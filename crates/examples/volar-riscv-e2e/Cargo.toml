@@ -28,7 +28,10 @@ volar-ir-opt = { version = "0.1.0", path = "../../ir/volar-ir-opt" }
 volar-verifier-fold = { path = "../../fold/volar-verifier-fold" }
 volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }
 volar-iop = { path = "../../iop/volar-iop" }
-volar-compiler = { path = "../../compiler/volar-compiler" }
+volar-compiler = { path = "../../compiler/volar-compiler", features = ["parsing"] }
 volar-fuzz = { path = "../../fuzz/volar-fuzz" }
+volar-lir-codegen = { path = "../../compiler/volar-lir-codegen" }
+volar-c-backend = { path = "../../compiler/volar-c-backend" }
+volar-lir-test-corpus = { path = "../../compiler/volar-lir-test-corpus" }
 wat = "1.212.0"
 wasmtime = "46.0.1"

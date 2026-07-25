@@ -1004,6 +1004,238 @@ mod tests {
         assert!(found, "some pre_init-seeded storage must hold the correct result word after real steps");
     }
 
+    /// Milestone 1's own real checkpoint: drive the *real* RISC-V
+    /// interpreter (not `mem_probe.rs`'s small stand-in) through the real
+    /// split weave -> `QSim` -> real Gf128-based multi-storage memory
+    /// boundary -> IOP finalization proof, for a small, fixed number of
+    /// real raw steps -- proving the whole honest pipeline is wired
+    /// correctly at real interpreter circuit scale, using
+    /// `chunk_size=1` (`docs/interpreter-honest-e2e-zk-plan.md`'s own
+    /// confirmed-compilable choice) and `crate::memory_check_driver`'s
+    /// generic per-`(storage_id, type_id)` accounting (mem_probe.rs's own
+    /// 2-storage, single-address `mem2`/`mem33` hand-threading doesn't
+    /// generalize -- the real interpreter's circuit touches dozens of
+    /// storages across many addresses, including
+    /// `StorageId::VAFFLE_SSA_SPILL`'s own cross-block spill slots).
+    ///
+    /// **Deliberately does *not* run the guest program to completion**
+    /// (the real 27-instruction sum-4-words program needs on the order of
+    /// 1000+ raw circuit steps, per `trace_interpreter_plain_values_matches_native_reference`'s
+    /// own ~1405-hop finding on an earlier repro) -- at `chunk_size=1`'s
+    /// 241 functions per role, a driver unrolling that many real steps
+    /// worth of straight-line calling code would need a fundamentally
+    /// different design (e.g. a real runtime loop over witness data
+    /// instead of one generated Rust statement block per step) to stay
+    /// compile-tractable, out of scope here. `RAW_STEPS` below is small
+    /// on purpose: enough to exercise a real write-then-read/write
+    /// sequence (so the multiset check's own `old_value`/`write_ts`
+    /// threading is genuinely tested, not just a trivial single-touch
+    /// case), not a claim that the guest program finishes.
+    ///
+    /// `#[ignore]`d: real interpreter scale. Run manually:
+    /// `cargo test -p volar-riscv-e2e --release honest_interpreter_run_folds_and_finalizes_with_real_memory_boundary -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn honest_interpreter_run_folds_and_finalizes_with_real_memory_boundary() {
+        use volar_ir_passes::LoweringMode;
+        use volar_ir_common::TypeId;
+        use volar_weaver::{
+            weave_vole_prover_ir_split, weave_vole_qsim_ir_split,
+            weave_vole_verifier_ir_split_with_trace, print_weaved_vole_module, IopSink,
+            StorageMode,
+        };
+        use volar_compiler::ir::IrFunction;
+        use volar_verifier_iop_runtime::run_iop_verifier;
+        use volar_fuzz::interpreter::ir::{
+            eval_ir_circuit_step_with_watch, apply_pre_init, bits_to_u64, bit_width, StorageMap,
+        };
+        use crate::split_driver::{generate_split_step, Slot};
+        use crate::memory_check_driver::MemCheckAccounting;
+
+        const RAW_STEPS: usize = 2;
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        let mode = StorageMode::Commitment;
+        let chunk_size = 1usize; // confirmed-compilable -- docs/interpreter-honest-e2e-zk-plan.md
+        let n_blocks = boundary.len();
+        let n_chunks = n_blocks.div_ceil(chunk_size);
+
+        let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        let trace = weave_vole_prover_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, |f| prover_funcs.push(f));
+        let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_qsim_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, |f| qsim_funcs.push(f));
+        let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv", &mode, &IopSink, &boundary, &accum_info, chunk_size, |f| verifier_funcs.push(f));
+        assert_eq!(prover_funcs.len(), n_blocks + n_chunks + 1);
+        assert_eq!(qsim_funcs.len(), n_blocks + n_chunks + 1);
+        assert_eq!(verifier_funcs.len(), n_blocks + n_chunks + 1);
+        eprintln!("woven: {} functions per role ({n_blocks} blocks + {n_chunks} chunks + 1 finish)", prover_funcs.len());
+
+        let module_of = |functions: std::vec::Vec<IrFunction>, name: &str| volar_compiler::ir::IrModule {
+            name: name.into(), functions, structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let prover_code = print_weaved_vole_module(&module_of(prover_funcs.clone(), "prover"));
+        let qsim_code = print_weaved_vole_module(&module_of(qsim_funcs.clone(), "qsim"));
+        let verifier_code = print_weaved_vole_module(&module_of(verifier_funcs.clone(), "verifier"));
+        let prover_fn_only = &prover_code[prover_code.find("pub fn").expect("prover source must have a pub fn")..];
+        let qsim_fn_only = &qsim_code[qsim_code.find("pub fn").expect("qsim source must have a pub fn")..];
+        let rust_source = format!("{verifier_code}\n{prover_fn_only}\n{qsim_fn_only}");
+        eprintln!("printed source length: {} bytes", rust_source.len());
+
+        // Ordered watch list: every real StorageRead/StorageWrite's own
+        // addr_var + value_var, in the same statement order `trace`
+        // itself lists them (verified by construction -- both come from
+        // the same statement-order walk, per `split_driver.rs`'s own
+        // doc). One watch pass per step recovers every real value
+        // `generate_split_step`'s own `oracle_bits` and
+        // `MemCheckAccounting` both need, without hand-deriving them.
+        let watch_vars: std::vec::Vec<u32> = trace.entries.iter().flat_map(|e| [e.addr_var, e.value_var]).collect();
+
+        let mut storage: StorageMap = StorageMap::new();
+        apply_pre_init(&mut storage, &circuit.pre_init, &types);
+        let mut pre_init_map: std::collections::BTreeMap<(u32, u32, u64), u64> = std::collections::BTreeMap::new();
+        for seg in &circuit.pre_init {
+            for i in 0..seg.data.len() {
+                pre_init_map.insert((seg.storage.0, seg.ty.0, (seg.offset + i) as u64), seg.as_u64(i));
+            }
+        }
+
+        let param_widths: std::vec::Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| bit_width(tid, &types)).collect();
+        let mut inputs: std::vec::Vec<std::vec::Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+
+        let mut zero_stmts = String::new();
+        for (i, &w) in param_widths.iter().enumerate() {
+            if w <= 1 {
+                zero_stmts += &format!("let w{i}_vope_0 = vope_zero();\nlet w{i}_q_0 = q_zero();\n");
+            } else {
+                zero_stmts += &format!("let w{i}_vope_0: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n");
+                zero_stmts += &format!("let w{i}_q_0: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n");
+            }
+        }
+        let mut entry_w: std::vec::Vec<(Slot, Slot)> = param_widths.iter().enumerate().map(|(i, &w)| {
+            if w <= 1 {
+                (Slot::Scalar(format!("w{i}_vope_0")), Slot::Scalar(format!("w{i}_q_0")))
+            } else {
+                (Slot::Array(format!("w{i}_vope_0"), w), Slot::Array(format!("w{i}_q_0"), w))
+            }
+        }).collect();
+
+        let mut all_steps_stmts = String::new();
+        let mut all_ok_fold_state: Option<(String, String)> = None;
+        let mut mem_check = MemCheckAccounting::new();
+
+        for step in 0..RAW_STEPS {
+            let (outputs, watched) = eval_ir_circuit_step_with_watch(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage, &watch_vars);
+            let watched_map: std::collections::BTreeMap<u32, std::vec::Vec<bool>> = watched.into_iter().collect();
+
+            let mut oracle_bits: std::vec::Vec<std::vec::Vec<bool>> = std::vec::Vec::new();
+            for e in &trace.entries {
+                let addr_bits = watched_map.get(&e.addr_var).unwrap_or_else(|| panic!("step {step}: addr_var {} not watched (dead statement?)", e.addr_var));
+                let value_bits = watched_map.get(&e.value_var).unwrap_or_else(|| panic!("step {step}: value_var {} not watched (dead statement?)", e.value_var));
+                let addr = bits_to_u64(addr_bits);
+                let width = bit_width(TypeId(e.type_id), &types);
+                let value = bits_to_u64(&value_bits[..width.min(64)]);
+                mem_check.emit_op(&mut all_steps_stmts, e.storage_id, e.type_id, addr, value, e.is_write, &pre_init_map);
+                if !e.is_write {
+                    oracle_bits.push(value_bits.clone());
+                }
+            }
+
+            let result = generate_split_step(
+                &prover_funcs, &qsim_funcs, &verifier_funcs, &boundary, &accum_info, n_chunks,
+                &entry_w, all_ok_fold_state.clone(), &oracle_bits, step,
+            );
+            all_steps_stmts += &result.stmts;
+            entry_w = result.next_entry_w;
+            all_ok_fold_state = Some((result.final_all_ok_expr, result.final_fold_state_expr));
+
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+        }
+        assert!(!mem_check.is_empty(), "the real interpreter must touch at least one real committed storage");
+        let (h_produce_expr, h_consume_expr) = mem_check.finish(&mut all_steps_stmts);
+        let (final_all_ok, final_fold_state) = all_ok_fold_state.expect("at least one step ran");
+
+        let driver = format!(r#"
+            use volar_iop::field::{{Field as _, Gf128}};
+            use volar_iop::transcript::FromBytes as _;
+            use volar_spec::field::Galois;
+            use volar_spec::ot::IdealCot;
+            use volar_spec::vole::setup::{{random_nonzero_delta, vole_commit_bit}};
+            use volar_spec::vole::memory::{{ChallengeKey, MemoryCheckState}};
+            use volar_spec::vole::{{Delta, Q, Vope}};
+            use volar_spec::{{Array, SpecRng}};
+            use hybrid_array::Array as HArray;
+
+            type N = cipher::consts::U16;
+
+            struct TestRng(u64);
+            impl SpecRng for TestRng {{
+                fn next_u32(&mut self) -> u32 {{
+                    self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                    let mut z = self.0;
+                    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                    (z ^ (z >> 31)) as u32
+                }}
+            }}
+            fn sample_g<R: SpecRng>(r: &mut R) -> Galois {{ Galois(r.next_u8()) }}
+            fn lift_bit_g(b: bool) -> Galois {{ Galois(if b {{ 1 }} else {{ 0 }}) }}
+            fn is_zero_g(g: &Galois) -> bool {{ g.0 == 0 }}
+
+            fn vope_zero() -> Vope<N, Galois, cipher::consts::U1> {{
+                Vope {{
+                    u: HArray::<HArray<Galois, N>, cipher::consts::U1>::from_fn(|_| HArray::<Galois, N>::from_fn(|_| Galois(0))),
+                    v: HArray::<Galois, N>::from_fn(|_| Galois(0)),
+                }}
+            }}
+            fn q_zero() -> Q<N, Galois> {{ Q {{ q: HArray::<Galois, N>::from_fn(|_| Galois(0)) }} }}
+            fn vope_one(delta: &Delta<N, Galois>) -> Vope<N, Galois, cipher::consts::U1> {{
+                let _ = delta;
+                Vope {{
+                    u: HArray::<HArray<Galois, N>, cipher::consts::U1>::from_fn(|_| HArray::<Galois, N>::from_fn(|_| Galois(1))),
+                    v: HArray::<Galois, N>::from_fn(|_| Galois(0)),
+                }}
+            }}
+            fn q_one(delta: &Delta<N, Galois>) -> Q<N, Galois> {{
+                Q {{ q: HArray::<Galois, N>::from_fn(|i| delta.delta[i].clone()) }}
+            }}
+
+            #[test]
+            fn honest_interpreter_run_verifies_with_real_memory_boundary() {{
+                let mut rng = TestRng(0xC0FFEE_C0FFEE);
+                let delta = random_nonzero_delta::<N, Galois, _>(&mut rng, sample_g, is_zero_g);
+                let cot = IdealCot::new(delta.clone());
+
+                let r = Gf128::from_u64(0x53);
+                let key = ChallengeKey::from_challenge(r);
+
+                {zero_stmts}
+
+                {all_steps_stmts}
+
+                assert_eq!({RAW_STEPS}u8, {RAW_STEPS}u8);
+
+                let mem_acc_in = {h_produce_expr};
+                let mem_acc_out = {h_consume_expr};
+
+                let tagged: volar_discipline::Tagged<volar_discipline::Transparent, _> =
+                    volar_discipline::Tagged::seal({final_fold_state});
+                let _ = {final_all_ok};
+                let (proof, ok) = prove_and_verify_iop(tagged, &mem_acc_in, &mem_acc_out, Some((&mem_acc_in, &mem_acc_out)));
+                assert!(ok, "the finalization proof over the real interpreter's own memory boundary must verify");
+
+                let mut corrupted_out = mem_acc_out;
+                corrupted_out[0] = Gf128::from_u64(0xdead_beef);
+                let corrupted_ok = volar_iop::verify_iop(&proof, Some((&mem_acc_in, &corrupted_out)));
+                assert!(!corrupted_ok, "a corrupted expected memory boundary must be rejected");
+            }}
+        "#);
+
+        run_iop_verifier(&rust_source, &driver);
+    }
+
     /// Cheap sanity check for `bound_register_survives_across_dispatch`'s
     /// own hand-assembled program -- decodes each word back and asserts it
     /// matches the intended instruction, so an encoding mistake (e.g. a
@@ -1705,6 +1937,177 @@ mod tests {
                 f.name, f.params.len(), code.len(),
             );
         }
+    }
+
+    /// `probe_chunk_size_vs_largest_function_size` only measures a
+    /// single, largest chunk function in isolation -- it never printed
+    /// *every* one of the ~241 split-weave functions for a role together,
+    /// which is what a real driven step actually needs
+    /// (`print_weaved_vole_module` on the full module, once per role).
+    /// That full-module print is what drove RSS past 13GB+ (system swap
+    /// nearly exhausted) before `WireRepr::Array` replaced
+    /// `insert_w_wires`'s eager per-bit unpacking -- this measures the
+    /// full-module print's own size/time directly, at `chunk_size=1`, to
+    /// confirm the fix actually holds at the scale that mattered.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release probe_full_module_print_size -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_full_module_print_size() {
+        use volar_ir_passes::LoweringMode;
+        use volar_weaver::{StorageMode, weave_vole_prover_ir_split, print_weaved_vole_module};
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        let mode = StorageMode::Commitment;
+        let chunk_size = 1usize;
+
+        eprintln!("num_params (circuit.blocks[0].params.len()) = {}", circuit.blocks[0].params.len());
+        {
+            use volar_ir_common::Stmt;
+            use volar_fuzz::interpreter::ir::bit_width;
+            let mut n_shuffle = 0usize;
+            let mut shuffle_bits = 0usize;
+            let mut n_merge = 0usize;
+            let mut merge_parts = 0usize;
+            let mut n_poly = 0usize;
+            let mut n_stmts = 0usize;
+            let mut poly_deg0 = 0usize; // no monomials at all (pure constant)
+            let mut poly_deg1_single = 0usize; // exactly one degree-1 monomial, no others (pass-through / NOT-ish)
+            let mut poly_deg1_multi = 0usize; // 2+ degree-1 monomials, no degree>=2 (XOR chain)
+            let mut poly_deg2plus = 0usize; // has at least one degree>=2 monomial (AND-bearing)
+            let mut poly_deg2plus_monomial_total = 0usize;
+            let mut poly_width_gt1 = 0usize;
+            let mut poly_by_ty: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+            for node in &circuit.blocks[0].stmts {
+                n_stmts += 1;
+                match &node.kind {
+                    Stmt::Shuffle { result_bits, .. } => { n_shuffle += 1; shuffle_bits += result_bits.len(); }
+                    Stmt::Merge { parts, .. } => { n_merge += 1; merge_parts += parts.len(); }
+                    Stmt::Poly { ty, coeffs, .. } => {
+                        n_poly += 1;
+                        *poly_by_ty.entry(ty.0).or_insert(0) += 1;
+                        let w = bit_width(*ty, &types);
+                        if w > 1 { poly_width_gt1 += 1; }
+                        let max_deg = coeffs.keys().map(|m| m.len()).max().unwrap_or(0);
+                        let deg1_count = coeffs.keys().filter(|m| m.len() == 1).count();
+                        let deg2plus_count = coeffs.keys().filter(|m| m.len() >= 2).count();
+                        if max_deg == 0 { poly_deg0 += 1; }
+                        else if max_deg == 1 && deg1_count == 1 { poly_deg1_single += 1; }
+                        else if max_deg == 1 { poly_deg1_multi += 1; }
+                        else { poly_deg2plus += 1; poly_deg2plus_monomial_total += deg2plus_count; }
+                    }
+                    _ => {}
+                }
+            }
+            eprintln!("total stmts={n_stmts} poly={n_poly} shuffle={n_shuffle} (total result_bits={shuffle_bits}) merge={n_merge} (total parts={merge_parts})");
+            eprintln!("poly breakdown: deg0(const)={poly_deg0} deg1_single={poly_deg1_single} deg1_multi(xor-chain)={poly_deg1_multi} deg2plus(and-bearing)={poly_deg2plus} (total and-monomials={poly_deg2plus_monomial_total}) width>1={poly_width_gt1}");
+            eprintln!("poly by output type id (top 10): {:?}", poly_by_ty.iter().collect::<Vec<_>>().into_iter().rev().take(10).collect::<Vec<_>>());
+        }
+        let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
+        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        eprintln!("woven: {} functions", funcs.len());
+        let avg_params = funcs.iter().map(|f| f.params.len()).sum::<usize>() as f64 / funcs.len() as f64;
+        eprintln!("avg params per function = {avg_params:.1}");
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: funcs, structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let code = print_weaved_vole_module(&module);
+        eprintln!("full prover module printed_len={} bytes", code.len());
+    }
+
+    /// First bounded feasibility check for the C-backend path: does the
+    /// REAL split-woven module (not the toy `BIrBlocks` circuits
+    /// `volar-c-backend/tests/vole_e2e.rs` already validates end-to-end)
+    /// even lower through the SAME `LinkageSystem` + `lower_module_with_opts`
+    /// + `CBackend` pipeline, at real interpreter scale, for a single block
+    /// function only (not all 241 -- that's the next step once this
+    /// succeeds).
+    ///
+    /// `vole_e2e.rs` proves the pipeline itself is real and correct (a
+    /// full OT-based VOLE AND-gate check, 4/4 pass) for the OLDER
+    /// `BIrBlocks`/`weave_vole_prover` path. The real interpreter goes
+    /// through `weave_vole_prover_ir_split` (`IRBlocks`/`CirBlock`-based,
+    /// chunk_size=1) instead, which currently has no `linkage` parameter
+    /// -- but `LinkageSystem::apply` is public and only mutates
+    /// `structs`/`enums`/`traits`/`impls`/`functions`/`type_aliases`, so
+    /// it can be applied externally without touching `vole.rs` at all.
+    /// `mem_probe.rs`'s own field config (`N=16`, `T=Galois`, `U1=1`,
+    /// `K=1`) matches `vole_e2e.rs`'s already-validated `galois_vole_env`
+    /// exactly, so no new `MonoEnv` config should be needed either.
+    #[test]
+    #[ignore]
+    fn probe_split_weave_single_block_lowers_to_c() {
+        use volar_ir_passes::LoweringMode;
+        use volar_weaver::{StorageMode, weave_vole_prover_ir_split};
+        use volar_compiler::{
+            SourceInput, ir::IrType, ir::PrimitiveType,
+            linkage::{LinkageKind, LinkageSystem, LinkedSpec},
+            parse_sources,
+        };
+        use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
+        use volar_c_backend::CBackend;
+
+        fn spec_src_dir() -> std::path::PathBuf {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent().unwrap()
+                .parent().unwrap()
+                .join("spec").join("volar-spec").join("src")
+        }
+        fn read_spec(name: &str) -> (String, String) {
+            let path = spec_src_dir().join(name);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read spec file {}: {e}", path.display()));
+            let stem = std::path::Path::new(name).file_stem().unwrap().to_string_lossy().into_owned();
+            (src, stem)
+        }
+        fn make_vole_linkage() -> LinkageSystem {
+            let files = ["lib.rs", "vole.rs", "vole/prove.rs", "vole/vope.rs", "vole/impls.rs"];
+            let loaded: Vec<(String, String)> = files.iter().map(|&f| read_spec(f)).collect();
+            let inputs: Vec<SourceInput> = loaded.iter()
+                .map(|(src, name)| SourceInput { source: src.as_str(), name: name.as_str() })
+                .collect();
+            let spec_module = parse_sources(&inputs, "volar_spec", &[])
+                .unwrap_or_else(|e| panic!("make_vole_linkage failed: {e}"));
+            let mut ls = LinkageSystem::new();
+            ls.add(LinkedSpec { name: "volar_spec".into(), module: spec_module, kind: LinkageKind::Inline });
+            ls
+        }
+        fn galois_vole_env() -> MonoEnv {
+            MonoEnv::new("sha256")
+                .with_len("N", 16)
+                .with_len("U1", 1)
+                .with_len("U0", 0)
+                .with_len("K", 1)
+                .with_type("T", IrType::Primitive(PrimitiveType::Galois))
+        }
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        let mode = StorageMode::Commitment;
+        let chunk_size = 1usize;
+
+        let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
+        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        eprintln!("woven: {} functions", funcs.len());
+
+        let one_func = funcs.into_iter().next().expect("at least one function woven");
+        eprintln!("testing single function: {} ({} params)", one_func.name, one_func.params.len());
+        let mut module = volar_compiler::ir::IrModule {
+            name: "riscv_step_probe".into(), functions: vec![one_func], structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+
+        let linkage = make_vole_linkage();
+        linkage.apply(&mut module);
+        eprintln!("after linkage: {} functions, {} structs", module.functions.len(), module.structs.len());
+
+        let env = galois_vole_env();
+        let mut b = CBackend::new();
+        lower_module_with_opts(&module, &mut b, &env);
+        let c_src = b.finish();
+        eprintln!("lowered to C successfully: {} bytes", c_src.len());
+        assert!(!c_src.is_empty());
     }
 
     /// Minimal isolation repro for the "circuit state never changes" bug

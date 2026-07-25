@@ -2345,8 +2345,37 @@ pub struct MemoryTrace {
 enum WireRepr {
     /// Single authenticated bit.
     Scalar(String),
-    /// Vector of authenticated bits (produced by `Merge`).
+    /// Vector of authenticated bits (produced by `Merge`), each an
+    /// independently-named, already-bound local -- the "real local per
+    /// bit" contract every generic consumer (`var(name)`) relies on.
     Vec(Vec<String>),
+    /// A wide value backed directly by an existing `[T; width]`-typed
+    /// array (a top-level circuit param, e.g. `w_i`, or a wide chunk/
+    /// finish incoming param like `in_next_state_k`) -- lane `j` is
+    /// `{name}[j]`, indexed lazily rather than eagerly unpacked into
+    /// `width` bound locals up front.
+    ///
+    /// Exists specifically because `insert_w_wires` previously unpacked
+    /// *every* top-level param into `width` `let`-bound locals
+    /// unconditionally, for *every* one of the ~241 split-weave
+    /// functions per role -- regardless of whether that function ever
+    /// referenced them. With top-level parameter threading (every state
+    /// slot is now a combined-circuit param), that is
+    /// O(functions * total_param_width) generated statements, which is
+    /// what drove `print_weaved_vole_module` to 13GB+ RSS printing the
+    /// real interpreter's full split-weave module.
+    ///
+    /// Any consumer that only needs an `IrExpr` (not a bound name) can
+    /// index directly (`arr_index(name, j)`) with no extra statement at
+    /// all -- see `emit_poly_wide`'s bundling step and `slot_expr`. Any
+    /// consumer that genuinely needs real bound-local names (address
+    /// composition, `Merge` combining, the unrolled per-lane `Poly`
+    /// fallback) must call `Self::materialize` first, which lazily binds
+    /// exactly the lanes actually touched and memoizes the result back
+    /// into `self.wires` as a normal `Vec` -- paying the "real locals"
+    /// cost only for vars a given function actually uses, not eagerly
+    /// for the whole top-level param set.
+    Array(String, usize),
 }
 
 /// Width of a circuit type in bits (1 for Bit, K for Vec(K, Bit)).
@@ -2481,6 +2510,45 @@ fn count_storage_reads_range(stmts: &[volar_ir_common::Node<IRStmt, ()>], types:
         Stmt::StorageRead { ty, .. } => Some(cir_type_width(ty, types)),
         _ => None,
     }).sum()
+}
+
+/// Scan a statement range for operand references into the combined
+/// circuit's own top-level param range (`< num_params`) -- used to
+/// determine which `w_i` a specific split-weave function actually needs
+/// to declare, instead of unconditionally declaring all of them (a real,
+/// measured blowup once top-level parameter threading made `num_params`
+/// cover every state slot -- see `WireRepr::Array`'s own doc).
+///
+/// Callers must additionally union in this function's own boundary-
+/// derived *output* var ids (`is_active`/`done`/`next_pc`/`next_state`/
+/// `ret_vals`) restricted to `< num_params` -- a block/chunk can return a
+/// top-level param *directly* (movfuscate.rs's tunnelled-slot
+/// elimination pass-through) without that id ever appearing as an
+/// operand inside this range. Deliberately conservative in the other
+/// direction too: this only ever *adds* real operand references, so a
+/// missed id just means an unused `w_i` stays declared (harmless, same
+/// as the pre-filtering behavior for every param) -- it can never
+/// produce an *under*-inclusive set that causes a "no entry for key"
+/// panic, since nothing here removes an id once found.
+fn collect_used_top_level_params(
+    stmts: &[volar_ir_common::Node<IRStmt, ()>],
+    num_params: usize,
+) -> alloc::collections::BTreeSet<u32> {
+    let mut used = alloc::collections::BTreeSet::new();
+    for node in stmts {
+        let _ = node.kind.clone().map_var(
+            &mut used,
+            &mut |used: &mut alloc::collections::BTreeSet<u32>, v: CirVar| -> Result<CirVar, core::convert::Infallible> {
+                if (v.0 as usize) < num_params {
+                    used.insert(v.0);
+                }
+                Ok(v)
+            },
+            &mut |_used, ty| Ok(ty),
+            &mut |_used, stor| Ok(stor),
+        );
+    }
+    used
 }
 
 /// Per-oracle-call bit layout: total committed bits across all outputs.
@@ -2703,14 +2771,46 @@ impl<'a> VoleIrCtx<'a> {
         match &self.wires[&v.0] {
             WireRepr::Scalar(s) => s,
             WireRepr::Vec(_) => panic!("expected scalar wire for v{}", v.0),
+            WireRepr::Array(..) => panic!("expected scalar wire for v{} (found wide Array)", v.0),
         }
     }
 
-    /// Get vec wire names for a var id.
-    fn vec_parts(&self, v: &CirVar) -> &[String] {
+    /// Ensure `v`'s wire is materialized as `Scalar`/`Vec` (never
+    /// `Array`) -- idempotent and memoized: a `WireRepr::Array` is
+    /// unpacked into `width` real bound locals (`let _mat_{v}_{j} =
+    /// {arr}[j].clone();`) the first time this is called for `v`, and the
+    /// result is written back into `self.wires` as a `Vec`, so any later
+    /// call (or lookup) for the same `v` sees the already-materialized
+    /// `Vec` and does no further work. Call this before any code path
+    /// that needs genuine bound-local names (address composition, `Merge`
+    /// combining, `vec_parts`) rather than just an `IrExpr` (which
+    /// `slot_expr`/`operand_expr` can build directly via `arr_index`,
+    /// without ever materializing).
+    fn materialize(&mut self, v: &CirVar) {
+        if let WireRepr::Array(arr_name, w) = self.wires[&v.0].clone() {
+            let names: Vec<String> = (0..w)
+                .map(|j| {
+                    let n = format!("_mat_{}_{}", v.0, j);
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&n),
+                        ty: None,
+                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
+                    }));
+                    n
+                })
+                .collect();
+            self.wires.insert(v.0, WireRepr::Vec(names));
+        }
+    }
+
+    /// Get vec wire names for a var id, materializing first if `v` is
+    /// currently a `WireRepr::Array`.
+    fn vec_parts(&mut self, v: &CirVar) -> Vec<String> {
+        self.materialize(v);
         match &self.wires[&v.0] {
-            WireRepr::Vec(v) => v,
+            WireRepr::Vec(v) => v.clone(),
             WireRepr::Scalar(_) => panic!("expected vec wire"),
+            WireRepr::Array(..) => unreachable!("materialize just ran"),
         }
     }
 
@@ -2728,6 +2828,11 @@ impl<'a> VoleIrCtx<'a> {
             WireRepr::Vec(names) => {
                 ir_expr(IrExprKind::FixedArray(names.iter().map(|n| clone_expr(var(n))).collect()))
             }
+            // `arr_name` is already a valid identifier (a real function
+            // param name) -- clone the whole `[T; w]` array directly
+            // rather than building a `w`-element `FixedArray` literal of
+            // individually-indexed clones.
+            WireRepr::Array(arr_name, _) => clone_expr(var(arr_name)),
         }
     }
 
@@ -2742,6 +2847,11 @@ impl<'a> VoleIrCtx<'a> {
                 kind: volar_compiler::ir::ArrayKind::FixedArray,
                 elem: Box::new(base_ty.clone()),
                 len: volar_compiler::ir::ArrayLength::Const(names.len()),
+            },
+            WireRepr::Array(_, w) => IrType::Array {
+                kind: volar_compiler::ir::ArrayKind::FixedArray,
+                elem: Box::new(base_ty.clone()),
+                len: volar_compiler::ir::ArrayLength::Const(*w),
             },
         }
     }
@@ -2895,10 +3005,12 @@ impl<'a> VoleIrCtx<'a> {
     /// `Bit` regardless of `val`'s width) — a scalar operand is reused
     /// verbatim at every lane (exactly the broadcast a selector bit needs),
     /// while a `Vec` operand is indexed per lane.
-    fn operand_lane(&self, v: &CirVar, lane: usize) -> String {
+    fn operand_lane(&mut self, v: &CirVar, lane: usize) -> String {
+        self.materialize(v);
         match &self.wires[&v.0] {
             WireRepr::Scalar(s) => s.clone(),
             WireRepr::Vec(parts) => parts[lane].clone(),
+            WireRepr::Array(..) => unreachable!("materialize just ran"),
         }
     }
 
@@ -3083,24 +3195,35 @@ impl<'a> VoleIrCtx<'a> {
         for mono in coeffs.keys() {
             for v in mono {
                 if wide_ops.contains(v) { continue; }
-                if matches!(&self.wires[&v.0], WireRepr::Vec(_)) {
+                if matches!(&self.wires[&v.0], WireRepr::Vec(_) | WireRepr::Array(..)) {
                     wide_ops.push(*v);
                 }
             }
         }
         let mut bundle: alloc::collections::BTreeMap<u32, String> = alloc::collections::BTreeMap::new();
         for v in &wide_ops {
-            let WireRepr::Vec(names) = &self.wires[&v.0] else { unreachable!() };
-            let bname = format!("{out_name}_o{}", v.0);
-            let arr = ir_expr(IrExprKind::FixedArray(
-                names.iter().map(|n| clone_expr(var(n))).collect(),
-            ));
-            self.stmts.push(ir_stmt(IrStmtKind::Let {
-                pattern: IrPattern::ident(&bname),
-                ty: None,
-                init: Some(arr),
-            }));
-            bundle.insert(v.0, bname);
+            match &self.wires[&v.0] {
+                // Already array-shaped (a top-level circuit param kept
+                // as a real `[T; w]` array rather than eagerly unpacked
+                // -- see `WireRepr::Array`'s own doc) -- no bundling
+                // statement needed, index it directly.
+                WireRepr::Array(arr_name, _) => {
+                    bundle.insert(v.0, arr_name.clone());
+                }
+                WireRepr::Vec(names) => {
+                    let bname = format!("{out_name}_o{}", v.0);
+                    let arr = ir_expr(IrExprKind::FixedArray(
+                        names.iter().map(|n| clone_expr(var(n))).collect(),
+                    ));
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&bname),
+                        ty: None,
+                        init: Some(arr),
+                    }));
+                    bundle.insert(v.0, bname);
+                }
+                WireRepr::Scalar(_) => unreachable!(),
+            }
         }
 
         // ---- 2. Bundle every AND monomial's hat/q_and/r_and, one bundle
@@ -3177,7 +3300,7 @@ impl<'a> VoleIrCtx<'a> {
         let operand_expr = |ctx: &Self, v: &CirVar| -> IrExpr {
             match &ctx.wires[&v.0] {
                 WireRepr::Scalar(s) => clone_expr(var(s)),
-                WireRepr::Vec(_) => clone_expr(arr_index(&bundle[&v.0], "i")),
+                WireRepr::Vec(_) | WireRepr::Array(..) => clone_expr(arr_index(&bundle[&v.0], "i")),
             }
         };
 
@@ -3605,9 +3728,11 @@ impl<'a> VoleIrCtx<'a> {
             return;
         }
 
+        self.materialize(addr_var);
         let full_addr: Vec<String> = match &self.wires[&addr_var.0] {
             WireRepr::Scalar(s) => vec![s.clone()],
             WireRepr::Vec(v) => v.clone(),
+            WireRepr::Array(..) => unreachable!("materialize just ran"),
         };
         let aw = Self::effective_addr_width(cell_count);
         let addr_bits: Vec<String> = full_addr[..aw].to_vec();
@@ -3650,9 +3775,11 @@ impl<'a> VoleIrCtx<'a> {
             .count();
         if cell_count == 0 { return; }
 
+        self.materialize(addr_var);
         let full_addr: Vec<String> = match &self.wires[&addr_var.0] {
             WireRepr::Scalar(s) => vec![s.clone()],
             WireRepr::Vec(v) => v.clone(),
+            WireRepr::Array(..) => unreachable!("materialize just ran"),
         };
         let aw = Self::effective_addr_width(cell_count);
         let addr_bits: Vec<String> = full_addr[..aw].to_vec();
@@ -3780,9 +3907,11 @@ impl<'a> VoleIrCtx<'a> {
     fn emit_merge(&mut self, out_id: u32, parts: &[CirVar]) {
         let mut names: Vec<String> = Vec::new();
         for v in parts {
+            self.materialize(v);
             match &self.wires[&v.0] {
                 WireRepr::Scalar(s) => names.push(s.clone()),
                 WireRepr::Vec(bits) => names.extend(bits.iter().cloned()),
+                WireRepr::Array(..) => unreachable!("materialize just ran"),
             }
         }
         self.wires.insert(out_id, WireRepr::Vec(names));
@@ -3834,27 +3963,18 @@ impl<'a> VoleIrCtx<'a> {
         // `weave_vole_verifier_ir_with_mode(_and_trace)`. Array-batched on
         // the *param* side (one `w_{i}: [T; width]` array, not `width`
         // scalar params -- see `docs/agent-context/circuit-size-optimization-backlog.md`'s
-        // 65535-arg-limit finding) but every *downstream* consumer still
-        // expects `width` individually-named locals (`WireRepr::Vec`'s
-        // long-standing contract), so extract them immediately here via
-        // per-lane `let w_{i}_{j} = w_{i}[j].clone();` statements -- the
-        // same "array param in, named locals out" pattern already used for
-        // `hat`/`q_and`/`r_and`'s per-gate reads.
+        // 65535-arg-limit finding); kept as a lazy `WireRepr::Array`
+        // rather than eagerly unpacked into `width` bound locals -- any
+        // consumer needing real names materializes on demand (see
+        // `WireRepr::Array`'s own doc for why eager unpacking here was a
+        // real, measured blowup once top-level parameter threading made
+        // `p` include every state slot).
         for i in 0..p {
             let w = cir_type_width(&block.params[i], types);
             if w <= 1 {
                 self.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
             } else {
-                let arr_name = format!("w_{}", i);
-                let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
-                for (j, bname) in bits.iter().enumerate() {
-                    self.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(bname),
-                        ty: None,
-                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
-                    }));
-                }
-                self.wires.insert(i as u32, WireRepr::Vec(bits));
+                self.wires.insert(i as u32, WireRepr::Array(format!("w_{}", i), w));
             }
         }
 
@@ -4375,16 +4495,16 @@ pub fn weave_vole_prover_ir_split(
             if w <= 1 {
                 ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
             } else {
-                let arr_name = format!("w_{}", i);
-                let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
-                for (j, bname) in bits.iter().enumerate() {
-                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(bname),
-                        ty: None,
-                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
-                    }));
-                }
-                ctx.wires.insert(i as u32, WireRepr::Vec(bits));
+                // Lazy `WireRepr::Array`, not eagerly unpacked -- see its
+                // own doc. With top-level parameter threading, `num_params`
+                // covers every state slot, and this closure runs once per
+                // (block/chunk/finish) split-weave function per role
+                // (~241 x 3): eagerly unpacking every wide param into `w`
+                // bound locals here, regardless of whether a given
+                // function ever references them, is exactly what drove
+                // `print_weaved_vole_module` to 13GB+ RSS printing the
+                // real interpreter's full split-weave module.
+                ctx.wires.insert(i as u32, WireRepr::Array(format!("w_{}", i), w));
             }
         }
     };
@@ -4428,8 +4548,23 @@ pub fn weave_vole_prover_ir_split(
         } else { 0 };
         let local_ext = count_external_primitives_range(local_stmts, types);
 
+        // Only declare the `w_i` this specific block function actually
+        // references, instead of unconditionally all `num_params` -- see
+        // `collect_used_top_level_params`'s own doc. Output ids
+        // (`is_active`/`done`/`next_pc`/`next_state`/`ret_vals`) must be
+        // unioned in explicitly: a tunnelled-slot pass-through can return
+        // a top-level param directly without it ever appearing as an
+        // operand inside this block's own statement range.
+        let mut used_w: alloc::collections::BTreeSet<u32> = collect_used_top_level_params(&block.stmts[shared_prefix.clone()], num_params);
+        used_w.extend(collect_used_top_level_params(local_stmts, num_params));
+        for &v in core::iter::once(&b.is_active).chain(core::iter::once(&b.done))
+            .chain(b.next_pc_bits.iter()).chain(b.next_state.iter()).chain(b.ret_vals.iter())
+        {
+            if (v as usize) < num_params { used_w.insert(v); }
+        }
+
         let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
-        params.extend(w_params.iter().cloned());
+        params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
         for j in 0..local_oracle_reads {
             params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
         }
@@ -4523,20 +4658,14 @@ pub fn weave_vole_prover_ir_split(
             IrType::Array { elem, len: volar_compiler::ir::ArrayLength::Const(n), .. } => {
                 // Array-batched on the *param* side (one array param, not
                 // `n` scalar params — same 65535-arg-limit reason as
-                // `hat`/`q_and`/`r_and`/`w_i`), but every downstream
-                // consumer still expects `n` individually-named locals
-                // (`WireRepr::Vec`'s contract) — extract them immediately,
-                // same "array param in, named locals out" pattern.
+                // `hat`/`q_and`/`r_and`/`w_i`). Kept as a lazy
+                // `WireRepr::Array` rather than eagerly unpacked into `n`
+                // bound locals -- see `WireRepr::Array`'s own doc; any
+                // consumer needing real names (`Merge`, address
+                // composition, the unrolled `Poly` fallback) materializes
+                // on demand.
                 params.push(IrParam { name: base_name.clone(), ty: wide_array_type((**elem).clone(), *n) });
-                let names: Vec<String> = (0..*n).map(|j| format!("{base_name}_{j}")).collect();
-                for (j, nm) in names.iter().enumerate() {
-                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(nm),
-                        ty: None,
-                        init: Some(clone_expr(arr_index(&base_name, &j.to_string()))),
-                    }));
-                }
-                ctx.wires.insert(var_id, WireRepr::Vec(names));
+                ctx.wires.insert(var_id, WireRepr::Array(base_name, *n));
             }
             _ => {
                 params.push(IrParam { name: base_name.clone(), ty });
@@ -5225,16 +5354,16 @@ pub fn weave_vole_qsim_ir_split(
             if w <= 1 {
                 ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
             } else {
-                let arr_name = format!("w_{}", i);
-                let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
-                for (j, bname) in bits.iter().enumerate() {
-                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(bname),
-                        ty: None,
-                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
-                    }));
-                }
-                ctx.wires.insert(i as u32, WireRepr::Vec(bits));
+                // Lazy `WireRepr::Array`, not eagerly unpacked -- see its
+                // own doc. With top-level parameter threading, `num_params`
+                // covers every state slot, and this closure runs once per
+                // (block/chunk/finish) split-weave function per role
+                // (~241 x 3): eagerly unpacking every wide param into `w`
+                // bound locals here, regardless of whether a given
+                // function ever references them, is exactly what drove
+                // `print_weaved_vole_module` to 13GB+ RSS printing the
+                // real interpreter's full split-weave module.
+                ctx.wires.insert(i as u32, WireRepr::Array(format!("w_{}", i), w));
             }
         }
     };
@@ -5271,20 +5400,14 @@ pub fn weave_vole_qsim_ir_split(
             IrType::Array { elem, len: volar_compiler::ir::ArrayLength::Const(n), .. } => {
                 // Array-batched on the *param* side (one array param, not
                 // `n` scalar params — same 65535-arg-limit reason as
-                // `hat`/`q_and`/`r_and`/`w_i`), but every downstream
-                // consumer still expects `n` individually-named locals
-                // (`WireRepr::Vec`'s contract) — extract them immediately,
-                // same "array param in, named locals out" pattern.
+                // `hat`/`q_and`/`r_and`/`w_i`). Kept as a lazy
+                // `WireRepr::Array` rather than eagerly unpacked into `n`
+                // bound locals -- see `WireRepr::Array`'s own doc; any
+                // consumer needing real names (`Merge`, address
+                // composition, the unrolled `Poly` fallback) materializes
+                // on demand.
                 params.push(IrParam { name: base_name.clone(), ty: wide_array_type((**elem).clone(), *n) });
-                let names: Vec<String> = (0..*n).map(|j| format!("{base_name}_{j}")).collect();
-                for (j, nm) in names.iter().enumerate() {
-                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(nm),
-                        ty: None,
-                        init: Some(clone_expr(arr_index(&base_name, &j.to_string()))),
-                    }));
-                }
-                ctx.wires.insert(var_id, WireRepr::Vec(names));
+                ctx.wires.insert(var_id, WireRepr::Array(base_name, *n));
             }
             _ => {
                 params.push(IrParam { name: base_name.clone(), ty });
@@ -5305,6 +5428,17 @@ pub fn weave_vole_qsim_ir_split(
         } else { 0 };
         let local_ext = count_external_primitives_range(local_stmts, types);
 
+        // See the matching comment in `weave_vole_prover_ir_split`'s own
+        // block loop -- only declare the `w_i` this block function
+        // actually references.
+        let mut used_w: alloc::collections::BTreeSet<u32> = collect_used_top_level_params(&block.stmts[shared_prefix.clone()], num_params);
+        used_w.extend(collect_used_top_level_params(local_stmts, num_params));
+        for &v in core::iter::once(&b.is_active).chain(core::iter::once(&b.done))
+            .chain(b.next_pc_bits.iter()).chain(b.next_state.iter()).chain(b.ret_vals.iter())
+        {
+            if (v as usize) < num_params { used_w.insert(v); }
+        }
+
         let mut params: Vec<IrParam> = vec![
             IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
         ];
@@ -5312,7 +5446,7 @@ pub fn weave_vole_qsim_ir_split(
             params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
         }
         params.push(IrParam { name: "q_one".into(), ty: q_type() });
-        params.extend(w_params.iter().cloned());
+        params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
         for j in 0..local_oracle_reads {
             params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
         }
@@ -5732,16 +5866,16 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             if w <= 1 {
                 ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
             } else {
-                let arr_name = format!("w_{}", i);
-                let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
-                for (j, bname) in bits.iter().enumerate() {
-                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(bname),
-                        ty: None,
-                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
-                    }));
-                }
-                ctx.wires.insert(i as u32, WireRepr::Vec(bits));
+                // Lazy `WireRepr::Array`, not eagerly unpacked -- see its
+                // own doc. With top-level parameter threading, `num_params`
+                // covers every state slot, and this closure runs once per
+                // (block/chunk/finish) split-weave function per role
+                // (~241 x 3): eagerly unpacking every wide param into `w`
+                // bound locals here, regardless of whether a given
+                // function ever references them, is exactly what drove
+                // `print_weaved_vole_module` to 13GB+ RSS printing the
+                // real interpreter's full split-weave module.
+                ctx.wires.insert(i as u32, WireRepr::Array(format!("w_{}", i), w));
             }
         }
     };
@@ -5801,20 +5935,14 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             IrType::Array { elem, len: volar_compiler::ir::ArrayLength::Const(n), .. } => {
                 // Array-batched on the *param* side (one array param, not
                 // `n` scalar params — same 65535-arg-limit reason as
-                // `hat`/`q_and`/`r_and`/`w_i`), but every downstream
-                // consumer still expects `n` individually-named locals
-                // (`WireRepr::Vec`'s contract) — extract them immediately,
-                // same "array param in, named locals out" pattern.
+                // `hat`/`q_and`/`r_and`/`w_i`). Kept as a lazy
+                // `WireRepr::Array` rather than eagerly unpacked into `n`
+                // bound locals -- see `WireRepr::Array`'s own doc; any
+                // consumer needing real names (`Merge`, address
+                // composition, the unrolled `Poly` fallback) materializes
+                // on demand.
                 params.push(IrParam { name: base_name.clone(), ty: wide_array_type((**elem).clone(), *n) });
-                let names: Vec<String> = (0..*n).map(|j| format!("{base_name}_{j}")).collect();
-                for (j, nm) in names.iter().enumerate() {
-                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(nm),
-                        ty: None,
-                        init: Some(clone_expr(arr_index(&base_name, &j.to_string()))),
-                    }));
-                }
-                ctx.wires.insert(var_id, WireRepr::Vec(names));
+                ctx.wires.insert(var_id, WireRepr::Array(base_name, *n));
             }
             _ => {
                 params.push(IrParam { name: base_name.clone(), ty });
@@ -5835,6 +5963,17 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         } else { 0 };
         let local_ext = count_external_primitives_range(local_stmts, types);
 
+        // See the matching comment in `weave_vole_prover_ir_split`'s own
+        // block loop -- only declare the `w_i` this block function
+        // actually references.
+        let mut used_w: alloc::collections::BTreeSet<u32> = collect_used_top_level_params(&block.stmts[shared_prefix.clone()], num_params);
+        used_w.extend(collect_used_top_level_params(local_stmts, num_params));
+        for &v in core::iter::once(&b.is_active).chain(core::iter::once(&b.done))
+            .chain(b.next_pc_bits.iter()).chain(b.next_state.iter()).chain(b.ret_vals.iter())
+        {
+            if (v as usize) < num_params { used_w.insert(v); }
+        }
+
         let mut params: Vec<IrParam> = vec![
             IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
         ];
@@ -5847,7 +5986,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             });
         }
         params.push(IrParam { name: "q_one".into(), ty: q_type() });
-        params.extend(w_params.iter().cloned());
+        params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
         for j in 0..local_oracle_reads {
             params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
         }

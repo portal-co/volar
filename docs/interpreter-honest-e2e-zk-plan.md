@@ -12,8 +12,14 @@ wide `Poly` instead of per-bit) is also implemented and landed — see
 "Bitwise-op-widening" below; measured no size change on *this specific*
 circuit (the interpreter's own dispatch logic doesn't route much traffic
 through wide AND/OR/XOR), but is a real, structurally-verified win for any
-program that does. Generic honest-driver work (Gf128-based multi-storage
-memory check) is designed but not yet built.**
+program that does. The generic honest driver (Gf128-based multi-storage
+memory check, `memory_check_driver.rs`) is built and a real
+`honest_interpreter_run_folds_and_finalizes_with_real_memory_boundary` test
+is written (`wat_gen.rs`, `#[ignore]`d, real interpreter scale) — but a
+**second, independent scale wall** was found and partially addressed; see
+"`WireRepr::Array`: fixing the real print-time OOM" and "Beyond
+`WireRepr::Array`: where the remaining size actually is" below for the full
+story, and "C-backend path" for the current, in-progress next step.**
 
 ## `chunk_size` mitigation (still useful, now stacks with the real fix)
 
@@ -236,10 +242,30 @@ verified against the split-weave's chunk-0 handling before changing
    ~28+ min budget, watch RSS) to confirm both a real *and* a
    *sufficient* reduction in generated source size.
 
-## Separate, still-designed-but-not-yet-implemented: the generic honest driver
+## Generic honest driver: built, e2e test running
 
-Once the above compiles, the interpreter's own honest e2e driver still needs
-building (design complete, not yet written):
+Both pieces below are now implemented (not just designed):
+
+- `crates/examples/volar-riscv-e2e/src/memory_check_driver.rs` (new file):
+  `MemCheckAccounting`, the generic per-`(storage_id, type_id)` accounting
+  struct described below. Declared as `#[cfg(test)] pub(crate) mod
+  memory_check_driver;` in `lib.rs`. Compiles cleanly.
+- `crates/examples/volar-riscv-e2e/src/wat_gen.rs`:
+  `honest_interpreter_run_folds_and_finalizes_with_real_memory_boundary`
+  (`#[ignore]`d, real interpreter scale) — drives the real interpreter's
+  circuit for a small, fixed `RAW_STEPS` (currently 2, deliberately **not**
+  full guest-program completion — see the test's own doc comment for why:
+  at `chunk_size=1`'s 241 functions/role, unrolling ~1000+ real steps into
+  one generated driver function is a different design problem, out of
+  scope here) through the real split weave (all 3 roles) at
+  `chunk_size=1`, `eval_ir_circuit_step_with_watch` for real plain values,
+  `MemCheckAccounting` for the real Gf128 multiset boundary, and
+  `generate_split_step` for the per-step calling glue, then
+  `prove_and_verify_iop` + a corrupted-boundary rejection check, compiled
+  via `run_iop_verifier`.
+
+Below is the original design (kept for reference; now implemented as
+described above):
 
 - `weave_vole_prover_ir_split` returns a `MemoryTrace` (real order + identity
   of every `StorageRead`/`StorageWrite`, including internal
@@ -269,6 +295,144 @@ building (design complete, not yet written):
   `IopLift`, is only implemented for `Galois`/`Bit`, not `Galois64`/`Gf128`
   directly — confirmed by reading
   `crates/iop/volar-verifier-iop-runtime/src/lib.rs`).
+
+## `WireRepr::Array`: fixing the real print-time OOM
+
+Running `honest_interpreter_run_folds_and_finalizes_with_real_memory_boundary`
+for the first time (2 real steps, `chunk_size=1`, all 3 roles) hit a second,
+independent scale wall — **before compilation even started**: weaving
+succeeded fast (241 functions/role), but `print_weaved_vole_module` on the
+full module drove RSS from ~5GB past 13GB+ and climbing, with system swap
+dropping to <1GB free (heavy thrashing, `Swapins`/`Swapouts` in the tens of
+millions) — killed manually before it could OOM the whole machine.
+
+**Root cause**: `insert_w_wires` (`vole.rs`, one copy per role in each
+`weave_vole_*_ir_split*` function) and the shared `bind_scalar` helper both
+eagerly unpacked every wide top-level/incoming param into `width`
+individually-`let`-bound locals, **unconditionally, for every one of the
+~241 functions per role**, regardless of whether that specific function
+ever referenced them. Before this session's top-level-parameter-threading
+work, `num_params` (`circuit.blocks[0].params.len()`) only covered the
+circuit's own original inputs; after it, `num_params` covers every state
+slot too (measured: **520** for the real interpreter). Unpacking is
+O(functions × total_param_width) — the actual driver of the blowup.
+
+**Fix**: `WireRepr` gained a third variant, `Array(String, usize)` — a
+wide value kept as a **lazy reference into an existing `[T; width]`
+array** (the function's own param, e.g. `w_5`), indexed on demand
+(`arr_index("w_5", "3")`) rather than eagerly unpacked. Any consumer that
+only needs an `IrExpr` (not a bound name) — `slot_expr`, `emit_poly_wide`'s
+operand bundling — indexes directly, no extra statement at all (and
+`emit_poly_wide`'s bundling step skips its own bundling `let` entirely for
+an already-array-shaped operand, reusing the param name directly). Any
+consumer that genuinely needs real bound-local names (`Merge` combining,
+oblivious-storage address composition, the unrolled per-lane `Poly`
+fallback) calls a new `materialize(&mut self, v)` helper first — idempotent
+and memoized (unpacks once, writes a real `WireRepr::Vec` back into
+`self.wires`), so only vars a function *actually* touches pay the
+real-locals cost, not the whole top-level param set.
+
+Verified: `volar-weaver`'s own `vole::tests` (36 tests) all green.
+Re-running the full-module print (`probe_full_module_print_size`,
+`wat_gen.rs`, `#[ignore]`d) after the fix: **241 functions, printed in
+28s, well under an 8GB `ulimit -v` safety net** (vs. the pre-fix run that
+was still climbing past 13GB after ~2 minutes with no end in sight).
+The crisis is fixed and confirmed at real scale.
+
+## Beyond `WireRepr::Array`: where the remaining size actually is
+
+The fix above solved the *crash*, but the full prover-role module is still
+**746,002,390 bytes (~746MB)** printed — vs. `chunk_size=8`'s single
+largest chunk (46.8MB) already OOM-ing `rustc` after ~28 minutes, i.e.
+~16x bigger than an already-failing reference point. Two follow-up
+investigations, both real (not blind optimization attempts):
+
+- **Used-parameter filtering** (implemented, `vole.rs`, block-function
+  sites only, all 3 roles): only declare the specific `w_i` a block
+  function's own statement range + boundary-derived output ids actually
+  reference, instead of unconditionally all `num_params`. Deliberately
+  conservative (safe over-inclusion via `collect_used_top_level_params` —
+  can only declare an unused-but-harmless extra param, never omit a
+  needed one) given how subtle this exact area has already proven this
+  session. **Result: negligible** (746,055,351 → 746,002,390 bytes,
+  ~0.007%). Root cause: every block's own `next_state` output is a
+  full state-width tuple (one entry per slot); for a slot the block
+  doesn't touch, that entry is a *literal pass-through* of the top-level
+  param `state_vars[k]` (movfuscate.rs's own tunnelled-slot elimination),
+  so the block function's signature needs `w_k` regardless of whether real
+  computation touches it. This is a hard floor at the current calling
+  convention — not fixable by filtering alone; would need block functions
+  to return only touched slots (sparse), pushing pass-through defaulting
+  into the chunk-level caller — a real redesign, not attempted.
+- **Statement-mix measurement** (`probe_full_module_print_size`, extended):
+  327,550 total statements in the combined circuit. `Poly`: 152,830 (47%,
+  dominant) — 83,125 are wide XOR-chains (mostly already using
+  `emit_poly_wide`'s collapsed-loop encoding), 68,107 are AND-bearing and
+  almost all **already width=1** (no unrolling possible, one statement is
+  already minimal). `Shuffle`: 23,408 (7%), every one already a single bit
+  (23,408 total `result_bits` / 23,408 shuffles = 1.0 avg) — nothing to
+  fold per-statement, only a batching-into-loops opportunity across many
+  shuffles, and even that only touches 7% of total statements. `Merge`:
+  1,338 (0.4%). **No obvious redundant/wasteful category** — this reads as
+  genuine, largely irreducible circuit complexity for a 120-block real
+  RISC-V interpreter at the bit-circuit level, not a second blowup bug.
+
+## C-backend path (in progress)
+
+Given the above, further shrinking the *Rust* source isn't likely to close
+a ~16x gap. `crates/compiler/volar-c-backend/tests/vole_e2e.rs` proves an
+**already-working, tested, real-cryptography-verified** alternative
+pipeline exists: `weave_vole_prover`/`weave_vole_verifier` (the older
+`BIrBlocks`-based siblings) → `LinkageSystem` (parses real
+`volar_spec::vole` source files via `parse_sources`, merges structs +
+functions into the woven module) → `lower_module_with_opts` with a
+`MonoEnv` (`N=16, T=Galois, U1=1, U0=0, K=1` — matching `mem_probe.rs`'s
+own field config exactly) → `CBackend` → C source → compiled with `cc` and
+run, verified against 4/4 real OT-based VOLE AND-gate checks. C is
+typically far cheaper for a C compiler to consume at scale than the
+equivalent Rust (no borrow-checker/monomorphization overhead), so this is
+a promising path for the real interpreter's actual scale.
+
+**Status**: `weave_vole_prover_ir_split` (the `IRBlocks`/`CirBlock`-based,
+chunk_size=1 split-weave this whole session's work targets) has no
+`linkage` parameter, unlike its non-split sibling
+`weave_vole_prover_ir_with_mode`. Since `LinkageSystem::apply` is public
+and only mutates `structs`/`enums`/`traits`/`impls`/`functions`/
+`type_aliases`, it can be applied externally with **no changes to
+`vole.rs`** — confirmed via a bounded probe
+(`probe_split_weave_single_block_lowers_to_c`, `wat_gen.rs`, `#[ignore]`d,
+single block function only): linkage merges cleanly (7 functions, 3
+structs after merge), and `lower_module_with_opts` gets meaningfully far
+before hitting a **concrete, well-defined blocker**:
+
+```
+thread '...' panicked at crates/compiler/volar-lir-codegen/src/structs.rs:283:21:
+unsubstituted TypeParam length 'N' — add it to MonoEnv
+```
+
+`ir_type_to_lir_inner` (`structs.rs:272-290`) resolves `ArrayLength::Const`
+and `ArrayLength::TypeNum` correctly but **unconditionally panics** on
+`ArrayLength::TypeParam` (line 283) — it never actually consults `MonoEnv`
+for the substitution, despite its own message. This fires specifically for
+`[Vope<N,T,U1>; w]`-shaped **arrays of a generic VOLE struct** (the real
+interpreter's wide `w_i` params, from `wide_array_type(vope_type(), w)`) —
+a construct `vole_e2e.rs`'s existing toy circuits (single AND/XOR/
+half-adder gates, all scalar/width=1) never exercise, so this gap was
+never surfaced before. Bare `Vope`/`Q` (as a function param, not array
+element) already lowers fine per `vole_e2e.rs`'s own passing tests, using
+the identical `MonoEnv` config — the gap is specifically in resolving a
+generic struct's own internal `N`-typed array field when that struct
+appears as an array *element* type, not as a bare param/field itself.
+
+**Next step** (not yet started): fix `structs.rs:283` to actually consult
+`MonoEnv`'s substitutions before panicking — likely needs the struct
+registry's own layout-resolution pass (used for bare `Vope`/`Q`) to be
+reachable/reused from `ir_type_to_lir_inner`'s array-element-type path,
+rather than duplicating substitution logic. Once fixed, re-run
+`probe_split_weave_single_block_lowers_to_c`, then scale up to all 241
+functions (one role at a time), then attempt an actual `cc` compile
+(`compile_and_run`-style) to get a real printed-C-size and compile-time
+data point comparable to the Rust-path numbers above.
 
 ## Known environment note
 
