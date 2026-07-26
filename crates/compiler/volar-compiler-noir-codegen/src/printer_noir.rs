@@ -12,10 +12,12 @@
 //! `NoirCodegenError` rather than panicking or emitting broken text.
 
 #[cfg(feature = "std")]
-use std::{format, string::String, string::ToString, vec::Vec};
+use std::{cell::RefCell, collections::BTreeMap, collections::BTreeSet, format, string::String, string::ToString, vec::Vec};
 
 #[cfg(not(feature = "std"))]
-use alloc::{format, string::String, string::ToString, vec::Vec};
+use alloc::{collections::BTreeMap, collections::BTreeSet, format, string::String, string::ToString, vec::Vec};
+#[cfg(not(feature = "std"))]
+use core::cell::RefCell;
 
 use volar_compiler::ir::{
     IrBlock, IrExpr, IrExprKind, IrFunction, IrGenericParam, IrLit, IrModule, IrParam, IrPattern,
@@ -26,6 +28,62 @@ use volar_compiler_passes::const_analysis::{classify_generic_with_aliases, Gener
 use crate::error::NoirCodegenError;
 use crate::lowering_noir::validate_module;
 
+/// Per-function printing context.
+///
+/// `tuple_structs` is module-wide (every `is_tuple` struct's Noir name,
+/// built once in `print_module_noir`) -- needed so `Field`/`Call` printing
+/// can tell a tuple-struct value (`.0` needs rewriting to `._0`, no such
+/// field in Noir) from a plain `IrType::Tuple` value (`.0` is real Noir
+/// tuple-access syntax, left alone). `var_types` seeds from the function's
+/// declared parameter types (and the enclosing impl's `self_ty` for
+/// methods), then grows as `print_stmt` walks `let` bindings whose type
+/// is inferable from their initializer (`infer_simple_type`) -- e.g.
+/// `let g = Galois(x);` records `g: Galois` so a later `g.0` in the same
+/// function resolves correctly. `RefCell` rather than threading `&mut
+/// PrintCtx` through every printer function: this context is read-mostly
+/// (every call site but one `insert`), and the alternative -- `&mut`
+/// propagating through `print_expr`, which nested block/if/loop bodies
+/// call back into `print_block` from -- would fight Rust's borrow
+/// checker for no real benefit here.
+///
+/// Known limitation, not a correctness bug: inference is flat across a
+/// function's nested blocks/scopes (no push/pop on block exit), so a
+/// name reused across sibling non-overlapping blocks/shadowed later in
+/// the same function can pick up a stale inferred type. The *value*
+/// printed is never wrong either way -- this only ever affects whether a
+/// numeric field access on that name prints `.0` or `._0`, and Volar
+/// spec code (the actual target) doesn't shadow like this in practice.
+struct PrintCtx {
+    generics: Vec<IrGenericParam>,
+    tuple_structs: BTreeSet<String>,
+    var_types: RefCell<BTreeMap<String, IrType>>,
+}
+
+/// The Noir identifier a value of `ty` would be declared under, if it's a
+/// (potentially tuple) struct -- covers both representations the parser
+/// produces for these names (see the type-mapping table in
+/// docs/noir-backend.md): `IrType::Struct(Custom(name))` for an ordinary
+/// struct reference, and `IrType::Primitive(p)` for the GF(2^k)/GF(3)
+/// fallback types specifically.
+fn struct_type_name(ty: &IrType) -> Option<String> {
+    match ty {
+        IrType::Struct { kind, .. } => Some(kind.to_string()),
+        IrType::Primitive(p) => Some(p.to_string()),
+        _ => None,
+    }
+}
+
+fn is_tuple_struct_type(ty: &IrType, tuple_structs: &BTreeSet<String>) -> bool {
+    struct_type_name(ty).is_some_and(|name| tuple_structs.contains(&name))
+}
+
+/// Synthesized field name for a tuple struct's `i`-th position (`_0`,
+/// `_1`, ...) -- Noir has no positional-index field access at all, so a
+/// tuple struct's `.0` needs a real named field to reference.
+fn tuple_field_name(i: usize) -> String {
+    format!("_{i}")
+}
+
 /// Print `module` as Noir source. Runs the pre-print validation pass
 /// first (see `lowering_noir`) and returns every violation found — this
 /// never panics and never emits source text for a rejected module.
@@ -34,6 +92,13 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
 
     let mut out = String::new();
     let mut errors = Vec::new();
+
+    let tuple_structs: BTreeSet<String> = module
+        .structs
+        .iter()
+        .filter(|s| s.is_tuple)
+        .map(|s| s.kind.to_string())
+        .collect();
 
     // Empirically confirmed (`nargo check`): unlike Rust, Noir does not
     // put `Add`/`Sub`/`Mul`/etc. -- nor `WrappingAdd`/`WrappingSub`, which
@@ -76,6 +141,19 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
         out.push('\n');
     }
 
+    for c in &module.consts {
+        match print_const(c) {
+            Ok(text) => {
+                out.push_str(&text);
+                out.push('\n');
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    if !module.consts.is_empty() {
+        out.push('\n');
+    }
+
     for s in &module.structs {
         // `GenericArray` is a structural alias for Volar's own generic-
         // array crate type, not a user struct declaration Noir needs to
@@ -94,7 +172,7 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
         }
     }
     for imp in &module.impls {
-        match print_impl(imp) {
+        match print_impl(imp, &tuple_structs) {
             Ok(text) => {
                 out.push_str(&text);
                 out.push_str("\n\n");
@@ -103,7 +181,7 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
         }
     }
     for function in &module.functions {
-        match print_function(function) {
+        match print_function(function, None, &tuple_structs) {
             Ok(text) => {
                 out.push_str(&text);
                 out.push_str("\n\n");
@@ -132,7 +210,7 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
 /// the approved plan). Comparison/clone/default traits and any non-`Math`
 /// `TraitKind` are unsupported in v1 (trait-bound/translation work beyond
 /// this narrow set is milestone 6 territory).
-fn print_impl(imp: &volar_compiler::ir::IrImpl) -> Result<String, NoirCodegenError> {
+fn print_impl(imp: &volar_compiler::ir::IrImpl, tuple_structs: &BTreeSet<String>) -> Result<String, NoirCodegenError> {
     let self_ty_text = type_to_noir(&imp.self_ty, "<impl>")?;
     let generics_text = print_generics(&imp.generics, "<impl>")?;
 
@@ -144,20 +222,67 @@ fn print_impl(imp: &volar_compiler::ir::IrImpl) -> Result<String, NoirCodegenErr
         }
     };
 
+    // Noir's operator traits (`Add`/`Sub`/`Mul`/etc, `noir_stdlib/src/ops/
+    // {arith,bit}.nr`) have no associated `Output` type at all -- always
+    // `fn add(self, other: Self) -> Self`. Rust source written against
+    // `core::ops` (exactly what `volar-primitives` does) always declares
+    // `type Output = Self;` (or the struct's own name, equivalent) and
+    // writes the method's return type as `Self::Output` rather than
+    // `Self` directly -- both need resolving away rather than rejecting:
+    // the `AssociatedType` item itself is consumed here (not printed --
+    // Noir has no such item), and any `Self::Output`-shaped return type
+    // is substituted with the resolved concrete type before printing.
+    let mut assoc_bindings = BTreeMap::new();
+    for item in &imp.items {
+        if let volar_compiler::ir::IrImplItem::AssociatedType { name, ty } = item {
+            assoc_bindings.insert(name.clone(), ty.clone());
+        }
+    }
+
     let mut methods = Vec::new();
     for item in &imp.items {
         match item {
-            volar_compiler::ir::IrImplItem::Method(f) => methods.push(print_function(f)?),
-            volar_compiler::ir::IrImplItem::AssociatedType { name, .. } => {
-                return Err(NoirCodegenError::Unsupported {
-                    function: "<impl>".into(),
-                    reason: format!("associated type `{name}` in an impl block is not yet supported"),
-                });
+            volar_compiler::ir::IrImplItem::Method(f) => {
+                let mut f = f.clone();
+                if let Some(ret) = &f.return_type {
+                    if matches!(ret, IrType::Projection { .. }) {
+                        f.return_type = Some(resolve_self_projection(ret, &imp.self_ty, &assoc_bindings));
+                    }
+                }
+                methods.push(print_function(&f, Some(&imp.self_ty), tuple_structs)?)
             }
+            volar_compiler::ir::IrImplItem::AssociatedType { .. } => {}
         }
     }
 
     Ok(format!("{header} {{\n{}\n}}", indent(&methods.join("\n\n"))))
+}
+
+/// Resolve a `Self::Assoc`-shaped [`IrType::Projection`] to a concrete
+/// type: `Self` resolves to `self_ty`, then `Assoc` is looked up in the
+/// impl's own associated-type bindings (`assoc_bindings`, from
+/// `IrImplItem::AssociatedType`) -- itself re-resolved if it's `Self`
+/// again (the common `type Output = Self;` case). Anything that isn't
+/// this specific `Self::Assoc` shape, or whose associated type isn't
+/// bound in this impl, is returned unchanged (still `Unsupported` when
+/// `type_to_noir` sees it -- this only handles the one shape real
+/// `core::ops`-style trait impls actually produce).
+fn resolve_self_projection(
+    ty: &IrType,
+    self_ty: &IrType,
+    assoc_bindings: &BTreeMap<volar_compiler::ir::AssociatedType, IrType>,
+) -> IrType {
+    let IrType::Projection { base, assoc, .. } = ty else {
+        return ty.clone();
+    };
+    if !matches!(base.as_ref(), IrType::TypeParam(n) if n == "Self") {
+        return ty.clone();
+    }
+    match assoc_bindings.get(assoc) {
+        Some(IrType::TypeParam(n)) if n == "Self" => self_ty.clone(),
+        Some(bound) => bound.clone(),
+        None => ty.clone(),
+    }
 }
 
 fn trait_kind_to_noir_name(kind: &volar_compiler::ir::TraitKind) -> Result<&'static str, NoirCodegenError> {
@@ -202,9 +327,21 @@ fn collect_needed_imports(block: &IrBlock, traits: &mut Vec<&'static str>, needs
     }
 }
 
+/// Exhaustive walk (mirrors `lowering_noir::validate_expr`'s coverage of
+/// every `IrExprKind` variant, not a subset) collecting which `use`
+/// imports the module's `StdMethod` calls will need -- see the doc
+/// comment at the `print_module_noir` call site for what was empirically
+/// confirmed. A narrower, non-exhaustive version of this walk previously
+/// missed a `WrappingAdd`/`Min`/etc. call nested in a struct-literal
+/// field, array element, or match arm -- it would still print the call
+/// site correctly (that logic lives in `print_expr`, which *is*
+/// exhaustive) but silently drop the needed `use`, so `nargo check` would
+/// fail on real fixtures that happened to nest a call this way. This
+/// walk only ever collects, never rejects -- unsupported constructs are
+/// still solely `lowering_noir`'s and `print_expr`'s job to reject.
 fn collect_needed_imports_expr(expr: &IrExpr, traits: &mut Vec<&'static str>, needs_cmp: &mut bool) {
     use volar_compiler::ir::{MethodKind, StdMethod};
-    if let IrExprKind::MethodCall { receiver, method, args, .. } = &expr.kind {
+    if let IrExprKind::MethodCall { method, .. } = &expr.kind {
         match method {
             MethodKind::Known(StdMethod::WrappingAdd) if !traits.contains(&"WrappingAdd") => {
                 traits.push("WrappingAdd");
@@ -217,34 +354,80 @@ fn collect_needed_imports_expr(expr: &IrExpr, traits: &mut Vec<&'static str>, ne
             }
             _ => {}
         }
-        collect_needed_imports_expr(receiver, traits, needs_cmp);
-        for a in args {
-            collect_needed_imports_expr(a, traits, needs_cmp);
-        }
-        return;
     }
-    // Recurse into the handful of shapes that can nest a MethodCall in
-    // practice for the fixtures this backend targets. Not an exhaustive
-    // walk of every IrExprKind variant (unlike lowering_noir's validation
-    // pass, missing a nesting shape here only means an import gets missed
-    // -- Noir's own compiler still catches that loudly as a real "trait
-    // not in scope" error, it just wouldn't be this printer's job to
-    // pre-empt it for every possible nesting).
     match &expr.kind {
+        IrExprKind::Lit(_) | IrExprKind::Var(_) | IrExprKind::Path { .. } | IrExprKind::Continue
+        | IrExprKind::Unreachable | IrExprKind::TypenumUsize { .. } | IrExprKind::LengthOf(_)
+        | IrExprKind::DefaultValue { .. } | IrExprKind::IterPipeline(_) | IrExprKind::Return(None)
+        | IrExprKind::Break(None) => {}
+
         IrExprKind::Binary { left, right, .. } | IrExprKind::Assign { left, right }
         | IrExprKind::AssignOp { left, right, .. } => {
             collect_needed_imports_expr(left, traits, needs_cmp);
             collect_needed_imports_expr(right, traits, needs_cmp);
         }
-        IrExprKind::Unary { expr, .. } | IrExprKind::Return(Some(expr)) | IrExprKind::Cast { expr, .. }
-        | IrExprKind::Field { base: expr, .. } => {
+        IrExprKind::Unary { expr, .. } | IrExprKind::Return(Some(expr)) | IrExprKind::Break(Some(expr))
+        | IrExprKind::Cast { expr, .. } | IrExprKind::Try(expr) | IrExprKind::Field { base: expr, .. } => {
             collect_needed_imports_expr(expr, traits, needs_cmp);
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            collect_needed_imports_expr(receiver, traits, needs_cmp);
+            for a in args {
+                collect_needed_imports_expr(a, traits, needs_cmp);
+            }
         }
         IrExprKind::Call { func, args } => {
             collect_needed_imports_expr(func, traits, needs_cmp);
             for a in args {
                 collect_needed_imports_expr(a, traits, needs_cmp);
             }
+        }
+        IrExprKind::Index { base, index } => {
+            collect_needed_imports_expr(base, traits, needs_cmp);
+            collect_needed_imports_expr(index, traits, needs_cmp);
+        }
+        IrExprKind::StructExpr { fields, rest, .. } => {
+            for (_, e) in fields {
+                collect_needed_imports_expr(e, traits, needs_cmp);
+            }
+            if let Some(r) = rest {
+                collect_needed_imports_expr(r, traits, needs_cmp);
+            }
+        }
+        IrExprKind::Tuple(es) | IrExprKind::Array(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                collect_needed_imports_expr(e, traits, needs_cmp);
+            }
+        }
+        IrExprKind::Repeat { elem, len } => {
+            collect_needed_imports_expr(elem, traits, needs_cmp);
+            collect_needed_imports_expr(len, traits, needs_cmp);
+        }
+        IrExprKind::ArrayGenerate { body, .. } => {
+            collect_needed_imports_expr(body, traits, needs_cmp);
+        }
+        IrExprKind::RawMap { receiver, body, .. } => {
+            collect_needed_imports_expr(receiver, traits, needs_cmp);
+            collect_needed_imports_expr(body, traits, needs_cmp);
+        }
+        IrExprKind::RawZip { left, right, body, .. } => {
+            collect_needed_imports_expr(left, traits, needs_cmp);
+            collect_needed_imports_expr(right, traits, needs_cmp);
+            collect_needed_imports_expr(body, traits, needs_cmp);
+        }
+        IrExprKind::RawFold { receiver, init, body, .. } => {
+            collect_needed_imports_expr(receiver, traits, needs_cmp);
+            collect_needed_imports_expr(init, traits, needs_cmp);
+            collect_needed_imports_expr(body, traits, needs_cmp);
+        }
+        IrExprKind::BoundedLoop { start, end, body, .. } => {
+            collect_needed_imports_expr(start, traits, needs_cmp);
+            collect_needed_imports_expr(end, traits, needs_cmp);
+            collect_needed_imports(body, traits, needs_cmp);
+        }
+        IrExprKind::IterLoop { collection, body, .. } => {
+            collect_needed_imports_expr(collection, traits, needs_cmp);
+            collect_needed_imports(body, traits, needs_cmp);
         }
         IrExprKind::Block(b) => collect_needed_imports(b, traits, needs_cmp),
         IrExprKind::If { cond, then_branch, else_branch } => {
@@ -254,11 +437,51 @@ fn collect_needed_imports_expr(expr: &IrExpr, traits: &mut Vec<&'static str>, ne
                 collect_needed_imports_expr(e, traits, needs_cmp);
             }
         }
-        IrExprKind::BoundedLoop { body, .. } | IrExprKind::IterLoop { body, .. } => {
+        IrExprKind::Match { expr, arms } => {
+            collect_needed_imports_expr(expr, traits, needs_cmp);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_needed_imports_expr(g, traits, needs_cmp);
+                }
+                collect_needed_imports_expr(&arm.body, traits, needs_cmp);
+            }
+        }
+        IrExprKind::Closure { body, .. } => collect_needed_imports_expr(body, traits, needs_cmp),
+        IrExprKind::Range { start, end, .. } => {
+            if let Some(s) = start {
+                collect_needed_imports_expr(s, traits, needs_cmp);
+            }
+            if let Some(e) = end {
+                collect_needed_imports_expr(e, traits, needs_cmp);
+            }
+        }
+        // `print_module_noir` runs `validate_module` (which rejects any
+        // `WhileLoop`) before this collection pass ever executes, so this
+        // arm is unreachable in practice -- included anyway so the match
+        // stays exhaustive without relying on that ordering.
+        IrExprKind::WhileLoop { cond, body } => {
+            collect_needed_imports_expr(cond, traits, needs_cmp);
             collect_needed_imports(body, traits, needs_cmp);
         }
+
+        // `IrExprKind` is `#[non_exhaustive]`; every variant known at the
+        // time this was written is handled above (mirrors the same
+        // closing arm in `lowering_noir::validate_expr`).
         _ => {}
     }
+}
+
+/// Print a module-level `const` as a Noir `global` -- empirically confirmed
+/// (`nargo check`) the correct Noir keyword; Noir has no `const` at all.
+/// `volar-primitives`'s reduction-polynomial constants (`GF8_POLY` etc.,
+/// referenced by the GF(2^k) software-fallback multiply/invert functions)
+/// are exactly this shape, so this is required for that fallback strategy
+/// to round-trip, not a hypothetical construct.
+fn print_const(c: &volar_compiler::ir::IrConst) -> Result<String, NoirCodegenError> {
+    let ty = type_to_noir(&c.ty, &c.name)?;
+    let ctx = PrintCtx { generics: Vec::new(), tuple_structs: BTreeSet::new(), var_types: RefCell::new(BTreeMap::new()) };
+    let value = print_expr(&c.value, &c.name, &ctx)?;
+    Ok(format!("global {}: {ty} = {value};", c.name))
 }
 
 fn print_struct(s: &volar_compiler::ir::IrStruct) -> Result<String, NoirCodegenError> {
@@ -266,25 +489,15 @@ fn print_struct(s: &volar_compiler::ir::IrStruct) -> Result<String, NoirCodegenE
     // Empirically confirmed (`nargo check`): Noir has no tuple-struct
     // syntax at all (`struct Galois(u8);` is a parse error -- "Expected a
     // '{' but found '('"). Volar's own `volar-primitives` fallback types
-    // (Bit/Galois/etc.) are all tuple structs, so this is a real, current
-    // gap blocking that specific fallback, not a hypothetical one --
-    // rejected clearly rather than emitting invalid syntax. Converting to
-    // a synthesized named-field struct (and correspondingly rewriting
-    // `.0`-style field access/tuple-construction call syntax throughout
-    // the expression printer) is tracked future work.
-    if s.is_tuple {
-        return Err(NoirCodegenError::Unsupported {
-            function: name.clone(),
-            reason: format!(
-                "`{name}` is a tuple struct -- Noir has no tuple-struct syntax \
-                 (confirmed via nargo check); needs conversion to a named-field \
-                 struct plus rewriting `.0`-style access, not yet implemented"
-            ),
-        });
-    }
+    // (Bit/Galois/etc.) are all tuple structs, so this is lowered to a
+    // named-field struct with synthesized `_0`/`_1`/... field names
+    // (`tuple_field_name`) rather than rejected -- `Field`/`Call` printing
+    // (see `print_expr`) correspondingly rewrite `.0`-style access and
+    // `Name(x)`-style construction for values statically known to have
+    // one of these types (`PrintCtx::tuple_structs`).
     let generics_text = print_generics(&s.generics, &name)?;
     let mut fields = Vec::new();
-    for f in &s.fields {
+    for (i, f) in s.fields.iter().enumerate() {
         // A reference *stored* in a struct field is the other "escapes"
         // case the plan calls out -- same reasoning as the returned-
         // reference check in `print_function`.
@@ -294,7 +507,8 @@ fn print_struct(s: &volar_compiler::ir::IrStruct) -> Result<String, NoirCodegenE
                 reason: format!("field `{}` cannot store a reference in Noir", f.name),
             });
         }
-        fields.push(format!("    {}: {},", f.name, type_to_noir(&f.ty, &name)?));
+        let field_name = if s.is_tuple { tuple_field_name(i) } else { f.name.clone() };
+        fields.push(format!("    {field_name}: {},", type_to_noir(&f.ty, &name)?));
     }
     Ok(format!(
         "struct {}{} {{\n{}\n}}",
@@ -304,14 +518,29 @@ fn print_struct(s: &volar_compiler::ir::IrStruct) -> Result<String, NoirCodegenE
     ))
 }
 
-fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
+fn print_function(
+    function: &IrFunction,
+    self_ty: Option<&IrType>,
+    tuple_structs: &BTreeSet<String>,
+) -> Result<String, NoirCodegenError> {
     let generics_text = print_generics(&function.generics, &function.name)?;
 
     let mut params = Vec::new();
+    let mut var_types = BTreeMap::new();
     match function.receiver {
         None => {}
-        Some(volar_compiler::ir::IrReceiver::Value) => params.push("self".to_string()),
-        Some(volar_compiler::ir::IrReceiver::Ref) => params.push("&self".to_string()),
+        Some(volar_compiler::ir::IrReceiver::Value) => {
+            params.push("self".to_string());
+            if let Some(ty) = self_ty {
+                var_types.insert("self".to_string(), ty.clone());
+            }
+        }
+        Some(volar_compiler::ir::IrReceiver::Ref) => {
+            params.push("&self".to_string());
+            if let Some(ty) = self_ty {
+                var_types.insert("self".to_string(), ty.clone());
+            }
+        }
         Some(volar_compiler::ir::IrReceiver::RefMut) => {
             return Err(NoirCodegenError::Unsupported {
                 function: function.name.clone(),
@@ -321,7 +550,13 @@ fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
     }
     for p in &function.params {
         params.push(print_param(p, &function.name)?);
+        var_types.insert(p.name.clone(), p.ty.clone());
     }
+    let ctx = PrintCtx {
+        generics: function.generics.clone(),
+        tuple_structs: tuple_structs.clone(),
+        var_types: RefCell::new(var_types),
+    };
 
     // Noir's entry point requires `pub` on the return type: the verifier
     // cannot retrieve a private witness, so a `main` returning a value at
@@ -351,7 +586,7 @@ fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
         }
     };
 
-    let body = print_block(&function.body, &function.name, &function.generics)?;
+    let body = print_block(&function.body, &function.name, &ctx)?;
 
     Ok(format!(
         "fn {}{}({}){} {{\n{}\n}}",
@@ -570,18 +805,18 @@ fn primitive_to_noir(p: PrimitiveType, fn_name: &str) -> Result<String, NoirCode
     }
 }
 
-fn print_block(block: &IrBlock, fn_name: &str, generics: &[IrGenericParam]) -> Result<String, NoirCodegenError> {
+fn print_block(block: &IrBlock, fn_name: &str, ctx: &PrintCtx) -> Result<String, NoirCodegenError> {
     let mut lines = Vec::new();
     for stmt in &block.stmts {
-        lines.push(print_stmt(&stmt.kind, fn_name, generics)?);
+        lines.push(print_stmt(&stmt.kind, fn_name, ctx)?);
     }
     if let Some(tail) = &block.expr {
-        lines.push(print_expr(tail, fn_name, generics)?);
+        lines.push(print_expr(tail, fn_name, ctx)?);
     }
     Ok(lines.join(";\n"))
 }
 
-fn print_stmt(stmt: &IrStmtKind, fn_name: &str, generics: &[IrGenericParam]) -> Result<String, NoirCodegenError> {
+fn print_stmt(stmt: &IrStmtKind, fn_name: &str, ctx: &PrintCtx) -> Result<String, NoirCodegenError> {
     match stmt {
         IrStmtKind::Let { pattern, ty, init } => {
             let name = ident_pattern_name(pattern, fn_name)?;
@@ -590,12 +825,27 @@ fn print_stmt(stmt: &IrStmtKind, fn_name: &str, generics: &[IrGenericParam]) -> 
                 None => String::new(),
             };
             let init_text = match init {
-                Some(e) => format!(" = {}", print_expr(e, fn_name, generics)?),
+                Some(e) => format!(" = {}", print_expr(e, fn_name, ctx)?),
                 None => String::new(),
             };
+
+            // Record this binding's type for later `Field`/`Call` lookups
+            // in the same function (`infer_simple_type`) -- prefer the
+            // explicit annotation when present (strictly more reliable
+            // than inference), else fall back to inferring from the
+            // initializer. `ident_pattern_name` above already validated
+            // `pattern` is a plain `Ident`, so this re-match can't fail.
+            let recorded_ty = match ty {
+                Some(t) => Some(t.clone()),
+                None => init.as_ref().and_then(|e| infer_simple_type(e, ctx)),
+            };
+            if let (Some(t), IrPattern::Ident { name: bare_name, .. }) = (recorded_ty, pattern) {
+                ctx.var_types.borrow_mut().insert(bare_name.clone(), t);
+            }
+
             Ok(format!("let {name}{ty_ann}{init_text}"))
         }
-        IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => print_expr(e, fn_name, generics),
+        IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => print_expr(e, fn_name, ctx),
         other => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
             reason: format!("unrecognized statement kind: {other:?}"),
@@ -615,7 +865,7 @@ fn ident_pattern_name(pattern: &IrPattern, fn_name: &str) -> Result<String, Noir
     }
 }
 
-fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Result<String, NoirCodegenError> {
+fn print_expr(expr: &IrExpr, fn_name: &str, ctx: &PrintCtx) -> Result<String, NoirCodegenError> {
     match &expr.kind {
         IrExprKind::Lit(lit) => print_lit(lit),
         IrExprKind::Var(name) => Ok(name.clone()),
@@ -623,28 +873,45 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
 
         IrExprKind::Binary { op, left, right } => Ok(format!(
             "({} {} {})",
-            print_expr(left, fn_name, generics)?,
+            print_expr(left, fn_name, ctx)?,
             bin_op_str(*op),
-            print_expr(right, fn_name, generics)?,
+            print_expr(right, fn_name, ctx)?,
         )),
 
         // References are transparently unwrapped in v1: `&x`/`&mut x`/`*x`
         // all print as just the inner expression's text.
         IrExprKind::Unary { op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut | SpecUnaryOp::Deref, expr } => {
-            print_expr(expr, fn_name, generics)
+            print_expr(expr, fn_name, ctx)
         }
         IrExprKind::Unary { op: SpecUnaryOp::Neg, expr } => {
-            Ok(format!("(-{})", print_expr(expr, fn_name, generics)?))
+            Ok(format!("(-{})", print_expr(expr, fn_name, ctx)?))
         }
         IrExprKind::Unary { op: SpecUnaryOp::Not, expr } => {
-            Ok(format!("(!{})", print_expr(expr, fn_name, generics)?))
+            Ok(format!("(!{})", print_expr(expr, fn_name, ctx)?))
         }
 
+        // A tuple struct's constructor call (`Galois(x)`) needs rewriting
+        // to Noir's named-field struct-literal syntax (`Galois { _0: x
+        // }`), matching the `_0`/`_1`/... field names `print_struct`
+        // synthesizes for its declaration -- Noir has no tuple-struct
+        // constructor-call syntax at all. Detected by the callee being a
+        // bare name (`Var`/single-segment `Path`) matching a known
+        // tuple-struct name in `ctx.tuple_structs` -- unlike field access
+        // (`infer_simple_type`), this needs no type inference: a call
+        // whose callee name literally *is* a tuple-struct name is
+        // unambiguously a construction, never a plain function call.
         IrExprKind::Call { func, args } => {
-            let func_text = print_expr(func, fn_name, generics)?;
+            if let Some(name) = tuple_struct_constructor_name(func, ctx) {
+                let mut field_texts = Vec::new();
+                for (i, a) in args.iter().enumerate() {
+                    field_texts.push(format!("{}: {}", tuple_field_name(i), print_expr(a, fn_name, ctx)?));
+                }
+                return Ok(format!("{name} {{ {} }}", field_texts.join(", ")));
+            }
+            let func_text = print_expr(func, fn_name, ctx)?;
             let mut arg_texts = Vec::new();
             for a in args {
-                arg_texts.push(print_expr(a, fn_name, generics)?);
+                arg_texts.push(print_expr(a, fn_name, ctx)?);
             }
             Ok(format!("{}({})", func_text, arg_texts.join(", ")))
         }
@@ -653,10 +920,10 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
         // an inherent or trait-impl method reachable via `print_impl`) --
         // direct 1:1 translation, `receiver.name(args)`.
         IrExprKind::MethodCall { receiver, method: volar_compiler::ir::MethodKind::Other(name), args, .. } => {
-            let receiver_text = print_expr(receiver, fn_name, generics)?;
+            let receiver_text = print_expr(receiver, fn_name, ctx)?;
             let mut arg_texts = Vec::new();
             for a in args {
-                arg_texts.push(print_expr(a, fn_name, generics)?);
+                arg_texts.push(print_expr(a, fn_name, ctx)?);
             }
             Ok(format!("{receiver_text}.{name}({})", arg_texts.join(", ")))
         }
@@ -675,22 +942,22 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
             use volar_compiler::ir::StdMethod;
             match std_method {
                 StdMethod::Len if args.is_empty() => {
-                    Ok(format!("{}.len()", print_expr(receiver, fn_name, generics)?))
+                    Ok(format!("{}.len()", print_expr(receiver, fn_name, ctx)?))
                 }
                 StdMethod::WrappingAdd | StdMethod::WrappingSub if args.len() == 1 => {
                     let method_name = if matches!(std_method, StdMethod::WrappingAdd) { "wrapping_add" } else { "wrapping_sub" };
                     Ok(format!(
                         "{}.{method_name}({})",
-                        print_expr(receiver, fn_name, generics)?,
-                        print_expr(&args[0], fn_name, generics)?,
+                        print_expr(receiver, fn_name, ctx)?,
+                        print_expr(&args[0], fn_name, ctx)?,
                     ))
                 }
                 StdMethod::Min | StdMethod::Max if args.len() == 1 => {
                     let fn_text = if matches!(std_method, StdMethod::Min) { "min" } else { "max" };
                     Ok(format!(
                         "{fn_text}({}, {})",
-                        print_expr(receiver, fn_name, generics)?,
-                        print_expr(&args[0], fn_name, generics)?,
+                        print_expr(receiver, fn_name, ctx)?,
+                        print_expr(&args[0], fn_name, ctx)?,
                     ))
                 }
                 other => Err(NoirCodegenError::Unsupported {
@@ -708,17 +975,34 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
         }),
 
         IrExprKind::Cast { expr, ty } => {
-            Ok(format!("({} as {})", print_expr(expr, fn_name, generics)?, type_to_noir(ty, fn_name)?))
+            Ok(format!("({} as {})", print_expr(expr, fn_name, ctx)?, type_to_noir(ty, fn_name)?))
         }
 
+        // A numeric field name (`.0`, `.1`) is ambiguous at this layer
+        // without a type-checked IR: it's valid Noir syntax as-is for a
+        // plain `IrType::Tuple` value, but Noir has no positional-index
+        // field access on structs at all -- a tuple *struct*'s `.0` needs
+        // the synthesized named field instead. Resolved via the only
+        // "type inference" this printer does (`infer_simple_type`:
+        // declared parameter/`self` types only, see `PrintCtx`); anything
+        // it can't resolve (e.g. a `let`-bound local with no type
+        // annotation) is left as plain `.N` access, which is the correct
+        // choice for the common case (an actual tuple) and a known,
+        // narrow limitation for the tuple-struct case.
         IrExprKind::Field { base, field } => {
-            Ok(format!("{}.{field}", print_expr(base, fn_name, generics)?))
+            let base_text = print_expr(base, fn_name, ctx)?;
+            if let Ok(idx) = field.parse::<usize>() {
+                if infer_simple_type(base, ctx).is_some_and(|ty| is_tuple_struct_type(&ty, &ctx.tuple_structs)) {
+                    return Ok(format!("{base_text}.{}", tuple_field_name(idx)));
+                }
+            }
+            Ok(format!("{base_text}.{field}"))
         }
 
         IrExprKind::Index { base, index } => Ok(format!(
             "{}[{}]",
-            print_expr(base, fn_name, generics)?,
-            print_expr(index, fn_name, generics)?,
+            print_expr(base, fn_name, ctx)?,
+            print_expr(index, fn_name, ctx)?,
         )),
 
         // Array literal `[a, b, c]` -- direct 1:1 translation, Noir's
@@ -740,19 +1024,19 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
         IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
             let mut parts = Vec::new();
             for e in elems {
-                parts.push(print_expr(e, fn_name, generics)?);
+                parts.push(print_expr(e, fn_name, ctx)?);
             }
             Ok(format!("[{}]", parts.join(", ")))
         }
         IrExprKind::Repeat { elem, len } => Ok(format!(
             "[{}; {}]",
-            print_expr(elem, fn_name, generics)?,
-            print_expr(len, fn_name, generics)?,
+            print_expr(elem, fn_name, ctx)?,
+            print_expr(len, fn_name, ctx)?,
         )),
         IrExprKind::Tuple(elems) => {
             let mut parts = Vec::new();
             for e in elems {
-                parts.push(print_expr(e, fn_name, generics)?);
+                parts.push(print_expr(e, fn_name, ctx)?);
             }
             Ok(format!("({})", parts.join(", ")))
         }
@@ -773,29 +1057,29 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
         IrExprKind::StructExpr { kind, fields, rest: None, .. } => {
             let mut parts = Vec::new();
             for (name, value) in fields {
-                parts.push(format!("{name}: {}", print_expr(value, fn_name, generics)?));
+                parts.push(format!("{name}: {}", print_expr(value, fn_name, ctx)?));
             }
             Ok(format!("{kind} {{ {} }}", parts.join(", ")))
         }
 
         IrExprKind::Assign { left, right } => {
-            Ok(format!("{} = {}", print_expr(left, fn_name, generics)?, print_expr(right, fn_name, generics)?))
+            Ok(format!("{} = {}", print_expr(left, fn_name, ctx)?, print_expr(right, fn_name, ctx)?))
         }
         IrExprKind::AssignOp { op, left, right } => Ok(format!(
             "{} {}= {}",
-            print_expr(left, fn_name, generics)?,
+            print_expr(left, fn_name, ctx)?,
             bin_op_str(*op),
-            print_expr(right, fn_name, generics)?,
+            print_expr(right, fn_name, ctx)?,
         )),
 
-        IrExprKind::Block(b) => Ok(format!("{{\n{}\n}}", indent(&print_block(b, fn_name, generics)?))),
+        IrExprKind::Block(b) => Ok(format!("{{\n{}\n}}", indent(&print_block(b, fn_name, ctx)?))),
 
         IrExprKind::If { cond, then_branch, else_branch } => {
-            let cond_text = print_expr(cond, fn_name, generics)?;
-            let then_text = print_block(then_branch, fn_name, generics)?;
+            let cond_text = print_expr(cond, fn_name, ctx)?;
+            let then_text = print_block(then_branch, fn_name, ctx)?;
             let else_text = match else_branch {
                 None => String::new(),
-                Some(e) => format!(" else {}", print_else_arm(e, fn_name, generics)?),
+                Some(e) => format!(" else {}", print_else_arm(e, fn_name, ctx)?),
             };
             Ok(format!(
                 "if {} {{\n{}\n}}{}",
@@ -813,20 +1097,20 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
         // covers the case where this printer is ever called without going
         // through validation first — never a panic either way.
         IrExprKind::BoundedLoop { var, start, end, inclusive, body } => {
-            let start_text = crate::const_eval::eval_const_expr(start, generics)
+            let start_text = crate::const_eval::eval_const_expr(start, &ctx.generics)
                 .map(|c| c.to_string())
                 .ok_or_else(|| NoirCodegenError::NonConstantLoopBound {
                     function: fn_name.into(),
                     reason: "start bound is not a compile-time constant".into(),
                 })?;
-            let end_text = crate::const_eval::eval_const_expr(end, generics)
+            let end_text = crate::const_eval::eval_const_expr(end, &ctx.generics)
                 .map(|c| c.to_string())
                 .ok_or_else(|| NoirCodegenError::NonConstantLoopBound {
                     function: fn_name.into(),
                     reason: "end bound is not a compile-time constant".into(),
                 })?;
             let range_op = if *inclusive { "..=" } else { ".." };
-            let body_text = print_block(body, fn_name, generics)?;
+            let body_text = print_block(body, fn_name, ctx)?;
             Ok(format!(
                 "for {var} in {start_text}{range_op}{end_text} {{\n{}\n}}",
                 indent(&body_text),
@@ -838,8 +1122,8 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
         // ordinary expression printer here.
         IrExprKind::IterLoop { pattern, collection, body } => {
             let pat_text = ident_pattern_name(pattern, fn_name)?;
-            let coll_text = print_expr(collection, fn_name, generics)?;
-            let body_text = print_block(body, fn_name, generics)?;
+            let coll_text = print_expr(collection, fn_name, ctx)?;
+            let body_text = print_block(body, fn_name, ctx)?;
             Ok(format!(
                 "for {pat_text} in {coll_text} {{\n{}\n}}",
                 indent(&body_text),
@@ -862,7 +1146,7 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
                 .into(),
         }),
 
-        IrExprKind::Return(Some(e)) => Ok(format!("return {}", print_expr(e, fn_name, generics)?)),
+        IrExprKind::Return(Some(e)) => Ok(format!("return {}", print_expr(e, fn_name, ctx)?)),
         IrExprKind::Return(None) => Ok("return".into()),
 
         other => Err(NoirCodegenError::Unsupported {
@@ -877,14 +1161,66 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
 /// the ordinary expression printer; anything else would not be valid Noir
 /// `else` syntax on its own, so it's rejected explicitly rather than
 /// emitted as-is.
-fn print_else_arm(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Result<String, NoirCodegenError> {
+fn print_else_arm(expr: &IrExpr, fn_name: &str, ctx: &PrintCtx) -> Result<String, NoirCodegenError> {
     match &expr.kind {
-        IrExprKind::If { .. } | IrExprKind::Block(_) => print_expr(expr, fn_name, generics),
+        IrExprKind::If { .. } | IrExprKind::Block(_) => print_expr(expr, fn_name, ctx),
         other => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
             reason: format!("unsupported else-arm shape: {other:?}"),
         }),
     }
+}
+
+/// The only "type inference" this printer does: resolve a `Var`
+/// reference's declared type from `ctx.var_types` (populated in
+/// `print_function` from the function's own parameters and, for methods,
+/// the enclosing impl's `self_ty`). Every other expression shape returns
+/// `None` -- a `let`-bound local's type isn't tracked, so a chain like
+/// `let g = Galois(x); g.0` won't resolve (falls back to plain `.0`
+/// access, a known, narrow limitation, not silently wrong: it only
+/// affects the printed *field name* for a value that's still a real
+/// tuple-struct instance either way).
+fn infer_simple_type(expr: &IrExpr, ctx: &PrintCtx) -> Option<IrType> {
+    match &expr.kind {
+        IrExprKind::Var(name) => ctx.var_types.borrow().get(name).cloned(),
+
+        // `Galois(x)` -- a tuple-struct constructor call -- has exactly
+        // the constructed struct's type. Reuses the same name-match
+        // `tuple_struct_constructor_name` uses for the `Call` print arm,
+        // so this only ever fires for names already known to be a tuple
+        // struct (a plain function call correctly returns `None` here,
+        // deferring to no-inference).
+        IrExprKind::Call { func, .. } => tuple_struct_constructor_name(func, ctx)
+            .map(|name| IrType::Struct { kind: volar_compiler::ir::StructKind::Custom(name), type_args: Vec::new() }),
+
+        // `g1.mul(g2)`-shaped calls to the curated operator-overload
+        // method set (`MethodKind::Other`, printed 1:1 in the `Call`/
+        // `MethodCall` arms) return `Self` by construction -- every v1-
+        // supported trait impl matches Noir's own `std::ops` signatures
+        // (`fn add(self, other: Self) -> Self`, see `trait_kind_to_noir_
+        // name`'s doc comment) -- so the result has the same type as the
+        // receiver. Recurses on the receiver rather than requiring its
+        // own var_types entry, so `Galois(a).mul(Galois(b))` (receiver
+        // itself a constructor call, not a bound variable) still infers.
+        IrExprKind::MethodCall { receiver, method: volar_compiler::ir::MethodKind::Other(_), .. } => {
+            infer_simple_type(receiver, ctx)
+        }
+
+        _ => None,
+    }
+}
+
+/// If `func` (a `Call`'s callee) is a bare name matching a known tuple
+/// struct, return that struct's Noir name -- see the `Call` arm in
+/// `print_expr` for why a name match alone (no type inference needed) is
+/// sufficient here.
+fn tuple_struct_constructor_name(func: &IrExpr, ctx: &PrintCtx) -> Option<String> {
+    let name = match &func.kind {
+        IrExprKind::Var(name) => name.clone(),
+        IrExprKind::Path { segments, .. } if segments.len() == 1 => segments[0].clone(),
+        _ => return None,
+    };
+    ctx.tuple_structs.contains(&name).then_some(name)
 }
 
 fn print_lit(lit: &IrLit) -> Result<String, NoirCodegenError> {
@@ -935,6 +1271,14 @@ mod tests {
 
     fn expr(kind: IrExprKind) -> IrExpr {
         IrExpr { kind, prov: (), side: None }
+    }
+
+    fn empty_ctx() -> PrintCtx {
+        PrintCtx { generics: Vec::new(), tuple_structs: BTreeSet::new(), var_types: RefCell::new(BTreeMap::new()) }
+    }
+
+    fn ctx_with_generics(generics: &[IrGenericParam]) -> PrintCtx {
+        PrintCtx { generics: generics.to_vec(), tuple_structs: BTreeSet::new(), var_types: RefCell::new(BTreeMap::new()) }
     }
 
     fn block(stmts: Vec<IrStmtKind>, tail: Option<IrExprKind>) -> IrBlock {
@@ -1027,7 +1371,7 @@ mod tests {
             Some(IrType::Primitive(PrimitiveType::U32)),
             body,
         );
-        let text = print_function(&f).unwrap();
+        let text = print_function(&f, None, &BTreeSet::new()).unwrap();
         // `main`'s return type must be `pub` — Noir's entry-point requirement.
         assert!(text.contains("-> pub u32"), "{text}");
         assert!(text.contains("(a + b)"), "{text}");
@@ -1042,7 +1386,7 @@ mod tests {
             Some(IrType::Primitive(PrimitiveType::U32)),
             body,
         );
-        let text = print_function(&f).unwrap();
+        let text = print_function(&f, None, &BTreeSet::new()).unwrap();
         assert!(text.contains("-> u32") && !text.contains("-> pub u32"), "{text}");
     }
 
@@ -1060,7 +1404,7 @@ mod tests {
                 Some(IrExprKind::Var("b".into())),
             ))))),
         });
-        let text = print_expr(&if_expr, "f", &[]).unwrap();
+        let text = print_expr(&if_expr, "f", &empty_ctx()).unwrap();
         assert!(text.starts_with("if (a > b) {"), "{text}");
         assert!(text.contains("} else {"), "{text}");
     }
@@ -1071,7 +1415,7 @@ mod tests {
             expr: Box::new(expr(IrExprKind::Var("a".into()))),
             arms: Vec::new(),
         });
-        let err = print_expr(&m, "f", &[]).unwrap_err();
+        let err = print_expr(&m, "f", &empty_ctx()).unwrap_err();
         match err {
             NoirCodegenError::Unsupported { reason, .. } => {
                 assert!(reason.contains("match"), "{reason}");
@@ -1089,7 +1433,7 @@ mod tests {
             inclusive: false,
             body: block(vec![], None),
         });
-        let text = print_expr(&loop_expr, "f", &[]).unwrap();
+        let text = print_expr(&loop_expr, "f", &empty_ctx()).unwrap();
         assert!(text.starts_with("for i in 0..10 {"), "{text}");
     }
 
@@ -1102,7 +1446,7 @@ mod tests {
             inclusive: true,
             body: block(vec![], None),
         });
-        let text = print_expr(&loop_expr, "f", &[]).unwrap();
+        let text = print_expr(&loop_expr, "f", &empty_ctx()).unwrap();
         assert!(text.starts_with("for i in 0..=10 {"), "{text}");
     }
 
@@ -1122,7 +1466,7 @@ mod tests {
             inclusive: false,
             body: block(vec![], None),
         });
-        let text = print_expr(&loop_expr, "f", &generics).unwrap();
+        let text = print_expr(&loop_expr, "f", &ctx_with_generics(&generics)).unwrap();
         assert!(text.starts_with("for i in 0..N {"), "{text}");
     }
 
@@ -1138,7 +1482,7 @@ mod tests {
             inclusive: false,
             body: block(vec![], None),
         });
-        let err = print_expr(&loop_expr, "f", &[]).unwrap_err();
+        let err = print_expr(&loop_expr, "f", &empty_ctx()).unwrap_err();
         assert!(matches!(err, NoirCodegenError::NonConstantLoopBound { .. }));
     }
 
@@ -1157,7 +1501,7 @@ mod tests {
             bounds: Vec::new(),
             default: None,
         }];
-        let text = print_function(&f).unwrap();
+        let text = print_function(&f, None, &BTreeSet::new()).unwrap();
         assert!(text.starts_with("fn identity<T>("), "{text}");
     }
 
@@ -1175,7 +1519,7 @@ mod tests {
             }],
             default: None,
         }];
-        assert!(print_function(&f).is_err());
+        assert!(print_function(&f, None, &BTreeSet::new()).is_err());
     }
 
     #[test]
@@ -1193,7 +1537,7 @@ mod tests {
             bounds: Vec::new(),
             default: None,
         }];
-        let text = print_function(&f).unwrap();
+        let text = print_function(&f, None, &BTreeSet::new()).unwrap();
         // Noir's numeric-generic syntax requires the `let` keyword and
         // defaults to `u32` when unspecified (confirmed against current
         // Noir docs).
@@ -1263,7 +1607,7 @@ mod tests {
             expr(IrExprKind::Lit(IrLit::Int(2))),
             expr(IrExprKind::Lit(IrLit::Int(3))),
         ]));
-        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "[1, 2, 3]");
+        assert_eq!(print_expr(&e, "f", &empty_ctx()).unwrap(), "[1, 2, 3]");
     }
 
     #[test]
@@ -1275,7 +1619,7 @@ mod tests {
             expr(IrExprKind::Lit(IrLit::Int(1))),
             expr(IrExprKind::Lit(IrLit::Int(2))),
         ]));
-        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "[1, 2]");
+        assert_eq!(print_expr(&e, "f", &empty_ctx()).unwrap(), "[1, 2]");
     }
 
     #[test]
@@ -1284,7 +1628,7 @@ mod tests {
             base: Box::new(expr(IrExprKind::Var("arr".into()))),
             index: Box::new(expr(IrExprKind::Lit(IrLit::Int(0)))),
         });
-        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "arr[0]");
+        assert_eq!(print_expr(&e, "f", &empty_ctx()).unwrap(), "arr[0]");
     }
 
     #[test]
@@ -1293,7 +1637,7 @@ mod tests {
             base: Box::new(expr(IrExprKind::Var("p".into()))),
             field: "x".into(),
         });
-        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "p.x");
+        assert_eq!(print_expr(&e, "f", &empty_ctx()).unwrap(), "p.x");
     }
 
     #[test]
@@ -1307,7 +1651,7 @@ mod tests {
             ],
             rest: None,
         });
-        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "Point { x: 1, y: 2 }");
+        assert_eq!(print_expr(&e, "f", &empty_ctx()).unwrap(), "Point { x: 1, y: 2 }");
     }
 
     #[test]
@@ -1318,7 +1662,7 @@ mod tests {
             fields: vec![("x".into(), expr(IrExprKind::Lit(IrLit::Int(1))))],
             rest: Some(Box::new(expr(IrExprKind::Var("other".into())))),
         });
-        assert!(print_expr(&e, "f", &[]).is_err());
+        assert!(print_expr(&e, "f", &empty_ctx()).is_err());
     }
 
     #[test]
@@ -1371,7 +1715,7 @@ mod tests {
             where_clause: Vec::new(),
             items: vec![volar_compiler::ir::IrImplItem::Method(galois_add_method())],
         };
-        let text = print_impl(&imp).unwrap();
+        let text = print_impl(&imp, &BTreeSet::new()).unwrap();
         assert!(text.starts_with("impl Add for Galois {"), "{text}");
         assert!(text.contains("fn add(self, other: Self)"), "{text}");
     }
@@ -1385,7 +1729,7 @@ mod tests {
             where_clause: Vec::new(),
             items: vec![volar_compiler::ir::IrImplItem::Method(galois_add_method())],
         };
-        let text = print_impl(&imp).unwrap();
+        let text = print_impl(&imp, &BTreeSet::new()).unwrap();
         assert!(text.starts_with("impl Galois {"), "{text}");
     }
 
@@ -1401,21 +1745,21 @@ mod tests {
             where_clause: Vec::new(),
             items: Vec::new(),
         };
-        assert!(print_impl(&imp).is_err());
+        assert!(print_impl(&imp, &BTreeSet::new()).is_err());
     }
 
     #[test]
     fn ref_mut_receiver_is_unsupported_in_v1() {
         let mut f = galois_add_method();
         f.receiver = Some(volar_compiler::ir::IrReceiver::RefMut);
-        assert!(print_function(&f).is_err());
+        assert!(print_function(&f, None, &BTreeSet::new()).is_err());
     }
 
     #[test]
     fn ref_receiver_prints_as_ampersand_self() {
         let mut f = galois_add_method();
         f.receiver = Some(volar_compiler::ir::IrReceiver::Ref);
-        let text = print_function(&f).unwrap();
+        let text = print_function(&f, None, &BTreeSet::new()).unwrap();
         assert!(text.contains("fn add(&self, other: Self)"), "{text}");
     }
 
@@ -1427,7 +1771,7 @@ mod tests {
             type_args: Vec::new(),
             args: vec![expr(IrExprKind::Var("g2".into()))],
         });
-        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "g1.add(g2)");
+        assert_eq!(print_expr(&e, "f", &empty_ctx()).unwrap(), "g1.add(g2)");
     }
 
     #[test]
@@ -1441,7 +1785,7 @@ mod tests {
             type_args: Vec::new(),
             args: vec![expr(IrExprKind::Lit(IrLit::Int(2)))],
         });
-        assert!(print_expr(&e, "f", &[]).is_err());
+        assert!(print_expr(&e, "f", &empty_ctx()).is_err());
     }
 
     #[test]
@@ -1452,7 +1796,7 @@ mod tests {
             type_args: Vec::new(),
             args: Vec::new(),
         });
-        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "arr.len()");
+        assert_eq!(print_expr(&e, "f", &empty_ctx()).unwrap(), "arr.len()");
     }
 
     #[test]
@@ -1463,7 +1807,7 @@ mod tests {
             type_args: Vec::new(),
             args: vec![expr(IrExprKind::Var("b".into()))],
         });
-        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "a.wrapping_add(b)");
+        assert_eq!(print_expr(&e, "f", &empty_ctx()).unwrap(), "a.wrapping_add(b)");
     }
 
     #[test]
@@ -1476,7 +1820,7 @@ mod tests {
             type_args: Vec::new(),
             args: vec![expr(IrExprKind::Var("b".into()))],
         });
-        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "min(a, b)");
+        assert_eq!(print_expr(&e, "f", &empty_ctx()).unwrap(), "min(a, b)");
     }
 
     #[test]
@@ -1487,7 +1831,7 @@ mod tests {
             Some(IrType::Reference { mutable: false, elem: Box::new(IrType::Primitive(PrimitiveType::U32)) }),
             block(vec![], None),
         );
-        let err = print_function(&f).unwrap_err();
+        let err = print_function(&f, None, &BTreeSet::new()).unwrap_err();
         assert!(matches!(err, NoirCodegenError::EscapingReference { .. }));
     }
 
@@ -1511,7 +1855,7 @@ mod tests {
     }
 
     #[test]
-    fn tuple_struct_is_rejected_clearly() {
+    fn tuple_struct_prints_with_synthesized_field_names() {
         let s = volar_compiler::ir::IrStruct {
             kind: volar_compiler::ir::StructKind::Custom("Galois".into()),
             module_path: Vec::new(),
@@ -1525,7 +1869,53 @@ mod tests {
             native_volar_type: None,
             derives: Vec::new(),
         };
-        assert!(print_struct(&s).is_err());
+        let text = print_struct(&s).unwrap();
+        assert!(text.contains("_0: u8"), "{text}");
+    }
+
+    #[test]
+    fn tuple_struct_construction_call_rewrites_to_struct_literal() {
+        let mut tuple_structs = BTreeSet::new();
+        tuple_structs.insert("Galois".to_string());
+        let ctx = PrintCtx { generics: Vec::new(), tuple_structs, var_types: RefCell::new(BTreeMap::new()) };
+        let call = expr(IrExprKind::Call {
+            func: Box::new(expr(IrExprKind::Var("Galois".into()))),
+            args: vec![expr(IrExprKind::Var("x".into()))],
+        });
+        let text = print_expr(&call, "f", &ctx).unwrap();
+        assert_eq!(text, "Galois { _0: x }");
+    }
+
+    #[test]
+    fn tuple_struct_field_access_rewrites_via_known_param_type() {
+        let mut tuple_structs = BTreeSet::new();
+        tuple_structs.insert("Galois".to_string());
+        let mut var_types = BTreeMap::new();
+        var_types.insert(
+            "g".to_string(),
+            IrType::Struct { kind: volar_compiler::ir::StructKind::Custom("Galois".into()), type_args: Vec::new() },
+        );
+        let ctx = PrintCtx { generics: Vec::new(), tuple_structs, var_types: RefCell::new(var_types) };
+        let field_access = expr(IrExprKind::Field {
+            base: Box::new(expr(IrExprKind::Var("g".into()))),
+            field: "0".into(),
+        });
+        let text = print_expr(&field_access, "f", &ctx).unwrap();
+        assert_eq!(text, "g._0");
+    }
+
+    #[test]
+    fn plain_tuple_field_access_is_left_unrewritten() {
+        // No type info for `t` at all (not in `var_types`) -- must default
+        // to plain `.0`, the correct choice for an actual `IrType::Tuple`
+        // value, which Noir supports natively.
+        let ctx = empty_ctx();
+        let field_access = expr(IrExprKind::Field {
+            base: Box::new(expr(IrExprKind::Var("t".into()))),
+            field: "0".into(),
+        });
+        let text = print_expr(&field_access, "f", &ctx).unwrap();
+        assert_eq!(text, "t.0");
     }
 
     #[test]

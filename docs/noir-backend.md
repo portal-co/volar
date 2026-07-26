@@ -56,12 +56,39 @@ dependency, matching `xtask`/`volar-compiler-passes`'s own footprint.
 | `Never` | `!` | |
 | `Infer` | unsupported | should never reach codegen — incomplete inference upstream |
 
-Tuple structs (`struct Galois(u8);`) are rejected with a clear diagnostic —
 **Noir has no tuple-struct syntax at all** (confirmed via `nargo check`:
-`Expected a '{' but found '('`). This is a real, current gap, not
-hypothetical: `volar-primitives`'s `Bit`/`Galois`/etc. are all tuple structs.
-Converting to synthesized named-field structs (and rewriting `.0`-style
-access throughout) is tracked future work, not silently skipped.
+`Expected a '{' but found '('`) — real, not hypothetical, since
+`volar-primitives`'s `Bit`/`Galois`/etc. are all tuple structs. Handled by
+lowering rather than rejecting: `print_struct` synthesizes named fields
+`_0`, `_1`, ... for a tuple struct's positional fields, and `print_expr`
+correspondingly rewrites both directions —
+
+- **Construction**: `Galois(x)` → `Galois { _0: x }`. Detected purely by the
+  callee being a bare name matching a known tuple-struct name
+  (`PrintCtx::tuple_structs`, built once per module) — no type inference
+  needed, since a call whose callee name literally *is* a tuple-struct name
+  can't be anything else.
+- **Field access**: `g.0` → `g._0`, but *only* when `g`'s type is statically
+  known to be a tuple struct (`infer_simple_type`) — otherwise left as plain
+  `.0`, the correct choice for a real `IrType::Tuple` value (Noir supports
+  `.0`/`.1` natively there). `infer_simple_type` covers: a parameter's or
+  `self`'s declared type (always known); a `let`-bound local's type, either
+  its explicit annotation or inferred from its initializer when the
+  initializer is itself a tuple-struct constructor call or a call to one of
+  the curated `MathTrait` operator-overload methods (`g1.mul(g2)` has the
+  same type as `g1`, since every v1-supported operator impl matches Noir's
+  own `Self`-returning `std::ops` signatures). A `let`-bound local with
+  neither an annotation nor an inferable initializer defaults to plain `.0`
+  access — a known, narrow limitation (never a wrong *value*, only a
+  possible wrong field-name choice for an actual tuple-struct field access
+  the printer couldn't trace), not silently wrong.
+
+Proven end-to-end against the real `volar-primitives` source (not a
+paraphrase): `crates/compiler/volar-compiler-noir-codegen/tests/nargo_smoke.rs`'s
+`volar_primitives_galois_multiply_round_trips_through_nargo` copies `Galois`,
+`gf_mul_u8`, and the `GF8_POLY` constant verbatim from
+`crates/spec/volar-primitives/src/lib.rs`, and validates the GF(2^8) product
+via a real `nargo execute` against an independently-computed expected result.
 
 ## Generics / length-param strategy
 
@@ -140,28 +167,46 @@ written in Volar's compiler-parseable subset specifically so backends can
 parse it as ordinary source and get correct field arithmetic "for free" — no
 bespoke field-arithmetic codegen. The TS backend already proves the mechanism
 works generally (parses the same source, generic struct/impl printer handles
-it with zero field-specific special-casing). Two real gaps found only by
-actually parsing `volar-primitives` and testing against `nargo`, not guessed:
+it with zero field-specific special-casing). Proven for Noir too, now
+end-to-end against the *real* source, not a stand-in — see the tuple-struct
+section above (`volar_primitives_galois_multiply_round_trips_through_nargo`
+copies `Galois`/`gf_mul_u8`/`GF8_POLY` verbatim and validates the GF(2^8)
+product via `nargo execute`). Real gaps found only by actually parsing
+`volar-primitives` and testing against `nargo`, not guessed — all fixed:
 
 1. Unlike Rust, Noir does not put `Add`/`Sub`/`Mul`/etc. — nor
    `WrappingAdd`/`WrappingSub` — in scope for `impl` purposes without an
    explicit `use` (`error: Trait Add not found` otherwise).
    `print_module_noir` auto-injects `use std::ops::{...}` for exactly the
-   trait/method names actually used (scanned from `module.impls` and every
-   function/method body), not an unconditional import list.
-2. Tuple structs (see above) block the *real* `volar-primitives` source
-   specifically — `Bit`/`Galois`/`Galois64`/`Galois128`/`Galois256`/
-   `BitsInBytes`/`BitsInBytes64`/`Z3` are all tuple structs. Verified
-   end-to-end with a **named-field** stand-in (same shape, not literally
-   parsed from `volar-primitives`) that the mechanism itself — struct decl +
-   trait impl + `Self::Output` resolution + auto `use` injection — works
-   correctly via a real `nargo execute` (XOR semantics, `5 ^ 3 = 6`).
+   trait/method names actually used, collected by an **exhaustive** walk
+   over every `IrExprKind` variant (mirroring `lowering_noir::validate_expr`'s
+   coverage) — an earlier, narrower walker missed calls nested inside a
+   struct-literal field, array element, match arm, etc., silently dropping
+   the needed `use` even though the call site itself printed correctly
+   (`nested_std_method_call_import_is_collected_through_nargo` is the
+   regression test for this).
+2. Tuple structs — `Bit`/`Galois`/`Galois64`/`Galois128`/`Galois256`/
+   `BitsInBytes`/`BitsInBytes64`/`Z3` are all tuple structs, and Noir has no
+   tuple-struct syntax at all. See the dedicated section above for the fix
+   (synthesized `_0`/`_1`/... fields, construction/access rewriting).
+3. `type Output = Self;` plus a method written as `-> Self::Output` (what
+   real `core::ops`-derived Rust source actually writes, not `-> Self`
+   directly) — the associated-type item itself is consumed for resolution
+   (not printed; Noir's operator traits have no such item) and the
+   `Self::Output` projection substituted with the resolved concrete type
+   before the return type reaches `type_to_noir`.
+4. Module-level `const GF8_POLY: u8 = 0x1b;` (a reduction-polynomial
+   constant the multiply/invert functions reference) wasn't printed at
+   all — `module.consts` was never iterated. Fixed by `print_const`,
+   emitting Noir's `global` (confirmed via `nargo check`: Noir has no
+   `const` keyword at all, only `global`).
 
-One required upstream fix, not yet made: `Bit`
+One required upstream fix, still not made (out of scope for this backend's
+own crate — it's a fix to `volar-primitives` itself): `Bit`
 (`volar-primitives/src/lib.rs`) currently only implements `BitXor<u8>`, not
 `Add`/`Sub`/`Mul`, even though `is_field_element()` claims parity with the
 other field types. Should mirror `BitsInBytes` (XOR for add/sub, AND for
-mul) once tuple-struct conversion unblocks it.
+mul) — no longer blocked by tuple-struct support, just not yet done.
 
 ## Curated `StdMethod` subset
 
@@ -211,10 +256,9 @@ over:
 - **Full reference/aliasing support.** Beyond parameter-position transparent
   unwrapping — returning/storing references, genuine `&mut` mutation through
   a parameter.
-- **Tuple-struct conversion.** Synthesize named fields, rewrite `.0`-style
-  access and tuple-construction-call syntax. Directly unblocks the real
-  `volar-primitives` GF(2^k)/GF(3) fallback (currently proven via a
-  named-field stand-in only).
+- **`Bit`'s missing `Add`/`Sub`/`Mul` impls.** An upstream `volar-primitives`
+  fix (mirror `BitsInBytes`'s XOR/AND semantics), not a codegen gap — the
+  tuple-struct mechanism that would carry it through is already in place.
 - **CLI wiring.** `crates/compiler/volar-compiler-noir-codegen/src/bin/
   volar_codegen_noir.rs` is a minimal stub (parse a `--spec-dir`, print to
   `--out` or stdout, no dedup/reachability pruning). Broader integration —

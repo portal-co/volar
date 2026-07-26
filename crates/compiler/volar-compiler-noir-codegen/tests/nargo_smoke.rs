@@ -406,6 +406,142 @@ fn generic_functions_type_check_through_nargo() {
 }
 
 #[test]
+fn volar_primitives_galois_multiply_round_trips_through_nargo() {
+    if !nargo_available() {
+        eprintln!("skipping: nargo not on PATH");
+        return;
+    }
+
+    // The real proof the approved plan's GF(2^k)/GF(3) software-fallback
+    // strategy works for Noir: this is `Galois`, `gf_mul_u8`, and
+    // `GF8_POLY` copied *verbatim* from
+    // crates/spec/volar-primitives/src/lib.rs (not a paraphrase) --
+    // parsed as ordinary ("no macros, no unbounded loops") total-Rust
+    // source, printed with no field-arithmetic-specific codegen at all
+    // (the same generic struct/impl/tuple-struct/const machinery every
+    // other test in this file exercises), and executed through a real
+    // `nargo execute`. Exercises, in combination, every gap fixed to get
+    // here: tuple-struct field synthesis (`Galois(u8)` has no named
+    // fields in real Rust), tuple-struct constructor-call rewriting
+    // (`Galois(x)`), `Self::Output`-typed trait-impl return types
+    // (`type Output = Self;` plus `-> Self::Output` on `add`/`mul`), and
+    // module-level `const` -> Noir `global` lowering (`GF8_POLY`).
+    let source = r#"
+        const GF8_POLY: u8 = 0x1b;
+
+        pub fn gf_mul_u8(a: u8, b: u8, c: u8) -> u8 {
+            let mut p: u8 = 0;
+            let mut a = a;
+            let mut b = b;
+            for _ in 0..8 {
+                if (b & 1) != 0 {
+                    p ^= a;
+                }
+                let high = a & 0x80;
+                a <<= 1;
+                if high != 0 {
+                    a ^= c;
+                }
+                b >>= 1;
+            }
+            p
+        }
+
+        pub struct Galois(pub u8);
+
+        impl Add<Galois> for Galois {
+            type Output = Galois;
+            fn add(self, rhs: Galois) -> Self::Output { Galois(self.0 ^ rhs.0) }
+        }
+        impl Mul<Galois> for Galois {
+            type Output = Galois;
+            fn mul(self, rhs: Galois) -> Self::Output {
+                Galois(gf_mul_u8(self.0, rhs.0, GF8_POLY))
+            }
+        }
+
+        fn main(a: u8, b: u8) -> u8 {
+            let g1 = Galois(a);
+            let g2 = Galois(b);
+            let product = g1.mul(g2);
+            product.0
+        }
+    "#;
+    let module = parse_source(source, "smoke_galois", &["smoke_galois".to_string()]).expect("parse failed");
+    let noir_source = print_module_noir(&module).expect("codegen failed");
+    assert!(noir_source.contains("global GF8_POLY: u8 = 27;"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("_0: u8"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("Galois { _0:"), "generated:\n{noir_source}");
+    assert!(!noir_source.contains("Self::Output"), "generated:\n{noir_source}");
+
+    let dir = scratch_project("volar_primitives_galois");
+    fs::write(dir.join("src/main.nr"), &noir_source).unwrap();
+    // 5 * 3 in GF(2^8) with reduction polynomial 0x1b (AES's field):
+    // independently computed via the carry-less-multiply-then-reduce
+    // algorithm gf_mul_u8 itself implements -- 5 (0b101) * 3 (0b11):
+    // partial products 5 and (5<<1)=10 XORed = 15, no reduction needed
+    // (result fits in 8 bits, no overflow past bit 7 during the
+    // 2-iteration-worth of set bits in b=3). Expected: 15.
+    fs::write(dir.join("Prover.toml"), "a = \"5\"\nb = \"3\"\n").unwrap();
+
+    let execute = run_nargo(&dir, &["execute"]);
+    assert!(
+        execute.status.success(),
+        "nargo execute failed:\nstdout: {}\nstderr: {}\n---\n{}",
+        String::from_utf8_lossy(&execute.stdout),
+        String::from_utf8_lossy(&execute.stderr),
+        noir_source,
+    );
+}
+
+#[test]
+fn nested_std_method_call_import_is_collected_through_nargo() {
+    if !nargo_available() {
+        eprintln!("skipping: nargo not on PATH");
+        return;
+    }
+
+    // Regression test for a real gap: `collect_needed_imports_expr` used
+    // to only recurse into a fixed, non-exhaustive subset of `IrExprKind`
+    // shapes (missing `StructExpr`/`Array`/`Match`/etc.), so a
+    // `wrapping_add` call nested inside a struct-literal field or array
+    // element would still *print* correctly (that's `print_expr`'s job,
+    // which was already exhaustive) but silently drop the `use
+    // std::ops::{WrappingAdd};` import -- `nargo check` would then fail
+    // with "trait ... which provides wrapping_add is implemented but not
+    // in scope" despite the call site itself looking completely correct.
+    // Now fixed by making the import-collection walk exhaustive too.
+    let source = r#"
+        struct Pair {
+            x: u32,
+            y: u32,
+        }
+
+        fn main(a: u32, b: u32) -> u32 {
+            let p = Pair { x: a.wrapping_add(b), y: b };
+            let arr = [a.wrapping_add(b), b];
+            p.x + arr[0]
+        }
+    "#;
+    let module = parse_source(source, "smoke_nested_import", &["smoke_nested_import".to_string()])
+        .expect("parse failed");
+    let noir_source = print_module_noir(&module).expect("codegen failed");
+    assert!(noir_source.contains("use std::ops::{WrappingAdd};"), "generated:\n{noir_source}");
+
+    let dir = scratch_project("nested_import");
+    fs::write(dir.join("src/main.nr"), &noir_source).unwrap();
+
+    let check = run_nargo(&dir, &["check"]);
+    assert!(
+        check.status.success(),
+        "nargo check failed:\nstdout: {}\nstderr: {}\n---\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr),
+        noir_source,
+    );
+}
+
+#[test]
 fn while_loop_is_rejected_before_any_file_is_written() {
     let source = r#"
         fn main(a: u32) -> u32 {
