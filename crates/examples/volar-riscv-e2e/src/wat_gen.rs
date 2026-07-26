@@ -1069,10 +1069,15 @@ mod tests {
     /// Milestone 1's own real checkpoint: drive the *real* RISC-V
     /// interpreter (not `mem_probe.rs`'s small stand-in) through the real
     /// split weave -> `QSim` -> real Gf128-based multi-storage memory
-    /// boundary -> IOP finalization proof, for a small, fixed number of
-    /// real raw steps -- proving the whole honest pipeline is wired
-    /// correctly at real interpreter circuit scale, using
-    /// `chunk_size=1` (`docs/interpreter-honest-e2e-zk-plan.md`'s own
+    /// boundary -> IOP finalization proof, through a REAL runtime loop
+    /// (`for step in 0..witness.len()`, generated once and executed
+    /// `witness.len()` times) rather than a host-side loop that
+    /// string-concatenates one generated statement block per step --
+    /// see `crate::split_driver`'s and `crate::memory_check_driver`'s own
+    /// doc comments for the calling convention this relies on, and
+    /// `mem_probe.rs`'s own `honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary`
+    /// for the smaller-scale version of the same conversion this mirrors.
+    /// Uses `chunk_size=1` (`docs/interpreter-honest-e2e-zk-plan.md`'s own
     /// confirmed-compilable choice) and `crate::memory_check_driver`'s
     /// generic per-`(storage_id, type_id)` accounting (mem_probe.rs's own
     /// 2-storage, single-address `mem2`/`mem33` hand-threading doesn't
@@ -1080,19 +1085,11 @@ mod tests {
     /// storages across many addresses, including
     /// `StorageId::VAFFLE_SSA_SPILL`'s own cross-block spill slots).
     ///
-    /// **Deliberately does *not* run the guest program to completion**
-    /// (the real 27-instruction sum-4-words program needs on the order of
-    /// 1000+ raw circuit steps, per `trace_interpreter_plain_values_matches_native_reference`'s
-    /// own ~1405-hop finding on an earlier repro) -- at `chunk_size=1`'s
-    /// 241 functions per role, a driver unrolling that many real steps
-    /// worth of straight-line calling code would need a fundamentally
-    /// different design (e.g. a real runtime loop over witness data
-    /// instead of one generated Rust statement block per step) to stay
-    /// compile-tractable, out of scope here. `RAW_STEPS` below is small
-    /// on purpose: enough to exercise a real write-then-read/write
-    /// sequence (so the multiset check's own `old_value`/`write_ts`
-    /// threading is genuinely tested, not just a trivial single-touch
-    /// case), not a claim that the guest program finishes.
+    /// Runs the real guest program to its own real halt (via the
+    /// circuit's own termination flag, `outputs[0]`), bounded by
+    /// `RAW_STEP_BUDGET` purely as a safety cap -- per
+    /// `trace_interpreter_plain_values_matches_native_reference`'s own
+    /// confirmed halt at step 1405, not an artificial truncation.
     ///
     /// `#[ignore]`d: real interpreter scale. Run manually:
     /// `cargo test -p volar-riscv-e2e --release honest_interpreter_run_folds_and_finalizes_with_real_memory_boundary -- --ignored --nocapture`.
@@ -1107,14 +1104,15 @@ mod tests {
             StorageMode,
         };
         use volar_compiler::ir::IrFunction;
-        use volar_verifier_iop_runtime::run_iop_verifier;
+        use volar_verifier_iop_runtime::run_iop_verifier_multi_file;
         use volar_fuzz::interpreter::ir::{
             eval_ir_circuit_step_with_watch, apply_pre_init, bits_to_u64, bit_width, StorageMap,
         };
-        use crate::split_driver::{generate_split_step, Slot};
-        use crate::memory_check_driver::MemCheckAccounting;
+        use crate::split_driver::{generate_split_step, slot_name, Slot};
+        use crate::memory_check_driver::{MemCheckAccounting, MemOpWitness};
 
-        const RAW_STEPS: usize = 2;
+        // Safety cap, not a truncation -- see the doc comment above.
+        const RAW_STEP_BUDGET: usize = 5;
 
         let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
@@ -1125,6 +1123,24 @@ mod tests {
 
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
         let trace = weave_vole_prover_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, |f| prover_funcs.push(f));
+        // `trace.entries` also carries synthetic pre_init entries (the
+        // weaver's own compile-time-constant "seed this cell's committed
+        // value" wires, materialized on a separate `syn_id` counter
+        // starting at `params.len() + stmts.len()` -- see `vole.rs`'s own
+        // pre_init-materialization sites) whose `addr_var`/`value_var`
+        // are, *by construction*, never real `circuit.blocks[0]`
+        // variable IDs -- `eval_ir_circuit_step_with_watch` can never
+        // find them (hence "not watched"). They're also redundant here:
+        // `MemCheckAccounting::record`'s own `pre_init_map` lookup
+        // already handles each address's first-touch/init value
+        // independently of this trace. Keep only the entries that
+        // genuinely need real per-step watching.
+        let n_real_vars = circuit.blocks[0].params.len() as u32 + circuit.blocks[0].stmts.len() as u32;
+        let real_entries: std::vec::Vec<_> = trace.entries.iter()
+            .filter(|e| e.addr_var < n_real_vars && e.value_var < n_real_vars)
+            .cloned()
+            .collect();
+        eprintln!("memory trace entries: {} total, {} real (per-step watchable)", trace.entries.len(), real_entries.len());
         let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
         weave_vole_qsim_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, |f| qsim_funcs.push(f));
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
@@ -1158,10 +1174,11 @@ mod tests {
         let prover_code = print_weaved_vole_module(&module_of(prover_funcs.clone(), "prover"));
         let qsim_code = print_weaved_vole_module(&module_of(qsim_funcs.clone(), "qsim"));
         let verifier_code = print_weaved_vole_module(&module_of(verifier_funcs.clone(), "verifier"));
-        let prover_fn_only = &prover_code[prover_code.find("pub fn").expect("prover source must have a pub fn")..];
-        let qsim_fn_only = &qsim_code[qsim_code.find("pub fn").expect("qsim source must have a pub fn")..];
-        let rust_source = format!("{verifier_code}\n{prover_fn_only}\n{qsim_fn_only}");
-        eprintln!("printed source length: {} bytes", rust_source.len());
+        eprintln!(
+            "printed source length: {} bytes across 3 files (prover {}, qsim {}, verifier {})",
+            prover_code.len() + qsim_code.len() + verifier_code.len(),
+            prover_code.len(), qsim_code.len(), verifier_code.len(),
+        );
 
         // Ordered watch list: every real StorageRead/StorageWrite's own
         // addr_var + value_var, in the same statement order `trace`
@@ -1170,7 +1187,7 @@ mod tests {
         // doc). One watch pass per step recovers every real value
         // `generate_split_step`'s own `oracle_bits` and
         // `MemCheckAccounting` both need, without hand-deriving them.
-        let watch_vars: std::vec::Vec<u32> = trace.entries.iter().flat_map(|e| [e.addr_var, e.value_var]).collect();
+        let watch_vars: std::vec::Vec<u32> = real_entries.iter().flat_map(|e| [e.addr_var, e.value_var]).collect();
 
         let mut storage: StorageMap = StorageMap::new();
         apply_pre_init(&mut storage, &circuit.pre_init, &types);
@@ -1188,65 +1205,120 @@ mod tests {
         let mut zero_stmts = String::new();
         for (i, &w) in param_widths.iter().enumerate() {
             if w <= 1 {
-                zero_stmts += &format!("let w{i}_vope_0 = vope_zero();\nlet w{i}_q_0 = q_zero();\n");
+                zero_stmts += &format!("let mut w{i}_vope = vope_zero();\nlet mut w{i}_q = q_zero();\n");
             } else {
-                zero_stmts += &format!("let w{i}_vope_0: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n");
-                zero_stmts += &format!("let w{i}_q_0: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n");
+                zero_stmts += &format!("let mut w{i}_vope: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n");
+                zero_stmts += &format!("let mut w{i}_q: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n");
             }
         }
-        let mut entry_w: std::vec::Vec<(Slot, Slot)> = param_widths.iter().enumerate().map(|(i, &w)| {
+        zero_stmts += "let mut all_ok = true;\nlet mut fold_state = iop_accumulator_fresh();\n";
+        let entry_w: std::vec::Vec<(Slot, Slot)> = param_widths.iter().enumerate().map(|(i, &w)| {
             if w <= 1 {
-                (Slot::Scalar(format!("w{i}_vope_0")), Slot::Scalar(format!("w{i}_q_0")))
+                (Slot::Scalar(format!("w{i}_vope")), Slot::Scalar(format!("w{i}_q")))
             } else {
-                (Slot::Array(format!("w{i}_vope_0"), w), Slot::Array(format!("w{i}_q_0"), w))
+                (Slot::Array(format!("w{i}_vope"), w), Slot::Array(format!("w{i}_q"), w))
             }
         }).collect();
 
-        let mut all_steps_stmts = String::new();
-        let mut all_ok_fold_state: Option<(String, String)> = None;
+        // ---- Host-side pass: run the real interpreter to its own real
+        // halt (or the safety budget), recording one `StepWitness`
+        // (oracle bits + mem-check facts) per real step, in true
+        // execution order -- exactly the same per-step data the old
+        // per-step-unrolled version derived, just collected into an
+        // array instead of spliced into N copies of generated text.
+        struct StepWitness { oracle_bits: std::vec::Vec<std::vec::Vec<bool>>, mem_ops: std::vec::Vec<MemOpWitness> }
         let mut mem_check = MemCheckAccounting::new();
-
-        for step in 0..RAW_STEPS {
+        let mut witness: std::vec::Vec<StepWitness> = std::vec::Vec::new();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < RAW_STEP_BUDGET {
             let (outputs, watched) = eval_ir_circuit_step_with_watch(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage, &watch_vars);
             let watched_map: std::collections::BTreeMap<u32, std::vec::Vec<bool>> = watched.into_iter().collect();
 
             let mut oracle_bits: std::vec::Vec<std::vec::Vec<bool>> = std::vec::Vec::new();
-            for e in &trace.entries {
+            let mut mem_ops: std::vec::Vec<MemOpWitness> = std::vec::Vec::with_capacity(real_entries.len());
+            for e in &real_entries {
                 let addr_bits = watched_map.get(&e.addr_var).unwrap_or_else(|| panic!("step {step}: addr_var {} not watched (dead statement?)", e.addr_var));
                 let value_bits = watched_map.get(&e.value_var).unwrap_or_else(|| panic!("step {step}: value_var {} not watched (dead statement?)", e.value_var));
                 let addr = bits_to_u64(addr_bits);
                 let width = bit_width(TypeId(e.type_id), &types);
                 let value = bits_to_u64(&value_bits[..width.min(64)]);
-                mem_check.emit_op(&mut all_steps_stmts, e.storage_id, e.type_id, addr, value, e.is_write, &pre_init_map);
+                mem_ops.push(mem_check.record(e.storage_id, e.type_id, addr, value, e.is_write, &pre_init_map));
                 if !e.is_write {
                     oracle_bits.push(value_bits.clone());
                 }
             }
+            witness.push(StepWitness { oracle_bits, mem_ops });
 
-            // Compatibility shim for `generate_split_step`'s new
-            // signature (real per-step literal values, wrapped as
-            // already-formatted Rust expression strings) -- this test
-            // still calls it once per (host-loop) step, same as before;
-            // it doesn't yet use the real-runtime-loop calling convention
-            // `mem_probe.rs`'s own honest test now does (that's Phase B
-            // step 2 -- deferred, needs `MemCheckAccounting`/
-            // `memory_check_driver.rs` converted too).
-            let oracle_bit_exprs: std::vec::Vec<std::vec::Vec<String>> = oracle_bits.iter()
-                .map(|bits| bits.iter().map(|b| b.to_string()).collect())
-                .collect();
-            let result = generate_split_step(
-                &prover_funcs_by_pos, &qsim_funcs_by_pos, &verifier_funcs_by_pos, &boundary, &accum_info, n_chunks,
-                &entry_w, all_ok_fold_state.clone(), &oracle_bit_exprs, &step.to_string(),
-            );
-            all_steps_stmts += &result.stmts;
-            entry_w = result.next_entry_w;
-            all_ok_fold_state = Some((result.final_all_ok_expr, result.final_fold_state_expr));
-
+            done = outputs[0].iter().any(|&b| b);
             inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
         }
         assert!(!mem_check.is_empty(), "the real interpreter must touch at least one real committed storage");
+        eprintln!("collected {} real steps of witness data (halted={done})", witness.len());
+
+        mem_check.emit_pre_loop_decls(&mut zero_stmts);
+
+        // Fixed per-read-site widths (same circuit structure every real
+        // step, so a read site's own width never varies) -- used to pack
+        // each step's own oracle bits into one flat `[bool; N]` witness
+        // field (nested arrays of *varying* inner length aren't a single
+        // homogeneous Rust array type, unlike `mem_probe.rs`'s uniform
+        // s2_bits/s33_bits case).
+        let oracle_widths: std::vec::Vec<usize> = real_entries.iter()
+            .filter(|e| !e.is_write)
+            .map(|e| bit_width(TypeId(e.type_id), &types))
+            .collect();
+        let total_oracle_bits: usize = oracle_widths.iter().sum();
+        let n_mem_ops = real_entries.len();
+
+        let witness_literal_body = witness.iter().map(|w| {
+            let flat_oracle_bits: std::vec::Vec<bool> = w.oracle_bits.iter().flatten().copied().collect();
+            debug_assert_eq!(flat_oracle_bits.len(), total_oracle_bits);
+            let oracle_bits_str = flat_oracle_bits.iter().map(|b| b.to_string()).collect::<std::vec::Vec<_>>().join(", ");
+            let mem_ops_str = w.mem_ops.iter().map(|m| format!(
+                "StepMemOp {{ needs_init: {}, init_val: {}u64, addr: {}u64, value: {}u64, is_write: {}, old_value: {}u64, old_ts: {}u64, new_ts: {}u64 }}",
+                m.needs_init, m.init_val, m.addr, m.value, m.is_write, m.old_value, m.old_ts, m.new_ts,
+            )).collect::<std::vec::Vec<_>>().join(", ");
+            format!("StepWitness {{ oracle_bits: [{oracle_bits_str}], mem_ops: [{mem_ops_str}] }}")
+        }).collect::<std::vec::Vec<_>>().join(", ");
+        let witness_literal = format!(
+            "struct StepMemOp {{ needs_init: bool, init_val: u64, addr: u64, value: u64, is_write: bool, old_value: u64, old_ts: u64, new_ts: u64 }}\n\
+             struct StepWitness {{ oracle_bits: [bool; {total_oracle_bits}], mem_ops: [StepMemOp; {n_mem_ops}] }}\n\
+             let witness: [StepWitness; {}] = [{witness_literal_body}];\n",
+            witness.len(),
+        );
+
+        // Oracle bit EXPRESSIONS, index-matched to `oracle_widths` above,
+        // referencing the runtime `witness[step]` array rather than a
+        // literal per step -- see `split_driver.rs`'s own doc comment on
+        // `generate_split_step`'s `oracle_bit_exprs` parameter.
+        let mut oracle_bit_exprs: std::vec::Vec<std::vec::Vec<String>> = std::vec::Vec::with_capacity(oracle_widths.len());
+        {
+            let mut off = 0usize;
+            for &w in &oracle_widths {
+                oracle_bit_exprs.push((0..w).map(|j| format!("witness[step].oracle_bits[{}]", off + j)).collect());
+                off += w;
+            }
+        }
+
+        let result = generate_split_step(
+            &prover_funcs_by_pos, &qsim_funcs_by_pos, &verifier_funcs_by_pos, &boundary, &accum_info, n_chunks,
+            &entry_w, Some(("all_ok".to_string(), "fold_state".to_string())), &oracle_bit_exprs, "step",
+        );
+        let mut loop_body = result.stmts.clone();
+        for (i, (vope_slot, q_slot)) in result.next_entry_w.iter().enumerate() {
+            loop_body += &format!("w{i}_vope = {};\n", slot_name(vope_slot));
+            loop_body += &format!("w{i}_q = {};\n", slot_name(q_slot));
+        }
+        loop_body += &format!("all_ok = {};\nfold_state = {};\n", result.final_all_ok_expr, result.final_fold_state_expr);
+        for (k, e) in real_entries.iter().enumerate() {
+            mem_check.emit_call_site(&mut loop_body, e.storage_id, e.type_id, &format!("witness[step].mem_ops[{k}]"));
+        }
+
+        let mut all_steps_stmts = format!("{witness_literal}for step in 0..witness.len() {{\n{loop_body}\n}}\n");
         let (h_produce_expr, h_consume_expr) = mem_check.finish(&mut all_steps_stmts);
-        let (final_all_ok, final_fold_state) = all_ok_fold_state.expect("at least one step ran");
+        let (final_all_ok, final_fold_state) = ("all_ok".to_string(), "fold_state".to_string());
 
         let driver = format!(r#"
             use volar_iop::field::{{Field as _, Gf128}};
@@ -1306,8 +1378,6 @@ mod tests {
 
                 {all_steps_stmts}
 
-                assert_eq!({RAW_STEPS}u8, {RAW_STEPS}u8);
-
                 let mem_acc_in = {h_produce_expr};
                 let mem_acc_out = {h_consume_expr};
 
@@ -1324,7 +1394,10 @@ mod tests {
             }}
         "#);
 
-        run_iop_verifier(&rust_source, &driver);
+        run_iop_verifier_multi_file(
+            &[("prover", &prover_code), ("qsim", &qsim_code), ("verifier", &verifier_code)],
+            &driver,
+        );
     }
 
     /// Cheap sanity check for `bound_register_survives_across_dispatch`'s

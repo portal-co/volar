@@ -8204,8 +8204,24 @@ pub fn print_weaved_vole_module(module: &IrModule<IrFunction>) -> String {
     let mut out = String::with_capacity(preamble.len() + body.len());
     out.push_str(preamble);
     out.push_str(&body);
-    out
+    // Bound how many flat `let` bindings share a single scope in any one
+    // printed function -- see `crate::nested_block_chunk`'s own doc for
+    // why this matters (real-interpreter-scale profiling found rustc's
+    // own AST name-resolution pass, not MIR-borrowck or codegen, as the
+    // dominant compile-time/memory cost once `vole_split`'s per-function
+    // splitting was already in place).
+    crate::nested_block_chunk::chunk_function_bodies(&out, NESTED_BLOCK_CHUNK_SIZE)
 }
+
+/// How many top-level statements a printed function body may hold before
+/// `nested_block_chunk` re-chunks it into nested blocks. Deliberately
+/// much smaller than `MAX_STMTS_PER_PIECE` (500) -- that threshold
+/// bounds per-function MIR-borrowck cost; this one bounds the size of a
+/// single rustc name-resolution scope ("rib"), a separate cost that
+/// scales with flat binding count within *one* scope, not function
+/// count. Not yet empirically tuned against real interpreter-scale
+/// compiles -- start conservative, adjust based on real profiling.
+const NESTED_BLOCK_CHUNK_SIZE: usize = 40;
 
 // ============================================================================
 // Tests

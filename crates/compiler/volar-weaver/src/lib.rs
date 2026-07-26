@@ -73,6 +73,7 @@ pub mod garble;
 pub mod vole;
 pub(crate) mod vole_common;
 pub(crate) mod vole_split;
+pub(crate) mod nested_block_chunk;
 pub mod faest;
 pub mod fhe;
 pub mod oram;

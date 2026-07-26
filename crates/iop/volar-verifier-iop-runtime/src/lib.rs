@@ -158,25 +158,11 @@ fn workspace_root() -> std::string::String {
 /// output" shape as this repo's other such harnesses (`AGENTS.md` rule 2).
 /// Returns captured stdout on success; panics with stdout+stderr on failure.
 pub fn run_iop_verifier(rust_source: &str, driver_src: &str) -> std::string::String {
-    let root = workspace_root();
-    let tmpdir = std::env::temp_dir().join(std::format!(
-        "volar_verifier_iop_runtime_{}",
-        std::process::id()
-    ));
-    let srcdir = tmpdir.join("src");
-    std::fs::create_dir_all(&srcdir).expect("create temp src dir");
+    run_iop_verifier_multi_file(&[("woven", rust_source)], driver_src)
+}
 
-    let full_src = std::format!(
-        "{rust_source}\n\n\
-         use volar_verifier_iop_runtime::*;\n\n\
-         #[cfg(test)]\n\
-         mod driver {{\n\
-             use super::*;\n\
-             {driver_src}\n\
-         }}\n"
-    );
-
-    let cargo_toml = std::format!(
+fn iop_verifier_cargo_toml(root: &str) -> std::string::String {
+    std::format!(
         "[package]\n\
          name = \"volar-verifier-iop-runtime-check\"\n\
          version = \"0.1.0\"\n\
@@ -193,14 +179,21 @@ pub fn run_iop_verifier(rust_source: &str, driver_src: &str) -> std::string::Str
          volar-discipline = {{ path = \"{root}/crates/ir/volar-discipline\" }}\n\
          hybrid-array = {{ version = \"0.4.8\", default-features = false }}\n\
          cipher = {{ version = \"0.5.1\", default-features = false }}\n"
-    );
+    )
+}
 
-    std::fs::write(tmpdir.join("Cargo.toml"), &cargo_toml).expect("write Cargo.toml");
-    std::fs::write(srcdir.join("lib.rs"), &full_src).expect("write src/lib.rs");
-
+/// Run `cargo test --release` in `tmpdir` (already populated with
+/// `Cargo.toml`/`src/*.rs`) and return captured stdout on success; panic
+/// with a *bounded* tail of stdout/stderr on failure (not the full
+/// generated source -- at real-interpreter scale that source is
+/// gigabytes, and formatting/printing that much text on panic is itself
+/// slow and unhelpful; the temp dir at `tmpdir` is left on disk
+/// specifically so a failure can be inspected/re-built/profiled directly
+/// with `cd` + `cargo`/`cargo +nightly rustc -- -Z time-passes` there).
+fn run_cargo_test_capped(tmpdir: &std::path::Path) -> std::string::String {
     let output = std::process::Command::new("cargo")
         .args(["test", "--release", "--quiet", "--test", "driver", "--", "--nocapture"])
-        .current_dir(&tmpdir)
+        .current_dir(tmpdir)
         .env("CARGO_TARGET_DIR", tmpdir.join("target").to_string_lossy().into_owned())
         .output()
         .expect("failed to run cargo test");
@@ -209,11 +202,88 @@ pub fn run_iop_verifier(rust_source: &str, driver_src: &str) -> std::string::Str
     let stderr = std::string::String::from_utf8_lossy(&output.stderr).into_owned();
 
     if !output.status.success() {
+        const TAIL: usize = 20_000;
+        fn tail(s: &str) -> &str { &s[s.len().saturating_sub(TAIL)..] }
         panic!(
-            "run_iop_verifier: compile/run failed\n--- source ---\n{full_src}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+            "run_iop_verifier: compile/run failed (source left at {})\n--- stdout (last {TAIL} bytes) ---\n{}\n--- stderr (last {TAIL} bytes) ---\n{}",
+            tmpdir.display(), tail(&stdout), tail(&stderr),
         );
     }
     stdout
+}
+
+/// Multi-file variant of [`run_iop_verifier`]: each `(module_name,
+/// content)` pair in `modules` becomes its own `src/{module_name}.rs`
+/// file (declared `pub mod {module_name};` + `pub use {module_name}::*;`
+/// from `src/lib.rs`) instead of being concatenated into one giant
+/// string/file. Two motivations, both specific to real-interpreter-scale
+/// woven output (hundreds of split functions, gigabytes of printed
+/// text): (1) avoids this function *itself* holding a second full copy
+/// of the already-huge combined source (the old `full_src =
+/// format!("{rust_source}...")` allocation) on top of the caller's own
+/// copy; (2) splitting a crate across files is a prerequisite for
+/// profiling *which file/stage* dominates compile time/memory with
+/// `cargo +nightly rustc -- -Z time-passes` against the left-behind temp
+/// crate, and is the natural first lever for reducing peak parse/typeck
+/// memory for a single oversized translation unit.
+///
+/// `driver_src` still becomes one `#[cfg(test)] mod driver { use
+/// super::*; ... }`, referencing every module's own `pub fn`s via the
+/// blanket re-exports in `lib.rs` -- callers don't need to change their
+/// own driver-construction code, only how they pass the woven source
+/// (per-role, not pre-concatenated).
+pub fn run_iop_verifier_multi_file(modules: &[(&str, &str)], driver_src: &str) -> std::string::String {
+    let root = workspace_root();
+    let tmpdir = std::env::temp_dir().join(std::format!(
+        "volar_verifier_iop_runtime_{}",
+        std::process::id()
+    ));
+    let srcdir = tmpdir.join("src");
+    std::fs::create_dir_all(&srcdir).expect("create temp src dir");
+
+    let mut lib_rs = std::string::String::new();
+    for (name, _) in modules {
+        lib_rs += &std::format!("pub mod {name};\n");
+    }
+    for (name, _) in modules {
+        lib_rs += &std::format!("pub use {name}::*;\n");
+    }
+    lib_rs += &std::format!(
+        "\nuse volar_verifier_iop_runtime::*;\n\n\
+         #[cfg(test)]\n\
+         mod driver {{\n\
+             use super::*;\n\
+             {driver_src}\n\
+         }}\n"
+    );
+
+    for (name, content) in modules {
+        // Each module is its own `mod name;` file, a separate scope from
+        // `lib.rs` -- a plain (non-`pub`) `use` in the parent isn't
+        // visible via `super::*`, so every module needs its own import
+        // of the bare names (`iop_fold_gate`/`IopChallenge`/etc) a woven
+        // verifier's own generated calls reference unqualified, mirroring
+        // what the single-file version got for free by being one scope.
+        // Inserted *after* the module's own leading `#![allow(...)]`
+        // inner attribute line (every `print_weaved_vole_module` output
+        // starts with one) -- an inner attribute must precede all other
+        // items in a file, so it can't simply be prepended before it.
+        let module_src = if let Some(nl) = content.find('\n') {
+            if content[..nl].trim_start().starts_with("#!") {
+                std::format!("{}\nuse volar_verifier_iop_runtime::*;\n{}", &content[..nl], &content[nl + 1..])
+            } else {
+                std::format!("use volar_verifier_iop_runtime::*;\n{content}")
+            }
+        } else {
+            std::format!("use volar_verifier_iop_runtime::*;\n{content}")
+        };
+        std::fs::write(srcdir.join(std::format!("{name}.rs")), &module_src)
+            .unwrap_or_else(|e| panic!("write src/{name}.rs: {e}"));
+    }
+    std::fs::write(srcdir.join("lib.rs"), &lib_rs).expect("write src/lib.rs");
+    std::fs::write(tmpdir.join("Cargo.toml"), iop_verifier_cargo_toml(&root)).expect("write Cargo.toml");
+
+    run_cargo_test_capped(&tmpdir)
 }
 
 #[cfg(test)]
