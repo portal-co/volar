@@ -163,6 +163,45 @@ fn extract_identifiers(text: &str) -> BTreeSet<String> {
     out
 }
 
+/// Byte offset of a `let` statement's own top-level assignment `=` (not
+/// `==`/`!=`/`<=`/`>=`), if `stmt` (trimmed) starts with `let`. A `let`
+/// statement's own LHS (`let PATTERN [: TYPE] =`) never itself contains
+/// `=` (patterns/types don't have comparison operators), so the first
+/// qualifying `=` found by a left-to-right scan is unambiguously the
+/// assignment.
+fn let_assignment_eq_pos(stmt: &str) -> Option<usize> {
+    if !stmt.trim_start().starts_with("let ") {
+        return None;
+    }
+    let bytes = stmt.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] != b'=' {
+            continue;
+        }
+        let prev_cmp = i > 0 && matches!(bytes[i - 1], b'=' | b'!' | b'<' | b'>');
+        let next_eq = i + 1 < bytes.len() && bytes[i + 1] == b'=';
+        if !prev_cmp && !next_eq {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Identifiers `stmt` *references* (reads), for the purpose of deciding
+/// whether an earlier chunk's own binding needs to survive past this
+/// statement -- unlike [`extract_identifiers`], a `let` statement's own
+/// LHS names are excluded (a `let x = ..;` *shadows*/(re)defines `x`,
+/// it doesn't reference whatever `x` meant before it, so counting it as
+/// a "later use" of an earlier same-named binding is wrong -- this
+/// matters once bindings can be reused/shadowed, e.g. pool-scratch
+/// helpers that deliberately reuse a fixed temp name per call site).
+fn extract_referenced_identifiers(stmt: &str) -> BTreeSet<String> {
+    match let_assignment_eq_pos(stmt) {
+        Some(eq) => extract_identifiers(&stmt[eq + 1..]),
+        None => extract_identifiers(stmt),
+    }
+}
+
 /// The name(s) a `let` statement binds, in left-to-right order, if
 /// `stmt` (trimmed) starts with `let`. Handles a bare identifier
 /// (`let x = ..;`, `let mut x: T = ..;`) or a tuple pattern
@@ -222,6 +261,127 @@ fn find_matching_close_paren(s: &str) -> Option<usize> {
     None
 }
 
+/// For every name `let`-defined more than once anywhere in `stmts`
+/// (this pipeline's own convention: a genuine, individually-meaningful
+/// circuit value is *never* redefined under the same name within one
+/// function -- only a deliberately reused/shadowed scratch temp is, e.g.
+/// `vole.rs`'s pool-scratch helpers' `_and_wire`/`_and_qand`), find each
+/// of its own "epochs" (from one `let` defining it up to, but not
+/// including, the next `let` that redefines it, or the end of `stmts`)
+/// and that epoch's own *last* referencing statement index within it.
+/// Returns `(def_index, last_ref_index)` pairs -- a chunk boundary
+/// strictly inside `(def_index, last_ref_index]` would split that
+/// specific instance's own live range, since some statement at or before
+/// `last_ref_index` still needs to read the value `def_index` bound.
+///
+/// Deliberately skips names defined only once: those are already handled
+/// correctly by `chunk_one_body`'s own `used_after`-based export
+/// mechanism, and computing this per-name epoch scan for every one of
+/// them (typically hundreds per function) would be needless work -- only
+/// the small set of genuinely reused names needs it.
+fn reused_name_live_ranges(stmts: &[&str]) -> Vec<(usize, usize)> {
+    let n = stmts.len();
+    let mut def_count: alloc::collections::BTreeMap<String, usize> = alloc::collections::BTreeMap::new();
+    for s in stmts {
+        for nm in extract_let_bound_names(s) {
+            *def_count.entry(nm).or_insert(0) += 1;
+        }
+    }
+    let reused: BTreeSet<String> = def_count.into_iter().filter(|(_, c)| *c > 1).map(|(k, _)| k).collect();
+    if reused.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranges = Vec::new();
+    for d in 0..n {
+        let defined: BTreeSet<String> = extract_let_bound_names(stmts[d]).into_iter().filter(|nm| reused.contains(nm)).collect();
+        if defined.is_empty() {
+            continue;
+        }
+        let mut epoch_end = n;
+        'outer: for j in (d + 1)..n {
+            for nm in extract_let_bound_names(stmts[j]) {
+                if defined.contains(&nm) {
+                    epoch_end = j;
+                    break 'outer;
+                }
+            }
+        }
+        let mut last_ref = d;
+        for (j, s) in stmts.iter().enumerate().take(epoch_end).skip(d) {
+            let refs = extract_referenced_identifiers(s);
+            if defined.iter().any(|nm| refs.contains(nm)) {
+                last_ref = j;
+            }
+        }
+        if last_ref > d {
+            ranges.push((d, last_ref));
+        }
+    }
+    ranges
+}
+
+/// Every chunk-boundary end index (exclusive), roughly every
+/// `chunk_size` statements, adjusted so no boundary ever falls inside a
+/// reused/shadowed name's own live range (see
+/// [`reused_name_live_ranges`]) -- e.g. `vole.rs`'s own pool-scratch
+/// helpers' `let _and_qand = ..; let _and_wire = _and_qand.clone();
+/// _pool.push(_and_qand); _pool.push(_and_wire);` shape, where
+/// `_and_wire`'s own definition and its own use (the second `push`) are
+/// *not* adjacent statements (an unrelated `_and_qand` push sits between
+/// them). Without this, a boundary landing inside that range turns a
+/// same-chunk self-reference into a cross-chunk one, which the "defined
+/// more than once in one chunk -> never export" rule (needed for a
+/// *different* reason -- see `chunk_one_body`'s own export-filtering
+/// doc) can't safely resolve either way: exporting risks handing back an
+/// already-consumed value, not exporting risks "cannot find value" if a
+/// later chunk's own reference no longer sees it. Keeping a reused
+/// name's own live range inside one chunk sidesteps the ambiguity
+/// instead of trying to resolve it.
+fn chunk_end_indices(stmts: &[&str], chunk_size: usize) -> Vec<usize> {
+    let step = chunk_size.max(1);
+    let mut ends = Vec::new();
+    let mut next = step;
+    while next < stmts.len() {
+        ends.push(next);
+        next += step;
+    }
+
+    let ranges = reused_name_live_ranges(stmts);
+    if !ranges.is_empty() {
+        for end in ends.iter_mut() {
+            loop {
+                if *end >= stmts.len() {
+                    break;
+                }
+                // `*end` is a boundary strictly inside (d, last_ref] if
+                // it lands anywhere in `d+1..=last_ref` -- shift past the
+                // furthest-reaching such range covering it, then re-check
+                // (the new position could itself fall inside another).
+                let blocking = ranges.iter().filter(|&&(d, l)| *end > d && *end <= l).map(|&(_, l)| l).max();
+                match blocking {
+                    Some(l) => *end = l + 1,
+                    None => break,
+                }
+            }
+        }
+    }
+
+    // Defensive: keep boundaries non-decreasing even if an adjustment
+    // above ever pushed one past the next "natural" boundary (not
+    // expected at realistic chunk sizes, since each adjustment only
+    // pulls in a handful of tightly-coupled statements, but cheap to
+    // guarantee outright rather than assume).
+    let mut prev_end = 0usize;
+    for end in ends.iter_mut() {
+        if *end < prev_end {
+            *end = prev_end;
+        }
+        prev_end = *end;
+    }
+    ends
+}
+
 /// Chunk one function's own body text (already unwrapped of its own
 /// outer `{`/`}`) into nested blocks of at most `chunk_size` top-level
 /// statements each. Returns the transformed body text (still without
@@ -232,7 +392,14 @@ fn chunk_one_body(body: &str, chunk_size: usize) -> String {
         return body.to_string();
     }
 
-    let chunks: Vec<&[&str]> = stmts.chunks(chunk_size.max(1)).collect();
+    let ends = chunk_end_indices(&stmts, chunk_size);
+    let mut chunks: Vec<&[&str]> = Vec::with_capacity(ends.len() + 1);
+    let mut start = 0usize;
+    for &end in &ends {
+        chunks.push(&stmts[start..end]);
+        start = end;
+    }
+    chunks.push(&stmts[start..]);
     let n = chunks.len();
     let mut used_after: BTreeSet<String> = extract_identifiers(tail);
     let mut rendered: Vec<String> = alloc::vec![String::new(); n];
@@ -242,14 +409,30 @@ fn chunk_one_body(body: &str, chunk_size: usize) -> String {
 
         let mut defined_order: Vec<String> = Vec::new();
         let mut defined_set: BTreeSet<String> = BTreeSet::new();
+        let mut defined_more_than_once: BTreeSet<String> = BTreeSet::new();
         for s in chunk {
             for name in extract_let_bound_names(s) {
                 if defined_set.insert(name.clone()) {
                     defined_order.push(name);
+                } else {
+                    defined_more_than_once.insert(name);
                 }
             }
         }
-        let exports: Vec<String> = defined_order.into_iter().filter(|nm| used_after.contains(nm)).collect();
+        // A name `let`-(re)defined more than once *within this one
+        // chunk* is a shadowed/reused scratch temp (this pipeline's own
+        // generated code never gives a genuine, individually-meaningful
+        // value more than one `let` for the same name in one function --
+        // every real circuit value gets a unique name) -- never a
+        // candidate for cross-chunk export, regardless of what
+        // `used_after` says, since its last-defined instance may already
+        // be consumed (e.g. moved into a `_pool.push(...)`) by the time
+        // this chunk's own trailing export tuple would try to read it
+        // again -- this text-level pass has no way to prove otherwise.
+        let exports: Vec<String> = defined_order
+            .into_iter()
+            .filter(|nm| !defined_more_than_once.contains(nm) && used_after.contains(nm))
+            .collect();
 
         let mut block = String::new();
         for s in chunk {
@@ -276,7 +459,22 @@ fn chunk_one_body(body: &str, chunk_size: usize) -> String {
         };
 
         for s in chunk {
-            used_after.extend(extract_identifiers(s));
+            used_after.extend(extract_referenced_identifiers(s));
+        }
+        // A name this chunk itself `let`-defines marks a shadowing
+        // boundary: anything *before* this chunk (further "backward",
+        // i.e. processed in later loop iterations) that shares the name
+        // refers to a *different* binding, not this one -- so once this
+        // chunk's own exports/references have been resolved against the
+        // current `used_after`, remove its own defined names from it.
+        // Removing *after* adding this chunk's own references (not
+        // before) matters: a chunk can both define and reference the
+        // same fixed/reused name internally (e.g. `let _tmp = f();
+        // pool.push(_tmp);`), and that self-reference must not leak past
+        // this chunk's own boundary as if it were a genuine external
+        // need.
+        for name in &defined_set {
+            used_after.remove(name);
         }
     }
 
@@ -336,6 +534,73 @@ mod tests {
         let src = "pub fn f() {\nlet v0 = a();\nlet v1 = b();\nlet v2 = c();\nlet v3 = d();\nlet v4 = e(v0);\n(v4)\n}\n";
         let out = chunk_function_bodies(src, 2);
         assert!(out.contains("v0.clone()"), "v0 must be exported via clone across the chunk boundary:\n{out}");
+    }
+
+    #[test]
+    fn reused_shadowed_name_is_not_treated_as_a_later_reference() {
+        // `_tmp` is a *fixed, reused* name (like the pool-scratch helpers'
+        // own temp bindings: define, immediately move into `pool.push`,
+        // repeat) -- every later `let _tmp = ...;` shadows the earlier
+        // one, it doesn't reference it. `chunk_size=6` puts the first two
+        // `_tmp` define+push pairs in one chunk (a real, load-bearing
+        // repro: `_tmp` defined *twice within one chunk*, each instance
+        // immediately moved -- the shape that broke the naive fix, where
+        // a chunk's own trailing export tuple tried to `.clone()` an
+        // already-moved `_tmp`), and the third pair alone in the next.
+        let src = "pub fn f() {\n\
+                    let _tmp = a();\n\
+                    _pool.push(_tmp);\n\
+                    let v1 = _pool[0].clone();\n\
+                    let _tmp = b();\n\
+                    _pool.push(_tmp);\n\
+                    let v2 = _pool[1].clone();\n\
+                    let _tmp = c();\n\
+                    _pool.push(_tmp);\n\
+                    let v3 = _pool[2].clone();\n\
+                    (v1, v2, v3)\n\
+                    }\n";
+        let out = chunk_function_bodies(src, 6);
+        assert!(
+            !out.contains("_tmp.clone()"),
+            "a fixed/reused name must never be exported -- including via its own chunk's trailing tuple, when it was defined more than once (each instance already moved) within that same chunk:\n{out}"
+        );
+    }
+
+    #[test]
+    fn chunk_boundary_never_splits_a_non_adjacent_define_and_use() {
+        // Mirrors `vole.rs::emit_and`'s real QSim-role shape exactly:
+        // `_and_wire`'s own definition (`let _and_wire = _and_qand.clone();`)
+        // is *not* immediately followed by its own use -- an unrelated
+        // `_pool.push(_and_qand);` sits in between. `chunk_size=2` puts a
+        // "natural" boundary right in the middle of this 4-statement group
+        // on every repetition, which is exactly the shape that broke the
+        // earlier "only check the very next statement" boundary fix.
+        let mut body = String::new();
+        for _ in 0..3 {
+            body += "let _and_qand = f();\n\
+                     let _and_wire = _and_qand.clone();\n\
+                     _pool.push(_and_qand);\n\
+                     _pool.push(_and_wire);\n";
+        }
+        let src = format!("pub fn f() {{\n{body}(0)\n}}\n");
+        let out = chunk_function_bodies(&src, 2);
+        // Every `_and_wire`/`_and_qand` reference must still resolve
+        // against a same-chunk (or, failing that, exported) binding --
+        // the cheapest real check available without a real rustc
+        // invocation is that brackets stay balanced and every push still
+        // has a matching, non-exported-away definition in the same
+        // block. Concretely: no chunk boundary marker (`};\nlet` or a
+        // bare `{` opening a fresh block) may appear strictly between a
+        // `let _and_wire = ..` and its own `_pool.push(_and_wire)`.
+        for (i, _) in out.match_indices("let _and_wire = _and_qand.clone();") {
+            let after = &out[i..];
+            let push_pos = after.find("_pool.push(_and_wire)").expect("push must still exist");
+            let between = &after[..push_pos];
+            assert!(
+                !between.contains("};") && between.matches('{').count() <= 1,
+                "a chunk boundary split _and_wire's own definition from its use:\n{out}"
+            );
+        }
     }
 
     #[test]

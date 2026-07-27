@@ -395,9 +395,15 @@ fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
 
 /// `wire.q[i]` — the verifier's Q share lane.
 fn q_index<P: Clone + Default>(wire_name: &str, idx: &str) -> IrExpr<P> {
+    q_index_of(var(wire_name), idx)
+}
+
+/// Same as [`q_index`], but takes an already-built base expression (e.g.
+/// a `_pool` index reference) instead of a bare name.
+fn q_index_of<P: Clone + Default>(base: IrExpr<P>, idx: &str) -> IrExpr<P> {
     ir_expr(IrExprKind::Index {
         base: Box::new(ir_expr(IrExprKind::Field {
-            base: Box::new(var(wire_name)),
+            base: Box::new(base),
             field: "q".into(),
         })),
         index: Box::new(var(idx)),
@@ -847,8 +853,8 @@ fn synth_verifier_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> 
 /// Emit `let (_wire_k, _hat_k) = vole_and_prover_step::<N, T>(wire_a.clone(), wire_b.clone());`
 /// The hat variable is left in scope for the caller to collect into a `FixedArray`.
 fn emit_prover_and_gate<P: Clone + Default>(
-    name_a: &str,
-    name_b: &str,
+    a_expr: IrExpr<P>,
+    b_expr: IrExpr<P>,
     wire_name: &str,
     hat_name: &str,
     stmts: &mut Vec<IrStmt<P>>,
@@ -870,11 +876,36 @@ fn emit_prover_and_gate<P: Clone + Default>(
                 ],
             }, prov.clone())),
             args: vec![
-                clone_expr(var(name_a)),
-                clone_expr(var(name_b)),
+                clone_expr(a_expr),
+                clone_expr(b_expr),
             ],
         }, prov.clone())),
     }, prov));
+}
+
+/// Same call as [`emit_prover_and_gate`], but returns the tuple-returning
+/// call expression itself instead of emitting a `let`-bound statement --
+/// lets a caller push the whole `(wire, hat)` pair directly into
+/// `_and_pool` (see [`VoleIrCtx::push_and_pair`]) without ever binding
+/// either half to a named `let` first. Args are NOT `clone_expr`-wrapped
+/// internally (unlike `emit_prover_and_gate`) -- callers decide, since
+/// some already have cloned expressions in hand (`operand_expr`'s
+/// output) and some don't (`wire_ref_raw`'s raw output).
+fn vole_and_prover_step_expr<P: Clone + Default>(
+    a_arg: IrExpr<P>,
+    b_arg: IrExpr<P>,
+    prov: P,
+) -> IrExpr<P> {
+    ir_expr_p(IrExprKind::Call {
+        func: Box::new(ir_expr_p(IrExprKind::Path {
+            segments: vec!["vole_and_prover_step".into()],
+            type_args: vec![
+                IrType::TypeParam("N".into()),
+                IrType::TypeParam("T".into()),
+            ],
+        }, prov.clone())),
+        args: vec![a_arg, b_arg],
+    }, prov)
 }
 
 /// Emit `let (_wire_k, _ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_expr, &hat_expr);`
@@ -884,8 +915,8 @@ fn emit_prover_and_gate<P: Clone + Default>(
 /// Volar-IR path) — this function only borrows them, never decides how
 /// they're sourced.
 fn emit_verifier_and_gate<P: Clone + Default>(
-    name_a: &str,
-    name_b: &str,
+    a_expr: IrExpr<P>,
+    b_expr: IrExpr<P>,
     wire_name: &str,
     ok_name: &str,
     q_and_expr: IrExpr<P>,
@@ -910,8 +941,8 @@ fn emit_verifier_and_gate<P: Clone + Default>(
             }, prov.clone())),
             args: vec![
                 var("delta"),
-                ref_expr(var(name_a)),
-                ref_expr(var(name_b)),
+                ref_expr(a_expr),
+                ref_expr(b_expr),
                 ref_expr(q_and_expr),
                 ref_expr(hat_expr),
             ],
@@ -929,52 +960,42 @@ fn emit_verifier_and_gate<P: Clone + Default>(
     }, prov.clone())), prov));
 }
 
-/// Emit `let q_and_k = derive_and_q::<N, T>(delta, &wire_a, &wire_b, &hat_expr);`
-/// followed by `let wire_k = q_and_k.clone();` — `QSim`'s AND-gate handling
-/// (Milestone 1.6): unlike [`emit_verifier_and_gate`], this *derives*
-/// `q_and` from an externally-supplied `hat` (same shape `Verifier`
-/// already takes) instead of taking `q_and_k` itself as an external
-/// parameter and checking it. No `ok`/`all_ok`/fold plumbing — `QSim`
-/// never folds, that's `Verifier`'s job once handed these derived values.
-/// `hat_expr` is an already-built read expression, same convention as
-/// [`emit_verifier_and_gate`]; `q_and_name` is a genuine local binding
-/// target (this function's own derived output), not a param read.
-fn emit_qsim_and_gate<P: Clone + Default>(
-    name_a: &str,
-    name_b: &str,
-    wire_name: &str,
-    q_and_name: &str,
+/// Build `derive_and_q::<N, T>(delta, &a, &b, &hat)` as a bare expression
+/// (not a statement) — `QSim`'s AND-gate handling (Milestone 1.6): unlike
+/// [`emit_verifier_and_gate`], this *derives* `q_and` from an externally-
+/// supplied `hat` (same shape `Verifier` already takes) instead of taking
+/// `q_and_k` itself as an external parameter and checking it. No
+/// `ok`/`all_ok`/fold plumbing — `QSim` never folds, that's `Verifier`'s
+/// job once handed these derived values.
+///
+/// Returns the call expression directly rather than emitting a `let`, so
+/// both callers (`emit_and`'s QSim branch, `emit_poly_wide`'s degree-2
+/// QSim handling) can push the result straight onto `_pool` (see
+/// [`VoleIrCtx::push_wire_scratch`]) with no intermediate name at all:
+/// QSim's AND-gate output *is* its own `q_and` (the "wire" value is
+/// always just a clone of it), so unlike the Prover's genuinely paired
+/// wire+hat there's nothing here that needs splitting across two names.
+fn derive_and_q_expr<P: Clone + Default>(
+    a_expr: IrExpr<P>,
+    b_expr: IrExpr<P>,
     hat_expr: IrExpr<P>,
-    stmts: &mut Vec<IrStmt<P>>,
     prov: P,
-) {
-    // let q_and_k = derive_and_q::<N, T>(delta, &wire_a, &wire_b, &hat);
-    stmts.push(ir_stmt_p(IrStmtKind::Let {
-        pattern: IrPattern::ident(q_and_name),
-        ty: None,
-        init: Some(ir_expr_p(IrExprKind::Call {
-            func: Box::new(ir_expr_p(IrExprKind::Path {
-                segments: vec!["derive_and_q".into()],
-                type_args: vec![
-                    IrType::TypeParam("N".into()),
-                    IrType::TypeParam("T".into()),
-                ],
-            }, prov.clone())),
-            args: vec![
-                var("delta"),
-                ref_expr(var(name_a)),
-                ref_expr(var(name_b)),
-                ref_expr(hat_expr),
+) -> IrExpr<P> {
+    ir_expr_p(IrExprKind::Call {
+        func: Box::new(ir_expr_p(IrExprKind::Path {
+            segments: vec!["derive_and_q".into()],
+            type_args: vec![
+                IrType::TypeParam("N".into()),
+                IrType::TypeParam("T".into()),
             ],
         }, prov.clone())),
-    }, prov.clone()));
-
-    // let wire_k = q_and_k.clone();
-    stmts.push(ir_stmt_p(IrStmtKind::Let {
-        pattern: IrPattern::ident(wire_name),
-        ty: None,
-        init: Some(clone_expr(var(q_and_name))),
-    }, prov));
+        args: vec![
+            var("delta"),
+            ref_expr(a_expr),
+            ref_expr(b_expr),
+            ref_expr(hat_expr),
+        ],
+    }, prov)
 }
 
 /// `[Vope<N, T, U2>; SBOX_COUNT]` — hat-free K=2 S-box product commitments.
@@ -1389,7 +1410,7 @@ where
                     let hat_name = format!("hat_{}", and_counter);
                     and_counter += 1;
                     hat_names.push(hat_name.clone());
-                    emit_prover_and_gate(&name_a, &name_b, &let_name, &hat_name, &mut stmts, q.clone());
+                    emit_prover_and_gate(var(&name_a), var(&name_b), &let_name, &hat_name, &mut stmts, q.clone());
                 }
             }
 
@@ -1455,6 +1476,8 @@ where
 
     // Return (output_wire, [hat_0, hat_1, ...]) or
     //        (output_wire, [hat_0, ...], [sbox_k2_0, ...]) when sbox_count > 0.
+    // Legacy `BIrBlocks` weaver -- entirely independent of `VoleIrCtx`'s
+    // own `_hat_pool` scratch pooling, always real names.
     let (output_expr, _) = build_return(block, &var_names, vope_type());
     let hats_expr = ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|h| var(h)).collect()));
     let ret_expr = if sbox_k2_names.is_empty() {
@@ -1912,7 +1935,7 @@ where
                     let hat_name = format!("hat_{}", gate_idx);
                     and_counter += 1;
                     emit_verifier_and_gate(
-                        &name_a, &name_b, &let_name, &ok_name,
+                        var(&name_a), var(&name_b), &let_name, &ok_name,
                         var(&q_and_name), var(&hat_name),
                         &mut stmts, q.clone(),
                     );
@@ -2668,6 +2691,123 @@ struct VoleIrCtx<'a> {
     ext_action_counter: usize,
     /// Index of the next Rng stmt encountered.
     ext_rng_counter: usize,
+    // ---- Local scratch pools (Phase A of the pool-based regalloc plan,
+    //      see the plan file's "Pool-based value representation" section)
+    //
+    // Purely function-local intermediate values (Poly XOR-chain
+    // accumulators, single-value AND-gate outputs for QSim, ...) that
+    // used to get a fresh, uniquely-numbered `let` binding each
+    // (`and_w_3`, `_ka_7`, ...) -- by far the largest volume of distinct
+    // identifiers rustc's own name-resolution pass has to track per
+    // function. Instead, each such value is pushed onto a shared `Vec`
+    // ("_pool" for wire-typed scratch -- `Vope<N,T,U1>` for Prover,
+    // `Q<N,T>` for Verifier/QSim) and referenced by its pool index
+    // instead of a fresh name.
+    //
+    // Reset implicitly to defaults on every fresh `VoleIrCtx` (one per
+    // emitted function) via the 3 constructors below, AND explicitly
+    // save/restored around `emit_poly_wide`'s own closure-body
+    // redirection of `self.stmts` (the `saved_stmts`/`body_stmts` swap)
+    // -- the closure body is its *own* Rust scope with its own fresh
+    // `_pool` (shadowing whichever, if any, exists in the enclosing
+    // function scope), so its own index bookkeeping must be fresh too,
+    // not continued from the outer scope's.
+    pool_declared: bool,
+    pool_next: usize,
+    // Prover-only: a SECOND pool, `_and_pool: Vec<(Vope<N,T,U1>, Array<T,N>)>`,
+    // holding an AND gate's full `(wire, hat)` output PAIR in one slot.
+    // Exists so `vole_and_prover_step(..)`'s call result can be pushed
+    // directly (`_and_pool.push(vole_and_prover_step(a, b));`) without
+    // EVER binding either half to a named `let` first -- `_pool` alone
+    // can't do this, since splitting a tuple call's two
+    // outputs into two SEPARATE pools still requires a `let (a, b) = ..;`
+    // to destructure it first (itself two more identifiers for the
+    // resolver to walk), which is exactly the residual cost this pool
+    // exists to remove. See [`VoleIrCtx::push_and_pair`] and the `@`-
+    // prefix convention below.
+    and_pool_declared: bool,
+    and_pool_next: usize,
+}
+
+/// `(Vope<N, T, U1>, Array<T, N>)` — the element type of `_and_pool`,
+/// see its doc on [`VoleIrCtx`].
+fn and_pair_type() -> IrType {
+    IrType::Tuple(vec![vope_type(), array_t_n()])
+}
+
+/// Text convention for wire-typed (`Vope`/`Q`) scratch values that live
+/// in a shared pool array rather than as a uniquely named `let`
+/// binding: a string starting with `@` is an `_and_pool` index (see
+/// [`VoleIrCtx::push_and_pair`]; reads field `.0`, the wire half); a
+/// string starting with an ASCII digit is a plain `_pool` index
+/// (produced by [`VoleIrCtx::push_wire_scratch`]). No real identifier
+/// this weaver ever generates starts with `@` or a digit (all are
+/// `snake_case` words or `_`-prefixed), so this three-way dispatch is
+/// unambiguous. Exists so the many existing `&str`/`String`-typed call
+/// sites (`operand_lane`, `emit_and`, `emit_poly_lane`'s `term_names`,
+/// ...) don't need a new enum type threaded through them -- a name and
+/// a pool-slot reference are both "a way to read a wire-typed value,"
+/// this is just the dispatch between the forms.
+fn wire_ref_raw(name_or_slot: &str) -> IrExpr {
+    if let Some(idx) = name_or_slot.strip_prefix('@') {
+        and_pool_field(idx, "0")
+    } else if name_or_slot.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        arr_index("_pool", name_or_slot)
+    } else {
+        var(name_or_slot)
+    }
+}
+
+fn wire_ref_expr(name_or_slot: &str) -> IrExpr {
+    clone_expr(wire_ref_raw(name_or_slot))
+}
+
+/// Same `@`-prefix convention as [`wire_ref_raw`], for hat reads --
+/// every hat-typed scratch value this weaver pools comes from an AND
+/// gate, so the only pooled case here is `_and_pool`'s field `.1` (the
+/// hat half). Anything else is assumed to be a real bound identifier
+/// (e.g. the `extracts_pair` wide-hat-extraction path's own
+/// uniquely-numbered names, which this deliberately never pools).
+fn hat_ref_raw(name_or_slot: &str) -> IrExpr {
+    if let Some(idx) = name_or_slot.strip_prefix('@') {
+        and_pool_field(idx, "1")
+    } else {
+        var(name_or_slot)
+    }
+}
+
+fn hat_ref_expr(name_or_slot: &str) -> IrExpr {
+    clone_expr(hat_ref_raw(name_or_slot))
+}
+
+/// `_and_pool[idx].{field}` — `field` is `"0"` (wire) or `"1"` (hat).
+fn and_pool_field(idx: &str, field: &str) -> IrExpr {
+    ir_expr(IrExprKind::Field {
+        base: Box::new(arr_index("_and_pool", idx)),
+        field: field.into(),
+    })
+}
+
+fn vec_new_call(elem_ty: IrType) -> (IrType, IrExpr) {
+    (
+        IrType::Vector { elem: Box::new(elem_ty) },
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+                segments: vec!["Vec".into(), "new".into()],
+                type_args: vec![],
+            })),
+            args: vec![],
+        }),
+    )
+}
+
+fn push_method_call(receiver_name: &str, value: IrExpr) -> IrStmt {
+    ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::MethodCall {
+        receiver: Box::new(var(receiver_name)),
+        method: MethodKind::Other("push".into()),
+        type_args: vec![],
+        args: vec![value],
+    })))
 }
 
 /// Returns the pre-init constant for storage cell `(sid, tid, ci)`, or `None`.
@@ -2706,6 +2846,10 @@ impl VoleIrCtx<'static> {
             ext_oracle_counter: 0,
             ext_action_counter: 0,
             ext_rng_counter: 0,
+            pool_declared: false,
+            pool_next: 0,
+            and_pool_declared: false,
+            and_pool_next: 0,
         }
     }
 
@@ -2733,6 +2877,10 @@ impl VoleIrCtx<'static> {
             ext_oracle_counter: 0,
             ext_action_counter: 0,
             ext_rng_counter: 0,
+            pool_declared: false,
+            pool_next: 0,
+            and_pool_declared: false,
+            and_pool_next: 0,
         }
     }
 }
@@ -2763,7 +2911,59 @@ impl<'a> VoleIrCtx<'a> {
             ext_oracle_counter: 0,
             ext_action_counter: 0,
             ext_rng_counter: 0,
+            pool_declared: false,
+            pool_next: 0,
+            and_pool_declared: false,
+            and_pool_next: 0,
         }
+    }
+
+    /// Push a wire-typed (`Vope`/`Q`) scratch value onto the shared
+    /// `_pool`, declaring the pool on first use in whichever scope is
+    /// currently active (the enclosing function body, or
+    /// `emit_poly_wide`'s own closure body if mid-redirection). Returns
+    /// the pool index as a digit-string -- see [`wire_ref_expr`] for how
+    /// callers turn this back into a read expression.
+    fn push_wire_scratch(&mut self, value: IrExpr) -> String {
+        if !self.pool_declared {
+            self.pool_declared = true;
+            let elem_ty = if self.role.is_prover() { vope_type() } else { q_type() };
+            let (ty, init) = vec_new_call(elem_ty);
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
+                pattern: IrPattern::ident("_pool").as_mut(),
+                ty: Some(ty),
+                init: Some(init),
+            }));
+        }
+        let idx = self.pool_next;
+        self.pool_next += 1;
+        self.stmts.push(push_method_call("_pool", value));
+        idx.to_string()
+    }
+
+    /// Push a Prover AND-gate's full `(wire, hat)` output pair onto the
+    /// shared `_and_pool` in a single statement -- `value` should be the
+    /// tuple-returning call expression itself (e.g. from
+    /// [`vole_and_prover_step_expr`]), NOT a name referencing an
+    /// already-`let`-bound tuple; this is the whole point (see
+    /// [`VoleIrCtx`]'s own doc on `and_pool_declared`). Returns an
+    /// `@`-prefixed index string usable as both a wire reference
+    /// ([`wire_ref_raw`] reads field `.0`) and a hat reference
+    /// ([`hat_ref_raw`] reads field `.1`).
+    fn push_and_pair(&mut self, value: IrExpr) -> String {
+        if !self.and_pool_declared {
+            self.and_pool_declared = true;
+            let (ty, init) = vec_new_call(and_pair_type());
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
+                pattern: IrPattern::ident("_and_pool").as_mut(),
+                ty: Some(ty),
+                init: Some(init),
+            }));
+        }
+        let idx = self.and_pool_next;
+        self.and_pool_next += 1;
+        self.stmts.push(push_method_call("_and_pool", value));
+        format!("@{idx}")
     }
 
     /// Get scalar wire name for a var id.
@@ -2921,50 +3121,92 @@ impl<'a> VoleIrCtx<'a> {
         }));
     }
 
-    /// Emit XOR (free: prover a + b, verifier element-wise).
-    fn emit_xor(&mut self, out: &str, a: &str, b: &str) {
+    /// Build `a + b` (prover) or `Q { q: Array::from_fn(|i| a.q[i].clone()
+    /// + b.q[i].clone()) }` (verifier/qsim) -- `a`/`b` may be real names
+    /// or `_pool` indices (see [`wire_ref_raw`]), shared by [`Self::emit_xor`]
+    /// (binds the result to a real name) and [`Self::emit_xor_scratch`]
+    /// (pushes it onto `_pool` instead).
+    fn xor_value_expr(&self, a: &str, b: &str) -> IrExpr {
         if self.role.is_prover() {
-            self.stmts.push(ir_stmt(IrStmtKind::Let {
-                pattern: IrPattern::ident(out),
-                ty: None,
-                init: Some(ir_expr(IrExprKind::Binary {
-                    op: SpecBinOp::Add,
-                    left: Box::new(clone_expr(var(a))),
-                    right: Box::new(clone_expr(var(b))),
-                })),
-            }));
+            ir_expr(IrExprKind::Binary {
+                op: SpecBinOp::Add,
+                left: Box::new(clone_expr(wire_ref_raw(a))),
+                right: Box::new(clone_expr(wire_ref_raw(b))),
+            })
         } else {
-            // Q { q: Array::from_fn(|i| a.q[i].clone() + b.q[i].clone()) }
-            self.stmts.push(ir_stmt(IrStmtKind::Let {
-                pattern: IrPattern::ident(out),
-                ty: None,
-                init: Some(q_struct(array_t_from_fn(
-                    "i",
-                    ir_expr(IrExprKind::Binary {
-                        op: SpecBinOp::Add,
-                        left: Box::new(clone_expr(q_index(a, "i"))),
-                        right: Box::new(clone_expr(q_index(b, "i"))),
-                    }),
-                ))),
-            }));
+            q_struct(array_t_from_fn(
+                "i",
+                ir_expr(IrExprKind::Binary {
+                    op: SpecBinOp::Add,
+                    left: Box::new(clone_expr(q_index_of(wire_ref_raw(a), "i"))),
+                    right: Box::new(clone_expr(q_index_of(wire_ref_raw(b), "i"))),
+                }),
+            ))
         }
     }
 
-    /// Emit AND gate.  Returns the name of the output wire.
+    /// Emit XOR (free: prover a + b, verifier element-wise), bound to a
+    /// real name `out` -- used for a statement's own genuine output.
+    fn emit_xor(&mut self, out: &str, a: &str, b: &str) {
+        let value = self.xor_value_expr(a, b);
+        self.stmts.push(ir_stmt(IrStmtKind::Let {
+            pattern: IrPattern::ident(out),
+            ty: None,
+            init: Some(value),
+        }));
+    }
+
+    /// Same computation as [`Self::emit_xor`], but for a purely
+    /// intermediate XOR-chain accumulator: pushes onto `_pool` and
+    /// returns the index instead of binding a fresh name.
+    fn emit_xor_scratch(&mut self, a: &str, b: &str) -> String {
+        let value = self.xor_value_expr(a, b);
+        self.push_wire_scratch(value)
+    }
+
+    /// Emit AND gate. Returns a reference to the output wire -- a real
+    /// name for `Verifier` (its own `and_gate_step` trace-sink call needs
+    /// real bound identifiers for `k_a`/`k_b`/`k_c`, a public API this
+    /// phase doesn't touch — see the doc on the `VoleRole::Verifier` arm
+    /// below), or a `_pool` index (see [`wire_ref_expr`]) for
+    /// `Prover`/`QSim`, which have no such constraint.
     fn emit_and(&mut self, a: &str, b: &str) -> String {
-        let wire_name = format!("and_w_{}", self.and_counter);
+        // Raw (un-cloned): `vole_and_prover_step_expr`/`derive_and_q_expr`/
+        // `emit_verifier_and_gate` each clone_expr's/ref_expr's their own
+        // `a_expr`/`b_expr` internally -- wrapping here too would
+        // double-clone.
+        let a_expr = wire_ref_raw(a);
+        let b_expr = wire_ref_raw(b);
         match self.role {
             VoleRole::Prover => {
-                let hat_name = format!("hat_{}", self.and_counter);
-                self.hat_names.push(hat_name.clone());
-                emit_prover_and_gate(a, b, &wire_name, &hat_name, &mut self.stmts, ());
+                // Push the whole `(wire, hat)` output pair directly --
+                // no intermediate `let (_and_wire, _and_hat) = ..;`
+                // binding at all (see `_and_pool`'s own doc on
+                // `VoleIrCtx`).
+                let value = vole_and_prover_step_expr(clone_expr(a_expr), clone_expr(b_expr), ());
+                let idx = self.push_and_pair(value);
+                self.hat_names.push(idx.clone());
+                self.and_counter += 1;
+                idx
             }
             VoleRole::Verifier => {
+                // Left as real, uniquely-numbered names (not pooled):
+                // `and_gate_step` (`VerifierTraceSink`, a `pub trait`
+                // other crates could implement) takes `k_a`/`k_b`/`k_c` as
+                // `&str`, used internally as real bound identifiers
+                // (`clone_expr(var(k_a))` etc) -- pooling here would mean
+                // either a breaking trait-signature change or synthesizing
+                // extra un-pooled temp bindings just to satisfy it, which
+                // defeats the point. Verifier's own functions already
+                // benefited the most from the earlier `emit_poly_wide`
+                // laziness fix (unconditionally eligible, no
+                // `extracts_pair` exception) -- deferred here, not lost.
+                let wire_name = format!("and_w_{}", self.and_counter);
                 let ok_name = format!("ok_{}", self.and_counter);
                 let idx = self.and_counter.to_string();
                 self.ok_names.push(ok_name.clone());
                 emit_verifier_and_gate(
-                    a, b, &wire_name, &ok_name,
+                    a_expr, b_expr, &wire_name, &ok_name,
                     arr_index("q_and", &idx), arr_index("hat", &idx), &mut self.stmts, (),
                 );
                 if let Some(sink) = self.trace_sink {
@@ -2977,21 +3219,25 @@ impl<'a> VoleIrCtx<'a> {
                         right: Box::new(new_state),
                     }))));
                 }
+                self.and_counter += 1;
+                wire_name
             }
             VoleRole::QSim => {
                 // hat is a required *input* param (same shape Verifier
                 // already takes, now array-batched — indexed by gate
                 // number rather than named per-gate); q_and_k is *derived*
                 // here and collected as this function's own output (see
-                // `q_and_names`).
-                let idx = self.and_counter.to_string();
-                let q_and_name = format!("q_and_{}", self.and_counter);
-                self.q_and_names.push(q_and_name.clone());
-                emit_qsim_and_gate(a, b, &wire_name, &q_and_name, arr_index("hat", &idx), &mut self.stmts, ());
+                // `q_and_names`). QSim's "wire" output IS its own
+                // `q_and` (no separate value) -- push once, alias both
+                // uses to the same `_pool` slot, no intermediate `let`.
+                let gate_idx = self.and_counter.to_string();
+                let value = derive_and_q_expr(a_expr, b_expr, arr_index("hat", &gate_idx), ());
+                let idx = self.push_wire_scratch(value);
+                self.q_and_names.push(idx.clone());
+                self.and_counter += 1;
+                idx
             }
         }
-        self.and_counter += 1;
-        wire_name
     }
 
     /// Emit NOT (free: a + one).
@@ -3076,26 +3322,26 @@ impl<'a> VoleIrCtx<'a> {
                 self.stmts.push(ir_stmt(IrStmtKind::Let {
                     pattern: IrPattern::ident(out_name),
                     ty: None,
-                    init: Some(clone_expr(var(&term_names[0]))),
+                    init: Some(clone_expr(wire_ref_raw(&term_names[0]))),
                 }));
             }
             _ => {
-                let first = term_names[0].clone();
-                let tmp0 = format!("{}_xor0", out_name);
-                self.stmts.push(ir_stmt(IrStmtKind::Let {
-                    pattern: IrPattern::ident(&tmp0),
-                    ty: None,
-                    init: Some(clone_expr(var(&first))),
-                }));
-                let mut acc = tmp0;
+                // `acc` starts as term_names[0] itself (no redundant
+                // "_xor0 = term_names[0].clone();" binding needed --
+                // `emit_xor`/`emit_xor_scratch` already clone their own
+                // `a`/`b` operands, so the first term's own clone happens
+                // as part of the first reduction step below). Every
+                // intermediate accumulator is pushed onto `_pool`
+                // (`emit_xor_scratch`); only the final step binds the
+                // statement's own real output name.
+                let mut acc = term_names[0].clone();
+                let n = term_names.len();
                 for (i, tn) in term_names[1..].iter().enumerate() {
-                    let next = if i == term_names.len() - 2 {
-                        out_name.to_string()
+                    if i == n - 2 {
+                        self.emit_xor(out_name, &acc, tn);
                     } else {
-                        format!("{}_xor{}", out_name, i + 1)
-                    };
-                    self.emit_xor(&next, &acc, tn);
-                    acc = next;
+                        acc = self.emit_xor_scratch(&acc, tn);
+                    }
                 }
             }
         }
@@ -3304,6 +3550,20 @@ impl<'a> VoleIrCtx<'a> {
         //         buffer; restored below, exactly as e.g. `hat_names`
         //         bookkeeping already assumes single-threaded, in-order use). ---
         let saved_stmts = core::mem::take(&mut self.stmts);
+        // The closure body is its own Rust scope -- its own `_pool`/
+        // `_hat_pool` (if it declares any) shadow whichever, if any,
+        // exist in the enclosing function scope, so the index
+        // bookkeeping must restart fresh here too, not continue the
+        // outer scope's count (see the `pool_declared`/`pool_next` field
+        // doc on `VoleIrCtx`).
+        let saved_pool = (
+            self.pool_declared, self.pool_next,
+            self.and_pool_declared, self.and_pool_next,
+        );
+        self.pool_declared = false;
+        self.pool_next = 0;
+        self.and_pool_declared = false;
+        self.and_pool_next = 0;
 
         let operand_expr = |ctx: &Self, v: &CirVar| -> IrExpr {
             match &ctx.wires[&v.0] {
@@ -3371,44 +3631,43 @@ impl<'a> VoleIrCtx<'a> {
                     term_names.push(n);
                 }
                 1 => {
-                    let n = format!("_t1_{term_idx}");
-                    self.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(&n), ty: None, init: Some(operand_expr(self, &mono[0])),
-                    }));
-                    term_names.push(n);
+                    let idx = self.push_wire_scratch(operand_expr(self, &mono[0]));
+                    term_names.push(idx);
                 }
                 2 => {
-                    // Bind operands to bare local names first: both the
-                    // AND-check call and (verifier) `and_gate_step` need
-                    // real in-scope identifiers, not arbitrary expressions.
                     let b = &and_bundles[and_gi];
                     and_gi += 1;
-                    let ka_n = format!("_ka_{term_idx}");
-                    let kb_n = format!("_kb_{term_idx}");
-                    self.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(&ka_n), ty: None, init: Some(operand_expr(self, &mono[0])),
-                    }));
-                    self.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(&kb_n), ty: None, init: Some(operand_expr(self, &mono[1])),
-                    }));
-                    let wire_n = format!("_aw_{term_idx}");
+                    let a_op = operand_expr(self, &mono[0]);
+                    let b_op = operand_expr(self, &mono[1]);
+                    let wire_n: String;
                     match self.role {
                         VoleRole::Prover => {
-                        let hat_n = format!("_ah_{term_idx}");
-                        self.stmts.push(ir_stmt(IrStmtKind::Let {
-                            pattern: IrPattern::Tuple(vec![IrPattern::ident(&wire_n), IrPattern::ident(&hat_n)]),
-                            ty: None,
-                            init: Some(ir_expr(IrExprKind::Call {
-                                func: Box::new(ir_expr(IrExprKind::Path {
-                                    segments: vec!["vole_and_prover_step".into()],
-                                    type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
-                                })),
-                                args: vec![clone_expr(var(&ka_n)), clone_expr(var(&kb_n))],
-                            })),
-                        }));
-                        hat_locals.push(hat_n);
+                        // Push the whole `(wire, hat)` output pair
+                        // directly onto `_and_pool` -- no intermediate
+                        // `let (_aw, _ah) = ..;` binding at all (see
+                        // `_and_pool`'s own doc on `VoleIrCtx`). `a_op`/
+                        // `b_op` (`operand_expr`'s result) are already
+                        // `clone_expr(...)`-wrapped -- don't wrap again.
+                        let value = vole_and_prover_step_expr(a_op, b_op, ());
+                        let idx = self.push_and_pair(value);
+                        hat_locals.push(idx.clone());
+                        wire_n = idx;
                         }
                         VoleRole::Verifier => {
+                        // Real, uniquely-numbered names throughout (not
+                        // pooled): `and_gate_step` (`VerifierTraceSink`, a
+                        // `pub trait`) needs real bound identifiers for
+                        // `k_a`/`k_b`/`k_c`/`hat` -- same constraint as
+                        // `emit_and`'s own Verifier branch, see its doc.
+                        let ka_n = format!("_ka_{term_idx}");
+                        let kb_n = format!("_kb_{term_idx}");
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
+                            pattern: IrPattern::ident(&ka_n), ty: None, init: Some(a_op),
+                        }));
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
+                            pattern: IrPattern::ident(&kb_n), ty: None, init: Some(b_op),
+                        }));
+                        let wire_n_real = format!("_aw_{term_idx}");
                         let hat_n = format!("_lane_hat_{term_idx}");
                         self.stmts.push(ir_stmt(IrStmtKind::Let {
                             pattern: IrPattern::ident(&hat_n), ty: None,
@@ -3416,7 +3675,7 @@ impl<'a> VoleIrCtx<'a> {
                         }));
                         let ok_n = format!("_aok_{term_idx}");
                         self.stmts.push(ir_stmt(IrStmtKind::Let {
-                            pattern: IrPattern::Tuple(vec![IrPattern::ident(&wire_n), IrPattern::ident(&ok_n)]),
+                            pattern: IrPattern::Tuple(vec![IrPattern::ident(&wire_n_real), IrPattern::ident(&ok_n)]),
                             ty: None,
                             init: Some(ir_expr(IrExprKind::Call {
                                 func: Box::new(ir_expr(IrExprKind::Path {
@@ -3447,38 +3706,25 @@ impl<'a> VoleIrCtx<'a> {
                                 init: Some(clone_expr(arr_index(&b.r, "i"))),
                             }));
                             let new_state = sink.and_gate_step(
-                                b.start, &ka_n, &kb_n, &wire_n, "delta", var(&hat_n), var(&r_n), "fold_state", (),
+                                b.start, &ka_n, &kb_n, &wire_n_real, "delta", var(&hat_n), var(&r_n), "fold_state", (),
                             );
                             self.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
                                 left: Box::new(var("fold_state")),
                                 right: Box::new(new_state),
                             }))));
                         }
+                        wire_n = wire_n_real;
                         }
                         VoleRole::QSim => {
-                        // let hat_n = b.hat[i].clone();
-                        // let wire_n = derive_and_q::<N, T>(delta, &ka_n, &kb_n, &hat_n);
-                        let hat_n = format!("_lane_hat_{term_idx}");
-                        self.stmts.push(ir_stmt(IrStmtKind::Let {
-                            pattern: IrPattern::ident(&hat_n), ty: None,
-                            init: Some(clone_expr(arr_index(&b.hat, "i"))),
-                        }));
-                        self.stmts.push(ir_stmt(IrStmtKind::Let {
-                            pattern: IrPattern::ident(&wire_n),
-                            ty: None,
-                            init: Some(ir_expr(IrExprKind::Call {
-                                func: Box::new(ir_expr(IrExprKind::Path {
-                                    segments: vec!["derive_and_q".into()],
-                                    type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
-                                })),
-                                args: vec![
-                                    var("delta"),
-                                    ref_expr(var(&ka_n)),
-                                    ref_expr(var(&kb_n)),
-                                    ref_expr(var(&hat_n)),
-                                ],
-                            })),
-                        }));
+                        // Push `derive_and_q(..)`'s result directly --
+                        // no intermediate `let _aw = ..;` binding. `a_op`/
+                        // `b_op` are already `clone_expr(...)`-wrapped
+                        // (`operand_expr`'s result); `derive_and_q_expr`
+                        // does its own `ref_expr` wrapping around each
+                        // arg, matching what this call site built by hand
+                        // before.
+                        let value = derive_and_q_expr(a_op, b_op, clone_expr(arr_index(&b.hat, "i")), ());
+                        wire_n = self.push_wire_scratch(value);
                         q_and_locals.push(wire_n.clone());
                         }
                     }
@@ -3498,37 +3744,46 @@ impl<'a> VoleIrCtx<'a> {
                 self.stmts.push(ir_stmt(IrStmtKind::Let {
                     pattern: IrPattern::ident(&final_name),
                     ty: None,
-                    init: Some(clone_expr(var(&term_names[0]))),
+                    init: Some(clone_expr(wire_ref_raw(&term_names[0]))),
                 }));
             }
             _ => {
-                let first = term_names[0].clone();
-                let tmp0 = "_xor0".to_string();
-                self.stmts.push(ir_stmt(IrStmtKind::Let {
-                    pattern: IrPattern::ident(&tmp0), ty: None, init: Some(clone_expr(var(&first))),
-                }));
-                let mut acc = tmp0;
+                // Same "no redundant first-clone" shape as
+                // `emit_poly_lane`'s own reduction -- see its own comment.
+                let mut acc = term_names[0].clone();
+                let n = term_names.len();
                 for (i, tn) in term_names[1..].iter().enumerate() {
-                    let next = if i == term_names.len() - 2 { final_name.clone() } else { format!("_xor{}", i + 1) };
-                    self.emit_xor(&next, &acc, tn);
-                    acc = next;
+                    if i == n - 2 {
+                        self.emit_xor(&final_name, &acc, tn);
+                    } else {
+                        acc = self.emit_xor_scratch(&acc, tn);
+                    }
                 }
             }
         }
 
         let has_ands = and_count_here > 0;
         let trailing = match self.role {
+            // `hat_locals`/`q_and_locals` are always `_pool`/`_hat_pool`
+            // indices now (both their producer sites push to pool) --
+            // *must* `.clone()` (via `hat_ref_expr`/`wire_ref_expr`, not
+            // the raw/move variants), since moving an element out of a
+            // `Vec` by index isn't allowed.
             VoleRole::Prover if has_ands => ir_expr(IrExprKind::Tuple(vec![
                 var(&final_name),
-                ir_expr(IrExprKind::Tuple(hat_locals.iter().map(|h| var(h)).collect())),
+                ir_expr(IrExprKind::Tuple(hat_locals.iter().map(|h| hat_ref_expr(h)).collect())),
             ])),
             VoleRole::QSim if has_ands => ir_expr(IrExprKind::Tuple(vec![
                 var(&final_name),
-                ir_expr(IrExprKind::Tuple(q_and_locals.iter().map(|q| var(q)).collect())),
+                ir_expr(IrExprKind::Tuple(q_and_locals.iter().map(|q| wire_ref_expr(q)).collect())),
             ])),
             _ => var(&final_name),
         };
         let body_stmts = core::mem::replace(&mut self.stmts, saved_stmts);
+        (
+            self.pool_declared, self.pool_next,
+            self.and_pool_declared, self.and_pool_next,
+        ) = saved_pool;
         let closure_body = ir_expr(IrExprKind::Block(IrBlock { stmts: body_stmts, expr: Some(Box::new(trailing)) }));
 
         // ---- 4. One `core::array::from_fn` statement for the whole lane
@@ -3553,27 +3808,54 @@ impl<'a> VoleIrCtx<'a> {
             init: Some(fixed_array_from_fn("i", closure_body)),
         }));
 
-        // ---- 5. Trivial per-lane extraction: restores WireRepr::Vec's
-        //         exact contract for every downstream consumer. ---
+        // ---- 5. Per-lane extraction -- only when actually load-bearing.
+        //
+        // `extracts_pair` true means `arr_name`'s own backing array
+        // holds *tuples* `(wire_value, hats/q_and-bundle)`, not raw
+        // wire values (see `elem_ty` above) -- `WireRepr::Array`'s own
+        // contract (every consumer in this file: `materialize`,
+        // `slot_expr`, `Stmt::Transmute`'s pass-through, this
+        // function's own step-1 operand bundling) assumes indexing the
+        // array directly yields a raw `Vope`/`Q`, so in this case we
+        // must eagerly strip the tuple down to real per-lane names
+        // (also true for `self.hat_names`/`self.q_and_names`, which are
+        // flat `Vec<String>` accumulated across every AND-gate in the
+        // whole function and later read back by name to build the
+        // return tuple's own hats/q_and arrays -- extending those to
+        // carry array-index references instead of names is a separate,
+        // larger change, not attempted here).
+        //
+        // When `extracts_pair` is false (`Verifier`, unconditionally --
+        // its own AND-check bundles are *input* params built in step 2,
+        // unrelated to this output array's element type; or `Prover`/
+        // `QSim` with no AND monomial in this particular `Poly`),
+        // `arr_name` already holds raw wire values directly (`elem_ty`
+        // is plain `vope_type()`/`q_type()`) -- returning
+        // `WireRepr::Array` here, skipping `width` per-lane `let`s
+        // entirely, is exactly what `WireRepr::Array`'s own lazy
+        // `materialize` contract exists for: real per-lane names only
+        // get extracted later, if and when some specific downstream
+        // consumer genuinely needs them (many operations -- cloning the
+        // whole value onward, indexing a single lane, threading it as a
+        // piece's own extra_out -- don't).
         let extracts_pair = has_ands && matches!(self.role, VoleRole::Prover | VoleRole::QSim);
+        if !extracts_pair {
+            return WireRepr::Array(arr_name, width);
+        }
         let names: Vec<String> = (0..width)
             .map(|k| {
                 let ln = format!("{out_name}_{k}");
-                let base = if extracts_pair {
-                    ir_expr(IrExprKind::Field {
-                        base: Box::new(arr_index(&arr_name, &k.to_string())),
-                        field: "0".into(),
-                    })
-                } else {
-                    arr_index(&arr_name, &k.to_string())
-                };
+                let base = ir_expr(IrExprKind::Field {
+                    base: Box::new(arr_index(&arr_name, &k.to_string())),
+                    field: "0".into(),
+                });
                 self.stmts.push(ir_stmt(IrStmtKind::Let {
                     pattern: IrPattern::ident(&ln), ty: None, init: Some(clone_expr(base)),
                 }));
                 ln
             })
             .collect();
-        if self.role.is_prover() && has_ands {
+        if self.role.is_prover() {
             // `and_counter` allocated hats *group-major* (all `width` hats
             // for AND-group 0, then all `width` for group 1, ...) — this
             // loop must push into `self.hat_names` in that exact same
@@ -3596,9 +3878,9 @@ impl<'a> VoleIrCtx<'a> {
                     self.hat_names.push(hn);
                 }
             }
-        }
-        if self.role == VoleRole::QSim && has_ands {
-            // Same group-major ordering as the prover's `hat_names` above
+        } else {
+            // role == QSim (extracts_pair rules out Verifier here). Same
+            // group-major ordering as the prover's `hat_names` above
             // (and as `emit_and`'s narrow-path `q_and_names` pushes) --
             // this is what `weave_vole_qsim_ir_with_mode`/`_split` read to
             // build the returned `q_and` array, in `and_counter` order.
@@ -4450,7 +4732,7 @@ pub fn weave_vole_prover_ir_with_mode(
     } else {
         ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| ctx.slot_expr(v)).collect()))
     };
-    let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
+    let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| hat_ref_expr(h)).collect()));
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr]));
     let trace = ctx.trace.clone();
 
@@ -4711,7 +4993,7 @@ pub fn weave_vole_prover_ir_split(
             let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
             let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &vope_type())).collect();
 
-            let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
+            let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| hat_ref_expr(h)).collect()));
             let hats_ty = hat_array_type(ctx.hat_names.len());
 
             let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
@@ -4850,7 +5132,7 @@ pub fn weave_vole_prover_ir_split(
                     piece_out_types.insert(v, ty.clone());
                     p_ret_tys.push(ty);
                 }
-                let p_hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
+                let p_hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| hat_ref_expr(h)).collect()));
                 let p_hats_ty = hat_array_type(ctx.hat_names.len());
                 piece_hat_counts.push(ctx.hat_names.len());
                 p_ret_tys.push(p_hats_ty);
@@ -5183,7 +5465,7 @@ pub fn weave_vole_prover_ir_split(
         let hats_ty = hat_array_type(ctx.hat_names.len());
         ret_tuple_tys.push(hats_ty);
         let mut ret_tuple_exprs = running_exprs(&ctx, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
-        let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
+        let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| hat_ref_expr(h)).collect()));
         ret_tuple_exprs.push(hats_expr);
 
         // As the per-block loop's own synthetic_out handling above --
@@ -5268,7 +5550,7 @@ pub fn weave_vole_prover_ir_split(
     } else {
         IrType::Tuple(ret_args.iter().map(|v| ctx.slot_type(v, &vope_type())).collect())
     };
-    let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
+    let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| hat_ref_expr(h)).collect()));
     let ret_type = IrType::Tuple(vec![output_ty, hat_array_type(ctx.hat_names.len())]);
     let output_expr = if ret_args.len() == 1 {
         ctx.slot_expr(&ret_args[0])
@@ -5669,7 +5951,7 @@ pub fn weave_vole_qsim_ir_with_mode(
     } else {
         IrType::Tuple(ret_args.iter().map(|v| ctx.slot_type(v, &q_type())).collect())
     };
-    let q_and_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|n| var(n)).collect()));
+    let q_and_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|n| wire_ref_expr(n)).collect()));
     let ret_type = IrType::Tuple(vec![output_ty, q_and_array_type(ctx.q_and_names.len())]);
     let output_expr = if ret_args.len() == 1 {
         ctx.slot_expr(&ret_args[0])
@@ -5929,7 +6211,7 @@ pub fn weave_vole_qsim_ir_split(
             let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
 
             let hats_ty = q_and_array_type(ctx.q_and_names.len());
-            let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
+            let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| wire_ref_expr(h)).collect()));
 
             let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
             ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
@@ -6052,7 +6334,7 @@ pub fn weave_vole_qsim_ir_split(
                     p_ret_tys.push(ty);
                 }
                 let p_hats_ty = q_and_array_type(ctx.q_and_names.len());
-                let p_hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
+                let p_hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| wire_ref_expr(h)).collect()));
                 piece_q_and_counts.push(ctx.q_and_names.len());
                 p_ret_tys.push(p_hats_ty);
                 p_ret_exprs.push(p_hats_expr);
@@ -6347,7 +6629,7 @@ pub fn weave_vole_qsim_ir_split(
         let hats_ty = q_and_array_type(ctx.q_and_names.len());
         ret_tuple_tys.push(hats_ty);
         let mut ret_tuple_exprs = running_exprs(&ctx, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
-        let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
+        let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| wire_ref_expr(h)).collect()));
         ret_tuple_exprs.push(hats_expr);
 
         // As `weave_vole_prover_ir_split`'s own chunk-level synthetic_out handling.
@@ -6435,7 +6717,7 @@ pub fn weave_vole_qsim_ir_split(
     } else {
         IrType::Tuple(ret_args.iter().map(|v| ctx.slot_type(v, &q_type())).collect())
     };
-    let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
+    let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| wire_ref_expr(h)).collect()));
     let ret_type = IrType::Tuple(vec![output_ty, q_and_array_type(ctx.q_and_names.len())]);
     let output_expr = if ret_args.len() == 1 {
         ctx.slot_expr(&ret_args[0])
@@ -7451,6 +7733,9 @@ fn net_ok_expr(inner: IrExpr) -> IrExpr {
 }
 
 /// `&[hat_0, ...]` — slice reference to fixed array of named wires.
+/// Unrelated to `VoleIrCtx`'s own `_hat_pool` scratch pooling (the
+/// "net"/networked weave path this belongs to doesn't use `VoleIrCtx`
+/// at all) -- always real names, plain `var(h)`.
 fn net_hats_slice(hat_names: &[String]) -> IrExpr {
     ref_expr(ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|h| var(h)).collect())))
 }
