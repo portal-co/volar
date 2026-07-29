@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(cargo search:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)",
+      "Bash(cargo test:*)",
+      "Bash(git stash:*)",
+      "Bash(rustup show:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(python3 -c \"import json,sys; m=json.load\\(sys.stdin\\); print\\(m['target_directory']\\)\")",
+      "Bash(grep -E \"\\\\.\\(rs|md\\)$\")",
+      "Bash(cargo check:*)",
+      "Bash(awk '/^error\\\\[/{err=1} err && /^\\\\s+-->/ && /volar\\\\/crates/{print; err=0}')",
+      "Bash(python3 -c ' *)",
+      "Bash(grep -v \"^--$\")",
+      "Bash(git -C /Users/grahamkelly/Code/portal-hot/volar log --oneline -20)",
+      "WebFetch(domain:eprint.iacr.org)",
+      "WebFetch(domain:en.wikipedia.org)",
+      "Bash(curl -sL --max-time 20 \"https://eprint.iacr.org/2015/267\" -A \"Mozilla/5.0\" -o /tmp/co.html)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git checkout *)",
+      "Bash(find /Users/grahamkelly/Code/portal-hot -maxdepth 3 -type d -name \"scripts\" -o -name \"tools\" | grep -v node_modules)",
+      "Read(//Users/grahamkelly/Code/portal-hot/**)",
+      "Bash(npx tsc *)"
+    ]
+  }
+}
