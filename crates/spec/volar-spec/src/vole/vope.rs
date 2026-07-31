@@ -14,6 +14,11 @@ pub struct Vope<N: VoleArray<T>, T, K: ArraySize = U1> {
     ///Fixed offset
     pub v: Array<T, N>,
 }
+impl<N: VoleArray<T>, T: Default, K: ArraySize> Default for Vope<N, T, K> {
+    fn default() -> Self {
+        Vope { u: Default::default(), v: Default::default() }
+    }
+}
 impl<N: VoleArray<T>, T> Vope<N, T, U0> {
     pub fn constant(v: Array<T, N>) -> Self {
         Vope {

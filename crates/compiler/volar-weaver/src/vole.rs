@@ -44,8 +44,8 @@ use volar_compiler::{
         AssociatedType, ExternalKind, IrAnyFunction, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction,
         IrCfgJump, IrCfgModule, IrCfgTerminator, IrExpr, IrExprKind, IrFunction, IrGenericParam,
         IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrStmtKind, IrTraitBound,
-        IrType, IrWherePredicate, MathTrait, MethodKind, PrimitiveType, SpecBinOp, StdMethod,
-        StructKind, TraitKind,
+        IrType, IrWherePredicate, MathTrait, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp,
+        StdMethod, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
@@ -2399,6 +2399,20 @@ enum WireRepr {
     /// cost only for vars a given function actually uses, not eagerly
     /// for the whole top-level param set.
     Array(String, usize),
+    /// A SCALAR (width-1) value living in a shared, `&mut`-threaded pool
+    /// array rather than as its own named parameter/local at all --
+    /// Phase C of the pool-based regalloc plan (cross-function/cross-
+    /// piece values, e.g. `piece_in_{v}`). `(pool_param_name, slot)`:
+    /// `pool_param_name` is the generated function's own parameter name
+    /// for the pool (e.g. `"_piece_pool"`), `slot` is a compact index
+    /// into it (NOT the raw circuit var id -- callers build a small
+    /// `var_id -> slot` map covering only the vars actually threaded
+    /// through a given pool, to avoid sizing the array to the whole
+    /// circuit's var-id space). Reading a `Pooled` slot must go through
+    /// [`VoleIrCtx::pooled_read_expr`] (asserts the slot has actually
+    /// been written first, in debug builds -- see its own doc); nothing
+    /// should ever build `arr_index(pool_param_name, ..)` by hand.
+    Pooled(&'static str, usize),
 }
 
 /// Width of a circuit type in bits (1 for Bit, K for Vec(K, Bit)).
@@ -2704,15 +2718,20 @@ struct VoleIrCtx<'a> {
     // `Q<N,T>` for Verifier/QSim) and referenced by its pool index
     // instead of a fresh name.
     //
-    // Reset implicitly to defaults on every fresh `VoleIrCtx` (one per
-    // emitted function) via the 3 constructors below, AND explicitly
-    // save/restored around `emit_poly_wide`'s own closure-body
-    // redirection of `self.stmts` (the `saved_stmts`/`body_stmts` swap)
-    // -- the closure body is its *own* Rust scope with its own fresh
-    // `_pool` (shadowing whichever, if any, exists in the enclosing
-    // function scope), so its own index bookkeeping must be fresh too,
-    // not continued from the outer scope's.
-    pool_declared: bool,
+    // `_pool` (and, Prover-only, `_and_pool`) are declared exactly ONCE,
+    // unconditionally, at construction time (see `declare_pools`) -- they
+    // are genuinely function-scoped, not lazily-declared-on-first-use.
+    // The lazy-declare version of this design (an earlier iteration)
+    // turned out to interact badly with `emit_poly_wide`'s own closure
+    // body (see below): resetting to a *fresh* pool at every closure
+    // boundary meant a function with many wide (`>1`-bit) `Poly`
+    // statements got one `_pool` declaration per such statement, not one
+    // per function -- a real, measured blowup (tens of thousands of
+    // duplicate declarations at real interpreter scale). `pool_next`/
+    // `and_pool_next` (the *index* counters) still DO reset at the
+    // closure boundary, and are restored advanced by however many slots
+    // the closure contributed overall (`width` invocations, once each) --
+    // see `in_closure` below and `emit_poly_wide`'s own boundary code.
     pool_next: usize,
     // Prover-only: a SECOND pool, `_and_pool: Vec<(Vope<N,T,U1>, Array<T,N>)>`,
     // holding an AND gate's full `(wire, hat)` output PAIR in one slot.
@@ -2725,8 +2744,27 @@ struct VoleIrCtx<'a> {
     // resolver to walk), which is exactly the residual cost this pool
     // exists to remove. See [`VoleIrCtx::push_and_pair`] and the `@`-
     // prefix convention below.
-    and_pool_declared: bool,
     and_pool_next: usize,
+    // Whether the statements currently being emitted (`self.stmts`, per
+    // `emit_poly_wide`'s own redirection) belong to a closure body that
+    // runs multiple times at RUNTIME (`core::array::from_fn(|i| {..})`,
+    // once per lane `i`) rather than the enclosing function body proper,
+    // which runs once. `_pool`/`_and_pool` are the SAME shared Vec inside
+    // and outside the closure (see the field doc above) -- but a literal
+    // index baked into the closure's own text would be wrong for every
+    // lane but the first, since each lane invocation grows the SAME pool
+    // further. While `in_closure`, [`VoleIrCtx::push_wire_scratch`]/
+    // [`VoleIrCtx::push_and_pair`] instead lazily capture a RUNTIME base
+    // offset (`_lane_base = _pool.len();`, captured fresh at the START of
+    // each of the closure's own W invocations) and encode subsequent
+    // indices as `_lane_base`-relative (the `%`/`^` prefix convention
+    // below) -- correct regardless of what order `core::array::from_fn`
+    // happens to invoke lanes in, since it only relies on invocations not
+    // overlapping (true for an ordinary synchronous `FnMut`), never on a
+    // particular order between them.
+    in_closure: bool,
+    pool_lane_base_declared: bool,
+    and_pool_lane_base_declared: bool,
 }
 
 /// `(Vope<N, T, U1>, Array<T, N>)` — the element type of `_and_pool`,
@@ -2737,20 +2775,31 @@ fn and_pair_type() -> IrType {
 
 /// Text convention for wire-typed (`Vope`/`Q`) scratch values that live
 /// in a shared pool array rather than as a uniquely named `let`
-/// binding: a string starting with `@` is an `_and_pool` index (see
-/// [`VoleIrCtx::push_and_pair`]; reads field `.0`, the wire half); a
-/// string starting with an ASCII digit is a plain `_pool` index
-/// (produced by [`VoleIrCtx::push_wire_scratch`]). No real identifier
-/// this weaver ever generates starts with `@` or a digit (all are
-/// `snake_case` words or `_`-prefixed), so this three-way dispatch is
-/// unambiguous. Exists so the many existing `&str`/`String`-typed call
-/// sites (`operand_lane`, `emit_and`, `emit_poly_lane`'s `term_names`,
-/// ...) don't need a new enum type threaded through them -- a name and
-/// a pool-slot reference are both "a way to read a wire-typed value,"
-/// this is just the dispatch between the forms.
+/// binding:
+/// - a plain ASCII digit string is an *absolute* `_pool` index (produced
+///   by [`VoleIrCtx::push_wire_scratch`] outside a closure);
+/// - `@N` is an absolute `_and_pool` index (reads field `.0`, the wire
+///   half -- see [`VoleIrCtx::push_and_pair`]);
+/// - `%N` is a `_pool` index *relative to `_lane_base`*, valid only
+///   inside `emit_poly_wide`'s own per-lane closure (see
+///   [`VoleIrCtx::in_closure`]'s doc);
+/// - `^N` is the closure-relative counterpart of `@N` (`_and_pool`
+///   field `.0`, offset by `_and_lane_base`).
+///
+/// No real identifier this weaver ever generates starts with `@`, `%`,
+/// `^`, or a digit (all are `snake_case` words or `_`-prefixed), so this
+/// dispatch is unambiguous. Exists so the many existing `&str`/`String`-
+/// typed call sites (`operand_lane`, `emit_and`, `emit_poly_lane`'s
+/// `term_names`, ...) don't need a new enum type threaded through them
+/// -- a name and a pool-slot reference are both "a way to read a
+/// wire-typed value," this is just the dispatch between the forms.
 fn wire_ref_raw(name_or_slot: &str) -> IrExpr {
     if let Some(idx) = name_or_slot.strip_prefix('@') {
-        and_pool_field(idx, "0")
+        and_pool_field(idx, "0", false)
+    } else if let Some(idx) = name_or_slot.strip_prefix('%') {
+        lane_relative_index("_pool", "_lane_base", idx)
+    } else if let Some(idx) = name_or_slot.strip_prefix('^') {
+        and_pool_field(idx, "0", true)
     } else if name_or_slot.as_bytes().first().is_some_and(u8::is_ascii_digit) {
         arr_index("_pool", name_or_slot)
     } else {
@@ -2762,15 +2811,17 @@ fn wire_ref_expr(name_or_slot: &str) -> IrExpr {
     clone_expr(wire_ref_raw(name_or_slot))
 }
 
-/// Same `@`-prefix convention as [`wire_ref_raw`], for hat reads --
-/// every hat-typed scratch value this weaver pools comes from an AND
-/// gate, so the only pooled case here is `_and_pool`'s field `.1` (the
-/// hat half). Anything else is assumed to be a real bound identifier
-/// (e.g. the `extracts_pair` wide-hat-extraction path's own
+/// Same convention as [`wire_ref_raw`], for hat reads -- every hat-typed
+/// scratch value this weaver pools comes from an AND gate, so the only
+/// pooled cases here are `_and_pool`'s field `.1` (absolute `@N`, or
+/// closure-relative `^N`). Anything else is assumed to be a real bound
+/// identifier (e.g. the `extracts_pair` wide-hat-extraction path's own
 /// uniquely-numbered names, which this deliberately never pools).
 fn hat_ref_raw(name_or_slot: &str) -> IrExpr {
     if let Some(idx) = name_or_slot.strip_prefix('@') {
-        and_pool_field(idx, "1")
+        and_pool_field(idx, "1", false)
+    } else if let Some(idx) = name_or_slot.strip_prefix('^') {
+        and_pool_field(idx, "1", true)
     } else {
         var(name_or_slot)
     }
@@ -2780,12 +2831,89 @@ fn hat_ref_expr(name_or_slot: &str) -> IrExpr {
     clone_expr(hat_ref_raw(name_or_slot))
 }
 
-/// `_and_pool[idx].{field}` — `field` is `"0"` (wire) or `"1"` (hat).
-fn and_pool_field(idx: &str, field: &str) -> IrExpr {
+/// `_and_pool[idx].{field}` (absolute) or `_and_pool[_and_lane_base +
+/// idx].{field}` (`lane_relative`) — `field` is `"0"` (wire) or `"1"`
+/// (hat).
+fn and_pool_field(idx: &str, field: &str, lane_relative: bool) -> IrExpr {
+    let base = if lane_relative {
+        lane_relative_index("_and_pool", "_and_lane_base", idx)
+    } else {
+        arr_index("_and_pool", idx)
+    };
     ir_expr(IrExprKind::Field {
-        base: Box::new(arr_index("_and_pool", idx)),
+        base: Box::new(base),
         field: field.into(),
     })
+}
+
+/// `base_name[lane_base_var + idx]` — a pool read whose index is a
+/// RUNTIME sum of a per-invocation base offset (captured once per
+/// closure invocation, see [`VoleIrCtx::in_closure`]'s doc) and a
+/// compile-time-known offset within that invocation. `idx` prints as a
+/// literal (same convention as [`arr_index`]'s own `idx` argument).
+fn lane_relative_index(base_name: &str, lane_base_var: &str, idx: &str) -> IrExpr {
+    ir_expr(IrExprKind::Index {
+        base: Box::new(var(base_name)),
+        index: Box::new(ir_expr(IrExprKind::Binary {
+            op: SpecBinOp::Add,
+            left: Box::new(var(lane_base_var)),
+            right: Box::new(var(idx)),
+        })),
+    })
+}
+
+/// `{ debug_check_pool_written(<pool_name>_written[slot], slot);
+/// <pool_name>[slot].clone() }` -- the ONLY way a [`WireRepr::Pooled`]
+/// slot should ever be read (see its own doc). `<pool_name>_written` is
+/// the pool's own paired debug bitset (see [`written_array_name`]).
+fn pooled_read_expr(pool_name: &str, slot: usize) -> IrExpr {
+    let slot_str = slot.to_string();
+    let written_name = written_array_name(pool_name);
+    ir_expr(IrExprKind::Block(IrBlock {
+        stmts: vec![ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+                segments: vec!["debug_check_pool_written".into()],
+                type_args: vec![],
+            })),
+            args: vec![
+                arr_index(&written_name, &slot_str),
+                ir_expr(IrExprKind::Lit(IrLit::Int(slot as i128))),
+            ],
+        })))],
+        expr: Some(Box::new(clone_expr(arr_index(pool_name, &slot_str)))),
+    }))
+}
+
+/// The debug-bitset array name paired with a given pool's own param
+/// name (e.g. `"_piece_pool"` -> `"_piece_pool_written"`).
+fn written_array_name(pool_name: &str) -> String {
+    format!("{pool_name}_written")
+}
+
+/// `&mut expr`
+fn ref_mut_expr(expr: IrExpr) -> IrExpr {
+    ir_expr(IrExprKind::Unary { op: SpecUnaryOp::RefMut, expr: Box::new(expr) })
+}
+
+/// `&mut [elem_ty]` -- an unsized slice reference, deliberately NOT a
+/// fixed-size `[elem_ty; K]` array: a cross-piece pool's own total slot
+/// count `K` isn't known until every piece in a region has been visited
+/// (values get assigned pool slots progressively, discovered piece by
+/// piece), but each piece's own signature must be built as it's emitted,
+/// before `K` is final. A slice type sidesteps this entirely -- no
+/// compile-time size in the TYPE at all, and Rust's own deref coercion
+/// (`&mut Vec<T>` -> `&mut [T]`) means the wrapper can pass `&mut
+/// _piece_pool` (a `Vec`, sized once `K` is finally known) directly to
+/// every piece call without any explicit slicing.
+fn pool_slice_type(elem_ty: IrType, mutable: bool) -> IrType {
+    IrType::Reference {
+        mutable,
+        elem: Box::new(IrType::Array {
+            kind: volar_compiler::ir::ArrayKind::Slice,
+            elem: Box::new(elem_ty),
+            len: volar_compiler::ir::ArrayLength::Const(0), // ignored for Slice
+        }),
+    }
 }
 
 fn vec_new_call(elem_ty: IrType) -> (IrType, IrExpr) {
@@ -2828,7 +2956,7 @@ fn lookup_pre_init_value(
 
 impl VoleIrCtx<'static> {
     fn new(is_prover: bool) -> Self {
-        VoleIrCtx {
+        let mut ctx = VoleIrCtx {
             stmts: Vec::new(),
             wires: alloc::collections::BTreeMap::new(),
             and_counter: 0,
@@ -2846,11 +2974,14 @@ impl VoleIrCtx<'static> {
             ext_oracle_counter: 0,
             ext_action_counter: 0,
             ext_rng_counter: 0,
-            pool_declared: false,
             pool_next: 0,
-            and_pool_declared: false,
             and_pool_next: 0,
-        }
+            in_closure: false,
+            pool_lane_base_declared: false,
+            and_pool_lane_base_declared: false,
+        };
+        ctx.declare_pools();
+        ctx
     }
 
     /// `QSim`-role constructor (Milestone 1.6): derives `q_and` values via
@@ -2859,7 +2990,7 @@ impl VoleIrCtx<'static> {
     /// `QSim`'s whole job is producing the `q_and`s the real `Verifier`
     /// function will itself fold.
     fn new_qsim() -> Self {
-        VoleIrCtx {
+        let mut ctx = VoleIrCtx {
             stmts: Vec::new(),
             wires: alloc::collections::BTreeMap::new(),
             and_counter: 0,
@@ -2877,11 +3008,14 @@ impl VoleIrCtx<'static> {
             ext_oracle_counter: 0,
             ext_action_counter: 0,
             ext_rng_counter: 0,
-            pool_declared: false,
             pool_next: 0,
-            and_pool_declared: false,
             and_pool_next: 0,
-        }
+            in_closure: false,
+            pool_lane_base_declared: false,
+            and_pool_lane_base_declared: false,
+        };
+        ctx.declare_pools();
+        ctx
     }
 }
 
@@ -2893,7 +3027,7 @@ impl<'a> VoleIrCtx<'a> {
     /// verifier's own `K_a, K_b, K_c` Q-shares), and `QSim` never folds at
     /// all (see [`VoleIrCtx::new_qsim`]).
     fn new_verifier_with_trace_sink(sink: &'a dyn VerifierTraceSink<()>) -> Self {
-        VoleIrCtx {
+        let mut ctx = VoleIrCtx {
             stmts: Vec::new(),
             wires: alloc::collections::BTreeMap::new(),
             and_counter: 0,
@@ -2911,95 +3045,159 @@ impl<'a> VoleIrCtx<'a> {
             ext_oracle_counter: 0,
             ext_action_counter: 0,
             ext_rng_counter: 0,
-            pool_declared: false,
             pool_next: 0,
-            and_pool_declared: false,
             and_pool_next: 0,
+            in_closure: false,
+            pool_lane_base_declared: false,
+            and_pool_lane_base_declared: false,
+        };
+        ctx.declare_pools();
+        ctx
+    }
+
+    /// Emit `_pool`'s (and, Prover-only, `_and_pool`'s) declaration as
+    /// the very first statement(s) of the function body -- called once,
+    /// unconditionally, right after construction (before anything else
+    /// has been pushed to `self.stmts`, so this is guaranteed to land in
+    /// the true function scope, never inside a later closure). See the
+    /// field doc on [`VoleIrCtx::pool_next`] for why this replaced an
+    /// earlier lazy-declare-on-first-use version.
+    fn declare_pools(&mut self) {
+        let elem_ty = if self.role.is_prover() { vope_type() } else { q_type() };
+        let (ty, init) = vec_new_call(elem_ty);
+        self.stmts.push(ir_stmt(IrStmtKind::Let {
+            pattern: IrPattern::ident("_pool").as_mut(),
+            ty: Some(ty),
+            init: Some(init),
+        }));
+        if self.role.is_prover() {
+            let (and_ty, and_init) = vec_new_call(and_pair_type());
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
+                pattern: IrPattern::ident("_and_pool").as_mut(),
+                ty: Some(and_ty),
+                init: Some(and_init),
+            }));
         }
     }
 
     /// Push a wire-typed (`Vope`/`Q`) scratch value onto the shared
-    /// `_pool`, declaring the pool on first use in whichever scope is
-    /// currently active (the enclosing function body, or
-    /// `emit_poly_wide`'s own closure body if mid-redirection). Returns
-    /// the pool index as a digit-string -- see [`wire_ref_expr`] for how
-    /// callers turn this back into a read expression.
+    /// `_pool` (declared once, function-wide, by [`Self::declare_pools`]).
+    /// Returns the pool index as a digit-string -- an absolute index
+    /// outside a closure, or a `%`-prefixed `_lane_base`-relative index
+    /// inside one (see [`VoleIrCtx::in_closure`]'s doc). See
+    /// [`wire_ref_expr`] for how callers turn this back into a read
+    /// expression.
     fn push_wire_scratch(&mut self, value: IrExpr) -> String {
-        if !self.pool_declared {
-            self.pool_declared = true;
-            let elem_ty = if self.role.is_prover() { vope_type() } else { q_type() };
-            let (ty, init) = vec_new_call(elem_ty);
+        if self.in_closure && !self.pool_lane_base_declared {
+            self.pool_lane_base_declared = true;
             self.stmts.push(ir_stmt(IrStmtKind::Let {
-                pattern: IrPattern::ident("_pool").as_mut(),
-                ty: Some(ty),
-                init: Some(init),
+                pattern: IrPattern::ident("_lane_base"),
+                ty: None,
+                init: Some(ir_expr(IrExprKind::MethodCall {
+                    receiver: Box::new(var("_pool")),
+                    method: MethodKind::Other("len".into()),
+                    type_args: vec![],
+                    args: vec![],
+                })),
             }));
         }
         let idx = self.pool_next;
         self.pool_next += 1;
         self.stmts.push(push_method_call("_pool", value));
+        if self.in_closure {
+            return format!("%{idx}");
+        }
         idx.to_string()
     }
 
     /// Push a Prover AND-gate's full `(wire, hat)` output pair onto the
-    /// shared `_and_pool` in a single statement -- `value` should be the
-    /// tuple-returning call expression itself (e.g. from
+    /// shared `_and_pool` (declared once, function-wide, by
+    /// [`Self::declare_pools`]) in a single statement -- `value` should
+    /// be the tuple-returning call expression itself (e.g. from
     /// [`vole_and_prover_step_expr`]), NOT a name referencing an
     /// already-`let`-bound tuple; this is the whole point (see
-    /// [`VoleIrCtx`]'s own doc on `and_pool_declared`). Returns an
-    /// `@`-prefixed index string usable as both a wire reference
-    /// ([`wire_ref_raw`] reads field `.0`) and a hat reference
-    /// ([`hat_ref_raw`] reads field `.1`).
+    /// [`VoleIrCtx`]'s own doc on `pool_next`). Returns an `@`-prefixed
+    /// (or, inside a closure, `^`-prefixed -- see [`VoleIrCtx::in_closure`])
+    /// index string usable as both a wire reference ([`wire_ref_raw`]
+    /// reads field `.0`) and a hat reference ([`hat_ref_raw`] reads
+    /// field `.1`).
     fn push_and_pair(&mut self, value: IrExpr) -> String {
-        if !self.and_pool_declared {
-            self.and_pool_declared = true;
-            let (ty, init) = vec_new_call(and_pair_type());
+        if self.in_closure && !self.and_pool_lane_base_declared {
+            self.and_pool_lane_base_declared = true;
             self.stmts.push(ir_stmt(IrStmtKind::Let {
-                pattern: IrPattern::ident("_and_pool").as_mut(),
-                ty: Some(ty),
-                init: Some(init),
+                pattern: IrPattern::ident("_and_lane_base"),
+                ty: None,
+                init: Some(ir_expr(IrExprKind::MethodCall {
+                    receiver: Box::new(var("_and_pool")),
+                    method: MethodKind::Other("len".into()),
+                    type_args: vec![],
+                    args: vec![],
+                })),
             }));
         }
         let idx = self.and_pool_next;
         self.and_pool_next += 1;
         self.stmts.push(push_method_call("_and_pool", value));
+        if self.in_closure {
+            return format!("^{idx}");
+        }
         format!("@{idx}")
     }
 
-    /// Get scalar wire name for a var id.
+    /// Get scalar wire name for a var id. Panics on `Pooled` -- this
+    /// weaver's own `Pooled`-producing call sites are all within the
+    /// split-driver family, which reads pooled values through
+    /// `slot_expr`/`materialize` (an `IrExpr`, or a real name via
+    /// materialization), never this raw `&str` accessor; callers that
+    /// might genuinely hit a pooled var should call `materialize` first.
     fn scalar(&self, v: &CirVar) -> &str {
         match &self.wires[&v.0] {
             WireRepr::Scalar(s) => s,
             WireRepr::Vec(_) => panic!("expected scalar wire for v{}", v.0),
             WireRepr::Array(..) => panic!("expected scalar wire for v{} (found wide Array)", v.0),
+            WireRepr::Pooled(..) => panic!("expected scalar wire for v{} (found Pooled -- call materialize() first)", v.0),
         }
     }
 
     /// Ensure `v`'s wire is materialized as `Scalar`/`Vec` (never
-    /// `Array`) -- idempotent and memoized: a `WireRepr::Array` is
-    /// unpacked into `width` real bound locals (`let _mat_{v}_{j} =
-    /// {arr}[j].clone();`) the first time this is called for `v`, and the
-    /// result is written back into `self.wires` as a `Vec`, so any later
-    /// call (or lookup) for the same `v` sees the already-materialized
-    /// `Vec` and does no further work. Call this before any code path
-    /// that needs genuine bound-local names (address composition, `Merge`
-    /// combining, `vec_parts`) rather than just an `IrExpr` (which
-    /// `slot_expr`/`operand_expr` can build directly via `arr_index`,
+    /// `Array`/`Pooled`) -- idempotent and memoized: a `WireRepr::Array`
+    /// is unpacked into `width` real bound locals (`let _mat_{v}_{j} =
+    /// {arr}[j].clone();`), and a `WireRepr::Pooled` slot is read once
+    /// into a single real bound local (`let _mat_{v} = { debug_check...;
+    /// pool[slot].clone() };`) the first time this is called for `v`,
+    /// with the result written back into `self.wires` as `Vec`/`Scalar`
+    /// respectively, so any later call (or lookup) for the same `v` sees
+    /// the already-materialized form and does no further work. Call this
+    /// before any code path that needs genuine bound-local names (address
+    /// composition, `Merge` combining, `vec_parts`) rather than just an
+    /// `IrExpr` (which `slot_expr`/`operand_expr` can build directly,
     /// without ever materializing).
     fn materialize(&mut self, v: &CirVar) {
-        if let WireRepr::Array(arr_name, w) = self.wires[&v.0].clone() {
-            let names: Vec<String> = (0..w)
-                .map(|j| {
-                    let n = format!("_mat_{}_{}", v.0, j);
-                    self.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(&n),
-                        ty: None,
-                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
-                    }));
-                    n
-                })
-                .collect();
-            self.wires.insert(v.0, WireRepr::Vec(names));
+        match self.wires[&v.0].clone() {
+            WireRepr::Array(arr_name, w) => {
+                let names: Vec<String> = (0..w)
+                    .map(|j| {
+                        let n = format!("_mat_{}_{}", v.0, j);
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
+                            pattern: IrPattern::ident(&n),
+                            ty: None,
+                            init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
+                        }));
+                        n
+                    })
+                    .collect();
+                self.wires.insert(v.0, WireRepr::Vec(names));
+            }
+            WireRepr::Pooled(pool_name, slot) => {
+                let n = format!("_mat_pool_{}", v.0);
+                self.stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::ident(&n),
+                    ty: None,
+                    init: Some(pooled_read_expr(pool_name, slot)),
+                }));
+                self.wires.insert(v.0, WireRepr::Scalar(n));
+            }
+            WireRepr::Scalar(_) | WireRepr::Vec(_) => {}
         }
     }
 
@@ -3011,6 +3209,7 @@ impl<'a> VoleIrCtx<'a> {
             WireRepr::Vec(v) => v.clone(),
             WireRepr::Scalar(_) => panic!("expected vec wire"),
             WireRepr::Array(..) => unreachable!("materialize just ran"),
+            WireRepr::Pooled(..) => unreachable!("materialize just ran"),
         }
     }
 
@@ -3037,6 +3236,7 @@ impl<'a> VoleIrCtx<'a> {
             // rather than building a `w`-element `FixedArray` literal of
             // individually-indexed clones.
             WireRepr::Array(arr_name, _) => clone_expr(var(arr_name)),
+            WireRepr::Pooled(pool_name, slot) => pooled_read_expr(pool_name, *slot),
         }
     }
 
@@ -3050,7 +3250,7 @@ impl<'a> VoleIrCtx<'a> {
             v.0, self.wires.len(), self.wires.keys().next(), self.wires.keys().next_back(),
         ));
         match wire {
-            WireRepr::Scalar(_) => base_ty.clone(),
+            WireRepr::Scalar(_) | WireRepr::Pooled(..) => base_ty.clone(),
             WireRepr::Vec(names) => IrType::Array {
                 kind: volar_compiler::ir::ArrayKind::FixedArray,
                 elem: Box::new(base_ty.clone()),
@@ -3265,6 +3465,7 @@ impl<'a> VoleIrCtx<'a> {
             WireRepr::Scalar(s) => s.clone(),
             WireRepr::Vec(parts) => parts[lane].clone(),
             WireRepr::Array(..) => unreachable!("materialize just ran"),
+            WireRepr::Pooled(..) => unreachable!("materialize just ran"),
         }
     }
 
@@ -3477,6 +3678,7 @@ impl<'a> VoleIrCtx<'a> {
                     bundle.insert(v.0, bname);
                 }
                 WireRepr::Scalar(_) => unreachable!(),
+                WireRepr::Pooled(..) => unreachable!(),
             }
         }
 
@@ -3550,25 +3752,36 @@ impl<'a> VoleIrCtx<'a> {
         //         buffer; restored below, exactly as e.g. `hat_names`
         //         bookkeeping already assumes single-threaded, in-order use). ---
         let saved_stmts = core::mem::take(&mut self.stmts);
-        // The closure body is its own Rust scope -- its own `_pool`/
-        // `_hat_pool` (if it declares any) shadow whichever, if any,
-        // exist in the enclosing function scope, so the index
-        // bookkeeping must restart fresh here too, not continue the
-        // outer scope's count (see the `pool_declared`/`pool_next` field
-        // doc on `VoleIrCtx`).
-        let saved_pool = (
-            self.pool_declared, self.pool_next,
-            self.and_pool_declared, self.and_pool_next,
-        );
-        self.pool_declared = false;
+        // The closure body runs `width` times at RUNTIME (once per lane),
+        // sharing the SAME `_pool`/`_and_pool` as the enclosing function
+        // (declared once, by `declare_pools`) -- but its own index
+        // bookkeeping must restart fresh *per invocation*, hence the
+        // `pool_next`/`and_pool_next` reset (their meaning switches from
+        // "absolute pool index" to "offset from this invocation's own
+        // `_lane_base`" -- see `VoleIrCtx::in_closure`'s field doc). On
+        // exit, the OUTER counters are restored not to their pre-closure
+        // snapshot but ADVANCED by `width` invocations' worth of
+        // contributions, since the closure's own pushes really did grow
+        // the shared pool by that much.
+        let saved_pool = (self.pool_next, self.and_pool_next, self.in_closure);
         self.pool_next = 0;
-        self.and_pool_declared = false;
         self.and_pool_next = 0;
+        self.in_closure = true;
+        self.pool_lane_base_declared = false;
+        self.and_pool_lane_base_declared = false;
 
         let operand_expr = |ctx: &Self, v: &CirVar| -> IrExpr {
             match &ctx.wires[&v.0] {
                 WireRepr::Scalar(s) => clone_expr(var(s)),
                 WireRepr::Vec(_) | WireRepr::Array(..) => clone_expr(arr_index(&bundle[&v.0], "i")),
+                // A pooled scalar behaves exactly like `Scalar` here --
+                // reused verbatim at every lane (it's not `Vec`/`Array`,
+                // so there's no per-lane indexing to do). `_piece_pool`
+                // (or any future pool) is an ordinary function parameter,
+                // visible via normal closure capture regardless of
+                // whether this operand is read inside `emit_poly_wide`'s
+                // own per-lane closure or not.
+                WireRepr::Pooled(pool_name, slot) => pooled_read_expr(pool_name, *slot),
             }
         };
 
@@ -3780,10 +3993,23 @@ impl<'a> VoleIrCtx<'a> {
             _ => var(&final_name),
         };
         let body_stmts = core::mem::replace(&mut self.stmts, saved_stmts);
-        (
-            self.pool_declared, self.pool_next,
-            self.and_pool_declared, self.and_pool_next,
-        ) = saved_pool;
+        // This closure's own final counters ARE its per-invocation slot
+        // counts (`pool_next`/`and_pool_next` never advance except via
+        // `push_wire_scratch`/`push_and_pair`, which reset-and-count
+        // fresh per closure -- see the entry comment above) -- multiply
+        // by `width` (one full run of the closure body per lane) to get
+        // the TOTAL contribution to the shared pool, and advance the
+        // restored outer counters by that, rather than simply restoring
+        // their pre-closure snapshot: the shared `_pool`/`_and_pool`
+        // really did grow by this much, and any push AFTER this
+        // statement (in the outer, non-closure scope) needs a literal
+        // index reflecting that.
+        let wire_slots_per_lane = self.pool_next;
+        let and_slots_per_lane = self.and_pool_next;
+        let (saved_pool_next, saved_and_pool_next, saved_in_closure) = saved_pool;
+        self.pool_next = saved_pool_next + wire_slots_per_lane * width;
+        self.and_pool_next = saved_and_pool_next + and_slots_per_lane * width;
+        self.in_closure = saved_in_closure;
         let closure_body = ir_expr(IrExprKind::Block(IrBlock { stmts: body_stmts, expr: Some(Box::new(trailing)) }));
 
         // ---- 4. One `core::array::from_fn` statement for the whole lane
@@ -4023,6 +4249,7 @@ impl<'a> VoleIrCtx<'a> {
             WireRepr::Scalar(s) => vec![s.clone()],
             WireRepr::Vec(v) => v.clone(),
             WireRepr::Array(..) => unreachable!("materialize just ran"),
+            WireRepr::Pooled(..) => unreachable!("materialize just ran"),
         };
         let aw = Self::effective_addr_width(cell_count);
         let addr_bits: Vec<String> = full_addr[..aw].to_vec();
@@ -4070,12 +4297,14 @@ impl<'a> VoleIrCtx<'a> {
             WireRepr::Scalar(s) => vec![s.clone()],
             WireRepr::Vec(v) => v.clone(),
             WireRepr::Array(..) => unreachable!("materialize just ran"),
+            WireRepr::Pooled(..) => unreachable!("materialize just ran"),
         };
         let aw = Self::effective_addr_width(cell_count);
         let addr_bits: Vec<String> = full_addr[..aw].to_vec();
 
         let vw = cir_type_width(val_ty, types);
         let src_bits: Vec<String> = if vw == 1 {
+            self.materialize(src_var);
             vec![self.scalar(src_var).to_string()]
         } else {
             self.vec_parts(src_var).to_vec()
@@ -4202,6 +4431,7 @@ impl<'a> VoleIrCtx<'a> {
                 WireRepr::Scalar(s) => names.push(s.clone()),
                 WireRepr::Vec(bits) => names.extend(bits.iter().cloned()),
                 WireRepr::Array(..) => unreachable!("materialize just ran"),
+                WireRepr::Pooled(..) => unreachable!("materialize just ran"),
             }
         }
         self.wires.insert(out_id, WireRepr::Vec(names));
@@ -5058,6 +5288,26 @@ pub fn weave_vole_prover_ir_split(
                     producer_piece.entry(v).or_insert(p);
                 }
             }
+
+            // ---- Phase C sub-stage 1: pool scalar cross-piece
+            // ("piece_in_v") values through a shared `_piece_pool` slice
+            // instead of threading each individually through its own
+            // named param + wrapper-local `piece{p}_v{v}` binding.
+            // `all_extra_in_vars` is every var ANY piece needs as an
+            // input from an earlier piece; `pool_slot` is filled in
+            // progressively below as each var's producing piece runs and
+            // its type becomes known (only SCALAR types get pooled --
+            // wide ones keep the old per-value param mechanism, since
+            // sizing/addressing a pool of arrays is out of this sub-
+            // stage's scope). `region_has_cross_piece_vars` is decided
+            // once, up front: a piece's own param list is finalized
+            // before later pieces (which might be the ones needing the
+            // pool) have even run, so "does THIS piece need the pool
+            // params" can't be decided piece-by-piece as we go.
+            let all_extra_in_vars: alloc::collections::BTreeSet<u32> =
+                pieces.iter().flat_map(|pc| pc.extra_in.iter().copied()).collect();
+            let mut pool_slot: alloc::collections::BTreeMap<u32, usize> = alloc::collections::BTreeMap::new();
+            let region_has_cross_piece_vars = pieces.iter().any(|pc| !pc.extra_in.is_empty() || !pc.extra_out.is_empty());
 
             let mut piece_names: Vec<String> = Vec::with_capacity(pieces.len());
             let mut piece_used_w: Vec<alloc::collections::BTreeSet<u32>> = Vec::with_capacity(pieces.len());
@@ -8479,7 +8729,7 @@ pub fn print_weaved_vole_module(module: &IrModule<IrFunction>) -> String {
         "use core::ops::{Add, Mul};\n",
         "use hybrid_array::{Array, ArraySize};\n",
         "use cipher::consts::U1;\n",
-        "use volar_spec::vole::{Delta, Q, Vope, VoleArray};\n",
+        "use volar_spec::vole::{Delta, Q, Vope, VoleArray, debug_check_pool_written};\n",
         "use volar_spec::vole::prove::{vole_and_prover_step, vole_and_verifier_check};\n",
         "use volar_spec::vole::setup::derive_and_q;\n",
         "use volar_spec::field::Invert;\n",

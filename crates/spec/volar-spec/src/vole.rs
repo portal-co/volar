@@ -17,11 +17,30 @@ pub mod setup;
 pub trait VoleArray<T>: ArraySize {}
 impl<T, X: ArraySize> VoleArray<T> for X {}
 
+/// Debug-mode guard for the pool-based regalloc design (cross-function
+/// value pooling): panics if a shared pool slot is read before it's
+/// been written -- a no-op in release builds (`cfg!(debug_assertions)`
+/// is a compile-time constant, so the release build doesn't even carry
+/// the branch). Woven code calls this once per pooled read, immediately
+/// before the actual read, wrapped around it in a block expression --
+/// see `vole.rs`'s own `WireRepr::Pooled` doc for the full design.
+#[inline(always)]
+pub fn debug_check_pool_written(written: bool, slot: usize) {
+    if cfg!(debug_assertions) && !written {
+        panic!("read from unwritten pool slot [{slot}]");
+    }
+}
+
 pub struct Delta<N: ArraySize, T> {
     pub delta: Array<T, N>,
 }
 pub struct Q<N: ArraySize, T> {
     pub q: Array<T, N>,
+}
+impl<N: ArraySize, T: Default> Default for Q<N, T> {
+    fn default() -> Self {
+        Q { q: Default::default() }
+    }
 }
 impl<N: ArraySize, T> Delta<N, T> {
     pub fn remap<M: ArraySize, F: FnMut(usize) -> usize>(&self, mut f: F) -> Delta<M, T>

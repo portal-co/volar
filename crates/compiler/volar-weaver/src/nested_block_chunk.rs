@@ -382,14 +382,64 @@ fn chunk_end_indices(stmts: &[&str], chunk_size: usize) -> Vec<usize> {
     ends
 }
 
+/// Recursively chunk any `core::array::from_fn(|i| { ... })` closure
+/// body found anywhere in `text`, using the exact same algorithm as an
+/// enclosing function body ([`chunk_one_body`] itself). Closures are
+/// entirely opaque to [`split_top_level`]'s own top-level statement
+/// split -- the whole closure, braces and all, is part of ONE top-level
+/// statement from the enclosing body's point of view -- so without this,
+/// a large closure body (a single wide, `>1`-bit `Poly` statement's own
+/// AND-gate/XOR-chain scratch, potentially many statements) would never
+/// get bounded at all, regardless of `chunk_size`: exactly the
+/// unbounded-rib problem this whole pass exists to prevent, just
+/// re-appearing one level down, unaddressed by the outer-body-only
+/// chunking alone.
+///
+/// Detects closures via the literal text `"|i| {"` -- this weaver's ONLY
+/// multi-statement closure body is `emit_poly_wide`'s own per-lane
+/// closure (`crates/compiler/volar-weaver/src/vole.rs`'s
+/// `fixed_array_from_fn("i", ..)`), always with parameter name `i`; the
+/// handful of OTHER (`array_t_from_fn`) closures this weaver generates
+/// are always a single expression, never exceed `chunk_size`, and this
+/// is a harmless no-op on them regardless. `|` never otherwise appears
+/// in this pipeline's own generated code (no bitwise-or, no `|`-pattern
+/// matching in this DSL), so the match is unambiguous.
+fn chunk_closures_in_text(text: &str, chunk_size: usize) -> String {
+    const MARKER: &str = "|i| {";
+    let Some(rel) = text.find(MARKER) else {
+        return text.to_string();
+    };
+    let brace_abs = rel + MARKER.len() - 1;
+    let inner_start = brace_abs + 1;
+    let Some(close_rel) = find_matching_close(&text[inner_start..]) else {
+        // Malformed (shouldn't happen for real printer output) -- leave
+        // the rest untouched rather than risk corrupting it.
+        return text.to_string();
+    };
+    let inner_end = inner_start + close_rel;
+    let mut out = String::with_capacity(text.len());
+    out.push_str(&text[..inner_start]);
+    out.push_str(&chunk_one_body(&text[inner_start..inner_end], chunk_size));
+    out.push('}');
+    // Keep scanning the remainder for any further closures (a function
+    // can have many wide `Poly` statements, each its own closure).
+    out.push_str(&chunk_closures_in_text(&text[inner_end + 1..], chunk_size));
+    out
+}
+
 /// Chunk one function's own body text (already unwrapped of its own
 /// outer `{`/`}`) into nested blocks of at most `chunk_size` top-level
 /// statements each. Returns the transformed body text (still without
-/// its own outer `{`/`}` -- the caller re-adds those).
+/// its own outer `{`/`}` -- the caller re-adds those). Also recurses
+/// into any closure bodies found anywhere within (see
+/// [`chunk_closures_in_text`]) -- independently of whether the outer
+/// body itself needs chunking, since a closure can be large even when
+/// its enclosing function isn't.
 fn chunk_one_body(body: &str, chunk_size: usize) -> String {
-    let (stmts, tail) = split_top_level(body);
+    let body = chunk_closures_in_text(body, chunk_size);
+    let (stmts, tail) = split_top_level(&body);
     if stmts.len() <= chunk_size {
-        return body.to_string();
+        return body;
     }
 
     let ends = chunk_end_indices(&stmts, chunk_size);
@@ -615,5 +665,54 @@ mod tests {
         let (stmts, tail) = split_top_level(body);
         assert_eq!(stmts.len(), 2, "the `;` inside `[u8; 5]`/`[0; 5]` must not split a statement: {stmts:?}");
         assert_eq!(tail, "(x, y)");
+    }
+
+    #[test]
+    fn large_closure_body_gets_chunked_even_when_outer_function_does_not() {
+        // Mirrors `emit_poly_wide`'s real shape: a short OUTER function
+        // (well under `chunk_size`) whose entire body is one statement
+        // wrapping a `core::array::from_fn(|i| { .. })` closure with an
+        // OVER-threshold statement count of its own. `split_top_level`
+        // treats the whole closure as one opaque top-level statement, so
+        // without recursing into it, the closure's own rib would never
+        // get bounded regardless of `chunk_size`.
+        let mut inner = String::new();
+        for i in 0..10 {
+            inner += &format!("let x{i} = f(x{});\n", if i == 0 { 0 } else { i - 1 });
+        }
+        inner += "x9\n";
+        let src = format!(
+            "pub fn f() -> [u8; 4] {{\nlet r = core::array::from_fn(|i| {{\n{inner}}});\nr\n}}\n"
+        );
+        let outer_stmt_count = 2; // `let r = ..;` and the trailing `r`
+        assert!(outer_stmt_count <= 3, "sanity: outer body itself must be under threshold");
+        let out = chunk_function_bodies(&src, 3);
+        assert_ne!(out, src, "the closure body must be rewritten even though the outer function isn't");
+        for i in 0..10 {
+            assert!(out.contains(&format!("x{i}")), "x{i} must survive closure-body chunking:\n{out}");
+        }
+        // The closure's own body must actually have been split into more
+        // than one nested block -- i.e. more `{` than just its own
+        // single opening brace between "|i| {" and the closure's own
+        // matching close.
+        let closure_start = out.find("|i| {").expect("closure marker must survive:\n{out}");
+        let inner_open = closure_start + "|i| {".len() - 1;
+        let close_rel = find_matching_close(&out[inner_open + 1..]).expect("closure must stay brace-balanced");
+        let closure_body = &out[inner_open + 1..inner_open + 1 + close_rel];
+        assert!(
+            closure_body.matches('{').count() >= 1,
+            "closure body must contain at least one nested chunk block of its own:\n{out}"
+        );
+        // Overall brace/paren/bracket balance, same sanity check as the
+        // outer-only chunking test above.
+        let mut depth = 0i32;
+        for b in out.bytes() {
+            match b {
+                b'{' | b'(' | b'[' => depth += 1,
+                b'}' | b')' | b']' => depth -= 1,
+                _ => {}
+            }
+        }
+        assert_eq!(depth, 0, "brackets must balance: {out}");
     }
 }
