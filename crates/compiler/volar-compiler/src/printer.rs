@@ -1649,6 +1649,13 @@ impl<'a> RustBackend for PatternWriter<'a> {
                     }
                     PatternWriter { pat: p }.fmt(f)?;
                 }
+                // Single-element tuples need a trailing comma: (x,) not
+                // (x) -- (x) is just a parenthesized `x` pattern, it
+                // doesn't destructure a 1-tuple at all. Mirrors the same
+                // fix already present on IrExprKind::Tuple/IrType::Tuple.
+                if elems.len() == 1 {
+                    write!(f, ",")?;
+                }
                 write!(f, ")")?;
             }
             IrPattern::TupleStruct { kind, elems } => {

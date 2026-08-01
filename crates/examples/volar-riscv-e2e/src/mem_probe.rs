@@ -288,8 +288,22 @@ pub(crate) mod tests {
     /// cross-checked there against a real wasmtime run) -- baked in here
     /// as literal per-step constants rather than re-derived at proof time,
     /// since it's public, not secret.
-    #[test]
-    fn honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary() {
+    /// `max_stmts_per_piece = DEFAULT_MAX_STMTS_PER_PIECE` reproduces the
+    /// original single test byte-for-byte (this circuit's own regions
+    /// never come close to 500 statements, so no piece splits happen at
+    /// all); a small value forces REAL intra-region piece splitting on
+    /// this circuit, which is what
+    /// `honest_mem_probe_run_with_forced_piece_splitting_pools_piece_in_v`
+    /// below uses to get a genuine compile+run check of Phase C's
+    /// `piece_in_v` pooling (`WireRepr::Pooled`/`_piece_pool`) -- not just
+    /// the structural IR check `vole.rs`'s own unit test does. If pooling
+    /// silently produced a wrong value (the exact bug class
+    /// `debug_check_pool_written` exists to catch), this circuit's own
+    /// `mem2.verify()`/`mem33.verify()`/`H_produce == H_consume`/
+    /// `prove_and_verify_iop(..).ok` checks below would very likely fail,
+    /// on top of the unconditional (not debug-gated) written-bitset guard
+    /// itself panicking on any ordering violation.
+    fn honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl(max_stmts_per_piece: usize) {
         use volar_weaver::{
             weave_vole_prover_ir_split, weave_vole_qsim_ir_split,
             weave_vole_verifier_ir_split_with_trace, print_weaved_vole_module, IopSink,
@@ -310,11 +324,11 @@ pub(crate) mod tests {
         let n_chunks = n_blocks.div_ceil(chunk_size);
 
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_prover_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| prover_funcs.push(f));
+        weave_vole_prover_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, max_stmts_per_piece, |f| prover_funcs.push(f));
         let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_qsim_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| qsim_funcs.push(f));
+        weave_vole_qsim_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, max_stmts_per_piece, |f| qsim_funcs.push(f));
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "mp", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| verifier_funcs.push(f));
+        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "mp", &mode, &IopSink, &boundary, &accum_info, chunk_size, max_stmts_per_piece, |f| verifier_funcs.push(f));
 
         // Positionally-indexed views (one entry per boundary/chunk/finish
         // position), used below for the assert and `generate_split_step`'s
@@ -588,5 +602,31 @@ pub(crate) mod tests {
         "#);
 
         run_iop_verifier(&rust_source, &driver);
+    }
+
+    #[test]
+    fn honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary() {
+        honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl(volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE);
+    }
+
+    /// Phase C sub-stage 1's real compile+run check: `max_stmts_per_piece
+    /// = 20` forces genuine intra-region piece splitting (`_piece_`
+    /// functions, `_piece_pool`/`_piece_pool_written` slices) on this
+    /// circuit's own ~2,740 gates, where the DEFAULT threshold (500)
+    /// never triggers a single split. Reuses every real check the
+    /// unsplit-piece version above already does -- real memory-boundary
+    /// multiset balance, `H_produce == H_consume`, a real IOP fold that
+    /// verifies, and corrupted-boundary rejection -- so if `piece_in_v`
+    /// pooling ever produced a silently wrong value (read-before-write,
+    /// wrong slot, a piece writing to the wrong pool), this test would
+    /// fail: either the unconditional `debug_check_pool_written` guard
+    /// panics directly, or (if the wrong value still happened to be
+    /// well-typed) one of these cryptographic checks fails downstream.
+    /// Only Prover pools `piece_in_v` so far (QSim/Verifier still use the
+    /// old per-value param mechanism) -- this test exercises Prover's
+    /// pooling specifically, alongside QSim/Verifier's unchanged behavior.
+    #[test]
+    fn honest_mem_probe_run_with_forced_piece_splitting_pools_piece_in_v() {
+        honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl(20);
     }
 }
