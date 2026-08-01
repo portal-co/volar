@@ -5256,12 +5256,22 @@ pub fn weave_vole_prover_ir_split(
                 }
             }
 
+            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            if synth_pool_needed {
+                params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
+                params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+            }
+
             let mut ctx = VoleIrCtx::new(true);
             insert_w_wires(&mut ctx);
             for &v in &b.synthetic_in {
                 let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
                     "weave_vole_prover_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
                 ));
+                if !matches!(ty, IrType::Array { .. }) {
+                    ctx.wires.insert(v, WireRepr::Pooled("_synth_pool", v as usize));
+                    continue;
+                }
                 bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
             }
             debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
@@ -5315,6 +5325,19 @@ pub fn weave_vole_prover_ir_split(
             for &v in &b.synthetic_out {
                 let ty = ctx.slot_type(&CirVar(v), &vope_type());
                 synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                if !matches!(ty, IrType::Array { .. }) {
+                    let slot_str = v.to_string();
+                    let value = ctx.slot_expr(&CirVar(v));
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool", &slot_str)),
+                        right: Box::new(value),
+                    }))));
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool_written", &slot_str)),
+                        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                    }))));
+                    continue;
+                }
                 ret_tuple_tys.push(ty);
                 ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
             }
@@ -5511,11 +5534,18 @@ pub fn weave_vole_prover_ir_split(
                 wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
             }
             // `can_split` already guarantees `local_ext` is empty here.
+            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            if synth_pool_needed {
+                wrapper_params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
+                wrapper_params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+            }
             for &v in &b.synthetic_in {
                 let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
                     "weave_vole_prover_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
                 ));
-                wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
+                if matches!(ty, IrType::Array { .. }) {
+                    wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
+                }
             }
 
             let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len() + 2);
@@ -5546,7 +5576,12 @@ pub fn weave_vole_prover_ir_split(
                     call_args.push(ref_mut_expr(var("_piece_pool_written")));
                 }
                 for &v in &b.synthetic_in {
-                    call_args.push(clone_expr(var(&format!("synth_{v}"))));
+                    let ty = synthetic_types.get(&v).cloned().expect("synthetic_types must already be populated");
+                    if matches!(ty, IrType::Array { .. }) {
+                        call_args.push(clone_expr(var(&format!("synth_{v}"))));
+                    } else {
+                        call_args.push(pooled_read_expr("_synth_pool", v as usize));
+                    }
                 }
                 for &v in &piece.extra_in {
                     // Pooled vars need no per-value call arg at all --
@@ -5629,6 +5664,18 @@ pub fn weave_vole_prover_ir_split(
             for &v in &b.synthetic_out {
                 let ty = field_ty(v);
                 synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                if !matches!(ty, IrType::Array { .. }) {
+                    let slot_str = v.to_string();
+                    wrapper_stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool", &slot_str)),
+                        right: Box::new(field_expr(v)),
+                    }))));
+                    wrapper_stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool_written", &slot_str)),
+                        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                    }))));
+                    continue;
+                }
                 ret_tuple_tys.push(ty);
                 ret_tuple_exprs.push(field_expr(v));
             }
@@ -5774,6 +5821,12 @@ pub fn weave_vole_prover_ir_split(
             for j in 0..width { params.push(IrParam { name: format!("vope_ext_rng_{}_bit_{}", r, j), ty: vope_type() }); }
         }
 
+        let chunk_synth_pool_needed = !accum_info.steps[lo].synthetic_in.is_empty() || !accum_info.steps[hi - 1].synthetic_out.is_empty();
+        if chunk_synth_pool_needed {
+            params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
+            params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+        }
+
         let mut ctx = VoleIrCtx::new(true);
         insert_w_wires(&mut ctx);
         bind_running(&mut ctx, &mut params, "in", running_done_acc, &running_next_pc, &running_next_state, &running_ret_vals);
@@ -5809,6 +5862,10 @@ pub fn weave_vole_prover_ir_split(
             let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
                 "weave_vole_prover_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
             ));
+            if !matches!(ty, IrType::Array { .. }) {
+                ctx.wires.insert(v, WireRepr::Pooled("_synth_pool", v as usize));
+                continue;
+            }
             bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
         }
 
@@ -5839,6 +5896,19 @@ pub fn weave_vole_prover_ir_split(
         for &v in &out_step.synthetic_out {
             let ty = ctx.slot_type(&CirVar(v), &vope_type());
             synthetic_types.entry(v).or_insert_with(|| ty.clone());
+            if !matches!(ty, IrType::Array { .. }) {
+                let slot_str = v.to_string();
+                let value = ctx.slot_expr(&CirVar(v));
+                ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                    left: Box::new(arr_index("_synth_pool", &slot_str)),
+                    right: Box::new(value),
+                }))));
+                ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                    left: Box::new(arr_index("_synth_pool_written", &slot_str)),
+                    right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                }))));
+                continue;
+            }
             ret_tuple_tys.push(ty);
             ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
         }
@@ -6542,12 +6612,22 @@ pub fn weave_vole_qsim_ir_split(
                 }
             }
 
+            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            if synth_pool_needed {
+                params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
+                params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+            }
+
             let mut ctx = VoleIrCtx::new_qsim();
             insert_w_wires(&mut ctx);
             for &v in &b.synthetic_in {
                 let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
                     "weave_vole_qsim_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
                 ));
+                if !matches!(ty, IrType::Array { .. }) {
+                    ctx.wires.insert(v, WireRepr::Pooled("_synth_pool", v as usize));
+                    continue;
+                }
                 bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
             }
             debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
@@ -6593,6 +6673,19 @@ pub fn weave_vole_qsim_ir_split(
             for &v in &b.synthetic_out {
                 let ty = ctx.slot_type(&CirVar(v), &q_type());
                 synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                if !matches!(ty, IrType::Array { .. }) {
+                    let slot_str = v.to_string();
+                    let value = ctx.slot_expr(&CirVar(v));
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool", &slot_str)),
+                        right: Box::new(value),
+                    }))));
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool_written", &slot_str)),
+                        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                    }))));
+                    continue;
+                }
                 ret_tuple_tys.push(ty);
                 ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
             }
@@ -6770,11 +6863,18 @@ pub fn weave_vole_qsim_ir_split(
             for j in 0..local_oracle_reads {
                 wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
             }
+            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            if synth_pool_needed {
+                wrapper_params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
+                wrapper_params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+            }
             for &v in &b.synthetic_in {
                 let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
                     "weave_vole_qsim_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
                 ));
-                wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
+                if matches!(ty, IrType::Array { .. }) {
+                    wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
+                }
             }
 
             let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len() + 2);
@@ -6813,7 +6913,12 @@ pub fn weave_vole_qsim_ir_split(
                     call_args.push(ref_mut_expr(var("_piece_pool_written")));
                 }
                 for &v in &b.synthetic_in {
-                    call_args.push(clone_expr(var(&format!("synth_{v}"))));
+                    let ty = synthetic_types.get(&v).cloned().expect("synthetic_types must already be populated");
+                    if matches!(ty, IrType::Array { .. }) {
+                        call_args.push(clone_expr(var(&format!("synth_{v}"))));
+                    } else {
+                        call_args.push(pooled_read_expr("_synth_pool", v as usize));
+                    }
                 }
                 for &v in &piece.extra_in {
                     if pool_slot.contains_key(&v) { continue; }
@@ -6881,6 +6986,18 @@ pub fn weave_vole_qsim_ir_split(
             for &v in &b.synthetic_out {
                 let ty = field_ty(v);
                 synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                if !matches!(ty, IrType::Array { .. }) {
+                    let slot_str = v.to_string();
+                    wrapper_stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool", &slot_str)),
+                        right: Box::new(field_expr(v)),
+                    }))));
+                    wrapper_stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool_written", &slot_str)),
+                        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                    }))));
+                    continue;
+                }
                 ret_tuple_tys.push(ty);
                 ret_tuple_exprs.push(field_expr(v));
             }
@@ -6997,6 +7114,12 @@ pub fn weave_vole_qsim_ir_split(
             for j in 0..width { params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() }); }
         }
 
+        let chunk_synth_pool_needed = !accum_info.steps[lo].synthetic_in.is_empty() || !accum_info.steps[hi - 1].synthetic_out.is_empty();
+        if chunk_synth_pool_needed {
+            params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
+            params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+        }
+
         let mut ctx = VoleIrCtx::new_qsim();
         insert_w_wires(&mut ctx);
         bind_running(&mut ctx, &mut params, "in", running_done_acc, &running_next_pc, &running_next_state, &running_ret_vals);
@@ -7022,6 +7145,10 @@ pub fn weave_vole_qsim_ir_split(
             let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
                 "weave_vole_qsim_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
             ));
+            if !matches!(ty, IrType::Array { .. }) {
+                ctx.wires.insert(v, WireRepr::Pooled("_synth_pool", v as usize));
+                continue;
+            }
             bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
         }
 
@@ -7048,6 +7175,19 @@ pub fn weave_vole_qsim_ir_split(
         for &v in &out_step.synthetic_out {
             let ty = ctx.slot_type(&CirVar(v), &q_type());
             synthetic_types.entry(v).or_insert_with(|| ty.clone());
+            if !matches!(ty, IrType::Array { .. }) {
+                let slot_str = v.to_string();
+                let value = ctx.slot_expr(&CirVar(v));
+                ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                    left: Box::new(arr_index("_synth_pool", &slot_str)),
+                    right: Box::new(value),
+                }))));
+                ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                    left: Box::new(arr_index("_synth_pool_written", &slot_str)),
+                    right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                }))));
+                continue;
+            }
             ret_tuple_tys.push(ty);
             ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
         }
@@ -7446,6 +7586,11 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             }
             params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
             params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
+            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            if synth_pool_needed {
+                params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
+                params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+            }
 
             let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
             insert_w_wires(&mut ctx);
@@ -7453,6 +7598,10 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
                     "weave_vole_verifier_ir_split_with_trace: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
                 ));
+                if !matches!(ty, IrType::Array { .. }) {
+                    ctx.wires.insert(v, WireRepr::Pooled("_synth_pool", v as usize));
+                    continue;
+                }
                 bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
             }
             ctx.stmts.push(ir_stmt(IrStmtKind::Let {
@@ -7513,6 +7662,19 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             for &v in &b.synthetic_out {
                 let ty = ctx.slot_type(&CirVar(v), &q_type());
                 synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                if !matches!(ty, IrType::Array { .. }) {
+                    let slot_str = v.to_string();
+                    let value = ctx.slot_expr(&CirVar(v));
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool", &slot_str)),
+                        right: Box::new(value),
+                    }))));
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool_written", &slot_str)),
+                        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                    }))));
+                    continue;
+                }
                 ret_tuple_tys.push(ty);
                 ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
             }
@@ -7720,11 +7882,18 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             // `split_driver.rs` depend on it).
             wrapper_params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
             wrapper_params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
+            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            if synth_pool_needed {
+                wrapper_params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
+                wrapper_params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+            }
             for &v in &b.synthetic_in {
                 let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
                     "weave_vole_verifier_ir_split_with_trace: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
                 ));
-                wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
+                if matches!(ty, IrType::Array { .. }) {
+                    wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
+                }
             }
 
             let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len() + 2);
@@ -7786,7 +7955,12 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                     call_args.push(ref_mut_expr(var("_piece_pool_written")));
                 }
                 for &v in &b.synthetic_in {
-                    call_args.push(clone_expr(var(&format!("synth_{v}"))));
+                    let ty = synthetic_types.get(&v).cloned().expect("synthetic_types must already be populated");
+                    if matches!(ty, IrType::Array { .. }) {
+                        call_args.push(clone_expr(var(&format!("synth_{v}"))));
+                    } else {
+                        call_args.push(pooled_read_expr("_synth_pool", v as usize));
+                    }
                 }
                 for &v in &piece.extra_in {
                     if pool_slot.contains_key(&v) { continue; }
@@ -7849,6 +8023,18 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             for &v in &b.synthetic_out {
                 let ty = field_ty(v);
                 synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                if !matches!(ty, IrType::Array { .. }) {
+                    let slot_str = v.to_string();
+                    wrapper_stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool", &slot_str)),
+                        right: Box::new(field_expr(v)),
+                    }))));
+                    wrapper_stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(arr_index("_synth_pool_written", &slot_str)),
+                        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                    }))));
+                    continue;
+                }
                 ret_tuple_tys.push(ty);
                 ret_tuple_exprs.push(field_expr(v));
             }
@@ -7993,12 +8179,22 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             }
         }
 
+        let chunk_synth_pool_needed = !accum_info.steps[lo].synthetic_in.is_empty() || !accum_info.steps[hi - 1].synthetic_out.is_empty();
+        if chunk_synth_pool_needed {
+            params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
+            params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+        }
+
         // As `weave_vole_prover_ir_split`'s own `chunk_synth_in` handling.
         let chunk_synth_in: Vec<u32> = accum_info.steps[lo].synthetic_in.clone();
         for &v in &chunk_synth_in {
             let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
                 "weave_vole_verifier_ir_split_with_trace: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
             ));
+            if !matches!(ty, IrType::Array { .. }) {
+                ctx.wires.insert(v, WireRepr::Pooled("_synth_pool", v as usize));
+                continue;
+            }
             bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
         }
 
@@ -8034,6 +8230,19 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         for &v in &out_step.synthetic_out {
             let ty = ctx.slot_type(&CirVar(v), &q_type());
             synthetic_types.entry(v).or_insert_with(|| ty.clone());
+            if !matches!(ty, IrType::Array { .. }) {
+                let slot_str = v.to_string();
+                let value = ctx.slot_expr(&CirVar(v));
+                ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                    left: Box::new(arr_index("_synth_pool", &slot_str)),
+                    right: Box::new(value),
+                }))));
+                ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                    left: Box::new(arr_index("_synth_pool_written", &slot_str)),
+                    right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                }))));
+                continue;
+            }
             ret_tuple_tys.push(ty);
             ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
         }

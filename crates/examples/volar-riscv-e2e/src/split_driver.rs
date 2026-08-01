@@ -233,6 +233,7 @@ pub fn generate_split_step(
     boundary: &[MovfuscBlockBoundary],
     accum_info: &MovfuscAccumInfo,
     n_chunks: usize,
+    total_vars: usize,
     entry_w: &[(Slot, Slot)],
     all_ok_fold_state_in: Option<(String, String)>,
     oracle_bit_exprs: &[Vec<String>],
@@ -248,6 +249,33 @@ pub fn generate_split_step(
     let mut and_gate_seed = 0u64;
     let mut all_ok_expr = all_ok_fold_state_in.as_ref().map(|(a, _)| a.clone()).unwrap_or_else(|| "true".to_string());
     let mut fold_state_expr = all_ok_fold_state_in.as_ref().map(|(_, f)| f.clone()).unwrap_or_else(|| "iop_accumulator_fresh()".to_string());
+
+    // `synth_v` pooling (Phase C): if ANY block/chunk function (in ANY
+    // role) takes `_synth_pool`, declare the backing storage once here,
+    // sized to `total_vars` (the whole circuit's own var-id space --
+    // `_synth_pool[v]` addresses var `v` directly, no compact remapping,
+    // matching `vole.rs`'s own `WireRepr::Pooled("_synth_pool", v as
+    // usize)` convention exactly). Two independently-typed pools, same
+    // reason `entry_w`/`exported_vope`/`exported_q` are dual-threaded:
+    // prover functions take a `Vec<Vope<..>>`-backed `_synth_pool`,
+    // qsim/verifier functions take a `Vec<Q<..>>`-backed one -- same
+    // param NAME, different TYPE, since they're always in separate
+    // functions with their own independent scopes. Declared once per
+    // real-runtime-loop call (i.e. inside the loop body this function's
+    // own `stmts` becomes), so a fresh, all-unwritten pool starts every
+    // step -- `debug_check_pool_written` genuinely re-arms per step,
+    // catching a per-step ordering bug rather than being silently
+    // masked by an earlier step's own writes.
+    let synth_pool_active = prover_funcs.iter().chain(qsim_funcs).chain(verifier_funcs)
+        .any(|f| f.params.iter().any(|p| p.name == "_synth_pool"));
+    if synth_pool_active {
+        out.push_str(&format!(
+            "let mut _synth_pool_vope: Vec<Vope<N, Galois, cipher::consts::U1>> = core::iter::repeat_with(Vope::default).take({total_vars}).collect();\n\
+             let mut _synth_pool_vope_written: Vec<bool> = core::iter::repeat(false).take({total_vars}).collect();\n\
+             let mut _synth_pool_q: Vec<Q<N, Galois>> = core::iter::repeat_with(Q::default).take({total_vars}).collect();\n\
+             let mut _synth_pool_q_written: Vec<bool> = core::iter::repeat(false).take({total_vars}).collect();\n"
+        ));
+    }
 
     // Per-block-or-chunk-or-finish exported next_pc/next_state/ret_vals
     // slots, keyed by the *consuming* param-name prefix (e.g.
@@ -371,6 +399,23 @@ pub fn generate_split_step(
                 let i: usize = n["w_".len()..].parse().unwrap();
                 let slot = if entry_w_index == 0 { &entry_w[i].0 } else { &entry_w[i].1 };
                 args.push(format!("{}.clone()", slot_name(slot)));
+                continue;
+            }
+            // `synth_v` pooling (Phase C): every function that reads or
+            // writes any pooled synthetic value takes these two params --
+            // pass the role-appropriate backing storage (Vope-typed for
+            // prover calls, Q-typed for qsim/verifier calls, exactly
+            // like `w_*` above) by `&mut` reference. `vole.rs`'s own
+            // generated code addresses `_synth_pool[v]` by the var's raw
+            // id directly, so no lookup/translation is needed here at
+            // all -- unlike `is_active_*`/`synth_{v}`, this is not a
+            // per-value named param, just a shared handle passed once.
+            if n == "_synth_pool" {
+                args.push(if entry_w_index == 0 { "&mut _synth_pool_vope".to_string() } else { "&mut _synth_pool_q".to_string() });
+                continue;
+            }
+            if n == "_synth_pool_written" {
+                args.push(if entry_w_index == 0 { "&mut _synth_pool_vope_written".to_string() } else { "&mut _synth_pool_q_written".to_string() });
                 continue;
             }
             if n.starts_with("oracle_rd_") {

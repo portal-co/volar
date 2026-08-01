@@ -1302,8 +1302,9 @@ mod tests {
             }
         }
 
+        let total_vars = circuit.blocks[0].params.len() + circuit.blocks[0].stmts.len();
         let result = generate_split_step(
-            &prover_funcs_by_pos, &qsim_funcs_by_pos, &verifier_funcs_by_pos, &boundary, &accum_info, n_chunks,
+            &prover_funcs_by_pos, &qsim_funcs_by_pos, &verifier_funcs_by_pos, &boundary, &accum_info, n_chunks, total_vars,
             &entry_w, Some(("all_ok".to_string(), "fold_state".to_string())), &oracle_bit_exprs, "step",
         );
         let mut loop_body = result.stmts.clone();
