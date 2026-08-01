@@ -622,9 +622,8 @@ pub(crate) mod tests {
     /// fail: either the unconditional `debug_check_pool_written` guard
     /// panics directly, or (if the wrong value still happened to be
     /// well-typed) one of these cryptographic checks fails downstream.
-    /// Only Prover pools `piece_in_v` so far (QSim/Verifier still use the
-    /// old per-value param mechanism) -- this test exercises Prover's
-    /// pooling specifically, alongside QSim/Verifier's unchanged behavior.
+    /// All 3 roles (Prover, QSim, Verifier) pool `piece_in_v` -- this
+    /// test exercises all of them together, real-compiled and run.
     #[test]
     fn honest_mem_probe_run_with_forced_piece_splitting_pools_piece_in_v() {
         honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl(20);

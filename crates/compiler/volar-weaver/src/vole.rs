@@ -6630,6 +6630,14 @@ pub fn weave_vole_qsim_ir_split(
                 }
             }
 
+            // ---- Phase C sub-stage 1: pool scalar cross-piece
+            // ("piece_in_v") values -- see the identical Prover-side
+            // design doc in `weave_vole_prover_ir_split`.
+            let all_extra_in_vars: alloc::collections::BTreeSet<u32> =
+                pieces.iter().flat_map(|pc| pc.extra_in.iter().copied()).collect();
+            let mut pool_slot: alloc::collections::BTreeMap<u32, usize> = alloc::collections::BTreeMap::new();
+            let region_has_cross_piece_vars = pieces.iter().any(|pc| !pc.extra_in.is_empty() || !pc.extra_out.is_empty());
+
             let mut piece_names: Vec<String> = Vec::with_capacity(pieces.len());
             let mut piece_used_w: Vec<alloc::collections::BTreeSet<u32>> = Vec::with_capacity(pieces.len());
             let mut piece_oracle_counts: Vec<usize> = Vec::with_capacity(pieces.len());
@@ -6663,6 +6671,10 @@ pub fn weave_vole_qsim_ir_split(
                 for j in 0..p_oracle_reads {
                     p_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
                 }
+                if region_has_cross_piece_vars {
+                    p_params.push(IrParam { name: "_piece_pool".into(), ty: pool_slice_type(q_type(), true) });
+                    p_params.push(IrParam { name: "_piece_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+                }
 
                 let mut ctx = VoleIrCtx::new_qsim();
                 insert_w_wires(&mut ctx);
@@ -6673,6 +6685,10 @@ pub fn weave_vole_qsim_ir_split(
                     bind_scalar(&mut ctx, &mut p_params, v, format!("synth_{v}"), ty);
                 }
                 for &v in &piece.extra_in {
+                    if let Some(&slot) = pool_slot.get(&v) {
+                        ctx.wires.insert(v, WireRepr::Pooled("_piece_pool", slot));
+                        continue;
+                    }
                     let ty = piece_out_types.get(&v).cloned().unwrap_or_else(|| panic!(
                         "weave_vole_qsim_ir_split: piece-local var {v} has no known type -- its own producing piece must run before this consuming piece"
                     ));
@@ -6693,6 +6709,23 @@ pub fn weave_vole_qsim_ir_split(
                 let mut p_ret_exprs: Vec<IrExpr> = Vec::with_capacity(piece.extra_out.len() + 1);
                 for &v in &piece.extra_out {
                     let ty = ctx.slot_type(&CirVar(v), &q_type());
+                    let is_scalar = !matches!(ty, IrType::Array { .. });
+                    if is_scalar && all_extra_in_vars.contains(&v) {
+                        let slot = pool_slot.len();
+                        pool_slot.insert(v, slot);
+                        let slot_str = slot.to_string();
+                        let value = ctx.slot_expr(&CirVar(v));
+                        ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                            left: Box::new(arr_index("_piece_pool", &slot_str)),
+                            right: Box::new(value),
+                        }))));
+                        ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                            left: Box::new(arr_index("_piece_pool_written", &slot_str)),
+                            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                        }))));
+                        piece_out_types.insert(v, ty);
+                        continue;
+                    }
                     p_ret_exprs.push(ctx.slot_expr(&CirVar(v)));
                     piece_out_types.insert(v, ty.clone());
                     p_ret_tys.push(ty);
@@ -6744,7 +6777,11 @@ pub fn weave_vole_qsim_ir_split(
                 wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
             }
 
-            let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len());
+            let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len() + 2);
+            if region_has_cross_piece_vars {
+                wrapper_stmts.push(pool_decl_stmt("_piece_pool", q_type(), q_default_call(), pool_slot.len()));
+                wrapper_stmts.push(pool_decl_stmt("_piece_pool_written", IrType::Primitive(PrimitiveType::Bool), ir_expr(IrExprKind::Lit(IrLit::Bool(false))), pool_slot.len()));
+            }
             let mut oracle_offset = 0usize;
             let mut and_offset = 0usize;
             for (p, piece) in pieces.iter().enumerate() {
@@ -6771,15 +6808,23 @@ pub fn weave_vole_qsim_ir_split(
                     call_args.push(clone_expr(var(&format!("oracle_rd_{}", oracle_offset + j))));
                 }
                 oracle_offset += piece_oracle_counts[p];
+                if region_has_cross_piece_vars {
+                    call_args.push(ref_mut_expr(var("_piece_pool")));
+                    call_args.push(ref_mut_expr(var("_piece_pool_written")));
+                }
                 for &v in &b.synthetic_in {
                     call_args.push(clone_expr(var(&format!("synth_{v}"))));
                 }
                 for &v in &piece.extra_in {
+                    if pool_slot.contains_key(&v) { continue; }
                     let producer = producer_piece.get(&v).copied().expect("weave_vole_qsim_ir_split: extra_in var must have a producer piece");
                     call_args.push(clone_expr(var(&format!("piece{producer}_v{v}"))));
                 }
 
-                let mut pattern_names: Vec<String> = piece.extra_out.iter().map(|&v| format!("piece{p}_v{v}")).collect();
+                let mut pattern_names: Vec<String> = piece.extra_out.iter()
+                    .filter(|v| !pool_slot.contains_key(v))
+                    .map(|&v| format!("piece{p}_v{v}"))
+                    .collect();
                 pattern_names.push(format!("piece{p}_hats"));
 
                 wrapper_stmts.push(ir_stmt(IrStmtKind::Let {
@@ -6795,7 +6840,10 @@ pub fn weave_vole_qsim_ir_split(
                 }));
             }
 
-            let field_expr = |v: u32| clone_expr(var(&format!("piece{}_v{}", producer_piece[&v], v)));
+            let field_expr = |v: u32| match pool_slot.get(&v) {
+                Some(&slot) => pooled_read_expr("_piece_pool", slot),
+                None => clone_expr(var(&format!("piece{}_v{}", producer_piece[&v], v))),
+            };
             let field_ty = |v: u32| piece_out_types[&v].clone();
 
             let is_active_ty = field_ty(b.is_active);
@@ -7504,6 +7552,14 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 }
             }
 
+            // ---- Phase C sub-stage 1: pool scalar cross-piece
+            // ("piece_in_v") values -- see the identical Prover-side
+            // design doc in `weave_vole_prover_ir_split`.
+            let all_extra_in_vars: alloc::collections::BTreeSet<u32> =
+                pieces.iter().flat_map(|pc| pc.extra_in.iter().copied()).collect();
+            let mut pool_slot: alloc::collections::BTreeMap<u32, usize> = alloc::collections::BTreeMap::new();
+            let region_has_cross_piece_vars = pieces.iter().any(|pc| !pc.extra_in.is_empty() || !pc.extra_out.is_empty());
+
             let mut piece_names: Vec<String> = Vec::with_capacity(pieces.len());
             let mut piece_used_w: Vec<alloc::collections::BTreeSet<u32>> = Vec::with_capacity(pieces.len());
             let mut piece_oracle_counts: Vec<usize> = Vec::with_capacity(pieces.len());
@@ -7543,6 +7599,10 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 }
                 p_params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
                 p_params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
+                if region_has_cross_piece_vars {
+                    p_params.push(IrParam { name: "_piece_pool".into(), ty: pool_slice_type(q_type(), true) });
+                    p_params.push(IrParam { name: "_piece_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+                }
 
                 let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
                 insert_w_wires(&mut ctx);
@@ -7553,6 +7613,10 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                     bind_scalar(&mut ctx, &mut p_params, v, format!("synth_{v}"), ty);
                 }
                 for &v in &piece.extra_in {
+                    if let Some(&slot) = pool_slot.get(&v) {
+                        ctx.wires.insert(v, WireRepr::Pooled("_piece_pool", slot));
+                        continue;
+                    }
                     let ty = piece_out_types.get(&v).cloned().unwrap_or_else(|| panic!(
                         "weave_vole_verifier_ir_split_with_trace: piece-local var {v} has no known type -- its own producing piece must run before this consuming piece"
                     ));
@@ -7583,6 +7647,23 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 let mut p_ret_exprs: Vec<IrExpr> = Vec::with_capacity(piece.extra_out.len() + 2);
                 for &v in &piece.extra_out {
                     let ty = ctx.slot_type(&CirVar(v), &q_type());
+                    let is_scalar = !matches!(ty, IrType::Array { .. });
+                    if is_scalar && all_extra_in_vars.contains(&v) {
+                        let slot = pool_slot.len();
+                        pool_slot.insert(v, slot);
+                        let slot_str = slot.to_string();
+                        let value = ctx.slot_expr(&CirVar(v));
+                        ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                            left: Box::new(arr_index("_piece_pool", &slot_str)),
+                            right: Box::new(value),
+                        }))));
+                        ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                            left: Box::new(arr_index("_piece_pool_written", &slot_str)),
+                            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                        }))));
+                        piece_out_types.insert(v, ty);
+                        continue;
+                    }
                     p_ret_exprs.push(ctx.slot_expr(&CirVar(v)));
                     piece_out_types.insert(v, ty.clone());
                     p_ret_tys.push(ty);
@@ -7646,7 +7727,11 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
             }
 
-            let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len());
+            let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len() + 2);
+            if region_has_cross_piece_vars {
+                wrapper_stmts.push(pool_decl_stmt("_piece_pool", q_type(), q_default_call(), pool_slot.len()));
+                wrapper_stmts.push(pool_decl_stmt("_piece_pool_written", IrType::Primitive(PrimitiveType::Bool), ir_expr(IrExprKind::Lit(IrLit::Bool(false))), pool_slot.len()));
+            }
             let mut oracle_offset = 0usize;
             let mut and_offset = 0usize;
             for (p, piece) in pieces.iter().enumerate() {
@@ -7696,15 +7781,23 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                     call_args.push(clone_expr(var(&format!("piece{}_all_ok", p - 1))));
                     call_args.push(clone_expr(var(&format!("piece{}_fold_state", p - 1))));
                 }
+                if region_has_cross_piece_vars {
+                    call_args.push(ref_mut_expr(var("_piece_pool")));
+                    call_args.push(ref_mut_expr(var("_piece_pool_written")));
+                }
                 for &v in &b.synthetic_in {
                     call_args.push(clone_expr(var(&format!("synth_{v}"))));
                 }
                 for &v in &piece.extra_in {
+                    if pool_slot.contains_key(&v) { continue; }
                     let producer = producer_piece.get(&v).copied().expect("weave_vole_verifier_ir_split_with_trace: extra_in var must have a producer piece");
                     call_args.push(clone_expr(var(&format!("piece{producer}_v{v}"))));
                 }
 
-                let mut pattern_names: Vec<String> = piece.extra_out.iter().map(|&v| format!("piece{p}_v{v}")).collect();
+                let mut pattern_names: Vec<String> = piece.extra_out.iter()
+                    .filter(|v| !pool_slot.contains_key(v))
+                    .map(|&v| format!("piece{p}_v{v}"))
+                    .collect();
                 pattern_names.push(format!("piece{p}_all_ok"));
                 pattern_names.push(format!("piece{p}_fold_state"));
 
@@ -7721,7 +7814,10 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 }));
             }
 
-            let field_expr = |v: u32| clone_expr(var(&format!("piece{}_v{}", producer_piece[&v], v)));
+            let field_expr = |v: u32| match pool_slot.get(&v) {
+                Some(&slot) => pooled_read_expr("_piece_pool", slot),
+                None => clone_expr(var(&format!("piece{}_v{}", producer_piece[&v], v))),
+            };
             let field_ty = |v: u32| piece_out_types[&v].clone();
 
             let is_active_ty = field_ty(b.is_active);
