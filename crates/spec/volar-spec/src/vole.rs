@@ -17,16 +17,22 @@ pub mod setup;
 pub trait VoleArray<T>: ArraySize {}
 impl<T, X: ArraySize> VoleArray<T> for X {}
 
-/// Debug-mode guard for the pool-based regalloc design (cross-function
-/// value pooling): panics if a shared pool slot is read before it's
-/// been written -- a no-op in release builds (`cfg!(debug_assertions)`
-/// is a compile-time constant, so the release build doesn't even carry
-/// the branch). Woven code calls this once per pooled read, immediately
-/// before the actual read, wrapped around it in a block expression --
-/// see `vole.rs`'s own `WireRepr::Pooled` doc for the full design.
+/// Guard for the pool-based regalloc design (cross-function value
+/// pooling): panics if a shared pool slot is read before it's been
+/// written. Deliberately UNCONDITIONAL, not gated on
+/// `cfg!(debug_assertions)` -- this whole pipeline's own real
+/// end-to-end validation (`run_iop_verifier`/`mem_probe.rs`/the real
+/// interpreter honest test) compiles the generated code via `cargo test
+/// --release` throughout, where `debug_assertions` is off, so a
+/// debug-gated check would never actually fire in the one place this
+/// bug class matters. The cost (one bool-array read + branch per pooled
+/// access) is negligible next to the VOLE field arithmetic surrounding
+/// it. Woven code calls this once per pooled read, immediately before
+/// the actual read, wrapped around it in a block expression -- see
+/// `vole.rs`'s own `WireRepr::Pooled` doc for the full design.
 #[inline(always)]
 pub fn debug_check_pool_written(written: bool, slot: usize) {
-    if cfg!(debug_assertions) && !written {
+    if !written {
         panic!("read from unwritten pool slot [{slot}]");
     }
 }

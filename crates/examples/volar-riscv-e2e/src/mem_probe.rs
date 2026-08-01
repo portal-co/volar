@@ -310,11 +310,11 @@ pub(crate) mod tests {
         let n_chunks = n_blocks.div_ceil(chunk_size);
 
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_prover_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, |f| prover_funcs.push(f));
+        weave_vole_prover_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| prover_funcs.push(f));
         let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_qsim_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, |f| qsim_funcs.push(f));
+        weave_vole_qsim_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| qsim_funcs.push(f));
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "mp", &mode, &IopSink, &boundary, &accum_info, chunk_size, |f| verifier_funcs.push(f));
+        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "mp", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| verifier_funcs.push(f));
 
         // Positionally-indexed views (one entry per boundary/chunk/finish
         // position), used below for the assert and `generate_split_step`'s

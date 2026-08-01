@@ -802,7 +802,7 @@ mod tests {
             let circuit = lower_to_circuit_ir(movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
             let mut total = 0usize;
             weave_vole_verifier_ir_split_with_trace(
-                &circuit, movfuscated_types, "cmp", &StorageMode::Commitment, &IopSink, boundary, accum_info, 1,
+                &circuit, movfuscated_types, "cmp", &StorageMode::Commitment, &IopSink, boundary, accum_info, 1, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
                 |f| total += f.params.iter().filter(|p| p.name.starts_with("q_and_")).count(),
             );
             total
@@ -863,7 +863,7 @@ mod tests {
         let mut verifier_and_counts: std::vec::Vec<usize> = std::vec::Vec::new();
         let mut verifier_param_counts: std::vec::Vec<usize> = std::vec::Vec::new();
         let verifier_trace = weave_vole_verifier_ir_split_with_trace(
-            &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size,
+            &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
             |f| {
                 // `q_and` is one array-batched param (Milestone 1.6's
                 // 65535-arg-limit fix), not one scalar per gate -- read
@@ -887,7 +887,7 @@ mod tests {
         let mut prover_hats_counts: std::vec::Vec<usize> = std::vec::Vec::new();
         let mut prover_param_counts: std::vec::Vec<usize> = std::vec::Vec::new();
         let prover_trace = weave_vole_prover_ir_split(
-            &circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size,
+            &circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
             |f| {
                 let hats_len = match f.return_type.as_ref().unwrap() {
                     volar_compiler::ir::IrType::Tuple(elems) => match elems.last().unwrap() {
@@ -1122,7 +1122,7 @@ mod tests {
         let n_chunks = n_blocks.div_ceil(chunk_size);
 
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        let trace = weave_vole_prover_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, |f| prover_funcs.push(f));
+        let trace = weave_vole_prover_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| prover_funcs.push(f));
         // `trace.entries` also carries synthetic pre_init entries (the
         // weaver's own compile-time-constant "seed this cell's committed
         // value" wires, materialized on a separate `syn_id` counter
@@ -1142,9 +1142,9 @@ mod tests {
             .collect();
         eprintln!("memory trace entries: {} total, {} real (per-step watchable)", trace.entries.len(), real_entries.len());
         let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_qsim_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, |f| qsim_funcs.push(f));
+        weave_vole_qsim_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| qsim_funcs.push(f));
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv", &mode, &IopSink, &boundary, &accum_info, chunk_size, |f| verifier_funcs.push(f));
+        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| verifier_funcs.push(f));
 
         // Positionally-indexed views (one entry per boundary/chunk/finish
         // position) -- see the matching comment in `mem_probe.rs`'s own
@@ -2036,7 +2036,7 @@ mod tests {
 
         let mut biggest: Option<volar_compiler::ir::IrFunction> = None;
         weave_vole_verifier_ir_split_with_trace(
-            &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size,
+            &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
             |f| {
                 if biggest.as_ref().map(|b| b.params.len()).unwrap_or(0) < f.params.len() {
                     biggest = Some(f);
@@ -2082,7 +2082,7 @@ mod tests {
             let mut biggest: Option<volar_compiler::ir::IrFunction> = None;
             let mut n_funcs = 0usize;
             weave_vole_verifier_ir_split_with_trace(
-                &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size,
+                &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
                 |f| {
                     n_funcs += 1;
                     if biggest.as_ref().map(|b| b.params.len()).unwrap_or(0) < f.params.len() {
@@ -2251,7 +2251,7 @@ mod tests {
             eprintln!("shuffle group locality: {adjacent_pairs}/{total_pairs} consecutive-in-group pairs are within 4 statements of each other");
         }
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
         eprintln!("woven: {} functions", funcs.len());
         let avg_params = funcs.iter().map(|f| f.params.len()).sum::<usize>() as f64 / funcs.len() as f64;
         eprintln!("avg params per function = {avg_params:.1}");
@@ -2335,7 +2335,7 @@ mod tests {
         let chunk_size = 1usize;
 
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
         eprintln!("woven: {} functions", funcs.len());
 
         let one_func = funcs.into_iter().next().expect("at least one function woven");
@@ -3035,7 +3035,7 @@ mod tests {
         let mode = StorageMode::Commitment;
         let chunk_size = 1usize;
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
         eprintln!("woven (prover): {} functions", funcs.len());
         funcs
     }
@@ -3049,7 +3049,7 @@ mod tests {
         let mode = StorageMode::Commitment;
         let chunk_size = 1usize;
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_qsim_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        let _trace = weave_vole_qsim_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
         eprintln!("woven (qsim): {} functions", funcs.len());
         funcs
     }
@@ -3063,7 +3063,7 @@ mod tests {
         let mode = StorageMode::Commitment;
         let chunk_size = 1usize;
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        let _trace = weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
         eprintln!("woven (verifier): {} functions", funcs.len());
         funcs
     }

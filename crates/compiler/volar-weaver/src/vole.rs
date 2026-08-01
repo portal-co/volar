@@ -2409,8 +2409,10 @@ enum WireRepr {
     /// `var_id -> slot` map covering only the vars actually threaded
     /// through a given pool, to avoid sizing the array to the whole
     /// circuit's var-id space). Reading a `Pooled` slot must go through
-    /// [`VoleIrCtx::pooled_read_expr`] (asserts the slot has actually
-    /// been written first, in debug builds -- see its own doc); nothing
+    /// [`pooled_read_expr`] (asserts the slot has actually been written
+    /// first -- unconditionally, not just in debug builds, since this
+    /// pipeline's own real validation compiles generated code via
+    /// `cargo test --release` throughout; see its own doc); nothing
     /// should ever build `arr_index(pool_param_name, ..)` by hand.
     Pooled(&'static str, usize),
 }
@@ -2914,6 +2916,61 @@ fn pool_slice_type(elem_ty: IrType, mutable: bool) -> IrType {
             len: volar_compiler::ir::ArrayLength::Const(0), // ignored for Slice
         }),
     }
+}
+
+/// `Vope::default()`
+fn vope_default_call() -> IrExpr {
+    ir_expr(IrExprKind::Call {
+        func: Box::new(ir_expr(IrExprKind::Path { segments: vec!["Vope".into(), "default".into()], type_args: vec![] })),
+        args: vec![],
+    })
+}
+
+/// `Q::default()`
+fn q_default_call() -> IrExpr {
+    ir_expr(IrExprKind::Call {
+        func: Box::new(ir_expr(IrExprKind::Path { segments: vec!["Q".into(), "default".into()], type_args: vec![] })),
+        args: vec![],
+    })
+}
+
+/// `let mut <name>: Vec<elem_ty> = core::iter::repeat(<elem_default_expr>).take(<count>).collect();`
+/// -- a pool's own backing storage, pre-sized (and, since `Vope`/`Q`/
+/// `bool` all implement `Default`, safely value-initialized -- never
+/// `MaybeUninit`/`unsafe`) once and for all at the point its true final
+/// size is known (see `pool_slot`'s own doc: a pool's size isn't final
+/// until every piece in a region has been visited). Built from
+/// `core::iter::repeat(..).take(n).collect()` rather than the `vec![x;
+/// n]` macro -- this pipeline's IR has no macro-invocation support at
+/// all (`debug_check_pool_written`'s own call-based, not
+/// `debug_assert!`-based, design exists for the same reason). Explicit
+/// `ty: Some(..)` on the `let`, not left to inference -- `collect()`'s
+/// target type would otherwise depend on this binding's own later
+/// uses, which can be genuinely ambiguous to rustc across a large
+/// generated function body.
+fn pool_decl_stmt(name: &str, elem_ty: IrType, elem_default_expr: IrExpr, count: usize) -> IrStmt {
+    let collect_call = ir_expr(IrExprKind::MethodCall {
+        receiver: Box::new(ir_expr(IrExprKind::MethodCall {
+            receiver: Box::new(ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
+                    segments: vec!["core".into(), "iter".into(), "repeat".into()],
+                    type_args: vec![],
+                })),
+                args: vec![elem_default_expr],
+            })),
+            method: MethodKind::Other("take".into()),
+            type_args: vec![],
+            args: vec![ir_expr(IrExprKind::Lit(IrLit::Int(count as i128)))],
+        })),
+        method: MethodKind::Other("collect".into()),
+        type_args: vec![],
+        args: vec![],
+    });
+    ir_stmt(IrStmtKind::Let {
+        pattern: IrPattern::ident(name).as_mut(),
+        ty: Some(IrType::Vector { elem: Box::new(elem_ty) }),
+        init: Some(collect_call),
+    })
 }
 
 fn vec_new_call(elem_ty: IrType) -> (IrType, IrExpr) {
@@ -5009,14 +5066,21 @@ pub fn weave_vole_prover_ir_with_mode(
 /// Same requirements on `boundary`/`accum_info` as the verifier
 /// counterpart; `chunk_size` is clamped to at least 1.
 ///
-/// Circuit-statement-count threshold above which a region gets split
-/// into multiple smaller Rust functions -- see [`crate::vole_split`].
+/// Default circuit-statement-count threshold above which a region gets
+/// split into multiple smaller Rust functions -- see [`crate::vole_split`].
 /// Derived from real measurement (`~/.claude/plans/tidy-exploring-duckling.md`):
 /// the known ~6.3-6.4MB outlier functions average ~1,389 printed bytes
 /// per circuit statement; 500 circuit statements/piece targets ~694KB
 /// pieces, comfortably inside the 500KB-1MB band real `rustc
 /// -Z time-passes` profiling identified as a reasonable starting point.
-const MAX_STMTS_PER_PIECE: usize = 500;
+///
+/// Threaded through each `weave_vole_*_ir_split` function as an explicit
+/// `max_stmts_per_piece` parameter (not a hardcoded constant) so tests
+/// can pass a small value to force real multi-piece splitting on a tiny
+/// circuit -- exercising the pool-based cross-piece threading
+/// (`piece_in_v`, see `WireRepr::Pooled`) without needing a
+/// 500+-statement fixture. Production callers should pass this default.
+pub const DEFAULT_MAX_STMTS_PER_PIECE: usize = 500;
 
 pub fn weave_vole_prover_ir_split(
     circuit: &IRBlocks,
@@ -5026,6 +5090,7 @@ pub fn weave_vole_prover_ir_split(
     boundary: &[volar_ir_passes::MovfuscBlockBoundary],
     accum_info: &volar_ir_passes::MovfuscAccumInfo,
     chunk_size: usize,
+    max_stmts_per_piece: usize,
     mut emit_fn: impl FnMut(IrFunction),
 ) -> MemoryTrace {
     assert!(circuit.is_circuit(), "weave_vole_prover_ir_split: circuit must satisfy is_circuit()");
@@ -5163,7 +5228,7 @@ pub fn weave_vole_prover_ir_split(
         region_outputs.extend(b.ret_vals.iter().copied());
         region_outputs.extend(b.synthetic_out.iter().copied());
         let pieces = if can_split {
-            crate::vole_split::split_region_into_pieces(block, num_params, b.start, b.end, &region_outputs, MAX_STMTS_PER_PIECE)
+            crate::vole_split::split_region_into_pieces(block, num_params, b.start, b.end, &region_outputs, max_stmts_per_piece)
         } else {
             alloc::vec![crate::vole_split::PieceSpec { start: b.start, end: b.end, extra_in: Vec::new(), extra_out: Vec::new() }]
         };
@@ -5337,6 +5402,10 @@ pub fn weave_vole_prover_ir_split(
                 for j in 0..p_oracle_reads {
                     p_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
                 }
+                if region_has_cross_piece_vars {
+                    p_params.push(IrParam { name: "_piece_pool".into(), ty: pool_slice_type(vope_type(), true) });
+                    p_params.push(IrParam { name: "_piece_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+                }
 
                 let mut ctx = VoleIrCtx::new(true);
                 insert_w_wires(&mut ctx);
@@ -5347,6 +5416,10 @@ pub fn weave_vole_prover_ir_split(
                     bind_scalar(&mut ctx, &mut p_params, v, format!("synth_{v}"), ty);
                 }
                 for &v in &piece.extra_in {
+                    if let Some(&slot) = pool_slot.get(&v) {
+                        ctx.wires.insert(v, WireRepr::Pooled("_piece_pool", slot));
+                        continue;
+                    }
                     let ty = piece_out_types.get(&v).cloned().unwrap_or_else(|| panic!(
                         "weave_vole_prover_ir_split: piece-local var {v} has no known type -- its own producing piece must run before this consuming piece"
                     ));
@@ -5378,6 +5451,23 @@ pub fn weave_vole_prover_ir_split(
                 let mut p_ret_exprs: Vec<IrExpr> = Vec::with_capacity(piece.extra_out.len() + 1);
                 for &v in &piece.extra_out {
                     let ty = ctx.slot_type(&CirVar(v), &vope_type());
+                    let is_scalar = !matches!(ty, IrType::Array { .. });
+                    if is_scalar && all_extra_in_vars.contains(&v) {
+                        let slot = pool_slot.len();
+                        pool_slot.insert(v, slot);
+                        let slot_str = slot.to_string();
+                        let value = ctx.slot_expr(&CirVar(v));
+                        ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                            left: Box::new(arr_index("_piece_pool", &slot_str)),
+                            right: Box::new(value),
+                        }))));
+                        ctx.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                            left: Box::new(arr_index("_piece_pool_written", &slot_str)),
+                            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+                        }))));
+                        piece_out_types.insert(v, ty);
+                        continue;
+                    }
                     p_ret_exprs.push(ctx.slot_expr(&CirVar(v)));
                     piece_out_types.insert(v, ty.clone());
                     p_ret_tys.push(ty);
@@ -5428,7 +5518,11 @@ pub fn weave_vole_prover_ir_split(
                 wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
             }
 
-            let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len());
+            let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len() + 2);
+            if region_has_cross_piece_vars {
+                wrapper_stmts.push(pool_decl_stmt("_piece_pool", vope_type(), vope_default_call(), pool_slot.len()));
+                wrapper_stmts.push(pool_decl_stmt("_piece_pool_written", IrType::Primitive(PrimitiveType::Bool), ir_expr(IrExprKind::Lit(IrLit::Bool(false))), pool_slot.len()));
+            }
             let mut oracle_offset = 0usize;
             for (p, piece) in pieces.iter().enumerate() {
                 // Every arg is `.clone()`d -- wrapper-local bindings
@@ -5447,15 +5541,31 @@ pub fn weave_vole_prover_ir_split(
                     call_args.push(clone_expr(var(&format!("oracle_rd_{}", oracle_offset + j))));
                 }
                 oracle_offset += piece_oracle_counts[p];
+                if region_has_cross_piece_vars {
+                    call_args.push(ref_mut_expr(var("_piece_pool")));
+                    call_args.push(ref_mut_expr(var("_piece_pool_written")));
+                }
                 for &v in &b.synthetic_in {
                     call_args.push(clone_expr(var(&format!("synth_{v}"))));
                 }
                 for &v in &piece.extra_in {
+                    // Pooled vars need no per-value call arg at all --
+                    // the consuming piece reads them straight out of the
+                    // shared `_piece_pool` (passed once, above), not from
+                    // a wrapper-local `piece{producer}_v{v}` binding.
+                    if pool_slot.contains_key(&v) { continue; }
                     let producer = producer_piece.get(&v).copied().expect("weave_vole_prover_ir_split: extra_in var must have a producer piece");
                     call_args.push(clone_expr(var(&format!("piece{producer}_v{v}"))));
                 }
 
-                let mut pattern_names: Vec<String> = piece.extra_out.iter().map(|&v| format!("piece{p}_v{v}")).collect();
+                // Pooled `extra_out` vars are written directly into
+                // `_piece_pool` by the piece itself (see the write-
+                // statement emission above) -- they never come back
+                // through this return tuple, so they're excluded here.
+                let mut pattern_names: Vec<String> = piece.extra_out.iter()
+                    .filter(|v| !pool_slot.contains_key(v))
+                    .map(|&v| format!("piece{p}_v{v}"))
+                    .collect();
                 pattern_names.push(format!("piece{p}_hats"));
 
                 wrapper_stmts.push(ir_stmt(IrStmtKind::Let {
@@ -5471,7 +5581,10 @@ pub fn weave_vole_prover_ir_split(
                 }));
             }
 
-            let field_expr = |v: u32| clone_expr(var(&format!("piece{}_v{}", producer_piece[&v], v)));
+            let field_expr = |v: u32| match pool_slot.get(&v) {
+                Some(&slot) => pooled_read_expr("_piece_pool", slot),
+                None => clone_expr(var(&format!("piece{}_v{}", producer_piece[&v], v))),
+            };
             let field_ty = |v: u32| piece_out_types[&v].clone();
 
             let is_active_ty = field_ty(b.is_active);
@@ -6264,6 +6377,7 @@ pub fn weave_vole_qsim_ir_split(
     boundary: &[volar_ir_passes::MovfuscBlockBoundary],
     accum_info: &volar_ir_passes::MovfuscAccumInfo,
     chunk_size: usize,
+    max_stmts_per_piece: usize,
     mut emit_fn: impl FnMut(IrFunction),
 ) -> MemoryTrace {
     assert!(circuit.is_circuit(), "weave_vole_qsim_ir_split: circuit must satisfy is_circuit()");
@@ -6394,7 +6508,7 @@ pub fn weave_vole_qsim_ir_split(
         region_outputs.extend(b.ret_vals.iter().copied());
         region_outputs.extend(b.synthetic_out.iter().copied());
         let pieces = if can_split {
-            crate::vole_split::split_region_into_pieces(block, num_params, b.start, b.end, &region_outputs, MAX_STMTS_PER_PIECE)
+            crate::vole_split::split_region_into_pieces(block, num_params, b.start, b.end, &region_outputs, max_stmts_per_piece)
         } else {
             alloc::vec![crate::vole_split::PieceSpec { start: b.start, end: b.end, extra_in: Vec::new(), extra_out: Vec::new() }]
         };
@@ -7063,6 +7177,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
     boundary: &[volar_ir_passes::MovfuscBlockBoundary],
     accum_info: &volar_ir_passes::MovfuscAccumInfo,
     chunk_size: usize,
+    max_stmts_per_piece: usize,
     mut emit_fn: impl FnMut(IrFunction),
 ) -> MemoryTrace {
     assert!(circuit.is_circuit(), "weave_vole_verifier_ir_split_with_trace: circuit must satisfy is_circuit()");
@@ -7243,7 +7358,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         region_outputs.extend(b.ret_vals.iter().copied());
         region_outputs.extend(b.synthetic_out.iter().copied());
         let pieces = if can_split {
-            crate::vole_split::split_region_into_pieces(block, num_params, b.start, b.end, &region_outputs, MAX_STMTS_PER_PIECE)
+            crate::vole_split::split_region_into_pieces(block, num_params, b.start, b.end, &region_outputs, max_stmts_per_piece)
         } else {
             alloc::vec![crate::vole_split::PieceSpec { start: b.start, end: b.end, extra_in: Vec::new(), extra_out: Vec::new() }]
         };
@@ -9504,7 +9619,7 @@ mod tests {
         // exercises the actual chunking logic, not just the degenerate
         // "one big chunk" case.
         let trace = weave_vole_verifier_ir_split_with_trace(
-            &circuit, &types, "split_test", &mode, &IopSink, &boundary, &accum_info, 1,
+            &circuit, &types, "split_test", &mode, &IopSink, &boundary, &accum_info, 1, DEFAULT_MAX_STMTS_PER_PIECE,
             |f| funcs.push(f),
         );
 
@@ -9582,7 +9697,7 @@ mod tests {
         let mode = StorageMode::Commitment;
         let mut funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
         let trace = weave_vole_prover_ir_split(
-            &circuit, &types, "split_test", &mode, &boundary, &accum_info, 1,
+            &circuit, &types, "split_test", &mode, &boundary, &accum_info, 1, DEFAULT_MAX_STMTS_PER_PIECE,
             |f| funcs.push(f),
         );
 
@@ -9618,6 +9733,61 @@ mod tests {
         assert_eq!(trace.entries.len(), 1, "one StorageRead in the whole circuit");
     }
 
+    /// Phase C sub-stage 1 (`piece_in_v` pooling): forces REAL intra-
+    /// region piece splitting on the same small fixture used above by
+    /// passing `max_stmts_per_piece = 1` (vs. the production default of
+    /// 500) -- exercising `WireRepr::Pooled`/`pool_slot`/the `_piece_pool`
+    /// mechanism, which no other existing test reaches (every other test
+    /// circuit is far smaller than the production threshold). Checks the
+    /// generated IR structurally: at least one piece function must exist
+    /// (splitting genuinely happened) and take the pool params, and the
+    /// PRINTED source must contain real `_piece_pool[` indexing -- if
+    /// pooling silently failed to activate, this would still show
+    /// `piece_in_` named params instead, which the test also checks for.
+    #[test]
+    fn piece_in_v_pooling_activates_under_forced_piece_splitting() {
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+
+        let (blocks, mut types) = build_ir_two_block_and_storage();
+        let (movfuscated, boundary, accum_info) = movfuscate_ir_with_boundary(&blocks, &mut types);
+
+        let bit_ty = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::Unconditional);
+        assert!(circuit.is_circuit());
+
+        let mode = StorageMode::Commitment;
+        let mut funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_prover_ir_split(
+            &circuit, &types, "pool_test", &mode, &boundary, &accum_info, 1, 1,
+            |f| funcs.push(f),
+        );
+
+        let piece_funcs: std::vec::Vec<&IrFunction> = funcs.iter().filter(|f| f.name.contains("_piece_")).collect();
+        assert!(!piece_funcs.is_empty(), "max_stmts_per_piece=1 must force real intra-region splitting on this fixture; got functions: {:?}", funcs.iter().map(|f| &f.name).collect::<std::vec::Vec<_>>());
+
+        let pooled_piece_funcs: std::vec::Vec<&&IrFunction> = piece_funcs.iter()
+            .filter(|f| f.params.iter().any(|p| p.name == "_piece_pool"))
+            .collect();
+        assert!(
+            !pooled_piece_funcs.is_empty(),
+            "expected at least one piece function to take _piece_pool -- pool_slot never activated. Piece function param names: {:?}",
+            piece_funcs.iter().map(|f| f.params.iter().map(|p| p.name.clone()).collect::<std::vec::Vec<_>>()).collect::<std::vec::Vec<_>>(),
+        );
+
+        // The printed source must show real pool indexing, not just the
+        // param -- confirms the read/write statements were actually
+        // emitted, not just the (harmless-looking but useless) plumbing.
+        let module = IrModule {
+            name: "pool_test_mod".into(), functions: funcs.clone(),
+            structs: std::vec![], enums: std::vec![], traits: std::vec![], impls: std::vec![],
+            type_aliases: std::vec![], consts: std::vec![],
+        };
+        let printed = print_weaved_vole_module(&module);
+        assert!(printed.contains("_piece_pool["), "printed source must contain real _piece_pool[..] indexing:\n{printed}");
+        assert!(printed.contains("_piece_pool_written["), "printed source must contain real _piece_pool_written[..] indexing:\n{printed}");
+        assert!(printed.contains("debug_check_pool_written"), "printed source must call the debug-bitset guard on every pooled read:\n{printed}");
+    }
+
     /// Milestone 1.5's stated goal: the split prover and verifier must be
     /// driveable *interleaved* (block 0's prover, then block 0's verifier,
     /// then block 1's prover, then block 1's verifier, ..., then both
@@ -9639,9 +9809,9 @@ mod tests {
         let mode = StorageMode::Commitment;
 
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_prover_ir_split(&circuit, &types, "il", &mode, &boundary, &accum_info, 1, |f| prover_funcs.push(f));
+        weave_vole_prover_ir_split(&circuit, &types, "il", &mode, &boundary, &accum_info, 1, DEFAULT_MAX_STMTS_PER_PIECE, |f| prover_funcs.push(f));
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "il", &mode, &IopSink, &boundary, &accum_info, 1, |f| verifier_funcs.push(f));
+        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "il", &mode, &IopSink, &boundary, &accum_info, 1, DEFAULT_MAX_STMTS_PER_PIECE, |f| verifier_funcs.push(f));
 
         assert_eq!(prover_funcs.len(), verifier_funcs.len());
         // `q_and` is now one array-batched param, not one scalar per gate —
@@ -9697,11 +9867,11 @@ mod tests {
         let mode = StorageMode::Commitment;
 
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_prover_ir_split(&circuit, &types, "qs", &mode, &boundary, &accum_info, 1, |f| prover_funcs.push(f));
+        weave_vole_prover_ir_split(&circuit, &types, "qs", &mode, &boundary, &accum_info, 1, DEFAULT_MAX_STMTS_PER_PIECE, |f| prover_funcs.push(f));
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "qs", &mode, &IopSink, &boundary, &accum_info, 1, |f| verifier_funcs.push(f));
+        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "qs", &mode, &IopSink, &boundary, &accum_info, 1, DEFAULT_MAX_STMTS_PER_PIECE, |f| verifier_funcs.push(f));
         let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        let trace = weave_vole_qsim_ir_split(&circuit, &types, "qs", &mode, &boundary, &accum_info, 1, |f| qsim_funcs.push(f));
+        let trace = weave_vole_qsim_ir_split(&circuit, &types, "qs", &mode, &boundary, &accum_info, 1, DEFAULT_MAX_STMTS_PER_PIECE, |f| qsim_funcs.push(f));
 
         assert_eq!(qsim_funcs.len(), 5, "2 blocks + 2 accumulator chunks (chunk_size=1) + 1 finish");
         assert_eq!(qsim_funcs[0].name, "vole_qsim_ir_qs_block_0");
