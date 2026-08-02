@@ -302,6 +302,32 @@ pub fn generate_split_step(
     let mut synth_exported_vope: BTreeMap<u32, Slot> = BTreeMap::new();
     let mut synth_exported_q: BTreeMap<u32, Slot> = BTreeMap::new();
 
+    // `synth_v` pooling (Phase C) makes a producer OMIT any pooled
+    // (scalar) synthetic_out var from its own return tuple entirely --
+    // it's written straight to `_synth_pool` instead. That means a
+    // region's FULL `synthetic_out` list (what `boundary`/`accum_info`
+    // report) no longer lines up 1:1, in order, with the trailing
+    // tuple slots a producer actually returns: naively zipping the two
+    // together (as this code used to, unconditionally) silently pairs
+    // the wrong var id with the wrong value whenever a region has a MIX
+    // of pooled and unpooled synthetic_out vars. Fix: recover, once,
+    // which synth vars are still tuple-threaded (unpooled) by checking
+    // whether ANY function anywhere still takes a literal `synth_{v}`
+    // param for it -- "is v scalar" is a fixed, type-determined property
+    // of the var (the same decision `vole.rs` makes wherever v appears),
+    // so if v is ever unpooled, every real consumer has a `synth_{v}`
+    // param; if v is pooled, none does (consumers read `_synth_pool[v]`
+    // directly instead). Filtering a region's `synthetic_out` down to
+    // this set, in the same relative order, exactly reproduces the
+    // trailing tuple's own real layout.
+    let unpooled_synth_vars: std::collections::BTreeSet<u32> = prover_funcs.iter().chain(qsim_funcs).chain(verifier_funcs)
+        .flat_map(|f| f.params.iter())
+        .filter_map(|p| p.name.strip_prefix("synth_").and_then(|s| s.parse::<u32>().ok()))
+        .collect();
+    let unpooled_synth_out = |all: &[u32]| -> Vec<u32> {
+        all.iter().copied().filter(|v| unpooled_synth_vars.contains(v)).collect()
+    };
+
     // Emit one committed oracle read (real value known host-side, or a
     // runtime witness-array reference -- `bit_expr` already decides
     // which) as a fresh `vole_commit_bit` call pair, returning
@@ -531,7 +557,9 @@ pub fn generate_split_step(
         let p_next_state: Vec<Slot> = p_slots[idx..idx + n_state].to_vec(); idx += n_state;
         let p_ret_vals: Vec<Slot> = p_slots[idx..idx + n_ret].to_vec(); idx += n_ret;
         let p_hats = p_slots[idx].clone(); idx += 1;
-        for (&v, s) in b.synthetic_out.iter().zip(&p_slots[idx..]) {
+        let p_synth_out = unpooled_synth_out(&b.synthetic_out);
+        assert_eq!(p_synth_out.len(), p_slots.len() - idx, "block {i}: prover unpooled synth_out count must match trailing tuple slots");
+        for (&v, s) in p_synth_out.iter().zip(&p_slots[idx..]) {
             insert_synth_export(&mut synth_exported_vope, v, s.clone());
         }
 
@@ -575,7 +603,9 @@ pub fn generate_split_step(
         let v_ret_vals: Vec<Slot> = v_slots[idx..idx + n_ret].to_vec(); idx += n_ret;
         let v_all_ok = match &v_slots[idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; idx += 1;
         let v_fold_state = match &v_slots[idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; idx += 1;
-        for (&v, s) in b.synthetic_out.iter().zip(&v_slots[idx..]) {
+        let v_synth_out = unpooled_synth_out(&b.synthetic_out);
+        assert_eq!(v_synth_out.len(), v_slots.len() - idx, "block {i}: verifier unpooled synth_out count must match trailing tuple slots");
+        for (&v, s) in v_synth_out.iter().zip(&v_slots[idx..]) {
             insert_synth_export(&mut synth_exported_q, v, s.clone());
         }
 
@@ -743,7 +773,9 @@ pub fn generate_split_step(
         let p_hats = p_slots[1 + pc_w + st_w + rv_w].clone();
         let (p_new_done_acc, p_new_next_pc, p_new_next_state, p_new_ret_vals) = parse_running_output(&p_slots);
         let out_step_for_lo_hi = &accum_info.steps[hi - 1];
-        for (&v, s) in out_step_for_lo_hi.synthetic_out.iter().zip(&p_slots[(2 + pc_w + st_w + rv_w)..]) {
+        let p_chunk_synth_out = unpooled_synth_out(&out_step_for_lo_hi.synthetic_out);
+        assert_eq!(p_chunk_synth_out.len(), p_slots.len() - (2 + pc_w + st_w + rv_w), "chunk {c}: prover unpooled synth_out count must match trailing tuple slots");
+        for (&v, s) in p_chunk_synth_out.iter().zip(&p_slots[(2 + pc_w + st_w + rv_w)..]) {
             insert_synth_export(&mut synth_exported_vope, v, s.clone());
         }
 
@@ -769,7 +801,9 @@ pub fn generate_split_step(
         let (v_new_done_acc, v_new_next_pc, v_new_next_state, v_new_ret_vals) = parse_running_output(&v_slots);
         let v_all_ok = match &v_slots[1 + pc_w + st_w + rv_w] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
         let v_fold_state = match &v_slots[2 + pc_w + st_w + rv_w] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
-        for (&v, s) in out_step_for_lo_hi.synthetic_out.iter().zip(&v_slots[(3 + pc_w + st_w + rv_w)..]) {
+        let v_chunk_synth_out = unpooled_synth_out(&out_step_for_lo_hi.synthetic_out);
+        assert_eq!(v_chunk_synth_out.len(), v_slots.len() - (3 + pc_w + st_w + rv_w), "chunk {c}: verifier unpooled synth_out count must match trailing tuple slots");
+        for (&v, s) in v_chunk_synth_out.iter().zip(&v_slots[(3 + pc_w + st_w + rv_w)..]) {
             insert_synth_export(&mut synth_exported_q, v, s.clone());
         }
 

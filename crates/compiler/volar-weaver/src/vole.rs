@@ -2989,7 +2989,7 @@ fn vec_new_call(elem_ty: IrType) -> (IrType, IrExpr) {
 fn push_method_call(receiver_name: &str, value: IrExpr) -> IrStmt {
     ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::MethodCall {
         receiver: Box::new(var(receiver_name)),
-        method: MethodKind::Other("push".into()),
+        method: MethodKind::from_str("push"),
         type_args: vec![],
         args: vec![value],
     })))
@@ -3152,7 +3152,7 @@ impl<'a> VoleIrCtx<'a> {
                 ty: None,
                 init: Some(ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(var("_pool")),
-                    method: MethodKind::Other("len".into()),
+                    method: MethodKind::from_str("len"),
                     type_args: vec![],
                     args: vec![],
                 })),
@@ -3186,7 +3186,7 @@ impl<'a> VoleIrCtx<'a> {
                 ty: None,
                 init: Some(ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(var("_and_pool")),
-                    method: MethodKind::Other("len".into()),
+                    method: MethodKind::from_str("len"),
                     type_args: vec![],
                     args: vec![],
                 })),
