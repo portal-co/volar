@@ -439,10 +439,29 @@ pub(crate) mod tests {
         // Entry-state declarations, now OUTER `mut` bindings (no `_0`
         // suffix -- there's no longer a distinct "step 0" text copy) that
         // the loop body reassigns at the end of each real iteration.
+        //
+        // Phase B: scalar top-level params are pooled via `_w_pool`
+        // instead of a per-value named Rust local -- but unlike
+        // `_synth_pool` (declared fresh INSIDE the loop body every step,
+        // since cross-region values never need to survive past one
+        // step), `_w_pool` must be LOOP-PERSISTENT (a param's own value
+        // carries from one real step to the next), so it's declared here
+        // ONCE, before the loop, and written in place at the end of each
+        // iteration -- mirroring `all_ok`/`fold_state`'s own already-
+        // established loop-accumulator pattern. Wide params are
+        // unaffected (still named `w{i}_vope`/`w{i}_q` locals, unchanged).
         let mut zero_stmts = String::new();
+        zero_stmts += &format!(
+            "let mut _w_pool_vope: Vec<Vope<N, Galois, cipher::consts::U1>> = core::iter::repeat_with(Vope::default).take({0}).collect();\n\
+             let mut _w_pool_vope_written: Vec<bool> = core::iter::repeat(false).take({0}).collect();\n\
+             let mut _w_pool_q: Vec<Q<N, Galois>> = core::iter::repeat_with(Q::default).take({0}).collect();\n\
+             let mut _w_pool_q_written: Vec<bool> = core::iter::repeat(false).take({0}).collect();\n",
+            widths.len(),
+        );
         for (i, &w) in widths.iter().enumerate() {
             if w <= 1 {
-                zero_stmts += &format!("let mut w{i}_vope = vope_zero();\nlet mut w{i}_q = q_zero();\n");
+                zero_stmts += &format!("_w_pool_vope[{i}] = vope_zero(); _w_pool_vope_written[{i}] = true;\n");
+                zero_stmts += &format!("_w_pool_q[{i}] = q_zero(); _w_pool_q_written[{i}] = true;\n");
             } else {
                 zero_stmts += &format!("let mut w{i}_vope: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n");
                 zero_stmts += &format!("let mut w{i}_q: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n");
@@ -451,7 +470,11 @@ pub(crate) mod tests {
         zero_stmts += "let mut all_ok = true;\nlet mut fold_state = iop_accumulator_fresh();\n";
         let entry_w: std::vec::Vec<(Slot, Slot)> = widths.iter().enumerate().map(|(i, &w)| {
             if w <= 1 {
-                (Slot::Scalar(format!("w{i}_vope")), Slot::Scalar(format!("w{i}_q")))
+                // Never actually read: `build_call`'s own
+                // `n.starts_with("w_")` branch never fires for a pooled
+                // (scalar) param, since no callee has such a named param
+                // anymore. Placeholder only.
+                (Slot::Scalar("_dead_pooled_w".to_string()), Slot::Scalar("_dead_pooled_w".to_string()))
             } else {
                 (Slot::Array(format!("w{i}_vope"), w), Slot::Array(format!("w{i}_q"), w))
             }
@@ -465,10 +488,16 @@ pub(crate) mod tests {
         let mut loop_body = result.stmts.clone();
         // Reassign the OUTER mutable entry-state/accumulator bindings from
         // this iteration's own final values, so the NEXT real loop
-        // iteration sees them.
+        // iteration sees them. Scalar params write into `_w_pool` instead
+        // of a named local (see the comment above `zero_stmts`).
         for (i, (vope_slot, q_slot)) in result.next_entry_w.iter().enumerate() {
-            loop_body += &format!("w{i}_vope = {};\n", slot_name(vope_slot));
-            loop_body += &format!("w{i}_q = {};\n", slot_name(q_slot));
+            if widths[i] <= 1 {
+                loop_body += &format!("_w_pool_vope[{i}] = {}; _w_pool_vope_written[{i}] = true;\n", slot_name(vope_slot));
+                loop_body += &format!("_w_pool_q[{i}] = {}; _w_pool_q_written[{i}] = true;\n", slot_name(q_slot));
+            } else {
+                loop_body += &format!("w{i}_vope = {};\n", slot_name(vope_slot));
+                loop_body += &format!("w{i}_q = {};\n", slot_name(q_slot));
+            }
         }
         loop_body += &format!("all_ok = {};\nfold_state = {};\n", result.final_all_ok_expr, result.final_fold_state_expr);
         // Mirrors the real circuit's own per-step trace exactly (see the

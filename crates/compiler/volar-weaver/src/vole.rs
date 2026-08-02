@@ -5153,7 +5153,16 @@ pub fn weave_vole_prover_ir_split(
         for i in 0..num_params {
             let w = cir_type_width(&block.params[i], types);
             if w <= 1 {
-                ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
+                // Phase B: scalar top-level params are pooled via
+                // `_w_pool`, keyed by raw param index (0..num_params,
+                // disjoint from `_synth_pool`'s own var-id space -- see
+                // `_w_pool`'s own declaration site for why it needs a
+                // separate, loop-persistent pool rather than reusing
+                // `_synth_pool`). No more per-value `w_i` named param for
+                // these; `used_w`/`piece_used_w` no longer gate them
+                // either (harmless to keep computing -- see the matching
+                // comment at every `w_params` filter site).
+                ctx.wires.insert(i as u32, WireRepr::Pooled("_w_pool", i));
             } else {
                 // Lazy `WireRepr::Array`, not eagerly unpacked -- see its
                 // own doc. With top-level parameter threading, `num_params`
@@ -5275,7 +5284,7 @@ pub fn weave_vole_prover_ir_split(
         if pieces.len() <= 1 {
             // ---- Unchanged: single function, exactly as before this session's addition ----
             let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
-            params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            params.extend(w_params.iter().enumerate().filter(|(idx, p)| used_w.contains(&(*idx as u32)) && matches!(p.ty, IrType::Array { .. })).map(|(_, p)| p.clone()));
             for j in 0..local_oracle_reads {
                 params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
             }
@@ -5306,6 +5315,9 @@ pub fn weave_vole_prover_ir_split(
             if synth_pool_needed {
                 params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
                 params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+                // Phase B: unconditional, same reasoning as `_synth_pool`.
+                params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(vope_type(), true) });
+                params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
             }
 
             let mut ctx = VoleIrCtx::new(true);
@@ -5481,7 +5493,7 @@ pub fn weave_vole_prover_ir_split(
                 }
 
                 let mut p_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
-                p_params.extend(w_params.iter().enumerate().filter(|(idx, _)| p_used_w.contains(&(*idx as u32))).map(|(_, pr)| pr.clone()));
+                p_params.extend(w_params.iter().enumerate().filter(|(idx, pr)| p_used_w.contains(&(*idx as u32)) && matches!(pr.ty, IrType::Array { .. })).map(|(_, pr)| pr.clone()));
                 for j in 0..p_oracle_reads {
                     p_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
                 }
@@ -5489,6 +5501,11 @@ pub fn weave_vole_prover_ir_split(
                     p_params.push(IrParam { name: "_piece_pool".into(), ty: pool_slice_type(vope_type(), true) });
                     p_params.push(IrParam { name: "_piece_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
                 }
+                // Phase B: unconditional, same reasoning as every other
+                // `_w_pool` declaration site -- a piece may reference any
+                // scalar top-level param directly.
+                p_params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(vope_type(), true) });
+                p_params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
 
                 let mut ctx = VoleIrCtx::new(true);
                 insert_w_wires(&mut ctx);
@@ -5589,7 +5606,7 @@ pub fn weave_vole_prover_ir_split(
             // sequential calls + tuple destructuring -- no `VoleIrCtx` of
             // its own, cheap to borrowck by construction.
             let mut wrapper_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
-            wrapper_params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            wrapper_params.extend(w_params.iter().enumerate().filter(|(idx, p)| used_w.contains(&(*idx as u32)) && matches!(p.ty, IrType::Array { .. })).map(|(_, p)| p.clone()));
             for j in 0..local_oracle_reads {
                 wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
             }
@@ -5605,6 +5622,9 @@ pub fn weave_vole_prover_ir_split(
             if synth_pool_needed {
                 wrapper_params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
                 wrapper_params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+                // Phase B: unconditional, same reasoning as `_synth_pool`.
+                wrapper_params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(vope_type(), true) });
+                wrapper_params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
             }
             for &v in &b.synthetic_in {
                 let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
@@ -5631,8 +5651,16 @@ pub fn weave_vole_prover_ir_split(
                 // `split_driver.rs`'s own established `.clone()`-per-arg
                 // pattern for its text-templated calls.
                 let mut call_args: Vec<IrExpr> = vec![clone_expr(var("vope_one"))];
+                // Phase B: only WIDE `w_i` are still real named args here --
+                // a scalar one is pooled (see `insert_w_wires`'s own
+                // doc), so the piece reads it via `_w_pool` (passed
+                // unconditionally below), not as a call arg. `w_params`
+                // (built once, indexed by original param id) is the same
+                // source of truth `p_params`'s own filter used.
                 for &idx in &piece_used_w[p] {
-                    call_args.push(clone_expr(var(&format!("w_{idx}"))));
+                    if matches!(w_params[idx as usize].ty, IrType::Array { .. }) {
+                        call_args.push(clone_expr(var(&format!("w_{idx}"))));
+                    }
                 }
                 for j in 0..piece_oracle_counts[p] {
                     call_args.push(clone_expr(var(&format!("oracle_rd_{}", oracle_offset + j))));
@@ -5642,6 +5670,10 @@ pub fn weave_vole_prover_ir_split(
                     call_args.push(ref_mut_expr(var("_piece_pool")));
                     call_args.push(ref_mut_expr(var("_piece_pool_written")));
                 }
+                // Phase B: unconditional, matching every piece's own
+                // unconditional `_w_pool`/`_w_pool_written` params.
+                call_args.push(ref_mut_expr(var("_w_pool")));
+                call_args.push(ref_mut_expr(var("_w_pool_written")));
                 for &v in &b.synthetic_in {
                     let ty = synthetic_types.get(&v).cloned().expect("synthetic_types must already be populated");
                     if matches!(ty, IrType::Array { .. }) {
@@ -5907,7 +5939,7 @@ pub fn weave_vole_prover_ir_split(
         let chunk_ext = count_external_primitives_range(chunk_stmts, types);
 
         let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
-        params.extend(w_params.iter().cloned());
+        params.extend(w_params.iter().filter(|p| matches!(p.ty, IrType::Array { .. })).cloned());
         for j in 0..chunk_oracle_reads {
             params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
         }
@@ -5927,6 +5959,9 @@ pub fn weave_vole_prover_ir_split(
         if chunk_synth_pool_needed {
             params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
             params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+            // Phase B: unconditional, same reasoning as `_synth_pool`.
+            params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(vope_type(), true) });
+            params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
         }
 
         let mut ctx = VoleIrCtx::new(true);
@@ -6047,7 +6082,7 @@ pub fn weave_vole_prover_ir_split(
     let finish_ext = count_external_primitives_range(finish_stmts, types);
 
     let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
-    params.extend(w_params.iter().cloned());
+    params.extend(w_params.iter().filter(|p| matches!(p.ty, IrType::Array { .. })).cloned());
     for j in 0..finish_oracle_reads {
         params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
     }
@@ -6069,6 +6104,9 @@ pub fn weave_vole_prover_ir_split(
     // `bind_running`'s own doc), so finish needs this virtually always.
     params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
     params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+    // Phase B: unconditional, same reasoning as `_synth_pool`.
+    params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(vope_type(), true) });
+    params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
 
     let mut ctx = VoleIrCtx::new(true);
     insert_w_wires(&mut ctx);
@@ -6584,7 +6622,16 @@ pub fn weave_vole_qsim_ir_split(
         for i in 0..num_params {
             let w = cir_type_width(&block.params[i], types);
             if w <= 1 {
-                ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
+                // Phase B: scalar top-level params are pooled via
+                // `_w_pool`, keyed by raw param index (0..num_params,
+                // disjoint from `_synth_pool`'s own var-id space -- see
+                // `_w_pool`'s own declaration site for why it needs a
+                // separate, loop-persistent pool rather than reusing
+                // `_synth_pool`). No more per-value `w_i` named param for
+                // these; `used_w`/`piece_used_w` no longer gate them
+                // either (harmless to keep computing -- see the matching
+                // comment at every `w_params` filter site).
+                ctx.wires.insert(i as u32, WireRepr::Pooled("_w_pool", i));
             } else {
                 // Lazy `WireRepr::Array`, not eagerly unpacked -- see its
                 // own doc. With top-level parameter threading, `num_params`
@@ -6720,7 +6767,7 @@ pub fn weave_vole_qsim_ir_split(
                 params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
             }
             params.push(IrParam { name: "q_one".into(), ty: q_type() });
-            params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            params.extend(w_params.iter().enumerate().filter(|(idx, p)| used_w.contains(&(*idx as u32)) && matches!(p.ty, IrType::Array { .. })).map(|(_, p)| p.clone()));
             for j in 0..local_oracle_reads {
                 params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
             }
@@ -6751,6 +6798,9 @@ pub fn weave_vole_qsim_ir_split(
             if synth_pool_needed {
                 params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
                 params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+                // Phase B: unconditional, same reasoning as `_synth_pool`.
+                params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+                params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
             }
 
             let mut ctx = VoleIrCtx::new_qsim();
@@ -6907,7 +6957,7 @@ pub fn weave_vole_qsim_ir_split(
                     p_params.push(IrParam { name: "hat".into(), ty: hat_array_type(p_and_count) });
                 }
                 p_params.push(IrParam { name: "q_one".into(), ty: q_type() });
-                p_params.extend(w_params.iter().enumerate().filter(|(idx, _)| p_used_w.contains(&(*idx as u32))).map(|(_, pr)| pr.clone()));
+                p_params.extend(w_params.iter().enumerate().filter(|(idx, pr)| p_used_w.contains(&(*idx as u32)) && matches!(pr.ty, IrType::Array { .. })).map(|(_, pr)| pr.clone()));
                 for j in 0..p_oracle_reads {
                     p_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
                 }
@@ -6915,6 +6965,11 @@ pub fn weave_vole_qsim_ir_split(
                     p_params.push(IrParam { name: "_piece_pool".into(), ty: pool_slice_type(q_type(), true) });
                     p_params.push(IrParam { name: "_piece_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
                 }
+                // Phase B: unconditional, same reasoning as every other
+                // `_w_pool` declaration site -- a piece may reference any
+                // scalar top-level param directly.
+                p_params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+                p_params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
 
                 let mut ctx = VoleIrCtx::new_qsim();
                 insert_w_wires(&mut ctx);
@@ -7006,7 +7061,7 @@ pub fn weave_vole_qsim_ir_split(
                 wrapper_params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
             }
             wrapper_params.push(IrParam { name: "q_one".into(), ty: q_type() });
-            wrapper_params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            wrapper_params.extend(w_params.iter().enumerate().filter(|(idx, p)| used_w.contains(&(*idx as u32)) && matches!(p.ty, IrType::Array { .. })).map(|(_, p)| p.clone()));
             for j in 0..local_oracle_reads {
                 wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
             }
@@ -7021,6 +7076,9 @@ pub fn weave_vole_qsim_ir_split(
             if synth_pool_needed {
                 wrapper_params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
                 wrapper_params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+                // Phase B: unconditional, same reasoning as `_synth_pool`.
+                wrapper_params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+                wrapper_params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
             }
             for &v in &b.synthetic_in {
                 let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
@@ -7056,7 +7114,9 @@ pub fn weave_vole_qsim_ir_split(
                 and_offset += piece_and_counts[p];
                 call_args.push(clone_expr(var("q_one")));
                 for &idx in &piece_used_w[p] {
-                    call_args.push(clone_expr(var(&format!("w_{idx}"))));
+                    if matches!(w_params[idx as usize].ty, IrType::Array { .. }) {
+                        call_args.push(clone_expr(var(&format!("w_{idx}"))));
+                    }
                 }
                 for j in 0..piece_oracle_counts[p] {
                     call_args.push(clone_expr(var(&format!("oracle_rd_{}", oracle_offset + j))));
@@ -7066,6 +7126,10 @@ pub fn weave_vole_qsim_ir_split(
                     call_args.push(ref_mut_expr(var("_piece_pool")));
                     call_args.push(ref_mut_expr(var("_piece_pool_written")));
                 }
+                // Phase B: unconditional, matching every piece's own
+                // unconditional `_w_pool`/`_w_pool_written` params.
+                call_args.push(ref_mut_expr(var("_w_pool")));
+                call_args.push(ref_mut_expr(var("_w_pool_written")));
                 for &v in &b.synthetic_in {
                     let ty = synthetic_types.get(&v).cloned().expect("synthetic_types must already be populated");
                     if matches!(ty, IrType::Array { .. }) {
@@ -7265,7 +7329,7 @@ pub fn weave_vole_qsim_ir_split(
             params.push(IrParam { name: "hat".into(), ty: hat_array_type(chunk_and_count) });
         }
         params.push(IrParam { name: "q_one".into(), ty: q_type() });
-        params.extend(w_params.iter().cloned());
+        params.extend(w_params.iter().filter(|p| matches!(p.ty, IrType::Array { .. })).cloned());
         for j in 0..chunk_oracle_reads {
             params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
         }
@@ -7285,6 +7349,9 @@ pub fn weave_vole_qsim_ir_split(
         if chunk_synth_pool_needed {
             params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
             params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+            // Phase B: unconditional, same reasoning as `_synth_pool`.
+            params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+            params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
         }
 
         let mut ctx = VoleIrCtx::new_qsim();
@@ -7398,7 +7465,7 @@ pub fn weave_vole_qsim_ir_split(
         params.push(IrParam { name: "hat".into(), ty: hat_array_type(finish_and_count) });
     }
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
-    params.extend(w_params.iter().cloned());
+    params.extend(w_params.iter().filter(|p| matches!(p.ty, IrType::Array { .. })).cloned());
     for j in 0..finish_oracle_reads {
         params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
     }
@@ -7416,6 +7483,9 @@ pub fn weave_vole_qsim_ir_split(
     // Prover-role comment.
     params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
     params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+    // Phase B: unconditional, same reasoning as `_synth_pool`.
+    params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+    params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
 
     let mut ctx = VoleIrCtx::new_qsim();
     insert_w_wires(&mut ctx);
@@ -7583,7 +7653,16 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         for i in 0..num_params {
             let w = cir_type_width(&block.params[i], types);
             if w <= 1 {
-                ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
+                // Phase B: scalar top-level params are pooled via
+                // `_w_pool`, keyed by raw param index (0..num_params,
+                // disjoint from `_synth_pool`'s own var-id space -- see
+                // `_w_pool`'s own declaration site for why it needs a
+                // separate, loop-persistent pool rather than reusing
+                // `_synth_pool`). No more per-value `w_i` named param for
+                // these; `used_w`/`piece_used_w` no longer gate them
+                // either (harmless to keep computing -- see the matching
+                // comment at every `w_params` filter site).
+                ctx.wires.insert(i as u32, WireRepr::Pooled("_w_pool", i));
             } else {
                 // Lazy `WireRepr::Array`, not eagerly unpacked -- see its
                 // own doc. With top-level parameter threading, `num_params`
@@ -7754,7 +7833,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 });
             }
             params.push(IrParam { name: "q_one".into(), ty: q_type() });
-            params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            params.extend(w_params.iter().enumerate().filter(|(idx, p)| used_w.contains(&(*idx as u32)) && matches!(p.ty, IrType::Array { .. })).map(|(_, p)| p.clone()));
             for j in 0..local_oracle_reads {
                 params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
             }
@@ -7786,6 +7865,9 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             if synth_pool_needed {
                 params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
                 params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+                // Phase B: unconditional, same reasoning as `_synth_pool`.
+                params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+                params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
             }
 
             let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
@@ -7960,7 +8042,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                     });
                 }
                 p_params.push(IrParam { name: "q_one".into(), ty: q_type() });
-                p_params.extend(w_params.iter().enumerate().filter(|(idx, _)| p_used_w.contains(&(*idx as u32))).map(|(_, pr)| pr.clone()));
+                p_params.extend(w_params.iter().enumerate().filter(|(idx, pr)| p_used_w.contains(&(*idx as u32)) && matches!(pr.ty, IrType::Array { .. })).map(|(_, pr)| pr.clone()));
                 for j in 0..p_oracle_reads {
                     p_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
                 }
@@ -7970,6 +8052,11 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                     p_params.push(IrParam { name: "_piece_pool".into(), ty: pool_slice_type(q_type(), true) });
                     p_params.push(IrParam { name: "_piece_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
                 }
+                // Phase B: unconditional, same reasoning as every other
+                // `_w_pool` declaration site -- a piece may reference any
+                // scalar top-level param directly.
+                p_params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+                p_params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
 
                 let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
                 insert_w_wires(&mut ctx);
@@ -8075,7 +8162,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 });
             }
             wrapper_params.push(IrParam { name: "q_one".into(), ty: q_type() });
-            wrapper_params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            wrapper_params.extend(w_params.iter().enumerate().filter(|(idx, p)| used_w.contains(&(*idx as u32)) && matches!(p.ty, IrType::Array { .. })).map(|(_, p)| p.clone()));
             for j in 0..local_oracle_reads {
                 wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
             }
@@ -8098,6 +8185,9 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             if synth_pool_needed {
                 wrapper_params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
                 wrapper_params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+                // Phase B: unconditional, same reasoning as `_synth_pool`.
+                wrapper_params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+                wrapper_params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
             }
             for &v in &b.synthetic_in {
                 let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
@@ -8141,7 +8231,9 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 and_offset += piece_and_counts[p];
                 call_args.push(clone_expr(var("q_one")));
                 for &idx in &piece_used_w[p] {
-                    call_args.push(clone_expr(var(&format!("w_{idx}"))));
+                    if matches!(w_params[idx as usize].ty, IrType::Array { .. }) {
+                        call_args.push(clone_expr(var(&format!("w_{idx}"))));
+                    }
                 }
                 for j in 0..piece_oracle_counts[p] {
                     call_args.push(clone_expr(var(&format!("oracle_rd_{}", oracle_offset + j))));
@@ -8166,6 +8258,10 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                     call_args.push(ref_mut_expr(var("_piece_pool")));
                     call_args.push(ref_mut_expr(var("_piece_pool_written")));
                 }
+                // Phase B: unconditional, matching every piece's own
+                // unconditional `_w_pool`/`_w_pool_written` params.
+                call_args.push(ref_mut_expr(var("_w_pool")));
+                call_args.push(ref_mut_expr(var("_w_pool_written")));
                 for &v in &b.synthetic_in {
                     let ty = synthetic_types.get(&v).cloned().expect("synthetic_types must already be populated");
                     if matches!(ty, IrType::Array { .. }) {
@@ -8371,7 +8467,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             params.push(IrParam { name: "r_and".into(), ty: r_and_array_type(chunk_and_count, sink.fold_scalar_type_name()) });
         }
         params.push(IrParam { name: "q_one".into(), ty: q_type() });
-        params.extend(w_params.iter().cloned());
+        params.extend(w_params.iter().filter(|p| matches!(p.ty, IrType::Array { .. })).cloned());
         for j in 0..chunk_oracle_reads {
             params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
         }
@@ -8410,6 +8506,9 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         if chunk_synth_pool_needed {
             params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
             params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+            // Phase B: unconditional, same reasoning as `_synth_pool`.
+            params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+            params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
         }
 
         // As `weave_vole_prover_ir_split`'s own `chunk_synth_in` handling.
@@ -8515,7 +8614,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         params.push(IrParam { name: "r_and".into(), ty: r_and_array_type(finish_and_count, sink.fold_scalar_type_name()) });
     }
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
-    params.extend(w_params.iter().cloned());
+    params.extend(w_params.iter().filter(|p| matches!(p.ty, IrType::Array { .. })).cloned());
     for j in 0..finish_oracle_reads {
         params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
     }
@@ -8538,6 +8637,9 @@ pub fn weave_vole_verifier_ir_split_with_trace(
     // about wrapper-internal Rust binding order, not signature order.
     params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
     params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
+    // Phase B: unconditional, same reasoning as `_synth_pool`.
+    params.push(IrParam { name: "_w_pool".into(), ty: pool_slice_type(q_type(), true) });
+    params.push(IrParam { name: "_w_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
 
     let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
     insert_w_wires(&mut ctx);
@@ -10229,11 +10331,24 @@ mod tests {
         assert!(funcs[0].params.iter().any(|p| p.name == "oracle_rd_0"));
         assert!(!funcs[1].params.iter().any(|p| p.name.starts_with("oracle_rd_")));
 
-        // Every function shares the same w_i entry-state params.
+        // Every function shares access to the same w_i entry-state --
+        // `w_0`/`w_1` are scalar in this fixture, so Phase B pooling
+        // means they're read via `_w_pool[i]` (shared, unconditional on
+        // every function) rather than a named `w_0`/`w_1` param -- check
+        // pool-param presence and, for one function, real pool-index
+        // references in the printed body (matching the same idiom used
+        // for block-boundary export pooling above).
         for f in &funcs {
-            assert!(f.params.iter().any(|p| p.name == "w_0"), "{} missing w_0", f.name);
-            assert!(f.params.iter().any(|p| p.name == "w_1"), "{} missing w_1", f.name);
+            assert!(f.params.iter().any(|p| p.name == "_w_pool"), "{} missing _w_pool", f.name);
         }
+        let one_fn_module = |f: &IrFunction| IrModule {
+            name: "split_verifier_w_pool_test_mod".into(), functions: std::vec![f.clone()],
+            structs: std::vec![], enums: std::vec![], traits: std::vec![], impls: std::vec![],
+            type_aliases: std::vec![], consts: std::vec![],
+        };
+        let printed_block0 = print_weaved_vole_module(&one_fn_module(&funcs[0]));
+        assert!(printed_block0.contains("_w_pool[0]"), "block 0 must pool-read w_0:\n{printed_block0}");
+        assert!(printed_block0.contains("_w_pool[1]"), "block 0 must pool-read w_1:\n{printed_block0}");
 
         // Commitment mode: the one real StorageRead produced a trace entry.
         assert_eq!(trace.entries.len(), 1, "one StorageRead in the whole circuit");

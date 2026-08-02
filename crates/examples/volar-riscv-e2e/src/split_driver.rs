@@ -460,6 +460,22 @@ pub fn generate_split_step(
                 args.push(if entry_w_index == 0 { "&mut _synth_pool_vope_written".to_string() } else { "&mut _synth_pool_q_written".to_string() });
                 continue;
             }
+            // Phase B (`w_i` pooling): same dispatch shape as `_synth_pool`
+            // above, but `_w_pool` is declared ONCE by the caller, outside
+            // the real runtime loop (a param's own value must persist
+            // across steps, unlike cross-region `_synth_pool` values,
+            // which never need to survive past the step that produced
+            // them) -- so, unlike `_synth_pool`, `generate_split_step`
+            // itself never emits this pool's own declaration; it just
+            // references `_w_pool_vope`/`_w_pool_q` as already in scope.
+            if n == "_w_pool" {
+                args.push(if entry_w_index == 0 { "&mut _w_pool_vope".to_string() } else { "&mut _w_pool_q".to_string() });
+                continue;
+            }
+            if n == "_w_pool_written" {
+                args.push(if entry_w_index == 0 { "&mut _w_pool_vope_written".to_string() } else { "&mut _w_pool_q_written".to_string() });
+                continue;
+            }
             if n.starts_with("oracle_rd_") {
                 let idx: usize = n.rsplit('_').next().unwrap().parse().unwrap();
                 let arr = oracle_arr.expect("oracle_rd_k param but no oracle array given");
