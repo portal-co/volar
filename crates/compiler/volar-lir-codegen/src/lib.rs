@@ -536,6 +536,19 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
         }
     }
 
+    // Eagerly declare every external (oracle/action) and module function
+    // before lowering any body, so index-based backends (e.g. WASM) can
+    // resolve a call to a not-yet-lowered callee. `Rng` is not declared here:
+    // `LirTarget::rng` takes no name, so it isn't resolved by declared name.
+    for (name, info) in &external_fns {
+        if matches!(info.kind, ExternalKind::Oracle | ExternalKind::Action) {
+            target.declare_import(name, &info.param_tys, info.return_type.clone());
+        }
+    }
+    for (name, sig) in &func_sigs {
+        target.declare_function(name, &sig.param_tys, sig.return_type.clone());
+    }
+
     for (key, env) in &plan.instances {
         let func = module
             .functions
@@ -2633,6 +2646,19 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
                 },
             );
         }
+    }
+
+    // Eagerly declare every external (oracle/action) and module function
+    // before lowering any body — see the identical step in
+    // `lower_planned_module` for why (index-based backends like WASM need
+    // every callee's identity fixed before any caller's body is lowered).
+    for (name, info) in &external_fns {
+        if matches!(info.kind, ExternalKind::Oracle | ExternalKind::Action) {
+            target.declare_import(name, &info.param_tys, info.return_type.clone());
+        }
+    }
+    for (name, sig) in &func_sigs {
+        target.declare_function(name, &sig.param_tys, sig.return_type.clone());
     }
 
     // Lower flat functions (auxiliary spec functions).

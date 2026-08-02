@@ -230,6 +230,16 @@ impl LirAbi {
         native_aggregates: false,
     };
 
+    /// ABI for the WASM backend.
+    ///
+    /// Aggregates up to 64 flat scalars pass inline; larger ones pass via
+    /// `StackAllocExt` (a linear-memory pointer + `alloca`), since WASM has
+    /// no native aggregate value type.
+    pub const WASM: LirAbi = LirAbi {
+        aggregate_byval_limit: 64,
+        native_aggregates: false,
+    };
+
     /// Whether `scalar_count` exceeds the inline-passing limit.
     ///
     /// Returns `true` when the aggregate should be passed by pointer
@@ -402,6 +412,42 @@ pub trait LirTarget<Prov: Clone = ()> {
     fn define_struct(&mut self, def: StructDef) -> StructId;
 
     // ---- Function management ------------------------------------------------
+
+    /// Pre-declare a pure oracle or conditional action's signature, before
+    /// any function body that might call it (by name, via
+    /// [`oracle`](LirTarget::oracle) / [`action`](LirTarget::action)) is
+    /// lowered.
+    ///
+    /// Called once per `ExternalKind::Oracle` / `ExternalKind::Action`
+    /// declaration in the module, by `volar-lir-codegen`'s module driver,
+    /// before [`declare_function`](LirTarget::declare_function) and before any
+    /// `begin_function` call. Backends with an index-based calling
+    /// convention (e.g. a WASM backend, where imported functions must occupy
+    /// the lowest indices in the function index space, before any
+    /// module-defined function) override this to reserve that index space up
+    /// front. `ExternalKind::Rng` declarations are not passed through this
+    /// hook — [`rng`](LirTarget::rng) takes no name, so backends that need an
+    /// imported RNG function configure it themselves (see e.g. `CBackend`'s
+    /// `rng_fn` field).
+    ///
+    /// The default implementation is a no-op.
+    fn declare_import(&mut self, _name: &str, _params: &[LirType], _ret: Option<LirType>) {}
+
+    /// Pre-declare a function's signature before its body is lowered.
+    ///
+    /// Called once per module function, before any `begin_function` call, by
+    /// `volar-lir-codegen`'s module driver (right after struct registration
+    /// and after [`declare_import`](LirTarget::declare_import)). Backends
+    /// with an index-based calling convention (e.g. a WASM backend, where
+    /// functions are called by numeric `funcidx` and the index space is
+    /// fixed by declaration order) override this to assign a stable numeric
+    /// identifier before any caller can reference it — this is what lets a
+    /// function call another one that is lowered later in the same module.
+    ///
+    /// The default implementation is a no-op: backends that resolve calls by
+    /// name at the host-language level (`CBackend`'s C `extern` declarations,
+    /// `LlvmBackend`'s `add_function` forward declarations) don't need it.
+    fn declare_function(&mut self, _name: &str, _params: &[LirType], _ret: Option<LirType>) {}
 
     /// Begin a new function.
     ///

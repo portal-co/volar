@@ -27,6 +27,7 @@ members = [
     "crates/compiler/volar-lir-codegen",
     "crates/compiler/volar-c-backend",
     "crates/compiler/volar-llvm-backend",
+    "crates/compiler/volar-wasm-backend",
     "crates/compiler/volar-lir-test-corpus",
     "crates/compiler/volar-lir-saved",
     "crates/compiler/volar-build",
@@ -75,6 +76,7 @@ default-members = [
     "crates/compiler/volar-lir-codegen",
     "crates/compiler/volar-c-backend",
     "crates/compiler/volar-llvm-backend",
+    "crates/compiler/volar-wasm-backend",
     "crates/compiler/volar-lir-test-corpus",
     "crates/compiler/volar-lir-saved",
     "crates/compiler/volar-build",
@@ -139,3 +141,5 @@ group = { version = "0.13.0", default-features = false }
 inkwell = { version = "0.8.0", features = [
     "llvm20-1",
 ] } # TODO: remove hardcoded LLVM version (currently llvm@20)
+
+wasm-encoder = { version = "0.254" }

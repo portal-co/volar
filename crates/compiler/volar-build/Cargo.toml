@@ -16,6 +16,7 @@ weave-ts         = ["weave-rust", "dep:volar-compiler", "dep:volar-compiler-pass
 pipeline         = ["dep:volar-ir-passes", "dep:volar-ir-opt", "dep:volar-ir"]
 pipeline-vaffle  = ["pipeline", "dep:vaffle", "dep:volar-vaffle-target"]
 pipeline-wasm    = ["pipeline-vaffle", "dep:portal-pc-waffle-ir", "dep:portal-pc-waffle-frontend"]
+backend-wasm     = ["pipeline", "dep:volar-wasm-backend"]
 
 [dependencies]
 volar-lir-saved = { path = "../volar-lir-saved", features = ["rkyv"] }
@@ -33,3 +34,4 @@ vaffle                = { path = "../../ir/vaffle", features = ["rkyv"], optiona
 volar-vaffle-target   = { workspace = true, optional = true }
 portal-pc-waffle-ir       = { workspace = true, optional = true }
 portal-pc-waffle-frontend = { workspace = true, optional = true }
+volar-wasm-backend        = { path = "../volar-wasm-backend", optional = true }

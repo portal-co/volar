@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk git *)",
+      "Bash(rtk grep *)",
+      "Bash(rtk find *)",
+      "Bash(rtk wc *)",
+      "Bash(awk '/impl.*fmt::Display for ExprWriter|impl.*Display for.*ExprWriter/{print NR\": \"$0}' volar-compiler/src/printer.rs)",
+      "Bash(rtk read *)",
+      "Bash(awk '/impl RustBackend for ExprWriter|struct ExprWriter/{print NR\": \"$0}' volar-compiler/src/printer.rs)",
+      "Bash(awk 'NR==1169,NR==1700 {print NR\": \"$0}' volar-compiler/src/printer.rs)",
+      "Bash(rtk ls *)",
+      "Bash(rtk diff *)"
+    ],
+    "additionalDirectories": [
+      "/Users/g/Code-local/portal-labs/volar-more-backends"
+    ]
+  }
+}

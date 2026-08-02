@@ -68,6 +68,26 @@ fn parse_lir_call(lex: &mut Lexer<'_>) -> Result<LirCall, ParseError> {
             })
         }
 
+        "declare_import" => {
+            lex.expect_key("name")?;
+            let name = lex.read_string()?;
+            lex.expect_key("params")?;
+            let params = parse_lir_type_list(lex)?;
+            lex.expect_key("ret")?;
+            let ret = parse_opt_lir_type(lex)?;
+            Ok(LirCall::DeclareImport { name, params, ret })
+        }
+
+        "declare_function" => {
+            lex.expect_key("name")?;
+            let name = lex.read_string()?;
+            lex.expect_key("params")?;
+            let params = parse_lir_type_list(lex)?;
+            lex.expect_key("ret")?;
+            let ret = parse_opt_lir_type(lex)?;
+            Ok(LirCall::DeclareFunction { name, params, ret })
+        }
+
         "begin_function" => {
             lex.expect_key("name")?;
             let name = lex.read_string()?;

@@ -409,3 +409,6 @@ cargo test -p volar-c-backend
   policies, and the `LirAbi` configuration struct.
 - [Fuzzing](fuzzing.md) — `lower_ir_to_boolar` pass (IRBlocks → BIrBlocks) and property tests.
 - [WAFFLE lowering](waffle-lowering.md) — WASM → VAFFLE → Volar IR pipeline.
+- [WASM backend](wasm-backend.md) — `volar-wasm-backend`, the `LirTarget` that
+  goes the other direction (LIR → `.wasm`), with eager function-index
+  allocation and background per-function encoding.

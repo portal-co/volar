@@ -220,6 +220,71 @@ pub fn opt_level_from_env() -> OptimizationLevel {
 }
 
 // ============================================================================
+// WasmCompileOptions / compile_lir_to_wasm
+// ============================================================================
+
+/// Options controlling how a [`SavedLirModule`] is compiled to a `.wasm`
+/// binary via [`compile_lir_to_wasm`] / [`Pipeline::compile_to_wasm`].
+///
+/// Unlike [`CompileOptions`] (LLVM), there is no target triple/CPU to
+/// resolve -- WASM is architecture-independent -- so this is much smaller.
+///
+/// [`Pipeline::compile_to_wasm`]: crate::Pipeline::compile_to_wasm
+#[cfg(feature = "backend-wasm")]
+#[derive(Clone, Debug, Default)]
+pub struct WasmCompileOptions {
+    /// Linear memory's initial page count. `None` uses `WasmBackend`'s
+    /// default (1 page). Only meaningful if the module uses `StackAllocExt`.
+    pub memory_initial_pages: Option<u64>,
+    /// Linear memory's maximum page count (`None` = unbounded growth).
+    pub memory_max_pages: Option<u64>,
+}
+
+#[cfg(feature = "backend-wasm")]
+impl WasmCompileOptions {
+    /// Override the linear memory's initial/maximum page counts.
+    pub fn with_memory_pages(mut self, initial: u64, max: Option<u64>) -> Self {
+        self.memory_initial_pages = Some(initial);
+        self.memory_max_pages = max;
+        self
+    }
+}
+
+/// Compile a [`SavedLirModule`] (loaded from `saved_path`) to a `.wasm`
+/// binary at `out_path`.
+///
+/// Also emits `cargo:rerun-if-changed=<saved_path>` so Cargo re-runs the
+/// build script when the saved LIR file changes.
+///
+/// # Errors
+///
+/// Returns a `Box<dyn std::error::Error>` on I/O or WASM-encoding errors
+/// (e.g. a function using an unsupported `LirType` -- see
+/// `docs/wasm-backend.md` for the current scope).
+#[cfg(feature = "backend-wasm")]
+pub fn compile_lir_to_wasm(
+    saved_path: &Path,
+    out_path: &Path,
+    options: &WasmCompileOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "cargo-directives")]
+    println!("cargo:rerun-if-changed={}", saved_path.display());
+
+    let bytes = std::fs::read(saved_path)?;
+    let saved: SavedLirModule = rkyv::from_bytes::<SavedLirModule, rkyv::rancor::Error>(&bytes)?;
+
+    let mut backend = volar_wasm_backend::WasmBackend::new();
+    if let Some(initial) = options.memory_initial_pages {
+        backend = backend.with_memory_pages(initial, options.memory_max_pages);
+    }
+    saved.replay(&mut backend);
+    let wasm_bytes = backend.finish();
+
+    std::fs::write(out_path, wasm_bytes)?;
+    Ok(())
+}
+
+// ============================================================================
 // compile_lir_to_object
 // ============================================================================
 

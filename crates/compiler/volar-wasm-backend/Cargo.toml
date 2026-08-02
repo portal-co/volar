@@ -1,0 +1,24 @@
+[package]
+name = "volar-wasm-backend"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-lir = { workspace = true }
+volar-lir-saved = { workspace = true }
+volar-ir-common.workspace = true
+wasm-encoder = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+wasmtime = "46.0.1"
+volar-lir-codegen = { path = "../volar-lir-codegen" }
+volar-compiler = { path = "../volar-compiler", features = ["parsing"] }
+volar-weaver = { path = "../volar-weaver" }
+volar-lir-test-corpus = { workspace = true }
+volar-ir.workspace = true
+volar-ir-passes.workspace = true
+volar-ir-common.workspace = true

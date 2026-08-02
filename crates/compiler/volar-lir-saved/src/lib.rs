@@ -46,6 +46,16 @@ pub enum LirCall {
     },
 
     // ---- Function management ------------------------------------------------
+    DeclareImport {
+        name: alloc::string::String,
+        params: Vec<LirType>,
+        ret: Option<LirType>,
+    },
+    DeclareFunction {
+        name: alloc::string::String,
+        params: Vec<LirType>,
+        ret: Option<LirType>,
+    },
     BeginFunction {
         name: alloc::string::String,
         params: Vec<LirType>,
@@ -249,6 +259,14 @@ impl SavedLirModule {
             match call {
                 LirCall::DefineStruct { def, .. } => {
                     target.define_struct(def.clone());
+                }
+
+                LirCall::DeclareImport { name, params, ret } => {
+                    target.declare_import(name, params, ret.clone());
+                }
+
+                LirCall::DeclareFunction { name, params, ret } => {
+                    target.declare_function(name, params, ret.clone());
                 }
 
                 LirCall::BeginFunction { name, params, ret, entry_block: _, param_vals: _ } => {
@@ -513,6 +531,22 @@ impl LirTarget for RecordingTarget {
         let id = self.module.calls.iter().filter(|c| matches!(c, LirCall::DefineStruct { .. })).count() as StructId;
         self.module.calls.push(LirCall::DefineStruct { def, id });
         id
+    }
+
+    fn declare_import(&mut self, name: &str, params: &[LirType], ret: Option<LirType>) {
+        self.module.calls.push(LirCall::DeclareImport {
+            name: alloc::string::String::from(name),
+            params: params.to_vec(),
+            ret,
+        });
+    }
+
+    fn declare_function(&mut self, name: &str, params: &[LirType], ret: Option<LirType>) {
+        self.module.calls.push(LirCall::DeclareFunction {
+            name: alloc::string::String::from(name),
+            params: params.to_vec(),
+            ret,
+        });
     }
 
     fn begin_function(

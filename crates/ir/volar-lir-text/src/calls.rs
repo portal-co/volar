@@ -48,6 +48,22 @@ impl WriteText for LirCall {
             }
 
             // ---- Function management -----------------------------------------
+            LirCall::DeclareImport { name, params, ret } => {
+                w.write_str("declare_import name=")?;
+                write_quoted_str(name, w)?;
+                w.write_str(" params=")?;
+                write_lir_type_list(params, w)?;
+                w.write_str(" ret=")?;
+                write_opt_lir_type(ret, w)
+            }
+            LirCall::DeclareFunction { name, params, ret } => {
+                w.write_str("declare_function name=")?;
+                write_quoted_str(name, w)?;
+                w.write_str(" params=")?;
+                write_lir_type_list(params, w)?;
+                w.write_str(" ret=")?;
+                write_opt_lir_type(ret, w)
+            }
             LirCall::BeginFunction { name, params, ret, entry_block, param_vals } => {
                 w.write_str("begin_function name=")?;
                 write_quoted_str(name, w)?;

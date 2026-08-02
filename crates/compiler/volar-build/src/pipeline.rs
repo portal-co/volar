@@ -179,6 +179,23 @@ impl Pipeline {
         }
     }
 
+    /// Execute all passes and compile the result to a `.wasm` binary.
+    #[cfg(feature = "backend-wasm")]
+    pub fn compile_to_wasm(
+        self,
+        out_path: &Path,
+        options: &crate::WasmCompileOptions,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let executed = self.execute()?;
+        match executed {
+            ExecutedPipeline::Lir(saved) => lir_to_wasm(&saved, out_path, options),
+            ExecutedPipeline::VolarIr(blocks, types) => {
+                let saved = lower_volar_ir_to_lir(&blocks, &types);
+                lir_to_wasm(&saved, out_path, options)
+            }
+        }
+    }
+
     /// Execute all passes and emit woven Rust source.
     #[cfg(feature = "weave-rust")]
     pub fn emit_woven_rust(
@@ -399,6 +416,25 @@ fn lower_volar_ir_to_lir(blocks: &IRBlocks, types: &IRTypes) -> SavedLirModule {
     let mut rec = RecordingTarget::new();
     volar_ir_passes::lower_lir::lower_ir(blocks, types, "volar_module", &mut rec);
     rec.finish()
+}
+
+#[cfg(feature = "backend-wasm")]
+fn lir_to_wasm(
+    saved: &SavedLirModule,
+    out_path: &Path,
+    options: &crate::WasmCompileOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use volar_wasm_backend::WasmBackend;
+
+    let mut backend = WasmBackend::new();
+    if let Some(initial) = options.memory_initial_pages {
+        backend = backend.with_memory_pages(initial, options.memory_max_pages);
+    }
+    saved.replay(&mut backend);
+    let wasm_bytes = backend.finish();
+
+    std::fs::write(out_path, wasm_bytes)?;
+    Ok(())
 }
 
 fn lir_to_object(
