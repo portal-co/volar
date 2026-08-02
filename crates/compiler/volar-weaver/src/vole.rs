@@ -2892,6 +2892,45 @@ fn written_array_name(pool_name: &str) -> String {
     format!("{pool_name}_written")
 }
 
+/// Emit `var_id`'s own value as either a direct pool write (scalar) or
+/// a contribution to the caller's own return tuple (wide) -- the write-
+/// side counterpart of [`pooled_read_expr`]/`WireRepr::Pooled`, shared
+/// by every "this function exports var v to a later function, keyed by
+/// v's own raw circuit var id" site: `synthetic_out` (cross-region CSE
+/// sharing) *and*, as of block-boundary-export/running-accumulator
+/// pooling, `is_active`/`done`/`next_pc_bits`/`next_state`/`ret_vals`
+/// and the chunk-to-chunk running accumulator -- all draw var ids from
+/// the same global circuit var-id space `_synth_pool` is sized to, so
+/// reusing one pool across every category is safe by construction (var
+/// ids never collide across categories) and needs no new pool
+/// infrastructure. `stmts` is the caller's own statement list (`ctx.stmts`
+/// for a ctx-based unsplit region, `wrapper_stmts` for a split wrapper --
+/// both are plain `Vec<IrStmt>`, no `ctx` access needed for a pool
+/// write).
+fn export_scalar_or_tuple(
+    stmts: &mut Vec<IrStmt>,
+    ret_tuple_tys: &mut Vec<IrType>,
+    ret_tuple_exprs: &mut Vec<IrExpr>,
+    var_id: u32,
+    ty: IrType,
+    expr: IrExpr,
+) {
+    if !matches!(ty, IrType::Array { .. }) {
+        let slot_str = var_id.to_string();
+        stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+            left: Box::new(arr_index("_synth_pool", &slot_str)),
+            right: Box::new(expr),
+        }))));
+        stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+            left: Box::new(arr_index(&written_array_name("_synth_pool"), &slot_str)),
+            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+        }))));
+        return;
+    }
+    ret_tuple_tys.push(ty);
+    ret_tuple_exprs.push(expr);
+}
+
 /// `&mut expr`
 fn ref_mut_expr(expr: IrExpr) -> IrExpr {
     ir_expr(IrExprKind::Unary { op: SpecUnaryOp::RefMut, expr: Box::new(expr) })
@@ -5256,7 +5295,14 @@ pub fn weave_vole_prover_ir_split(
                 }
             }
 
-            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            // Unconditional (not just when synthetic_in/out are non-empty):
+            // block-boundary exports (is_active/done/next_pc/next_state/
+            // ret_vals) are ALSO pooled now, and every block has at least
+            // an is_active+done pair, so this is needed almost always in
+            // practice anyway -- an unused pool param on the rare block
+            // that somehow needs none of this is harmless (the generated
+            // preamble already has #![allow(unused_variables, ...)]).
+            let synth_pool_needed = true;
             if synth_pool_needed {
                 params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
                 params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
@@ -5301,16 +5347,30 @@ pub fn weave_vole_prover_ir_split(
             let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| hat_ref_expr(h)).collect()));
             let hats_ty = hat_array_type(ctx.hat_names.len());
 
-            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
-            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
-            ret_tuple_tys.extend(next_state_tys.iter().cloned());
-            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            // Block-boundary exports (is_active/done/next_pc/next_state/
+            // ret_vals): pool scalar ones directly via `_synth_pool` (the
+            // same shared pool `synthetic_out` below already uses -- see
+            // `export_scalar_or_tuple`'s own doc), keep wide ones on the
+            // return tuple exactly as before. `is_active_ty`/`done_ty`/
+            // `next_pc_bit_tys`/`next_state_tys`/`ret_val_tys` are still
+            // computed and stored on `SplitBlockInterface` below either
+            // way -- the covering chunk's own read side needs the type
+            // regardless of whether this value ends up pooled or tuple-
+            // threaded, to make the identical pooling decision.
+            let mut ret_tuple_tys: Vec<IrType> = Vec::new();
+            let mut ret_tuple_exprs: Vec<IrExpr> = Vec::new();
+            export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.is_active, is_active_ty.clone(), is_active_expr);
+            export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.done, done_ty.clone(), done_expr);
+            for (j, expr) in next_pc_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_pc_bits[j], next_pc_bit_tys[j].clone(), expr);
+            }
+            for (k, expr) in next_state_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_state[k], next_state_tys[k].clone(), expr);
+            }
+            for (m, expr) in ret_val_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.ret_vals[m], ret_val_tys[m].clone(), expr);
+            }
             ret_tuple_tys.push(hats_ty);
-
-            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
-            ret_tuple_exprs.extend(next_pc_exprs);
-            ret_tuple_exprs.extend(next_state_exprs);
-            ret_tuple_exprs.extend(ret_val_exprs);
             ret_tuple_exprs.push(hats_expr);
 
             // Cross-chunk-shared values this range genuinely produces or
@@ -5534,7 +5594,14 @@ pub fn weave_vole_prover_ir_split(
                 wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
             }
             // `can_split` already guarantees `local_ext` is empty here.
-            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            // Unconditional (not just when synthetic_in/out are non-empty):
+            // block-boundary exports (is_active/done/next_pc/next_state/
+            // ret_vals) are ALSO pooled now, and every block has at least
+            // an is_active+done pair, so this is needed almost always in
+            // practice anyway -- an unused pool param on the rare block
+            // that somehow needs none of this is harmless (the generated
+            // preamble already has #![allow(unused_variables, ...)]).
+            let synth_pool_needed = true;
             if synth_pool_needed {
                 wrapper_params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
                 wrapper_params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
@@ -5649,16 +5716,23 @@ pub fn weave_vole_prover_ir_split(
             let hats_ty = hat_array_type(combined_hats_exprs.len());
             let hats_expr = ir_expr(IrExprKind::FixedArray(combined_hats_exprs));
 
-            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
-            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
-            ret_tuple_tys.extend(next_state_tys.iter().cloned());
-            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            // Block-boundary exports: pool scalar ones directly via
+            // `_synth_pool` -- see `export_scalar_or_tuple`'s own doc and
+            // the matching comment at the unsplit-region site above.
+            let mut ret_tuple_tys: Vec<IrType> = Vec::new();
+            let mut ret_tuple_exprs: Vec<IrExpr> = Vec::new();
+            export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.is_active, is_active_ty.clone(), is_active_expr);
+            export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.done, done_ty.clone(), done_expr);
+            for (j, expr) in next_pc_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_pc_bits[j], next_pc_bit_tys[j].clone(), expr);
+            }
+            for (k, expr) in next_state_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_state[k], next_state_tys[k].clone(), expr);
+            }
+            for (m, expr) in ret_val_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.ret_vals[m], ret_val_tys[m].clone(), expr);
+            }
             ret_tuple_tys.push(hats_ty);
-
-            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
-            ret_tuple_exprs.extend(next_pc_exprs);
-            ret_tuple_exprs.extend(next_state_exprs);
-            ret_tuple_exprs.extend(ret_val_exprs);
             ret_tuple_exprs.push(hats_expr);
 
             for &v in &b.synthetic_out {
@@ -5728,6 +5802,22 @@ pub fn weave_vole_prover_ir_split(
                 ctx.wires.insert(var_id, WireRepr::Scalar(base_name));
             }
         }
+    }
+
+    /// As [`bind_scalar`], but for a value this function may instead read
+    /// straight from `_synth_pool` (a block-boundary export or running-
+    /// accumulator input, keyed by its own raw circuit var id, exactly
+    /// like `synthetic_in` -- see `export_scalar_or_tuple`'s own doc for
+    /// why one shared pool safely covers every category). Pooling here
+    /// must agree with whatever decision the *producer* made for this
+    /// same var id -- both sides derive it identically, from the var's
+    /// own type alone, so they can never disagree.
+    fn bind_scalar_or_pool(ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, var_id: u32, base_name: String, ty: IrType) {
+        if !matches!(ty, IrType::Array { .. }) {
+            ctx.wires.insert(var_id, WireRepr::Pooled("_synth_pool", var_id as usize));
+            return;
+        }
+        bind_scalar(ctx, params, var_id, base_name, ty);
     }
 
     let (init_next_state_tys, init_ret_val_tys) = {
@@ -5821,7 +5911,9 @@ pub fn weave_vole_prover_ir_split(
             for j in 0..width { params.push(IrParam { name: format!("vope_ext_rng_{}_bit_{}", r, j), ty: vope_type() }); }
         }
 
-        let chunk_synth_pool_needed = !accum_info.steps[lo].synthetic_in.is_empty() || !accum_info.steps[hi - 1].synthetic_out.is_empty();
+        // Unconditional -- see the matching comment at the block-level
+        // synth_pool_needed site: block-boundary exports are pooled too now.
+        let chunk_synth_pool_needed = true;
         if chunk_synth_pool_needed {
             params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
             params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
@@ -5833,16 +5925,16 @@ pub fn weave_vole_prover_ir_split(
         for i in lo..hi {
             let b = &boundary[i];
             let iface = &interfaces[i];
-            bind_scalar(&mut ctx, &mut params, b.is_active, format!("is_active_{i}"), iface.is_active_ty.clone());
-            bind_scalar(&mut ctx, &mut params, b.done, format!("done_{i}"), iface.done_ty.clone());
+            bind_scalar_or_pool(&mut ctx, &mut params, b.is_active, format!("is_active_{i}"), iface.is_active_ty.clone());
+            bind_scalar_or_pool(&mut ctx, &mut params, b.done, format!("done_{i}"), iface.done_ty.clone());
             for (j, &v) in b.next_pc_bits.iter().enumerate() {
-                bind_scalar(&mut ctx, &mut params, v, format!("next_pc_{i}_{j}"), iface.next_pc_bit_tys[j].clone());
+                bind_scalar_or_pool(&mut ctx, &mut params, v, format!("next_pc_{i}_{j}"), iface.next_pc_bit_tys[j].clone());
             }
             for (k, &v) in b.next_state.iter().enumerate() {
-                bind_scalar(&mut ctx, &mut params, v, format!("next_state_{i}_{k}"), iface.next_state_tys[k].clone());
+                bind_scalar_or_pool(&mut ctx, &mut params, v, format!("next_state_{i}_{k}"), iface.next_state_tys[k].clone());
             }
             for (m, &v) in b.ret_vals.iter().enumerate() {
-                bind_scalar(&mut ctx, &mut params, v, format!("ret_val_{i}_{m}"), iface.ret_val_tys[m].clone());
+                bind_scalar_or_pool(&mut ctx, &mut params, v, format!("ret_val_{i}_{m}"), iface.ret_val_tys[m].clone());
             }
         }
 
@@ -6536,6 +6628,22 @@ pub fn weave_vole_qsim_ir_split(
         }
     }
 
+    /// As [`bind_scalar`], but for a value this function may instead read
+    /// straight from `_synth_pool` (a block-boundary export or running-
+    /// accumulator input, keyed by its own raw circuit var id, exactly
+    /// like `synthetic_in` -- see `export_scalar_or_tuple`'s own doc for
+    /// why one shared pool safely covers every category). Pooling here
+    /// must agree with whatever decision the *producer* made for this
+    /// same var id -- both sides derive it identically, from the var's
+    /// own type alone, so they can never disagree.
+    fn bind_scalar_or_pool(ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, var_id: u32, base_name: String, ty: IrType) {
+        if !matches!(ty, IrType::Array { .. }) {
+            ctx.wires.insert(var_id, WireRepr::Pooled("_synth_pool", var_id as usize));
+            return;
+        }
+        bind_scalar(ctx, params, var_id, base_name, ty);
+    }
+
     let mut interfaces: Vec<SplitBlockInterface> = Vec::with_capacity(boundary.len());
 
     // As `weave_vole_prover_ir_split`'s own `synthetic_types` -- see its
@@ -6612,7 +6720,14 @@ pub fn weave_vole_qsim_ir_split(
                 }
             }
 
-            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            // Unconditional (not just when synthetic_in/out are non-empty):
+            // block-boundary exports (is_active/done/next_pc/next_state/
+            // ret_vals) are ALSO pooled now, and every block has at least
+            // an is_active+done pair, so this is needed almost always in
+            // practice anyway -- an unused pool param on the rare block
+            // that somehow needs none of this is harmless (the generated
+            // preamble already has #![allow(unused_variables, ...)]).
+            let synth_pool_needed = true;
             if synth_pool_needed {
                 params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
                 params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
@@ -6657,16 +6772,28 @@ pub fn weave_vole_qsim_ir_split(
             let hats_ty = q_and_array_type(ctx.q_and_names.len());
             let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| wire_ref_expr(h)).collect()));
 
-            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
-            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
-            ret_tuple_tys.extend(next_state_tys.iter().cloned());
-            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            // Block-boundary exports: pool scalar ones directly via
+            // `_synth_pool` -- see `export_scalar_or_tuple`'s own doc and
+            // the matching Prover-role site. QSim's own is_active/done/
+            // next_pc/next_state/ret_vals values are discarded downstream
+            // regardless (only Verifier's are threaded onward), but the
+            // return-tuple layout must still match this function's own
+            // real generated body, so the same pooling decision applies
+            // here too.
+            let mut ret_tuple_tys: Vec<IrType> = Vec::new();
+            let mut ret_tuple_exprs: Vec<IrExpr> = Vec::new();
+            export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.is_active, is_active_ty.clone(), is_active_expr);
+            export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.done, done_ty.clone(), done_expr);
+            for (j, expr) in next_pc_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_pc_bits[j], next_pc_bit_tys[j].clone(), expr);
+            }
+            for (k, expr) in next_state_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_state[k], next_state_tys[k].clone(), expr);
+            }
+            for (m, expr) in ret_val_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.ret_vals[m], ret_val_tys[m].clone(), expr);
+            }
             ret_tuple_tys.push(hats_ty);
-
-            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
-            ret_tuple_exprs.extend(next_pc_exprs);
-            ret_tuple_exprs.extend(next_state_exprs);
-            ret_tuple_exprs.extend(ret_val_exprs);
             ret_tuple_exprs.push(hats_expr);
 
             // As `weave_vole_prover_ir_split`'s own synthetic_out handling.
@@ -6863,7 +6990,14 @@ pub fn weave_vole_qsim_ir_split(
             for j in 0..local_oracle_reads {
                 wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
             }
-            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            // Unconditional (not just when synthetic_in/out are non-empty):
+            // block-boundary exports (is_active/done/next_pc/next_state/
+            // ret_vals) are ALSO pooled now, and every block has at least
+            // an is_active+done pair, so this is needed almost always in
+            // practice anyway -- an unused pool param on the rare block
+            // that somehow needs none of this is harmless (the generated
+            // preamble already has #![allow(unused_variables, ...)]).
+            let synth_pool_needed = true;
             if synth_pool_needed {
                 wrapper_params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
                 wrapper_params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
@@ -6971,16 +7105,22 @@ pub fn weave_vole_qsim_ir_split(
             let hats_ty = q_and_array_type(combined_hats_exprs.len());
             let hats_expr = ir_expr(IrExprKind::FixedArray(combined_hats_exprs));
 
-            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
-            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
-            ret_tuple_tys.extend(next_state_tys.iter().cloned());
-            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            // Block-boundary exports: pool scalar ones directly via
+            // `_synth_pool` -- see `export_scalar_or_tuple`'s own doc.
+            let mut ret_tuple_tys: Vec<IrType> = Vec::new();
+            let mut ret_tuple_exprs: Vec<IrExpr> = Vec::new();
+            export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.is_active, is_active_ty.clone(), is_active_expr);
+            export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.done, done_ty.clone(), done_expr);
+            for (j, expr) in next_pc_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_pc_bits[j], next_pc_bit_tys[j].clone(), expr);
+            }
+            for (k, expr) in next_state_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_state[k], next_state_tys[k].clone(), expr);
+            }
+            for (m, expr) in ret_val_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.ret_vals[m], ret_val_tys[m].clone(), expr);
+            }
             ret_tuple_tys.push(hats_ty);
-
-            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
-            ret_tuple_exprs.extend(next_pc_exprs);
-            ret_tuple_exprs.extend(next_state_exprs);
-            ret_tuple_exprs.extend(ret_val_exprs);
             ret_tuple_exprs.push(hats_expr);
 
             for &v in &b.synthetic_out {
@@ -7114,7 +7254,9 @@ pub fn weave_vole_qsim_ir_split(
             for j in 0..width { params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() }); }
         }
 
-        let chunk_synth_pool_needed = !accum_info.steps[lo].synthetic_in.is_empty() || !accum_info.steps[hi - 1].synthetic_out.is_empty();
+        // Unconditional -- see the matching comment at the block-level
+        // synth_pool_needed site: block-boundary exports are pooled too now.
+        let chunk_synth_pool_needed = true;
         if chunk_synth_pool_needed {
             params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
             params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
@@ -7126,16 +7268,16 @@ pub fn weave_vole_qsim_ir_split(
         for i in lo..hi {
             let b = &boundary[i];
             let iface = &interfaces[i];
-            bind_scalar(&mut ctx, &mut params, b.is_active, format!("is_active_{i}"), iface.is_active_ty.clone());
-            bind_scalar(&mut ctx, &mut params, b.done, format!("done_{i}"), iface.done_ty.clone());
+            bind_scalar_or_pool(&mut ctx, &mut params, b.is_active, format!("is_active_{i}"), iface.is_active_ty.clone());
+            bind_scalar_or_pool(&mut ctx, &mut params, b.done, format!("done_{i}"), iface.done_ty.clone());
             for (j, &v) in b.next_pc_bits.iter().enumerate() {
-                bind_scalar(&mut ctx, &mut params, v, format!("next_pc_{i}_{j}"), iface.next_pc_bit_tys[j].clone());
+                bind_scalar_or_pool(&mut ctx, &mut params, v, format!("next_pc_{i}_{j}"), iface.next_pc_bit_tys[j].clone());
             }
             for (k, &v) in b.next_state.iter().enumerate() {
-                bind_scalar(&mut ctx, &mut params, v, format!("next_state_{i}_{k}"), iface.next_state_tys[k].clone());
+                bind_scalar_or_pool(&mut ctx, &mut params, v, format!("next_state_{i}_{k}"), iface.next_state_tys[k].clone());
             }
             for (m, &v) in b.ret_vals.iter().enumerate() {
-                bind_scalar(&mut ctx, &mut params, v, format!("ret_val_{i}_{m}"), iface.ret_val_tys[m].clone());
+                bind_scalar_or_pool(&mut ctx, &mut params, v, format!("ret_val_{i}_{m}"), iface.ret_val_tys[m].clone());
             }
         }
 
@@ -7497,6 +7639,22 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         }
     }
 
+    /// As [`bind_scalar`], but for a value this function may instead read
+    /// straight from `_synth_pool` (a block-boundary export or running-
+    /// accumulator input, keyed by its own raw circuit var id, exactly
+    /// like `synthetic_in` -- see `export_scalar_or_tuple`'s own doc for
+    /// why one shared pool safely covers every category). Pooling here
+    /// must agree with whatever decision the *producer* made for this
+    /// same var id -- both sides derive it identically, from the var's
+    /// own type alone, so they can never disagree.
+    fn bind_scalar_or_pool(ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, var_id: u32, base_name: String, ty: IrType) {
+        if !matches!(ty, IrType::Array { .. }) {
+            ctx.wires.insert(var_id, WireRepr::Pooled("_synth_pool", var_id as usize));
+            return;
+        }
+        bind_scalar(ctx, params, var_id, base_name, ty);
+    }
+
     let mut interfaces: Vec<SplitBlockInterface> = Vec::with_capacity(boundary.len());
 
     // As `weave_vole_prover_ir_split`'s own `synthetic_types` -- see its
@@ -7586,7 +7744,14 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             }
             params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
             params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
-            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            // Unconditional (not just when synthetic_in/out are non-empty):
+            // block-boundary exports (is_active/done/next_pc/next_state/
+            // ret_vals) are ALSO pooled now, and every block has at least
+            // an is_active+done pair, so this is needed almost always in
+            // practice anyway -- an unused pool param on the rare block
+            // that somehow needs none of this is harmless (the generated
+            // preamble already has #![allow(unused_variables, ...)]).
+            let synth_pool_needed = true;
             if synth_pool_needed {
                 params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
                 params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
@@ -7644,17 +7809,26 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
             let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
 
-            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
-            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
-            ret_tuple_tys.extend(next_state_tys.iter().cloned());
-            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            // Block-boundary exports: pool scalar ones directly via
+            // `_synth_pool` -- see `export_scalar_or_tuple`'s own doc.
+            // Verifier has no `hats` array (all_ok/fold_state trail
+            // instead, unconditionally, so its own return tuple can never
+            // shrink to a single element even if every export pools).
+            let mut ret_tuple_tys: Vec<IrType> = Vec::new();
+            let mut ret_tuple_exprs: Vec<IrExpr> = Vec::new();
+            export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.is_active, is_active_ty.clone(), is_active_expr);
+            export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.done, done_ty.clone(), done_expr);
+            for (j, expr) in next_pc_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_pc_bits[j], next_pc_bit_tys[j].clone(), expr);
+            }
+            for (k, expr) in next_state_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_state[k], next_state_tys[k].clone(), expr);
+            }
+            for (m, expr) in ret_val_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut ctx.stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.ret_vals[m], ret_val_tys[m].clone(), expr);
+            }
             ret_tuple_tys.push(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool));
             ret_tuple_tys.push(IrType::TypeParam(sink.state_type_name().into()));
-
-            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
-            ret_tuple_exprs.extend(next_pc_exprs);
-            ret_tuple_exprs.extend(next_state_exprs);
-            ret_tuple_exprs.extend(ret_val_exprs);
             ret_tuple_exprs.push(var("all_ok"));
             ret_tuple_exprs.push(var("fold_state"));
 
@@ -7882,7 +8056,14 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             // `split_driver.rs` depend on it).
             wrapper_params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
             wrapper_params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
-            let synth_pool_needed = !b.synthetic_in.is_empty() || !b.synthetic_out.is_empty();
+            // Unconditional (not just when synthetic_in/out are non-empty):
+            // block-boundary exports (is_active/done/next_pc/next_state/
+            // ret_vals) are ALSO pooled now, and every block has at least
+            // an is_active+done pair, so this is needed almost always in
+            // practice anyway -- an unused pool param on the rare block
+            // that somehow needs none of this is harmless (the generated
+            // preamble already has #![allow(unused_variables, ...)]).
+            let synth_pool_needed = true;
             if synth_pool_needed {
                 wrapper_params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
                 wrapper_params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
@@ -8005,18 +8186,25 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| field_expr(v)).collect();
             let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| field_ty(v)).collect();
 
-            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
-            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
-            ret_tuple_tys.extend(next_state_tys.iter().cloned());
-            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            // Block-boundary exports: pool scalar ones directly via
+            // `_synth_pool` -- see `export_scalar_or_tuple`'s own doc.
+            let mut ret_tuple_tys: Vec<IrType> = Vec::new();
+            let mut ret_tuple_exprs: Vec<IrExpr> = Vec::new();
+            export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.is_active, is_active_ty.clone(), is_active_expr);
+            export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.done, done_ty.clone(), done_expr);
+            for (j, expr) in next_pc_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_pc_bits[j], next_pc_bit_tys[j].clone(), expr);
+            }
+            for (k, expr) in next_state_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.next_state[k], next_state_tys[k].clone(), expr);
+            }
+            for (m, expr) in ret_val_exprs.into_iter().enumerate() {
+                export_scalar_or_tuple(&mut wrapper_stmts, &mut ret_tuple_tys, &mut ret_tuple_exprs, b.ret_vals[m], ret_val_tys[m].clone(), expr);
+            }
             ret_tuple_tys.push(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool));
             ret_tuple_tys.push(IrType::TypeParam(sink.state_type_name().into()));
 
             let last = pieces.len() - 1;
-            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
-            ret_tuple_exprs.extend(next_pc_exprs);
-            ret_tuple_exprs.extend(next_state_exprs);
-            ret_tuple_exprs.extend(ret_val_exprs);
             ret_tuple_exprs.push(clone_expr(var(&format!("piece{last}_all_ok"))));
             ret_tuple_exprs.push(clone_expr(var(&format!("piece{last}_fold_state"))));
 
@@ -8166,20 +8354,22 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         for i in lo..hi {
             let b = &boundary[i];
             let iface = &interfaces[i];
-            bind_scalar(&mut ctx, &mut params, b.is_active, format!("is_active_{i}"), iface.is_active_ty.clone());
-            bind_scalar(&mut ctx, &mut params, b.done, format!("done_{i}"), iface.done_ty.clone());
+            bind_scalar_or_pool(&mut ctx, &mut params, b.is_active, format!("is_active_{i}"), iface.is_active_ty.clone());
+            bind_scalar_or_pool(&mut ctx, &mut params, b.done, format!("done_{i}"), iface.done_ty.clone());
             for (j, &v) in b.next_pc_bits.iter().enumerate() {
-                bind_scalar(&mut ctx, &mut params, v, format!("next_pc_{i}_{j}"), iface.next_pc_bit_tys[j].clone());
+                bind_scalar_or_pool(&mut ctx, &mut params, v, format!("next_pc_{i}_{j}"), iface.next_pc_bit_tys[j].clone());
             }
             for (k, &v) in b.next_state.iter().enumerate() {
-                bind_scalar(&mut ctx, &mut params, v, format!("next_state_{i}_{k}"), iface.next_state_tys[k].clone());
+                bind_scalar_or_pool(&mut ctx, &mut params, v, format!("next_state_{i}_{k}"), iface.next_state_tys[k].clone());
             }
             for (m, &v) in b.ret_vals.iter().enumerate() {
-                bind_scalar(&mut ctx, &mut params, v, format!("ret_val_{i}_{m}"), iface.ret_val_tys[m].clone());
+                bind_scalar_or_pool(&mut ctx, &mut params, v, format!("ret_val_{i}_{m}"), iface.ret_val_tys[m].clone());
             }
         }
 
-        let chunk_synth_pool_needed = !accum_info.steps[lo].synthetic_in.is_empty() || !accum_info.steps[hi - 1].synthetic_out.is_empty();
+        // Unconditional -- see the matching comment at the block-level
+        // synth_pool_needed site: block-boundary exports are pooled too now.
+        let chunk_synth_pool_needed = true;
         if chunk_synth_pool_needed {
             params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
             params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
@@ -9935,14 +10125,27 @@ mod tests {
         assert_eq!(funcs[3].name, "vole_verify_ir_split_test_accum_chunk_1");
         assert_eq!(funcs[4].name, "vole_verify_ir_split_test_finish");
 
-        // No chunk function's own params reference *every* block -- with
+        // No chunk function's own body references *every* block -- with
         // chunk_size=1, each accum_chunk function should reference only
         // its own one block's exported vars (is_active_N/done_N/...), not
-        // both blocks'.
-        assert!(funcs[2].params.iter().any(|p| p.name == "is_active_0"));
-        assert!(!funcs[2].params.iter().any(|p| p.name == "is_active_1"));
-        assert!(funcs[3].params.iter().any(|p| p.name == "is_active_1"));
-        assert!(!funcs[3].params.iter().any(|p| p.name == "is_active_0"));
+        // both blocks'. `is_active`/`done` are scalar for this fixture, so
+        // block-boundary-export pooling means they're read via
+        // `_synth_pool[v]` (v = the var's own raw circuit var id) rather
+        // than taking a named `is_active_N` param -- check the printed
+        // body's own pool-index references instead of param names.
+        let is_active_0 = boundary[0].is_active;
+        let is_active_1 = boundary[1].is_active;
+        let one_fn_module = |f: &IrFunction| IrModule {
+            name: "split_verifier_test_mod".into(), functions: std::vec![f.clone()],
+            structs: std::vec![], enums: std::vec![], traits: std::vec![], impls: std::vec![],
+            type_aliases: std::vec![], consts: std::vec![],
+        };
+        let printed_chunk0 = print_weaved_vole_module(&one_fn_module(&funcs[2]));
+        let printed_chunk1 = print_weaved_vole_module(&one_fn_module(&funcs[3]));
+        assert!(printed_chunk0.contains(&format!("_synth_pool[{is_active_0}]")), "chunk 0 must pool-read block 0's own is_active:\n{printed_chunk0}");
+        assert!(!printed_chunk0.contains(&format!("_synth_pool[{is_active_1}]")), "chunk 0 must not reference block 1's own is_active:\n{printed_chunk0}");
+        assert!(printed_chunk1.contains(&format!("_synth_pool[{is_active_1}]")), "chunk 1 must pool-read block 1's own is_active:\n{printed_chunk1}");
+        assert!(!printed_chunk1.contains(&format!("_synth_pool[{is_active_0}]")), "chunk 1 must not reference block 0's own is_active:\n{printed_chunk1}");
 
         // Real, structural bound: the *split* param counts must sum back to
         // exactly the whole (unsplit) circuit's and_count (nothing lost,

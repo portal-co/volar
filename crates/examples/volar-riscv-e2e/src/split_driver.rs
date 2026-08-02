@@ -302,31 +302,47 @@ pub fn generate_split_step(
     let mut synth_exported_vope: BTreeMap<u32, Slot> = BTreeMap::new();
     let mut synth_exported_q: BTreeMap<u32, Slot> = BTreeMap::new();
 
-    // `synth_v` pooling (Phase C) makes a producer OMIT any pooled
-    // (scalar) synthetic_out var from its own return tuple entirely --
-    // it's written straight to `_synth_pool` instead. That means a
-    // region's FULL `synthetic_out` list (what `boundary`/`accum_info`
-    // report) no longer lines up 1:1, in order, with the trailing
-    // tuple slots a producer actually returns: naively zipping the two
-    // together (as this code used to, unconditionally) silently pairs
-    // the wrong var id with the wrong value whenever a region has a MIX
-    // of pooled and unpooled synthetic_out vars. Fix: recover, once,
-    // which synth vars are still tuple-threaded (unpooled) by checking
-    // whether ANY function anywhere still takes a literal `synth_{v}`
-    // param for it -- "is v scalar" is a fixed, type-determined property
-    // of the var (the same decision `vole.rs` makes wherever v appears),
-    // so if v is ever unpooled, every real consumer has a `synth_{v}`
-    // param; if v is pooled, none does (consumers read `_synth_pool[v]`
-    // directly instead). Filtering a region's `synthetic_out` down to
-    // this set, in the same relative order, exactly reproduces the
-    // trailing tuple's own real layout.
-    let unpooled_synth_vars: std::collections::BTreeSet<u32> = prover_funcs.iter().chain(qsim_funcs).chain(verifier_funcs)
+    // Pooling (Phase C: synth_v, and now block-boundary exports/running-
+    // accumulator too) makes a producer OMIT any pooled (scalar) exported
+    // var from its own return tuple entirely -- it's written straight to
+    // `_synth_pool` instead. That means a region's FULL export list
+    // (`synthetic_out`, or is_active/done/next_pc/next_state/ret_vals/
+    // running-accumulator) no longer lines up 1:1, in order, with the
+    // trailing tuple slots a producer actually returns: naively slicing/
+    // zipping the two together (as this code used to, unconditionally)
+    // silently pairs the wrong var/slot with the wrong value whenever a
+    // region has a MIX of pooled and unpooled exports. Fix: recover,
+    // once, the full set of param names that are still real, tuple-
+    // threaded params SOMEWHERE (unpooled) -- "is v scalar" is a fixed,
+    // type-determined property of the var (the same decision `vole.rs`
+    // makes wherever it appears), so if a var/category is ever unpooled,
+    // every real consumer has the matching named param; if it's pooled,
+    // none does (consumers read `_synth_pool[v]` directly instead).
+    let named_param_present: std::collections::BTreeSet<String> = prover_funcs.iter().chain(qsim_funcs).chain(verifier_funcs)
         .flat_map(|f| f.params.iter())
-        .filter_map(|p| p.name.strip_prefix("synth_").and_then(|s| s.parse::<u32>().ok()))
+        .map(|p| p.name.clone())
         .collect();
     let unpooled_synth_out = |all: &[u32]| -> Vec<u32> {
-        all.iter().copied().filter(|v| unpooled_synth_vars.contains(v)).collect()
+        all.iter().copied().filter(|v| named_param_present.contains(&format!("synth_{v}"))).collect()
     };
+    // Take the next slot from `slots[*idx]` and advance `idx`, but only
+    // if `name` is still a real, tuple-threaded param somewhere (i.e.
+    // NOT pooled) -- the position-named (`is_active_i`/`next_pc_i_j`/
+    // `in_next_state_k`/etc) counterpart of `unpooled_synth_out`'s own
+    // var-id-keyed reasoning above. Returns `None` for a pooled entry:
+    // its own value never needs tracking here at all, since its consumer
+    // reads `_synth_pool[v]` directly rather than taking a named param,
+    // so `exported_vope`/`exported_q`/`running_in` never need (or get) an
+    // entry for it.
+    fn take_if_named(slots: &[Slot], idx: &mut usize, named_param_present: &std::collections::BTreeSet<String>, name: &str) -> Option<Slot> {
+        if named_param_present.contains(name) {
+            let s = slots[*idx].clone();
+            *idx += 1;
+            Some(s)
+        } else {
+            None
+        }
+    }
 
     // Emit one committed oracle read (real value known host-side, or a
     // runtime witness-array reference -- `bit_expr` already decides
@@ -549,13 +565,16 @@ pub fn generate_split_step(
             "", "", oracle_vope.as_deref(), &format!("p_{uid}"),
         );
         let p_slots = p_outcome.finish_output;
-        // Layout: [is_active, done, next_pc.., next_state.., ret_vals.., hats, synth_out..]
+        // Layout: [is_active, done, next_pc.., next_state.., ret_vals.., hats, synth_out..] --
+        // MINUS any pooled (scalar) entry, which `take_if_named` skips
+        // over entirely (see its own doc, and `unpooled_synth_out`'s
+        // matching reasoning below).
         let mut idx = 0usize;
-        let p_is_active = p_slots[idx].clone(); idx += 1;
-        let p_done = p_slots[idx].clone(); idx += 1;
-        let p_next_pc: Vec<Slot> = p_slots[idx..idx + n_pc].to_vec(); idx += n_pc;
-        let p_next_state: Vec<Slot> = p_slots[idx..idx + n_state].to_vec(); idx += n_state;
-        let p_ret_vals: Vec<Slot> = p_slots[idx..idx + n_ret].to_vec(); idx += n_ret;
+        let p_is_active = take_if_named(&p_slots, &mut idx, &named_param_present, &format!("is_active_{i}"));
+        let p_done = take_if_named(&p_slots, &mut idx, &named_param_present, &format!("done_{i}"));
+        let p_next_pc: Vec<Option<Slot>> = (0..n_pc).map(|j| take_if_named(&p_slots, &mut idx, &named_param_present, &format!("next_pc_{i}_{j}"))).collect();
+        let p_next_state: Vec<Option<Slot>> = (0..n_state).map(|k| take_if_named(&p_slots, &mut idx, &named_param_present, &format!("next_state_{i}_{k}"))).collect();
+        let p_ret_vals: Vec<Option<Slot>> = (0..n_ret).map(|m| take_if_named(&p_slots, &mut idx, &named_param_present, &format!("ret_val_{i}_{m}"))).collect();
         let p_hats = p_slots[idx].clone(); idx += 1;
         let p_synth_out = unpooled_synth_out(&b.synthetic_out);
         assert_eq!(p_synth_out.len(), p_slots.len() - idx, "block {i}: prover unpooled synth_out count must match trailing tuple slots");
@@ -571,12 +590,17 @@ pub fn generate_split_step(
             "", "", oracle_q.as_deref(), &format!("q_{uid}"),
         );
         let q_slots = q_outcome.finish_output;
+        // QSim's own is_active/done/next_pc/next_state/ret_vals values are
+        // discarded downstream regardless (only Verifier's are threaded
+        // onward) -- but `idx` must still be advanced correctly past
+        // whichever of them are NOT pooled, to land on `q_and_arr` at the
+        // right position.
         let mut idx = 0usize;
-        let q_is_active = q_slots[idx].clone(); idx += 1;
-        let q_done = q_slots[idx].clone(); idx += 1;
-        let q_next_pc: Vec<Slot> = q_slots[idx..idx + n_pc].to_vec(); idx += n_pc;
-        let q_next_state: Vec<Slot> = q_slots[idx..idx + n_state].to_vec(); idx += n_state;
-        let q_ret_vals: Vec<Slot> = q_slots[idx..idx + n_ret].to_vec(); idx += n_ret;
+        let _q_is_active = take_if_named(&q_slots, &mut idx, &named_param_present, &format!("is_active_{i}"));
+        let _q_done = take_if_named(&q_slots, &mut idx, &named_param_present, &format!("done_{i}"));
+        for j in 0..n_pc { take_if_named(&q_slots, &mut idx, &named_param_present, &format!("next_pc_{i}_{j}")); }
+        for k in 0..n_state { take_if_named(&q_slots, &mut idx, &named_param_present, &format!("next_state_{i}_{k}")); }
+        for m in 0..n_ret { take_if_named(&q_slots, &mut idx, &named_param_present, &format!("ret_val_{i}_{m}")); }
         let q_and_arr = q_slots[idx].clone();
         // QSim's own synthetic outputs are discarded, same as its is_active/done/etc above.
 
@@ -596,11 +620,11 @@ pub fn generate_split_step(
         );
         let v_slots = v_outcome.finish_output;
         let mut idx = 0usize;
-        let v_is_active = v_slots[idx].clone(); idx += 1;
-        let v_done = v_slots[idx].clone(); idx += 1;
-        let v_next_pc: Vec<Slot> = v_slots[idx..idx + n_pc].to_vec(); idx += n_pc;
-        let v_next_state: Vec<Slot> = v_slots[idx..idx + n_state].to_vec(); idx += n_state;
-        let v_ret_vals: Vec<Slot> = v_slots[idx..idx + n_ret].to_vec(); idx += n_ret;
+        let v_is_active = take_if_named(&v_slots, &mut idx, &named_param_present, &format!("is_active_{i}"));
+        let v_done = take_if_named(&v_slots, &mut idx, &named_param_present, &format!("done_{i}"));
+        let v_next_pc: Vec<Option<Slot>> = (0..n_pc).map(|j| take_if_named(&v_slots, &mut idx, &named_param_present, &format!("next_pc_{i}_{j}"))).collect();
+        let v_next_state: Vec<Option<Slot>> = (0..n_state).map(|k| take_if_named(&v_slots, &mut idx, &named_param_present, &format!("next_state_{i}_{k}"))).collect();
+        let v_ret_vals: Vec<Option<Slot>> = (0..n_ret).map(|m| take_if_named(&v_slots, &mut idx, &named_param_present, &format!("ret_val_{i}_{m}"))).collect();
         let v_all_ok = match &v_slots[idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; idx += 1;
         let v_fold_state = match &v_slots[idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; idx += 1;
         let v_synth_out = unpooled_synth_out(&b.synthetic_out);
@@ -617,31 +641,33 @@ pub fn generate_split_step(
         // chunk function; the verifier's own (Q-typed) block exports feed
         // the qsim/verifier chunk functions -- two separate maps, exactly
         // like `entry_w`/`running_in`. QSim's own export values are never
-        // consumed downstream (only its q_and output is).
-        let _ = (q_is_active, q_done, q_next_pc, q_next_state, q_ret_vals);
-
-        insert_export(&mut exported_vope, format!("is_active_{i}"), p_is_active);
-        insert_export(&mut exported_vope, format!("done_{i}"), p_done);
+        // consumed downstream (only its q_and output is, already handled
+        // above via `_q_is_active` etc). A pooled (`None`) entry needs no
+        // map insertion at all -- its consumer reads `_synth_pool[v]`
+        // directly instead of taking a named param, so nothing ever looks
+        // it up in `exported_vope`/`exported_q`.
+        if let Some(s) = p_is_active { insert_export(&mut exported_vope, format!("is_active_{i}"), s); }
+        if let Some(s) = p_done { insert_export(&mut exported_vope, format!("done_{i}"), s); }
         for (j, s) in p_next_pc.into_iter().enumerate() {
-            insert_export(&mut exported_vope, format!("next_pc_{i}_{j}"), s);
+            if let Some(s) = s { insert_export(&mut exported_vope, format!("next_pc_{i}_{j}"), s); }
         }
         for (k, s) in p_next_state.into_iter().enumerate() {
-            insert_export(&mut exported_vope, format!("next_state_{i}_{k}"), s);
+            if let Some(s) = s { insert_export(&mut exported_vope, format!("next_state_{i}_{k}"), s); }
         }
         for (m, s) in p_ret_vals.into_iter().enumerate() {
-            insert_export(&mut exported_vope, format!("ret_val_{i}_{m}"), s);
+            if let Some(s) = s { insert_export(&mut exported_vope, format!("ret_val_{i}_{m}"), s); }
         }
 
-        insert_export(&mut exported_q, format!("is_active_{i}"), v_is_active);
-        insert_export(&mut exported_q, format!("done_{i}"), v_done);
+        if let Some(s) = v_is_active { insert_export(&mut exported_q, format!("is_active_{i}"), s); }
+        if let Some(s) = v_done { insert_export(&mut exported_q, format!("done_{i}"), s); }
         for (j, s) in v_next_pc.into_iter().enumerate() {
-            insert_export(&mut exported_q, format!("next_pc_{i}_{j}"), s);
+            if let Some(s) = s { insert_export(&mut exported_q, format!("next_pc_{i}_{j}"), s); }
         }
         for (k, s) in v_next_state.into_iter().enumerate() {
-            insert_export(&mut exported_q, format!("next_state_{i}_{k}"), s);
+            if let Some(s) = s { insert_export(&mut exported_q, format!("next_state_{i}_{k}"), s); }
         }
         for (m, s) in v_ret_vals.into_iter().enumerate() {
-            insert_export(&mut exported_q, format!("ret_val_{i}_{m}"), s);
+            if let Some(s) = s { insert_export(&mut exported_q, format!("ret_val_{i}_{m}"), s); }
         }
     }
 
