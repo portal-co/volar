@@ -756,21 +756,71 @@ pub fn generate_split_step(
     out.push_str(&format!("let {running_ret_vals_vope} = {};\n", tuple_literal(&init_ret_locals_vope)));
     out.push_str(&format!("let {running_ret_vals_q} = {};\n", tuple_literal(&init_ret_locals_q)));
 
+    // Chunk 0's own INCOMING running-accumulator state (`accum_info.init`)
+    // is a pure host-side value (zero for done_acc/next_pc/ret_vals; the
+    // circuit's own real param for next_state, per the comment above) --
+    // unlike every OTHER var `_synth_pool` covers, it is NEVER produced by
+    // a real vole.rs-generated function call, so nothing would otherwise
+    // ever write it into the pool before chunk 0's own `in_*` read tries
+    // to read it -- `debug_check_pool_written` correctly catches this as
+    // "read from unwritten pool slot" if skipped (confirmed: this is
+    // exactly what happened before this fix was added). Write any pooled
+    // entry here explicitly, mirroring what a real producer's own
+    // `export_scalar_or_tuple` would have emitted.
+    if synth_pool_active {
+        let mut emit_pool_init = |var_id: u32, name: &str, value_vope: &str, value_q: &str| {
+            if named_param_present.contains(name) { return; } // still tuple-threaded (wide) -- no pool write needed
+            out.push_str(&format!("_synth_pool_vope[{var_id}] = {value_vope}; _synth_pool_vope_written[{var_id}] = true;\n"));
+            out.push_str(&format!("_synth_pool_q[{var_id}] = {value_q}; _synth_pool_q_written[{var_id}] = true;\n"));
+        };
+        emit_pool_init(accum_info.init.done_acc, "in_done_acc", "vope_zero()", "q_zero()");
+        for (j, &v) in accum_info.init.next_pc.iter().enumerate() {
+            emit_pool_init(v, &format!("in_next_pc_{j}"), "vope_zero()", "q_zero()");
+        }
+        for (k, &v) in accum_info.init.next_state.iter().enumerate() {
+            emit_pool_init(v, &format!("in_next_state_{k}"), &init_state_locals_vope[k], &init_state_locals_q[k]);
+        }
+        for (m, &v) in accum_info.init.ret_vals.iter().enumerate() {
+            emit_pool_init(v, &format!("in_ret_val_{m}"), &format!("{}.clone()", init_ret_locals_vope[m]), &format!("{}.clone()", init_ret_locals_q[m]));
+        }
+    }
+
     let pc_w = accum_info.init.next_pc.len();
     let st_w = accum_info.init.next_state.len();
     let rv_w = accum_info.init.ret_vals.len();
 
-    // Parse a chunk/finish-shaped flat `[done_acc, next_pc.., next_state..,
+    // Parse a chunk-shaped flat `[done_acc, next_pc.., next_state..,
     // ret_vals.., ..trailing]` output into its running-state prefix (the
     // trailing elements -- hats, or all_ok+fold_state -- are the caller's
-    // own concern).
-    let parse_running_output = |slots: &[Slot]| -> (Slot, Vec<Slot>, Vec<Slot>, Vec<Slot>) {
-        let mut idx = 0usize;
-        let done_acc = slots[idx].clone(); idx += 1;
-        let next_pc: Vec<Slot> = slots[idx..idx + pc_w].to_vec(); idx += pc_w;
-        let next_state: Vec<Slot> = slots[idx..idx + st_w].to_vec(); idx += st_w;
-        let ret_vals: Vec<Slot> = slots[idx..idx + rv_w].to_vec();
+    // own concern) -- MINUS any pooled entries, which `take_if_named`
+    // skips over (see its own doc). `done_acc`/`next_pc` are
+    // unconditionally `vope_type()`/`q_type()` (never `Array`) by
+    // `bind_running`/`running_export`'s own design in `vole.rs`, so they
+    // are ALWAYS pooled in practice -- but this stays generic (uniform
+    // `take_if_named` calls) rather than hardcoding that fact, so it
+    // stays correct if that ever changes. Takes `idx` by `&mut` (rather
+    // than returning it) so callers can locate whatever trails (hats, or
+    // all_ok/fold_state) at the correct position afterward.
+    let parse_running_output = |slots: &[Slot], idx: &mut usize| -> (Option<Slot>, Vec<Option<Slot>>, Vec<Option<Slot>>, Vec<Option<Slot>>) {
+        let done_acc = take_if_named(slots, idx, &named_param_present, "in_done_acc");
+        let next_pc: Vec<Option<Slot>> = (0..pc_w).map(|j| take_if_named(slots, idx, &named_param_present, &format!("in_next_pc_{j}"))).collect();
+        let next_state: Vec<Option<Slot>> = (0..st_w).map(|k| take_if_named(slots, idx, &named_param_present, &format!("in_next_state_{k}"))).collect();
+        let ret_vals: Vec<Option<Slot>> = (0..rv_w).map(|m| take_if_named(slots, idx, &named_param_present, &format!("in_ret_val_{m}"))).collect();
         (done_acc, next_pc, next_state, ret_vals)
+    };
+    // A field of the running-accumulator's own OUTGOING tuple/array local
+    // (`_acc_st_vope_{uid}` etc.): the real extracted value if this slot
+    // is still tuple-threaded, or a harmless zero placeholder if it's
+    // pooled -- a pooled field is never actually read back (its real
+    // current value lives in `_synth_pool[v]` instead, addressed by the
+    // same var id `vole.rs`'s own host-side `running_*` tracking already
+    // threads producer-to-consumer), so the placeholder only needs to be
+    // syntactically valid, not meaningful.
+    let running_field_str = |s: &Option<Slot>, zero_expr: &str| -> String {
+        match s {
+            Some(s) => format!("{}.clone()", slot_name(s)),
+            None => zero_expr.to_string(),
+        }
     };
 
     for c in 0..n_chunks {
@@ -795,13 +845,14 @@ pub fn generate_split_step(
         );
         let p_slots = p_outcome.finish_output;
         // Layout: [done_acc, next_pc.., next_state.., ret_vals.., hats, synth_out..]
-        // -- NOT `.last()` for hats: synth_out entries (if any) trail it.
-        let p_hats = p_slots[1 + pc_w + st_w + rv_w].clone();
-        let (p_new_done_acc, p_new_next_pc, p_new_next_state, p_new_ret_vals) = parse_running_output(&p_slots);
+        // -- MINUS any pooled entries (see `parse_running_output`'s own doc).
+        let mut p_idx = 0usize;
+        let (p_new_done_acc, p_new_next_pc, p_new_next_state, p_new_ret_vals) = parse_running_output(&p_slots, &mut p_idx);
+        let p_hats = p_slots[p_idx].clone(); p_idx += 1;
         let out_step_for_lo_hi = &accum_info.steps[hi - 1];
         let p_chunk_synth_out = unpooled_synth_out(&out_step_for_lo_hi.synthetic_out);
-        assert_eq!(p_chunk_synth_out.len(), p_slots.len() - (2 + pc_w + st_w + rv_w), "chunk {c}: prover unpooled synth_out count must match trailing tuple slots");
-        for (&v, s) in p_chunk_synth_out.iter().zip(&p_slots[(2 + pc_w + st_w + rv_w)..]) {
+        assert_eq!(p_chunk_synth_out.len(), p_slots.len() - p_idx, "chunk {c}: prover unpooled synth_out count must match trailing tuple slots");
+        for (&v, s) in p_chunk_synth_out.iter().zip(&p_slots[p_idx..]) {
             insert_synth_export(&mut synth_exported_vope, v, s.clone());
         }
 
@@ -809,8 +860,14 @@ pub fn generate_split_step(
             &mut out, qf, "q_one(&delta)", entry_w, 1, Some(&p_hats), None, None, Some(running_in_q), &exported_q, &synth_exported_q, Some((lo, hi)), false,
             "", "", oracle_q.as_deref(), &format!("q_{uid}"),
         );
-        let q_and_arr = q_outcome.finish_output[1 + pc_w + st_w + rv_w].clone();
-        // QSim's own synthetic outputs are discarded, same as its running state above.
+        let q_slots = q_outcome.finish_output;
+        // QSim's own running state is discarded downstream (only Verifier's
+        // is threaded onward), but `idx` must still advance correctly past
+        // it to land on `q_and_arr` at the right position.
+        let mut q_idx = 0usize;
+        let _ = parse_running_output(&q_slots, &mut q_idx);
+        let q_and_arr = q_slots[q_idx].clone();
+        // QSim's own synthetic outputs are discarded too, same reasoning.
 
         let and_count = and_count_of(vf);
         let r_ands_name = format!("_rands_{uid}");
@@ -824,12 +881,14 @@ pub fn generate_split_step(
         );
         let v_slots = v_outcome.finish_output;
         // Layout: [done_acc, next_pc.., next_state.., ret_vals.., all_ok, fold_state, synth_out..]
-        let (v_new_done_acc, v_new_next_pc, v_new_next_state, v_new_ret_vals) = parse_running_output(&v_slots);
-        let v_all_ok = match &v_slots[1 + pc_w + st_w + rv_w] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
-        let v_fold_state = match &v_slots[2 + pc_w + st_w + rv_w] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
+        // -- MINUS any pooled entries, same as the prover call above.
+        let mut v_idx = 0usize;
+        let (v_new_done_acc, v_new_next_pc, v_new_next_state, v_new_ret_vals) = parse_running_output(&v_slots, &mut v_idx);
+        let v_all_ok = match &v_slots[v_idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; v_idx += 1;
+        let v_fold_state = match &v_slots[v_idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; v_idx += 1;
         let v_chunk_synth_out = unpooled_synth_out(&out_step_for_lo_hi.synthetic_out);
-        assert_eq!(v_chunk_synth_out.len(), v_slots.len() - (3 + pc_w + st_w + rv_w), "chunk {c}: verifier unpooled synth_out count must match trailing tuple slots");
-        for (&v, s) in v_chunk_synth_out.iter().zip(&v_slots[(3 + pc_w + st_w + rv_w)..]) {
+        assert_eq!(v_chunk_synth_out.len(), v_slots.len() - v_idx, "chunk {c}: verifier unpooled synth_out count must match trailing tuple slots");
+        for (&v, s) in v_chunk_synth_out.iter().zip(&v_slots[v_idx..]) {
             insert_synth_export(&mut synth_exported_q, v, s.clone());
         }
 
@@ -837,32 +896,36 @@ pub fn generate_split_step(
         all_ok_expr = v_all_ok;
         fold_state_expr = v_fold_state;
 
-        let done_acc_vope_name = match &p_new_done_acc { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
+        // Build this chunk's own OUTGOING running-state locals -- real
+        // extracted values for still-tuple-threaded (wide) slots, harmless
+        // zero placeholders for pooled ones (see `running_field_str`'s own
+        // doc: a pooled field is never read back from here at all).
+        let done_acc_vope_name = running_field_str(&p_new_done_acc, "vope_zero()");
         let pc_arr_vope = format!("_acc_pc_vope_{uid}");
-        out.push_str(&format!("let {pc_arr_vope} = [{}];\n", p_new_next_pc.iter().map(|s| format!("{}.clone()", slot_name(s))).collect::<Vec<_>>().join(", ")));
+        out.push_str(&format!("let {pc_arr_vope} = [{}];\n", p_new_next_pc.iter().map(|s| running_field_str(s, "vope_zero()")).collect::<Vec<_>>().join(", ")));
         let st_arr_vope = format!("_acc_st_vope_{uid}");
         out.push_str(&format!(
             "let {st_arr_vope} = {};\n",
-            tuple_literal(&p_new_next_state.iter().map(|s| format!("{}.clone()", slot_name(s))).collect::<Vec<_>>())
+            tuple_literal(&p_new_next_state.iter().map(|s| running_field_str(s, "vope_zero()")).collect::<Vec<_>>())
         ));
         let rv_arr_vope = format!("_acc_rv_vope_{uid}");
         out.push_str(&format!(
             "let {rv_arr_vope} = {};\n",
-            tuple_literal(&p_new_ret_vals.iter().map(|s| format!("{}.clone()", slot_name(s))).collect::<Vec<_>>())
+            tuple_literal(&p_new_ret_vals.iter().map(|s| running_field_str(s, "vope_zero()")).collect::<Vec<_>>())
         ));
 
-        let done_acc_q_name = match &v_new_done_acc { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
+        let done_acc_q_name = running_field_str(&v_new_done_acc, "q_zero()");
         let pc_arr_q = format!("_acc_pc_q_{uid}");
-        out.push_str(&format!("let {pc_arr_q} = [{}];\n", v_new_next_pc.iter().map(|s| format!("{}.clone()", slot_name(s))).collect::<Vec<_>>().join(", ")));
+        out.push_str(&format!("let {pc_arr_q} = [{}];\n", v_new_next_pc.iter().map(|s| running_field_str(s, "q_zero()")).collect::<Vec<_>>().join(", ")));
         let st_arr_q = format!("_acc_st_q_{uid}");
         out.push_str(&format!(
             "let {st_arr_q} = {};\n",
-            tuple_literal(&v_new_next_state.iter().map(|s| format!("{}.clone()", slot_name(s))).collect::<Vec<_>>())
+            tuple_literal(&v_new_next_state.iter().map(|s| running_field_str(s, "q_zero()")).collect::<Vec<_>>())
         ));
         let rv_arr_q = format!("_acc_rv_q_{uid}");
         out.push_str(&format!(
             "let {rv_arr_q} = {};\n",
-            tuple_literal(&v_new_ret_vals.iter().map(|s| format!("{}.clone()", slot_name(s))).collect::<Vec<_>>())
+            tuple_literal(&v_new_ret_vals.iter().map(|s| running_field_str(s, "q_zero()")).collect::<Vec<_>>())
         ));
 
         running_done_acc_vope = done_acc_vope_name;

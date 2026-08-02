@@ -5852,30 +5852,40 @@ pub fn weave_vole_prover_ir_split(
 
     let bind_running = |ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, prefix: &str,
                          done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| {
-        bind_scalar(ctx, params, done_acc, format!("{prefix}_done_acc"), vope_type());
+        bind_scalar_or_pool(ctx, params, done_acc, format!("{prefix}_done_acc"), vope_type());
         for (j, &v) in next_pc.iter().enumerate() {
-            bind_scalar(ctx, params, v, format!("{prefix}_next_pc_{j}"), vope_type());
+            bind_scalar_or_pool(ctx, params, v, format!("{prefix}_next_pc_{j}"), vope_type());
         }
         for (k, &v) in next_state.iter().enumerate() {
-            bind_scalar(ctx, params, v, format!("{prefix}_next_state_{k}"), init_next_state_tys[k].clone());
+            bind_scalar_or_pool(ctx, params, v, format!("{prefix}_next_state_{k}"), init_next_state_tys[k].clone());
         }
         for (m, &v) in ret_vals.iter().enumerate() {
-            bind_scalar(ctx, params, v, format!("{prefix}_ret_val_{m}"), init_ret_val_tys[m].clone());
+            bind_scalar_or_pool(ctx, params, v, format!("{prefix}_ret_val_{m}"), init_ret_val_tys[m].clone());
         }
     };
-    let running_tys = |pc_width: usize| -> Vec<IrType> {
-        let mut tys = vec![vope_type()];
-        tys.extend((0..pc_width).map(|_| vope_type()));
-        tys.extend(init_next_state_tys.iter().cloned());
-        tys.extend(init_ret_val_tys.iter().cloned());
-        tys
-    };
-    let running_exprs = |ctx: &VoleIrCtx, done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| -> Vec<IrExpr> {
-        let mut exprs = vec![ctx.slot_expr(&CirVar(done_acc))];
-        exprs.extend(next_pc.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
-        exprs.extend(next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
-        exprs.extend(ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
-        exprs
+    // Running-accumulator OUTGOING state (this chunk's own new done_acc/
+    // next_pc/next_state/ret_vals): pool scalar ones directly via
+    // `_synth_pool`, exactly like block-boundary exports -- see
+    // `export_scalar_or_tuple`'s own doc. Replaces the old unconditional
+    // running_tys/running_exprs pair (which always pushed every value
+    // onto the return tuple) since the pooling decision needs
+    // type+expr+var_id together, not types and exprs built independently.
+    let running_export = |ctx: &mut VoleIrCtx, ret_tuple_tys: &mut Vec<IrType>, ret_tuple_exprs: &mut Vec<IrExpr>,
+                           done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| {
+        let done_acc_expr = ctx.slot_expr(&CirVar(done_acc));
+        export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, done_acc, vope_type(), done_acc_expr);
+        for &v in next_pc {
+            let expr = ctx.slot_expr(&CirVar(v));
+            export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, v, vope_type(), expr);
+        }
+        for (k, &v) in next_state.iter().enumerate() {
+            let expr = ctx.slot_expr(&CirVar(v));
+            export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, v, init_next_state_tys[k].clone(), expr);
+        }
+        for (m, &v) in ret_vals.iter().enumerate() {
+            let expr = ctx.slot_expr(&CirVar(v));
+            export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, v, init_ret_val_tys[m].clone(), expr);
+        }
     };
 
     let n_blocks = boundary.len();
@@ -5973,11 +5983,12 @@ pub fn weave_vole_prover_ir_split(
         global_ts += local_entry_count.max(ctx.mem_timestamp);
 
         let out_step = &accum_info.steps[hi - 1];
-        let mut ret_tuple_tys = running_tys(accum_info.init.next_pc.len());
+        let mut ret_tuple_tys: Vec<IrType> = Vec::new();
+        let mut ret_tuple_exprs: Vec<IrExpr> = Vec::new();
+        running_export(&mut ctx, &mut ret_tuple_tys, &mut ret_tuple_exprs, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
         let hats_ty = hat_array_type(ctx.hat_names.len());
-        ret_tuple_tys.push(hats_ty);
-        let mut ret_tuple_exprs = running_exprs(&ctx, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
         let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| hat_ref_expr(h)).collect()));
+        ret_tuple_tys.push(hats_ty);
         ret_tuple_exprs.push(hats_expr);
 
         // As the per-block loop's own synthetic_out handling above --
@@ -6049,6 +6060,15 @@ pub fn weave_vole_prover_ir_split(
     for (r, &width) in finish_ext.rng_widths.iter().enumerate() {
         for j in 0..width { params.push(IrParam { name: format!("vope_ext_rng_{}_bit_{}", r, j), ty: vope_type() }); }
     }
+    // `bind_running`'s READ side can now register a pooled (`_synth_pool`)
+    // read for the incoming running accumulator -- finish never had any
+    // other reason to take `_synth_pool` (it has no `synthetic_in`/`out`
+    // of its own, confirmed earlier), so this declaration was previously
+    // entirely absent here. Unconditional for the same reason the block/
+    // chunk sites are: done_acc/next_pc are unconditionally scalar (see
+    // `bind_running`'s own doc), so finish needs this virtually always.
+    params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(vope_type(), true) });
+    params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
 
     let mut ctx = VoleIrCtx::new(true);
     insert_w_wires(&mut ctx);
@@ -7188,30 +7208,35 @@ pub fn weave_vole_qsim_ir_split(
 
     let bind_running = |ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, prefix: &str,
                          done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| {
-        bind_scalar(ctx, params, done_acc, format!("{prefix}_done_acc"), q_type());
+        bind_scalar_or_pool(ctx, params, done_acc, format!("{prefix}_done_acc"), q_type());
         for (j, &v) in next_pc.iter().enumerate() {
-            bind_scalar(ctx, params, v, format!("{prefix}_next_pc_{j}"), q_type());
+            bind_scalar_or_pool(ctx, params, v, format!("{prefix}_next_pc_{j}"), q_type());
         }
         for (k, &v) in next_state.iter().enumerate() {
-            bind_scalar(ctx, params, v, format!("{prefix}_next_state_{k}"), init_next_state_tys[k].clone());
+            bind_scalar_or_pool(ctx, params, v, format!("{prefix}_next_state_{k}"), init_next_state_tys[k].clone());
         }
         for (m, &v) in ret_vals.iter().enumerate() {
-            bind_scalar(ctx, params, v, format!("{prefix}_ret_val_{m}"), init_ret_val_tys[m].clone());
+            bind_scalar_or_pool(ctx, params, v, format!("{prefix}_ret_val_{m}"), init_ret_val_tys[m].clone());
         }
     };
-    let running_tys = |pc_width: usize| -> Vec<IrType> {
-        let mut tys = vec![q_type()];
-        tys.extend((0..pc_width).map(|_| q_type()));
-        tys.extend(init_next_state_tys.iter().cloned());
-        tys.extend(init_ret_val_tys.iter().cloned());
-        tys
-    };
-    let running_exprs = |ctx: &VoleIrCtx, done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| -> Vec<IrExpr> {
-        let mut exprs = vec![ctx.slot_expr(&CirVar(done_acc))];
-        exprs.extend(next_pc.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
-        exprs.extend(next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
-        exprs.extend(ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
-        exprs
+    // Running-accumulator OUTGOING state: pool scalar ones directly via
+    // `_synth_pool` -- see the matching Prover-role comment.
+    let running_export = |ctx: &mut VoleIrCtx, ret_tuple_tys: &mut Vec<IrType>, ret_tuple_exprs: &mut Vec<IrExpr>,
+                           done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| {
+        let done_acc_expr = ctx.slot_expr(&CirVar(done_acc));
+        export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, done_acc, q_type(), done_acc_expr);
+        for &v in next_pc {
+            let expr = ctx.slot_expr(&CirVar(v));
+            export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, v, q_type(), expr);
+        }
+        for (k, &v) in next_state.iter().enumerate() {
+            let expr = ctx.slot_expr(&CirVar(v));
+            export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, v, init_next_state_tys[k].clone(), expr);
+        }
+        for (m, &v) in ret_vals.iter().enumerate() {
+            let expr = ctx.slot_expr(&CirVar(v));
+            export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, v, init_ret_val_tys[m].clone(), expr);
+        }
     };
 
     let n_blocks = boundary.len();
@@ -7306,11 +7331,12 @@ pub fn weave_vole_qsim_ir_split(
         global_ts += local_entry_count.max(ctx.mem_timestamp);
 
         let out_step = &accum_info.steps[hi - 1];
-        let mut ret_tuple_tys = running_tys(accum_info.init.next_pc.len());
+        let mut ret_tuple_tys: Vec<IrType> = Vec::new();
+        let mut ret_tuple_exprs: Vec<IrExpr> = Vec::new();
+        running_export(&mut ctx, &mut ret_tuple_tys, &mut ret_tuple_exprs, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
         let hats_ty = q_and_array_type(ctx.q_and_names.len());
-        ret_tuple_tys.push(hats_ty);
-        let mut ret_tuple_exprs = running_exprs(&ctx, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
         let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| wire_ref_expr(h)).collect()));
+        ret_tuple_tys.push(hats_ty);
         ret_tuple_exprs.push(hats_expr);
 
         // As `weave_vole_prover_ir_split`'s own chunk-level synthetic_out handling.
@@ -7385,6 +7411,11 @@ pub fn weave_vole_qsim_ir_split(
     for (r, &width) in finish_ext.rng_widths.iter().enumerate() {
         for j in 0..width { params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() }); }
     }
+    // `bind_running`'s READ side can now register a pooled (`_synth_pool`)
+    // read for the incoming running accumulator -- see the matching
+    // Prover-role comment.
+    params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
+    params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
 
     let mut ctx = VoleIrCtx::new_qsim();
     insert_w_wires(&mut ctx);
@@ -8279,31 +8310,37 @@ pub fn weave_vole_verifier_ir_split_with_trace(
 
     let bind_running = |ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, prefix: &str,
                          done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| {
-        bind_scalar(ctx, params, done_acc, format!("{prefix}_done_acc"), q_type());
+        bind_scalar_or_pool(ctx, params, done_acc, format!("{prefix}_done_acc"), q_type());
         for (j, &v) in next_pc.iter().enumerate() {
-            bind_scalar(ctx, params, v, format!("{prefix}_next_pc_{j}"), q_type());
+            bind_scalar_or_pool(ctx, params, v, format!("{prefix}_next_pc_{j}"), q_type());
         }
         for (k, &v) in next_state.iter().enumerate() {
-            bind_scalar(ctx, params, v, format!("{prefix}_next_state_{k}"), init_next_state_tys[k].clone());
+            bind_scalar_or_pool(ctx, params, v, format!("{prefix}_next_state_{k}"), init_next_state_tys[k].clone());
         }
         for (m, &v) in ret_vals.iter().enumerate() {
-            bind_scalar(ctx, params, v, format!("{prefix}_ret_val_{m}"), init_ret_val_tys[m].clone());
+            bind_scalar_or_pool(ctx, params, v, format!("{prefix}_ret_val_{m}"), init_ret_val_tys[m].clone());
         }
     };
-    let running_tys = |prefix: &str, pc_width: usize| -> Vec<IrType> {
-        let mut tys = vec![q_type()];
-        tys.extend((0..pc_width).map(|_| q_type()));
-        tys.extend(init_next_state_tys.iter().cloned());
-        tys.extend(init_ret_val_tys.iter().cloned());
-        let _ = prefix;
-        tys
-    };
-    let running_exprs = |ctx: &VoleIrCtx, done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| -> Vec<IrExpr> {
-        let mut exprs = vec![ctx.slot_expr(&CirVar(done_acc))];
-        exprs.extend(next_pc.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
-        exprs.extend(next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
-        exprs.extend(ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
-        exprs
+    // Running-accumulator OUTGOING state: pool scalar ones directly via
+    // `_synth_pool` -- see the matching Prover-role comment. `prefix` was
+    // already unused by the old `running_tys` (`let _ = prefix;`), so it's
+    // dropped here rather than threaded through for no purpose.
+    let running_export = |ctx: &mut VoleIrCtx, ret_tuple_tys: &mut Vec<IrType>, ret_tuple_exprs: &mut Vec<IrExpr>,
+                           done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| {
+        let done_acc_expr = ctx.slot_expr(&CirVar(done_acc));
+        export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, done_acc, q_type(), done_acc_expr);
+        for &v in next_pc {
+            let expr = ctx.slot_expr(&CirVar(v));
+            export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, v, q_type(), expr);
+        }
+        for (k, &v) in next_state.iter().enumerate() {
+            let expr = ctx.slot_expr(&CirVar(v));
+            export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, v, init_next_state_tys[k].clone(), expr);
+        }
+        for (m, &v) in ret_vals.iter().enumerate() {
+            let expr = ctx.slot_expr(&CirVar(v));
+            export_scalar_or_tuple(&mut ctx.stmts, ret_tuple_tys, ret_tuple_exprs, v, init_ret_val_tys[m].clone(), expr);
+        }
     };
 
     let n_blocks = boundary.len();
@@ -8409,10 +8446,11 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         global_ts += local_entry_count.max(ctx.mem_timestamp);
 
         let out_step = &accum_info.steps[hi - 1];
-        let mut ret_tuple_tys = running_tys("out", accum_info.init.next_pc.len());
+        let mut ret_tuple_tys: Vec<IrType> = Vec::new();
+        let mut ret_tuple_exprs: Vec<IrExpr> = Vec::new();
+        running_export(&mut ctx, &mut ret_tuple_tys, &mut ret_tuple_exprs, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
         ret_tuple_tys.push(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool));
         ret_tuple_tys.push(IrType::TypeParam(sink.state_type_name().into()));
-        let mut ret_tuple_exprs = running_exprs(&ctx, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
         ret_tuple_exprs.push(var("all_ok"));
         ret_tuple_exprs.push(var("fold_state"));
 
@@ -8490,6 +8528,16 @@ pub fn weave_vole_verifier_ir_split_with_trace(
     for (r, &width) in finish_ext.rng_widths.iter().enumerate() {
         for j in 0..width { params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() }); }
     }
+    // `bind_running`'s READ side can now register a pooled (`_synth_pool`)
+    // read for the incoming running accumulator -- see the matching
+    // Prover-role comment. Param declaration order doesn't affect
+    // `split_driver.rs::build_call`'s own correctness (it matches params
+    // by name, not position), so placing this before `all_ok_in`/
+    // `fold_state_in` below is fine despite the "all_ok_in/fold_state_in
+    // BEFORE synth_*" convention noted elsewhere -- that convention is
+    // about wrapper-internal Rust binding order, not signature order.
+    params.push(IrParam { name: "_synth_pool".into(), ty: pool_slice_type(q_type(), true) });
+    params.push(IrParam { name: "_synth_pool_written".into(), ty: pool_slice_type(IrType::Primitive(PrimitiveType::Bool), true) });
 
     let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
     insert_w_wires(&mut ctx);
