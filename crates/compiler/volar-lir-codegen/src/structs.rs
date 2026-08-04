@@ -501,6 +501,17 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             LirType::Arr(Box::new(ir_type_to_lir_inner(elem, registry)), n)
         }
 
+        // `Box<T>` (see `volar_compiler::ir::box_type`'s own doc): not a real
+        // registered struct at all, always a heap pointer to its element type
+        // regardless of what `T` is. Must be checked before the generic
+        // `Struct` registry lookup below, which would otherwise panic (no
+        // struct named "Box" is ever registered).
+        IrType::Struct { kind: StructKind::Custom(name), type_args }
+            if name == "Box" && type_args.len() == 1 =>
+        {
+            LirType::Ptr(Box::new(ir_type_to_lir_inner(&type_args[0], registry)))
+        }
+
         IrType::Struct { kind, type_args } => {
             // Native-annotated structs map to LirType::Native instead of LirType::Struct.
             if let Some(native_ty) = registry.native_types.get(&kind_name(kind)).copied() {

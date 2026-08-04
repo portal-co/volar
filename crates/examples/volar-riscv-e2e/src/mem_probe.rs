@@ -263,6 +263,99 @@ pub(crate) mod tests {
         assert_eq!(byte, STEPS as u32, "committed byte must equal STEPS after 3 real steps");
     }
 
+    /// Parse the VOLE-relevant spec sources into a single `IrModule`, for
+    /// use as [`volar_compiler::linkage`]-style inlining into the LIR
+    /// pipeline (`lower_module_monomorphized` + `CBackend`) -- mirrors
+    /// `volar-c-backend/tests/vole_e2e.rs`'s own `parse_vole_spec` helper
+    /// exactly (can't reuse it directly, it's private to that test binary),
+    /// with `vole/setup.rs` added for `derive_and_q` (QSim's own only
+    /// real spec call, not exercised by that file's small AND/XOR/half-adder
+    /// circuits).
+    fn parse_vole_spec_for_lir() -> volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction> {
+        use volar_compiler::{SourceInput, parse_sources};
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().parent().unwrap()
+            .join("spec").join("volar-spec").join("src");
+        let files = ["lib.rs", "vole.rs", "vole/prove.rs", "vole/vope.rs", "vole/impls.rs", "vole/setup.rs"];
+        let loaded: std::vec::Vec<(String, String)> = files.iter().map(|&f| {
+            let path = src_dir.join(f);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read spec file {}: {e}", path.display()));
+            let stem = std::path::Path::new(f).file_stem().unwrap().to_string_lossy().into_owned();
+            (src, stem)
+        }).collect();
+        let inputs: std::vec::Vec<SourceInput> = loaded.iter()
+            .map(|(src, name)| SourceInput { source: src.as_str(), name: name.as_str() })
+            .collect();
+        parse_sources(&inputs, "volar_spec", &[])
+            .unwrap_or_else(|e| panic!("parse_vole_spec_for_lir failed: {e}"))
+    }
+
+    /// `MonoEnv` matching the driver's own real crypto parameters (see
+    /// `honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl`'s
+    /// own `type N = cipher::consts::U16;` / `Galois` usage) -- `T = Galois`
+    /// (not the plain-`u8` `vole_env()` used by `vole_e2e.rs`'s toy
+    /// circuits), since real non-zero-mask VOLE needs GF-aware arithmetic.
+    fn mem_probe_lir_env() -> volar_lir_codegen::mono::MonoEnv {
+        use volar_compiler::ir::{IrType, PrimitiveType};
+        volar_lir_codegen::mono::MonoEnv::new("mem_probe")
+            .with_len("N", 16)
+            .with_len("U1", 1)
+            .with_len("U0", 0)
+            .with_len("K", 1)
+            .with_type("T", IrType::Primitive(PrimitiveType::Galois))
+    }
+
+    /// First real test of the user's own parallel LIR/C-backend work
+    /// against a genuine (not toy AND/XOR/half-adder) circuit: does the
+    /// *split, pooled* mem_probe prover module (the exact same
+    /// `weave_vole_prover_ir_split` output the rustc-text pipeline already
+    /// compiles+runs, exercising all 3 pool-based-regalloc phases) lower
+    /// through `lower_module_monomorphized` + `CBackend` at all? Structural
+    /// only (no compile/run yet) -- reports the generated C source's own
+    /// size for comparison against the equivalent Rust-printer output
+    /// (`honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary`'s
+    /// own `prover_code` -- not printed there today, worth comparing by
+    /// hand). Run manually with
+    /// `cargo test -p volar-riscv-e2e lir_probe_prover_lowers_to_c -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn lir_probe_prover_lowers_to_c() {
+        use volar_weaver::{weave_vole_prover_ir_split, StorageMode};
+        use volar_compiler::ir::IrFunction;
+        use volar_lir_codegen::{lower_module_monomorphized, roots_by_name_prefix, MonoPlanOptions};
+        use volar_c_backend::CBackend;
+
+        let (_ir_blocks, _movfuscated, circuit, types, boundary, accum_info) = lower_mem_probe();
+        let mode = StorageMode::Commitment;
+        let chunk_size = 2usize;
+        let max_stmts_per_piece = volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE;
+
+        let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_prover_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, max_stmts_per_piece, |f| prover_funcs.push(f));
+        eprintln!("woven prover functions: {}", prover_funcs.len());
+
+        let mut module = parse_vole_spec_for_lir();
+        module.name = "mp_prover".into();
+        module.functions.extend(prover_funcs);
+
+        let env = mem_probe_lir_env();
+        // A configurable prefix list, not a hardcoded pair -- see
+        // `roots_by_name_prefix`'s own doc: this codebase's 3 woven roles
+        // use 3 different prefixes (`vole_prove_`/`vole_verify_`/
+        // `vole_qsim_`), and a future weaver is one more prefix here, not a
+        // new hardcoded helper.
+        let roots = roots_by_name_prefix(&module, &["vole_prove_"], &["vole_and_prover_step"], env);
+        eprintln!("roots: {}", roots.len());
+
+        let mut backend = CBackend::new();
+        lower_module_monomorphized(&module, &mut backend, MonoPlanOptions { roots, ..Default::default() })
+            .unwrap_or_else(|e| panic!("LIR monomorphization failed: {e}"));
+        let c_src = backend.finish();
+        eprintln!("generated C source: {} bytes", c_src.len());
+        assert!(!c_src.is_empty());
+    }
+
     /// Milestone 1.6's real checkpoint: compile and run the *split*
     /// prover + **`QSim`** + verifier (one function per movfuscated block,
     /// plus chunked accumulator functions, plus a finish function -- see

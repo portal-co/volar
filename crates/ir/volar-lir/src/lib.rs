@@ -278,6 +278,43 @@ pub trait StackAllocExt {
 }
 
 // ============================================================================
+// Heap allocation extension trait
+// ============================================================================
+
+/// Extension trait for backends with a real heap-allocation primitive —
+/// the `Box<T>` counterpart of [`StackAllocExt`].
+///
+/// Access via [`LirTarget::heap_alloc_ext`], which returns `None` for
+/// backends without one. `CBackend` returns `Some(self)`, backed by `malloc`.
+///
+/// # Pointer type
+///
+/// Like [`StackAllocExt::alloca`], `heap_alloc` returns a [`LirType::Ptr`]
+/// value — [`StackAllocExt::ptr_load`]/`ptr_store`/`ptr_offset` and
+/// [`LirTarget::ptr_index_load`]/`ptr_index_store` all work identically
+/// regardless of whether a pointer came from `alloca` or `heap_alloc`; only
+/// the allocation site itself differs. A backend implementing
+/// `HeapAllocExt` is expected to also implement `StackAllocExt`, so callers
+/// needing to read/write through the resulting pointer reuse that trait's
+/// methods rather than duplicating them here.
+///
+/// # Lifetime
+///
+/// Unlike a stack allocation, a heap allocation is never implicitly freed —
+/// this trait deliberately has no `free`/`drop` method. For this codebase's
+/// current use (function-scoped proof-generation pools, freed in bulk when
+/// the enclosing single-shot process exits) that's an acceptable, explicit
+/// simplification, not an oversight; add explicit freeing here if a future
+/// caller needs it.
+pub trait HeapAllocExt {
+    type Value: Clone + Eq + core::fmt::Debug;
+
+    /// Allocate heap storage for `count` elements of `elem_ty`, returning a
+    /// value of type `LirType::Ptr(Box::new(elem_ty))`.
+    fn heap_alloc(&mut self, elem_ty: LirType, count: usize) -> Self::Value;
+}
+
+// ============================================================================
 // Struct definitions
 // ============================================================================
 
@@ -553,6 +590,22 @@ pub trait LirTarget<Prov: Clone = ()> {
     /// Callers should check for `Some` before using pointer-based patterns
     /// (e.g. passing large structs by pointer in the C ABI).
     fn stack_alloc_ext(&mut self) -> Option<&mut dyn StackAllocExt<Value = Self::Value>> {
+        None
+    }
+
+    /// Return a mutable reference to the [`HeapAllocExt`] implementation for
+    /// this backend, if it supports heap allocation.
+    ///
+    /// The `Box<T>` abstraction (see `volar_compiler::ir::box_type`/
+    /// `box_new_expr`) lowers through this — unlike [`Self::stack_alloc_ext`],
+    /// a heap allocation's storage outlives the call that produced it and is
+    /// never implicitly freed at function exit, which is exactly what a
+    /// large, statically-sized-but-too-big-for-the-stack buffer (e.g. a
+    /// pool with thousands of slots) needs.
+    ///
+    /// Circuit backends (`VolarIrTarget`, `VaffleTarget`) return `None`.
+    /// `CBackend` returns `Some(self)` (backed by `malloc`).
+    fn heap_alloc_ext(&mut self) -> Option<&mut dyn HeapAllocExt<Value = Self::Value>> {
         None
     }
 

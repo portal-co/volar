@@ -1809,6 +1809,202 @@ impl fmt::Display for IrLit {
     }
 }
 
+/// A real Rust identifier can never start with an ASCII digit, so an
+/// [`IrExprKind::Var`] whose name is composed *entirely* of ASCII digits is
+/// unambiguously not a real bound-variable reference. Some IR producers
+/// (e.g. `volar-weaver`'s VOLE weaver, for its pool-index addressing
+/// convention) smuggle a literal integer through `Var` this way, relying on
+/// a text printer emitting the name as a bare token that rustc reparses as
+/// an integer literal — cheap for printer-only consumers, but wrong for any
+/// consumer that gives `Var` its real semantic meaning (a bound-variable
+/// lookup), such as `volar-lir-codegen`'s IR-to-LIR lowering or an IR
+/// interpreter.
+///
+/// This is the single, shared guardrail every such consumer should call
+/// before treating an unresolved `Var(name)` as an error: `None` means
+/// `name` is a genuine undefined-variable reference (a real bug), `Some`
+/// means it was a smuggled literal all along.
+pub fn digit_var_as_literal(name: &str) -> Option<i128> {
+    if name.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        name.parse::<i128>().ok()
+    } else {
+        None
+    }
+}
+
+// ============================================================================
+// `Box<T>` as a first heap-allocation abstraction
+// ============================================================================
+//
+// A single, target-agnostic way for an IR producer (a weaver, a lowering
+// pass, ...) to say "this value should live on the heap, not the stack" —
+// each backend then decides what that actually means: Rust prints a real
+// `Box<T>`/`Box::new(_)`; the LIR/C backend allocates with `malloc` and
+// represents the box as a `LirType::Ptr`; a hypothetical JS backend can
+// treat it as a no-op (every JS value is already heap-managed); and a
+// producer that has no reason to care about the stack/heap distinction at
+// all (e.g. a future non-Rust-text weaver target) is free to ignore `Box`
+// entirely and keep emitting plain, unwrapped values.
+//
+// Deliberately reuses existing `IrType`/`IrExprKind` machinery instead of
+// adding new variants: `Box<T>` is `Struct{kind: Custom("Box"), type_args:
+// [T]}` (the Rust printer already renders `Struct{kind, type_args}` as
+// `{kind}<{type_args}>`, so this prints as `Box<T>` with zero printer
+// changes), and `Box::new(inner)` is `Call{func: Path(["Box","new"]), args:
+// [inner]}` (likewise already printer-supported). This keeps the change
+// footprint to the handful of places that need to give `Box` real semantic
+// meaning (LIR codegen, `LirTarget`'s heap-allocation primitive) rather than
+// touching every exhaustive match over `IrType`/`IrExprKind` in the
+// codebase.
+
+/// `Box<elem>` — see the module-level doc above for the encoding.
+pub fn box_type(elem: IrType) -> IrType {
+    IrType::Struct {
+        kind: StructKind::Custom("Box".into()),
+        type_args: vec![elem],
+    }
+}
+
+/// Recognize a `Box<T>` type built by [`box_type`], returning `T`.
+pub fn as_box_type(ty: &IrType) -> Option<&IrType> {
+    match ty {
+        IrType::Struct { kind: StructKind::Custom(name), type_args } if name == "Box" && type_args.len() == 1 => {
+            Some(&type_args[0])
+        }
+        _ => None,
+    }
+}
+
+/// `Box::new(inner)` — see the module-level doc above for the encoding.
+pub fn box_new_expr<P: Clone + Default>(inner: IrExpr<P>) -> IrExpr<P> {
+    IrExpr::new(
+        IrExprKind::Call {
+            func: Box::new(IrExpr::new(
+                IrExprKind::Path { segments: vec!["Box".into(), "new".into()], type_args: vec![] },
+                P::default(),
+                None,
+            )),
+            args: vec![inner],
+        },
+        P::default(),
+        None,
+    )
+}
+
+/// Recognize a `Box::new(inner)` call built by [`box_new_expr`], returning
+/// `inner`.
+pub fn as_box_new<P: Clone>(expr: &IrExpr<P>) -> Option<&IrExpr<P>> {
+    let IrExprKind::Call { func, args } = &expr.kind else { return None };
+    let [inner] = args.as_slice() else { return None };
+    let IrExprKind::Path { segments, .. } = &func.kind else { return None };
+    if segments.len() == 2 && segments[0] == "Box" && segments[1] == "new" {
+        Some(inner)
+    } else {
+        None
+    }
+}
+
+/// `Box<[elem_ty; count]>` — the type half of [`box_new_array_expr`]. Uses
+/// `IrType::Array { kind: FixedArray, .. }` (a real Rust builtin array,
+/// `[T; N]`) rather than `ArrayKind::GenericArray` (`hybrid_array::Array<T,
+/// N>`, used pervasively elsewhere in this codebase's weavers for the
+/// unrelated VOLE-repetition dimension, always a small N like 16): a
+/// builtin array supports *any* `N` via a plain `usize` const generic,
+/// while `hybrid_array::Array<T, N>` only implements its own `ArraySize`
+/// bound for a bounded set of typenum values (confirmed directly — a
+/// pool-scale `N` in the hundreds hits "the trait `ArraySize` is not
+/// implemented", RustCrypto/hybrid-array#66) — wrong tool for a
+/// potentially-thousands-of-slots pool.
+pub fn box_array_type(elem_ty: IrType, count: usize) -> IrType {
+    box_type(IrType::Array {
+        kind: crate::ir::ArrayKind::FixedArray,
+        elem: Box::new(elem_ty),
+        len: crate::ir::ArrayLength::Const(count),
+    })
+}
+
+/// `Box::<[elem_ty; count]>::new(core::array::from_fn(|_| elem_default_expr))`
+/// — a statically-sized, heap-backed, default-value-initialized array. This
+/// is the specific `Box` shape a pool declaration wants (see e.g.
+/// `volar-weaver`'s `pool_decl_stmt`).
+///
+/// Built from `core::array::from_fn` (closure-based construction), not
+/// [`IrExprKind::Repeat`] (`[elem; N]`, a literal-repeat expression) —
+/// `Repeat`'s own Rust semantics require `elem: Copy` (the *value* gets
+/// duplicated `N` times), which most types this abstraction targets (VOLE
+/// wire commitments like `Vope`/`Q`, generally not `Copy`) don't satisfy;
+/// `core::array::from_fn` instead calls the body closure fresh for every
+/// index, no `Copy` bound needed — exactly matching how this codebase's own
+/// hand-written driver text already builds this shape
+/// (`core::array::from_fn(|_| vope_zero())`). A plain `Call{Path, args:
+/// [Closure]}`, not [`IrExprKind::ArrayGenerate`] — that node is hardwired
+/// by the Rust printer to `Array::<T,N>::from_fn(..)` (`hybrid_array`'s own
+/// type, unconditionally), which is exactly the type this function exists
+/// to avoid (see [`box_array_type`]'s own doc).
+///
+/// The element TYPE is carried explicitly as a `type_arg` on the outer
+/// `Box::new` path (as the *whole array type*, `[elem_ty; count]` — not
+/// `elem_ty` alone, which would print as `Box::<elem_ty>::new(...)`, valid
+/// Rust syntax but semantically the wrong type for what `Box::new` actually
+/// receives here) so a non-text-printer consumer like `volar-lir-codegen`
+/// doesn't need to re-derive it from an un-annotated closure.
+///
+/// `elem_default_expr` must be a zero/`Default::default()`-shaped
+/// expression (a bare `0`, `false`, or a niladic `T::default()` call) — a
+/// real IR-consumer backend is expected to rely on the heap allocation's
+/// own zero-initialization rather than visiting `count` slots individually
+/// (which would defeat the entire point of pooling); anything else is a
+/// producer bug caught loudly at lowering time, not silently mishandled.
+pub fn box_new_array_expr<P: Clone + Default>(
+    elem_ty: IrType,
+    elem_default_expr: IrExpr<P>,
+    count: usize,
+) -> IrExpr<P> {
+    let array_ty = IrType::Array {
+        kind: crate::ir::ArrayKind::FixedArray,
+        elem: Box::new(elem_ty),
+        len: crate::ir::ArrayLength::Const(count),
+    };
+    let from_fn_call = IrExpr::new(
+        IrExprKind::Call {
+            func: Box::new(IrExpr::new(
+                IrExprKind::Path {
+                    segments: vec!["core".into(), "array".into(), "from_fn".into()],
+                    type_args: vec![],
+                },
+                P::default(),
+                None,
+            )),
+            args: vec![IrExpr::new(
+                IrExprKind::Closure {
+                    params: vec![IrClosureParam { pattern: IrPattern::ident("_"), ty: None }],
+                    ret_type: None,
+                    body: Box::new(elem_default_expr),
+                },
+                P::default(),
+                None,
+            )],
+        },
+        P::default(),
+        None,
+    );
+    IrExpr::new(
+        IrExprKind::Call {
+            func: Box::new(IrExpr::new(
+                IrExprKind::Path {
+                    segments: vec!["Box".into(), "new".into()],
+                    type_args: vec![array_ty],
+                },
+                P::default(),
+                None,
+            )),
+            args: vec![from_fn_call],
+        },
+        P::default(),
+        None,
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum SpecBinOp {

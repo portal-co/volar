@@ -26,7 +26,7 @@ use std::{
     vec::Vec,
 };
 use volar_ir_common::Type as NativeType;
-use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId};
+use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType, LirAbi, HeapAllocExt, StackAllocExt, StructDef, StructId};
 
 pub use volar_lir::NameConfig;
 
@@ -232,7 +232,8 @@ impl CBackend {
     pub fn finish(self) -> String {
         let mut out = String::new();
         out.push_str("#include <stdint.h>\n");
-        out.push_str("#include <stdbool.h>\n\n");
+        out.push_str("#include <stdbool.h>\n");
+        out.push_str("#include <stdlib.h>\n\n");
 
         // GF(2^8) carry-less multiply helper, emitted only when Galois field types are used.
         // Uses AES polynomial 0x1b (x^8 + x^4 + x^3 + x + 1).
@@ -937,6 +938,10 @@ impl LirTarget for CBackend {
         Some(self)
     }
 
+    fn heap_alloc_ext(&mut self) -> Option<&mut dyn HeapAllocExt<Value = CValue>> {
+        Some(self)
+    }
+
     fn abi(&self) -> LirAbi {
         LirAbi::C_NATIVE
     }
@@ -1035,6 +1040,43 @@ impl StackAllocExt for CBackend {
         let idx_name = self.state().name_of(idx).to_owned();
         let expr = format!("{ptr_name} + {idx_name}");
         self.state().emit_instr(ty, c_type, &expr)
+    }
+}
+
+// ============================================================================
+// HeapAllocExt impl
+// ============================================================================
+
+impl HeapAllocExt for CBackend {
+    type Value = CValue;
+
+    /// Allocate heap storage for `count` elements of `elem_ty` via `malloc`,
+    /// zero-initialized (matching `Box::new(core::array::from_fn(|_| T::default()))`'s
+    /// own value-initialized semantics on the Rust side — `calloc` over
+    /// `malloc`+manual zeroing since every current caller wants a
+    /// zero/default-initialized region up front, not uninitialized memory).
+    ///
+    /// Emits into the function preamble (so the pointer has function scope,
+    /// matching `StackAllocExt::alloca`'s own placement):
+    /// ```c
+    /// T* vN = (T*)calloc(count, sizeof(T));
+    /// ```
+    /// Returns the pointer value `vN` of type `LirType::Ptr(elem_ty)`.
+    fn heap_alloc(&mut self, elem_ty: LirType, count: usize) -> CValue {
+        let elem_c = lir_type_to_c_free(&elem_ty, &self.struct_names);
+        let ptr_c = format!("{elem_c}*");
+        let ptr_ty = LirType::Ptr(Box::new(elem_ty));
+
+        let state = self.current.as_mut().expect("CBackend::heap_alloc: not inside a function");
+        let id = state.next_value;
+        let ptr_name = format!("v{id}");
+
+        writeln!(
+            state.preamble,
+            "  {ptr_c} {ptr_name} = ({ptr_c})calloc({count}, sizeof({elem_c}));"
+        ).unwrap();
+
+        state.alloc_value(ptr_ty, ptr_c, ptr_name)
     }
 }
 

@@ -25,7 +25,7 @@ use volar_compiler::{
     linkage::{LinkageKind, LinkageSystem, LinkedSpec},
     parse_sources,
 };
-use volar_lir_codegen::{lower_module_monomorphized, mono::MonoEnv, MonoPlanOptions, MonoRoot};
+use volar_lir_codegen::{lower_module_monomorphized, mono::MonoEnv, MonoPlanOptions};
 use volar_lir_saved::{RecordingTarget, SavedLirModule};
 use volar_lir_test_corpus::{compile_and_run, make_biir_and, make_biir_xor, make_biir_half_adder};
 use volar_wasm_backend::WasmBackend;
@@ -43,31 +43,22 @@ fn lower_vole_module(module: &IrModule<IrFunction>, backend: &mut CBackend, env:
 }
 
 /// Same root selection as [`lower_vole_module`], targeting an arbitrary `LirTarget`.
+///
+/// Prefix list is configurable (see `roots_by_name_prefix`'s own doc) —
+/// covers only `vole_prove_`/`vole_verify_` here since this file's own
+/// circuits (AND/XOR/half-adder) never weave a QSim role (`vole_qsim_`);
+/// a caller rooting a QSim-inclusive module passes a broader list.
 fn lower_vole_to_target<T: volar_lir::LirTarget>(
     module: &IrModule<IrFunction>,
     target: &mut T,
     env: &MonoEnv,
 ) {
-    let mut roots: Vec<MonoRoot> = module
-        .functions
-        .iter()
-        .filter(|f| f.external_kind == volar_compiler::ir::ExternalKind::Normal)
-        .filter(|f| {
-            f.name.starts_with("vole_prove_") || f.name.starts_with("vole_verify_")
-        })
-        .map(|f| MonoRoot::new(f.name.clone(), env.clone()))
-        .collect();
-    assert!(
-        !roots.is_empty(),
-        "expected a woven vole_prove_*/vole_verify_* entry in module"
+    let roots = volar_lir_codegen::roots_by_name_prefix(
+        module,
+        &["vole_prove_", "vole_verify_"],
+        &["vole_and_verifier_check", "vole_and_prover_step"],
+        env.clone(),
     );
-    for helper in ["vole_and_verifier_check", "vole_and_prover_step"] {
-        if module.functions.iter().any(|f| f.name == helper)
-            && !roots.iter().any(|r| r.function == helper)
-        {
-            roots.push(MonoRoot::new(helper, env.clone()));
-        }
-    }
     lower_module_monomorphized(
         module,
         target,

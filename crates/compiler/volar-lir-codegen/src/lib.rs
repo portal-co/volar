@@ -244,7 +244,13 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                         IrType::Array { elem: inner, .. } => Some(*inner.clone()),
                         _ => None,
                     },
-                    _ => None,
+                    // Box<Array<T>> (see `volar_compiler::ir::box_type`'s
+                    // own doc, and `is_slice_ref`/`slice_ref_elem`'s Box
+                    // arm below): element type is T, same as a reference.
+                    _ => match volar_compiler::ir::as_box_type(&base_ty) {
+                        Some(IrType::Array { elem: inner, .. }) => Some(*inner.clone()),
+                        _ => None,
+                    },
                 }
             }
 
@@ -403,6 +409,55 @@ impl Default for MonoPlanOptions {
             include_auxiliary: true,
         }
     }
+}
+
+/// Build one [`MonoRoot`] (all sharing `env`) for every `Normal` function in
+/// `module` whose name starts with any of `prefixes`, plus one more for
+/// every name in `extra_helpers` that's actually present in `module` (for
+/// non-entry-point functions an entry point calls directly, e.g. a spec's
+/// own `vole_and_prover_step`/`vole_and_verifier_check`/`derive_and_q` —
+/// rooting every such helper unconditionally would force specializations
+/// a given circuit never actually calls).
+///
+/// A configurable prefix LIST rather than a single hardcoded pair: this
+/// codebase's own woven functions alone already use three different
+/// prefixes across roles (`vole_prove_`/`vole_verify_`/`vole_qsim_`) —
+/// hardcoding just the first two (as this crate's own earlier example
+/// helpers did) silently roots zero QSim functions, which then either
+/// produces an empty `roots` list (if QSim is the only role woven) or
+/// silently drops QSim's own functions from the plan entirely (if woven
+/// alongside another role) — no error, just a quietly incomplete lowering.
+/// A future weaver (net-style, or a wholly different naming convention) is
+/// one more prefix, not a new hardcoded helper.
+///
+/// Panics if the result is empty — an empty root set is never useful (see
+/// [`lower_module_monomorphized`], which would simply lower nothing) and
+/// usually means a prefix typo or the wrong module, better caught here than
+/// as silent no-op output downstream.
+pub fn roots_by_name_prefix<P: Clone>(
+    module: &IrModule<IrFunction<P>, P>,
+    prefixes: &[&str],
+    extra_helpers: &[&str],
+    env: mono::MonoEnv,
+) -> Vec<MonoRoot> {
+    let mut roots: Vec<MonoRoot> = module
+        .functions
+        .iter()
+        .filter(|f| f.external_kind == ExternalKind::Normal)
+        .filter(|f| prefixes.iter().any(|p| f.name.starts_with(p)))
+        .map(|f| MonoRoot::new(f.name.clone(), env.clone()))
+        .collect();
+    for &helper in extra_helpers {
+        if module.functions.iter().any(|f| f.name == helper) && !roots.iter().any(|r| r.function == helper) {
+            roots.push(MonoRoot::new(helper, env.clone()));
+        }
+    }
+    assert!(
+        !roots.is_empty(),
+        "roots_by_name_prefix: no function in module matched any of {prefixes:?} — \
+         wrong prefix list, wrong module, or genuinely nothing to root"
+    );
+    roots
 }
 
 
@@ -965,6 +1020,11 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             // Const-generic names in parsed repeat lengths and type-level
             // arithmetic are expression nodes, not runtime locals.
             if let Some(&value) = ctx.mono.const_params.get(name.as_str()) {
+                return vec![ctx.target.iconst(LirType::U64, value as i64)];
+            }
+            // See `digit_var_as_literal`'s own doc: an all-digit `Var` name
+            // is never a real variable reference, always a smuggled literal.
+            if let Some(value) = volar_compiler::ir::digit_var_as_literal(name) {
                 return vec![ctx.target.iconst(LirType::U64, value as i64)];
             }
             panic!("undefined variable: {name}")
@@ -1902,24 +1962,48 @@ fn lower_repeat_array<T: LirTarget<P>, P: Clone>(
     len: &IrExpr<P>,
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
-    let n = match &len.kind {
+    let n = resolve_const_expr_len(len, ctx.mono);
+    let values = lower_expr(elem, ctx);
+    (0..n).flat_map(|_| values.iter().cloned()).collect()
+}
+
+/// Recognizes `0`, `false`, and a bare `T::default()` call — the only
+/// element-expression shapes `Box::new([elem; N])`'s own lowering currently
+/// accepts (see its doc for why: relying on the heap allocation's own
+/// zero-init instead of N individual stores).
+fn is_zero_default_expr<P: Clone>(expr: &IrExpr<P>) -> bool {
+    match &expr.kind {
+        IrExprKind::Lit(IrLit::Bool(false)) | IrExprKind::Lit(IrLit::Int(0)) => true,
+        IrExprKind::Call { func, args } if args.is_empty() => {
+            matches!(&func.kind, IrExprKind::Path { segments, .. } if segments.last().map(String::as_str) == Some("default"))
+        }
+        // A tuple of recognized-default elements (e.g. `_and_pool`'s own
+        // `(Vope::default(), Array::default())` element type) is itself
+        // recognized-default — `calloc`'s zero-init is still correct field
+        // by field.
+        IrExprKind::Tuple(elems) => elems.iter().all(is_zero_default_expr),
+        _ => false,
+    }
+}
+
+/// Resolve an expression-typed array length (an `IrExprKind::Repeat`'s own
+/// `len` field, e.g. from `[elem; N]`) to a concrete `usize` — shared by
+/// [`lower_repeat_array`] and `Box::new([elem; N])`'s own lowering.
+fn resolve_const_expr_len<P: Clone>(len: &IrExpr<P>, mono: &MonoEnv) -> usize {
+    match &len.kind {
         IrExprKind::Lit(IrLit::Int(value)) => *value as usize,
-        IrExprKind::Var(name) => ctx
-            .mono
+        IrExprKind::Var(name) => mono
             .const_params
             .get(name)
             .copied()
-            .unwrap_or_else(|| panic!("repeat array length '{name}' is not concrete")),
-        IrExprKind::Path { segments, .. } if segments.len() == 2 && segments[1] == "USIZE" => ctx
-            .mono
+            .unwrap_or_else(|| panic!("array length '{name}' is not concrete")),
+        IrExprKind::Path { segments, .. } if segments.len() == 2 && segments[1] == "USIZE" => mono
             .const_params
             .get(&segments[0])
             .copied()
-            .unwrap_or_else(|| panic!("repeat array length '{}' is not concrete", segments[0])),
-        _ => panic!("repeat array length must be a concrete integer"),
-    };
-    let values = lower_expr(elem, ctx);
-    (0..n).flat_map(|_| values.iter().cloned()).collect()
+            .unwrap_or_else(|| panic!("array length '{}' is not concrete", segments[0])),
+        _ => panic!("array length must be a concrete integer"),
+    }
 }
 
 // ============================================================================
@@ -2085,23 +2169,35 @@ fn array_elem_and_len(ty: &IrType, env: &MonoEnv) -> (IrType, usize) {
 // Slice-reference helpers
 // ============================================================================
 
-/// Check if an IrType is a reference to a slice (`&[T]` or `&mut [T]`).
+/// Check if an IrType should use real pointer-indexed access (`ptr_index_load`/
+/// `ptr_index_store`) rather than the O(n) select-mux-tree fallback: either a
+/// reference to a slice (`&[T]`/`&mut [T]`), or a `Box<[T; N]>` (see
+/// `volar_compiler::ir::box_type`'s own doc) — both lower to `LirType::Ptr`,
+/// so both need the same real-pointer indexing rather than the mux tree,
+/// which is what a plain unwrapped (stack-flattened) `IrType::Array` gets.
+/// This matters a lot in practice: a `Box`ed pool with thousands of slots
+/// indexed via the mux-tree fallback would emit a `select` chain over every
+/// slot on every single read/write — exactly the code-volume blowup pooling
+/// exists to avoid.
 fn is_slice_ref(ty: &IrType) -> bool {
     matches!(ty,
         IrType::Reference { elem, .. }
             if matches!(elem.as_ref(), IrType::Array { kind: ArrayKind::Slice, .. })
-    )
+    ) || matches!(volar_compiler::ir::as_box_type(ty), Some(IrType::Array { .. }))
 }
 
-/// Extract the element type from a `Reference<Slice<T>>`.
-/// Panics if `ty` is not a slice reference.
+/// Extract the element type from a `Reference<Slice<T>>` or `Box<[T; N]>`.
+/// Panics if `ty` is neither (see [`is_slice_ref`]).
 fn slice_ref_elem(ty: &IrType) -> IrType {
+    if let Some(IrType::Array { elem: inner, .. }) = volar_compiler::ir::as_box_type(ty) {
+        return *inner.clone();
+    }
     match ty {
         IrType::Reference { elem, .. } => match elem.as_ref() {
             IrType::Array { elem: inner, .. } => *inner.clone(),
             _ => panic!("slice_ref_elem: not a slice"),
         },
-        _ => panic!("slice_ref_elem: not a reference"),
+        _ => panic!("slice_ref_elem: not a reference or Box"),
     }
 }
 
@@ -2510,6 +2606,67 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
             }
             // Fallback if closure form is unexpected.
             panic!("Array::from_fn with unexpected args — expected a single closure argument");
+        }
+
+        // `Box::<[T; N]>::new(core::array::from_fn(|_| elem))` (see
+        // `volar_compiler::ir::box_new_array_expr`'s own doc, and
+        // `HeapAllocExt`'s doc on why this must NOT unroll into N individual
+        // stores): heap-allocate `N` slots of the array type carried on the
+        // Path's own `type_args` (the producer is expected to supply this
+        // explicitly — see `box_new_array_expr` — rather than relying on
+        // inference), and return the resulting pointer as a single scalar
+        // value, not the flattened N*width scalars a plain unwrapped array
+        // would produce.
+        //
+        // Relies on the allocation being zero-initialized (`calloc`, see
+        // `HeapAllocExt::heap_alloc`'s own doc) matching the generator
+        // closure's own real value — true for every current caller
+        // (`T::default()`/`0`/`false` element expressions), asserted below
+        // rather than assumed, so a future non-default element expression
+        // fails loudly instead of silently allocating uninitialized-looking
+        // (but not really, just wrong) storage.
+        if segments.len() == 2 && segments[0] == "Box" && segments[1] == "new" {
+            let inner = args.first().expect("Box::new expects exactly one argument");
+            let IrExprKind::Call { func: inner_func, args: inner_args } = &inner.kind else {
+                unimplemented!(
+                    "lower_call: Box::new(_) is currently only supported for a \
+                     `core::array::from_fn(|_| _)` argument — see box_new_array_expr"
+                );
+            };
+            let IrExprKind::Path { segments: inner_segments, .. } = &inner_func.kind else {
+                unimplemented!("lower_call: Box::new(_)'s argument must be a core::array::from_fn call");
+            };
+            if inner_segments.last().map(String::as_str) != Some("from_fn") {
+                unimplemented!(
+                    "lower_call: Box::new(_) is currently only supported for a \
+                     `core::array::from_fn(|_| _)` argument, got a call to {inner_segments:?}"
+                );
+            }
+            let Some(IrExprKind::Closure { body, .. }) = inner_args.first().map(|a| &a.kind) else {
+                unimplemented!("lower_call: Box::new(core::array::from_fn(_))'s argument must be a closure");
+            };
+            if !is_zero_default_expr(body) {
+                unimplemented!(
+                    "lower_call: Box::new(core::array::from_fn(|_| elem))'s elem must be a \
+                     recognized zero/Default::default()-shaped expression (relies on the heap \
+                     allocation's own zero-init matching elem's real value — see \
+                     HeapAllocExt::heap_alloc's doc); got a different shape, which needs real \
+                     per-slot initialization, and must NOT be unrolled into N individual stores \
+                     (defeats pooling's whole purpose)"
+                );
+            }
+            let array_ir_ty = type_args
+                .first()
+                .map(|t| mono_type(t, ctx.mono))
+                .unwrap_or_else(|| panic!("Box::new: missing array type_arg on the Box::new path — see box_new_array_expr"));
+            let (elem_ir_ty, count) = array_elem_and_len(&array_ir_ty, ctx.mono);
+            let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+            let ptr = ctx
+                .target
+                .heap_alloc_ext()
+                .expect("Box::new requires a LirTarget with HeapAllocExt support")
+                .heap_alloc(elem_lir_ty, count);
+            return vec![ptr];
         }
     }
 

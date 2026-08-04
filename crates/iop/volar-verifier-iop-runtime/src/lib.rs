@@ -178,7 +178,8 @@ fn iop_verifier_cargo_toml(root: &str) -> std::string::String {
          volar-spec = {{ path = \"{root}/crates/spec/volar-spec\" }}\n\
          volar-discipline = {{ path = \"{root}/crates/ir/volar-discipline\" }}\n\
          hybrid-array = {{ version = \"0.4.8\", default-features = false }}\n\
-         cipher = {{ version = \"0.5.1\", default-features = false }}\n"
+         cipher = {{ version = \"0.5.1\", default-features = false }}\n\
+         typenum = {{ version = \"1.19.0\", default-features = false }}\n"
     )
 }
 

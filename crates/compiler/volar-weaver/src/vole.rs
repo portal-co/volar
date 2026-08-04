@@ -2936,6 +2936,26 @@ fn ref_mut_expr(expr: IrExpr) -> IrExpr {
     ir_expr(IrExprKind::Unary { op: SpecUnaryOp::RefMut, expr: Box::new(expr) })
 }
 
+/// `&mut <name>[..]` -- pass a pool by mutable SLICE reference, for a
+/// callee whose own param type is `&mut [T]` (see [`pool_slice_type`]).
+/// Deliberately re-slices via an explicit `[..]` rather than relying on
+/// deref coercion at the call site (`ref_mut_expr(var(name))`, i.e. plain
+/// `&mut <name>`): that single-step coercion is exactly what `Vec<T>`
+/// provides for free (`&mut Vec<T> -> &mut [T]`, `Vec`'s own `DerefMut`),
+/// but does NOT reliably auto-apply for `Box<[T; K]>` at a call site (a
+/// TWO-step coercion -- deref through `Box`, then unsize the resulting
+/// `[T; K]` to `[T]` -- confirmed to fail with a real type mismatch when
+/// `_piece_pool` moved from `Vec` to `Box<[T; K]>`, real-scale on
+/// `mem_probe.rs`'s own forced-piece-splitting test). Explicit `[..]`
+/// indexing forces the unsize step directly, works identically for both
+/// `Vec<T>` (still used by some pools) and `Box<[T; K]>` alike.
+fn slice_ref_mut_expr(name: &str) -> IrExpr {
+    ref_mut_expr(ir_expr(IrExprKind::Index {
+        base: Box::new(var(name)),
+        index: Box::new(ir_expr(IrExprKind::Range { start: None, end: None, inclusive: false })),
+    }))
+}
+
 /// `&mut [elem_ty]` -- an unsized slice reference, deliberately NOT a
 /// fixed-size `[elem_ty; K]` array: a cross-piece pool's own total slot
 /// count `K` isn't known until every piece in a region has been visited
@@ -2973,65 +2993,83 @@ fn q_default_call() -> IrExpr {
     })
 }
 
-/// `let mut <name>: Vec<elem_ty> = core::iter::repeat(<elem_default_expr>).take(<count>).collect();`
+/// `let mut <name>: Box<[elem_ty; count]> = Box::new([<elem_default_expr>; count]);`
 /// -- a pool's own backing storage, pre-sized (and, since `Vope`/`Q`/
 /// `bool` all implement `Default`, safely value-initialized -- never
 /// `MaybeUninit`/`unsafe`) once and for all at the point its true final
 /// size is known (see `pool_slot`'s own doc: a pool's size isn't final
-/// until every piece in a region has been visited). Built from
-/// `core::iter::repeat(..).take(n).collect()` rather than the `vec![x;
-/// n]` macro -- this pipeline's IR has no macro-invocation support at
-/// all (`debug_check_pool_written`'s own call-based, not
-/// `debug_assert!`-based, design exists for the same reason). Explicit
-/// `ty: Some(..)` on the `let`, not left to inference -- `collect()`'s
-/// target type would otherwise depend on this binding's own later
-/// uses, which can be genuinely ambiguous to rustc across a large
-/// generated function body.
+/// until every piece in a region has been visited). Heap-backed (`Box`,
+/// see `volar_compiler::ir::box_type`'s own doc) rather than stack-backed
+/// -- some pools run into the thousands of slots at real interpreter
+/// scale, too large to put on the C stack safely. Statically sized
+/// (`[elem_ty; count]`, not a growable `Vec`) rather than dynamically
+/// sized -- the count really is known here, and a real `LirType`
+/// (`Ptr`-backed via `HeapAllocExt`) exists for this shape, unlike a true
+/// runtime-length `Vec<T>` (see `docs`/the LIR side of this abstraction).
+/// `elem_default_expr` must be a zero/default-shaped expression (see
+/// `box_new_array_expr`'s own doc) -- true for every caller here
+/// (`vope_default_call()`/`q_default_call()`/`Lit(Bool(false))`).
 fn pool_decl_stmt(name: &str, elem_ty: IrType, elem_default_expr: IrExpr, count: usize) -> IrStmt {
-    let collect_call = ir_expr(IrExprKind::MethodCall {
-        receiver: Box::new(ir_expr(IrExprKind::MethodCall {
-            receiver: Box::new(ir_expr(IrExprKind::Call {
-                func: Box::new(ir_expr(IrExprKind::Path {
-                    segments: vec!["core".into(), "iter".into(), "repeat".into()],
-                    type_args: vec![],
-                })),
-                args: vec![elem_default_expr],
-            })),
-            method: MethodKind::Other("take".into()),
-            type_args: vec![],
-            args: vec![ir_expr(IrExprKind::Lit(IrLit::Int(count as i128)))],
-        })),
-        method: MethodKind::Other("collect".into()),
-        type_args: vec![],
-        args: vec![],
-    });
+    let box_array_ty = volar_compiler::ir::box_array_type(elem_ty.clone(), count);
+    let init = volar_compiler::ir::box_new_array_expr(elem_ty, elem_default_expr, count);
     ir_stmt(IrStmtKind::Let {
         pattern: IrPattern::ident(name).as_mut(),
-        ty: Some(IrType::Vector { elem: Box::new(elem_ty) }),
-        init: Some(collect_call),
+        ty: Some(box_array_ty),
+        init: Some(init),
     })
 }
 
-fn vec_new_call(elem_ty: IrType) -> (IrType, IrExpr) {
-    (
-        IrType::Vector { elem: Box::new(elem_ty) },
-        ir_expr(IrExprKind::Call {
-            func: Box::new(ir_expr(IrExprKind::Path {
-                segments: vec!["Vec".into(), "new".into()],
-                type_args: vec![],
-            })),
-            args: vec![],
-        }),
-    )
+/// `<lhs> = <value>;` -- the write-side counterpart of `arr_index`/
+/// `lane_relative_index` reads, used by [`VoleIrCtx::push_wire_scratch`]/
+/// [`VoleIrCtx::push_and_pair`] to write into a statically-sized `_pool`/
+/// `_and_pool` slot directly (no `.push()` -- these are fixed-size `Box`ed
+/// arrays, not growable `Vec`s; see `finalize_pools`'s own doc).
+fn pool_index_write_stmt(lhs: IrExpr, value: IrExpr) -> IrStmt {
+    ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+        left: Box::new(lhs),
+        right: Box::new(value),
+    })))
 }
 
-fn push_method_call(receiver_name: &str, value: IrExpr) -> IrStmt {
-    ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::MethodCall {
-        receiver: Box::new(var(receiver_name)),
-        method: MethodKind::from_str("push"),
-        type_args: vec![],
-        args: vec![value],
-    })))
+/// `Array::<T, N>::default()` -- the `_and_pool` tuple element's second
+/// half (see [`and_pair_default_expr`]).
+fn array_t_n_default_call() -> IrExpr {
+    ir_expr(IrExprKind::Call {
+        func: Box::new(ir_expr(IrExprKind::Path {
+            segments: vec!["Array".into(), "default".into()],
+            type_args: vec![IrType::TypeParam("T".into()), IrType::TypeParam("N".into())],
+        })),
+        args: vec![],
+    })
+}
+
+/// `(Vope::default(), Array::default())` -- `_and_pool`'s own element
+/// default value (see [`and_pair_type`]), for [`pool_decl_stmt`].
+fn and_pair_default_expr() -> IrExpr {
+    ir_expr(IrExprKind::Tuple(vec![vope_default_call(), array_t_n_default_call()]))
+}
+
+/// `let <name> = <base> + i * <per_lane>;` -- a closure-relative pool base
+/// offset, computed as a pure compile-time-known formula rather than a
+/// runtime `.len()` read (see `emit_poly_wide`'s own closure-exit code,
+/// the sole caller, for why: `base`/`per_lane` are both known once the
+/// closure body has been built once, and `i` is the closure's own
+/// `core::array::from_fn` index variable).
+fn lane_base_decl_stmt(name: &str, base: usize, per_lane: usize) -> IrStmt {
+    let value = ir_expr(IrExprKind::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(base as i128)))),
+        right: Box::new(ir_expr(IrExprKind::Binary {
+            op: SpecBinOp::Mul,
+            left: Box::new(var("i")),
+            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(per_lane as i128)))),
+        })),
+    });
+    ir_stmt(IrStmtKind::Let {
+        pattern: IrPattern::ident(name),
+        ty: None,
+        init: Some(value),
+    })
 }
 
 /// Returns the pre-init constant for storage cell `(sid, tid, ci)`, or `None`.
@@ -3076,7 +3114,6 @@ impl VoleIrCtx<'static> {
             pool_lane_base_declared: false,
             and_pool_lane_base_declared: false,
         };
-        ctx.declare_pools();
         ctx
     }
 
@@ -3110,7 +3147,6 @@ impl VoleIrCtx<'static> {
             pool_lane_base_declared: false,
             and_pool_lane_base_declared: false,
         };
-        ctx.declare_pools();
         ctx
     }
 }
@@ -3147,69 +3183,83 @@ impl<'a> VoleIrCtx<'a> {
             pool_lane_base_declared: false,
             and_pool_lane_base_declared: false,
         };
-        ctx.declare_pools();
         ctx
     }
 
-    /// Emit `_pool`'s (and, Prover-only, `_and_pool`'s) declaration as
-    /// the very first statement(s) of the function body -- called once,
-    /// unconditionally, right after construction (before anything else
-    /// has been pushed to `self.stmts`, so this is guaranteed to land in
-    /// the true function scope, never inside a later closure). See the
-    /// field doc on [`VoleIrCtx::pool_next`] for why this replaced an
-    /// earlier lazy-declare-on-first-use version.
-    fn declare_pools(&mut self) {
+    /// Prepend `_pool`'s (and, Prover-only, `_and_pool`'s) declaration to
+    /// `self.stmts`, now that this function's own final pool size
+    /// (`self.pool_next`/`self.and_pool_next`) is known -- which is only
+    /// true once every `push_wire_scratch`/`push_and_pair` call for this
+    /// function has already happened. Must be called exactly once, as the
+    /// very last step before this ctx's `stmts` get consumed into the
+    /// final `IrFunction` body -- see [`Self::finalize_and_take_stmts`],
+    /// the sole caller.
+    ///
+    /// Heap-backed, statically-sized (`Box<Array<T, count>>`, see
+    /// `volar_compiler::ir::box_array_type`'s own doc) rather than a
+    /// growable `Vec` -- this is why the declaration can't just be emitted
+    /// eagerly at construction time the way it originally was: a `Vec`
+    /// doesn't need its final size known up front, a static `Box`ed array
+    /// does, and that size genuinely isn't known until every push for this
+    /// function has happened.
+    fn finalize_pools(&mut self) {
         let elem_ty = if self.role.is_prover() { vope_type() } else { q_type() };
-        let (ty, init) = vec_new_call(elem_ty);
-        self.stmts.push(ir_stmt(IrStmtKind::Let {
-            pattern: IrPattern::ident("_pool").as_mut(),
-            ty: Some(ty),
-            init: Some(init),
-        }));
+        let elem_default = if self.role.is_prover() { vope_default_call() } else { q_default_call() };
+        let mut prelude = vec![pool_decl_stmt("_pool", elem_ty, elem_default, self.pool_next)];
         if self.role.is_prover() {
-            let (and_ty, and_init) = vec_new_call(and_pair_type());
-            self.stmts.push(ir_stmt(IrStmtKind::Let {
-                pattern: IrPattern::ident("_and_pool").as_mut(),
-                ty: Some(and_ty),
-                init: Some(and_init),
-            }));
+            prelude.push(pool_decl_stmt("_and_pool", and_pair_type(), and_pair_default_expr(), self.and_pool_next));
         }
+        prelude.extend(core::mem::take(&mut self.stmts));
+        self.stmts = prelude;
     }
 
-    /// Push a wire-typed (`Vope`/`Q`) scratch value onto the shared
-    /// `_pool` (declared once, function-wide, by [`Self::declare_pools`]).
+    /// [`Self::finalize_pools`] then take `self.stmts` -- the standard way
+    /// a woven function's own statement list is read out of its `ctx` once
+    /// building is complete (replaces a plain `ctx.stmts` field read, which
+    /// would grab the pool-less/wrong-size-declaration statements built so
+    /// far and never patch them).
+    fn finalize_and_take_stmts(&mut self) -> Vec<IrStmt> {
+        self.finalize_pools();
+        core::mem::take(&mut self.stmts)
+    }
+
+    /// Push a wire-typed (`Vope`/`Q`) scratch value into the shared
+    /// `_pool` (its final declaration prepended once, function-wide, by
+    /// [`Self::finalize_pools`]) at the next free index, via a direct
+    /// indexed write (`_pool[idx] = value;`) -- `_pool` is a statically-
+    /// sized array, not a growable `Vec`, so there is no `.push()`.
     /// Returns the pool index as a digit-string -- an absolute index
     /// outside a closure, or a `%`-prefixed `_lane_base`-relative index
     /// inside one (see [`VoleIrCtx::in_closure`]'s doc). See
     /// [`wire_ref_expr`] for how callers turn this back into a read
     /// expression.
     fn push_wire_scratch(&mut self, value: IrExpr) -> String {
-        if self.in_closure && !self.pool_lane_base_declared {
+        if self.in_closure {
+            // `_lane_base`'s own declaration is prepended once the
+            // closure's own per-invocation slot count is known -- see
+            // `emit_poly_wide`'s closure-exit code, which checks this same
+            // `pool_lane_base_declared` flag. Only the flag is set here;
+            // the actual runtime value (`{base} + i * {slots_per_lane}`)
+            // can't be computed until this closure body is fully built.
             self.pool_lane_base_declared = true;
-            self.stmts.push(ir_stmt(IrStmtKind::Let {
-                pattern: IrPattern::ident("_lane_base"),
-                ty: None,
-                init: Some(ir_expr(IrExprKind::MethodCall {
-                    receiver: Box::new(var("_pool")),
-                    method: MethodKind::from_str("len"),
-                    type_args: vec![],
-                    args: vec![],
-                })),
-            }));
+            let idx = self.pool_next;
+            self.pool_next += 1;
+            self.stmts.push(pool_index_write_stmt(
+                lane_relative_index("_pool", "_lane_base", &idx.to_string()),
+                value,
+            ));
+            return format!("%{idx}");
         }
         let idx = self.pool_next;
         self.pool_next += 1;
-        self.stmts.push(push_method_call("_pool", value));
-        if self.in_closure {
-            return format!("%{idx}");
-        }
+        self.stmts.push(pool_index_write_stmt(arr_index("_pool", &idx.to_string()), value));
         idx.to_string()
     }
 
-    /// Push a Prover AND-gate's full `(wire, hat)` output pair onto the
-    /// shared `_and_pool` (declared once, function-wide, by
-    /// [`Self::declare_pools`]) in a single statement -- `value` should
-    /// be the tuple-returning call expression itself (e.g. from
+    /// Push a Prover AND-gate's full `(wire, hat)` output pair into the
+    /// shared `_and_pool` (its final declaration prepended once, function-
+    /// wide, by [`Self::finalize_pools`]) at the next free index -- `value`
+    /// should be the tuple-returning call expression itself (e.g. from
     /// [`vole_and_prover_step_expr`]), NOT a name referencing an
     /// already-`let`-bound tuple; this is the whole point (see
     /// [`VoleIrCtx`]'s own doc on `pool_next`). Returns an `@`-prefixed
@@ -3218,25 +3268,19 @@ impl<'a> VoleIrCtx<'a> {
     /// reads field `.0`) and a hat reference ([`hat_ref_raw`] reads
     /// field `.1`).
     fn push_and_pair(&mut self, value: IrExpr) -> String {
-        if self.in_closure && !self.and_pool_lane_base_declared {
+        if self.in_closure {
             self.and_pool_lane_base_declared = true;
-            self.stmts.push(ir_stmt(IrStmtKind::Let {
-                pattern: IrPattern::ident("_and_lane_base"),
-                ty: None,
-                init: Some(ir_expr(IrExprKind::MethodCall {
-                    receiver: Box::new(var("_and_pool")),
-                    method: MethodKind::from_str("len"),
-                    type_args: vec![],
-                    args: vec![],
-                })),
-            }));
+            let idx = self.and_pool_next;
+            self.and_pool_next += 1;
+            self.stmts.push(pool_index_write_stmt(
+                lane_relative_index("_and_pool", "_and_lane_base", &idx.to_string()),
+                value,
+            ));
+            return format!("^{idx}");
         }
         let idx = self.and_pool_next;
         self.and_pool_next += 1;
-        self.stmts.push(push_method_call("_and_pool", value));
-        if self.in_closure {
-            return format!("^{idx}");
-        }
+        self.stmts.push(pool_index_write_stmt(arr_index("_and_pool", &idx.to_string()), value));
         format!("@{idx}")
     }
 
@@ -4088,7 +4132,7 @@ impl<'a> VoleIrCtx<'a> {
             ])),
             _ => var(&final_name),
         };
-        let body_stmts = core::mem::replace(&mut self.stmts, saved_stmts);
+        let mut body_stmts = core::mem::replace(&mut self.stmts, saved_stmts);
         // This closure's own final counters ARE its per-invocation slot
         // counts (`pool_next`/`and_pool_next` never advance except via
         // `push_wire_scratch`/`push_and_pair`, which reset-and-count
@@ -4103,6 +4147,21 @@ impl<'a> VoleIrCtx<'a> {
         let wire_slots_per_lane = self.pool_next;
         let and_slots_per_lane = self.and_pool_next;
         let (saved_pool_next, saved_and_pool_next, saved_in_closure) = saved_pool;
+        // Prepend `_lane_base`/`_and_lane_base`'s own declaration now that
+        // this closure's per-invocation slot count is finally known (see
+        // `push_wire_scratch`/`push_and_pair`'s own doc on why this can't
+        // happen any earlier -- they only set the flag, they don't emit the
+        // statement themselves). `{saved_pool_next} + i * {slots_per_lane}`
+        // gives invocation `i`'s own absolute base offset into the shared
+        // pool -- a pure compile-time-known formula, replacing what used to
+        // be a runtime `_pool.len()` read (meaningless now that `_pool` is
+        // a fixed-size array whose `.len()` never changes).
+        if self.and_pool_lane_base_declared {
+            body_stmts.insert(0, lane_base_decl_stmt("_and_lane_base", saved_and_pool_next, and_slots_per_lane));
+        }
+        if self.pool_lane_base_declared {
+            body_stmts.insert(0, lane_base_decl_stmt("_lane_base", saved_pool_next, wire_slots_per_lane));
+        }
         self.pool_next = saved_pool_next + wire_slots_per_lane * width;
         self.and_pool_next = saved_and_pool_next + and_slots_per_lane * width;
         self.in_closure = saved_in_closure;
@@ -5071,7 +5130,7 @@ pub fn weave_vole_prover_ir_with_mode(
         return_type: Some(ret_type),
         where_clause,
         body: IrBlock {
-            stmts: ctx.stmts,
+            stmts: ctx.finalize_and_take_stmts(),
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -5423,7 +5482,7 @@ pub fn weave_vole_prover_ir_split(
                 return_type: Some(IrType::Tuple(ret_tuple_tys)),
                 where_clause: where_clause.clone(),
                 body: IrBlock {
-                    stmts: ctx.stmts,
+                    stmts: ctx.finalize_and_take_stmts(),
                     expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
                 },
                 external_kind: ExternalKind::Normal,
@@ -5588,7 +5647,7 @@ pub fn weave_vole_prover_ir_split(
                     return_type: Some(IrType::Tuple(p_ret_tys)),
                     where_clause: where_clause.clone(),
                     body: IrBlock {
-                        stmts: ctx.stmts,
+                        stmts: ctx.finalize_and_take_stmts(),
                         expr: Some(Box::new(ir_expr(IrExprKind::Tuple(p_ret_exprs)))),
                     },
                     external_kind: ExternalKind::Normal,
@@ -5667,13 +5726,13 @@ pub fn weave_vole_prover_ir_split(
                 }
                 oracle_offset += piece_oracle_counts[p];
                 if region_has_cross_piece_vars {
-                    call_args.push(ref_mut_expr(var("_piece_pool")));
-                    call_args.push(ref_mut_expr(var("_piece_pool_written")));
+                    call_args.push(slice_ref_mut_expr("_piece_pool"));
+                    call_args.push(slice_ref_mut_expr("_piece_pool_written"));
                 }
                 // Phase B: unconditional, matching every piece's own
                 // unconditional `_w_pool`/`_w_pool_written` params.
-                call_args.push(ref_mut_expr(var("_w_pool")));
-                call_args.push(ref_mut_expr(var("_w_pool_written")));
+                call_args.push(slice_ref_mut_expr("_w_pool"));
+                call_args.push(slice_ref_mut_expr("_w_pool_written"));
                 for &v in &b.synthetic_in {
                     let ty = synthetic_types.get(&v).cloned().expect("synthetic_types must already be populated");
                     if matches!(ty, IrType::Array { .. }) {
@@ -6059,7 +6118,7 @@ pub fn weave_vole_prover_ir_split(
             params,
             return_type: Some(IrType::Tuple(ret_tuple_tys)),
             where_clause: where_clause.clone(),
-            body: IrBlock { stmts: ctx.stmts, expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))) },
+            body: IrBlock { stmts: ctx.finalize_and_take_stmts(), expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))) },
             external_kind: ExternalKind::Normal,
         };
         emit_fn(chunk_func);
@@ -6151,7 +6210,7 @@ pub fn weave_vole_prover_ir_split(
         return_type: Some(ret_type),
         where_clause,
         body: IrBlock {
-            stmts: ctx.stmts,
+            stmts: ctx.finalize_and_take_stmts(),
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -6273,7 +6332,7 @@ pub fn weave_vole_verifier_ir_with_mode(
         return_type: Some(ret_type),
         where_clause,
         body: IrBlock {
-            stmts: ctx.stmts,
+            stmts: ctx.finalize_and_take_stmts(),
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -6433,7 +6492,7 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
         return_type: Some(ret_type),
         where_clause,
         body: IrBlock {
-            stmts: ctx.stmts,
+            stmts: ctx.finalize_and_take_stmts(),
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -6553,7 +6612,7 @@ pub fn weave_vole_qsim_ir_with_mode(
         return_type: Some(ret_type),
         where_clause,
         body: IrBlock {
-            stmts: ctx.stmts,
+            stmts: ctx.finalize_and_take_stmts(),
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -6896,7 +6955,7 @@ pub fn weave_vole_qsim_ir_split(
                 return_type: Some(IrType::Tuple(ret_tuple_tys)),
                 where_clause: where_clause.clone(),
                 body: IrBlock {
-                    stmts: ctx.stmts,
+                    stmts: ctx.finalize_and_take_stmts(),
                     expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
                 },
                 external_kind: ExternalKind::Normal,
@@ -7041,7 +7100,7 @@ pub fn weave_vole_qsim_ir_split(
                     return_type: Some(IrType::Tuple(p_ret_tys)),
                     where_clause: where_clause.clone(),
                     body: IrBlock {
-                        stmts: ctx.stmts,
+                        stmts: ctx.finalize_and_take_stmts(),
                         expr: Some(Box::new(ir_expr(IrExprKind::Tuple(p_ret_exprs)))),
                     },
                     external_kind: ExternalKind::Normal,
@@ -7123,13 +7182,13 @@ pub fn weave_vole_qsim_ir_split(
                 }
                 oracle_offset += piece_oracle_counts[p];
                 if region_has_cross_piece_vars {
-                    call_args.push(ref_mut_expr(var("_piece_pool")));
-                    call_args.push(ref_mut_expr(var("_piece_pool_written")));
+                    call_args.push(slice_ref_mut_expr("_piece_pool"));
+                    call_args.push(slice_ref_mut_expr("_piece_pool_written"));
                 }
                 // Phase B: unconditional, matching every piece's own
                 // unconditional `_w_pool`/`_w_pool_written` params.
-                call_args.push(ref_mut_expr(var("_w_pool")));
-                call_args.push(ref_mut_expr(var("_w_pool_written")));
+                call_args.push(slice_ref_mut_expr("_w_pool"));
+                call_args.push(slice_ref_mut_expr("_w_pool_written"));
                 for &v in &b.synthetic_in {
                     let ty = synthetic_types.get(&v).cloned().expect("synthetic_types must already be populated");
                     if matches!(ty, IrType::Array { .. }) {
@@ -7435,7 +7494,7 @@ pub fn weave_vole_qsim_ir_split(
             params,
             return_type: Some(IrType::Tuple(ret_tuple_tys)),
             where_clause: where_clause.clone(),
-            body: IrBlock { stmts: ctx.stmts, expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))) },
+            body: IrBlock { stmts: ctx.finalize_and_take_stmts(), expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))) },
             external_kind: ExternalKind::Normal,
         };
         emit_fn(chunk_func);
@@ -7530,7 +7589,7 @@ pub fn weave_vole_qsim_ir_split(
         return_type: Some(ret_type),
         where_clause,
         body: IrBlock {
-            stmts: ctx.stmts,
+            stmts: ctx.finalize_and_take_stmts(),
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -7975,7 +8034,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 return_type: Some(IrType::Tuple(ret_tuple_tys)),
                 where_clause: where_clause_for(sink),
                 body: IrBlock {
-                    stmts: ctx.stmts,
+                    stmts: ctx.finalize_and_take_stmts(),
                     expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
                 },
                 external_kind: ExternalKind::Normal,
@@ -8137,7 +8196,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                     return_type: Some(IrType::Tuple(p_ret_tys)),
                     where_clause: where_clause_for(sink),
                     body: IrBlock {
-                        stmts: ctx.stmts,
+                        stmts: ctx.finalize_and_take_stmts(),
                         expr: Some(Box::new(ir_expr(IrExprKind::Tuple(p_ret_exprs)))),
                     },
                     external_kind: ExternalKind::Normal,
@@ -8255,13 +8314,13 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                     call_args.push(clone_expr(var(&format!("piece{}_fold_state", p - 1))));
                 }
                 if region_has_cross_piece_vars {
-                    call_args.push(ref_mut_expr(var("_piece_pool")));
-                    call_args.push(ref_mut_expr(var("_piece_pool_written")));
+                    call_args.push(slice_ref_mut_expr("_piece_pool"));
+                    call_args.push(slice_ref_mut_expr("_piece_pool_written"));
                 }
                 // Phase B: unconditional, matching every piece's own
                 // unconditional `_w_pool`/`_w_pool_written` params.
-                call_args.push(ref_mut_expr(var("_w_pool")));
-                call_args.push(ref_mut_expr(var("_w_pool_written")));
+                call_args.push(slice_ref_mut_expr("_w_pool"));
+                call_args.push(slice_ref_mut_expr("_w_pool_written"));
                 for &v in &b.synthetic_in {
                     let ty = synthetic_types.get(&v).cloned().expect("synthetic_types must already be populated");
                     if matches!(ty, IrType::Array { .. }) {
@@ -8582,7 +8641,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             params,
             return_type: Some(IrType::Tuple(ret_tuple_tys)),
             where_clause: where_clause_for(sink),
-            body: IrBlock { stmts: ctx.stmts, expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))) },
+            body: IrBlock { stmts: ctx.finalize_and_take_stmts(), expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))) },
             external_kind: ExternalKind::Normal,
         };
         emit_fn(chunk_func);
@@ -8695,7 +8754,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         return_type: Some(ret_type),
         where_clause: where_clause_for(sink),
         body: IrBlock {
-            stmts: ctx.stmts,
+            stmts: ctx.finalize_and_take_stmts(),
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -9053,7 +9112,7 @@ pub fn weave_net_vole_prover_ir(
         return_type: Some(ret_type),
         where_clause,
         body: IrBlock {
-            stmts: ctx.stmts,
+            stmts: ctx.finalize_and_take_stmts(),
             expr: Some(Box::new(net_ok_expr(output_expr))),
         },
         external_kind: ExternalKind::Normal,
@@ -9134,7 +9193,7 @@ pub fn weave_net_vole_verifier_ir(
         return_type: Some(ret_type),
         where_clause,
         body: IrBlock {
-            stmts: ctx.stmts,
+            stmts: ctx.finalize_and_take_stmts(),
             expr: Some(Box::new(net_ok_expr(output_expr))),
         },
         external_kind: ExternalKind::Normal,
@@ -9251,7 +9310,7 @@ pub fn weave_net_vole_prover_ir_loop(
 
     let b1 = IrCfgBlock {
         params: b1_params,
-        stmts: ctx.stmts,
+        stmts: ctx.finalize_and_take_stmts(),
         terminator: IrCfgTerminator::CondGoto {
             cond: var("done_bit"),
             then_: IrCfgJump { target: 2, args: vec![clone_expr(var(&output_wire))], reentry: None },
@@ -9430,7 +9489,7 @@ pub fn weave_net_vole_verifier_ir_loop(
 
     let b1 = IrCfgBlock {
         params: b1_params,
-        stmts: ctx.stmts,
+        stmts: ctx.finalize_and_take_stmts(),
         terminator: IrCfgTerminator::CondGoto {
             cond: var("is_sentinel"),
             then_: IrCfgJump { target: 2, args: vec![var("all_ok")], reentry: None },
