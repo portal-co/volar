@@ -9478,9 +9478,6 @@ pub fn print_weaved_vole_module(module: &IrModule<IrFunction>) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;
 
-    let mut body = String::new();
-    let _ = write!(body, "{}", DisplayRust(ModuleWriter { module, emit_async: false }));
-
     let preamble = concat!(
         "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]\n",
         "extern crate alloc;\n",
@@ -9496,9 +9493,21 @@ pub fn print_weaved_vole_module(module: &IrModule<IrFunction>) -> String {
         "\n",
     );
 
-    let mut out = String::with_capacity(preamble.len() + body.len());
+    // Write the preamble + printed IR directly into ONE buffer, rather
+    // than building the printed body as its own separate `String` and
+    // then copying it in. At real interpreter scale (~2GB of printed
+    // text) the old two-buffer approach meant `body` and `out` were both
+    // fully resident at once -- and `body` was never explicitly dropped,
+    // so Rust's default end-of-scope drop timing kept it alive (unused)
+    // through the rest of this function too, including the whole
+    // `chunk_function_bodies` call below (which allocates its own,
+    // separate output buffer) -- avoidable peak-memory pressure that
+    // contributed to a real machine hang during a real-scale compile
+    // attempt.
+    let mut out = String::with_capacity(preamble.len());
     out.push_str(preamble);
-    out.push_str(&body);
+    let _ = write!(out, "{}", DisplayRust(ModuleWriter { module, emit_async: false }));
+
     // Bound how many flat `let` bindings share a single scope in any one
     // printed function -- see `crate::nested_block_chunk`'s own doc for
     // why this matters (real-interpreter-scale profiling found rustc's

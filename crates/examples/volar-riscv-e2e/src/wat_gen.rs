@@ -1121,6 +1121,33 @@ mod tests {
         let n_blocks = boundary.len();
         let n_chunks = n_blocks.div_ceil(chunk_size);
 
+        // Positionally-indexed views (one entry per boundary/chunk/finish
+        // position) -- see the matching comment in `mem_probe.rs`'s own
+        // `honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary`.
+        // Any region exceeding `MAX_STMTS_PER_PIECE` now emits extra
+        // `..._piece_{p}` functions alongside its own wrapper; pieces are
+        // internal-only and must be excluded from positional indexing
+        // (but not from a role's own full function list, which stays
+        // unfiltered for printing).
+        let by_pos = |fs: &std::vec::Vec<IrFunction>| -> std::vec::Vec<IrFunction> {
+            fs.iter().filter(|f| !f.name.contains("_piece_")).cloned().collect()
+        };
+        let module_of = |functions: std::vec::Vec<IrFunction>, name: &str| volar_compiler::ir::IrModule {
+            name: name.into(), functions, structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+
+        // Each role is woven, filtered-by-position, and printed to text in
+        // full before moving to the next role -- NOT all three woven first
+        // and printed after. Weaving builds the entire in-memory IrFunction
+        // AST for that role (845 functions at real interpreter scale); at
+        // real scale, weaving all three roles first meant all three full
+        // ASTs were simultaneously alive well before any of them could be
+        // printed and dropped, which is what actually exhausted memory
+        // during a real-scale attempt (confirmed by where the process died:
+        // right after prover's own weave completed, mid-way through qsim's).
+        // Interleaving bounds peak AST memory to roughly one role's own
+        // full AST at a time, plus the (much smaller) printed text and
+        // `_by_pos` clones already produced for earlier roles.
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
         let trace = weave_vole_prover_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| prover_funcs.push(f));
         // `trace.entries` also carries synthetic pre_init entries (the
@@ -1141,39 +1168,27 @@ mod tests {
             .cloned()
             .collect();
         eprintln!("memory trace entries: {} total, {} real (per-step watchable)", trace.entries.len(), real_entries.len());
+        let prover_funcs_by_pos = by_pos(&prover_funcs);
+        assert_eq!(prover_funcs_by_pos.len(), n_blocks + n_chunks + 1);
+        let prover_total_funcs = prover_funcs.len();
+        let prover_code = print_weaved_vole_module(&module_of(prover_funcs, "prover"));
+
         let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
         weave_vole_qsim_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| qsim_funcs.push(f));
+        let qsim_funcs_by_pos = by_pos(&qsim_funcs);
+        assert_eq!(qsim_funcs_by_pos.len(), n_blocks + n_chunks + 1);
+        let qsim_code = print_weaved_vole_module(&module_of(qsim_funcs, "qsim"));
+
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
         weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| verifier_funcs.push(f));
-
-        // Positionally-indexed views (one entry per boundary/chunk/finish
-        // position) -- see the matching comment in `mem_probe.rs`'s own
-        // `honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary`.
-        // Any region exceeding `MAX_STMTS_PER_PIECE` now emits extra
-        // `..._piece_{p}` functions alongside its own wrapper; pieces are
-        // internal-only and must be excluded from positional indexing
-        // (but not from `prover_funcs`/etc themselves, which stay
-        // unfiltered for printing below).
-        let by_pos = |fs: &std::vec::Vec<IrFunction>| -> std::vec::Vec<IrFunction> {
-            fs.iter().filter(|f| !f.name.contains("_piece_")).cloned().collect()
-        };
-        let prover_funcs_by_pos = by_pos(&prover_funcs);
-        let qsim_funcs_by_pos = by_pos(&qsim_funcs);
         let verifier_funcs_by_pos = by_pos(&verifier_funcs);
-        assert_eq!(prover_funcs_by_pos.len(), n_blocks + n_chunks + 1);
-        assert_eq!(qsim_funcs_by_pos.len(), n_blocks + n_chunks + 1);
         assert_eq!(verifier_funcs_by_pos.len(), n_blocks + n_chunks + 1);
+        let verifier_code = print_weaved_vole_module(&module_of(verifier_funcs, "verifier"));
+
         eprintln!(
             "woven: {} functions per role ({n_blocks} blocks + {n_chunks} chunks + 1 finish, {} total incl. split pieces)",
-            prover_funcs_by_pos.len(), prover_funcs.len(),
+            prover_funcs_by_pos.len(), prover_total_funcs,
         );
-
-        let module_of = |functions: std::vec::Vec<IrFunction>, name: &str| volar_compiler::ir::IrModule {
-            name: name.into(), functions, structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
-        };
-        let prover_code = print_weaved_vole_module(&module_of(prover_funcs.clone(), "prover"));
-        let qsim_code = print_weaved_vole_module(&module_of(qsim_funcs.clone(), "qsim"));
-        let verifier_code = print_weaved_vole_module(&module_of(verifier_funcs.clone(), "verifier"));
         eprintln!(
             "printed source length: {} bytes across 3 files (prover {}, qsim {}, verifier {})",
             prover_code.len() + qsim_code.len() + verifier_code.len(),
@@ -1323,7 +1338,24 @@ mod tests {
             &entry_w, Some(("all_ok".to_string(), "fold_state".to_string())), &oracle_bit_exprs, "step",
         );
         let mut loop_body = result.stmts.clone();
+        // `next_entry_w` can have MORE entries than `param_widths`/`entry_w`
+        // itself -- the real interpreter's own movfuscated circuit
+        // terminator returns one extra slot beyond `circuit.blocks[0].params`
+        // (a pre-existing characteristic of this circuit's own terminator
+        // shape, confirmed unrelated to any pooling: `vole.rs`'s finish-
+        // function terminator-output construction and `split_driver.rs`'s
+        // `p_output`/`destructure_finish_output` are both untouched by
+        // Phase A/B/C). This extra slot was ALWAYS effectively dead data --
+        // even before pooling, `entry_w` itself (built from `param_widths`)
+        // never had a matching index for it, so the pre-Phase-B code's own
+        // unconditional `w{i}_vope = ..;` reassignment would have referenced
+        // an undeclared local for it too (never actually exercised at real
+        // scale before now, since no prior attempt reached this code path).
+        // Skip indices beyond `param_widths.len()` -- there is no pool slot
+        // or named local to write them into, and nothing downstream ever
+        // reads them back as next-step entry state either way.
         for (i, (vope_slot, q_slot)) in result.next_entry_w.iter().enumerate() {
+            if i >= param_widths.len() { continue; }
             if param_widths[i] <= 1 {
                 loop_body += &format!("_w_pool_vope[{i}] = {}; _w_pool_vope_written[{i}] = true;\n", slot_name(vope_slot));
                 loop_body += &format!("_w_pool_q[{i}] = {}; _w_pool_q_written[{i}] = true;\n", slot_name(q_slot));
