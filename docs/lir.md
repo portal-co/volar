@@ -6,8 +6,16 @@ low-level integer code needed for correctness testing. It lives in three crates:
 | Crate | Role |
 |---|---|
 | `crates/ir/volar-lir` | `LirTarget` trait + type definitions (no_std) |
-| `crates/compiler/volar-lir-codegen` | `IrModule` → `LirTarget` lowering + monomorphization |
-| `crates/compiler/volar-c-backend` | `LirTarget` implementation that emits C99 |
+| `crates/compiler/volar-lir-codegen` | `IrModule` → `LirTarget` lowering + MonoPlan monomorphization |
+| `crates/compiler/volar-c-backend` | `LirTarget` → C99 |
+| `crates/compiler/volar-wasm-backend` | `LirTarget` → WASM via wax-core / `wasm_encoder` |
+| `crates/compiler/volar-lir-saved` | `RecordingTarget` / `SavedLirModule` record → replay |
+
+### Multi-backend parallelism
+
+Lower once into `RecordingTarget`, then `SavedLirModule::replay` /
+`replay_pair` / `replay_into_many` into peer backends (C, LLVM, WASM). This is
+the supported fan-out path; blitz sharding is out of scope for outbound LIR.
 
 ---
 

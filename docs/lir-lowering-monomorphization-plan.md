@@ -1,7 +1,12 @@
 # Plan: Lowering-Time Monomorphization in `volar-lir-codegen`
 
-**Status:** proposed; widening currently exposes an unresolved const-parameter failure.
-**Implementation scope:** centered on `crates/compiler/volar-lir-codegen/`, but callers, instance/layout planning, CFG/auxiliary paths, and target consumers must be traced before declaring a backend-only fix. Breaking codegen APIs may be appropriate only with downstream reconciliation.
+**Status:** Phases 2–5 landed for small woven/flat modules (2026-08-04).
+`encrypt_branch` / unbound `L` is a planner rooting issue (do not root
+orphan generics); plan-API + instance-keyed nominals + restricted call-site
+inference are in `volar-lir-codegen`. Evidence: `lir_backend`,
+`monomorphization`, `vole_e2e` (including record→C+WASM AND).
+**Implementation scope:** centered on `crates/compiler/volar-lir-codegen/`, with
+callers migrated to `lower_module_monomorphized` / `MonoPlan` roots.
 
 ## Merged-tree update — 2026-07-22
 

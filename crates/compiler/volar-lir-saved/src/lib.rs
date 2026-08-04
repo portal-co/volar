@@ -210,6 +210,23 @@ pub struct SavedLirModule {
 }
 
 impl SavedLirModule {
+    /// Record-once / replay-many: fan out into every target of the same type.
+    ///
+    /// This is the supported multi-backend parallelism path (not a thread pool).
+    /// For heterogeneous backends, call [`Self::replay`] once per target, or
+    /// [`Self::replay_pair`].
+    pub fn replay_into_many<T: LirTarget>(&self, targets: &mut [T]) {
+        for target in targets.iter_mut() {
+            self.replay(target);
+        }
+    }
+
+    /// Replay into two backends of possibly different types.
+    pub fn replay_pair<A: LirTarget, B: LirTarget>(&self, a: &mut A, b: &mut B) {
+        self.replay(a);
+        self.replay(b);
+    }
+
     /// Replay this module into `target`.
     ///
     /// Values and blocks are mapped from their recorded `u32` indices to the
@@ -447,6 +464,7 @@ impl SavedLirModule {
             }
         }
     }
+
 }
 
 // ============================================================================
@@ -463,6 +481,8 @@ pub struct RecordingTarget {
     next_block: u32,
     /// Type map: `val_types[i]` = `LirType` of value index `i`.
     val_types: Vec<LirType>,
+    /// Struct layouts in define order — needed to flatten aggregate params/returns.
+    struct_defs: Vec<StructDef>,
 }
 
 impl RecordingTarget {
@@ -472,6 +492,7 @@ impl RecordingTarget {
             next_val: 0,
             next_block: 0,
             val_types: Vec::new(),
+            struct_defs: Vec::new(),
         }
     }
 
@@ -487,6 +508,26 @@ impl RecordingTarget {
         let idx = self.next_block;
         self.next_block += 1;
         idx
+    }
+
+    fn flatten_scalar_tys(&self, ty: &LirType) -> Vec<LirType> {
+        match ty {
+            LirType::Arr(elem, n) => {
+                let mut out = Vec::new();
+                for _ in 0..*n {
+                    out.extend(self.flatten_scalar_tys(elem));
+                }
+                out
+            }
+            LirType::Struct(id) => {
+                let mut out = Vec::new();
+                for field in &self.struct_defs[*id as usize].fields {
+                    out.extend(self.flatten_scalar_tys(&field.ty));
+                }
+                out
+            }
+            _ => vec![ty.clone()],
+        }
     }
 
     /// Consume the recorder and return the finished [`SavedLirModule`].
@@ -510,7 +551,8 @@ impl LirTarget for RecordingTarget {
     type Block = u32;
 
     fn define_struct(&mut self, def: StructDef) -> StructId {
-        let id = self.module.calls.iter().filter(|c| matches!(c, LirCall::DefineStruct { .. })).count() as StructId;
+        let id = self.struct_defs.len() as StructId;
+        self.struct_defs.push(def.clone());
         self.module.calls.push(LirCall::DefineStruct { def, id });
         id
     }
@@ -523,11 +565,15 @@ impl LirTarget for RecordingTarget {
     ) -> (u32, Vec<Vec<u32>>) {
         let entry_block = self.alloc_block();
 
-        // Allocate value indices for each parameter (scalar: one val per param).
+        // Flatten aggregates to scalars — matches WasmBackend / LIR ABI.
         let mut param_vals: Vec<Vec<u32>> = Vec::new();
         for ty in params {
-            let v = self.alloc_val(ty.clone());
-            param_vals.push(vec![v]);
+            let group: Vec<u32> = self
+                .flatten_scalar_tys(ty)
+                .into_iter()
+                .map(|sty| self.alloc_val(sty))
+                .collect();
+            param_vals.push(group);
         }
 
         self.module.calls.push(LirCall::BeginFunction {
@@ -693,10 +739,15 @@ impl LirTarget for RecordingTarget {
         args: &[u32],
         ret_ty: Option<LirType>,
     ) -> Vec<u32> {
-        let mut outs = Vec::new();
-        if let Some(ty) = &ret_ty {
-            outs.push(self.alloc_val(ty.clone()));
-        }
+        let outs: Vec<u32> = ret_ty
+            .as_ref()
+            .map(|ty| {
+                self.flatten_scalar_tys(ty)
+                    .into_iter()
+                    .map(|sty| self.alloc_val(sty))
+                    .collect()
+            })
+            .unwrap_or_default();
         self.module.calls.push(LirCall::CallExtern {
             name: alloc::string::String::from(name),
             arg_tys: arg_tys.to_vec(),

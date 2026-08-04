@@ -12,13 +12,26 @@ use std::collections::{BTreeMap, VecDeque};
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
     IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr, IrExprKind,
-    IrField, IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStmtKind, IrStruct,
-    IrType, IrTypeAlias, StructKind, TypeNumConst,
+    IrField, IrFunction, IrImpl, IrImplItem, IrLit, IrModule, IrParam, IrStmt, IrStmtKind, IrStruct,
+    IrType, IrTypeAlias, SpecUnaryOp, StructKind, TypeNumConst,
 };
 
 // ============================================================================
 // Array length helpers
 // ============================================================================
+
+/// Parse a typenum-style unsigned marker (`U0`…`U64`, and any `U{digits}` such
+/// as `U3` used for VOLE polynomial degree).
+pub(crate) fn typenum_usize(name: &str) -> Option<usize> {
+    if let Some(tn) = TypeNumConst::from_str(name) {
+        return Some(tn.to_usize());
+    }
+    let rest = name.strip_prefix('U')?;
+    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse().ok()
+}
 
 /// Convert the second type argument of a generic array type (e.g. `Array<T, N>`)
 /// to an `ArrayLength`, resolving const params via `env` where possible.
@@ -39,16 +52,18 @@ pub(crate) fn type_args_to_len(len_ty: Option<&IrType>, env: &MonoEnv) -> ArrayL
             if let Some(concrete) = env.type_params.get(name.as_str()) {
                 return type_args_to_len(Some(concrete), env);
             }
+            if let Some(n) = typenum_usize(name) {
+                return ArrayLength::Const(n);
+            }
             ArrayLength::TypeParam(name.clone())
         }
         Some(IrType::Struct {
             kind: StructKind::Custom(name),
             type_args,
         }) if type_args.is_empty() => {
-            // Typenum constant used as a type argument (e.g. `U1`, `U16`).
-            // Try to parse it as a typenum name.
-            if let Some(tn) = TypeNumConst::from_str(name) {
-                return ArrayLength::TypeNum(tn);
+            // Typenum constant used as a type argument (e.g. `U1`, `U3`, `U16`).
+            if let Some(n) = typenum_usize(name) {
+                return ArrayLength::Const(n);
             }
             // Fall back to const_params (e.g. env has with_len("U1", 1)).
             if let Some(&n) = env.const_params.get(name.as_str()) {
@@ -138,13 +153,14 @@ impl std::error::Error for MonoError {}
 
 /// Concrete identity of one source function instantiation.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct FunctionInstanceKey {
+pub struct FunctionInstanceKey {
     pub source_name: String,
     pub canonical_env: String,
 }
 
 /// A closed, deterministic collection of emitted local function instances.
-pub(crate) struct MonoPlan {
+#[derive(Clone, Debug)]
+pub struct MonoPlan {
     pub instances: BTreeMap<FunctionInstanceKey, MonoEnv>,
     pub emitted_names: BTreeMap<FunctionInstanceKey, String>,
     pub calls: BTreeMap<(FunctionInstanceKey, String, String), FunctionInstanceKey>,
@@ -220,7 +236,7 @@ fn mangle(name: &str, env: &MonoEnv, generic: bool) -> String {
 /// Plan all direct local specializations reachable from `roots`.
 /// Generic local calls require explicit type arguments; full type inference
 /// remains outside this backend-local monomorphizer.
-pub(crate) fn plan_flat_module<P: Clone>(
+pub fn plan_flat_module<P: Clone>(
     module: &IrModule<IrFunction<P>, P>,
     roots: &[crate::MonoRoot],
     max_instances: usize,
@@ -273,15 +289,38 @@ pub(crate) fn plan_flat_module<P: Clone>(
             .get(&key.source_name)
             .expect("queued source definition exists");
         instances.insert(key.clone(), env.clone());
-        for (callee, type_args) in direct_calls(&definition.body) {
+        for (callee, type_args, arg_tys) in direct_calls(&definition.body, &env) {
             let Some(callee_def) = definitions.get(&callee) else {
                 continue;
             };
             if callee_def.external_kind != volar_compiler::ir::ExternalKind::Normal {
                 continue;
             }
-            let callee_env = bind_explicit_args(callee_def, &type_args, &env)?;
-            let args = normalized_args(&type_args, &env);
+            let callee_env = bind_call_args(callee_def, &type_args, &arg_tys, &env)?;
+            let args = normalized_args(
+                &if type_args.is_empty() {
+                    // Prefer inferred concrete args for the call key when turbofish
+                    // was omitted.
+                    callee_def
+                        .generics
+                        .iter()
+                        .filter_map(|parameter| match parameter.kind {
+                            volar_compiler::ir::IrGenericParamKind::Const => callee_env
+                                .const_params
+                                .get(&parameter.name)
+                                .map(|&n| IrType::TypeParam(n.to_string())),
+                            volar_compiler::ir::IrGenericParamKind::Type => callee_env
+                                .type_params
+                                .get(&parameter.name)
+                                .cloned(),
+                            volar_compiler::ir::IrGenericParamKind::Lifetime => None,
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    type_args.clone()
+                },
+                &env,
+            );
             let callee_key = instance_key(&callee, &callee_env);
             calls.insert((key.clone(), callee.clone(), args), callee_key.clone());
             if !instances.contains_key(&callee_key) {
@@ -289,6 +328,9 @@ pub(crate) fn plan_flat_module<P: Clone>(
             }
         }
     }
+    // First specialization of each source name keeps the bare name for C ABI /
+    // harness friendliness (mirrors nominal struct emission).
+    let mut claimed_bare: BTreeMap<String, ()> = BTreeMap::new();
     let emitted_names = instances
         .iter()
         .map(|(key, env)| {
@@ -298,7 +340,14 @@ pub(crate) fn plan_flat_module<P: Clone>(
                 .generics
                 .len()
                 > 0;
-            (key.clone(), mangle(&key.source_name, env, generic))
+            let emitted = if !generic {
+                key.source_name.clone()
+            } else if claimed_bare.insert(key.source_name.clone(), ()).is_none() {
+                key.source_name.clone()
+            } else {
+                mangle(&key.source_name, env, true)
+            };
+            (key.clone(), emitted)
         })
         .collect();
     Ok(MonoPlan {
@@ -308,9 +357,10 @@ pub(crate) fn plan_flat_module<P: Clone>(
     })
 }
 
-fn bind_explicit_args<P: Clone>(
+fn bind_call_args<P: Clone>(
     function: &IrFunction<P>,
     type_args: &[IrType],
+    arg_tys: &[Option<IrType>],
     caller_env: &MonoEnv,
 ) -> Result<MonoEnv, MonoError> {
     if function.generics.is_empty() {
@@ -320,35 +370,59 @@ fn bind_explicit_args<P: Clone>(
                 function.name
             )));
         }
-        return Ok(MonoEnv::new(caller_env.hash_suffix.clone()));
+        // Keep the caller's layout bindings. An empty env would re-plan the same
+        // non-generic body without `N`/`U1` and panic during type conversion.
+        return Ok(caller_env.clone());
     }
-    if type_args.len() != function.generics.len() {
-        return Err(MonoError::new(format!(
-            "generic local call '{}' requires {} explicit type arguments; found {}",
-            function.name,
-            function.generics.len(),
-            type_args.len()
-        )));
+    // Seed with ambient caller bindings that this function does not shadow
+    // (typenum defaults, VOLE `U1`/`U0`, hash suffix, etc.).
+    let mut env = ambient_callee_env(function, caller_env);
+    // Explicit turbofish bindings first.
+    if !type_args.is_empty() {
+        if type_args.len() != function.generics.len() {
+            return Err(MonoError::new(format!(
+                "generic local call '{}' requires {} explicit type arguments; found {}",
+                function.name,
+                function.generics.len(),
+                type_args.len()
+            )));
+        }
+        for (parameter, argument) in function.generics.iter().zip(type_args) {
+            bind_one_generic(&mut env, function, parameter, argument, caller_env)?;
+        }
+        return Ok(env);
     }
-    let mut env = MonoEnv::new(caller_env.hash_suffix.clone());
-    for (parameter, argument) in function.generics.iter().zip(type_args) {
-        let argument = mono_type(argument, caller_env);
+    // Restricted inference: unify callee parameter types with call-site arg types.
+    for (param, arg_ty) in function.params.iter().zip(arg_tys.iter()) {
+        let Some(arg_ty) = arg_ty else {
+            continue;
+        };
+        let arg_ty = mono_type(arg_ty, caller_env);
+        unify_into(&mut env, &param.ty, &arg_ty, function, caller_env)?;
+    }
+    // Every layout-relevant generic must be concrete after inference.
+    for parameter in &function.generics {
         match parameter.kind {
-            volar_compiler::ir::IrGenericParamKind::Type => {
-                env.type_params.insert(parameter.name.clone(), argument);
-            }
             volar_compiler::ir::IrGenericParamKind::Const => {
-                match mono_len(&type_args_to_len(Some(&argument), caller_env), caller_env) {
-                    ArrayLength::Const(value) => {
-                        env.const_params.insert(parameter.name.clone(), value);
-                    }
-                    ArrayLength::TypeNum(value) => {
-                        env.const_params
-                            .insert(parameter.name.clone(), value.to_usize());
-                    }
-                    other => {
+                if !env.const_params.contains_key(&parameter.name) {
+                    return Err(MonoError::new(format!(
+                        "generic local call '{}': const parameter '{}' could not be inferred",
+                        function.name, parameter.name
+                    )));
+                }
+            }
+            volar_compiler::ir::IrGenericParamKind::Type => {
+                match env.type_params.get(&parameter.name) {
+                    Some(ty) if is_concrete_type(ty) => {}
+                    Some(ty) => {
                         return Err(MonoError::new(format!(
-                            "generic local call '{}': const parameter '{}' is unresolved ({other:?})",
+                            "generic local call '{}': type parameter '{}' inferred non-concrete ({ty:?})",
+                            function.name, parameter.name
+                        )));
+                    }
+                    None => {
+                        return Err(MonoError::new(format!(
+                            "generic local call '{}': type parameter '{}' could not be inferred",
                             function.name, parameter.name
                         )));
                     }
@@ -360,64 +434,316 @@ fn bind_explicit_args<P: Clone>(
     Ok(env)
 }
 
-fn direct_calls<P: Clone>(block: &volar_compiler::ir::IrBlock<P>) -> Vec<(String, Vec<IrType>)> {
+/// Caller bindings whose names are not parameters of `function`.
+fn ambient_callee_env<P: Clone>(function: &IrFunction<P>, caller_env: &MonoEnv) -> MonoEnv {
+    let shadows = |name: &str| function.generics.iter().any(|g| g.name == name);
+    let mut env = MonoEnv::new(caller_env.hash_suffix.clone());
+    for (name, value) in &caller_env.const_params {
+        if !shadows(name) {
+            env.const_params.insert(name.clone(), *value);
+        }
+    }
+    for (name, value) in &caller_env.type_params {
+        if !shadows(name) {
+            env.type_params.insert(name.clone(), value.clone());
+        }
+    }
+    for (key, value) in &caller_env.projections {
+        if !shadows(&key.0) {
+            env.projections.insert(key.clone(), value.clone());
+        }
+    }
+    env
+}
+
+fn bind_one_generic<P: Clone>(
+    env: &mut MonoEnv,
+    function: &IrFunction<P>,
+    parameter: &volar_compiler::ir::IrGenericParam,
+    argument: &IrType,
+    caller_env: &MonoEnv,
+) -> Result<(), MonoError> {
+    let argument = mono_type(argument, caller_env);
+    match parameter.kind {
+        volar_compiler::ir::IrGenericParamKind::Type => {
+            if !is_concrete_type(&argument) {
+                return Err(MonoError::new(format!(
+                    "generic local call '{}': type parameter '{}' is unresolved ({argument:?})",
+                    function.name, parameter.name
+                )));
+            }
+            // ArraySize-style type params often arrive as `TypeParam("16")`.
+            if let IrType::TypeParam(name) = &argument {
+                if let Ok(n) = name.parse::<usize>() {
+                    env.const_params.insert(parameter.name.clone(), n);
+                } else if let Some(n) = typenum_usize(name) {
+                    env.const_params.insert(parameter.name.clone(), n);
+                }
+            }
+            env.type_params.insert(parameter.name.clone(), argument);
+        }
+        volar_compiler::ir::IrGenericParamKind::Const => {
+            match mono_len(&type_args_to_len(Some(&argument), caller_env), caller_env) {
+                ArrayLength::Const(value) => {
+                    env.const_params.insert(parameter.name.clone(), value);
+                }
+                ArrayLength::TypeNum(value) => {
+                    env.const_params
+                        .insert(parameter.name.clone(), value.to_usize());
+                }
+                other => {
+                    return Err(MonoError::new(format!(
+                        "generic local call '{}': const parameter '{}' is unresolved ({other:?})",
+                        function.name, parameter.name
+                    )));
+                }
+            }
+        }
+        volar_compiler::ir::IrGenericParamKind::Lifetime => {}
+    }
+    Ok(())
+}
+
+fn is_concrete_type(ty: &IrType) -> bool {
+    match ty {
+        IrType::TypeParam(name) => {
+            name.parse::<usize>().is_ok() || typenum_usize(name).is_some()
+        }
+        IrType::Primitive(_) | IrType::Unit | IrType::Never => true,
+        IrType::Array { elem, len, .. } => {
+            is_concrete_type(elem)
+                && matches!(len, ArrayLength::Const(_) | ArrayLength::TypeNum(_))
+        }
+        IrType::Struct { type_args, .. } => type_args.iter().all(is_concrete_type),
+        IrType::Reference { elem, .. } | IrType::Vector { elem } => is_concrete_type(elem),
+        IrType::Tuple(elems) => elems.iter().all(is_concrete_type),
+        _ => false,
+    }
+}
+
+fn unify_into<P: Clone>(
+    env: &mut MonoEnv,
+    pattern: &IrType,
+    concrete: &IrType,
+    function: &IrFunction<P>,
+    caller_env: &MonoEnv,
+) -> Result<(), MonoError> {
+    let pattern = mono_type(pattern, env);
+    let concrete = mono_type(concrete, caller_env);
+    match (&pattern, &concrete) {
+        (IrType::TypeParam(name), concrete) => {
+            if !is_concrete_type(concrete) {
+                return Err(MonoError::new(format!(
+                    "generic local call '{}': cannot bind '{}' to non-concrete {concrete:?}",
+                    function.name, name
+                )));
+            }
+            if let Some(existing) = env.type_params.get(name) {
+                if existing != concrete {
+                    return Err(MonoError::new(format!(
+                        "generic local call '{}': contradictory binding for '{}'",
+                        function.name, name
+                    )));
+                }
+            } else if function.generics.iter().any(|g| {
+                g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Type
+            }) {
+                if let IrType::TypeParam(nname) = concrete {
+                    if let Ok(n) = nname.parse::<usize>() {
+                        env.const_params.insert(name.clone(), n);
+                    } else if let Some(n) = typenum_usize(nname) {
+                        env.const_params.insert(name.clone(), n);
+                    }
+                }
+                env.type_params.insert(name.clone(), concrete.clone());
+            }
+            Ok(())
+        }
+        (
+            IrType::Array {
+                elem: p_elem,
+                len: p_len,
+                ..
+            },
+            IrType::Array {
+                elem: c_elem,
+                len: c_len,
+                ..
+            },
+        ) => {
+            unify_into(env, p_elem, c_elem, function, caller_env)?;
+            if let (ArrayLength::TypeParam(name), ArrayLength::Const(n)) = (p_len, c_len) {
+                if function.generics.iter().any(|g| {
+                    g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Const
+                }) {
+                    if let Some(existing) = env.const_params.get(name) {
+                        if existing != n {
+                            return Err(MonoError::new(format!(
+                                "generic local call '{}': contradictory const binding for '{}'",
+                                function.name, name
+                            )));
+                        }
+                    } else {
+                        env.const_params.insert(name.clone(), *n);
+                    }
+                }
+            }
+            Ok(())
+        }
+        (
+            IrType::Struct {
+                kind: p_kind,
+                type_args: p_args,
+            },
+            IrType::Struct {
+                kind: c_kind,
+                type_args: c_args,
+            },
+        ) if p_kind == c_kind && p_args.len() == c_args.len() => {
+            for (p, c) in p_args.iter().zip(c_args.iter()) {
+                unify_into(env, p, c, function, caller_env)?;
+            }
+            Ok(())
+        }
+        (
+            IrType::Reference { elem: p_elem, .. },
+            IrType::Reference { elem: c_elem, .. },
+        ) => unify_into(env, p_elem, c_elem, function, caller_env),
+        (IrType::Reference { elem: p_elem, .. }, concrete) => {
+            unify_into(env, p_elem, concrete, function, caller_env)
+        }
+        (pattern, IrType::Reference { elem: c_elem, .. }) => {
+            unify_into(env, pattern, c_elem, function, caller_env)
+        }
+        (IrType::Tuple(p_elems), IrType::Tuple(c_elems)) if p_elems.len() == c_elems.len() => {
+            for (p, c) in p_elems.iter().zip(c_elems.iter()) {
+                unify_into(env, p, c, function, caller_env)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn infer_expr_type<P: Clone>(expr: &IrExpr<P>, env: &MonoEnv) -> Option<IrType> {
+    match &expr.kind {
+        IrExprKind::Lit(IrLit::Int(_)) => Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::U64)),
+        IrExprKind::Lit(IrLit::Bool(_)) => Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool)),
+        IrExprKind::FixedArray(elems) => {
+            let elem_ty = elems.first().and_then(|e| infer_expr_type(e, env))?;
+            Some(IrType::Array {
+                kind: ArrayKind::FixedArray,
+                elem: Box::new(elem_ty),
+                len: ArrayLength::Const(elems.len()),
+            })
+        }
+        IrExprKind::Array(elems) => {
+            let elem_ty = elems.first().and_then(|e| infer_expr_type(e, env))?;
+            Some(IrType::Array {
+                kind: ArrayKind::FixedArray,
+                elem: Box::new(elem_ty),
+                len: ArrayLength::Const(elems.len()),
+            })
+        }
+        IrExprKind::StructExpr {
+            kind, type_args, ..
+        } => Some(IrType::Struct {
+            kind: kind.clone(),
+            type_args: type_args.iter().map(|a| mono_type(a, env)).collect(),
+        }),
+        IrExprKind::Cast { ty, .. } => Some(mono_type(ty, env)),
+        IrExprKind::Unary {
+            op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
+            expr,
+        } => infer_expr_type(expr, env).map(|elem| IrType::Reference {
+            mutable: false,
+            elem: Box::new(elem),
+        }),
+        IrExprKind::Unary {
+            op: SpecUnaryOp::Deref,
+            expr,
+        } => match infer_expr_type(expr, env)? {
+            IrType::Reference { elem, .. } => Some(*elem),
+            other => Some(other),
+        },
+        _ => None,
+    }
+}
+
+fn direct_calls<P: Clone>(
+    block: &volar_compiler::ir::IrBlock<P>,
+    env: &MonoEnv,
+) -> Vec<(String, Vec<IrType>, Vec<Option<IrType>>)> {
     let mut calls = Vec::new();
     for stmt in &block.stmts {
-        collect_stmt_calls(stmt, &mut calls);
+        collect_stmt_calls(stmt, env, &mut calls);
     }
     if let Some(expr) = &block.expr {
-        collect_expr_calls(expr, &mut calls);
+        collect_expr_calls(expr, env, &mut calls);
     }
     calls
 }
-fn collect_stmt_calls<P: Clone>(stmt: &IrStmt<P>, calls: &mut Vec<(String, Vec<IrType>)>) {
+fn collect_stmt_calls<P: Clone>(
+    stmt: &IrStmt<P>,
+    env: &MonoEnv,
+    calls: &mut Vec<(String, Vec<IrType>, Vec<Option<IrType>>)>,
+) {
     match &stmt.kind {
         IrStmtKind::Let {
             init: Some(expr), ..
         }
         | IrStmtKind::Semi(expr)
-        | IrStmtKind::Expr(expr) => collect_expr_calls(expr, calls),
+        | IrStmtKind::Expr(expr) => collect_expr_calls(expr, env, calls),
         _ => {}
     }
 }
-fn collect_expr_calls<P: Clone>(expr: &IrExpr<P>, calls: &mut Vec<(String, Vec<IrType>)>) {
+fn collect_expr_calls<P: Clone>(
+    expr: &IrExpr<P>,
+    env: &MonoEnv,
+    calls: &mut Vec<(String, Vec<IrType>, Vec<Option<IrType>>)>,
+) {
     use IrExprKind::*;
     match &expr.kind {
         Call { func, args } => {
-            if let Path {
-                segments,
-                type_args,
-            } = &func.kind
-            {
-                calls.push((segments.join("_"), type_args.clone()));
+            let callee = match &func.kind {
+                Path {
+                    segments,
+                    type_args,
+                } => Some((segments.join("_"), type_args.clone())),
+                Var(name) => Some((name.clone(), Vec::new())),
+                _ => None,
+            };
+            if let Some((name, type_args)) = callee {
+                let arg_tys = args.iter().map(|a| infer_expr_type(a, env)).collect();
+                calls.push((name, type_args, arg_tys));
             }
             for arg in args {
-                collect_expr_calls(arg, calls);
+                collect_expr_calls(arg, env, calls);
             }
         }
         Binary { left, right, .. }
         | Assign { left, right }
         | AssignOp { left, right, .. }
         | RawZip { left, right, .. } => {
-            collect_expr_calls(left, calls);
-            collect_expr_calls(right, calls);
+            collect_expr_calls(left, env, calls);
+            collect_expr_calls(right, env, calls);
         }
         Unary { expr, .. }
         | Field { base: expr, .. }
         | Try(expr)
         | Cast { expr, .. }
         | RawMap { receiver: expr, .. }
-        | RawFold { receiver: expr, .. } => collect_expr_calls(expr, calls),
+        | RawFold { receiver: expr, .. } => collect_expr_calls(expr, env, calls),
         Index { base, index } => {
-            collect_expr_calls(base, calls);
-            collect_expr_calls(index, calls);
+            collect_expr_calls(base, env, calls);
+            collect_expr_calls(index, env, calls);
         }
         Block(block) | BoundedLoop { body: block, .. } => {
             for stmt in &block.stmts {
-                collect_stmt_calls(stmt, calls);
+                collect_stmt_calls(stmt, env, calls);
             }
             if let Some(expr) = &block.expr {
-                collect_expr_calls(expr, calls);
+                collect_expr_calls(expr, env, calls);
             }
         }
         If {
@@ -425,28 +751,28 @@ fn collect_expr_calls<P: Clone>(expr: &IrExpr<P>, calls: &mut Vec<(String, Vec<I
             then_branch,
             else_branch,
         } => {
-            collect_expr_calls(cond, calls);
+            collect_expr_calls(cond, env, calls);
             for stmt in &then_branch.stmts {
-                collect_stmt_calls(stmt, calls);
+                collect_stmt_calls(stmt, env, calls);
             }
             if let Some(expr) = &then_branch.expr {
-                collect_expr_calls(expr, calls);
+                collect_expr_calls(expr, env, calls);
             }
             if let Some(expr) = else_branch {
-                collect_expr_calls(expr, calls);
+                collect_expr_calls(expr, env, calls);
             }
         }
         Tuple(values) | Array(values) | FixedArray(values) => {
             for value in values {
-                collect_expr_calls(value, calls);
+                collect_expr_calls(value, env, calls);
             }
         }
         StructExpr { fields, .. } => {
             for (_, value) in fields {
-                collect_expr_calls(value, calls);
+                collect_expr_calls(value, env, calls);
             }
         }
-        Return(Some(expr)) => collect_expr_calls(expr, calls),
+        Return(Some(expr)) => collect_expr_calls(expr, env, calls),
         _ => {}
     }
 }
@@ -770,6 +1096,16 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
         IrType::TypeParam(name) => {
             if let Some(concrete) = env.type_params.get(name) {
                 mono_type(concrete, env) // recurse in case the substituted type itself has params
+            } else if let Some(&n) = env.const_params.get(name) {
+                // Const-generic names often appear as `TypeParam("N")` in
+                // struct type_args (`Vope<N, T, U1>`); bind via `with_len`.
+                IrType::TypeParam(n.to_string())
+            } else if let Ok(n) = name.parse::<usize>() {
+                IrType::TypeParam(n.to_string())
+            } else if let Some(n) = typenum_usize(name) {
+                // Default typenum args (`Vope<N, T, U1>` / `U3`) survive into
+                // callee envs that only bind N/T — resolve them globally.
+                IrType::TypeParam(n.to_string())
             } else {
                 ty.clone()
             }
@@ -794,6 +1130,18 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
                     elem,
                     len,
                 };
+            }
+
+            // Typenum / const-generic markers used as type arguments (`U1`, `U3`).
+            if type_args.is_empty() {
+                if let StructKind::Custom(name) = kind {
+                    if let Some(&n) = env.const_params.get(name) {
+                        return IrType::TypeParam(n.to_string());
+                    }
+                    if let Some(n) = typenum_usize(name) {
+                        return IrType::TypeParam(n.to_string());
+                    }
+                }
             }
 
             IrType::Struct {
@@ -845,10 +1193,20 @@ pub(crate) fn mono_len(len: &ArrayLength, env: &MonoEnv) -> ArrayLength {
     match len {
         ArrayLength::TypeParam(name) => {
             if let Some(&n) = env.const_params.get(name) {
-                ArrayLength::Const(n)
-            } else {
-                len.clone()
+                return ArrayLength::Const(n);
             }
+            // `N: ArraySize` is often a Type generic bound via turbofish/inference
+            // into `type_params` as `TypeParam("16")` rather than `const_params`.
+            if let Some(concrete) = env.type_params.get(name) {
+                return mono_len(&type_args_to_len(Some(concrete), env), env);
+            }
+            if let Ok(n) = name.parse::<usize>() {
+                return ArrayLength::Const(n);
+            }
+            if let Some(n) = typenum_usize(name) {
+                return ArrayLength::Const(n);
+            }
+            len.clone()
         }
         // Projection might reference a const param indirectly; leave for now.
         other => other.clone(),

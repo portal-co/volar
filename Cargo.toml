@@ -26,6 +26,7 @@ members = [
     "crates/compiler/volar-lir-codegen",
     "crates/compiler/volar-c-backend",
     "crates/compiler/volar-llvm-backend",
+    "crates/compiler/volar-wasm-backend",
     "crates/compiler/volar-lir-test-corpus",
     "crates/compiler/volar-lir-saved",
     "crates/compiler/volar-build",
@@ -73,6 +74,7 @@ default-members = [
     "crates/compiler/volar-lir-codegen",
     "crates/compiler/volar-c-backend",
     "crates/compiler/volar-llvm-backend",
+    "crates/compiler/volar-wasm-backend",
     "crates/compiler/volar-lir-test-corpus",
     "crates/compiler/volar-lir-saved",
     "crates/compiler/volar-build",
@@ -115,6 +117,7 @@ volar-net = {path="crates/net/volar-net", version = "0.1.0"}
 volar-compiler-passes = {path="crates/compiler/volar-compiler-passes", version = "0.1.0"}
 volar-lir-test-corpus = {path="crates/compiler/volar-lir-test-corpus", version = "0.1.0"}
 volar-lir-saved = {path="crates/compiler/volar-lir-saved", version = "0.1.0"}
+volar-wasm-backend = {path="crates/compiler/volar-wasm-backend", version = "0.1.0"}
 volar-build = {path="crates/compiler/volar-build", version = "0.1.0"}
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }

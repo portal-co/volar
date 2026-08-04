@@ -1,17 +1,15 @@
-//! Integration test: full LIR codegen pipeline for volar-spec.
+//! Integration test: LIR monomorphization planning for the full volar-spec tree.
 //!
-//! Reads volar-primitives, volar-common, and volar-spec sources, runs them
-//! through `lower_module_with_opts` + `CBackend::finish()`, and verifies that
-//! lowering completes without panicking and produces non-empty C output.
-//!
-//! Each function that fails to lower is logged so that gaps can be tracked.
+//! Reads volar-primitives, volar-common, and volar-spec sources and verifies that
+//! [`plan_flat_module`] / non-generic roots complete without the historic
+//! unbound-`L` failure on `encrypt_branch`. Body lowering for the entire spec
+//! tree still has gaps; those are tracked by component / vole e2e tests.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use volar_c_backend::CBackend;
 use volar_compiler::{ir::IrFunction, ir::IrModule, parser::parse_source};
-use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
+use volar_lir_codegen::{plan_flat_module, MonoPlanOptions};
 
 // ---------------------------------------------------------------------------
 // Source collection
@@ -68,7 +66,10 @@ fn parse_dir(dir: &Path, crate_name: &str, module: &mut IrModule<IrFunction>) {
                 module.type_aliases.extend(m.type_aliases);
                 module.consts.extend(m.consts);
             }
-            Err(e) => eprintln!("  warn: parse error in {}: {e}", file.file_name().unwrap().to_string_lossy()),
+            Err(e) => eprintln!(
+                "  warn: parse error in {}: {e}",
+                file.file_name().unwrap().to_string_lossy()
+            ),
         }
     }
 }
@@ -80,11 +81,22 @@ fn build_module() -> IrModule<IrFunction> {
         ..Default::default()
     };
 
-    parse_dir(&root.join("crates/spec/volar-primitives/src"), "volar_primitives", &mut module);
-    parse_dir(&root.join("crates/spec/volar-common/src"), "volar_common", &mut module);
-    parse_dir(&root.join("crates/spec/volar-spec/src"), "volar_spec", &mut module);
+    parse_dir(
+        &root.join("crates/spec/volar-primitives/src"),
+        "volar_primitives",
+        &mut module,
+    );
+    parse_dir(
+        &root.join("crates/spec/volar-common/src"),
+        "volar_common",
+        &mut module,
+    );
+    parse_dir(
+        &root.join("crates/spec/volar-spec/src"),
+        "volar_spec",
+        &mut module,
+    );
 
-    // Dedup: within the same crate, keep first by bare name.
     {
         let mut seen = std::collections::HashSet::new();
         module.structs.retain(|s| {
@@ -115,36 +127,37 @@ fn build_module() -> IrModule<IrFunction> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_lir_backend_no_errors() {
+fn test_lir_backend_plan_no_unresolved_l() {
     let module = build_module();
 
     eprintln!(
-        "\n=== LIR backend: lowering {} functions from {} structs ===\n",
+        "\n=== LIR backend: planning {} functions from {} structs ===\n",
         module.functions.len(),
         module.structs.len()
     );
 
-    // Catch panics from lower_module_with_opts so we can report them all.
-    let result = std::panic::catch_unwind(|| {
-        let mut backend = CBackend::new();
-        lower_module_with_opts(&module, &mut backend, &MonoEnv::new("volar_lir_test"));
-        backend.finish()
-    });
+    let options = MonoPlanOptions::default();
+    let plan = plan_flat_module(&module, &options.roots, options.max_instances)
+        .expect("full-spec MonoPlan must not fail on unbound encrypt_branch L");
 
-    match result {
-        Ok(c_output) => {
-            eprintln!("LIR lowering succeeded. C output: {} bytes", c_output.len());
-            assert!(!c_output.is_empty(), "CBackend produced empty output");
-        }
-        Err(e) => {
-            let msg = if let Some(s) = e.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = e.downcast_ref::<&str>() {
-                s.to_string()
-            } else {
-                "(non-string panic payload)".to_string()
-            };
-            panic!("LIR backend panicked: {}", msg);
-        }
-    }
+    assert!(
+        !plan.instances.is_empty(),
+        "expected at least one non-generic root instance"
+    );
+
+    // Orphan generic `encrypt_branch` must not be forced as an unbound root.
+    let encrypt_instances: Vec<_> = plan
+        .instances
+        .keys()
+        .filter(|k| k.source_name == "encrypt_branch")
+        .collect();
+    assert!(
+        encrypt_instances.is_empty(),
+        "encrypt_branch must not be planned without a concrete L; got {encrypt_instances:?}"
+    );
+
+    eprintln!(
+        "LIR planning succeeded: {} concrete instances",
+        plan.instances.len()
+    );
 }

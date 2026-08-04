@@ -35,6 +35,7 @@ pub struct StructRegistry {
     pub lenient: bool,
 }
 
+#[derive(Clone)]
 struct StructEntry {
     pub id: StructId,
     /// Field names in declaration order.
@@ -63,9 +64,16 @@ impl StructRegistry {
         self.native_types.get(&kind_name(kind)).copied()
     }
 
-    /// Look up the `StructId` for a struct by its kind name.
+    /// Look up the `StructId` for a non-generic (or already-mangled) kind name.
     pub fn id_for(&self, kind: &StructKind) -> Option<StructId> {
         self.by_name.get(&kind_name(kind)).map(|e| e.id)
+    }
+
+    /// Look up a concrete nominal instance by kind + monomorphized type args.
+    pub fn id_for_instance(&self, kind: &StructKind, type_args: &[IrType]) -> Option<StructId> {
+        self.by_name
+            .get(&nominal_instance_name(kind, type_args))
+            .map(|e| e.id)
     }
 
     /// Return the 0-based index of `field` in the given struct, or panic.
@@ -205,19 +213,232 @@ pub fn register_tuples_in_type<T: LirTarget<P>, P: Clone>(
 // Builder
 // ============================================================================
 
-/// Build a `StructRegistry` from an `IrModule`, applying `env` substitutions
-/// to field types on the fly.
+/// Deterministic concrete name for a nominal type instance.
 ///
-/// For each struct in `module.structs`:
-/// 1. Maps its field types to `LirType` (with mono substitution via `env`).
-/// 2. Calls `target.define_struct(...)`.
-/// 3. Records the mapping.
+/// Non-generic (empty `type_args`) definitions keep their source kind name.
+/// Generic instances append a sanitized encoding of the concrete arguments so
+/// `Wrap<U8>` and `Wrap<U64>` never share a `StructId`.
+pub fn nominal_instance_name(kind: &StructKind, type_args: &[IrType]) -> String {
+    let base = kind_name(kind);
+    if type_args.is_empty() {
+        return base;
+    }
+    let mut out = base;
+    out.push_str("__mono");
+    for arg in type_args {
+        out.push('_');
+        for byte in format!("{arg:?}").bytes() {
+            match byte {
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => out.push(byte as char),
+                _ => out.push('_'),
+            }
+        }
+    }
+    out
+}
+
+/// Bind a struct definition's declared generics to concrete `type_args`.
+fn struct_instance_env(ir_struct: &IrStruct, type_args: &[IrType], outer: &MonoEnv) -> MonoEnv {
+    let mut env = MonoEnv::new(outer.hash_suffix.clone());
+    for (parameter, argument) in ir_struct.generics.iter().zip(type_args.iter()) {
+        let argument = mono_type(argument, outer);
+        // Length-like args only: numeric `TypeParam("16")`, typenum `U1`, or an
+        // explicit Const generic. Do **not** treat value primitives (`U8`,
+        // `Galois`) as lengths — `type_args_to_len` maps unknown primitives to
+        // `Const(0)`, which would clobber `T = u8` into `TypeParam("0")` → U64.
+        let length_like = match &argument {
+            IrType::TypeParam(name) => {
+                name.parse::<usize>().is_ok() || crate::mono::typenum_usize(name).is_some()
+            }
+            IrType::Struct {
+                kind: StructKind::Custom(name),
+                type_args,
+            } if type_args.is_empty() => crate::mono::typenum_usize(name).is_some(),
+            _ => false,
+        };
+        let numeric = if length_like
+            || matches!(
+                parameter.kind,
+                volar_compiler::ir::IrGenericParamKind::Const
+            ) {
+            match crate::mono::mono_len(
+                &crate::mono::type_args_to_len(Some(&argument), outer),
+                outer,
+            ) {
+                ArrayLength::Const(n) => Some(n),
+                ArrayLength::TypeNum(tn) => Some(tn.to_usize()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(n) = numeric {
+            env.const_params.insert(parameter.name.clone(), n);
+            if matches!(
+                parameter.kind,
+                volar_compiler::ir::IrGenericParamKind::Type
+            ) {
+                env.type_params
+                    .insert(parameter.name.clone(), IrType::TypeParam(n.to_string()));
+            }
+            continue;
+        }
+        if matches!(
+            parameter.kind,
+            volar_compiler::ir::IrGenericParamKind::Type
+        ) {
+            env.type_params.insert(parameter.name.clone(), argument);
+        }
+    }
+    env
+}
+
+/// Register one concrete nominal instance of `ir_struct` under its mangled name.
 ///
-/// Structs are registered in the order they appear in `module.structs`.
-/// The caller must ensure the ordering is dependency-safe (fields of struct S
-/// must not reference struct T unless T appears earlier in the list).
+/// Returns early when the instance is already registered. Nested nominal field
+/// types are registered first.
+pub fn ensure_struct_instance<T: LirTarget<P>, P: Clone>(
+    ir_struct: &IrStruct,
+    type_args: &[IrType],
+    registry: &mut StructRegistry,
+    target: &mut T,
+    outer: &MonoEnv,
+    all_structs: &[IrStruct],
+) {
+    if ir_struct.kind == StructKind::GenericArray {
+        return;
+    }
+    let name = kind_name(&ir_struct.kind);
+    if let Some(native_ty) = ir_struct.native_volar_type {
+        registry.native_types.insert(name, native_ty);
+        return;
+    }
+    // Generic definitions require a full type-arg list; bare uses are skipped.
+    if !ir_struct.generics.is_empty() && type_args.len() != ir_struct.generics.len() {
+        return;
+    }
+    let concrete_args: Vec<IrType> = type_args.iter().map(|a| mono_type(a, outer)).collect();
+    // Refuse to register when any type arg is still an unbound param name.
+    // Numeric `TypeParam("16")` is a resolved const-generic spelling.
+    if concrete_args.iter().any(|a| match a {
+        IrType::TypeParam(name) => name.parse::<usize>().is_err(),
+        _ => false,
+    }) {
+        return;
+    }
+    let instance_key = nominal_instance_name(&ir_struct.kind, &concrete_args);
+    if registry.id_for_name(&instance_key).is_some() {
+        return;
+    }
+
+    let local = struct_instance_env(ir_struct, &concrete_args, outer);
+    // Pre-register nested nominal dependencies from field types.
+    for field in &ir_struct.fields {
+        ensure_type_nominals(&field.ty, registry, target, &local, all_structs);
+    }
+
+    let lir_fields: Vec<(String, LirType)> = ir_struct
+        .fields
+        .iter()
+        .map(|f| {
+            let lir_ty = registry.ir_type_to_lir(&f.ty, &local);
+            (f.name.clone(), lir_ty)
+        })
+        .collect();
+
+    // First specialization of a generic struct keeps the source kind name for
+    // C ABI / harness friendliness (`Vope`); further specializations use the
+    // mangled instance key so layouts never collide.
+    let base = kind_name(&ir_struct.kind);
+    let emit_name = if concrete_args.is_empty() {
+        base.clone()
+    } else if registry.id_for_name(&base).is_none() {
+        base.clone()
+    } else {
+        instance_key.clone()
+    };
+
+    let struct_def = StructDef {
+        name: emit_name,
+        fields: lir_fields
+            .iter()
+            .map(|(fname, fty)| FieldDef {
+                name: fname.clone(),
+                ty: fty.clone(),
+            })
+            .collect(),
+    };
+    let id = target.define_struct(struct_def);
+    let field_names = lir_fields.iter().map(|(n, _)| n.clone()).collect();
+    let field_types = lir_fields.into_iter().map(|(_, t)| t).collect();
+    let entry = StructEntry {
+        id,
+        field_names,
+        field_types,
+    };
+    registry.by_name.insert(instance_key.clone(), entry.clone());
+    // Alias bare kind → first instance so harnesses that spell `Vope` resolve.
+    if instance_key != base {
+        registry.by_name.entry(base).or_insert(entry);
+    }
+}
+
+/// Walk an IR type and register every concrete nominal instance it mentions.
+pub fn ensure_type_nominals<T: LirTarget<P>, P: Clone>(
+    ty: &IrType,
+    registry: &mut StructRegistry,
+    target: &mut T,
+    env: &MonoEnv,
+    all_structs: &[IrStruct],
+) {
+    let ty = mono_type(ty, env);
+    match ty {
+        IrType::Struct { kind, type_args } => {
+            if matches!(kind, StructKind::GenericArray)
+                || matches!(&kind, StructKind::Custom(n) if n == "Array")
+            {
+                for arg in &type_args {
+                    ensure_type_nominals(arg, registry, target, env, all_structs);
+                }
+                return;
+            }
+            if let Some(ir_struct) = all_structs.iter().find(|s| s.kind == kind) {
+                ensure_struct_instance(ir_struct, &type_args, registry, target, env, all_structs);
+            }
+            for arg in &type_args {
+                ensure_type_nominals(arg, registry, target, env, all_structs);
+            }
+        }
+        IrType::Array { elem, .. } | IrType::Reference { elem, .. } | IrType::Vector { elem } => {
+            ensure_type_nominals(&elem, registry, target, env, all_structs);
+        }
+        IrType::Tuple(elems) => {
+            for elem in elems {
+                ensure_type_nominals(&elem, registry, target, env, all_structs);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build a `StructRegistry` from non-generic (and native) struct definitions.
+///
+/// Generic structs are **not** registered here — callers must
+/// [`ensure_struct_instance`] / [`ensure_type_nominals`] for each concrete use.
 pub fn build_struct_registry<T: LirTarget<P>, P: Clone>(module: &IrModule<IrFunction<P>, P>, target: &mut T, env: &MonoEnv) -> StructRegistry {
+    build_struct_registry_with_lenient(module, target, env, false)
+}
+
+/// Like [`build_struct_registry`], but sets `lenient` before field conversion so
+/// unknown externals (e.g. `Vec<u8>`) do not panic during registration.
+pub fn build_struct_registry_with_lenient<T: LirTarget<P>, P: Clone>(
+    module: &IrModule<IrFunction<P>, P>,
+    target: &mut T,
+    env: &MonoEnv,
+    lenient: bool,
+) -> StructRegistry {
     let mut registry = StructRegistry::new();
+    registry.lenient = lenient;
 
     for ir_struct in &module.structs {
         // Skip GenericArray — it maps to LirType::Arr directly, not a LIR struct.
@@ -234,30 +455,12 @@ pub fn build_struct_registry<T: LirTarget<P>, P: Clone>(module: &IrModule<IrFunc
             continue;
         }
 
-        // Map field types to LirType using the partially-built registry,
-        // applying MonoEnv substitutions on the fly.
-        let lir_fields: Vec<(String, LirType)> = ir_struct
-            .fields
-            .iter()
-            .map(|f| {
-                let lir_ty = registry.ir_type_to_lir(&f.ty, env);
-                (f.name.clone(), lir_ty)
-            })
-            .collect();
+        // Defer generic nominals to per-instance registration.
+        if !ir_struct.generics.is_empty() {
+            continue;
+        }
 
-        let struct_def = StructDef {
-            name: name.clone(),
-            fields: lir_fields
-                .iter()
-                .map(|(fname, fty)| FieldDef { name: fname.clone(), ty: fty.clone() })
-                .collect(),
-        };
-
-        let id = target.define_struct(struct_def);
-        let field_names = lir_fields.iter().map(|(n, _)| n.clone()).collect();
-        let field_types = lir_fields.into_iter().map(|(_, t)| t).collect();
-
-        registry.by_name.insert(name, StructEntry { id, field_names, field_types });
+        ensure_struct_instance(ir_struct, &[], &mut registry, target, env, &module.structs);
     }
 
     registry
@@ -280,28 +483,40 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                 ArrayLength::Const(n) => *n,
                 ArrayLength::TypeNum(tn) => tn.to_usize(),
                 ArrayLength::TypeParam(name) => {
-                    panic!("unsubstituted TypeParam length '{name}' — add it to MonoEnv")
+                    if registry.lenient {
+                        // Opaque widen: unknown const-generic length → empty array.
+                        0
+                    } else {
+                        panic!("unsubstituted TypeParam length '{name}' — add it to MonoEnv")
+                    }
                 }
                 ArrayLength::Projection { .. } => {
-                    unimplemented!("Projection array length in LIR lowering")
+                    if registry.lenient {
+                        0
+                    } else {
+                        unimplemented!("Projection array length in LIR lowering")
+                    }
                 }
             };
             LirType::Arr(Box::new(ir_type_to_lir_inner(elem, registry)), n)
         }
 
-        IrType::Struct { kind, .. } => {
+        IrType::Struct { kind, type_args } => {
             // Native-annotated structs map to LirType::Native instead of LirType::Struct.
             if let Some(native_ty) = registry.native_types.get(&kind_name(kind)).copied() {
                 return LirType::Native(native_ty);
             }
-            match registry.id_for(kind) {
+            match registry.id_for_instance(kind, type_args) {
                 Some(id) => LirType::Struct(id),
                 None if registry.lenient => {
                     // Opaque external type — use U64 as a placeholder.
                     LirType::U64
                 }
                 None => {
-                    panic!("struct '{:?}' not in registry — was define_struct called?", kind)
+                    panic!(
+                        "struct '{}' not in registry — was ensure_struct_instance called?",
+                        nominal_instance_name(kind, type_args)
+                    )
                 }
             }
         }
@@ -322,6 +537,14 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             // a type-parameter name in a function that is also a module-level struct).
             if let Some(id) = registry.id_for_name(name) {
                 return LirType::Struct(id);
+            }
+            // Numeric leftovers from const-generic spelling (`TypeParam("16")`)
+            // are not value types; treat as opaque word.
+            if name.parse::<usize>().is_ok() {
+                return LirType::U64;
+            }
+            if registry.lenient {
+                return LirType::U64;
             }
             panic!("unsubstituted TypeParam '{name}' — add it to MonoEnv")
         }
@@ -349,7 +572,11 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
         }
 
         other => {
-            unimplemented!("ir_type_to_lir: unsupported type {:?}", other)
+            if registry.lenient {
+                LirType::U64
+            } else {
+                unimplemented!("ir_type_to_lir: unsupported type {:?}", other)
+            }
         }
     }
 }
@@ -579,6 +806,10 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
     let mut registry = EnumRegistry::new();
 
     for ir_enum in enums {
+        // Generic enums need per-instance registration; skip unbound defs.
+        if !ir_enum.generics.is_empty() {
+            continue;
+        }
         let name = kind_name(&ir_enum.kind);
 
         let mut variant_entries: Vec<VariantEntry> = Vec::new();

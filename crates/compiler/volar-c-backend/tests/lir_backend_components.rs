@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use volar_c_backend::CBackend;
 use volar_compiler::{ir::IrFunction, ir::IrModule, parser::parse_source};
+use volar_compiler::ir::{IrType, PrimitiveType};
 use volar_lir_codegen::{lower_module_seeded, mono::MonoEnv};
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,16 @@ fn build_module() -> IrModule<IrFunction> {
     module
 }
 
+/// Env with common VOLE/TFHE const-generic bindings for seeded generic roots.
+fn component_env() -> MonoEnv {
+    MonoEnv::new("volar_lir_components")
+        .with_len("N", 16)
+        .with_len("U1", 1)
+        .with_len("U0", 0)
+        .with_len("K", 1)
+        .with_type("T", IrType::Primitive(PrimitiveType::U8))
+}
+
 /// Lower only the functions reachable from `seeds` and assert no panic.
 fn run_lir_component(seeds: &[&str], label: &str) {
     let module = build_module();
@@ -114,7 +125,12 @@ fn run_lir_component(seeds: &[&str], label: &str) {
     let seeds_owned: Vec<String> = seeds.iter().map(|s| s.to_string()).collect();
     let result = std::panic::catch_unwind(move || {
         let mut backend = CBackend::new();
-        lower_module_seeded(&module, &mut backend, &MonoEnv::new("volar_lir_components"), &seeds_owned.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        lower_module_seeded(
+            &module,
+            &mut backend,
+            &component_env(),
+            &seeds_owned.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        );
         backend.finish()
     });
 

@@ -390,6 +390,19 @@ impl CBackend {
     ///
     /// `offset` is advanced by the number of scalars consumed.  Emits
     /// construction instructions to the body.
+    fn lir_scalar_count(&self, ty: &LirType) -> usize {
+        match ty {
+            LirType::Arr(elem, n) => n * self.lir_scalar_count(elem),
+            LirType::Struct(id) => self.struct_defs[*id as usize]
+                .fields
+                .iter()
+                .map(|f| self.lir_scalar_count(&f.ty))
+                .sum(),
+            LirType::Ptr(_) => 1,
+            _ => 1,
+        }
+    }
+
     fn pack_scalars(&mut self, ty: &LirType, scalars: &[CValue], offset: &mut usize) -> CValue {
         match ty.clone() {
             LirType::Arr(elem, n) => {
@@ -740,8 +753,17 @@ impl LirTarget for CBackend {
         let name = self.name_config.apply(name);
         let name = name.as_str();
         // Pack flat scalars into C aggregate arguments.
+        let expected: Vec<usize> = arg_tys.iter().map(|ty| self.lir_scalar_count(ty)).collect();
+        let expected_total: usize = expected.iter().sum();
+        if expected_total != args.len() {
+            panic!(
+                "call_extern '{name}': arg_tys expect {expected_total} scalars ({expected:?} for {arg_tys:?}), flat args provided {}",
+                args.len()
+            );
+        }
         let mut offset = 0usize;
-        let packed_args: Vec<CValue> = arg_tys.iter()
+        let packed_args: Vec<CValue> = arg_tys
+            .iter()
             .map(|ty| self.pack_scalars(ty, args, &mut offset))
             .collect();
 

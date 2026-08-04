@@ -11,13 +11,14 @@
   still exist. The LIR plan describes a replacement based on per-function
   instance discovery, concrete nominal-type identities, and deterministic
   mangling; it is not evidence that that refactor is complete.
-- **Current failure / blocker:**
-  ```sh
-  cargo test -p volar-weaver -p volar-lir-codegen -p volar-c-backend
-  ```
-  reaches `volar-c-backend/tests/lir_backend.rs`: lowering `encrypt_branch`
-  leaves const parameter `L` unresolved. This is distinct from the separately
-  missing-LLVM environment blocker.
+- **Completion evidence (2026-08-04):** Unbound `L` was caused by rooting every
+  Normal function (including `encrypt_branch::<R,L>`) under one `MonoEnv`.
+  Fix: plan roots are non-generic or explicitly env-bound; `lir_backend` uses
+  empty/`plan_flat_module` and asserts `encrypt_branch` is not planned unbound.
+  Instance-keyed `Vope`/`Wrap` layouts, typenum `U{n}` canonicalization,
+  `lower_cfg_module_monomorphized`, `SavedLirModule::replay_pair` /
+  `replay_into_many`, `volar-wasm-backend`, and woven AND e2e
+  (`vole_e2e` + `vole_and_record_replay_c_and_wasm`) pass.
 - **Invariants and non-goals:** LIR layouts must be concrete; no unresolved
   `TypeParam`, type-parameter array length, or projection may reach lowering.
   Never silently select a specialization. Keep the ZK/non-ZK discipline intact.

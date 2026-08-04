@@ -19,7 +19,10 @@ legacy markers superseded by the pinnedness/stability migration policy.
 
 ## Current Goal
 
-Complete merged-tree reconciliation before new feature work: diagnose the unresolved LIR const parameter `L`, then widen generated-backend evidence. See `docs/handoffs/merge-recovery/index.md`.
+LIR AST unblock (MonoPlan + record/replay + WASM) is green for small woven VOLE
+AND/XOR. Next: widen LIR backend coverage (more gates, CFG dual-instantiation
+harness) without touching large-scale Rust printer/split-weave work; keep
+garble/TFHE/ORAM on the parallel scale track.
 
 ## Completed
 

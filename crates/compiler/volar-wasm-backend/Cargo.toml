@@ -1,0 +1,18 @@
+[package]
+name = "volar-wasm-backend"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-lir = { workspace = true }
+volar-ir-common.workspace = true
+wax-core = { path = "../../../../wax/crates/wax-core" }
+wasm-encoder = { version = "0.240.0", default-features = false, features = ["wasmparser"] }
+
+[dev-dependencies]
+wasmtime = "46.0.1"
+volar-lir-saved = { workspace = true }
+volar-lir-test-corpus = { workspace = true }

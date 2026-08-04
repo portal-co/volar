@@ -40,7 +40,8 @@ pub struct LirAbi {
 | `LirAbi::CIRCUIT` | `usize::MAX` | `false` | `VolarIrTarget`, `VaffleTarget` (default) |
 | `LirAbi::VAFFLE_OPTIMIZED` | `64` | `false` | `VaffleTarget` (with `set_optimized_abi(true)`) |
 | `LirAbi::C_NATIVE` | `64` | `true` | `CBackend` |
-| `LirAbi::DEFAULT` | `usize::MAX` | `false` | Fallback for unknown backends |
+| `LirAbi::DEFAULT` | `usize::MAX` | `false` | Fallback; also `WasmBackend` (flat locals) |
+| WASM row | flatten to `i32`/`i64` locals | `false` | `volar-wasm-backend`: aggregates are scalar sequences in params/returns; block-param SSA → locals + `br`/`br_if` |
 
 ### Query Method
 

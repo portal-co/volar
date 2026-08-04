@@ -83,3 +83,44 @@ fn real_spec_helper_multiple_const_instances_to_c() {
     );
     assert_eq!(output.trim(), "165");
 }
+
+/// Two concrete nominal layouts (`Wrap<u8>` and `Wrap<u64>`) must coexist in one
+/// lowering — a bare `StructKind` registry key would collide and corrupt fields.
+#[test]
+fn dual_nominal_wrap_layouts_to_c() {
+    let module = parse_source(
+        r#"
+        struct Wrap<T> { value: T }
+
+        fn wrap_u8(x: u8) -> Wrap<u8> {
+            Wrap { value: x }
+        }
+
+        fn wrap_u64(x: u64) -> Wrap<u64> {
+            Wrap { value: x }
+        }
+
+        fn dual_wrap_sum(a: u8, b: u64) -> u64 {
+            let w8 = wrap_u8(a);
+            let w64 = wrap_u64(b);
+            (w8.value as u64) + w64.value
+        }
+        "#,
+        "dual_wrap",
+        &[],
+    )
+    .expect("parse dual Wrap module");
+
+    let mut backend = CBackend::new();
+    lower_module_monomorphized(&module, &mut backend, MonoPlanOptions::default())
+        .expect("plan and lower dual Wrap specializations");
+    let c_source = backend.finish();
+
+    let output = compile_and_run(
+        &c_source,
+        r#"
+        printf("%llu\n", (unsigned long long)dual_wrap_sum(3, 40));
+        "#,
+    );
+    assert_eq!(output.trim(), "43");
+}

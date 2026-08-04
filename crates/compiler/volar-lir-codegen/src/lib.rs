@@ -26,7 +26,8 @@ use volar_ir_common::ReentryHint;
 use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 
 use mono::{
-    mono_len, mono_type, normalized_args, type_args_to_len, FunctionInstanceKey, MonoEnv, MonoPlan,
+    mono_len, mono_type, normalized_args, type_args_to_len, typenum_usize, FunctionInstanceKey,
+    MonoEnv, MonoPlan,
 };
 use structs::{
     flatten_count, flatten_scalar_types, primitive_to_lir, struct_field_scalar_offset,
@@ -34,11 +35,28 @@ use structs::{
 };
 use volar_compiler::ir::IrEnum;
 
+pub use mono::{MonoError, plan_flat_module};
+
 // Unwrap a single-element Vec into a scalar, panicking if the vec has != 1 element.
 fn into_scalar<V: Clone>(vals: Vec<V>, context: &str) -> V {
     vals.into_iter()
         .next()
         .unwrap_or_else(|| panic!("expected scalar at {context}, got 0 values"))
+}
+
+/// Resolve `N::USIZE` / typenum markers via const_params, type_params, or `U{n}`.
+fn resolve_usize_param(name: &str, env: &MonoEnv) -> Option<usize> {
+    if let Some(&n) = env.const_params.get(name) {
+        return Some(n);
+    }
+    if let Some(concrete) = env.type_params.get(name) {
+        match mono_len(&type_args_to_len(Some(concrete), env), env) {
+            ArrayLength::Const(n) => return Some(n),
+            ArrayLength::TypeNum(tn) => return Some(tn.to_usize()),
+            _ => {}
+        }
+    }
+    typenum_usize(name)
 }
 
 // ============================================================================
@@ -182,13 +200,39 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                     let idx: usize = field.parse().ok()?;
                     return elems.get(idx).cloned();
                 }
-                let struct_kind = extract_struct_kind(&base_ty)?;
+                let (struct_kind, type_args) = match &base_ty {
+                    IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
+                    IrType::Reference { elem, .. } => match elem.as_ref() {
+                        IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
                 let ir_struct = self
                     .module_structs
                     .iter()
                     .find(|s| s.kind == *struct_kind)?;
                 let field_def = ir_struct.fields.iter().find(|f| &f.name == field)?;
-                Some(field_def.ty.clone())
+                // Substitute the struct's own generics from the use-site type args.
+                let mut local = MonoEnv::new(self.mono.hash_suffix.clone());
+                for (parameter, argument) in ir_struct.generics.iter().zip(type_args.iter()) {
+                    match parameter.kind {
+                        volar_compiler::ir::IrGenericParamKind::Type => {
+                            local
+                                .type_params
+                                .insert(parameter.name.clone(), mono_type(argument, self.mono));
+                        }
+                        volar_compiler::ir::IrGenericParamKind::Const => {
+                            if let ArrayLength::Const(n) =
+                                mono_len(&type_args_to_len(Some(argument), self.mono), self.mono)
+                            {
+                                local.const_params.insert(parameter.name.clone(), n);
+                            }
+                        }
+                        volar_compiler::ir::IrGenericParamKind::Lifetime => {}
+                    }
+                }
+                Some(mono_type(&field_def.ty, &local))
             }
 
             IrExprKind::Index { base, .. } => {
@@ -230,25 +274,25 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             // to an unmangled source-name lookup. This preserves the concrete
             // return layout for `let value = helper::<N>(...)`.
             IrExprKind::Call { func, .. } => {
-                if let IrExprKind::Path {
-                    segments,
-                    type_args,
-                } = &func.kind
-                {
-                    let name = segments.join("_");
-                    if let (Some(plan), Some(caller)) = (self.mono_plan, self.current_instance) {
-                        let args = normalized_args(type_args, self.mono);
-                        if let Some(callee) = plan.local_call(caller, &name, &args) {
-                            return self
-                                .ir_func_ret_types
-                                .get(plan.emitted_name(callee))
-                                .cloned();
-                        }
+                let (name, type_args): (String, &[IrType]) = match &func.kind {
+                    IrExprKind::Path {
+                        segments,
+                        type_args,
+                    } => (segments.join("_"), type_args.as_slice()),
+                    // Local calls without turbofish parse as `Var`.
+                    IrExprKind::Var(name) => (name.clone(), &[]),
+                    _ => return None,
+                };
+                if let (Some(plan), Some(caller)) = (self.mono_plan, self.current_instance) {
+                    let args = normalized_args(type_args, self.mono);
+                    if let Some(callee) = plan.local_call(caller, &name, &args) {
+                        return self
+                            .ir_func_ret_types
+                            .get(plan.emitted_name(callee))
+                            .cloned();
                     }
-                    self.ir_func_ret_types.get(&name).cloned()
-                } else {
-                    None
                 }
+                self.ir_func_ret_types.get(&name).cloned()
             }
 
             // Literal: infer primitive type from the literal variant.
@@ -343,6 +387,11 @@ pub struct MonoPlanOptions {
     pub roots: Vec<MonoRoot>,
     /// Bound recursive specialization expansion before reporting an error.
     pub max_instances: usize,
+    /// When true, unknown / unregistered nominal types become opaque `U64`
+    /// placeholders instead of panicking (useful for full-spec widen).
+    pub lenient: bool,
+    /// For CFG modules: whether to emit flat auxiliary function bodies.
+    pub include_auxiliary: bool,
 }
 
 impl Default for MonoPlanOptions {
@@ -350,11 +399,12 @@ impl Default for MonoPlanOptions {
         Self {
             roots: Vec::new(),
             max_instances: 4_096,
+            lenient: false,
+            include_auxiliary: true,
         }
     }
 }
 
-pub use mono::MonoError;
 
 /// Lower a closed set of concrete local function instances to `target`.
 ///
@@ -367,7 +417,7 @@ pub fn lower_module_monomorphized<T: LirTarget<P>, P: Clone>(
     options: MonoPlanOptions,
 ) -> Result<(), MonoError> {
     let plan = mono::plan_flat_module(module, &options.roots, options.max_instances)?;
-    lower_planned_module(module, target, &plan);
+    lower_planned_module(module, target, &plan, options.lenient);
     Ok(())
 }
 
@@ -382,8 +432,13 @@ pub fn lower_module<T: LirTarget<P>, P: Clone>(
 }
 
 /// Compatibility entry point for callers that historically provided one
-/// environment for a whole module. It now creates one root per normal
-/// function; discovered callees still receive independent environments.
+/// environment for a whole module.
+///
+/// Only **non-generic** normal functions become roots (each cloning `env`).
+/// Generic callees are discovered from explicit turbofish / inferred bindings
+/// and receive their own environments. Rooting every generic definition with a
+/// shared env incorrectly treats unbound const params (e.g. `encrypt_branch`'s
+/// `L`) as concrete layouts.
 pub fn lower_module_with_opts<T: LirTarget<P>, P: Clone>(
     module: &IrModule<IrFunction<P>, P>,
     target: &mut T,
@@ -392,7 +447,9 @@ pub fn lower_module_with_opts<T: LirTarget<P>, P: Clone>(
     let roots = module
         .functions
         .iter()
-        .filter(|f| f.external_kind == ExternalKind::Normal)
+        .filter(|f| {
+            f.external_kind == ExternalKind::Normal && f.generics.is_empty()
+        })
         .map(|f| MonoRoot::new(f.name.clone(), env.clone()))
         .collect();
     lower_module_monomorphized(
@@ -406,67 +463,45 @@ pub fn lower_module_with_opts<T: LirTarget<P>, P: Clone>(
     .unwrap_or_else(|err| panic!("LIR monomorphization failed: {err}"));
 }
 
-/// Lower only functions transitively reachable from `seeds` (and their call
-/// dependencies) via `lower_module_with_opts`.  Struct/enum registries are
-/// built from the full module so type layouts are always available.
+/// Lower the closed specialization set reachable from `seeds`.
+///
+/// Each seed becomes a [`MonoRoot`] with `env` (so generic seeds such as
+/// `vole_and_prover_step` can be specialized). Callees are discovered by the
+/// planner; orphan generic definitions are not forced as roots.
 pub fn lower_module_seeded<T: LirTarget>(
     module: &IrModule<IrFunction>,
     target: &mut T,
     env: &MonoEnv,
     seeds: &[&str],
 ) {
-    use volar_compiler::reachability::compute_reachable;
-    let reachability = compute_reachable(module, seeds);
-    // Build a filtered module view with only reachable non-external functions.
-    // Keep all structs/enums/consts/impls so the registry builds correctly.
-    let filtered_functions: Vec<IrFunction> = module
-        .functions
+    let roots = seeds
         .iter()
-        .filter(|f| f.external_kind != ExternalKind::Normal || reachability.fns.contains(&f.name))
-        .cloned()
+        .map(|seed| MonoRoot::new((*seed).to_owned(), env.clone()))
         .collect();
-    let filtered = IrModule {
-        name: module.name.clone(),
-        structs: module.structs.clone(),
-        enums: module.enums.clone(),
-        traits: module.traits.clone(),
-        impls: module.impls.clone(),
-        functions: filtered_functions,
-        type_aliases: module.type_aliases.clone(),
-        consts: module.consts.clone(),
-    };
-    lower_module_with_opts(&filtered, target, env);
+    lower_module_monomorphized(
+        module,
+        target,
+        MonoPlanOptions {
+            roots,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|err| panic!("LIR monomorphization failed: {err}"));
 }
 
 fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     module: &IrModule<IrFunction<P>, P>,
     target: &mut T,
     plan: &MonoPlan,
+    lenient: bool,
 ) {
-    // Nominal generic layout specialization is registered in `structs`; a
-    // struct's own field types (parsed directly from generic source, e.g.
-    // `struct Vope<N,T,K> { u: Array<Array<T,N>,K>, .. }`) still reference
-    // their own unresolved generic params at this point though -- an
-    // always-empty environment here makes `ir_type_to_lir_inner` panic on
-    // *any* struct with a generic array-length field, even before
-    // per-call-site specialization has a chance to matter (confirmed: this
-    // broke even `volar-c-backend/tests/vole_e2e.rs`'s own single-AND-gate
-    // smoke test). Merge every planned instance's own substitutions into
-    // one environment instead: in the common case (one global `MonoEnv`
-    // shared by every root, e.g. via `lower_module_with_opts`) this exactly
-    // recovers that env; for genuinely divergent per-instance envs it's a
-    // best-effort union (last write wins on key collision), still strictly
-    // better than an always-empty environment for definitions that would
-    // otherwise be unresolvable.
-    let mut merged_env = MonoEnv::new("");
-    for env in plan.instances.values() {
-        merged_env.const_params.extend(env.const_params.iter().map(|(k, v)| (k.clone(), *v)));
-        merged_env.type_params.extend(env.type_params.iter().map(|(k, v)| (k.clone(), v.clone())));
-        merged_env.projections.extend(env.projections.iter().map(|(k, v)| (k.clone(), v.clone())));
-    }
-    let mut registry = structs::build_struct_registry(module, target, &merged_env);
+    // Non-generic structs first; concrete generic nominals are registered
+    // per planned instance via `ensure_type_nominals` (no module-wide merge).
+    let empty = MonoEnv::new("");
+    let mut registry =
+        structs::build_struct_registry_with_lenient(module, target, &empty, lenient);
     let enum_registry =
-        structs::build_enum_registry(&module.enums, &mut registry, target, &merged_env);
+        structs::build_enum_registry(&module.enums, &mut registry, target, &empty);
 
     for (key, env) in &plan.instances {
         let func = module
@@ -475,10 +510,67 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
             .find(|func| func.name == key.source_name)
             .expect("planned source function exists");
         for parameter in &func.params {
+            structs::ensure_type_nominals(
+                &parameter.ty,
+                &mut registry,
+                target,
+                env,
+                &module.structs,
+            );
             structs::register_tuples_in_type(&parameter.ty, &mut registry, target, env);
         }
         if let Some(return_type) = &func.return_type {
+            structs::ensure_type_nominals(
+                return_type,
+                &mut registry,
+                target,
+                env,
+                &module.structs,
+            );
             structs::register_tuples_in_type(return_type, &mut registry, target, env);
+        }
+        // Register generic module structs under this instance env when every
+        // declared generic is bound (covers Vope/Delta/Q for woven VOLE).
+        for ir_struct in &module.structs {
+            if ir_struct.generics.is_empty() {
+                continue;
+            }
+            let mut args: Vec<IrType> = Vec::new();
+            let mut complete = true;
+            for parameter in &ir_struct.generics {
+                match parameter.kind {
+                    volar_compiler::ir::IrGenericParamKind::Type => {
+                        if let Some(ty) = env.type_params.get(&parameter.name) {
+                            args.push(ty.clone());
+                        } else if let Some(&n) = env.const_params.get(&parameter.name) {
+                            // `K: ArraySize` often bound via `with_len("K", …)`.
+                            args.push(IrType::TypeParam(n.to_string()));
+                        } else {
+                            complete = false;
+                            break;
+                        }
+                    }
+                    volar_compiler::ir::IrGenericParamKind::Const => {
+                        if let Some(&n) = env.const_params.get(&parameter.name) {
+                            args.push(IrType::TypeParam(n.to_string()));
+                        } else {
+                            complete = false;
+                            break;
+                        }
+                    }
+                    volar_compiler::ir::IrGenericParamKind::Lifetime => {}
+                }
+            }
+            if complete && !args.is_empty() {
+                structs::ensure_struct_instance(
+                    ir_struct,
+                    &args,
+                    &mut registry,
+                    target,
+                    env,
+                    &module.structs,
+                );
+            }
         }
     }
 
@@ -958,7 +1050,12 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
         IrExprKind::Index { base, index } => lower_index(base, index, ctx),
 
         // ---- Phase 2: struct construction -----------------------------------
-        IrExprKind::StructExpr { kind, fields, .. } => lower_struct_expr(kind, fields, ctx),
+        IrExprKind::StructExpr {
+            kind,
+            type_args,
+            fields,
+            ..
+        } => lower_struct_expr(kind, type_args, fields, ctx),
 
         // ---- Tuple construction ---------------------------------------------
         IrExprKind::Tuple(elems) => {
@@ -1039,14 +1136,15 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
 
         // ---- TypenumUsize and LengthOf — resolve to concrete usize const ------
         IrExprKind::TypenumUsize { ty } => {
-            // `T::USIZE` — resolve T as a const param.
+            // `T::USIZE` — resolve T as a const / type-level size.
             let n = match ty.as_ref() {
-                IrType::TypeParam(name) => ctx
-                    .mono
-                    .const_params
-                    .get(name.as_str())
-                    .copied()
+                IrType::TypeParam(name) => resolve_usize_param(name, ctx.mono)
                     .unwrap_or_else(|| panic!("TypenumUsize: unresolved TypeParam '{name}'")),
+                IrType::Struct {
+                    kind: StructKind::Custom(name),
+                    type_args,
+                } if type_args.is_empty() => typenum_usize(name)
+                    .unwrap_or_else(|| panic!("TypenumUsize: unresolved typenum '{name}'")),
                 other => panic!("TypenumUsize: unexpected type {:?}", other),
             };
             vec![ctx.target.iconst(LirType::U64, n as i64)]
@@ -1082,8 +1180,7 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
         IrExprKind::Path { segments, .. } => {
             // `T::USIZE` pattern — access const generic usize from MonoEnv.
             if segments.len() == 2 && segments[1] == "USIZE" {
-                let ty_name = &segments[0];
-                if let Some(&n) = ctx.mono.const_params.get(ty_name.as_str()) {
+                if let Some(n) = resolve_usize_param(&segments[0], ctx.mono) {
                     return vec![ctx.target.iconst(LirType::U64, n as i64)];
                 }
             }
@@ -1678,15 +1775,28 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
         return base_vals[offset..offset + width].to_vec();
     }
 
-    let struct_kind = extract_struct_kind(&base_ir_ty)
-        .unwrap_or_else(|| panic!("field .{field} on non-struct type {:?}", base_ir_ty));
+    let (struct_kind, type_args) = match &base_ir_ty {
+        IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
+        IrType::Reference { elem, .. } => match elem.as_ref() {
+            IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
+            other => panic!("field .{field} on non-struct type {:?}", other),
+        },
+        other => panic!("field .{field} on non-struct type {:?}", other),
+    };
 
-    let struct_id = ctx.registry.id_for(struct_kind).unwrap_or_else(|| {
-        panic!(
-            "struct {:?} not in registry for field .{field}",
-            struct_kind
-        )
-    });
+    let mono_args: Vec<IrType> = type_args
+        .iter()
+        .map(|a| mono_type(a, ctx.mono))
+        .collect();
+    let struct_id = ctx
+        .registry
+        .id_for_instance(struct_kind, &mono_args)
+        .unwrap_or_else(|| {
+            panic!(
+                "struct '{}' not in registry for field .{field}",
+                structs::nominal_instance_name(struct_kind, &mono_args)
+            )
+        });
 
     let field_idx = ctx.registry.field_index(struct_id, field);
     let offset = struct_field_scalar_offset(ctx.registry, struct_id, field_idx);
@@ -1702,13 +1812,56 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
 
 fn lower_struct_expr<T: LirTarget<P>, P: Clone>(
     kind: &StructKind,
+    type_args: &[IrType],
     fields: &[(String, IrExpr<P>)],
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
+    let mut mono_args: Vec<IrType> = type_args
+        .iter()
+        .map(|a| mono_type(a, ctx.mono))
+        .collect();
+    // `Wrap { value: x }` parses with empty type_args; infer from field exprs.
+    if mono_args.is_empty() {
+        if let Some(ir_struct) = ctx.module_structs.iter().find(|s| s.kind == *kind) {
+            if !ir_struct.generics.is_empty() {
+                let mut local = MonoEnv::new(ctx.mono.hash_suffix.clone());
+                for field_def in &ir_struct.fields {
+                    let Some((_, expr)) = fields.iter().find(|(n, _)| n == &field_def.name) else {
+                        continue;
+                    };
+                    let Some(concrete) = ctx.infer_type(expr) else {
+                        continue;
+                    };
+                    if let IrType::TypeParam(name) = &field_def.ty {
+                        local.type_params.insert(name.clone(), concrete);
+                    }
+                }
+                mono_args = ir_struct
+                    .generics
+                    .iter()
+                    .filter_map(|parameter| match parameter.kind {
+                        volar_compiler::ir::IrGenericParamKind::Type => {
+                            local.type_params.get(&parameter.name).cloned()
+                        }
+                        volar_compiler::ir::IrGenericParamKind::Const => local
+                            .const_params
+                            .get(&parameter.name)
+                            .map(|&n| IrType::TypeParam(n.to_string())),
+                        volar_compiler::ir::IrGenericParamKind::Lifetime => None,
+                    })
+                    .collect();
+            }
+        }
+    }
     let struct_id = ctx
         .registry
-        .id_for(kind)
-        .unwrap_or_else(|| panic!("struct {:?} not in registry", kind));
+        .id_for_instance(kind, &mono_args)
+        .unwrap_or_else(|| {
+            panic!(
+                "struct '{}' not in registry",
+                structs::nominal_instance_name(kind, &mono_args)
+            )
+        });
 
     let field_map: BTreeMap<&str, &IrExpr<P>> =
         fields.iter().map(|(n, e)| (n.as_str(), e)).collect();
@@ -2526,7 +2679,64 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
 /// map each `IrCfgBlock` directly to a LIR block, using the target's native
 /// `create_block`/`jump`/`branch`/`ret`.
 pub fn lower_cfg_module<T: LirTarget>(module: &IrCfgModule, target: &mut T) {
-    lower_cfg_module_with_opts(module, target, &MonoEnv::new(""), true);
+    lower_cfg_module_monomorphized(module, target, MonoPlanOptions::default())
+        .unwrap_or_else(|err| panic!("LIR CFG monomorphization failed: {err}"));
+}
+
+/// Plan-API CFG lowering.
+///
+/// Validates that flat auxiliaries are a finite, bindable specialization set
+/// under [`plan_flat_module`], then emits via [`lower_cfg_module_with_opts`]
+/// using the first root's environment (or empty). Multi-instance CFG body
+/// emission shares that planner for callee discovery; CFG functions themselves
+/// remain single-env in this pass (weaver CFG entry points are non-generic).
+pub fn lower_cfg_module_monomorphized<T: LirTarget>(
+    module: &IrCfgModule,
+    target: &mut T,
+    options: MonoPlanOptions,
+) -> Result<(), MonoError> {
+    let flat: IrModule<IrFunction> = IrModule {
+        name: module.name.clone(),
+        structs: module.structs.clone(),
+        enums: module.enums.clone(),
+        traits: module.traits.clone(),
+        impls: module.impls.clone(),
+        functions: module
+            .functions
+            .iter()
+            .filter_map(|f| {
+                if let IrAnyFunction::Flat(f) = f {
+                    Some(f.clone())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        type_aliases: module.type_aliases.clone(),
+        consts: module.consts.clone(),
+    };
+
+    let cfg_env = options
+        .roots
+        .first()
+        .map(|r| r.env.clone())
+        .unwrap_or_else(|| MonoEnv::new(""));
+
+    // Ensure auxiliary specializations are plannable before emission.
+    let flat_roots: Vec<MonoRoot> = if options.roots.is_empty() {
+        Vec::new()
+    } else {
+        options
+            .roots
+            .iter()
+            .filter(|r| flat.functions.iter().any(|f| f.name == r.function))
+            .cloned()
+            .collect()
+    };
+    let _plan = mono::plan_flat_module(&flat, &flat_roots, options.max_instances)?;
+
+    lower_cfg_module_with_opts(module, target, &cfg_env, options.include_auxiliary);
+    Ok(())
 }
 
 /// Like `lower_cfg_module` but with a `MonoEnv` and control over auxiliary

@@ -16,6 +16,9 @@ volar-lir-codegen = { path = "../volar-lir-codegen" }
 volar-compiler = { path = "../volar-compiler", features = ["parsing"] }
 volar-weaver = { path = "../volar-weaver" }
 volar-lir-test-corpus = { workspace = true }
+volar-lir-saved = { workspace = true }
+volar-wasm-backend = { workspace = true }
+wasmtime = "46.0.1"
 volar-ir.workspace = true
 volar-ir-passes.workspace = true
 volar-ir-common.workspace = true

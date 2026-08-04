@@ -1,5 +1,5 @@
 // @reliability: experimental
-//! End-to-end integration tests: VOLE weaver → IrModule → lower_module_with_opts → C → compile.
+//! End-to-end integration tests: VOLE weaver → IrModule → MonoPlan → C → compile.
 //!
 //! These tests exercise the full pipeline from a boolean circuit through the VOLE
 //! weaver, through the LIR lowering pass, to compiled C code.  They are intended
@@ -12,7 +12,7 @@
 //! BIrBlocks (circuit)
 //!   └─ weave_vole_prover/verifier  (volar-weaver)
 //!        └─ IrModule<IrFunction>   (woven + spec-linked)
-//!             └─ lower_module_with_opts  (volar-lir-codegen)
+//!             └─ lower_module_monomorphized  (volar-lir-codegen)
 //!                  └─ CBackend::finish()
 //!                       └─ cc -O0 -std=c99  (system C compiler)
 //! ```
@@ -21,13 +21,63 @@ use std::path::Path;
 
 use volar_c_backend::CBackend;
 use volar_compiler::{
-    SourceInput, ir::IrType, ir::PrimitiveType,
+    SourceInput, ir::IrFunction, ir::IrModule, ir::IrType, ir::PrimitiveType,
     linkage::{LinkageKind, LinkageSystem, LinkedSpec},
     parse_sources,
 };
-use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
+use volar_lir_codegen::{lower_module_monomorphized, mono::MonoEnv, MonoPlanOptions, MonoRoot};
+use volar_lir_saved::{RecordingTarget, SavedLirModule};
 use volar_lir_test_corpus::{compile_and_run, make_biir_and, make_biir_xor, make_biir_half_adder};
+use volar_wasm_backend::WasmBackend;
 use volar_weaver::{weave_vole_prover, weave_vole_verifier};
+use wasmtime::{Engine, Module, Store};
+
+/// Plan-API lower for woven VOLE modules.
+///
+/// Roots only woven entries (`vole_prove_*` / `vole_verify_*`) plus harness
+/// helpers the e2e `main` calls directly. Rooting every linked Normal function
+/// would force unused sbox/`mul_generalized` specializations that the small
+/// AND/XOR circuits never call.
+fn lower_vole_module(module: &IrModule<IrFunction>, backend: &mut CBackend, env: &MonoEnv) {
+    lower_vole_to_target(module, backend, env);
+}
+
+/// Same root selection as [`lower_vole_module`], targeting an arbitrary `LirTarget`.
+fn lower_vole_to_target<T: volar_lir::LirTarget>(
+    module: &IrModule<IrFunction>,
+    target: &mut T,
+    env: &MonoEnv,
+) {
+    let mut roots: Vec<MonoRoot> = module
+        .functions
+        .iter()
+        .filter(|f| f.external_kind == volar_compiler::ir::ExternalKind::Normal)
+        .filter(|f| {
+            f.name.starts_with("vole_prove_") || f.name.starts_with("vole_verify_")
+        })
+        .map(|f| MonoRoot::new(f.name.clone(), env.clone()))
+        .collect();
+    assert!(
+        !roots.is_empty(),
+        "expected a woven vole_prove_*/vole_verify_* entry in module"
+    );
+    for helper in ["vole_and_verifier_check", "vole_and_prover_step"] {
+        if module.functions.iter().any(|f| f.name == helper)
+            && !roots.iter().any(|r| r.function == helper)
+        {
+            roots.push(MonoRoot::new(helper, env.clone()));
+        }
+    }
+    lower_module_monomorphized(
+        module,
+        target,
+        MonoPlanOptions {
+            roots,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|err| panic!("LIR monomorphization failed: {err}"));
+}
 
 // ============================================================================
 // Helpers
@@ -187,7 +237,7 @@ fn vole_prover_and_no_linkage_lower() {
     let env = vole_env();
     let mut b = CBackend::new();
     // Currently panics: struct Vope not in registry.
-    lower_module_with_opts(&module, &mut b, &env);
+    lower_vole_module(&module, &mut b, &env);
     let c_src = b.finish();
     assert!(!c_src.is_empty());
 }
@@ -209,7 +259,7 @@ fn vole_prover_and_gate_to_c() {
 
     let env = vole_env();
     let mut b = CBackend::new();
-    lower_module_with_opts(&module, &mut b, &env);
+    lower_vole_module(&module, &mut b, &env);
     let c_src = b.finish();
 
     assert!(!c_src.is_empty(), "C output should be non-empty");
@@ -229,7 +279,7 @@ fn vole_prover_xor_gate_to_c() {
 
     let env = vole_env();
     let mut b = CBackend::new();
-    lower_module_with_opts(&module, &mut b, &env);
+    lower_vole_module(&module, &mut b, &env);
     let c_src = b.finish();
 
     assert!(!c_src.is_empty());
@@ -248,7 +298,7 @@ fn vole_prover_half_adder_to_c() {
 
     let env = vole_env();
     let mut b = CBackend::new();
-    lower_module_with_opts(&module, &mut b, &env);
+    lower_vole_module(&module, &mut b, &env);
     let c_src = b.finish();
 
     assert!(!c_src.is_empty());
@@ -267,7 +317,7 @@ fn vole_verifier_and_gate_to_c() {
 
     let env = vole_env();
     let mut b = CBackend::new();
-    lower_module_with_opts(&module, &mut b, &env);
+    lower_vole_module(&module, &mut b, &env);
     let c_src = b.finish();
 
     assert!(!c_src.is_empty());
@@ -283,7 +333,7 @@ fn vole_verifier_xor_gate_to_c() {
 
     let env = vole_env();
     let mut b = CBackend::new();
-    lower_module_with_opts(&module, &mut b, &env);
+    lower_vole_module(&module, &mut b, &env);
     let c_src = b.finish();
 
     assert!(!c_src.is_empty());
@@ -308,7 +358,7 @@ fn vole_prover_verifier_correctness_e2e() {
 
     let env = vole_env();
     let mut b = CBackend::new();
-    lower_module_with_opts(&module, &mut b, &env);
+    lower_vole_module(&module, &mut b, &env);
     let c_src = b.finish();
 
     // Honest VOLE inputs: a=1, b=0 => AND=0; delta=1 on all 16 GF(2^8) lanes;
@@ -320,7 +370,7 @@ fn vole_prover_verifier_correctness_e2e() {
   memset(vope_a.u.data[0].data, 1, 16);
   Vope vope_b; memset(&vope_b, 0, sizeof(vope_b));
 
-  __Tuple_s2_aau8x16x1 prover_out = vole_prove_and_prover(vope_one, vope_a, vope_b);
+  __Tuple_s0_aau8x16x1 prover_out = vole_prove_and_prover(vope_one, vope_a, vope_b);
   Arr_U8_16 hat = prover_out._1.data[0];
 
   Delta delta; memset(&delta, 0, sizeof(delta));
@@ -330,11 +380,118 @@ fn vole_prover_verifier_correctness_e2e() {
   Q q_b; memset(&q_b, 0, sizeof(q_b));
   Q q_and; memset(&q_and, 0, sizeof(q_and));
 
-  __Tuple_s1_b result = vole_and_verifier_check(delta, q_a, q_b, q_and, hat);
+  __Tuple_s3_b result = vole_and_verifier_check(delta, q_a, q_b, q_and, hat);
   printf("%d\n", (int)result._1);
 "#;
     let out = compile_and_run(&c_src, main_body);
     assert_eq!(out.trim(), "1", "VOLE verifier should accept honest prover output");
+}
+
+/// Record-once / replay-many: woven AND → [`RecordingTarget`] → C + WASM.
+///
+/// C path re-runs the honest-prover correctness check. WASM path validates the
+/// module with wasmtime and executes `vole_and_verifier_check` on the same
+/// zero-mask inputs (flat `i32` params / results).
+#[test]
+fn vole_and_record_replay_c_and_wasm() {
+    let circuit = make_biir_and();
+    let linkage = make_vole_linkage();
+    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage)).into_inner();
+    let env = vole_env();
+
+    let mut rec = RecordingTarget::new();
+    lower_vole_to_target(&module, &mut rec, &env);
+    let saved: SavedLirModule = rec.finish();
+
+    let mut c = CBackend::new();
+    let mut wasm = WasmBackend::new();
+    saved.replay_pair(&mut c, &mut wasm);
+
+    let c_src = c.finish();
+    let main_body = r#"
+  Vope vope_one; memset(&vope_one, 0, sizeof(vope_one));
+  memset(vope_one.u.data[0].data, 1, 16);
+  Vope vope_a; memset(&vope_a, 0, sizeof(vope_a));
+  memset(vope_a.u.data[0].data, 1, 16);
+  Vope vope_b; memset(&vope_b, 0, sizeof(vope_b));
+
+  __Tuple_s0_aau8x16x1 prover_out = vole_prove_and_prover(vope_one, vope_a, vope_b);
+  Arr_U8_16 hat = prover_out._1.data[0];
+
+  Delta delta; memset(&delta, 0, sizeof(delta));
+  memset(delta.delta.data, 1, 16);
+  Q q_a; memset(&q_a, 0, sizeof(q_a));
+  memset(q_a.q.data, 1, 16);
+  Q q_b; memset(&q_b, 0, sizeof(q_b));
+  Q q_and; memset(&q_and, 0, sizeof(q_and));
+
+  __Tuple_s3_b result = vole_and_verifier_check(delta, q_a, q_b, q_and, hat);
+  printf("%d\n", (int)result._1);
+"#;
+    assert_eq!(
+        compile_and_run(&c_src, main_body).trim(),
+        "1",
+        "C replay of recorded LIR should accept honest prover output"
+    );
+
+    let bytes = wasm.finish();
+    assert!(!bytes.is_empty(), "WASM replay should emit a module");
+    let engine = Engine::default();
+    let wasm_module = Module::new(&engine, &bytes).expect("WASM module should validate");
+    assert!(
+        wasm_module
+            .exports()
+            .any(|e| e.name() == "vole_and_verifier_check"),
+        "expected vole_and_verifier_check export"
+    );
+
+    // Stub any imports (crypto externs unused on this zero-mask path).
+    let mut linker = wasmtime::Linker::new(&engine);
+    for import in wasm_module.imports() {
+        let module_name = import.module().to_owned();
+        let name = import.name().to_owned();
+        match import.ty() {
+            wasmtime::ExternType::Func(ft) => {
+                linker
+                    .func_new(&module_name, &name, ft, |_, _params, results| {
+                        for r in results.iter_mut() {
+                            *r = match *r {
+                                wasmtime::Val::I32(_) => wasmtime::Val::I32(0),
+                                wasmtime::Val::I64(_) => wasmtime::Val::I64(0),
+                                wasmtime::Val::F32(_) => wasmtime::Val::F32(0),
+                                wasmtime::Val::F64(_) => wasmtime::Val::F64(0),
+                                _ => wasmtime::Val::I32(0),
+                            };
+                        }
+                        Ok(())
+                    })
+                    .unwrap_or_else(|e| panic!("link import {module_name}::{name}: {e}"));
+            }
+            other => panic!("unsupported wasm import type: {other:?}"),
+        }
+    }
+
+    // Flat ABI: Delta(16) + Q(16)*3 + hat(16) = 80 × i32 params; returns Q(16) + bool.
+    let mut store = Store::new(&engine, ());
+    let instance = linker
+        .instantiate(&mut store, &wasm_module)
+        .expect("instantiate wasm");
+    let func = instance
+        .get_func(&mut store, "vole_and_verifier_check")
+        .expect("export vole_and_verifier_check");
+    let mut params = vec![wasmtime::Val::I32(0); 80];
+    for i in 0..16 {
+        params[i] = wasmtime::Val::I32(1); // delta
+        params[16 + i] = wasmtime::Val::I32(1); // q_a
+    }
+    let mut results = vec![wasmtime::Val::I32(0); 17];
+    func.call(&mut store, &params, &mut results)
+        .expect("call vole_and_verifier_check");
+    let ok = match results[16] {
+        wasmtime::Val::I32(v) => v != 0,
+        other => panic!("expected i32 bool result, got {other:?}"),
+    };
+    assert!(ok, "WASM verifier should accept honest zero-mask AND inputs");
 }
 
 #[test]
@@ -346,9 +503,9 @@ fn dump_vole_and_c_to_tmp() {
     let module_v = weave_vole_verifier(&circuit, "and_verifier", Some(&linkage)).into_inner();
     let env = vole_env();
     let mut bp = CBackend::new();
-    lower_module_with_opts(&module_p, &mut bp, &env);
+    lower_vole_module(&module_p, &mut bp, &env);
     let mut bv = CBackend::new();
-    lower_module_with_opts(&module_v, &mut bv, &env);
+    lower_vole_module(&module_v, &mut bv, &env);
     std::fs::write("/tmp/vole_prover.c", bp.finish()).unwrap();
     std::fs::write("/tmp/vole_verifier.c", bv.finish()).unwrap();
 }
@@ -361,7 +518,7 @@ fn dump_vole_galois_c_to_tmp() {
     let module_p = weave_vole_prover(&circuit, "and_prover", Some(&linkage)).into_inner();
     let env = galois_vole_env();
     let mut bp = CBackend::new();
-    lower_module_with_opts(&module_p, &mut bp, &env);
+    lower_vole_module(&module_p, &mut bp, &env);
     std::fs::write("/tmp/vole_galois_prover.c", bp.finish()).unwrap();
 }
 
@@ -390,8 +547,8 @@ fn dump_vole_galois_c_to_tmp() {
 ///   `Arr_Native_AES8_16`       – [uint8_t; 16]
 ///   `Arr_Arr_Native_AES8_16_1` – [[uint8_t; 16]; 1]
 ///   `Vope` / `Delta` / `Q`    – wrapping the above
-///   `__Tuple_s2_aan7x16x1`     – prover output (Vope, Arr_Arr_Native_AES8_16_1)
-///   `__Tuple_s1_b`             – verifier output (Q, bool)
+///   `__Tuple_s0_aan7x16x1`     – prover output (Vope, Arr_Arr_Native_AES8_16_1)
+///   `__Tuple_s3_b`             – verifier output (Q, bool)
 #[test]
 fn vole_prover_verifier_ot_setup_e2e() {
     let circuit = make_biir_and();
@@ -402,7 +559,7 @@ fn vole_prover_verifier_ot_setup_e2e() {
 
     let env = galois_vole_env();
     let mut b = CBackend::new();
-    lower_module_with_opts(&module, &mut b, &env);
+    lower_vole_module(&module, &mut b, &env);
     let c_src = b.finish();
 
     assert!(!c_src.is_empty(), "C output should be non-empty");
@@ -502,7 +659,7 @@ static uint8_t volar_gf8_inv(uint8_t a) {
       COMMIT_BIT(bi,  vope_b,   q_b);
 
       /* Prover step: (vope_c, hat_wrapped) */
-      __Tuple_s2_aan7x16x1 pout = vole_prove_and_prover(vope_one, vope_a, vope_b);
+      __Tuple_s0_aan7x16x1 pout = vole_prove_and_prover(vope_one, vope_a, vope_b);
       /* hat is pout._1.data[0] */
       Arr_Native_AES8_16 hat = pout._1.data[0];
 
@@ -511,7 +668,7 @@ static uint8_t volar_gf8_inv(uint8_t a) {
       DERIVE_AND_Q(q_a, q_b, hat, q_and);
 
       /* Verifier check */
-      __Tuple_s1_b chk = vole_and_verifier_check(delta, q_a, q_b, q_and, hat);
+      __Tuple_s3_b chk = vole_and_verifier_check(delta, q_a, q_b, q_and, hat);
       if (chk._1) pass++;
     }
   }
