@@ -1104,7 +1104,7 @@ mod tests {
             StorageMode,
         };
         use volar_compiler::ir::IrFunction;
-        use volar_verifier_iop_runtime::run_iop_verifier_multi_file;
+        use volar_verifier_iop_runtime::run_iop_verifier_multi_file_with_extra_files;
         use volar_fuzz::interpreter::ir::{
             eval_ir_circuit_step_with_watch, apply_pre_init, bits_to_u64, bit_width, StorageMap,
         };
@@ -1302,20 +1302,66 @@ mod tests {
         let total_oracle_bits: usize = oracle_widths.iter().sum();
         let n_mem_ops = real_entries.len();
 
-        let witness_literal_body = witness.iter().map(|w| {
+        // Binary-encode the witness trace instead of embedding it as a
+        // literal Rust array. A `[StepMemOp; ~68000]` x N-steps array
+        // *literal* forces every AST-walking compiler pass (parsing, HIR
+        // lowering, every lint) to visit one real AST node per element --
+        // confirmed via a real guarded attempt: this hung rustc's own
+        // `UnusedDelimLint::emit_unused_delims_expr` for 45+ minutes on one
+        // such literal (a single ~52MB source line) at real interpreter
+        // scale, RSS never even approaching a memory-blowup threshold --
+        // this is a genuinely different bottleneck than the ones this
+        // session's own earlier memory-fix work addressed. `include_bytes!`
+        // embeds the identical data as one opaque byte-slice constant, with
+        // no per-element AST nodes at all regardless of size -- see
+        // `run_iop_verifier_multi_file_with_extra_files`'s own doc comment.
+        const MEM_OP_BYTES: usize = 1 + 8 + 8 + 8 + 1 + 8 + 8 + 8; // needs_init,init_val,addr,value,is_write,old_value,old_ts,new_ts
+        let mut witness_bytes: std::vec::Vec<u8> =
+            std::vec::Vec::with_capacity(witness.len() * (total_oracle_bits + n_mem_ops * MEM_OP_BYTES));
+        for w in &witness {
             let flat_oracle_bits: std::vec::Vec<bool> = w.oracle_bits.iter().flatten().copied().collect();
             debug_assert_eq!(flat_oracle_bits.len(), total_oracle_bits);
-            let oracle_bits_str = flat_oracle_bits.iter().map(|b| b.to_string()).collect::<std::vec::Vec<_>>().join(", ");
-            let mem_ops_str = w.mem_ops.iter().map(|m| format!(
-                "StepMemOp {{ needs_init: {}, init_val: {}u64, addr: {}u64, value: {}u64, is_write: {}, old_value: {}u64, old_ts: {}u64, new_ts: {}u64 }}",
-                m.needs_init, m.init_val, m.addr, m.value, m.is_write, m.old_value, m.old_ts, m.new_ts,
-            )).collect::<std::vec::Vec<_>>().join(", ");
-            format!("StepWitness {{ oracle_bits: [{oracle_bits_str}], mem_ops: [{mem_ops_str}] }}")
-        }).collect::<std::vec::Vec<_>>().join(", ");
+            witness_bytes.extend(flat_oracle_bits.iter().map(|&b| b as u8));
+            for m in &w.mem_ops {
+                witness_bytes.push(m.needs_init as u8);
+                witness_bytes.extend_from_slice(&m.init_val.to_le_bytes());
+                witness_bytes.extend_from_slice(&m.addr.to_le_bytes());
+                witness_bytes.extend_from_slice(&m.value.to_le_bytes());
+                witness_bytes.push(m.is_write as u8);
+                witness_bytes.extend_from_slice(&m.old_value.to_le_bytes());
+                witness_bytes.extend_from_slice(&m.old_ts.to_le_bytes());
+                witness_bytes.extend_from_slice(&m.new_ts.to_le_bytes());
+            }
+        }
         let witness_literal = format!(
             "struct StepMemOp {{ needs_init: bool, init_val: u64, addr: u64, value: u64, is_write: bool, old_value: u64, old_ts: u64, new_ts: u64 }}\n\
-             struct StepWitness {{ oracle_bits: [bool; {total_oracle_bits}], mem_ops: [StepMemOp; {n_mem_ops}] }}\n\
-             let witness: [StepWitness; {}] = [{witness_literal_body}];\n",
+             struct StepWitness {{ oracle_bits: std::vec::Vec<bool>, mem_ops: std::vec::Vec<StepMemOp> }}\n\
+             fn decode_witness(bytes: &[u8], n_steps: usize, total_oracle_bits: usize, n_mem_ops: usize) -> std::vec::Vec<StepWitness> {{\n\
+             \x20   const MEM_OP_BYTES: usize = {MEM_OP_BYTES};\n\
+             \x20   let step_bytes = total_oracle_bits + n_mem_ops * MEM_OP_BYTES;\n\
+             \x20   let mut out = std::vec::Vec::with_capacity(n_steps);\n\
+             \x20   for s in 0..n_steps {{\n\
+             \x20       let base = s * step_bytes;\n\
+             \x20       let oracle_bits: std::vec::Vec<bool> = bytes[base..base + total_oracle_bits].iter().map(|&b| b != 0).collect();\n\
+             \x20       let mut mem_ops = std::vec::Vec::with_capacity(n_mem_ops);\n\
+             \x20       let mut off = base + total_oracle_bits;\n\
+             \x20       for _ in 0..n_mem_ops {{\n\
+             \x20           let needs_init = bytes[off] != 0; off += 1;\n\
+             \x20           let init_val = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()); off += 8;\n\
+             \x20           let addr = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()); off += 8;\n\
+             \x20           let value = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()); off += 8;\n\
+             \x20           let is_write = bytes[off] != 0; off += 1;\n\
+             \x20           let old_value = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()); off += 8;\n\
+             \x20           let old_ts = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()); off += 8;\n\
+             \x20           let new_ts = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()); off += 8;\n\
+             \x20           mem_ops.push(StepMemOp {{ needs_init, init_val, addr, value, is_write, old_value, old_ts, new_ts }});\n\
+             \x20       }}\n\
+             \x20       out.push(StepWitness {{ oracle_bits, mem_ops }});\n\
+             \x20   }}\n\
+             \x20   out\n\
+             }}\n\
+             static WITNESS_BYTES: &[u8] = include_bytes!(\"witness.bin\");\n\
+             let witness: std::vec::Vec<StepWitness> = decode_witness(WITNESS_BYTES, {}, {total_oracle_bits}, {n_mem_ops});\n",
             witness.len(),
         );
 
@@ -1447,9 +1493,10 @@ mod tests {
             }}
         "#);
 
-        run_iop_verifier_multi_file(
+        run_iop_verifier_multi_file_with_extra_files(
             &[("prover", &prover_code), ("qsim", &qsim_code), ("verifier", &verifier_code)],
             &driver,
+            &[("witness.bin", &witness_bytes)],
         );
     }
 

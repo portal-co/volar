@@ -233,6 +233,33 @@ fn run_cargo_test_capped(tmpdir: &std::path::Path) -> std::string::String {
 /// own driver-construction code, only how they pass the woven source
 /// (per-role, not pre-concatenated).
 pub fn run_iop_verifier_multi_file(modules: &[(&str, &str)], driver_src: &str) -> std::string::String {
+    run_iop_verifier_multi_file_with_extra_files(modules, driver_src, &[])
+}
+
+/// As [`run_iop_verifier_multi_file`], but also writes each `(file_name,
+/// bytes)` pair in `extra_files` verbatim into `src/` alongside the
+/// generated `.rs` modules, before compiling. For `driver_src`/a module's
+/// own text to reference one via `include_bytes!("name")`/`include_str!
+/// ("name")`, `file_name` must be a plain name (no directory components) --
+/// `include_bytes!` resolves relative to the including file's own
+/// directory, which is this same `src/` dir for every module and for
+/// `lib.rs` (where `driver_src` is embedded). Written before the `.rs`
+/// files so a name collision with a module file fails loudly (the `.rs`
+/// write would then overwrite it) rather than silently ordering-dependent.
+///
+/// Exists so large, purely-data witness/trace payloads (e.g. a driver's own
+/// per-step memory-check trace) can be embedded as compact bytes instead of
+/// literal Rust struct/array syntax -- a `[bool; N]`/`[SomeStruct; M]`
+/// array *literal* with N/M in the hundreds of thousands forces every
+/// downstream compiler pass (parsing, HIR lowering, every AST-walking lint)
+/// to visit one real AST node per element; `include_bytes!` embeds the same
+/// data as a single opaque byte-slice constant, no per-element AST nodes at
+/// all, regardless of how large the underlying data is.
+pub fn run_iop_verifier_multi_file_with_extra_files(
+    modules: &[(&str, &str)],
+    driver_src: &str,
+    extra_files: &[(&str, &[u8])],
+) -> std::string::String {
     let root = workspace_root();
     let tmpdir = std::env::temp_dir().join(std::format!(
         "volar_verifier_iop_runtime_{}",
@@ -240,6 +267,10 @@ pub fn run_iop_verifier_multi_file(modules: &[(&str, &str)], driver_src: &str) -
     ));
     let srcdir = tmpdir.join("src");
     std::fs::create_dir_all(&srcdir).expect("create temp src dir");
+
+    for (name, bytes) in extra_files {
+        std::fs::write(srcdir.join(name), bytes).unwrap_or_else(|e| panic!("write src/{name}: {e}"));
+    }
 
     let mut lib_rs = std::string::String::new();
     for (name, _) in modules {
