@@ -387,6 +387,54 @@ impl<'a> ExprWriter<'a> {
     }
 }
 
+/// Like [`ExprWriter`], but for an expression already printed in a position
+/// syntactically closed by its surrounding context (a `let` initializer, a
+/// bare statement's own expression, a block's own tail expression) --
+/// where `ExprWriter`'s own defensive outer-paren wrap on `Binary`/`Cast`
+/// (needed when an expression might be re-embedded as a *sub*-expression
+/// elsewhere, e.g. as another binary op's own operand) is provably
+/// redundant: nothing outside this position could ever reparse across the
+/// statement's own `;`/block boundary. Every other expression kind
+/// delegates straight to `ExprWriter` unchanged -- this is not a general
+/// precedence-aware printer, just a targeted skip for the two kinds that
+/// unconditionally self-wrap.
+///
+/// Exists purely to keep rustc's own `unused_parens` lint check (which
+/// runs its full per-expression cost regardless of `#![allow(unused_parens)]`
+/// -- only the diagnostic *output* is suppressed, not the underlying work)
+/// from having to visit millions of genuinely-redundant top-level parens on
+/// real-interpreter-scale generated code. Confirmed via a real guarded
+/// compile attempt: this exact redundant-paren pattern, repeated across
+/// every emitted `Poly`/gate statement (one `Binary` per statement is the
+/// overwhelmingly common shape this weaver's own emission produces), stalled
+/// a single lint pass for 45+ minutes at real interpreter scale, RSS never
+/// even approaching a memory-blowup threshold -- a genuinely different
+/// bottleneck from the memory-focused fixes elsewhere in this crate's
+/// history.
+struct TopLevelExprWriter<'a> {
+    expr: &'a IrExpr,
+    ctx: Option<&'a RustCtx>,
+}
+
+impl<'a> RustBackend for TopLevelExprWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.expr.kind {
+            IrExprKind::Binary { op, left, right } => {
+                ExprWriter { expr: left, ctx: self.ctx }.fmt(f)?;
+                write!(f, " {} ", bin_op_str(*op))?;
+                ExprWriter { expr: right, ctx: self.ctx }.fmt(f)?;
+                Ok(())
+            }
+            IrExprKind::Cast { expr, ty } => {
+                ExprWriter { expr, ctx: self.ctx }.fmt(f)?;
+                write!(f, " as ")?;
+                TypeWriter { ty }.fmt(f)
+            }
+            _ => ExprWriter { expr: self.expr, ctx: self.ctx }.fmt(f),
+        }
+    }
+}
+
 /// Writes an expression as part of an iterator chain (without final `.collect()`).
 pub struct ExprChainWriter<'a> {
     pub expr: &'a IrExpr,
@@ -942,7 +990,7 @@ impl<'a> RustBackend for BlockWriter<'a> {
         }
         if let Some(e) = &self.block.expr {
             write!(f, "{}    ", indent)?;
-            ExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
+            TopLevelExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
             writeln!(f)?;
         }
         write!(f, "{}}}", indent)?;
@@ -964,16 +1012,16 @@ impl<'a> RustBackend for StmtWriter<'a> {
                 }
                 if let Some(i) = init {
                     write!(f, " = ")?;
-                    ExprWriter { expr: i, ctx: self.ctx }.fmt(f)?;
+                    TopLevelExprWriter { expr: i, ctx: self.ctx }.fmt(f)?;
                 }
                 writeln!(f, ";")?;
             }
             IrStmtKind::Semi(e) => {
-                ExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
+                TopLevelExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
                 writeln!(f, ";")?;
             }
             IrStmtKind::Expr(e) => {
-                ExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
+                TopLevelExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
                 writeln!(f)?;
             }
         }
@@ -2704,5 +2752,69 @@ mod tests {
         // Bucket and enums have derive(Clone, Copy)
         let derive_clone_copy_count = out.matches("#[derive(Clone, Copy)]").count();
         assert_eq!(derive_clone_copy_count, 3, "expected 3 derive(Clone, Copy) (Bucket + 2 enums): {}", out);
+    }
+
+    // ── TopLevelExprWriter: statement-top-level Binary/Cast skip their own
+    //    outer parens, nested occurrences still get them ─────────────────────
+
+    fn var(name: &str) -> IrExpr {
+        ir_expr(IrExprKind::Var(name.to_string()))
+    }
+
+    fn binary(op: SpecBinOp, left: IrExpr, right: IrExpr) -> IrExpr {
+        ir_expr(IrExprKind::Binary { op, left: Box::new(left), right: Box::new(right) })
+    }
+
+    fn render_let_init(init: IrExpr) -> String {
+        let stmt = volar_ir_common::Node::new(
+            IrStmtKind::Let {
+                pattern: IrPattern::ident("x"),
+                ty: None,
+                init: Some(init),
+            },
+            (),
+            None,
+        );
+        format!("{}", DisplayRust(StmtWriter { stmt: &stmt, level: 0, ctx: None }))
+    }
+
+    #[test]
+    fn top_level_binary_let_init_has_no_outer_parens() {
+        let out = render_let_init(binary(SpecBinOp::BitXor, var("a"), var("b")));
+        assert_eq!(out.trim(), "let x = a ^ b;", "statement-top-level Binary must not self-wrap: {out}");
+    }
+
+    #[test]
+    fn nested_binary_operand_still_gets_parens() {
+        // (a ^ b) ^ c -- the outer Binary is statement-top-level (no self-wrap),
+        // but its own `left` operand is itself a Binary, printed via the
+        // ordinary (still-wrapping) ExprWriter recursion.
+        let out = render_let_init(binary(
+            SpecBinOp::BitXor,
+            binary(SpecBinOp::BitXor, var("a"), var("b")),
+            var("c"),
+        ));
+        assert_eq!(out.trim(), "let x = (a ^ b) ^ c;", "nested Binary operand must still be parenthesized: {out}");
+    }
+
+    #[test]
+    fn top_level_cast_has_no_outer_parens() {
+        let init = ir_expr(IrExprKind::Cast {
+            expr: Box::new(var("a")),
+            ty: Box::new(IrType::Primitive(PrimitiveType::U64)),
+        });
+        let out = render_let_init(init);
+        assert_eq!(out.trim(), "let x = a as u64;", "statement-top-level Cast must not self-wrap: {out}");
+    }
+
+    #[test]
+    fn semi_and_bare_expr_statements_skip_outer_parens_too() {
+        let semi = volar_ir_common::Node::new(
+            IrStmtKind::Semi(binary(SpecBinOp::Add, var("a"), var("b"))),
+            (),
+            None,
+        );
+        let out = format!("{}", DisplayRust(StmtWriter { stmt: &semi, level: 0, ctx: None }));
+        assert_eq!(out.trim(), "a + b;", "Semi statement must not self-wrap its own Binary: {out}");
     }
 }
