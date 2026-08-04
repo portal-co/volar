@@ -420,10 +420,9 @@ impl<'a> RustBackend for TopLevelExprWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.expr.kind {
             IrExprKind::Binary { op, left, right } => {
-                ExprWriter { expr: left, ctx: self.ctx }.fmt(f)?;
+                write_binary_operand(f, left, *op, self.ctx)?;
                 write!(f, " {} ", bin_op_str(*op))?;
-                ExprWriter { expr: right, ctx: self.ctx }.fmt(f)?;
-                Ok(())
+                write_binary_operand(f, right, *op, self.ctx)
             }
             IrExprKind::Cast { expr, ty } => {
                 ExprWriter { expr, ctx: self.ctx }.fmt(f)?;
@@ -433,6 +432,51 @@ impl<'a> RustBackend for TopLevelExprWriter<'a> {
             _ => ExprWriter { expr: self.expr, ctx: self.ctx }.fmt(f),
         }
     }
+}
+
+/// `true` for operators where `a OP (b OP c)` and `(a OP b) OP c` are always
+/// the same value *and* where printing the flattened chain `a OP b OP c`
+/// (Rust's own left-associative parse of repeated same-precedence `OP`)
+/// reproduces that value regardless of which side of the original tree `b`
+/// and `c` came from -- i.e. associative operators. Deliberately excludes
+/// `Sub`/`Div`/`Rem`/shifts/comparisons/`Eq`/`Ne` (not associative, or -- for
+/// the comparison operators -- not even a value of the same type, so
+/// chaining them at all would be a type error, never mind a semantic one).
+fn is_associative_bin_op(op: SpecBinOp) -> bool {
+    matches!(
+        op,
+        SpecBinOp::Add | SpecBinOp::Mul | SpecBinOp::BitAnd | SpecBinOp::BitOr | SpecBinOp::BitXor | SpecBinOp::And | SpecBinOp::Or
+    )
+}
+
+/// Write `expr` as one operand of a `Binary` whose own operator is
+/// `parent_op`. If `expr` is *itself* `Binary` with the identical operator
+/// and that operator is [`is_associative_bin_op`], the nested operand's own
+/// outer parens are provably redundant too -- recurse and flatten the whole
+/// chain instead of stopping at one level (this is what actually matters at
+/// real interpreter scale: `emit_poly_wide`'s own XOR/Add accumulation
+/// builds long same-operator chains as nested `Binary` trees, one node per
+/// term, so a fix that only unwraps the outermost node leaves the other
+/// N-1 levels still parenthesized). A *different* operator (even one with
+/// higher Rust precedence, where a human wouldn't need parens either) is
+/// deliberately left to the ordinary, conservative `ExprWriter` -- getting
+/// real precedence comparison wrong would be a silent correctness bug, and
+/// this codebase's own generated expressions don't mix operators within one
+/// accumulation chain, so there is no real-world case this excludes.
+fn write_binary_operand<'a>(
+    f: &mut fmt::Formatter<'_>,
+    expr: &'a IrExpr,
+    parent_op: SpecBinOp,
+    ctx: Option<&'a RustCtx>,
+) -> fmt::Result {
+    if let IrExprKind::Binary { op, left, right } = &expr.kind {
+        if *op == parent_op && is_associative_bin_op(*op) {
+            write_binary_operand(f, left, *op, ctx)?;
+            write!(f, " {} ", bin_op_str(*op))?;
+            return write_binary_operand(f, right, *op, ctx);
+        }
+    }
+    ExprWriter { expr, ctx }.fmt(f)
 }
 
 /// Writes an expression as part of an iterator chain (without final `.collect()`).
@@ -1295,7 +1339,16 @@ impl<'a> RustBackend for ExprWriter<'a> {
             IrExprKind::Index { base, index } => {
                 self.sub(base).fmt(f)?;
                 write!(f, "[")?;
-                self.sub(index).fmt(f)?;
+                // `index`'s own position is already fully delimited by the
+                // surrounding `[...]` -- same "provably redundant outer
+                // wrap" reasoning as `TopLevelExprWriter`'s own statement
+                // positions (see its doc comment). Confirmed a real,
+                // high-volume case at real interpreter scale: this
+                // weaver's own pool-indexed reads (`_pool[base + i]`,
+                // `_and_pool[lane_base + k]`, etc.) are index expressions
+                // over a `Binary` sum, used at effectively every pooled
+                // value access.
+                TopLevelExprWriter { expr: index, ctx: self.ctx }.fmt(f)?;
                 write!(f, "]")?;
             }
             IrExprKind::Block(b) => self.block(b, 0).fmt(f)?,
@@ -2785,16 +2838,55 @@ mod tests {
     }
 
     #[test]
-    fn nested_binary_operand_still_gets_parens() {
-        // (a ^ b) ^ c -- the outer Binary is statement-top-level (no self-wrap),
-        // but its own `left` operand is itself a Binary, printed via the
-        // ordinary (still-wrapping) ExprWriter recursion.
+    fn same_operator_nested_binary_chain_flattens_without_parens() {
+        // (a ^ b) ^ c -- XOR is associative, so the nested `(a ^ b)` operand's
+        // own parens are provably redundant too, not just the outer one:
+        // `write_binary_operand` recurses and flattens the whole chain.
         let out = render_let_init(binary(
             SpecBinOp::BitXor,
             binary(SpecBinOp::BitXor, var("a"), var("b")),
             var("c"),
         ));
-        assert_eq!(out.trim(), "let x = (a ^ b) ^ c;", "nested Binary operand must still be parenthesized: {out}");
+        assert_eq!(out.trim(), "let x = a ^ b ^ c;", "same-operator associative chain must flatten fully: {out}");
+    }
+
+    #[test]
+    fn different_operator_nested_binary_still_gets_parens() {
+        // (a ^ b) + c -- different operators (XOR vs Add): conservative
+        // ExprWriter recursion still wraps the nested operand, since this
+        // printer does not do real cross-operator precedence comparison.
+        let out = render_let_init(binary(
+            SpecBinOp::Add,
+            binary(SpecBinOp::BitXor, var("a"), var("b")),
+            var("c"),
+        ));
+        assert_eq!(out.trim(), "let x = (a ^ b) + c;", "different-operator nested Binary must still be parenthesized: {out}");
+    }
+
+    #[test]
+    fn non_associative_same_operator_nested_binary_still_gets_parens() {
+        // (a - b) - c -- Sub is NOT associative ((a-b)-c != a-(b-c)), so
+        // even a same-operator nested chain must stay conservatively
+        // parenthesized.
+        let out = render_let_init(binary(
+            SpecBinOp::Sub,
+            binary(SpecBinOp::Sub, var("a"), var("b")),
+            var("c"),
+        ));
+        assert_eq!(out.trim(), "let x = (a - b) - c;", "non-associative operator must never flatten: {out}");
+    }
+
+    #[test]
+    fn index_expression_skips_redundant_parens_on_binary_index() {
+        // arr[a + b] -- the index position is fully delimited by `[...]`,
+        // so Binary's own outer-paren wrap is redundant there too, exactly
+        // like the statement-top-level positions.
+        let index_expr = ir_expr(IrExprKind::Index {
+            base: Box::new(var("arr")),
+            index: Box::new(binary(SpecBinOp::Add, var("a"), var("b"))),
+        });
+        let out = render_let_init(index_expr);
+        assert_eq!(out.trim(), "let x = arr[a + b];", "Index's own index operand must not be defensively parenthesized: {out}");
     }
 
     #[test]
