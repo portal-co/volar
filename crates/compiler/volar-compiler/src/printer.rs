@@ -1358,7 +1358,16 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 else_branch,
             } => {
                 write!(f, "if ")?;
-                self.sub(cond).fmt(f)?;
+                // `cond`'s own position, like a `let` initializer, is
+                // already fully delimited (by the following `{`) -- Rust's
+                // `if` doesn't need (and doesn't accept, for a struct-
+                // literal condition, but that's not a shape this weaver
+                // produces) outer parens around it. Confirmed a real,
+                // hot pattern at real interpreter scale: `emit_poly_wide`'s
+                // own per-lane constant-bit-test condition is a 3-deep
+                // Shr/BitAnd/Eq chain, built fresh in every wide-Poly
+                // statement's closure.
+                TopLevelExprWriter { expr: cond, ctx: self.ctx }.fmt(f)?;
                 self.block(then_branch, 0).fmt(f)?;
                 if let Some(eb) = else_branch {
                     write!(f, " else ")?;
@@ -1378,9 +1387,12 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     var
                 );
                 write!(f, "for {} in ", var)?;
-                self.sub(start).fmt(f)?;
+                // Same reasoning as `If`'s own `cond` -- a range's own
+                // `start`/`end` are already delimited by `..`/`..=` and the
+                // loop's own trailing `{`.
+                TopLevelExprWriter { expr: start, ctx: self.ctx }.fmt(f)?;
                 write!(f, "{} ", if *inclusive { "..=" } else { ".." })?;
-                self.sub(end).fmt(f)?;
+                TopLevelExprWriter { expr: end, ctx: self.ctx }.fmt(f)?;
                 self.block(body, 0).fmt(f)?;
             }
             IrExprKind::IterLoop {
@@ -2908,5 +2920,37 @@ mod tests {
         );
         let out = format!("{}", DisplayRust(StmtWriter { stmt: &semi, level: 0, ctx: None }));
         assert_eq!(out.trim(), "a + b;", "Semi statement must not self-wrap its own Binary: {out}");
+    }
+
+    #[test]
+    fn if_condition_skips_redundant_parens_on_binary() {
+        // if a == b { ... } -- the condition position is already fully
+        // delimited by the trailing `{`, so Binary's own outer-paren wrap
+        // is redundant there too. Confirmed a real, hot pattern at real
+        // interpreter scale: emit_poly_wide's own per-lane constant-bit
+        // condition is a 3-deep Shr/BitAnd/Eq chain.
+        let cond = binary(SpecBinOp::Eq, var("a"), var("b"));
+        let if_expr = ir_expr(IrExprKind::If {
+            cond: Box::new(cond),
+            then_branch: IrBlock { stmts: vec![], expr: Some(Box::new(var("x"))) },
+            else_branch: None,
+        });
+        let out = render_let_init(if_expr);
+        assert_eq!(out.trim(), "let x = if a == b{\n    x\n};", "If's own cond must not be defensively parenthesized: {out}");
+    }
+
+    #[test]
+    fn bounded_loop_range_skips_redundant_parens_on_binary() {
+        // for i in a + 1..b { ... } -- start/end are already delimited by
+        // `for .. in`/`..`/the trailing `{`.
+        let loop_expr = ir_expr(IrExprKind::BoundedLoop {
+            var: "i".to_string(),
+            start: Box::new(binary(SpecBinOp::Add, var("a"), var("one"))),
+            end: Box::new(var("b")),
+            inclusive: false,
+            body: IrBlock { stmts: vec![], expr: None },
+        });
+        let out = format!("{}", DisplayRust(TopLevelExprWriter { expr: &loop_expr, ctx: None }));
+        assert_eq!(out.trim(), "for i in a + one.. b{\n}", "BoundedLoop's own start must not be defensively parenthesized: {out}");
     }
 }
