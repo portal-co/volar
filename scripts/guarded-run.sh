@@ -36,7 +36,16 @@
 # Log files, under <log_dir>:
 #   command.log   stdout+stderr of the wrapped command
 #   guard.log     one line per poll (timestamp, top rustc RSS, free mem,
-#                 swap used) plus a loud multi-line block if/when it kills
+#                 swap used) plus a loud multi-line block if/when it kills,
+#                 plus one line per auto-sample (see below)
+#   sample_*.txt  a `sample <rustc_pid> 2 -mayDie` snapshot of the top
+#                 rustc process, taken automatically every 90s regardless
+#                 of memory pressure -- a memory-only guard is blind to a
+#                 process that's alive, using little RSS, and burning CPU
+#                 in a genuinely slow compiler pass (confirmed real, twice,
+#                 at real interpreter scale); this puts a stall's own stack
+#                 trace on disk before anyone has to notice and attach
+#                 `sample` by hand
 
 set -uo pipefail
 # Monitor mode: puts each backgrounded job in its OWN process group instead
@@ -86,6 +95,22 @@ log "launched pid=$CMD_PID pgid=${PGID:-unknown}"
 PAGE_SIZE=$(vm_stat | head -1 | grep -oE '[0-9]+' | head -1)
 PAGE_SIZE=${PAGE_SIZE:-16384}
 
+# Auto-sampling: a memory-based guard alone is blind to a rustc process
+# that's alive, using little RSS, and burning CPU in a genuinely slow
+# (not necessarily ever-terminating on its own within a reasonable time)
+# compiler pass -- confirmed real (twice, same lint) at real interpreter
+# scale: `sample`-ing by hand after the fact was the only way that got
+# found. Auto-capture a short `sample` of the top rustc process every
+# SAMPLE_INTERVAL_S seconds so a stall's own stack trace is already on
+# disk (in $LOG_DIR/sample_*.txt) the moment anyone goes looking --
+# no need to catch it live and attach `sample` manually. Runs backgrounded
+# (own subshell) so the few seconds `sample` takes never stalls the main
+# 5s poll loop; `set -m` above already gives it its own process group,
+# so it dies cleanly with everything else on a guard kill.
+SAMPLE_INTERVAL_S=90
+SAMPLE_DURATION_S=2
+last_sample_epoch=0
+
 killed=0
 reason=""
 while kill -0 "$CMD_PID" 2>/dev/null; do
@@ -107,6 +132,24 @@ while kill -0 "$CMD_PID" 2>/dev/null; do
         top_rustc_rss_gb="$rss_gb"; top_rustc_pid="$pid"
       fi
     done <<< "$rustc_pids"
+  fi
+
+  if [ -n "$top_rustc_pid" ]; then
+    now_epoch=$(date +%s)
+    if [ $((now_epoch - last_sample_epoch)) -ge "$SAMPLE_INTERVAL_S" ]; then
+      last_sample_epoch=$now_epoch
+      sample_pid="$top_rustc_pid"
+      sample_file="$LOG_DIR/sample_$(date '+%H%M%S')_pid${sample_pid}.txt"
+      (
+        sample "$sample_pid" "$SAMPLE_DURATION_S" -mayDie > "$sample_file" 2>&1
+        # Compact top-of-stack summary appended to guard.log -- enough to
+        # spot a recognizable stuck pass (e.g. a specific lint/query name)
+        # without opening the full sample file.
+        top_frames=$(awk '/^Sort by top of stack/{f=1;next} f && NF{print; c++} c>=3{exit}' "$sample_file" \
+          | sed -E 's/^ +//; s/  +/ /g' | tr '\n' '; ')
+        log "auto-sample pid=$sample_pid -> $(basename "$sample_file") | top: ${top_frames:-<no frames captured>}"
+      ) &
+    fi
   fi
 
   free_pages=$(vm_stat | awk '/Pages free/{gsub("[.]","");print $3}')
