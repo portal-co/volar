@@ -655,6 +655,11 @@ pub(crate) mod tests {
             fn sample_g<R: SpecRng>(r: &mut R) -> Galois {{ Galois(r.next_u8()) }}
             fn lift_bit_g(b: bool) -> Galois {{ Galois(if b {{ 1 }} else {{ 0 }}) }}
             fn is_zero_g(g: &Galois) -> bool {{ g.0 == 0 }}
+            // Real function (not the `assert!` macro) so `split_driver.rs`'s
+            // own AST-based statement generation can call it -- this IR has
+            // no macro-invocation support at all (see `ir_builder.rs`'s own
+            // `assert_true_stmt` doc).
+            fn __assert_true(cond: bool, msg: &str) {{ assert!(cond, "{{}}", msg); }}
 
             fn vope_zero() -> Vope<N, Galois, cipher::consts::U1> {{
                 Vope {{

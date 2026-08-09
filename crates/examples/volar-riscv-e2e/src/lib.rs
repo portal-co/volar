@@ -17,6 +17,8 @@
 use portal_pc_waffle_frontend::{FrontendOptions, Module as WModule, expand_func};
 
 pub mod commit_mem_e2e;
+#[cfg(test)]
+pub(crate) mod ir_builder;
 pub mod interp;
 pub mod mem_probe;
 #[cfg(test)]
