@@ -183,7 +183,7 @@ Accepted iteration forms:
 - `for x in collection` → `IterLoop` (collection must be a finite array/vec).
 - Iterator pipeline with `Collect` or `Fold` terminal → `IterPipeline`.
 
-This mirrors the totality requirement of the Volar IR (see [ir-lowering.md](ir-lowering.md)).
+This mirrors the totality requirement of the Volar IR (see the `volar-ir` repo's `docs/ir-lowering.md`).
 
 ---
 

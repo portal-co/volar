@@ -21,8 +21,8 @@ volar-provenance.workspace = true
 volar-ir-common.workspace = true
 volar-side.workspace = true
 volar-ir.workspace = true
-volar-ir-passes = {path="../../ir/volar-ir-passes"}
-volar-lir = {path="../../ir/volar-lir"}
+volar-ir-passes = { workspace = true }
+volar-lir = { workspace = true }
 volar-lir-codegen = {path="../volar-lir-codegen"}
 volar-c-backend = {path="../volar-c-backend"}
 vaffle.workspace = true
@@ -33,3 +33,4 @@ volar-net = { workspace = true, optional = true }
 # Cross-check the `emit_keccak256` boolean gadget against a known-good SHA3-256.
 sha3.workspace = true
 digest = { version = "0.11.2", default-features = false }
+volar-ir-virt = { workspace = true }

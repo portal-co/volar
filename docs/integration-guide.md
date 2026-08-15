@@ -138,8 +138,8 @@ let c_source = backend.finish();
 
 The C backend currently targets correctness testing rather than
 deployment. It does not implement large-aggregate ABI optimisations and
-emits `unimplemented!` for `_128` / `_256` primitive types. See
-[lir-abi.md](lir-abi.md).
+emits `unimplemented!` for `_128` / `_256` primitive types. See the
+`volar-ir` repo's `docs/lir-abi.md`.
 
 ---
 
@@ -400,5 +400,5 @@ applications depend on get evidence and stability work first.
 - [garbling-pipeline.md](garbling-pipeline.md) — how the garbling weaver
   works.
 - [insecure.md](insecure.md) — what the `.insecure` extension means.
-- [text-format-spec.md](text-format-spec.md) — IR text formats for
+- `volar-ir` repo's `docs/text-format-spec.md` — IR text formats for
   serialised artefacts.

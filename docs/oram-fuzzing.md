@@ -151,5 +151,5 @@ at I for ORAM properties.
 ## See Also
 
 - `crates/oram/volar-oram/src/lib.rs` — source of truth for ORAM tests
-- `docs/fuzzing.md` — IR-level fuzzing infrastructure
+- `volar-ir` repo's `docs/fuzzing.md` — IR-level fuzzing infrastructure
 - `docs/archive/oram-channel-plan.md` — ORAM design decisions (archived; implemented)

@@ -18,7 +18,7 @@ pipeline-vaffle  = ["pipeline", "dep:vaffle", "dep:volar-vaffle-target"]
 pipeline-wasm    = ["pipeline-vaffle", "dep:portal-pc-waffle-ir", "dep:portal-pc-waffle-frontend"]
 
 [dependencies]
-volar-lir-saved = { path = "../volar-lir-saved", features = ["rkyv"] }
+volar-lir-saved = { workspace = true, features = ["rkyv"] }
 volar-llvm-backend = { path = "../volar-llvm-backend" }
 volar-lir = { workspace = true }
 inkwell = { workspace = true }
@@ -29,7 +29,7 @@ volar-compiler        = { path = "../volar-compiler", optional = true }
 volar-compiler-passes = { path = "../volar-compiler-passes", optional = true }
 volar-ir-passes       = { workspace = true, optional = true }
 volar-ir-opt          = { workspace = true, optional = true }
-vaffle                = { path = "../../ir/vaffle", features = ["rkyv"], optional = true }
+vaffle                = { workspace = true, features = ["rkyv"], optional = true }
 volar-vaffle-target   = { workspace = true, optional = true }
 portal-pc-waffle-ir       = { workspace = true, optional = true }
 portal-pc-waffle-frontend = { workspace = true, optional = true }

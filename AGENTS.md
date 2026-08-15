@@ -119,13 +119,10 @@ Load these when working in the relevant area:
 | Operating procedure for AI agents | `docs/agents-guide.md` | Always — first thing before editing |
 | **Full pipeline (multi-pass, weaving feedback)** | **`docs/pipeline.md`** | **Touching any lowering pass, codegen backend, or weaver — the overview.md sketch is not accurate** |
 | User-facing integration | `docs/integration-guide.md` | When answering questions about app integration |
-| IR types, storage, Poly semantics | `docs/agent-context/ir-types-storage.md` | Working on IR, lowering, evaluators, store-forward, fuzzer generators |
-| IR `map`/`as_ref`/`as_mut` conventions | `docs/agent-context/ir-map-conventions.md` | Adding IR variants, writing IR transformations, understanding `#[non_exhaustive]` catch-all conventions |
-| Provenance pipeline | `docs/agent-context/provenance-pipeline.md` | Adding provenance to passes, writing `ProvenanceHandler` impls, understanding why `Default`/`synthetic()` are absent |
+| Volar IR / VAFFLE / LIR (IR types, lowering, movfuscation, DCE/CSE, virtualization) | [`volar-ir` repo docs](https://github.com/portal-co/volar-ir/tree/main/docs) | Working on `volar-ir`, `vaffle`, `volar-lir`, or any of the crates split into that repo — see its `AGENTS.md` for that repo's own topic index |
 | Weaving & multi-backend | `docs/agent-context/weaving.md` | Working on FHE/garbled-circuit weaving, compiler printers (Rust/TS/C), action system, CFG emission |
 | **ZK / non-ZK proving discipline** | `docs/agent-context/discipline.md` | Touching any weaver, `volar-fold`, the build pipeline, or anything that moves a proof `IrModule` — the load-bearing ZK↔non-ZK boundary |
 | Prove-the-verifier (IOP-based) | `docs/prove-the-verifier-iop.md` | Folding the verifier natively into `GF(2^k)`, the Merkle+Fiat–Shamir finalization proof, memory-accumulator boundary |
-| `u128` support in LIR/C backend (deferred) | `docs/agent-context/lir-u128-support.md` | Touching `primitive_to_lir`, the C backend, or spec-linking `u128`-using code (`Scalar`, curve arithmetic) |
 | AST-to-AST weaving (future track) | `docs/agent-context/ast-to-ast-weaving.md` | Considering bypassing LIR lowering entirely for a new target (e.g. ZK-proven FHE) |
 | Higher-K gate degree (future track) | `docs/agent-context/higher-k-gates.md` | Touching `BIrStmt::And`'s degree dispatch, `gate_degree`, or K=3+/FAEST AES pinning |
 | TypeScript class witnesses | `docs/agent-context/ts-class-witnesses.md` | Working on TS codegen: `WitnessKind`, `ctx` parameter, type-param-as-value, static method dispatch |

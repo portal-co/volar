@@ -125,7 +125,7 @@ IrModule / IrCfgModule        Boolar IR   (peephole)
                           LirTarget (→ C99, VAFFLE, …)
 ```
 
-See [ir-lowering.md](ir-lowering.md) for details on Volar IR and Boolar IR.
+See the `volar-ir` repo's `docs/ir-lowering.md` for details on Volar IR and Boolar IR.
 
 ---
 

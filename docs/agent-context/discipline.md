@@ -10,9 +10,9 @@ from catastrophically mixing already-existing primitives (a zero-knowledge
 prover with a non-ZK / transparent prover or a folding instance). The type system
 enforces it; this document tells you **why you must not route around it**.
 
-See also [`prove-the-verifier.md`](../prove-the-verifier.md) and
-[`provenance.md`](../provenance.md) (the discipline tag is orthogonal to and
-composes with provenance `P`).
+See also [`prove-the-verifier.md`](../prove-the-verifier.md) and the
+`volar-ir` repo's `docs/provenance.md` (the discipline tag is orthogonal to
+and composes with provenance `P`).
 
 ---
 

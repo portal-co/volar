@@ -15,5 +15,5 @@ volar-weaver = { path = "../../compiler/volar-weaver" }
 
 [dev-dependencies]
 volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }
-volar-ir = { path = "../../ir/volar-ir" }
-volar-ir-common = { path = "../../ir/volar-ir-common" }
+volar-ir = { workspace = true }
+volar-ir-common = { workspace = true }

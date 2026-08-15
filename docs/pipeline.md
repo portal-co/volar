@@ -241,11 +241,9 @@ No intermediate files, no external tools.
 
 | Topic | File |
 |---|---|
-| IR types and storage in depth | [`agent-context/ir-types-storage.md`](agent-context/ir-types-storage.md) |
 | Weaving passes (garbling, VOLE) | [`agent-context/weaving.md`](agent-context/weaving.md) |
 | TypeScript class witnesses | [`agent-context/ts-class-witnesses.md`](agent-context/ts-class-witnesses.md) |
-| Low-level circuit IRs (Volar IR, Boolar IR) | [`ir-lowering.md`](ir-lowering.md) |
-| LIR target trait and C backend | [`lir.md`](lir.md), [`lir-abi.md`](lir-abi.md) |
+| Low-level circuit IRs (Volar IR, Boolar IR), LIR target trait, C backend, IR types and storage | `volar-ir` repo's `docs/ir-lowering.md`, `docs/lir.md`, `docs/lir-abi.md`, `docs/agent-context/ir-types-storage.md` |
 | Garbling pipeline | [`garbling-pipeline.md`](garbling-pipeline.md) |
 | VOLE weaving | [`vole-weaving.md`](vole-weaving.md) |
 | Architecture overview (sketch) | [`overview.md`](overview.md) |

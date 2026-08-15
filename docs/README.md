@@ -57,8 +57,8 @@ where applicable.
 | [reliability.md](reliability.md) | Pinnedness, stability, legacy-marker migration, AI markers, and reclassification protocol |
 | [overview.md](overview.md) | Workspace layout, crate dependency graph, compilation pipeline |
 | [insecure.md](insecure.md) | The `.insecure` extension and current insecure files |
-| [provenance.md](provenance.md) | Per-statement origin tracking through the IR pipeline |
-| [side.md](side.md) | Per-value actor/role tracking (ZK witness/statement, FHE plaintext/ciphertext) — provenance's sibling |
+| `volar-ir` repo's `docs/provenance.md` | Per-statement origin tracking through the IR pipeline |
+| `volar-ir` repo's `docs/side.md` | Per-value actor/role tracking (ZK witness/statement, FHE plaintext/ciphertext) — provenance's sibling |
 
 ### Specifications and protocols
 
@@ -76,12 +76,7 @@ where applicable.
 |---|---|
 | [pipeline.md](pipeline.md) | **Full multi-pass pipeline**: parse → weave → lower → codegen, recursive flows, why fixes belong in lowering not backends |
 | [compiler.md](compiler.md) | `volar-compiler`: parser, IR types, manifests, dynamic lowering, Rust/TS printers |
-| [ir-lowering.md](ir-lowering.md) | The `volar-ir` low-level circuit IR, movfuscation, Volar IR / Boolar IR |
-| [lir.md](lir.md) | LIR target trait, IrModule → LirTarget lowering, monomorphisation |
-| [lir-abi.md](lir-abi.md) | LIR ABI policy and per-target conventions |
-| [text-format-spec.md](text-format-spec.md) | Stable text formats for serialised IR artefacts |
-| [waffle-lowering.md](waffle-lowering.md) | WAFFLE → VAFFLE lowering for WASM-compiled circuits |
-| [wasm-feature-support.md](wasm-feature-support.md) | Which WASM features are supported at each pipeline layer |
+| [`volar-ir` repo docs](https://github.com/portal-co/volar-ir/tree/main/docs) | Volar IR, VAFFLE, movfuscation, circuit lowering, virtualization, DCE/CSE/const-fold, LIR, WAFFLE→VAFFLE lowering, WASM feature support, IR text formats — split out of this repo, see `volar-ir`'s `docs/pipeline.md` |
 | [metadata-container-plan.md](metadata-container-plan.md) | Implemented metadata container and propagation ledger; remaining consumer/coverage work |
 | [instruction-groups-plan.md](instruction-groups-plan.md) | Implemented instruction-group infrastructure ledger; remaining consumers and generated-backend coverage |
 
@@ -103,7 +98,8 @@ where applicable.
 
 | Document | What it covers |
 |---|---|
-| [fuzzing.md](fuzzing.md) | `volar-fuzz` infrastructure: generators, interpreters, properties, libFuzzer targets |
+| `volar-ir` repo's `docs/fuzzing.md` | `volar-fuzz` infrastructure: generators, interpreters, properties, libFuzzer targets |
+| `fuzz/fuzz_targets/fuzz_vole_circuit_completeness.rs` | The one fuzz target that stayed here (also exercises `volar-spec`) |
 
 ### Active design plans
 
@@ -115,7 +111,7 @@ where applicable.
 | [spec-static-shapes-plan.md](spec-static-shapes-plan.md) | Static TFHE shapes landed; dynamic and LIR/C validation gaps are recorded |
 | [metadata-container-plan.md](metadata-container-plan.md) | Implemented metadata refactor ledger and incomplete consumer/coverage work |
 | [instruction-groups-plan.md](instruction-groups-plan.md) | Implemented group infrastructure ledger and incomplete consumer/coverage work |
-| [lir-lowering-monomorphization-plan.md](lir-lowering-monomorphization-plan.md) | Proposed instance-aware lowering; unresolved const `L` blocks widening-ring C evidence |
+| `volar-ir` repo's `docs/lir-lowering-monomorphization-plan.md` | Proposed instance-aware lowering; unresolved const `L` blocks widening-ring C evidence |
 | [handoffs/merge-recovery/index.md](handoffs/merge-recovery/index.md) | Merged-tree recovery evidence, blockers, and model-neutral next actions |
 
 ### Agent-context briefings
@@ -126,10 +122,10 @@ trip-wires that show up most often in code review.
 
 | Document | When to load |
 |---|---|
-| [agent-context/ir-types-storage.md](agent-context/ir-types-storage.md) | IR, lowering, evaluators, store-forward, fuzzer generators |
+| `volar-ir` repo's `docs/agent-context/ir-types-storage.md` | IR, lowering, evaluators, store-forward, fuzzer generators |
 | [agent-context/weaving.md](agent-context/weaving.md) | FHE/garbled-circuit weaving, compiler printers, action system, CFG emission |
 | [agent-context/discipline.md](agent-context/discipline.md) | The ZK↔non-ZK proving discipline boundary: weavers, `volar-fold`, build pipeline — binds agents against mixing prover/verifier/fold primitives |
-| [agent-context/side.md](agent-context/side.md) | Per-value side tracking: adding `SideId` to an IR container, `SideHandler` impls, replacing `ZkWitnessConfig`/`*ActionConfig`/`PublicSet`-shaped configs |
+| `volar-ir` repo's `docs/agent-context/side.md` | Per-value side tracking: adding `SideId` to an IR container, `SideHandler` impls, replacing `ZkWitnessConfig`/`*ActionConfig`/`PublicSet`-shaped configs |
 | [agent-context/oram.md](agent-context/oram.md) | ORAM crates, channel protocol, ORAM weaver integration |
 
 ### Operating procedures
@@ -163,12 +159,9 @@ historical context.
                 │       overview.md       │  ← architectural starting point
                 └────────────┬────────────┘
                              │
-   ┌──────────┬──────────────┼──────────────┬──────────────┐
-   ▼          ▼              ▼              ▼              ▼
-spec.md   compiler.md   vole-weaving.md   lir.md   ir-lowering.md
-              │
-              ▼
-   text-format-spec.md, lir-abi.md, waffle-lowering.md, …
+   ┌──────────┬──────────────┼──────────────┐
+   ▼          ▼              ▼              ▼
+spec.md   compiler.md   vole-weaving.md   volar-ir repo docs (lir.md, ir-lowering.md, …)
 
                 ┌─────────────────────────┐
                 │  agent-context/ briefs  │  ← topic-focused, dense
