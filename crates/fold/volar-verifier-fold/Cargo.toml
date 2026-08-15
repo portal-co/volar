@@ -10,7 +10,7 @@ repository.workspace = true
 volar-discipline = { workspace = true }
 volar-compiler = { path = "../../compiler/volar-compiler" }
 volar-lir-codegen = { path = "../../compiler/volar-lir-codegen" }
-volar-c-backend = { path = "../../compiler/volar-c-backend" }
+volar-c-backend = { workspace = true }
 volar-weaver = { path = "../../compiler/volar-weaver" }
 
 [dev-dependencies]

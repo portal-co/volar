@@ -19,7 +19,7 @@ pipeline-wasm    = ["pipeline-vaffle", "dep:portal-pc-waffle-ir", "dep:portal-pc
 
 [dependencies]
 volar-lir-saved = { workspace = true, features = ["rkyv"] }
-volar-llvm-backend = { path = "../volar-llvm-backend" }
+volar-llvm-backend = { workspace = true }
 volar-lir = { workspace = true }
 inkwell = { workspace = true }
 rkyv = { workspace = true, features = ["bytecheck"] }

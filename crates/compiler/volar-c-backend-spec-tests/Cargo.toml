@@ -1,0 +1,21 @@
+[package]
+name = "volar-c-backend-spec-tests"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Spec-integration and volar-lir-codegen-dependent tests for volar-c-backend, kept in volar since they exercise volar-compiler/volar-spec, not just the LIR-to-C backend"
+repository.workspace = true
+publish = false
+
+[dependencies]
+volar-c-backend = { path = "../../../../volar-ir/crates/backends/volar-c-backend" }
+volar-compiler = { path = "../volar-compiler", features = ["parsing"] }
+volar-lir-codegen = { path = "../volar-lir-codegen" }
+volar-weaver = { path = "../volar-weaver" }
+volar-wasm-backend = { path = "../../../../volar-ir/crates/backends/volar-wasm-backend" }
+volar-lir = { path = "../../../../volar-ir/crates/ir/volar-lir" }
+volar-lir-saved = { path = "../../../../volar-ir/crates/ir/volar-lir-saved" }
+volar-lir-test-corpus = { path = "../../../../volar-ir/crates/ir/volar-lir-test-corpus" }
+volar-ir = { path = "../../../../volar-ir/crates/ir/volar-ir" }
+volar-ir-passes = { path = "../../../../volar-ir/crates/ir/volar-ir-passes" }
+wasmtime = "46.0.1"

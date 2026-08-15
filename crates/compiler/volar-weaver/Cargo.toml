@@ -24,7 +24,7 @@ volar-ir.workspace = true
 volar-ir-passes = { workspace = true }
 volar-lir = { workspace = true }
 volar-lir-codegen = {path="../volar-lir-codegen"}
-volar-c-backend = {path="../volar-c-backend"}
+volar-c-backend = { workspace = true }
 vaffle.workspace = true
 portal-pc-waffle-ir.workspace = true
 volar-net = { workspace = true, optional = true }

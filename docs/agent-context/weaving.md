@@ -110,9 +110,9 @@ For compile checks, action function bodies use `IrExpr::Unreachable` which print
 - `crates/compiler/volar-compiler/src/printer.rs` — Rust `CfgModuleWriter`/`CfgFunctionWriter`
 - `crates/compiler/volar-compiler/src/printer_ts.rs` — TS flat + CFG printers
 - `crates/compiler/volar-compiler/src/ir.rs` — `IrCfgModule`, `IrCfgFunction`, `IrCfgBlock`, `IrCfgTerminator`, `IrEnum`, `IrTypeAlias`
-- `crates/ir/volar-lir/src/lib.rs` — `LirTarget` trait
+- `volar-ir` repo's `crates/ir/volar-lir/src/lib.rs` — `LirTarget` trait
 - `crates/compiler/volar-lir-codegen/src/lib.rs` — flat + CFG lowering
-- `crates/compiler/volar-c-backend/src/lib.rs` — `CBackend`
+- `volar-ir` repo's `crates/backends/volar-c-backend/src/lib.rs` — `CBackend`
 - `crates/compiler/volar-weaver/src/fhe.rs` — weaving + print functions
 - `crates/compiler/volar-weaver/src/oram.rs` — ORAM rewrite + integration tests
 - `crates/macros/volar-macros/src/lib.rs` — `#[volar_action]` proc macro

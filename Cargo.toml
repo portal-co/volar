@@ -13,9 +13,7 @@ members = [
     "crates/ir/volar-discipline",
     "crates/compiler/volar-weaver",
     "crates/compiler/volar-lir-codegen",
-    "crates/compiler/volar-c-backend",
-    "crates/compiler/volar-llvm-backend",
-    "crates/compiler/volar-wasm-backend",
+    "crates/compiler/volar-c-backend-spec-tests",
     "crates/compiler/volar-build",
     "crates/channel/volar-channel",
     "crates/oram/volar-oram",
@@ -45,9 +43,7 @@ default-members = [
     "crates/ir/volar-discipline",
     "crates/compiler/volar-weaver",
     "crates/compiler/volar-lir-codegen",
-    "crates/compiler/volar-c-backend",
-    "crates/compiler/volar-llvm-backend",
-    "crates/compiler/volar-wasm-backend",
+    "crates/compiler/volar-c-backend-spec-tests",
     "crates/compiler/volar-build",
     "crates/channel/volar-channel",
     "crates/oram/volar-oram",
@@ -72,7 +68,9 @@ volar-net = {path="crates/net/volar-net", version = "0.1.0"}
 volar-compiler-passes = {path="crates/compiler/volar-compiler-passes", version = "0.1.0"}
 volar-lir-test-corpus = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 volar-lir-saved = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
-volar-wasm-backend = {path="crates/compiler/volar-wasm-backend", version = "0.1.0"}
+volar-wasm-backend = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
+volar-c-backend = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
+volar-llvm-backend = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 volar-build = {path="crates/compiler/volar-build", version = "0.1.0"}
 
 volar-ir-config        = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
