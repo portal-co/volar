@@ -14,12 +14,9 @@
 //! is silently skipped, with no error reported. Every function must be
 //! expanded via `expand_func` first.
 
-use portal_pc_waffle_frontend::{FrontendOptions, Module as WModule, expand_func};
-
 pub mod commit_mem_e2e;
 #[cfg(test)]
 pub(crate) mod ir_builder;
-pub mod interp;
 pub mod mem_probe;
 #[cfg(test)]
 pub(crate) mod memory_check_driver;
@@ -28,19 +25,8 @@ pub mod signature;
 pub(crate) mod split_driver;
 pub mod wat_gen;
 
-/// Parse a WASM binary into a fully-expanded WAFFLE `Module`, ready for
-/// `volar_vaffle_target::lower_waffle_module`.
-pub fn parse_and_expand(wasm_bytes: &[u8]) -> anyhow::Result<WModule<'_>> {
-    let mut module = portal_pc_waffle_frontend::from_wasm_bytes(
-        wasm_bytes,
-        &FrontendOptions { debug: false },
-    )?;
-    let func_ids: Vec<_> = module.funcs.entries().map(|(id, _)| id).collect();
-    for id in func_ids {
-        expand_func(&mut module, id)?;
-    }
-    Ok(module)
-}
+pub use volar_riscv_test_programs::interp;
+pub use volar_riscv_test_programs::parse_and_expand;
 
 #[cfg(test)]
 mod tests {

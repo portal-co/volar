@@ -23,6 +23,7 @@ hybrid-array = { workspace = true }
 cipher = { workspace = true }
 anyhow = { version = "^1.0", default-features = false }
 volar-ir-opt = { workspace = true }
+volar-riscv-test-programs = { path = "../../../../volar-ir/crates/ir/volar-riscv-test-programs" }
 
 [dev-dependencies]
 volar-verifier-fold = { path = "../../fold/volar-verifier-fold" }

@@ -24,6 +24,11 @@
 
 use crate::interp::{MAX_STEPS, RESULT_ADDR};
 
+// The generic fixture is the source of truth. The legacy implementation
+// below remains only so Volar's old weave/proof experiments keep their local
+// historical reference while that stack is blocked.
+pub use volar_riscv_test_programs::wat_gen::{interpreter_wat, test_program_wat};
+
 /// RV32I base opcodes for the instructions this interpreter supports.
 mod opcode {
     pub const ADDI: u32 = 0x13;
@@ -75,7 +80,8 @@ fn set_reg(idx_local: &str, val_local: &str) -> String {
 /// separate linear memories (`$code`, `$data`) -- multi-memory is fully
 /// supported by `volar-vaffle-target`, and this split is exactly what lets
 /// `StorageMode::Commitment` be applied to only `$data` later.
-pub fn interpreter_wat(code_bytes: &[u8], data_bytes: &[u8]) -> String {
+#[allow(dead_code)]
+fn legacy_interpreter_wat(code_bytes: &[u8], data_bytes: &[u8]) -> String {
     let code_pages = code_bytes.len().div_ceil(65536).max(1);
     let data_pages = data_bytes.len().div_ceil(65536).max(1);
 
@@ -243,8 +249,9 @@ pub fn interpreter_wat(code_bytes: &[u8], data_bytes: &[u8]) -> String {
 
 /// The Milestone-1 test program's WAT source, built from
 /// [`crate::interp::assemble_program`] / [`crate::interp::initial_data_bytes`].
-pub fn test_program_wat() -> String {
-    interpreter_wat(&crate::interp::program_bytes(), &crate::interp::initial_data_bytes())
+#[allow(dead_code)]
+fn legacy_test_program_wat() -> String {
+    legacy_interpreter_wat(&crate::interp::program_bytes(), &crate::interp::initial_data_bytes())
 }
 
 #[allow(dead_code)]
