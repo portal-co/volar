@@ -35,7 +35,7 @@ use alloc::vec::Vec;
 use volar_channel::{Protocol, Yield};
 
 // Re-export core types so downstream doesn't need to depend on both crates.
-pub use volar_oram_core::{OramEntry, Bucket};
+pub use volar_oram_core::{Bucket, OramEntry};
 
 // Re-export core helper functions (used by both crates).
 pub use volar_oram_core::{bit_reverse, bits_needed, eviction_target};
@@ -279,11 +279,7 @@ impl PosMap {
     }
 
     /// Look up the assigned leaf for `addr`.
-    pub fn lookup(
-        &mut self,
-        addr: u64,
-        rng: &mut dyn FnMut() -> u64,
-    ) -> u64 {
+    pub fn lookup(&mut self, addr: u64, rng: &mut dyn FnMut() -> u64) -> u64 {
         match self {
             PosMap::Local { map, .. } => map[addr as usize],
             PosMap::Recursive {
@@ -295,7 +291,8 @@ impl PosMap {
             } => {
                 let block_idx = addr as usize / *entries_per_block;
                 let offset_in_block = addr as usize % *entries_per_block;
-                let result = oram_access_local(sub_client, sub_tree, block_idx as u64, AccessOp::Read, rng);
+                let result =
+                    oram_access_local(sub_client, sub_tree, block_idx as u64, AccessOp::Read, rng);
                 match result {
                     AccessResult::ReadValue(block) => {
                         extract_position(&block, offset_in_block, *bits_per_pos)
@@ -307,12 +304,7 @@ impl PosMap {
     }
 
     /// Update the assigned leaf for `addr` to `new_leaf`. Returns the old leaf.
-    pub fn update(
-        &mut self,
-        addr: u64,
-        new_leaf: u64,
-        rng: &mut dyn FnMut() -> u64,
-    ) -> u64 {
+    pub fn update(&mut self, addr: u64, new_leaf: u64, rng: &mut dyn FnMut() -> u64) -> u64 {
         match self {
             PosMap::Local { map, .. } => {
                 let old = map[addr as usize];
@@ -329,13 +321,8 @@ impl PosMap {
                 let block_idx = addr as usize / *entries_per_block;
                 let offset_in_block = addr as usize % *entries_per_block;
                 // Read the block
-                let result = oram_access_local(
-                    sub_client,
-                    sub_tree,
-                    block_idx as u64,
-                    AccessOp::Read,
-                    rng,
-                );
+                let result =
+                    oram_access_local(sub_client, sub_tree, block_idx as u64, AccessOp::Read, rng);
                 let mut block = match result {
                     AccessResult::ReadValue(b) => b,
                     _ => unreachable!(),
@@ -498,7 +485,11 @@ impl<const Z: usize, const B: usize> OramClient<Z, B> {
         let num_leaves = 1u64 << (levels - 1);
         let new_leaf = rng() % num_leaves;
         let old_leaf = self.position_map.update(addr, new_leaf, rng);
-        ActionBeginState { old_leaf, new_leaf, addr }
+        ActionBeginState {
+            old_leaf,
+            new_leaf,
+            addr,
+        }
     }
 
     /// **Phase 2 — Process**: absorb the server-provided path into the
@@ -596,8 +587,15 @@ pub fn oram_access_local<const Z: usize, const B: usize>(
     let path_buckets = tree.read_path(old_leaf);
 
     // 3. Process: move real entries from path into stash, access block
-    let (result, new_path) =
-        process_access(client, &path_buckets, addr, op, old_leaf, new_leaf, tree.levels);
+    let (result, new_path) = process_access(
+        client,
+        &path_buckets,
+        addr,
+        op,
+        old_leaf,
+        new_leaf,
+        tree.levels,
+    );
 
     // 4. Write updated path back
     tree.write_path(old_leaf, &new_path);
@@ -727,8 +725,7 @@ fn evict_along_path<const Z: usize, const B: usize>(
         let mut placed = 0;
         let mut i = 0;
         while i < client.stash.len() && placed < Z {
-            if client.stash[i].is_real()
-                && leaf_in_subtree(client.stash[i].leaf, node_idx, levels)
+            if client.stash[i].is_real() && leaf_in_subtree(client.stash[i].leaf, node_idx, levels)
             {
                 new_path[level].entries[placed] = client.stash.swap_remove(i);
                 placed += 1;
@@ -849,7 +846,10 @@ impl<const Z: usize, const B: usize> Protocol for OramClientProtocol<Z, B> {
                 *rng_counter = val.wrapping_mul(6364136223846793005).wrapping_add(1);
                 val
             };
-            params.client.position_map.update(params.addr, new_leaf, &mut rng)
+            params
+                .client
+                .position_map
+                .update(params.addr, new_leaf, &mut rng)
         };
 
         params.step = ClientStep::WaitPath { old_leaf, new_leaf };
@@ -917,8 +917,7 @@ impl<const Z: usize, const B: usize> Protocol for OramClientProtocol<Z, B> {
                 }
 
                 // Evict stash entries back into path
-                let new_path =
-                    evict_along_path(&mut state.client, old_leaf, state.levels);
+                let new_path = evict_along_path(&mut state.client, old_leaf, state.levels);
 
                 // Stash overflow check
                 assert!(
@@ -1353,7 +1352,12 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for counter in 0..num_leaves {
             let target = eviction_target(counter, num_leaves);
-            assert!(target < num_leaves, "target {} >= num_leaves {}", target, num_leaves);
+            assert!(
+                target < num_leaves,
+                "target {} >= num_leaves {}",
+                target,
+                num_leaves
+            );
             seen.insert(target);
         }
         // All leaves should be covered in one full cycle
@@ -1369,24 +1373,13 @@ mod tests {
         let client = OramClient::<4, 16>::new(levels, 4);
 
         // Write
-        let write_state = ClientProtocolState::new(
-            client,
-            0,
-            AccessOp::Write([0xBB; 16]),
-            levels,
-            42,
-        );
+        let write_state =
+            ClientProtocolState::new(client, 0, AccessOp::Write([0xBB; 16]), levels, 42);
         let (client, result, tree) = run_oram_protocol(write_state, tree);
         assert_eq!(result, AccessResult::WriteAck);
 
         // Read
-        let read_state = ClientProtocolState::new(
-            client,
-            0,
-            AccessOp::Read,
-            levels,
-            100,
-        );
+        let read_state = ClientProtocolState::new(client, 0, AccessOp::Read, levels, 100);
         let (_client, result, _tree) = run_oram_protocol(read_state, tree);
         assert_eq!(result, AccessResult::ReadValue([0xBB; 16]));
     }
@@ -1402,13 +1395,7 @@ mod tests {
         for addr in 0..8u64 {
             let mut data = [0u8; 16];
             data[0] = addr as u8 + 10;
-            let state = ClientProtocolState::new(
-                client,
-                addr,
-                AccessOp::Write(data),
-                levels,
-                seed,
-            );
+            let state = ClientProtocolState::new(client, addr, AccessOp::Write(data), levels, seed);
             seed += 1000;
             let (c, r, t) = run_oram_protocol(state, tree);
             assert_eq!(r, AccessResult::WriteAck);
@@ -1418,13 +1405,7 @@ mod tests {
 
         // Read them all back
         for addr in 0..8u64 {
-            let state = ClientProtocolState::new(
-                client,
-                addr,
-                AccessOp::Read,
-                levels,
-                seed,
-            );
+            let state = ClientProtocolState::new(client, addr, AccessOp::Read, levels, seed);
             seed += 1000;
             let (c, r, t) = run_oram_protocol(state, tree);
             match r {
@@ -1520,7 +1501,10 @@ mod tests {
         // Second access to the same address: should return the new_leaf from
         // the first access (which was assigned via RNG).
         let state2 = client.handle_begin(0, levels, &mut rng);
-        assert_ne!(state2.old_leaf, 0, "second access should reflect updated posmap");
+        assert_ne!(
+            state2.old_leaf, 0,
+            "second access should reflect updated posmap"
+        );
     }
 
     #[test]
@@ -1589,14 +1573,24 @@ mod tests {
         for addr in 0..4u64 {
             let mut data = [0u8; 16];
             data[0] = addr as u8;
-            oram_access_local(&mut client, &mut tree, addr, AccessOp::Write(data), &mut rng);
+            oram_access_local(
+                &mut client,
+                &mut tree,
+                addr,
+                AccessOp::Write(data),
+                &mut rng,
+            );
         }
 
         // Read a path and evict.
         let leaf = 3;
         let path = tree.read_path(leaf);
         let evicted = client.handle_evict(&path, leaf, levels);
-        assert_eq!(evicted.len(), levels, "evicted path should have `levels` buckets");
+        assert_eq!(
+            evicted.len(),
+            levels,
+            "evicted path should have `levels` buckets"
+        );
     }
 
     #[test]
@@ -1621,8 +1615,11 @@ mod tests {
 
             // Local oracle
             oram_access_local(
-                &mut client_local, &mut tree_local, addr,
-                AccessOp::Write(data), &mut rng_local,
+                &mut client_local,
+                &mut tree_local,
+                addr,
+                AccessOp::Write(data),
+                &mut rng_local,
             );
 
             // Three-phase handler
@@ -1644,8 +1641,11 @@ mod tests {
         // Read all addresses back from both paths and compare.
         for addr in 0..num_addrs {
             let local_result = oram_access_local(
-                &mut client_local, &mut tree_local, addr,
-                AccessOp::Read, &mut rng_local,
+                &mut client_local,
+                &mut tree_local,
+                addr,
+                AccessOp::Read,
+                &mut rng_local,
             );
 
             let begin = client_3p.handle_begin(addr, levels, &mut rng_3p);

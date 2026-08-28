@@ -79,10 +79,8 @@ pub trait VoleTransport<N: ArraySize, T> {
     /// `and_count` is the number of AND gates per iteration (statically known
     /// from the circuit).  The returned `bool` is `true` if this is the final
     /// iteration (sentinel received).
-    fn recv_iteration(
-        &mut self,
-        and_count: usize,
-    ) -> Result<(Vec<Array<T, N>>, bool), Self::Error>;
+    fn recv_iteration(&mut self, and_count: usize)
+    -> Result<(Vec<Array<T, N>>, bool), Self::Error>;
 
     // ── Storage (Commitment mode) ─────────────────────────────────────────────
 
@@ -223,7 +221,11 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
     /// `Ok(false)` on a recoverable disconnect (enter the cleartext gap path),
     /// or `Err(_)` for an unrecoverable error (the generated code `?`-propagates
     /// it).  Default: any transport error maps to a recoverable `Ok(false)`.
-    fn try_send_iteration(&mut self, hats: &[Array<T, N>], is_sentinel: bool) -> Result<bool, Self::Error> {
+    fn try_send_iteration(
+        &mut self,
+        hats: &[Array<T, N>],
+        is_sentinel: bool,
+    ) -> Result<bool, Self::Error> {
         Ok(self.send_iteration(hats, is_sentinel).is_ok())
     }
 
@@ -239,7 +241,11 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
     ///
     /// Default (best-effort): no-op — the resumed state rides on the re-opened
     /// streaming loop / VOLE setup, and the gap is left unproven.
-    fn prover_bridge(&mut self, _token: &ResumeToken<N, T>, _gap_len: u32) -> Result<(), Self::Error> {
+    fn prover_bridge(
+        &mut self,
+        _token: &ResumeToken<N, T>,
+        _gap_len: u32,
+    ) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -250,7 +256,10 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
     /// gap-relative interval `[0, gap_len)`; the generated verifier offsets it by
     /// its absolute iteration counter and records the qualified verdict.
     fn verifier_bridge(&mut self, gap_len: u32) -> Result<GapVerdict, Self::Error> {
-        Ok(GapVerdict::Unproven { start: 0, end: gap_len })
+        Ok(GapVerdict::Unproven {
+            start: 0,
+            end: gap_len,
+        })
     }
 
     /// Draw `bits.len()` **fresh** VOLE correlations from the transport's setup

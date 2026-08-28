@@ -372,7 +372,10 @@ mod tests {
         assert!(result.is_some());
         let (c3, ctr) = result.unwrap();
         assert_eq!(c3.len(), 16);
-        assert!(has_trailing_zero_bits(&c3, 1), "output must have 1 trailing zero bit");
+        assert!(
+            has_trailing_zero_bits(&c3, 1),
+            "output must have 1 trailing zero bit"
+        );
         assert!(ctr < 1000);
     }
 
@@ -384,7 +387,10 @@ mod tests {
         let b_hat = [0xCCu8; 16];
         let c_hat = [0xDDu8; 16];
         let result = grind_chall3(&c2, &a_hat, &b_hat, &c_hat, 16, 11, false, 50_000);
-        assert!(result.is_some(), "grinding with w_grind=11 should terminate within 50000 iters");
+        assert!(
+            result.is_some(),
+            "grinding with w_grind=11 should terminate within 50000 iters"
+        );
         let (c3, _ctr) = result.unwrap();
         assert!(has_trailing_zero_bits(&c3, 11));
     }

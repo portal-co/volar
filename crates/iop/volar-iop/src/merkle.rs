@@ -17,8 +17,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use sha3::{
-    digest::{Digest, FixedOutput},
     Sha3_256,
+    digest::{Digest, FixedOutput},
 };
 
 const LEAF_PREFIX: u8 = 0x00;
@@ -64,7 +64,10 @@ impl MerkleTree {
     /// convention — documented so it can be reviewed/changed if a different
     /// one is preferred).
     pub fn commit(leaves: &[Vec<u8>]) -> Self {
-        assert!(!leaves.is_empty(), "MerkleTree::commit: at least one leaf required");
+        assert!(
+            !leaves.is_empty(),
+            "MerkleTree::commit: at least one leaf required"
+        );
         let mut level: Vec<Digest32> = leaves.iter().map(|l| hash_leaf(l)).collect();
         let padded_len = level.len().next_power_of_two();
         while level.len() < padded_len {
@@ -92,7 +95,10 @@ impl MerkleTree {
 
     /// Build the authentication path for leaf `index`.
     pub fn open(&self, index: usize) -> AuthPath {
-        assert!(index < self.num_leaves(), "MerkleTree::open: index out of range");
+        assert!(
+            index < self.num_leaves(),
+            "MerkleTree::open: index out of range"
+        );
         let mut siblings = Vec::new();
         let mut idx = index;
         for layer in &self.layers[..self.layers.len() - 1] {
@@ -110,7 +116,11 @@ pub fn verify(root: &Digest32, leaf: &[u8], index: usize, path: &AuthPath) -> bo
     let mut cur = hash_leaf(leaf);
     let mut idx = index;
     for sib in &path.siblings {
-        cur = if idx % 2 == 0 { hash_node(&cur, sib) } else { hash_node(sib, &cur) };
+        cur = if idx % 2 == 0 {
+            hash_node(&cur, sib)
+        } else {
+            hash_node(sib, &cur)
+        };
         idx /= 2;
     }
     cur == *root
@@ -121,7 +131,9 @@ mod tests {
     use super::*;
 
     fn leaves(n: usize) -> Vec<Vec<u8>> {
-        (0..n).map(|i| alloc::vec![i as u8, (i * 3) as u8]).collect()
+        (0..n)
+            .map(|i| alloc::vec![i as u8, (i * 3) as u8])
+            .collect()
     }
 
     #[test]

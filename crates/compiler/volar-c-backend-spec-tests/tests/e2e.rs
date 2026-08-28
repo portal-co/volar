@@ -17,16 +17,16 @@ use volar_c_backend::CBackend;
 use volar_ir::boolar::BIrBlocks;
 use volar_ir::ir::{IRBlocks, IRTypes};
 use volar_ir_passes::{
+    LoweringMode,
     lower_lir::{lower_biir, lower_ir},
     lower_to_circuit::lower_to_circuit,
-    movfuscate_biir, LoweringMode,
+    movfuscate_biir,
 };
 use volar_lir::LirTarget;
 use volar_lir_test_corpus::{
-    compile_and_run,
-    make_biir_and, make_biir_half_adder, make_biir_identity, make_biir_not,
-    make_biir_self_loop, make_biir_two_block_not, make_biir_xor,
-    make_ir_and, make_ir_not, make_ir_xor,
+    compile_and_run, make_biir_and, make_biir_half_adder, make_biir_identity, make_biir_not,
+    make_biir_self_loop, make_biir_two_block_not, make_biir_xor, make_ir_and, make_ir_not,
+    make_ir_xor,
 };
 
 /// Construct a fresh `IrExpr` with no provenance/side — test fixtures here
@@ -57,12 +57,16 @@ fn run_biir(blocks: &BIrBlocks, name: &str, inputs: &[bool], expected: u64) {
         .map(|&v| if v { "1" } else { "0" })
         .collect::<Vec<_>>()
         .join(", ");
-    let body = format!(
-        r#"  printf("%llu\n", (unsigned long long){name}({args}));"#,
-    );
+    let body = format!(r#"  printf("%llu\n", (unsigned long long){name}({args}));"#,);
     let out = compile_and_run(&c, &body);
-    let actual: u64 = out.trim().parse().unwrap_or_else(|_| panic!("parse error: {out:?}"));
-    assert_eq!(actual, expected, "{name}({inputs:?}): expected {expected}, got {actual}");
+    let actual: u64 = out
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("parse error: {out:?}"));
+    assert_eq!(
+        actual, expected,
+        "{name}({inputs:?}): expected {expected}, got {actual}"
+    );
 }
 
 /// Run a typed IR circuit with bool inputs and check the packed u64 output.
@@ -73,12 +77,16 @@ fn run_ir(blocks: &IRBlocks, types: &IRTypes, name: &str, inputs: &[bool], expec
         .map(|&v| if v { "1" } else { "0" })
         .collect::<Vec<_>>()
         .join(", ");
-    let body = format!(
-        r#"  printf("%llu\n", (unsigned long long){name}({args}));"#,
-    );
+    let body = format!(r#"  printf("%llu\n", (unsigned long long){name}({args}));"#,);
     let out = compile_and_run(&c, &body);
-    let actual: u64 = out.trim().parse().unwrap_or_else(|_| panic!("parse error: {out:?}"));
-    assert_eq!(actual, expected, "{name}({inputs:?}): expected {expected}, got {actual}");
+    let actual: u64 = out
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("parse error: {out:?}"));
+    assert_eq!(
+        actual, expected,
+        "{name}({inputs:?}): expected {expected}, got {actual}"
+    );
 }
 
 // ############################################################################
@@ -125,9 +133,9 @@ fn biir_direct_half_adder() {
     // Output: bit 0 = sum (XOR), bit 1 = carry (AND).
     // Packed u64: carry << 1 | sum.
     run_biir(&c, "ha", &[false, false], 0b00); // sum=0, carry=0
-    run_biir(&c, "ha", &[false, true], 0b01);  // sum=1, carry=0
-    run_biir(&c, "ha", &[true, false], 0b01);  // sum=1, carry=0
-    run_biir(&c, "ha", &[true, true], 0b10);   // sum=0, carry=1
+    run_biir(&c, "ha", &[false, true], 0b01); // sum=1, carry=0
+    run_biir(&c, "ha", &[true, false], 0b01); // sum=1, carry=0
+    run_biir(&c, "ha", &[true, true], 0b10); // sum=0, carry=1
 }
 
 // ############################################################################
@@ -148,10 +156,19 @@ fn biir_movfuscate_two_block_not() {
     // With limit≥2, both iterations complete and the MUX selects the final result.
     let dag = make_biir_two_block_not();
     let movf = movfuscate_biir(&dag);
-    assert!(movf.is_movfuscated(), "should be single block after movfuscation");
-    assert_eq!(movf.blocks[0].params, 2, "combined block has pc(1) + state(1) params");
+    assert!(
+        movf.is_movfuscated(),
+        "should be single block after movfuscation"
+    );
+    assert_eq!(
+        movf.blocks[0].params, 2,
+        "combined block has pc(1) + state(1) params"
+    );
     let circuit = lower_to_circuit(&movf, 4, LoweringMode::Unconditional);
-    assert!(circuit.is_circuit(), "should be a flat circuit after lower_to_circuit");
+    assert!(
+        circuit.is_circuit(),
+        "should be a flat circuit after lower_to_circuit"
+    );
     // [pc=false, state=false] → NOT(false) = 1
     run_biir(&circuit, "movf_not", &[false, false], 1);
     // [pc=false, state=true]  → NOT(true)  = 0
@@ -242,7 +259,8 @@ fn compiler_oracle_dispatch() {
         consts: vec![],
         type_aliases: vec![],
         functions: vec![
-            IrFunction { no_inline: false,
+            IrFunction {
+                no_inline: false,
                 name: "double".to_owned(),
                 module_path: vec![],
                 generics: vec![],
@@ -253,10 +271,14 @@ fn compiler_oracle_dispatch() {
                 }],
                 return_type: Some(IrType::Primitive(PrimitiveType::U64)),
                 where_clause: vec![],
-                body: IrBlock { stmts: vec![], expr: None },
+                body: IrBlock {
+                    stmts: vec![],
+                    expr: None,
+                },
                 external_kind: ExternalKind::Oracle,
             },
-            IrFunction { no_inline: false,
+            IrFunction {
+                no_inline: false,
                 name: "call_it".to_owned(),
                 module_path: vec![],
                 generics: vec![],
@@ -284,9 +306,7 @@ fn compiler_oracle_dispatch() {
     let c_src = b.finish();
 
     // Provide the oracle stub BEFORE main (as a top-level function).
-    let full_c = format!(
-        "{c_src}\nuint64_t oracle_double(uint64_t x) {{ return x * 2; }}\n"
-    );
+    let full_c = format!("{c_src}\nuint64_t oracle_double(uint64_t x) {{ return x * 2; }}\n");
     let out = compile_and_run(
         &full_c,
         r#"printf("%llu\n", (unsigned long long)call_it(21));"#,
@@ -310,7 +330,8 @@ fn compiler_rng_dispatch() {
         consts: vec![],
         type_aliases: vec![],
         functions: vec![
-            IrFunction { no_inline: false,
+            IrFunction {
+                no_inline: false,
                 name: "get_rand".to_owned(),
                 module_path: vec![],
                 generics: vec![],
@@ -318,10 +339,14 @@ fn compiler_rng_dispatch() {
                 params: vec![],
                 return_type: Some(IrType::Primitive(PrimitiveType::U64)),
                 where_clause: vec![],
-                body: IrBlock { stmts: vec![], expr: None },
+                body: IrBlock {
+                    stmts: vec![],
+                    expr: None,
+                },
                 external_kind: ExternalKind::Rng,
             },
-            IrFunction { no_inline: false,
+            IrFunction {
+                no_inline: false,
                 name: "use_rng".to_owned(),
                 module_path: vec![],
                 generics: vec![],
@@ -398,12 +423,16 @@ fn enum_option_roundtrip() {
     };
 
     // fn make_some(x: u32) -> OptionU32 { Some(x) }
-    let make_some = IrFunction { no_inline: false,
+    let make_some = IrFunction {
+        no_inline: false,
         name: "make_some".into(),
         module_path: vec![],
         generics: vec![],
         receiver: None,
-        params: vec![IrParam { name: "x".into(), ty: IrType::Primitive(PrimitiveType::U32) }],
+        params: vec![IrParam {
+            name: "x".into(),
+            ty: IrType::Primitive(PrimitiveType::U32),
+        }],
         return_type: Some(opt_ty.clone()),
         where_clause: vec![],
         body: IrBlock {
@@ -420,7 +449,8 @@ fn enum_option_roundtrip() {
     };
 
     // fn make_none() -> OptionU32 { None }
-    let make_none = IrFunction { no_inline: false,
+    let make_none = IrFunction {
+        no_inline: false,
         name: "make_none".into(),
         module_path: vec![],
         generics: vec![],
@@ -441,14 +471,21 @@ fn enum_option_roundtrip() {
     // fn unwrap_or(opt: OptionU32, default: u32) -> u32 {
     //     match opt { Some(v) => v, None => default, _ => default }
     // }
-    let unwrap_or = IrFunction { no_inline: false,
+    let unwrap_or = IrFunction {
+        no_inline: false,
         name: "unwrap_or".into(),
         module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![
-            IrParam { name: "opt".into(), ty: opt_ty.clone() },
-            IrParam { name: "default".into(), ty: IrType::Primitive(PrimitiveType::U32) },
+            IrParam {
+                name: "opt".into(),
+                ty: opt_ty.clone(),
+            },
+            IrParam {
+                name: "default".into(),
+                ty: IrType::Primitive(PrimitiveType::U32),
+            },
         ],
         return_type: Some(IrType::Primitive(PrimitiveType::U32)),
         where_clause: vec![],
@@ -461,7 +498,9 @@ fn enum_option_roundtrip() {
                         pattern: IrPattern::TupleStruct {
                             kind: StructKind::Custom("Some".into()),
                             elems: vec![IrPattern::Ident {
-                                mutable: false, name: "v".into(), subpat: None,
+                                mutable: false,
+                                name: "v".into(),
+                                subpat: None,
                             }],
                         },
                         guard: None,

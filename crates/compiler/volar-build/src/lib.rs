@@ -52,26 +52,23 @@ pub use circuit::SavedCircuit;
 
 #[cfg(feature = "weave-rust")]
 mod weave;
-#[cfg(feature = "weave-rust")]
-pub use weave::{
-    Weaver, emit_woven_rust,
-    serialize_boolar_circuit, serialize_volar_circuit,
-};
+#[cfg(any(feature = "weave-chunked", feature = "weave-ts"))]
+pub use volar_compiler::chunk_module::ChunkOptions;
 #[cfg(feature = "weave-rust")]
 pub use volar_weaver::StorageSizes;
 #[cfg(feature = "weave-chunked")]
 pub use weave::emit_woven_rust_chunked;
-#[cfg(any(feature = "weave-chunked", feature = "weave-ts"))]
-pub use volar_compiler::chunk_module::ChunkOptions;
+#[cfg(feature = "weave-rust")]
+pub use weave::{Weaver, emit_woven_rust, serialize_boolar_circuit, serialize_volar_circuit};
 #[cfg(feature = "weave-ts")]
 pub use weave::{emit_woven_typescript, emit_woven_typescript_chunked};
 
 #[cfg(feature = "pipeline")]
 mod pipeline;
-#[cfg(feature = "pipeline")]
-pub use pipeline::{Pipeline, PipelinePass};
 #[cfg(feature = "pipeline-vaffle")]
 pub use pipeline::serialize_vaffle_module;
+#[cfg(feature = "pipeline")]
+pub use pipeline::{Pipeline, PipelinePass};
 #[cfg(feature = "pipeline-wasm")]
 pub use volar_vaffle_target::{WaffleImportConfig, WaffleImportKind};
 
@@ -260,8 +257,8 @@ pub fn compile_lir_to_object(
 
     // ---- Replay into LlvmBackend --------------------------------------------
     let context = Context::create();
-    let mut backend = LlvmBackend::new(&context, module_name)
-        .with_name_config(options.name_config.clone());
+    let mut backend =
+        LlvmBackend::new(&context, module_name).with_name_config(options.name_config.clone());
     saved.replay(&mut backend);
     let module = backend.finish();
 
@@ -270,22 +267,20 @@ pub fn compile_lir_to_object(
     // Cargo always sets TARGET (and HOST) in build scripts; comparing them
     // tells us whether this is a cross-compilation.
     let cargo_target = std::env::var("TARGET").ok();
-    let cargo_host  = std::env::var("HOST").ok();
+    let cargo_host = std::env::var("HOST").ok();
     let explicit_triple = options.target_triple.as_deref();
 
     // Resolved triple string (owned).
-    let resolved_triple_str: Option<String> = explicit_triple
-        .map(str::to_owned)
-        .or_else(|| {
-            // Use Cargo's TARGET only when it differs from HOST (cross build),
-            // or HOST is unavailable (not running inside a build script).
-            match (&cargo_target, &cargo_host) {
-                (Some(t), Some(h)) if t != h => Some(t.clone()),
-                (Some(_), Some(_)) => None, // native — let LLVM auto-detect
-                (Some(t), None)    => Some(t.clone()), // unknown host, use TARGET
-                _                  => None,
-            }
-        });
+    let resolved_triple_str: Option<String> = explicit_triple.map(str::to_owned).or_else(|| {
+        // Use Cargo's TARGET only when it differs from HOST (cross build),
+        // or HOST is unavailable (not running inside a build script).
+        match (&cargo_target, &cargo_host) {
+            (Some(t), Some(h)) if t != h => Some(t.clone()),
+            (Some(_), Some(_)) => None, // native — let LLVM auto-detect
+            (Some(t), None) => Some(t.clone()), // unknown host, use TARGET
+            _ => None,
+        }
+    });
 
     let (triple, cpu_str, features_str) = match resolved_triple_str {
         None => {
@@ -298,7 +293,11 @@ pub fn compile_lir_to_object(
                 .cpu
                 .as_deref()
                 .map(str::to_owned)
-                .unwrap_or_else(|| TargetMachine::get_host_cpu_name().to_string_lossy().into_owned());
+                .unwrap_or_else(|| {
+                    TargetMachine::get_host_cpu_name()
+                        .to_string_lossy()
+                        .into_owned()
+                });
             let features = options
                 .features
                 .as_deref()
@@ -321,8 +320,8 @@ pub fn compile_lir_to_object(
         }
     };
 
-    let target = Target::from_triple(&triple)
-        .map_err(|e| format!("LLVM target from triple failed: {e}"))?;
+    let target =
+        Target::from_triple(&triple).map_err(|e| format!("LLVM target from triple failed: {e}"))?;
 
     let target_machine = target
         .create_target_machine(

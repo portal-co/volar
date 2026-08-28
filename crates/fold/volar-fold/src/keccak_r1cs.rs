@@ -36,7 +36,7 @@ use alloc::vec::Vec;
 
 use crate::keccak::{PILN, RNDC, ROTC};
 use crate::r1cs::R1CS;
-use crate::r1cs_builder::{bit_scalar, Builder, Lc};
+use crate::r1cs_builder::{Builder, Lc, bit_scalar};
 use crate::scalar::Scalar;
 
 // ── Keccak-f[1600] over Lc wires (state = 25 lanes × 64 bits, flat index l*64+i) ─
@@ -96,7 +96,11 @@ fn keccakf_circuit(bld: &mut Builder, st: &mut [Lc]) {
         let mut j = 0;
         while j < 25 {
             let row: Vec<Vec<Lc>> = (0..5)
-                .map(|i| (0..64).map(|bit| st[lane_bit(j + i, bit)].clone()).collect())
+                .map(|i| {
+                    (0..64)
+                        .map(|bit| st[lane_bit(j + i, bit)].clone())
+                        .collect()
+                })
                 .collect();
             for i in 0..5 {
                 for bit in 0..64 {
@@ -181,8 +185,7 @@ pub fn keccak256_r1cs_with_digest(input: &[bool], digest: &[bool; 256]) -> Kecca
 
     // 1. Boolean-constrained input bits.
     let input_lcs: Vec<Lc> = input.iter().map(|&b| bld.input_bit(b)).collect();
-    let input_vars: Vec<usize> =
-        input_lcs.iter().map(|lc| lc.terms[0].0).collect();
+    let input_vars: Vec<usize> = input_lcs.iter().map(|lc| lc.terms[0].0).collect();
 
     // 2. Sponge: absorb the padded message block-by-block, permuting each block.
     let msg = padded_message_bits(&bld, &input_lcs);
@@ -198,13 +201,21 @@ pub fn keccak256_r1cs_with_digest(input: &[bool], digest: &[bool; 256]) -> Kecca
 
     // 3. Bind the squeezed 256 output bits to the public digest:  st[i]·1 = d_i.
     for i in 0..256 {
-        let d_lc = Lc { terms: Vec::new(), constant: bit_scalar(digest[i]) };
+        let d_lc = Lc {
+            terms: Vec::new(),
+            constant: bit_scalar(digest[i]),
+        };
         let st_i = st[i].clone();
         bld.enforce(&st_i, &Lc::one(), &d_lc);
     }
 
     let (r1cs, witness) = bld.finish();
-    KeccakInstance { r1cs, witness, input_vars, digest_bits: *digest }
+    KeccakInstance {
+        r1cs,
+        witness,
+        input_vars,
+        digest_bits: *digest,
+    }
 }
 
 /// Convenience: bind to the *correct* digest `keccak256_bits(input)`, so the
@@ -229,15 +240,23 @@ mod tests {
 
     #[test]
     fn r1cs_satisfied_and_digest_matches_reference() {
-        let input: std::vec::Vec<bool> =
-            [0xa5u8, 0x3c].iter().flat_map(|b| (0..8).map(move |i| (b >> i) & 1 == 1)).collect();
+        let input: std::vec::Vec<bool> = [0xa5u8, 0x3c]
+            .iter()
+            .flat_map(|b| (0..8).map(move |i| (b >> i) & 1 == 1))
+            .collect();
         let inst = keccak256_r1cs(&input);
         // The circuit's digest equals the lane-based reference (and the sha3 crate
         // via keccak.rs's own anchor), confirming the gate logic.
         assert_eq!(inst.digest_bits, keccak256_bits(&input));
-        assert_eq!(digest_bits_to_bytes(&inst.digest_bits), sha3_256(&[0xa5, 0x3c]));
+        assert_eq!(
+            digest_bits_to_bytes(&inst.digest_bits),
+            sha3_256(&[0xa5, 0x3c])
+        );
         // The arithmetization is satisfied by the honest witness.
-        assert!(inst.r1cs.is_satisfied(&full_z(&inst)), "honest Keccak witness must satisfy R1CS");
+        assert!(
+            inst.r1cs.is_satisfied(&full_z(&inst)),
+            "honest Keccak witness must satisfy R1CS"
+        );
     }
 
     #[test]
@@ -249,7 +268,10 @@ mod tests {
         let inst = keccak256_r1cs_with_digest(&input, &d);
         // The honest witness produces the *true* output bits, which now disagree
         // with the bound digest ⇒ the output-equality constraints fail.
-        assert!(!inst.r1cs.is_satisfied(&full_z(&inst)), "wrong digest must be unsatisfiable");
+        assert!(
+            !inst.r1cs.is_satisfied(&full_z(&inst)),
+            "wrong digest must be unsatisfiable"
+        );
     }
 
     #[test]
@@ -260,7 +282,14 @@ mod tests {
         // Flip an input wire (stays boolean, so b²=b still holds, but every
         // downstream gate constraint that consumed it now breaks).
         let v = inst.input_vars[0];
-        z[v] = if z[v] == Scalar::ONE { Scalar::ZERO } else { Scalar::ONE };
-        assert!(!inst.r1cs.is_satisfied(&z), "tampered input must break the circuit");
+        z[v] = if z[v] == Scalar::ONE {
+            Scalar::ZERO
+        } else {
+            Scalar::ONE
+        };
+        assert!(
+            !inst.r1cs.is_satisfied(&z),
+            "tampered input must break the circuit"
+        );
     }
 }

@@ -81,9 +81,21 @@ fn build_module() -> IrModule<IrFunction> {
         name: "volar_ts_components".to_string(),
         ..Default::default()
     };
-    parse_dir(&root.join("crates/spec/volar-primitives/src"), "volar_primitives", &mut module);
-    parse_dir(&root.join("crates/spec/volar-common/src"), "volar_common", &mut module);
-    parse_dir(&root.join("crates/spec/volar-spec/src"), "volar_spec", &mut module);
+    parse_dir(
+        &root.join("crates/spec/volar-primitives/src"),
+        "volar_primitives",
+        &mut module,
+    );
+    parse_dir(
+        &root.join("crates/spec/volar-common/src"),
+        "volar_common",
+        &mut module,
+    );
+    parse_dir(
+        &root.join("crates/spec/volar-spec/src"),
+        "volar_spec",
+        &mut module,
+    );
     {
         let mut seen = std::collections::HashSet::new();
         module.structs.retain(|s| {
@@ -176,7 +188,10 @@ fn run_ts_component(seeds: &[&str], label: &str) {
         if let Some(pos) = line.find("error TS") {
             let code_start = pos + "error ".len();
             let rest = &line[code_start..];
-            let code: String = rest.chars().take_while(|c| !c.is_whitespace() && *c != ':').collect();
+            let code: String = rest
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != ':')
+                .collect();
             by_code.entry(code).or_default().push(line.to_string());
             total += 1;
         }

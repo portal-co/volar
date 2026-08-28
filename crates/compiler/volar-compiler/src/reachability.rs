@@ -15,7 +15,9 @@ use alloc::collections::{BTreeMap as HashMap, BTreeSet as HashSet, VecDeque};
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
 
-use crate::ir::{IrBlock, IrExpr, IrExprKind, IrFunction, IrImplItem, IrModule, IrStmt, IrStmtKind, MethodKind};
+use crate::ir::{
+    IrBlock, IrExpr, IrExprKind, IrFunction, IrImplItem, IrModule, IrStmt, IrStmtKind, MethodKind,
+};
 use crate::printer_ts::is_namespace_prefix;
 
 /// Result of reachability analysis: reachable standalone functions and
@@ -30,10 +32,7 @@ pub struct ReachabilityResult {
 
 /// Compute reachability from `seeds`, integrating impl method expansion into
 /// the BFS so standalone functions called from impl methods are included.
-pub fn compute_reachable(
-    module: &IrModule<IrFunction>,
-    seeds: &[&str],
-) -> ReachabilityResult {
+pub fn compute_reachable(module: &IrModule<IrFunction>, seeds: &[&str]) -> ReachabilityResult {
     if seeds.is_empty() {
         return ReachabilityResult {
             fns: HashSet::new(),
@@ -41,7 +40,9 @@ pub fn compute_reachable(
         };
     }
 
-    let name_to_idx: HashMap<&str, usize> = module.functions.iter()
+    let name_to_idx: HashMap<&str, usize> = module
+        .functions
+        .iter()
         .enumerate()
         .map(|(i, f)| (f.name.as_str(), i))
         .collect();
@@ -58,7 +59,9 @@ pub fn compute_reachable(
                 let method_calls = collect_method_calls_fn(func);
                 let entry = method_to_fn_callees.entry(func.name.clone()).or_default();
                 entry.extend(fn_callees);
-                method_to_method_calls.entry(func.name.clone()).or_default()
+                method_to_method_calls
+                    .entry(func.name.clone())
+                    .or_default()
                     .extend(method_calls);
             }
         }
@@ -70,7 +73,10 @@ pub fn compute_reachable(
         if let Some(sub_methods) = method_to_method_calls.get(name.as_str()).cloned() {
             for sub in sub_methods {
                 if let Some(extra) = method_to_fn_callees.get(sub.as_str()).cloned() {
-                    method_to_fn_callees.entry(name.clone()).or_default().extend(extra);
+                    method_to_fn_callees
+                        .entry(name.clone())
+                        .or_default()
+                        .extend(extra);
                 }
             }
         }
@@ -78,7 +84,9 @@ pub fn compute_reachable(
 
     // Build augmented callee graph: each function's direct callees PLUS
     // standalone functions reachable through impl methods it calls.
-    let callees: Vec<Vec<usize>> = module.functions.iter()
+    let callees: Vec<Vec<usize>> = module
+        .functions
+        .iter()
         .map(|f| {
             let mut out = collect_callees_fn(f, &name_to_idx);
             let method_calls = collect_method_calls_fn(f);
@@ -121,11 +129,13 @@ pub fn compute_reachable(
     }
 
     // Collect method names called by all reachable standalone functions.
-    let method_names: HashSet<String> = visited.iter()
+    let method_names: HashSet<String> = visited
+        .iter()
         .flat_map(|&idx| collect_method_calls_fn(&module.functions[idx]))
         .collect();
 
-    let mut fns: HashSet<String> = visited.into_iter()
+    let mut fns: HashSet<String> = visited
+        .into_iter()
         .map(|i| module.functions[i].name.clone())
         .collect();
 
@@ -192,7 +202,8 @@ fn collect_expr(expr: &IrExpr, idx_map: &HashMap<&str, usize>, out: &mut Vec<usi
             match &func.kind {
                 IrExprKind::Var(name) => add_callee(name, idx_map, out),
                 IrExprKind::Path { segments, .. } => {
-                    let last = segments.iter()
+                    let last = segments
+                        .iter()
                         .map(|s| s.as_str())
                         .filter(|s| !is_namespace_prefix(s))
                         .last();
@@ -202,31 +213,52 @@ fn collect_expr(expr: &IrExpr, idx_map: &HashMap<&str, usize>, out: &mut Vec<usi
                 }
                 _ => collect_expr(func, idx_map, out),
             }
-            for a in args { collect_expr(a, idx_map, out); }
+            for a in args {
+                collect_expr(a, idx_map, out);
+            }
         }
-        IrExprKind::MethodCall { receiver, method, args, .. } => {
+        IrExprKind::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } => {
             collect_expr(receiver, idx_map, out);
             if let MethodKind::Other(name) = method {
                 add_callee(name, idx_map, out);
             }
-            for a in args { collect_expr(a, idx_map, out); }
+            for a in args {
+                collect_expr(a, idx_map, out);
+            }
         }
         IrExprKind::Block(b) => collect_block(b, idx_map, out),
-        IrExprKind::If { cond, then_branch, else_branch } => {
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             collect_expr(cond, idx_map, out);
             collect_block(then_branch, idx_map, out);
-            if let Some(eb) = else_branch { collect_expr(eb, idx_map, out); }
+            if let Some(eb) = else_branch {
+                collect_expr(eb, idx_map, out);
+            }
         }
         IrExprKind::Match { expr: e, arms } => {
             collect_expr(e, idx_map, out);
-            for arm in arms { collect_expr(&arm.body, idx_map, out); }
+            for arm in arms {
+                collect_expr(&arm.body, idx_map, out);
+            }
         }
-        IrExprKind::BoundedLoop { start, end, body, .. } => {
+        IrExprKind::BoundedLoop {
+            start, end, body, ..
+        } => {
             collect_expr(start, idx_map, out);
             collect_expr(end, idx_map, out);
             collect_block(body, idx_map, out);
         }
-        IrExprKind::IterLoop { collection, body, .. } => {
+        IrExprKind::IterLoop {
+            collection, body, ..
+        } => {
             collect_expr(collection, idx_map, out);
             collect_block(body, idx_map, out);
         }
@@ -252,11 +284,17 @@ fn collect_expr(expr: &IrExpr, idx_map: &HashMap<&str, usize>, out: &mut Vec<usi
             collect_expr(right, idx_map, out);
         }
         IrExprKind::Range { start, end, .. } => {
-            if let Some(s) = start { collect_expr(s, idx_map, out); }
-            if let Some(e) = end   { collect_expr(e, idx_map, out); }
+            if let Some(s) = start {
+                collect_expr(s, idx_map, out);
+            }
+            if let Some(e) = end {
+                collect_expr(e, idx_map, out);
+            }
         }
         IrExprKind::Array(elems) | IrExprKind::Tuple(elems) | IrExprKind::FixedArray(elems) => {
-            for el in elems { collect_expr(el, idx_map, out); }
+            for el in elems {
+                collect_expr(el, idx_map, out);
+            }
         }
         IrExprKind::Repeat { elem, len } => {
             collect_expr(elem, idx_map, out);
@@ -265,19 +303,30 @@ fn collect_expr(expr: &IrExpr, idx_map: &HashMap<&str, usize>, out: &mut Vec<usi
         IrExprKind::ArrayGenerate { body, .. } => collect_expr(body, idx_map, out),
         IrExprKind::Closure { body, .. } => collect_expr(body, idx_map, out),
         IrExprKind::StructExpr { fields, rest, .. } => {
-            for (_, v) in fields { collect_expr(v, idx_map, out); }
-            if let Some(r) = rest { collect_expr(r, idx_map, out); }
+            for (_, v) in fields {
+                collect_expr(v, idx_map, out);
+            }
+            if let Some(r) = rest {
+                collect_expr(r, idx_map, out);
+            }
         }
         IrExprKind::RawMap { receiver, body, .. } => {
             collect_expr(receiver, idx_map, out);
             collect_expr(body, idx_map, out);
         }
-        IrExprKind::RawZip { left, right, body, .. } => {
+        IrExprKind::RawZip {
+            left, right, body, ..
+        } => {
             collect_expr(left, idx_map, out);
             collect_expr(right, idx_map, out);
             collect_expr(body, idx_map, out);
         }
-        IrExprKind::RawFold { receiver, init, body, .. } => {
+        IrExprKind::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
             collect_expr(receiver, idx_map, out);
             collect_expr(init, idx_map, out);
             collect_expr(body, idx_map, out);
@@ -288,33 +337,54 @@ fn collect_expr(expr: &IrExpr, idx_map: &HashMap<&str, usize>, out: &mut Vec<usi
 
 fn collect_method_names_expr(expr: &IrExpr, out: &mut Vec<String>) {
     match &expr.kind {
-        IrExprKind::MethodCall { receiver, method, args, .. } => {
+        IrExprKind::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } => {
             collect_method_names_expr(receiver, out);
             if let MethodKind::Other(name) = method {
                 out.push(name.clone());
             }
-            for a in args { collect_method_names_expr(a, out); }
+            for a in args {
+                collect_method_names_expr(a, out);
+            }
         }
         IrExprKind::Call { func, args } => {
             collect_method_names_expr(func, out);
-            for a in args { collect_method_names_expr(a, out); }
+            for a in args {
+                collect_method_names_expr(a, out);
+            }
         }
         IrExprKind::Block(b) => collect_method_names_block(b, out),
-        IrExprKind::If { cond, then_branch, else_branch } => {
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             collect_method_names_expr(cond, out);
             collect_method_names_block(then_branch, out);
-            if let Some(eb) = else_branch { collect_method_names_expr(eb, out); }
+            if let Some(eb) = else_branch {
+                collect_method_names_expr(eb, out);
+            }
         }
         IrExprKind::Match { expr: e, arms } => {
             collect_method_names_expr(e, out);
-            for arm in arms { collect_method_names_expr(&arm.body, out); }
+            for arm in arms {
+                collect_method_names_expr(&arm.body, out);
+            }
         }
-        IrExprKind::BoundedLoop { start, end, body, .. } => {
+        IrExprKind::BoundedLoop {
+            start, end, body, ..
+        } => {
             collect_method_names_expr(start, out);
             collect_method_names_expr(end, out);
             collect_method_names_block(body, out);
         }
-        IrExprKind::IterLoop { collection, body, .. } => {
+        IrExprKind::IterLoop {
+            collection, body, ..
+        } => {
             collect_method_names_expr(collection, out);
             collect_method_names_block(body, out);
         }
@@ -322,7 +392,9 @@ fn collect_method_names_expr(expr: &IrExpr, out: &mut Vec<String>) {
             collect_method_names_expr(cond, out);
             collect_method_names_block(body, out);
         }
-        IrExprKind::Return(Some(e)) | IrExprKind::Break(Some(e)) => collect_method_names_expr(e, out),
+        IrExprKind::Return(Some(e)) | IrExprKind::Break(Some(e)) => {
+            collect_method_names_expr(e, out)
+        }
         IrExprKind::Unary { expr: e, .. } => collect_method_names_expr(e, out),
         IrExprKind::Cast { expr: e, .. } => collect_method_names_expr(e, out),
         IrExprKind::Try(e) => collect_method_names_expr(e, out),
@@ -340,11 +412,17 @@ fn collect_method_names_expr(expr: &IrExpr, out: &mut Vec<String>) {
             collect_method_names_expr(right, out);
         }
         IrExprKind::Range { start, end, .. } => {
-            if let Some(s) = start { collect_method_names_expr(s, out); }
-            if let Some(e) = end   { collect_method_names_expr(e, out); }
+            if let Some(s) = start {
+                collect_method_names_expr(s, out);
+            }
+            if let Some(e) = end {
+                collect_method_names_expr(e, out);
+            }
         }
         IrExprKind::Array(elems) | IrExprKind::Tuple(elems) | IrExprKind::FixedArray(elems) => {
-            for el in elems { collect_method_names_expr(el, out); }
+            for el in elems {
+                collect_method_names_expr(el, out);
+            }
         }
         IrExprKind::Repeat { elem, len } => {
             collect_method_names_expr(elem, out);
@@ -353,19 +431,30 @@ fn collect_method_names_expr(expr: &IrExpr, out: &mut Vec<String>) {
         IrExprKind::ArrayGenerate { body, .. } => collect_method_names_expr(body, out),
         IrExprKind::Closure { body, .. } => collect_method_names_expr(body, out),
         IrExprKind::StructExpr { fields, rest, .. } => {
-            for (_, v) in fields { collect_method_names_expr(v, out); }
-            if let Some(r) = rest { collect_method_names_expr(r, out); }
+            for (_, v) in fields {
+                collect_method_names_expr(v, out);
+            }
+            if let Some(r) = rest {
+                collect_method_names_expr(r, out);
+            }
         }
         IrExprKind::RawMap { receiver, body, .. } => {
             collect_method_names_expr(receiver, out);
             collect_method_names_expr(body, out);
         }
-        IrExprKind::RawZip { left, right, body, .. } => {
+        IrExprKind::RawZip {
+            left, right, body, ..
+        } => {
             collect_method_names_expr(left, out);
             collect_method_names_expr(right, out);
             collect_method_names_expr(body, out);
         }
-        IrExprKind::RawFold { receiver, init, body, .. } => {
+        IrExprKind::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
             collect_method_names_expr(receiver, out);
             collect_method_names_expr(init, out);
             collect_method_names_expr(body, out);

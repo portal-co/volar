@@ -46,16 +46,16 @@
 #![no_std]
 extern crate alloc;
 
-pub mod scalar;
-pub mod pedersen;
-pub mod keccak;
-pub(crate) mod r1cs_builder;
-pub mod keccak_r1cs;
-pub mod r1cs;
-pub mod nifs;
-pub mod verify;
-pub mod ivc;
-pub mod link;
 pub mod bridge_adapter;
+pub mod ivc;
+pub mod keccak;
+pub mod keccak_r1cs;
+pub mod link;
+pub mod nifs;
+pub mod pedersen;
+pub mod r1cs;
+pub(crate) mod r1cs_builder;
+pub mod scalar;
+pub mod verify;
 
 pub use scalar::Scalar;

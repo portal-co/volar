@@ -64,7 +64,11 @@ pub struct RelaxedWitness {
 impl R1CS {
     /// `z = [W ‖ u]`.
     pub fn full_z(&self, w: &[Scalar], u: &Scalar) -> Vec<Scalar> {
-        assert_eq!(w.len(), self.num_vars - 1, "witness length must be num_vars - 1");
+        assert_eq!(
+            w.len(),
+            self.num_vars - 1,
+            "witness length must be num_vars - 1"
+        );
         let mut z = w.to_vec();
         z.push(*u);
         z
@@ -120,16 +124,30 @@ mod tests {
     fn plain_satisfied() {
         let r = mul_gate();
         // 3 · 4 = 12
-        let z = vec![Scalar::from_u64(3), Scalar::from_u64(4), Scalar::from_u64(12), Scalar::ONE];
+        let z = vec![
+            Scalar::from_u64(3),
+            Scalar::from_u64(4),
+            Scalar::from_u64(12),
+            Scalar::ONE,
+        ];
         assert!(r.is_satisfied(&z));
-        let bad = vec![Scalar::from_u64(3), Scalar::from_u64(4), Scalar::from_u64(13), Scalar::ONE];
+        let bad = vec![
+            Scalar::from_u64(3),
+            Scalar::from_u64(4),
+            Scalar::from_u64(13),
+            Scalar::ONE,
+        ];
         assert!(!r.is_satisfied(&bad));
     }
 
     #[test]
     fn relaxed_fresh_matches_plain() {
         let r = mul_gate();
-        let w = vec![Scalar::from_u64(3), Scalar::from_u64(4), Scalar::from_u64(12)];
+        let w = vec![
+            Scalar::from_u64(3),
+            Scalar::from_u64(4),
+            Scalar::from_u64(12),
+        ];
         let e = vec![Scalar::ZERO];
         assert!(r.is_satisfied_relaxed(&w, &e, &Scalar::ONE));
     }
@@ -139,7 +157,11 @@ mod tests {
         // With u = 2: A z ∘ B z = w0·w1 (unaffected by u); u·Cz = 2·w2; so
         // E must absorb w0·w1 − 2·w2.  Pick w0=3,w1=4 ⇒ 12; w2=12 ⇒ E = 12−24 = −12.
         let r = mul_gate();
-        let w = vec![Scalar::from_u64(3), Scalar::from_u64(4), Scalar::from_u64(12)];
+        let w = vec![
+            Scalar::from_u64(3),
+            Scalar::from_u64(4),
+            Scalar::from_u64(12),
+        ];
         let u = Scalar::from_u64(2);
         let e = vec![Scalar::from_u64(12).sub(&Scalar::from_u64(24))];
         assert!(r.is_satisfied_relaxed(&w, &e, &u));

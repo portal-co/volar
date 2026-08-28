@@ -16,7 +16,10 @@ pub struct Vope<N: VoleArray<T>, T, K: ArraySize = U1> {
 }
 impl<N: VoleArray<T>, T: Default, K: ArraySize> Default for Vope<N, T, K> {
     fn default() -> Self {
-        Vope { u: Default::default(), v: Default::default() }
+        Vope {
+            u: Default::default(),
+            v: Default::default(),
+        }
     }
 }
 impl<N: VoleArray<T>, T> Vope<N, T, U0> {

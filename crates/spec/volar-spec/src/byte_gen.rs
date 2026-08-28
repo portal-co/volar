@@ -24,22 +24,21 @@ pub trait PartyIndex {
 #[cfg(not(feature = "multi_party"))]
 impl PartyIndex for U1 {
     #[inline]
-    fn party_index(_: usize) -> usize { 0 }
+    fn party_index(_: usize) -> usize {
+        0
+    }
 }
 
 /// N-party: return the requested index directly.
 #[cfg(feature = "multi_party")]
 impl<N: Unsigned> PartyIndex for N {
     #[inline]
-    fn party_index(requested: usize) -> usize { requested }
+    fn party_index(requested: usize) -> usize {
+        requested
+    }
 }
 
-pub fn gen_abo<
-    B: LengthDoubler,
-    D: Digest,
-    K: ArraySize,
-    N: ArraySize,
->(
+pub fn gen_abo<B: LengthDoubler, D: Digest, K: ArraySize, N: ArraySize>(
     a: Array<u8, B::OutputSize>,
     rand: &impl AsRef<[u8]>,
 ) -> ABO<B, D, K, N>
@@ -74,11 +73,11 @@ where
 pub fn create_vole_from_material<B: LengthDoubler<OutputSize: VoleArray<u8>>, X: AsRef<[u8]>>(
     s: &[X],
 ) -> Vope<B::OutputSize, u8> {
-    let u: Array<u8, B::OutputSize> =
-        s.iter()
-            .fold(Array::<u8, B::OutputSize>::default(), |a, b| {
-                Array::<u8, B::OutputSize>::from_fn(|i| a[i].bitxor(b.as_ref()[i]))
-            });
+    let u: Array<u8, B::OutputSize> = s
+        .iter()
+        .fold(Array::<u8, B::OutputSize>::default(), |a, b| {
+            Array::<u8, B::OutputSize>::from_fn(|i| a[i].bitxor(b.as_ref()[i]))
+        });
     let v: Array<u8, B::OutputSize> =
         s.iter()
             .enumerate()
@@ -117,12 +116,7 @@ pub fn create_vole_from_material_expanded<
         v,
     }
 }
-pub struct ABO<
-    B: LengthDoubler,
-    D: Digest,
-    K: ArraySize,
-    N: ArraySize,
-> {
+pub struct ABO<B: LengthDoubler, D: Digest, K: ArraySize, N: ArraySize> {
     pub commit: Array<u8, D::OutputSize>,
     pub per_byte: Array<Array<Array<u8, B::OutputSize>, K>, N>,
 }
@@ -134,19 +128,13 @@ pub struct ABOOpening<
     N: ArraySize,
 > {
     pub bad: Array<u64, T>,
-    pub openings: Array<Array<
-        Array<Array<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
-        T,
-    >, N>,
+    pub openings:
+        Array<Array<Array<Array<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>, T>, N>,
 }
 
 pub mod prover;
 pub mod verifier;
 
-pub struct BSplit<
-    B: LengthDoubler,
-    D: Digest<OutputSize: Logarithm2<Output: ArraySize>>,
-> {
-    pub split:
-        Array<[Array<u8, B::OutputSize>; 2], <D::OutputSize as Logarithm2>::Output>,
+pub struct BSplit<B: LengthDoubler, D: Digest<OutputSize: Logarithm2<Output: ArraySize>>> {
+    pub split: Array<[Array<u8, B::OutputSize>; 2], <D::OutputSize as Logarithm2>::Output>,
 }

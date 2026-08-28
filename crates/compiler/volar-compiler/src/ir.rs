@@ -27,8 +27,8 @@ use alloc::{
 
 use thiserror::Error;
 
-pub use volar_ir_common::{MeasureSpec, ReentryHint, StructRef};
 use volar_ir_common::{MapKind, Node};
+pub use volar_ir_common::{MeasureSpec, ReentryHint, StructRef};
 
 #[derive(Error, Debug)]
 pub enum CompilerError {
@@ -46,7 +46,10 @@ pub enum CompilerError {
 
 /// Iterator source methods — how we obtain an iterator from a collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IterMethod {
     Iter,
     IntoIter,
@@ -80,7 +83,10 @@ impl IterMethod {
 /// variants with a single flat structure that is easy to analyze and
 /// backend-neutral.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[cfg_attr(feature = "rkyv", rkyv(
     archive_bounds(P: rkyv::Archive),
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
@@ -101,7 +107,10 @@ pub struct IrIterChain<P: Clone = ()> {
 
 /// The data source for an iterator chain.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[cfg_attr(feature = "rkyv", rkyv(
     archive_bounds(P: rkyv::Archive),
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
@@ -134,7 +143,10 @@ pub enum IterChainSource<P: Clone = ()> {
 
 /// An intermediate transformation step in an iterator pipeline.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[cfg_attr(feature = "rkyv", rkyv(
     archive_bounds(P: rkyv::Archive),
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
@@ -143,26 +155,54 @@ pub enum IterChainSource<P: Clone = ()> {
 ))]
 pub enum IterStep<P: Clone = ()> {
     /// `.map(|var| body)`
-    Map { var: IrPattern, #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] body: Box<IrExpr<P>> },
+    Map {
+        var: IrPattern,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        body: Box<IrExpr<P>>,
+    },
     /// `.filter(|var| body)`
-    Filter { var: IrPattern, #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] body: Box<IrExpr<P>> },
+    Filter {
+        var: IrPattern,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        body: Box<IrExpr<P>>,
+    },
     /// `.filter_map(|var| body)`
-    FilterMap { var: IrPattern, #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] body: Box<IrExpr<P>> },
+    FilterMap {
+        var: IrPattern,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        body: Box<IrExpr<P>>,
+    },
     /// `.flat_map(|var| body)`
-    FlatMap { var: IrPattern, #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] body: Box<IrExpr<P>> },
+    FlatMap {
+        var: IrPattern,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        body: Box<IrExpr<P>>,
+    },
     /// `.enumerate()`
     Enumerate,
     /// `.take(count)`
-    Take { #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] count: Box<IrExpr<P>> },
+    Take {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        count: Box<IrExpr<P>>,
+    },
     /// `.skip(count)`
-    Skip { #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] count: Box<IrExpr<P>> },
+    Skip {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        count: Box<IrExpr<P>>,
+    },
     /// `.chain(other)` — appends another iterator chain.
-    Chain { #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] other: Box<IrIterChain<P>> },
+    Chain {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        other: Box<IrIterChain<P>>,
+    },
 }
 
 /// How an iterator pipeline terminates.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[cfg_attr(feature = "rkyv", rkyv(
     archive_bounds(P: rkyv::Archive),
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
@@ -196,7 +236,10 @@ pub type Result<T> = core::result::Result<T, CompilerError>;
 
 /// Primitive scalar types used in volar-spec
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum PrimitiveType {
     /// Boolean type
     Bool,
@@ -274,8 +317,14 @@ impl PrimitiveType {
     pub fn is_field_element(&self) -> bool {
         matches!(
             self,
-            Self::Bit | Self::Galois | Self::Galois64 | Self::Galois128 | Self::Galois256
-            | Self::BitsInBytes | Self::BitsInBytes64 | Self::Z3
+            Self::Bit
+                | Self::Galois
+                | Self::Galois64
+                | Self::Galois128
+                | Self::Galois256
+                | Self::BitsInBytes
+                | Self::BitsInBytes64
+                | Self::Z3
         )
     }
 }
@@ -308,7 +357,10 @@ impl fmt::Display for PrimitiveType {
 
 /// Known array types in volar-spec
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum ArrayKind {
     /// `GenericArray<T, N>`
     GenericArray,
@@ -320,7 +372,10 @@ pub enum ArrayKind {
 
 /// Array length representation
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[cfg_attr(feature = "rkyv", rkyv(
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source),
     deserialize_bounds(__D::Error: rkyv::rancor::Source),
@@ -345,7 +400,10 @@ pub enum ArrayLength {
 
 /// Typenum constants commonly used
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum TypeNumConst {
     U0,
     U1,
@@ -389,7 +447,10 @@ impl TypeNumConst {
 
 /// Known struct types in volar-spec
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum StructKind {
     /// GenericArray — special semantics in lowering (type-level-sized array)
     GenericArray,
@@ -427,7 +488,10 @@ impl fmt::Display for StructKind {
 
 /// Standard mathematical traits
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum MathTrait {
     Add,
     Sub,
@@ -487,7 +551,10 @@ impl MathTrait {
 /// Well-known crypto/stdlib traits that the compiler has specific handling for
 /// are named variants.  Everything else goes in `Custom(String)`.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum TraitKind {
     Math(MathTrait),
     Into(Box<IrType>),
@@ -605,7 +672,10 @@ impl fmt::Display for TraitKind {
 
 /// Input kinds allowed for generated Fn-like traits
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum FnInput {
     BytesSlice,
     Size,
@@ -614,7 +684,10 @@ pub enum FnInput {
 
 /// VOLE-specific method names
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum VoleMethod {
     Remap,
     RotateLeft,
@@ -636,7 +709,10 @@ impl VoleMethod {
 /// compiler pass matches against.  Adding a new variant here removes one
 /// `if name == "..."` / `match s.as_str()` pattern from processing code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum StdMethod {
     // ---- Standard Rust methods (former Std whitelist) ----
     Clone,
@@ -855,7 +931,10 @@ impl fmt::Display for StdMethod {
 /// for, and `Other(String)` for domain-specific or user-defined methods (e.g.
 /// garbled-circuit helpers like `and_via_table`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum MethodKind {
     Vole(VoleMethod),
     /// A method the compiler knows about and has explicit handling for.
@@ -910,7 +989,10 @@ impl MethodKind {
 
 /// Associated type names in traits
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum AssociatedType {
     Output,
     Key,
@@ -969,7 +1051,10 @@ pub fn item_irpath(module_path: &[String], name: &str) -> IrPath {
 
 /// A `pub const` declaration captured from the spec source.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrConst {
     pub name: String,
     /// Origin module path (without the item name). Empty = synthetic/built-in.
@@ -979,7 +1064,10 @@ pub struct IrConst {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrModule<F, P: Clone = ()> {
     pub name: String,
     pub structs: Vec<IrStruct>,
@@ -1007,7 +1095,10 @@ impl<F, P: Clone> Default for IrModule<F, P> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrStruct {
     pub kind: StructKind,
     /// Origin module path (without the item name). Empty = synthetic/built-in.
@@ -1046,7 +1137,10 @@ pub struct IrStruct {
 /// - Patterns: `IrPattern::TupleStruct` / `IrPattern::Struct` with
 ///   `StructKind::Custom("Enum::Variant")`
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrEnum {
     pub kind: StructKind,
     pub generics: Vec<IrGenericParam>,
@@ -1061,7 +1155,10 @@ pub struct IrEnum {
 
 /// A single variant of an [`IrEnum`].
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrEnumVariant {
     pub name: String,
     pub fields: IrEnumVariantData,
@@ -1069,7 +1166,10 @@ pub struct IrEnumVariant {
 
 /// The data carried by an enum variant.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IrEnumVariantData {
     /// Unit variant: `Variant` (no payload).
     Unit,
@@ -1080,7 +1180,10 @@ pub enum IrEnumVariantData {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrTrait {
     pub kind: TraitKind,
     /// Origin module path (without the trait name). Empty = synthetic/built-in.
@@ -1091,7 +1194,10 @@ pub struct IrTrait {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IrTraitItem {
     Method(IrMethodSig),
     AssociatedType {
@@ -1102,7 +1208,10 @@ pub enum IrTraitItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrImpl<P: Clone = ()> {
     pub generics: Vec<IrGenericParam>,
     pub trait_: Option<IrTraitRef>,
@@ -1112,21 +1221,30 @@ pub struct IrImpl<P: Clone = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrTraitRef {
     pub kind: TraitKind,
     pub type_args: Vec<IrType>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IrImplItem<P: Clone = ()> {
     Method(IrFunction<P>),
     AssociatedType { name: AssociatedType, ty: IrType },
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrMethodSig {
     pub name: String,
     pub generics: Vec<IrGenericParam>,
@@ -1142,7 +1260,10 @@ pub struct IrMethodSig {
 /// on function items.  External proc-macros may attach these attributes to library
 /// functions without modifying Volar source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum ExternalKind {
     /// A regular function with a body.
     Normal,
@@ -1159,7 +1280,10 @@ pub enum ExternalKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrFunction<P: Clone = ()> {
     pub name: String,
     /// Origin module path (without the item name). Empty = synthetic/built-in.
@@ -1184,14 +1308,20 @@ pub struct IrFunction<P: Clone = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrParam {
     pub name: String,
     pub ty: IrType,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrField {
     pub name: String,
     pub ty: IrType,
@@ -1199,7 +1329,10 @@ pub struct IrField {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IrGenericParamKind {
     Type,
     Const,
@@ -1207,7 +1340,10 @@ pub enum IrGenericParamKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrGenericParam {
     pub name: String,
     pub kind: IrGenericParamKind,
@@ -1219,7 +1355,10 @@ pub struct IrGenericParam {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IrWherePredicate {
     TypeBound {
         ty: IrType,
@@ -1228,7 +1367,10 @@ pub enum IrWherePredicate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IrReceiver {
     Value,
     Ref,
@@ -1236,7 +1378,10 @@ pub enum IrReceiver {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrTypeAlias {
     pub name: String,
     /// Origin module path (without the item name). Empty = synthetic/built-in.
@@ -1246,7 +1391,10 @@ pub struct IrTypeAlias {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[cfg_attr(feature = "rkyv", rkyv(
     archive_bounds(P: rkyv::Archive),
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
@@ -1261,7 +1409,10 @@ pub struct IrBlock<P: Clone = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[non_exhaustive]
 #[cfg_attr(feature = "rkyv", rkyv(
     archive_bounds(P: rkyv::Archive),
@@ -1285,7 +1436,10 @@ pub enum IrStmtKind<P: Clone = ()> {
 pub type IrStmt<P: Clone = ()> = Node<IrStmtKind<P>, P>;
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[cfg_attr(feature = "rkyv", rkyv(
     archive_bounds(P: rkyv::Archive),
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
@@ -1301,14 +1455,20 @@ pub struct IrMatchArm<P: Clone = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrClosureParam {
     pub pattern: IrPattern,
     pub ty: Option<IrType>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[non_exhaustive]
 #[cfg_attr(feature = "rkyv", rkyv(
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source),
@@ -1451,7 +1611,10 @@ impl fmt::Display for IrType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[cfg_attr(feature = "rkyv", rkyv(
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source),
     deserialize_bounds(__D::Error: rkyv::rancor::Source),
@@ -1494,7 +1657,10 @@ impl fmt::Display for IrTraitBound {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[non_exhaustive]
 #[cfg_attr(feature = "rkyv", rkyv(
     archive_bounds(P: rkyv::Archive),
@@ -1714,7 +1880,10 @@ pub enum IrExprKind<P: Clone = ()> {
 pub type IrExpr<P: Clone = ()> = Node<IrExprKind<P>, P>;
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[non_exhaustive]
 #[cfg_attr(feature = "rkyv", rkyv(
     serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source),
@@ -1776,7 +1945,10 @@ impl IrPattern {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IrLit {
     Int(i128),
     Float(f64),
@@ -1868,9 +2040,10 @@ pub fn box_type(elem: IrType) -> IrType {
 /// Recognize a `Box<T>` type built by [`box_type`], returning `T`.
 pub fn as_box_type(ty: &IrType) -> Option<&IrType> {
     match ty {
-        IrType::Struct { kind: StructKind::Custom(name), type_args } if name == "Box" && type_args.len() == 1 => {
-            Some(&type_args[0])
-        }
+        IrType::Struct {
+            kind: StructKind::Custom(name),
+            type_args,
+        } if name == "Box" && type_args.len() == 1 => Some(&type_args[0]),
         _ => None,
     }
 }
@@ -1880,7 +2053,10 @@ pub fn box_new_expr<P: Clone + Default>(inner: IrExpr<P>) -> IrExpr<P> {
     IrExpr::new(
         IrExprKind::Call {
             func: Box::new(IrExpr::new(
-                IrExprKind::Path { segments: vec!["Box".into(), "new".into()], type_args: vec![] },
+                IrExprKind::Path {
+                    segments: vec!["Box".into(), "new".into()],
+                    type_args: vec![],
+                },
                 P::default(),
                 None,
             )),
@@ -1894,9 +2070,15 @@ pub fn box_new_expr<P: Clone + Default>(inner: IrExpr<P>) -> IrExpr<P> {
 /// Recognize a `Box::new(inner)` call built by [`box_new_expr`], returning
 /// `inner`.
 pub fn as_box_new<P: Clone>(expr: &IrExpr<P>) -> Option<&IrExpr<P>> {
-    let IrExprKind::Call { func, args } = &expr.kind else { return None };
-    let [inner] = args.as_slice() else { return None };
-    let IrExprKind::Path { segments, .. } = &func.kind else { return None };
+    let IrExprKind::Call { func, args } = &expr.kind else {
+        return None;
+    };
+    let [inner] = args.as_slice() else {
+        return None;
+    };
+    let IrExprKind::Path { segments, .. } = &func.kind else {
+        return None;
+    };
     if segments.len() == 2 && segments[0] == "Box" && segments[1] == "new" {
         Some(inner)
     } else {
@@ -1977,7 +2159,10 @@ pub fn box_new_array_expr<P: Clone + Default>(
             )),
             args: vec![IrExpr::new(
                 IrExprKind::Closure {
-                    params: vec![IrClosureParam { pattern: IrPattern::ident("_"), ty: None }],
+                    params: vec![IrClosureParam {
+                        pattern: IrPattern::ident("_"),
+                        ty: None,
+                    }],
                     ret_type: None,
                     body: Box::new(elem_default_expr),
                 },
@@ -2006,7 +2191,10 @@ pub fn box_new_array_expr<P: Clone + Default>(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SpecBinOp {
     Add,
     Sub,
@@ -2029,7 +2217,10 @@ pub enum SpecBinOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum SpecUnaryOp {
     Neg,
     Not,
@@ -2135,8 +2326,8 @@ fn builtin_binop_trait(math: MathTrait) -> IrTrait {
     IrTrait {
         kind: TraitKind::Math(math),
 
-
-        module_path: vec![],        generics: vec![IrGenericParam {
+        module_path: vec![],
+        generics: vec![IrGenericParam {
             name: "Rhs".into(),
             kind: IrGenericParamKind::Type,
             const_ty: None,
@@ -2184,8 +2375,8 @@ fn builtin_unary_trait(math: MathTrait) -> IrTrait {
     IrTrait {
         kind: TraitKind::Math(math),
 
-
-        module_path: vec![],        generics: vec![],
+        module_path: vec![],
+        generics: vec![],
         super_traits: vec![],
         items: vec![
             IrTraitItem::AssociatedType {
@@ -2235,8 +2426,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Math(MathTrait::PartialEq),
 
-
-            module_path: vec![],            generics: vec![IrGenericParam {
+            module_path: vec![],
+            generics: vec![IrGenericParam {
                 name: "Rhs".into(),
                 kind: IrGenericParamKind::Type,
                 const_ty: None,
@@ -2263,8 +2454,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Math(MathTrait::Eq),
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![IrTraitBound {
                 trait_kind: TraitKind::Math(MathTrait::PartialEq),
                 type_args: vec![],
@@ -2276,8 +2467,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Math(MathTrait::PartialOrd),
 
-
-            module_path: vec![],            generics: vec![IrGenericParam {
+            module_path: vec![],
+            generics: vec![IrGenericParam {
                 name: "Rhs".into(),
                 kind: IrGenericParamKind::Type,
                 const_ty: None,
@@ -2314,8 +2505,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Math(MathTrait::Ord),
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![
                 IrTraitBound {
                     trait_kind: TraitKind::Math(MathTrait::Eq),
@@ -2350,8 +2541,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Math(MathTrait::Clone),
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![],
             items: vec![IrTraitItem::Method(IrMethodSig {
                 name: "clone".into(),
@@ -2366,8 +2557,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Math(MathTrait::Copy),
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![IrTraitBound {
                 trait_kind: TraitKind::Math(MathTrait::Clone),
                 type_args: vec![],
@@ -2379,8 +2570,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Math(MathTrait::Default),
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![],
             items: vec![IrTraitItem::Method(IrMethodSig {
                 name: "default".into(),
@@ -2395,8 +2586,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Math(MathTrait::Unsigned),
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![],
             items: vec![],
         },
@@ -2405,8 +2596,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::BlockEncrypt,
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![],
             items: vec![
                 IrTraitItem::AssociatedType {
@@ -2437,8 +2628,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::BlockCipher,
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![],
             items: vec![IrTraitItem::AssociatedType {
                 name: AssociatedType::BlockSize,
@@ -2450,8 +2641,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Digest,
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![],
             items: vec![
                 IrTraitItem::AssociatedType {
@@ -2507,8 +2698,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::ArrayLength,
 
-
-            module_path: vec![],            generics: vec![IrGenericParam {
+            module_path: vec![],
+            generics: vec![IrGenericParam {
                 name: "T".into(),
                 kind: IrGenericParamKind::Type,
                 const_ty: None,
@@ -2522,8 +2713,8 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         IrTrait {
             kind: TraitKind::Rng,
 
-
-            module_path: vec![],            generics: vec![],
+            module_path: vec![],
+            generics: vec![],
             super_traits: vec![],
             items: vec![],
         },
@@ -2549,61 +2740,196 @@ impl<P: Clone, Q: Clone> MapKind<P, Q> for IrExprKind<P> {
         match self {
             IrExprKind::Lit(l) => IrExprKind::Lit(l),
             IrExprKind::Var(v) => IrExprKind::Var(v),
-            IrExprKind::Path { segments, type_args } => IrExprKind::Path { segments, type_args },
-            IrExprKind::Binary { op, left, right } =>
-                IrExprKind::Binary { op, left: Box::new(left.map_kind_prov(f)), right: Box::new(right.map_kind_prov(f)) },
-            IrExprKind::Unary { op, expr } =>
-                IrExprKind::Unary { op, expr: Box::new(expr.map_kind_prov(f)) },
-            IrExprKind::MethodCall { receiver, method, type_args, args } =>
-                IrExprKind::MethodCall { receiver: Box::new(receiver.map_kind_prov(f)), method, type_args, args: args.into_iter().map(|a| a.map_kind_prov(f)).collect() },
-            IrExprKind::Call { func, args } =>
-                IrExprKind::Call { func: Box::new(func.map_kind_prov(f)), args: args.into_iter().map(|a| a.map_kind_prov(f)).collect() },
-            IrExprKind::Field { base, field } =>
-                IrExprKind::Field { base: Box::new(base.map_kind_prov(f)), field },
-            IrExprKind::Index { base, index } =>
-                IrExprKind::Index { base: Box::new(base.map_kind_prov(f)), index: Box::new(index.map_kind_prov(f)) },
-            IrExprKind::StructExpr { kind, type_args, fields, rest } =>
-                IrExprKind::StructExpr { kind, type_args, fields: fields.into_iter().map(|(n, e)| (n, e.map_kind_prov(f))).collect(), rest: rest.map(|r| Box::new(r.map_kind_prov(f))) },
-            IrExprKind::Tuple(es) => IrExprKind::Tuple(es.into_iter().map(|e| e.map_kind_prov(f)).collect()),
-            IrExprKind::Array(es) => IrExprKind::Array(es.into_iter().map(|e| e.map_kind_prov(f)).collect()),
-            IrExprKind::FixedArray(es) => IrExprKind::FixedArray(es.into_iter().map(|e| e.map_kind_prov(f)).collect()),
-            IrExprKind::Repeat { elem, len } =>
-                IrExprKind::Repeat { elem: Box::new(elem.map_kind_prov(f)), len: Box::new(len.map_kind_prov(f)) },
-            IrExprKind::ArrayGenerate { elem_ty, len, index_var, body } =>
-                IrExprKind::ArrayGenerate { elem_ty, len, index_var, body: Box::new(body.map_kind_prov(f)) },
+            IrExprKind::Path {
+                segments,
+                type_args,
+            } => IrExprKind::Path {
+                segments,
+                type_args,
+            },
+            IrExprKind::Binary { op, left, right } => IrExprKind::Binary {
+                op,
+                left: Box::new(left.map_kind_prov(f)),
+                right: Box::new(right.map_kind_prov(f)),
+            },
+            IrExprKind::Unary { op, expr } => IrExprKind::Unary {
+                op,
+                expr: Box::new(expr.map_kind_prov(f)),
+            },
+            IrExprKind::MethodCall {
+                receiver,
+                method,
+                type_args,
+                args,
+            } => IrExprKind::MethodCall {
+                receiver: Box::new(receiver.map_kind_prov(f)),
+                method,
+                type_args,
+                args: args.into_iter().map(|a| a.map_kind_prov(f)).collect(),
+            },
+            IrExprKind::Call { func, args } => IrExprKind::Call {
+                func: Box::new(func.map_kind_prov(f)),
+                args: args.into_iter().map(|a| a.map_kind_prov(f)).collect(),
+            },
+            IrExprKind::Field { base, field } => IrExprKind::Field {
+                base: Box::new(base.map_kind_prov(f)),
+                field,
+            },
+            IrExprKind::Index { base, index } => IrExprKind::Index {
+                base: Box::new(base.map_kind_prov(f)),
+                index: Box::new(index.map_kind_prov(f)),
+            },
+            IrExprKind::StructExpr {
+                kind,
+                type_args,
+                fields,
+                rest,
+            } => IrExprKind::StructExpr {
+                kind,
+                type_args,
+                fields: fields
+                    .into_iter()
+                    .map(|(n, e)| (n, e.map_kind_prov(f)))
+                    .collect(),
+                rest: rest.map(|r| Box::new(r.map_kind_prov(f))),
+            },
+            IrExprKind::Tuple(es) => {
+                IrExprKind::Tuple(es.into_iter().map(|e| e.map_kind_prov(f)).collect())
+            }
+            IrExprKind::Array(es) => {
+                IrExprKind::Array(es.into_iter().map(|e| e.map_kind_prov(f)).collect())
+            }
+            IrExprKind::FixedArray(es) => {
+                IrExprKind::FixedArray(es.into_iter().map(|e| e.map_kind_prov(f)).collect())
+            }
+            IrExprKind::Repeat { elem, len } => IrExprKind::Repeat {
+                elem: Box::new(elem.map_kind_prov(f)),
+                len: Box::new(len.map_kind_prov(f)),
+            },
+            IrExprKind::ArrayGenerate {
+                elem_ty,
+                len,
+                index_var,
+                body,
+            } => IrExprKind::ArrayGenerate {
+                elem_ty,
+                len,
+                index_var,
+                body: Box::new(body.map_kind_prov(f)),
+            },
             IrExprKind::DefaultValue { ty } => IrExprKind::DefaultValue { ty },
             IrExprKind::LengthOf(l) => IrExprKind::LengthOf(l),
             IrExprKind::IterPipeline(chain) => IrExprKind::IterPipeline(chain.map_prov(f)),
-            IrExprKind::RawMap { receiver, elem_var, body } =>
-                IrExprKind::RawMap { receiver: Box::new(receiver.map_kind_prov(f)), elem_var, body: Box::new(body.map_kind_prov(f)) },
-            IrExprKind::RawZip { left, right, left_var, right_var, body } =>
-                IrExprKind::RawZip { left: Box::new(left.map_kind_prov(f)), right: Box::new(right.map_kind_prov(f)), left_var, right_var, body: Box::new(body.map_kind_prov(f)) },
-            IrExprKind::RawFold { receiver, init, acc_var, elem_var, body } =>
-                IrExprKind::RawFold { receiver: Box::new(receiver.map_kind_prov(f)), init: Box::new(init.map_kind_prov(f)), acc_var, elem_var, body: Box::new(body.map_kind_prov(f)) },
-            IrExprKind::BoundedLoop { var, start, end, inclusive, body } =>
-                IrExprKind::BoundedLoop { var, start: Box::new(start.map_kind_prov(f)), end: Box::new(end.map_kind_prov(f)), inclusive, body: body.map_prov(f) },
-            IrExprKind::IterLoop { pattern, collection, body } =>
-                IrExprKind::IterLoop { pattern, collection: Box::new(collection.map_kind_prov(f)), body: body.map_prov(f) },
+            IrExprKind::RawMap {
+                receiver,
+                elem_var,
+                body,
+            } => IrExprKind::RawMap {
+                receiver: Box::new(receiver.map_kind_prov(f)),
+                elem_var,
+                body: Box::new(body.map_kind_prov(f)),
+            },
+            IrExprKind::RawZip {
+                left,
+                right,
+                left_var,
+                right_var,
+                body,
+            } => IrExprKind::RawZip {
+                left: Box::new(left.map_kind_prov(f)),
+                right: Box::new(right.map_kind_prov(f)),
+                left_var,
+                right_var,
+                body: Box::new(body.map_kind_prov(f)),
+            },
+            IrExprKind::RawFold {
+                receiver,
+                init,
+                acc_var,
+                elem_var,
+                body,
+            } => IrExprKind::RawFold {
+                receiver: Box::new(receiver.map_kind_prov(f)),
+                init: Box::new(init.map_kind_prov(f)),
+                acc_var,
+                elem_var,
+                body: Box::new(body.map_kind_prov(f)),
+            },
+            IrExprKind::BoundedLoop {
+                var,
+                start,
+                end,
+                inclusive,
+                body,
+            } => IrExprKind::BoundedLoop {
+                var,
+                start: Box::new(start.map_kind_prov(f)),
+                end: Box::new(end.map_kind_prov(f)),
+                inclusive,
+                body: body.map_prov(f),
+            },
+            IrExprKind::IterLoop {
+                pattern,
+                collection,
+                body,
+            } => IrExprKind::IterLoop {
+                pattern,
+                collection: Box::new(collection.map_kind_prov(f)),
+                body: body.map_prov(f),
+            },
             IrExprKind::Block(b) => IrExprKind::Block(b.map_prov(f)),
-            IrExprKind::If { cond, then_branch, else_branch } =>
-                IrExprKind::If { cond: Box::new(cond.map_kind_prov(f)), then_branch: then_branch.map_prov(f), else_branch: else_branch.map(|e| Box::new(e.map_kind_prov(f))) },
-            IrExprKind::Match { expr, arms } =>
-                IrExprKind::Match { expr: Box::new(expr.map_kind_prov(f)), arms: arms.into_iter().map(|a| a.map_prov(f)).collect() },
-            IrExprKind::Closure { params, ret_type, body } =>
-                IrExprKind::Closure { params, ret_type, body: Box::new(body.map_kind_prov(f)) },
-            IrExprKind::Cast { expr, ty } => IrExprKind::Cast { expr: Box::new(expr.map_kind_prov(f)), ty },
+            IrExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => IrExprKind::If {
+                cond: Box::new(cond.map_kind_prov(f)),
+                then_branch: then_branch.map_prov(f),
+                else_branch: else_branch.map(|e| Box::new(e.map_kind_prov(f))),
+            },
+            IrExprKind::Match { expr, arms } => IrExprKind::Match {
+                expr: Box::new(expr.map_kind_prov(f)),
+                arms: arms.into_iter().map(|a| a.map_prov(f)).collect(),
+            },
+            IrExprKind::Closure {
+                params,
+                ret_type,
+                body,
+            } => IrExprKind::Closure {
+                params,
+                ret_type,
+                body: Box::new(body.map_kind_prov(f)),
+            },
+            IrExprKind::Cast { expr, ty } => IrExprKind::Cast {
+                expr: Box::new(expr.map_kind_prov(f)),
+                ty,
+            },
             IrExprKind::Return(e) => IrExprKind::Return(e.map(|e| Box::new(e.map_kind_prov(f)))),
             IrExprKind::Break(e) => IrExprKind::Break(e.map(|e| Box::new(e.map_kind_prov(f)))),
             IrExprKind::Continue => IrExprKind::Continue,
-            IrExprKind::Assign { left, right } =>
-                IrExprKind::Assign { left: Box::new(left.map_kind_prov(f)), right: Box::new(right.map_kind_prov(f)) },
-            IrExprKind::AssignOp { op, left, right } =>
-                IrExprKind::AssignOp { op, left: Box::new(left.map_kind_prov(f)), right: Box::new(right.map_kind_prov(f)) },
-            IrExprKind::Range { start, end, inclusive } =>
-                IrExprKind::Range { start: start.map(|e| Box::new(e.map_kind_prov(f))), end: end.map(|e| Box::new(e.map_kind_prov(f))), inclusive },
+            IrExprKind::Assign { left, right } => IrExprKind::Assign {
+                left: Box::new(left.map_kind_prov(f)),
+                right: Box::new(right.map_kind_prov(f)),
+            },
+            IrExprKind::AssignOp { op, left, right } => IrExprKind::AssignOp {
+                op,
+                left: Box::new(left.map_kind_prov(f)),
+                right: Box::new(right.map_kind_prov(f)),
+            },
+            IrExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => IrExprKind::Range {
+                start: start.map(|e| Box::new(e.map_kind_prov(f))),
+                end: end.map(|e| Box::new(e.map_kind_prov(f))),
+                inclusive,
+            },
             IrExprKind::TypenumUsize { ty } => IrExprKind::TypenumUsize { ty },
-            IrExprKind::WhileLoop { cond, body } =>
-                IrExprKind::WhileLoop { cond: Box::new(cond.map_kind_prov(f)), body: body.map_prov(f) },
+            IrExprKind::WhileLoop { cond, body } => IrExprKind::WhileLoop {
+                cond: Box::new(cond.map_kind_prov(f)),
+                body: body.map_prov(f),
+            },
             IrExprKind::Unreachable => IrExprKind::Unreachable,
             IrExprKind::Try(e) => IrExprKind::Try(Box::new(e.map_kind_prov(f))),
         }
@@ -2625,12 +2951,23 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IterChainSource<P> {
     type Output = IterChainSource<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IterChainSource<Q> {
         match self {
-            IterChainSource::Method { collection, method } =>
-                IterChainSource::Method { collection: Box::new(collection.map_kind_prov(f)), method },
-            IterChainSource::Range { start, end, inclusive } =>
-                IterChainSource::Range { start: Box::new(start.map_kind_prov(f)), end: Box::new(end.map_kind_prov(f)), inclusive },
-            IterChainSource::Zip { left, right } =>
-                IterChainSource::Zip { left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)) },
+            IterChainSource::Method { collection, method } => IterChainSource::Method {
+                collection: Box::new(collection.map_kind_prov(f)),
+                method,
+            },
+            IterChainSource::Range {
+                start,
+                end,
+                inclusive,
+            } => IterChainSource::Range {
+                start: Box::new(start.map_kind_prov(f)),
+                end: Box::new(end.map_kind_prov(f)),
+                inclusive,
+            },
+            IterChainSource::Zip { left, right } => IterChainSource::Zip {
+                left: Box::new(left.map_prov(f)),
+                right: Box::new(right.map_prov(f)),
+            },
         }
     }
 }
@@ -2639,14 +2976,32 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IterStep<P> {
     type Output = IterStep<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IterStep<Q> {
         match self {
-            IterStep::Map { var, body } => IterStep::Map { var, body: Box::new(body.map_kind_prov(f)) },
-            IterStep::Filter { var, body } => IterStep::Filter { var, body: Box::new(body.map_kind_prov(f)) },
-            IterStep::FilterMap { var, body } => IterStep::FilterMap { var, body: Box::new(body.map_kind_prov(f)) },
-            IterStep::FlatMap { var, body } => IterStep::FlatMap { var, body: Box::new(body.map_kind_prov(f)) },
+            IterStep::Map { var, body } => IterStep::Map {
+                var,
+                body: Box::new(body.map_kind_prov(f)),
+            },
+            IterStep::Filter { var, body } => IterStep::Filter {
+                var,
+                body: Box::new(body.map_kind_prov(f)),
+            },
+            IterStep::FilterMap { var, body } => IterStep::FilterMap {
+                var,
+                body: Box::new(body.map_kind_prov(f)),
+            },
+            IterStep::FlatMap { var, body } => IterStep::FlatMap {
+                var,
+                body: Box::new(body.map_kind_prov(f)),
+            },
             IterStep::Enumerate => IterStep::Enumerate,
-            IterStep::Take { count } => IterStep::Take { count: Box::new(count.map_kind_prov(f)) },
-            IterStep::Skip { count } => IterStep::Skip { count: Box::new(count.map_kind_prov(f)) },
-            IterStep::Chain { other } => IterStep::Chain { other: Box::new(other.map_prov(f)) },
+            IterStep::Take { count } => IterStep::Take {
+                count: Box::new(count.map_kind_prov(f)),
+            },
+            IterStep::Skip { count } => IterStep::Skip {
+                count: Box::new(count.map_kind_prov(f)),
+            },
+            IterStep::Chain { other } => IterStep::Chain {
+                other: Box::new(other.map_prov(f)),
+            },
         }
     }
 }
@@ -2657,8 +3012,17 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IterTerminal<P> {
         match self {
             IterTerminal::Collect => IterTerminal::Collect,
             IterTerminal::CollectTyped(ty) => IterTerminal::CollectTyped(ty),
-            IterTerminal::Fold { init, acc_var, elem_var, body } =>
-                IterTerminal::Fold { init: Box::new(init.map_kind_prov(f)), acc_var, elem_var, body: Box::new(body.map_kind_prov(f)) },
+            IterTerminal::Fold {
+                init,
+                acc_var,
+                elem_var,
+                body,
+            } => IterTerminal::Fold {
+                init: Box::new(init.map_kind_prov(f)),
+                acc_var,
+                elem_var,
+                body: Box::new(body.map_kind_prov(f)),
+            },
             IterTerminal::Lazy => IterTerminal::Lazy,
         }
     }
@@ -2679,8 +3043,11 @@ impl<P: Clone, Q: Clone> MapKind<P, Q> for IrStmtKind<P> {
     type Output = IrStmtKind<Q>;
     fn map_kind(self, f: &impl Fn(P) -> Q) -> IrStmtKind<Q> {
         match self {
-            IrStmtKind::Let { pattern, ty, init } =>
-                IrStmtKind::Let { pattern, ty, init: init.map(|e| e.map_kind_prov(f)) },
+            IrStmtKind::Let { pattern, ty, init } => IrStmtKind::Let {
+                pattern,
+                ty,
+                init: init.map(|e| e.map_kind_prov(f)),
+            },
             IrStmtKind::Semi(e) => IrStmtKind::Semi(e.map_kind_prov(f)),
             IrStmtKind::Expr(e) => IrStmtKind::Expr(e.map_kind_prov(f)),
         }
@@ -2700,7 +3067,8 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IrBlock<P> {
 impl<P: Clone, Q: Clone> MapProv<P, Q> for IrFunction<P> {
     type Output = IrFunction<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrFunction<Q> {
-        IrFunction { no_inline: false,
+        IrFunction {
+            no_inline: false,
             name: self.name,
             module_path: self.module_path,
             generics: self.generics,
@@ -2756,7 +3124,11 @@ impl<F: MapProv<P, Q>, P: Clone, Q: Clone> MapProv<P, Q> for IrModule<F, P> {
             enums: self.enums,
             traits: self.traits,
             impls: self.impls.into_iter().map(|i| i.map_prov(f)).collect(),
-            functions: self.functions.into_iter().map(|func| func.map_prov(f)).collect(),
+            functions: self
+                .functions
+                .into_iter()
+                .map(|func| func.map_prov(f))
+                .collect(),
             type_aliases: self.type_aliases,
             consts: self.consts,
         }
@@ -2769,7 +3141,10 @@ impl<F: MapProv<P, Q>, P: Clone, Q: Clone> MapProv<P, Q> for IrModule<F, P> {
 
 /// A jump to a target block, carrying block-parameter arguments.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrCfgJump<P: Clone = ()> {
     /// 0-indexed block index within the enclosing [`IrCfgBody`].
     pub target: usize,
@@ -2782,13 +3157,20 @@ pub struct IrCfgJump<P: Clone = ()> {
 impl<P: Clone> IrCfgJump<P> {
     /// Jump with no reentry hint.
     pub fn new(target: usize, args: Vec<IrExpr<P>>) -> Self {
-        IrCfgJump { target, args, reentry: None }
+        IrCfgJump {
+            target,
+            args,
+            reentry: None,
+        }
     }
 }
 
 /// Terminates an [`IrCfgBlock`].
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 #[non_exhaustive]
 pub enum IrCfgTerminator<P: Clone = ()> {
     /// Function returns, with an optional value expression.
@@ -2808,7 +3190,10 @@ pub enum IrCfgTerminator<P: Clone = ()> {
 /// Block 0 is always the entry block.  Block parameters are filled by the
 /// `args` of incoming jumps (SSA block-argument style, analogous to φ-nodes).
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrCfgBlock<P: Clone = ()> {
     /// SSA block parameters — bound by the `args` of jumps that target this block.
     pub params: Vec<IrParam>,
@@ -2820,7 +3205,10 @@ pub struct IrCfgBlock<P: Clone = ()> {
 ///
 /// Block 0 is the entry.  Control flows between blocks via terminators.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrCfgBody<P: Clone = ()> {
     pub blocks: Vec<IrCfgBlock<P>>,
 }
@@ -2833,7 +3221,10 @@ pub struct IrCfgBody<P: Clone = ()> {
 ///
 /// [`IRBlocks`]: volar_ir::ir::IRBlocks
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub struct IrCfgFunction<P: Clone = ()> {
     pub name: String,
     pub generics: Vec<IrGenericParam>,
@@ -2913,7 +3304,10 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgFunction<P> {
 /// circuit-level CFG functions and auxiliary flat functions merged from
 /// linked specs via [`LinkageSystem::apply_cfg`].
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(
+    feature = "rkyv",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
 pub enum IrAnyFunction<P: Clone = ()> {
     Flat(IrFunction<P>),
     Cfg(IrCfgFunction<P>),

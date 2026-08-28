@@ -131,11 +131,17 @@ impl MemCheckAccounting {
         pre_init: &BTreeMap<AddrKey, u64>,
     ) -> MemOpWitness {
         let key = (storage_id, type_id);
-        self.storages.entry(key).or_insert_with(|| format!("mem_s{storage_id}_t{type_id}"));
+        self.storages
+            .entry(key)
+            .or_insert_with(|| format!("mem_s{storage_id}_t{type_id}"));
 
         let addr_key = (storage_id, type_id, addr);
         let needs_init = !self.addr_state.contains_key(&addr_key);
-        let init_val = if needs_init { pre_init.get(&addr_key).copied().unwrap_or(0) } else { 0 };
+        let init_val = if needs_init {
+            pre_init.get(&addr_key).copied().unwrap_or(0)
+        } else {
+            0
+        };
         if needs_init {
             self.addr_state.insert(addr_key, (init_val, 0));
         }
@@ -157,7 +163,16 @@ impl MemCheckAccounting {
         // value itself only ever changes on a write.
         self.addr_state.insert(addr_key, (value, new_ts));
 
-        MemOpWitness { needs_init, init_val, addr, value, is_write, old_value, old_ts, new_ts }
+        MemOpWitness {
+            needs_init,
+            init_val,
+            addr,
+            value,
+            is_write,
+            old_value,
+            old_ts,
+            new_ts,
+        }
     }
 
     /// Emit each touched storage's own `MemoryCheckState` declaration --
@@ -167,7 +182,9 @@ impl MemCheckAccounting {
     /// `mem_probe.rs`'s own `mem2`/`mem33`).
     pub fn emit_pre_loop_decls(&self, out: &mut String) {
         for name in self.storages.values() {
-            out.push_str(&format!("let mut {name} = MemoryCheckState::<Gf128>::new(key.clone());\n"));
+            out.push_str(&format!(
+                "let mut {name} = MemoryCheckState::<Gf128>::new(key.clone());\n"
+            ));
         }
     }
 
@@ -176,7 +193,13 @@ impl MemCheckAccounting {
     /// index), with `out` targeting the loop body. `witness_expr` is a
     /// Rust expression evaluating to that position's own `MemOpWitness`
     /// for the current iteration (e.g. `"witness[step].mem_ops[3]"`).
-    pub fn emit_call_site(&self, out: &mut String, storage_id: u32, type_id: u32, witness_expr: &str) {
+    pub fn emit_call_site(
+        &self,
+        out: &mut String,
+        storage_id: u32,
+        type_id: u32,
+        witness_expr: &str,
+    ) {
         let local = &self.storages[&(storage_id, type_id)];
         out.push_str(&format!(
             "if {witness_expr}.needs_init {{ {local}.init(Gf128::from_u64({witness_expr}.addr), Gf128::from_u64({witness_expr}.init_val)); }}\n"
@@ -197,7 +220,10 @@ impl MemCheckAccounting {
     pub fn finish(&mut self, out: &mut String) -> (String, String) {
         let mut by_storage: BTreeMap<(u32, u32), Vec<(u64, (u64, u64))>> = BTreeMap::new();
         for (&(sid, tid, addr), &(val, ts)) in &self.addr_state {
-            by_storage.entry((sid, tid)).or_default().push((addr, (val, ts)));
+            by_storage
+                .entry((sid, tid))
+                .or_default()
+                .push((addr, (val, ts)));
         }
 
         let mut produce_names = Vec::new();

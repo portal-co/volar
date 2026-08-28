@@ -6,6 +6,7 @@
 //! target for each concrete struct. Provides field-index lookup for `Field` and
 //! `StructExpr` lowering.
 
+use crate::mono::{MonoEnv, mono_type};
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, IrEnum, IrEnumVariantData, IrFunction, IrModule, IrStruct, IrType,
@@ -13,7 +14,6 @@ use volar_compiler::ir::{
 };
 use volar_ir_common::Type as NativeType;
 use volar_lir::{FieldDef, LirTarget, LirType, StructDef, StructId};
-use crate::mono::{MonoEnv, mono_type};
 
 // ============================================================================
 // StructRegistry
@@ -46,7 +46,11 @@ struct StructEntry {
 
 impl StructRegistry {
     fn new() -> Self {
-        StructRegistry { by_name: BTreeMap::new(), native_types: BTreeMap::new(), lenient: false }
+        StructRegistry {
+            by_name: BTreeMap::new(),
+            native_types: BTreeMap::new(),
+            lenient: false,
+        }
     }
 
     /// An empty registry (no structs registered). Used when no struct types are needed.
@@ -84,9 +88,7 @@ impl StructRegistry {
                     .field_names
                     .iter()
                     .position(|n| n == field)
-                    .unwrap_or_else(|| {
-                        panic!("struct S{id} has no field '{field}'")
-                    });
+                    .unwrap_or_else(|| panic!("struct S{id} has no field '{field}'"));
             }
         }
         panic!("StructId {id} not in registry")
@@ -133,7 +135,14 @@ impl StructRegistry {
         field_names: Vec<String>,
         field_types: Vec<LirType>,
     ) {
-        self.by_name.insert(name, StructEntry { id, field_names, field_types });
+        self.by_name.insert(
+            name,
+            StructEntry {
+                id,
+                field_names,
+                field_types,
+            },
+        );
     }
 }
 
@@ -184,7 +193,8 @@ pub fn register_tuples_in_type<T: LirTarget<P>, P: Clone>(
                 register_tuples_in_type(elem, registry, target, env);
             }
             // Convert elements to LIR and check if already registered.
-            let lir_elems: Vec<LirType> = elems.iter()
+            let lir_elems: Vec<LirType> = elems
+                .iter()
                 .map(|e| ir_type_to_lir_inner(&mono_type(e, env), registry))
                 .collect();
             let name = tuple_struct_name(&lir_elems);
@@ -192,8 +202,13 @@ pub fn register_tuples_in_type<T: LirTarget<P>, P: Clone>(
                 return; // already registered
             }
             // Register as a synthetic struct with fields "0", "1", ...
-            let field_defs: Vec<FieldDef> = lir_elems.iter().enumerate()
-                .map(|(i, t)| FieldDef { name: format!("{i}"), ty: t.clone() })
+            let field_defs: Vec<FieldDef> = lir_elems
+                .iter()
+                .enumerate()
+                .map(|(i, t)| FieldDef {
+                    name: format!("{i}"),
+                    ty: t.clone(),
+                })
                 .collect();
             let id = target.define_struct(StructDef {
                 name: name.clone(),
@@ -274,19 +289,13 @@ fn struct_instance_env(ir_struct: &IrStruct, type_args: &[IrType], outer: &MonoE
         };
         if let Some(n) = numeric {
             env.const_params.insert(parameter.name.clone(), n);
-            if matches!(
-                parameter.kind,
-                volar_compiler::ir::IrGenericParamKind::Type
-            ) {
+            if matches!(parameter.kind, volar_compiler::ir::IrGenericParamKind::Type) {
                 env.type_params
                     .insert(parameter.name.clone(), IrType::TypeParam(n.to_string()));
             }
             continue;
         }
-        if matches!(
-            parameter.kind,
-            volar_compiler::ir::IrGenericParamKind::Type
-        ) {
+        if matches!(parameter.kind, volar_compiler::ir::IrGenericParamKind::Type) {
             env.type_params.insert(parameter.name.clone(), argument);
         }
     }
@@ -425,7 +434,11 @@ pub fn ensure_type_nominals<T: LirTarget<P>, P: Clone>(
 ///
 /// Generic structs are **not** registered here — callers must
 /// [`ensure_struct_instance`] / [`ensure_type_nominals`] for each concrete use.
-pub fn build_struct_registry<T: LirTarget<P>, P: Clone>(module: &IrModule<IrFunction<P>, P>, target: &mut T, env: &MonoEnv) -> StructRegistry {
+pub fn build_struct_registry<T: LirTarget<P>, P: Clone>(
+    module: &IrModule<IrFunction<P>, P>,
+    target: &mut T,
+    env: &MonoEnv,
+) -> StructRegistry {
     build_struct_registry_with_lenient(module, target, env, false)
 }
 
@@ -506,9 +519,10 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
         // regardless of what `T` is. Must be checked before the generic
         // `Struct` registry lookup below, which would otherwise panic (no
         // struct named "Box" is ever registered).
-        IrType::Struct { kind: StructKind::Custom(name), type_args }
-            if name == "Box" && type_args.len() == 1 =>
-        {
+        IrType::Struct {
+            kind: StructKind::Custom(name),
+            type_args,
+        } if name == "Box" && type_args.len() == 1 => {
             LirType::Ptr(Box::new(ir_type_to_lir_inner(&type_args[0], registry)))
         }
 
@@ -535,7 +549,12 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
         IrType::Reference { elem, .. } => {
             // References to slices become pointers — slices are dynamically
             // sized, so they can't be flattened to a fixed number of scalars.
-            if let IrType::Array { kind: ArrayKind::Slice, elem: inner_elem, .. } = elem.as_ref() {
+            if let IrType::Array {
+                kind: ArrayKind::Slice,
+                elem: inner_elem,
+                ..
+            } = elem.as_ref()
+            {
                 LirType::Ptr(Box::new(ir_type_to_lir_inner(inner_elem, registry)))
             } else {
                 // Non-slice references are transparent in LIR (value semantics).
@@ -566,7 +585,8 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                 1 => ir_type_to_lir_inner(&elems[0], registry),
                 _ => {
                     // Look up previously registered synthetic tuple struct.
-                    let lir_elems: Vec<LirType> = elems.iter()
+                    let lir_elems: Vec<LirType> = elems
+                        .iter()
                         .map(|e| ir_type_to_lir_inner(e, registry))
                         .collect();
                     let name = tuple_struct_name(&lir_elems);
@@ -670,7 +690,12 @@ pub fn flatten_scalar_types(ty: &LirType, registry: &StructRegistry) -> Vec<LirT
     match ty {
         LirType::Arr(elem, n) => {
             let elem_scalars = flatten_scalar_types(elem, registry);
-            elem_scalars.iter().cloned().cycle().take(elem_scalars.len() * n).collect()
+            elem_scalars
+                .iter()
+                .cloned()
+                .cycle()
+                .take(elem_scalars.len() * n)
+                .collect()
         }
         LirType::Struct(id) => registry
             .field_types(*id)
@@ -740,7 +765,9 @@ pub struct EnumRegistry {
 
 impl EnumRegistry {
     fn new() -> Self {
-        EnumRegistry { enums: BTreeMap::new() }
+        EnumRegistry {
+            enums: BTreeMap::new(),
+        }
     }
 
     /// An empty registry (no enums registered).
@@ -760,7 +787,9 @@ impl EnumRegistry {
 
     /// Total flat width (tag + max payload) of this enum kind.
     pub fn flat_width_for(&self, kind: &StructKind) -> Option<usize> {
-        self.enums.get(&kind_name(kind)).map(|e| 1 + e.max_payload_width)
+        self.enums
+            .get(&kind_name(kind))
+            .map(|e| 1 + e.max_payload_width)
     }
 
     /// Look up a variant by `"EnumName::VariantName"` or `"VariantName"` (searches all enums).
@@ -784,7 +813,8 @@ impl EnumRegistry {
 
     /// Variant payload width (scalars only, not including the tag).
     pub fn variant_payload_width(&self, kind: &StructKind, variant_name: &str) -> usize {
-        self.enums.get(&kind_name(kind))
+        self.enums
+            .get(&kind_name(kind))
             .and_then(|e| e.variants.iter().find(|v| v.name == variant_name))
             .map(|v| v.payload_lir_tys.len())
             .unwrap_or(0)
@@ -792,12 +822,17 @@ impl EnumRegistry {
 
     /// All variants for a given enum kind.
     pub fn variants_for(&self, kind: &StructKind) -> Option<&[VariantEntry]> {
-        self.enums.get(&kind_name(kind)).map(|e| e.variants.as_slice())
+        self.enums
+            .get(&kind_name(kind))
+            .map(|e| e.variants.as_slice())
     }
 
     /// Maximum payload width (excluding tag) for a given enum kind.
     pub fn max_payload_width(&self, kind: &StructKind) -> usize {
-        self.enums.get(&kind_name(kind)).map(|e| e.max_payload_width).unwrap_or(0)
+        self.enums
+            .get(&kind_name(kind))
+            .map(|e| e.max_payload_width)
+            .unwrap_or(0)
     }
 }
 
@@ -828,7 +863,8 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
             let (payload_lir_tys, field_names) = match &variant.fields {
                 IrEnumVariantData::Unit => (vec![], None),
                 IrEnumVariantData::Tuple(tys) => {
-                    let lir_tys: Vec<LirType> = tys.iter()
+                    let lir_tys: Vec<LirType> = tys
+                        .iter()
                         .flat_map(|t| {
                             let lir = ir_type_to_lir_inner(&mono_type(t, env), struct_registry);
                             flatten_scalar_types(&lir, struct_registry)
@@ -854,7 +890,8 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
             });
         }
 
-        let max_payload_width = variant_entries.iter()
+        let max_payload_width = variant_entries
+            .iter()
             .map(|v| v.payload_lir_tys.len())
             .max()
             .unwrap_or(0);
@@ -863,9 +900,15 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
         // We use U8 for all payload slots as a uniform scalar placeholder — actual types
         // are tracked in VariantEntry.payload_lir_tys for lowering.
         let synthetic_name = format!("__Enum_{name}");
-        let mut fields = vec![FieldDef { name: "_tag".into(), ty: LirType::U8 }];
+        let mut fields = vec![FieldDef {
+            name: "_tag".into(),
+            ty: LirType::U8,
+        }];
         for i in 0..max_payload_width {
-            fields.push(FieldDef { name: format!("_p{i}"), ty: LirType::U8 });
+            fields.push(FieldDef {
+                name: format!("_p{i}"),
+                ty: LirType::U8,
+            });
         }
         let synthetic_id = target.define_struct(StructDef {
             name: synthetic_name.clone(),
@@ -873,7 +916,12 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
         });
         let field_names = fields.iter().map(|f| f.name.clone()).collect();
         let field_types = fields.into_iter().map(|f| f.ty).collect();
-        struct_registry.register_synthetic(synthetic_name.clone(), synthetic_id, field_names, field_types);
+        struct_registry.register_synthetic(
+            synthetic_name.clone(),
+            synthetic_id,
+            field_names,
+            field_types,
+        );
 
         // Also register the enum kind name → synthetic_id so ir_type_to_lir can find it.
         struct_registry.register_synthetic(
@@ -884,11 +932,14 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
             vec![LirType::U8],
         );
 
-        registry.enums.insert(name, EnumEntry {
-            variants: variant_entries,
-            max_payload_width,
-            synthetic_id,
-        });
+        registry.enums.insert(
+            name,
+            EnumEntry {
+                variants: variant_entries,
+                max_payload_width,
+                synthetic_id,
+            },
+        );
     }
 
     registry

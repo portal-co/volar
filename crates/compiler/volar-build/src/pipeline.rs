@@ -114,10 +114,7 @@ impl Pipeline {
     ///
     /// Has no effect when the source is not a `.wasm` file.
     #[cfg(feature = "pipeline-wasm")]
-    pub fn with_import_config(
-        mut self,
-        config: volar_vaffle_target::WaffleImportConfig,
-    ) -> Self {
+    pub fn with_import_config(mut self, config: volar_vaffle_target::WaffleImportConfig) -> Self {
         self.import_config = config;
         self
     }
@@ -213,9 +210,9 @@ impl Pipeline {
             ExecutedPipeline::VolarIr(blocks, types) => {
                 weave_volar_ir_chunked(&blocks, &types, out_dir, weaver, options)
             }
-            ExecutedPipeline::Lir(_) => Err(
-                "emit_woven_rust_chunked requires VolarIr stage; got Lir".into()
-            ),
+            ExecutedPipeline::Lir(_) => {
+                Err("emit_woven_rust_chunked requires VolarIr stage; got Lir".into())
+            }
         }
     }
 
@@ -237,9 +234,9 @@ impl Pipeline {
                 let module = weave_volar_ir_to_ir_module(&blocks, &types, weaver)?;
                 volar_compiler_passes::emit_woven_ts_chunked(&module, out_dir, options)
             }
-            ExecutedPipeline::Lir(_) => Err(
-                "emit_woven_typescript_chunked requires VolarIr stage; got Lir".into()
-            ),
+            ExecutedPipeline::Lir(_) => {
+                Err("emit_woven_typescript_chunked requires VolarIr stage; got Lir".into())
+            }
         }
     }
 }
@@ -313,8 +310,7 @@ enum RuntimeStage {
 
 fn load_source(
     source: SourceStage,
-    #[cfg(feature = "pipeline-wasm")]
-    import_config: volar_vaffle_target::WaffleImportConfig,
+    #[cfg(feature = "pipeline-wasm")] import_config: volar_vaffle_target::WaffleImportConfig,
 ) -> Result<RuntimeStage, Box<dyn std::error::Error>> {
     match source {
         SourceStage::Lir(path) => {
@@ -341,9 +337,11 @@ fn load_source(
         #[cfg(feature = "pipeline-wasm")]
         SourceStage::Wasm(path) => {
             let bytes = std::fs::read(&path)?;
-            let waffle_module =
-                portal_pc_waffle_frontend::from_wasm_bytes(&bytes, &portal_pc_waffle_frontend::FrontendOptions::default())
-                    .map_err(|e| format!("WAFFLE parse failed: {e}"))?;
+            let waffle_module = portal_pc_waffle_frontend::from_wasm_bytes(
+                &bytes,
+                &portal_pc_waffle_frontend::FrontendOptions::default(),
+            )
+            .map_err(|e| format!("WAFFLE parse failed: {e}"))?;
             let mut target = volar_vaffle_target::VaffleTarget::new();
             volar_vaffle_target::lower_waffle_module(&waffle_module, &mut target, &import_config);
             Ok(RuntimeStage::Vaffle(target.module))
@@ -410,7 +408,8 @@ fn lir_to_object(
         context::Context,
         passes::PassBuilderOptions,
         targets::{
-            CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
+            CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
+            TargetTriple,
         },
     };
     use volar_llvm_backend::LlvmBackend;
@@ -423,8 +422,8 @@ fn lir_to_object(
         .unwrap_or("volar_module");
 
     let context = Context::create();
-    let mut backend = LlvmBackend::new(&context, module_name)
-        .with_name_config(options.name_config.clone());
+    let mut backend =
+        LlvmBackend::new(&context, module_name).with_name_config(options.name_config.clone());
     saved.replay(&mut backend);
     let module = backend.finish();
 
@@ -432,14 +431,15 @@ fn lir_to_object(
     let cargo_host = std::env::var("HOST").ok();
     let explicit_triple = options.target_triple.as_deref();
 
-    let resolved_triple_str: Option<String> = explicit_triple
-        .map(str::to_owned)
-        .or_else(|| match (&cargo_target, &cargo_host) {
-            (Some(t), Some(h)) if t != h => Some(t.clone()),
-            (Some(_), Some(_)) => None,
-            (Some(t), None) => Some(t.clone()),
-            _ => None,
-        });
+    let resolved_triple_str: Option<String> =
+        explicit_triple
+            .map(str::to_owned)
+            .or_else(|| match (&cargo_target, &cargo_host) {
+                (Some(t), Some(h)) if t != h => Some(t.clone()),
+                (Some(_), Some(_)) => None,
+                (Some(t), None) => Some(t.clone()),
+                _ => None,
+            });
 
     let (triple, cpu_str, features_str) = match resolved_triple_str {
         None => {
@@ -450,13 +450,19 @@ fn lir_to_object(
                 .cpu
                 .as_deref()
                 .map(str::to_owned)
-                .unwrap_or_else(|| TargetMachine::get_host_cpu_name().to_string_lossy().into_owned());
+                .unwrap_or_else(|| {
+                    TargetMachine::get_host_cpu_name()
+                        .to_string_lossy()
+                        .into_owned()
+                });
             let features = options
                 .features
                 .as_deref()
                 .map(str::to_owned)
                 .unwrap_or_else(|| {
-                    TargetMachine::get_host_cpu_features().to_string_lossy().into_owned()
+                    TargetMachine::get_host_cpu_features()
+                        .to_string_lossy()
+                        .into_owned()
                 });
             (triple, cpu, features)
         }
@@ -469,10 +475,17 @@ fn lir_to_object(
         }
     };
 
-    let target = Target::from_triple(&triple)
-        .map_err(|e| format!("LLVM target from triple: {e}"))?;
+    let target =
+        Target::from_triple(&triple).map_err(|e| format!("LLVM target from triple: {e}"))?;
     let target_machine = target
-        .create_target_machine(&triple, &cpu_str, &features_str, opt_level, RelocMode::Default, CodeModel::Default)
+        .create_target_machine(
+            &triple,
+            &cpu_str,
+            &features_str,
+            opt_level,
+            RelocMode::Default,
+            CodeModel::Default,
+        )
         .ok_or("failed to create LLVM TargetMachine")?;
 
     let pass_pipeline = match opt_level {
@@ -583,7 +596,8 @@ fn weave_volar_ir_to_ir_module(
     blocks: &IRBlocks,
     types: &IRTypes,
     weaver: &crate::Weaver,
-) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, Box<dyn std::error::Error>> {
+) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, Box<dyn std::error::Error>>
+{
     use crate::Weaver;
     let module = match weaver {
         Weaver::VoleProverIr { name, storage_sizes } => {

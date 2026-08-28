@@ -37,8 +37,14 @@ pub struct IopVerifierFold<F: Field = Gf128> {
 /// elsewhere; this is just the boundary attestation).
 ///
 /// Panics if no gate was ever folded in.
-pub fn finish_fold<F: Field>(acc: &IopAccumulator<F>, mem_acc_in: &[F], mem_acc_out: &[F]) -> IopVerifierFold<F> {
-    let (w, e, u) = acc.witness().expect("finish_fold: accumulator has no folded gates");
+pub fn finish_fold<F: Field>(
+    acc: &IopAccumulator<F>,
+    mem_acc_in: &[F],
+    mem_acc_out: &[F],
+) -> IopVerifierFold<F> {
+    let (w, e, u) = acc
+        .witness()
+        .expect("finish_fold: accumulator has no folded gates");
     IopVerifierFold {
         w: w.to_vec(),
         e: e.to_vec(),
@@ -68,7 +74,13 @@ pub fn prove_verifier_iop<Z: NonZk, F: Field + FromBytes>(
     mem_acc_out: &[F],
 ) -> Tagged<Transparent, IopProof<F>> {
     let folded = finish_fold(acc.inner(), mem_acc_in, mem_acc_out);
-    Tagged::seal(crate::ligero::prove(&folded.w, &folded.e, folded.u, &folded.mem_acc_in, &folded.mem_acc_out))
+    Tagged::seal(crate::ligero::prove(
+        &folded.w,
+        &folded.e,
+        folded.u,
+        &folded.mem_acc_in,
+        &folded.mem_acc_out,
+    ))
 }
 
 /// **Terminal check.** Takes a [`Transparent`] proof by construction — the
@@ -128,7 +140,10 @@ mod tests {
         let mem_in = [Gf128::from_u64(1), Gf128::from_u64(2)];
         let mem_out = [Gf128::from_u64(9), Gf128::from_u64(9)];
         let proof = prove_verifier_iop(tagged, &mem_in, &mem_out);
-        assert!(verify_iop(&proof, None), "no expectation given: should still verify");
+        assert!(
+            verify_iop(&proof, None),
+            "no expectation given: should still verify"
+        );
         assert!(
             verify_iop(&proof, Some((&mem_in, &mem_out))),
             "matching expected mem_acc: should verify"
@@ -163,7 +178,10 @@ mod tests {
         }
         let tagged: Tagged<Transparent, _> = Tagged::seal(acc);
         let proof = prove_verifier_iop(tagged, &[], &[]);
-        assert!(!verify_iop(&proof, None), "a dishonest gate anywhere in the chain must be caught");
+        assert!(
+            !verify_iop(&proof, None),
+            "a dishonest gate anywhere in the chain must be caught"
+        );
     }
 }
 

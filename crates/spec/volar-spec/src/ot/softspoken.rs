@@ -39,9 +39,9 @@
 
 use digest::Digest;
 
-use crate::SpecRng;
 use super::group::Group;
 use super::iknp::iknp_cot_extend;
+use crate::SpecRng;
 
 /// Output bundle of one SoftSpoken extension.
 pub struct SoftSpokenOut<const M: usize, const L: usize, D: Digest> {
@@ -110,13 +110,18 @@ where
     }
     let receiver_tag = hr.finalize();
 
-    SoftSpokenOut { sender_r0, receiver_v, sender_tag, receiver_tag }
+    SoftSpokenOut {
+        sender_r0,
+        receiver_v,
+        sender_tag,
+        receiver_tag,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::group::ToyGroup;
+    use super::*;
     use sha2::Sha256;
 
     struct TestRng(u64);
@@ -141,10 +146,14 @@ mod tests {
         let mut rng_r = TestRng(0xCAFE_F00D_CAFE_F00D);
 
         let mut bits = [false; M];
-        for j in 0..M { bits[j] = (j * 5 + 3) & 1 == 1; }
+        for j in 0..M {
+            bits[j] = (j * 5 + 3) & 1 == 1;
+        }
 
         let mut delta = [0u8; L];
-        for b in 0..L { delta[b] = (b as u8).wrapping_mul(7).wrapping_add(11); }
+        for b in 0..L {
+            delta[b] = (b as u8).wrapping_mul(7).wrapping_add(11);
+        }
 
         let out = softspoken_cot_extend::<ToyGroup, Sha256, _, K, M, L>(
             &mut rng_s, &mut rng_r, &bits, &delta,
@@ -153,10 +162,15 @@ mod tests {
         assert!(out.check(), "honest tags must match");
         for j in 0..M {
             for b in 0..L {
-                let expected = if bits[j] { out.sender_r0[j][b] ^ delta[b] }
-                               else       { out.sender_r0[j][b] };
-                assert_eq!(out.receiver_v[j][b], expected,
-                           "row {j} byte {b}: C-OT relation broken");
+                let expected = if bits[j] {
+                    out.sender_r0[j][b] ^ delta[b]
+                } else {
+                    out.sender_r0[j][b]
+                };
+                assert_eq!(
+                    out.receiver_v[j][b], expected,
+                    "row {j} byte {b}: C-OT relation broken"
+                );
             }
         }
     }
@@ -180,7 +194,9 @@ mod tests {
         let mut hs = Sha256::new();
         hs.update(TAG_DOMAIN);
         hs.update(delta);
-        for row in out.sender_r0.iter() { hs.update(row); }
+        for row in out.sender_r0.iter() {
+            hs.update(row);
+        }
         out.sender_tag = hs.finalize();
 
         assert!(!out.check(), "tampered sender row must mismatch");
@@ -207,7 +223,9 @@ mod tests {
         for j in 0..M {
             let mut r0r = [0u8; L];
             if bits[j] {
-                for b in 0..L { r0r[b] = out.receiver_v[j][b] ^ delta[b]; }
+                for b in 0..L {
+                    r0r[b] = out.receiver_v[j][b] ^ delta[b];
+                }
             } else {
                 r0r = out.receiver_v[j];
             }
@@ -231,10 +249,16 @@ mod tests {
         let delta = [1u8; L];
 
         let out_k1 = softspoken_cot_extend::<ToyGroup, Sha256, _, 1, M, L>(
-            &mut rng_s_a, &mut rng_r_a, &bits, &delta,
+            &mut rng_s_a,
+            &mut rng_r_a,
+            &bits,
+            &delta,
         );
         let out_k2 = softspoken_cot_extend::<ToyGroup, Sha256, _, 2, M, L>(
-            &mut rng_s_b, &mut rng_r_b, &bits, &delta,
+            &mut rng_s_b,
+            &mut rng_r_b,
+            &bits,
+            &delta,
         );
         // Same RNG seeds + same bits + same Δ ⇒ same outputs (K ignored).
         assert_eq!(out_k1.sender_r0, out_k2.sender_r0);

@@ -16,7 +16,7 @@
 //! Both functions are linear over F_2 in the input (for fixed key), which is
 //! required by the ε_v / ε_zk almost-universality proofs in the spec.
 
-use volar_primitives::{Galois128, Galois64};
+use volar_primitives::{Galois64, Galois128};
 
 /// Shared key for both hash functions: `(r0, r1) ∈ GF(2^128) × GF(2^64)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -303,7 +303,10 @@ mod tests {
         // Compute hq directly:
         let hq_h0 = delta * hu.h0;
         let hq_h1 = Galois64(delta.0 as u64) * hu.h1;
-        let hq = UniversalHashOutput { h0: hq_h0, h1: hq_h1 };
+        let hq = UniversalHashOutput {
+            h0: hq_h0,
+            h1: hq_h1,
+        };
 
         assert!(vole_hash_consistency_check(&key, hu, hq, hv, hc, delta));
     }
@@ -328,13 +331,17 @@ mod tests {
             h0: delta * hu.h0,
             h1: Galois64(delta.0 as u64) * hu.h1,
         };
-        assert!(vole_hash_consistency_check(&key, hu, good_hq, hv, hc, delta));
+        assert!(vole_hash_consistency_check(
+            &key, hu, good_hq, hv, hc, delta
+        ));
 
         // Tampered hq (flip a bit):
         let bad_hq = UniversalHashOutput {
             h0: good_hq.h0 + Galois128(1),
             h1: good_hq.h1,
         };
-        assert!(!vole_hash_consistency_check(&key, hu, bad_hq, hv, hc, delta));
+        assert!(!vole_hash_consistency_check(
+            &key, hu, bad_hq, hv, hc, delta
+        ));
     }
 }

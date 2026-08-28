@@ -15,7 +15,7 @@ use volar_ir::ir::{IRBlockTargetId, IRVarId};
 use volar_ir_common::Node;
 use volar_verifier_fold::emit_verifier_rust;
 use volar_verifier_iop_runtime::run_iop_verifier;
-use volar_weaver::{weave_vole_verifier_with_trace, IopSink, ZkWitnessConfig};
+use volar_weaver::{IopSink, ZkWitnessConfig, weave_vole_verifier_with_trace};
 
 /// `c = a AND b`; params = [a, b]; returns c.
 fn and_circuit() -> BIrBlocks<()> {
@@ -39,8 +39,14 @@ fn iop_sink_verifier_compiles_runs_and_finalization_proof_verifies() {
     let module = weave_vole_verifier_with_trace(&circuit, "and1", &config, &IopSink, None);
     let rust_src = emit_verifier_rust(&module);
 
-    assert!(rust_src.contains("iop_fold_gate"), "printed source missing iop_fold_gate call:\n{rust_src}");
-    assert!(rust_src.contains("vole_verify_and1"), "printed source missing the woven fn name:\n{rust_src}");
+    assert!(
+        rust_src.contains("iop_fold_gate"),
+        "printed source missing iop_fold_gate call:\n{rust_src}"
+    );
+    assert!(
+        rust_src.contains("vole_verify_and1"),
+        "printed source missing the woven fn name:\n{rust_src}"
+    );
 
     let driver = r#"
         use volar_iop::field::{Field as _, Gf128};

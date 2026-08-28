@@ -193,9 +193,20 @@ fn iop_verifier_cargo_toml(root: &str) -> std::string::String {
 /// with `cd` + `cargo`/`cargo +nightly rustc -- -Z time-passes` there).
 fn run_cargo_test_capped(tmpdir: &std::path::Path) -> std::string::String {
     let output = std::process::Command::new("cargo")
-        .args(["test", "--release", "--quiet", "--test", "driver", "--", "--nocapture"])
+        .args([
+            "test",
+            "--release",
+            "--quiet",
+            "--test",
+            "driver",
+            "--",
+            "--nocapture",
+        ])
         .current_dir(tmpdir)
-        .env("CARGO_TARGET_DIR", tmpdir.join("target").to_string_lossy().into_owned())
+        .env(
+            "CARGO_TARGET_DIR",
+            tmpdir.join("target").to_string_lossy().into_owned(),
+        )
         .output()
         .expect("failed to run cargo test");
 
@@ -204,10 +215,14 @@ fn run_cargo_test_capped(tmpdir: &std::path::Path) -> std::string::String {
 
     if !output.status.success() {
         const TAIL: usize = 20_000;
-        fn tail(s: &str) -> &str { &s[s.len().saturating_sub(TAIL)..] }
+        fn tail(s: &str) -> &str {
+            &s[s.len().saturating_sub(TAIL)..]
+        }
         panic!(
             "run_iop_verifier: compile/run failed (source left at {})\n--- stdout (last {TAIL} bytes) ---\n{}\n--- stderr (last {TAIL} bytes) ---\n{}",
-            tmpdir.display(), tail(&stdout), tail(&stderr),
+            tmpdir.display(),
+            tail(&stdout),
+            tail(&stderr),
         );
     }
     stdout
@@ -233,7 +248,10 @@ fn run_cargo_test_capped(tmpdir: &std::path::Path) -> std::string::String {
 /// blanket re-exports in `lib.rs` -- callers don't need to change their
 /// own driver-construction code, only how they pass the woven source
 /// (per-role, not pre-concatenated).
-pub fn run_iop_verifier_multi_file(modules: &[(&str, &str)], driver_src: &str) -> std::string::String {
+pub fn run_iop_verifier_multi_file(
+    modules: &[(&str, &str)],
+    driver_src: &str,
+) -> std::string::String {
     run_iop_verifier_multi_file_with_extra_files(modules, driver_src, &[])
 }
 
@@ -270,7 +288,8 @@ pub fn run_iop_verifier_multi_file_with_extra_files(
     std::fs::create_dir_all(&srcdir).expect("create temp src dir");
 
     for (name, bytes) in extra_files {
-        std::fs::write(srcdir.join(name), bytes).unwrap_or_else(|e| panic!("write src/{name}: {e}"));
+        std::fs::write(srcdir.join(name), bytes)
+            .unwrap_or_else(|e| panic!("write src/{name}: {e}"));
     }
 
     let mut lib_rs = std::string::String::new();
@@ -302,7 +321,11 @@ pub fn run_iop_verifier_multi_file_with_extra_files(
         // items in a file, so it can't simply be prepended before it.
         let module_src = if let Some(nl) = content.find('\n') {
             if content[..nl].trim_start().starts_with("#!") {
-                std::format!("{}\nuse volar_verifier_iop_runtime::*;\n{}", &content[..nl], &content[nl + 1..])
+                std::format!(
+                    "{}\nuse volar_verifier_iop_runtime::*;\n{}",
+                    &content[..nl],
+                    &content[nl + 1..]
+                )
             } else {
                 std::format!("use volar_verifier_iop_runtime::*;\n{content}")
             }
@@ -313,7 +336,8 @@ pub fn run_iop_verifier_multi_file_with_extra_files(
             .unwrap_or_else(|e| panic!("write src/{name}.rs: {e}"));
     }
     std::fs::write(srcdir.join("lib.rs"), &lib_rs).expect("write src/lib.rs");
-    std::fs::write(tmpdir.join("Cargo.toml"), iop_verifier_cargo_toml(&root)).expect("write Cargo.toml");
+    std::fs::write(tmpdir.join("Cargo.toml"), iop_verifier_cargo_toml(&root))
+        .expect("write Cargo.toml");
 
     run_cargo_test_capped(&tmpdir)
 }
@@ -361,10 +385,14 @@ mod tests {
     }
 
     fn q1(x: Galois) -> Q<cipher::consts::U1, Galois> {
-        Q { q: HArray::<Galois, cipher::consts::U1>::from_fn(|_| x) }
+        Q {
+            q: HArray::<Galois, cipher::consts::U1>::from_fn(|_| x),
+        }
     }
     fn delta1(x: Galois) -> Delta<cipher::consts::U1, Galois> {
-        Delta { delta: HArray::<Galois, cipher::consts::U1>::from_fn(|_| x) }
+        Delta {
+            delta: HArray::<Galois, cipher::consts::U1>::from_fn(|_| x),
+        }
     }
     fn hat1(x: Galois) -> Array<Galois, cipher::consts::U1> {
         HArray::<Galois, cipher::consts::U1>::from_fn(|_| x)
@@ -397,21 +425,37 @@ mod tests {
     #[test]
     fn whole_verifier_folds_and_finalization_proof_verifies() {
         let mut state = iop_accumulator_fresh();
-        for (i, &(a, b, d)) in [(0x37u8, 0x82u8, 0xc3u8), (0x01, 0xff, 0x1d), (0xaa, 0x55, 0x02)].iter().enumerate() {
+        for (i, &(a, b, d)) in [
+            (0x37u8, 0x82u8, 0xc3u8),
+            (0x01, 0xff, 0x1d),
+            (0xaa, 0x55, 0x02),
+        ]
+        .iter()
+        .enumerate()
+        {
             let (ka, kb, kc, delta, vv) = honest_gate(a, b, d);
             let r = IopChallenge::from_u64(0xabcd + i as u64);
             state = iop_fold_gate(state, q1(ka), q1(kb), q1(kc), &delta1(delta), hat1(vv), r);
         }
         let tagged: Tagged<Transparent, _> = Tagged::seal(state);
         let (proof, ok) = prove_and_verify_iop(tagged, &[], &[], None);
-        assert!(ok, "honest chain of gates must produce a verifying finalization proof");
-        assert_eq!(proof.discipline(), volar_discipline::Discipline::Transparent);
+        assert!(
+            ok,
+            "honest chain of gates must produce a verifying finalization proof"
+        );
+        assert_eq!(
+            proof.discipline(),
+            volar_discipline::Discipline::Transparent
+        );
     }
 
     #[test]
     fn whole_verifier_with_memory_boundary_verifies() {
         let mut state = iop_accumulator_fresh();
-        for (i, &(a, b, d)) in [(0x37u8, 0x82u8, 0xc3u8), (0x01, 0xff, 0x1d)].iter().enumerate() {
+        for (i, &(a, b, d)) in [(0x37u8, 0x82u8, 0xc3u8), (0x01, 0xff, 0x1d)]
+            .iter()
+            .enumerate()
+        {
             let (ka, kb, kc, delta, vv) = honest_gate(a, b, d);
             let r = IopChallenge::from_u64(0xabcd + i as u64);
             state = iop_fold_gate(state, q1(ka), q1(kb), q1(kc), &delta1(delta), hat1(vv), r);
@@ -419,8 +463,12 @@ mod tests {
         let tagged: Tagged<Transparent, _> = Tagged::seal(state);
         let mem_in = [IopChallenge::from_u64(1)];
         let mem_out = [IopChallenge::from_u64(2)];
-        let (proof, ok) = prove_and_verify_iop(tagged, &mem_in, &mem_out, Some((&mem_in, &mem_out)));
-        assert!(ok, "honest chain + matching memory-boundary expectation must verify");
+        let (proof, ok) =
+            prove_and_verify_iop(tagged, &mem_in, &mem_out, Some((&mem_in, &mem_out)));
+        assert!(
+            ok,
+            "honest chain + matching memory-boundary expectation must verify"
+        );
         let _ = proof;
     }
 
@@ -428,19 +476,34 @@ mod tests {
     fn memory_boundary_mismatch_is_rejected() {
         let mut state = iop_accumulator_fresh();
         let (ka, kb, kc, delta, vv) = honest_gate(0x37, 0x82, 0xc3);
-        state = iop_fold_gate(state, q1(ka), q1(kb), q1(kc), &delta1(delta), hat1(vv), IopChallenge::from_u64(1));
+        state = iop_fold_gate(
+            state,
+            q1(ka),
+            q1(kb),
+            q1(kc),
+            &delta1(delta),
+            hat1(vv),
+            IopChallenge::from_u64(1),
+        );
         let tagged: Tagged<Transparent, _> = Tagged::seal(state);
         let mem_in = [IopChallenge::from_u64(1)];
         let mem_out = [IopChallenge::from_u64(2)];
         let wrong_out = [IopChallenge::from_u64(999)];
         let (_, ok) = prove_and_verify_iop(tagged, &mem_in, &mem_out, Some((&mem_in, &wrong_out)));
-        assert!(!ok, "a caller-expected memory boundary that doesn't match must be rejected");
+        assert!(
+            !ok,
+            "a caller-expected memory boundary that doesn't match must be rejected"
+        );
     }
 
     #[test]
     fn tampered_gate_is_rejected() {
         let mut state = iop_accumulator_fresh();
-        let tuples = [(0x37u8, 0x82u8, 0xc3u8), (0x01, 0xff, 0x1d), (0xaa, 0x55, 0x02)];
+        let tuples = [
+            (0x37u8, 0x82u8, 0xc3u8),
+            (0x01, 0xff, 0x1d),
+            (0xaa, 0x55, 0x02),
+        ];
         for (i, &(a, b, d)) in tuples.iter().enumerate() {
             let (ka, kb, kc, delta, mut vv) = honest_gate(a, b, d);
             if i == 1 {
@@ -451,6 +514,9 @@ mod tests {
         }
         let tagged: Tagged<Transparent, _> = Tagged::seal(state);
         let (_, ok) = prove_and_verify_iop(tagged, &[], &[], None);
-        assert!(!ok, "a tampered gate observation must fail the finalization proof");
+        assert!(
+            !ok,
+            "a tampered gate observation must fail the finalization proof"
+        );
     }
 }

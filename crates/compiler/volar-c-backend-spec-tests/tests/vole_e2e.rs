@@ -21,13 +21,17 @@ use std::path::Path;
 
 use volar_c_backend::CBackend;
 use volar_compiler::{
-    SourceInput, ir::IrFunction, ir::IrModule, ir::IrType, ir::PrimitiveType,
+    SourceInput,
+    ir::IrFunction,
+    ir::IrModule,
+    ir::IrType,
+    ir::PrimitiveType,
     linkage::{LinkageKind, LinkageSystem, LinkedSpec},
     parse_sources,
 };
-use volar_lir_codegen::{lower_module_monomorphized, mono::MonoEnv, MonoPlanOptions};
+use volar_lir_codegen::{MonoPlanOptions, lower_module_monomorphized, mono::MonoEnv};
 use volar_lir_saved::{RecordingTarget, SavedLirModule};
-use volar_lir_test_corpus::{compile_and_run, make_biir_and, make_biir_xor, make_biir_half_adder};
+use volar_lir_test_corpus::{compile_and_run, make_biir_and, make_biir_half_adder, make_biir_xor};
 use volar_wasm_backend::WasmBackend;
 use volar_weaver::{weave_vole_prover, weave_vole_verifier};
 use wasmtime::{Engine, Module, Store};
@@ -76,16 +80,24 @@ fn lower_vole_to_target<T: volar_lir::LirTarget>(
 
 fn spec_src_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
-        .join("spec").join("volar-spec").join("src")
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("spec")
+        .join("volar-spec")
+        .join("src")
 }
 
 fn read_spec(name: &str) -> (String, String) {
     let path = spec_src_dir().join(name);
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read spec file {}: {e}", path.display()));
-    let stem = Path::new(name).file_stem().unwrap().to_string_lossy().into_owned();
+    let stem = Path::new(name)
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     (src, stem)
 }
 
@@ -106,8 +118,12 @@ fn parse_vole_spec() -> volar_compiler::ir::IrModule<volar_compiler::ir::IrFunct
         "vole/impls.rs",
     ];
     let loaded: Vec<(String, String)> = files.iter().map(|&f| read_spec(f)).collect();
-    let inputs: Vec<SourceInput> = loaded.iter()
-        .map(|(src, name)| SourceInput { source: src.as_str(), name: name.as_str() })
+    let inputs: Vec<SourceInput> = loaded
+        .iter()
+        .map(|(src, name)| SourceInput {
+            source: src.as_str(),
+            name: name.as_str(),
+        })
         .collect();
     parse_sources(&inputs, "volar_spec", &[])
         .unwrap_or_else(|e| panic!("parse_vole_spec failed: {e}"))
@@ -117,7 +133,11 @@ fn parse_vole_spec() -> volar_compiler::ir::IrModule<volar_compiler::ir::IrFunct
 fn make_vole_linkage() -> LinkageSystem {
     let spec_module = parse_vole_spec();
     let mut ls = LinkageSystem::new();
-    ls.add(LinkedSpec { name: "volar_spec".into(), module: spec_module, kind: LinkageKind::Inline });
+    ls.add(LinkedSpec {
+        name: "volar_spec".into(),
+        module: spec_module,
+        kind: LinkageKind::Inline,
+    });
     ls
 }
 
@@ -165,13 +185,21 @@ fn make_vole_linkage_galois() -> LinkageSystem {
 #[test]
 fn vole_spec_parses() {
     let module = parse_vole_spec();
-    let struct_names: Vec<&str> = module.structs.iter()
+    let struct_names: Vec<&str> = module
+        .structs
+        .iter()
         .filter_map(|s| {
-            if let volar_compiler::ir::StructKind::Custom(n) = &s.kind { Some(n.as_str()) } else { None }
+            if let volar_compiler::ir::StructKind::Custom(n) = &s.kind {
+                Some(n.as_str())
+            } else {
+                None
+            }
         })
         .collect();
     assert!(
-        struct_names.iter().any(|&n| n == "Vope" || n == "Delta" || n == "Q"),
+        struct_names
+            .iter()
+            .any(|&n| n == "Vope" || n == "Delta" || n == "Q"),
         "expected Vope/Delta/Q in parsed spec structs, got: {struct_names:?}"
     );
     let fn_names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
@@ -192,9 +220,15 @@ fn vole_weaved_module_has_spec_structs() {
     let linkage = make_vole_linkage();
     let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage)).into_inner();
 
-    let struct_names: Vec<&str> = module.structs.iter()
+    let struct_names: Vec<&str> = module
+        .structs
+        .iter()
         .filter_map(|s| {
-            if let volar_compiler::ir::StructKind::Custom(n) = &s.kind { Some(n.as_str()) } else { None }
+            if let volar_compiler::ir::StructKind::Custom(n) = &s.kind {
+                Some(n.as_str())
+            } else {
+                None
+            }
         })
         .collect();
     assert!(
@@ -223,7 +257,10 @@ fn vole_prover_and_no_linkage_lower() {
     let circuit = make_biir_and();
     let module = weave_vole_prover(&circuit, "and_prover", None).into_inner();
 
-    assert!(module.structs.is_empty(), "no structs expected without linkage");
+    assert!(
+        module.structs.is_empty(),
+        "no structs expected without linkage"
+    );
 
     let env = vole_env();
     let mut b = CBackend::new();
@@ -375,7 +412,11 @@ fn vole_prover_verifier_correctness_e2e() {
   printf("%d\n", (int)result._1);
 "#;
     let out = compile_and_run(&c_src, main_body);
-    assert_eq!(out.trim(), "1", "VOLE verifier should accept honest prover output");
+    assert_eq!(
+        out.trim(),
+        "1",
+        "VOLE verifier should accept honest prover output"
+    );
 }
 
 /// Record-once / replay-many: woven AND → [`RecordingTarget`] → C + WASM.
@@ -482,7 +523,10 @@ fn vole_and_record_replay_c_and_wasm() {
         wasmtime::Val::I32(v) => v != 0,
         other => panic!("expected i32 bool result, got {other:?}"),
     };
-    assert!(ok, "WASM verifier should accept honest zero-mask AND inputs");
+    assert!(
+        ok,
+        "WASM verifier should accept honest zero-mask AND inputs"
+    );
 }
 
 #[test]
@@ -555,7 +599,10 @@ fn vole_prover_verifier_ot_setup_e2e() {
 
     assert!(!c_src.is_empty(), "C output should be non-empty");
     // The generated code must include the GF8 multiply helper.
-    assert!(c_src.contains("volar_gf8_mul"), "generated C must contain volar_gf8_mul");
+    assert!(
+        c_src.contains("volar_gf8_mul"),
+        "generated C must contain volar_gf8_mul"
+    );
 
     // GF(2^8) inversion helper (a^{254}) — appended after generated code so it
     // can use `volar_gf8_mul` which is `static` in the generated code.
@@ -667,7 +714,11 @@ static uint8_t volar_gf8_inv(uint8_t a) {
 "#;
 
     let out = compile_and_run(&full_c, main_body);
-    assert_eq!(out.trim(), "4/4",
+    assert_eq!(
+        out.trim(),
+        "4/4",
         "All 4 (a,b) combinations should pass the Quicksilver AND verifier check.\n\
-         Output was: {}", out.trim());
+         Output was: {}",
+        out.trim()
+    );
 }

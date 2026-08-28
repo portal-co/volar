@@ -37,7 +37,13 @@ fn and_check_r1cs() -> R1CS {
     R1CS {
         num_cons: 3,
         num_vars: 8,
-        a: vec![(0, K_A, one), (1, K_C, one), (2, P1, one), (2, V_HAT, one), (2, P2, neg_one)],
+        a: vec![
+            (0, K_A, one),
+            (1, K_C, one),
+            (2, P1, one),
+            (2, V_HAT, one),
+            (2, P2, neg_one),
+        ],
         b: vec![(0, K_B, one), (1, DELTA, one), (2, U, one)],
         c: vec![(0, P1, one), (1, P2, one)],
     }
@@ -74,8 +80,14 @@ fn spec_fold_matches_oracle() {
 
     // Relaxed satisfaction agrees between spec and oracle on the folded instance.
     let uf_u = spec::fold_u(&u1.u, &u2.u, &r);
-    assert!(spec::is_satisfied_relaxed(&sw, &se, &uf_u), "spec relaxed-sat");
-    assert!(r1cs.is_satisfied_relaxed(&owf.w, &owf.e, &uf_u), "oracle relaxed-sat");
+    assert!(
+        spec::is_satisfied_relaxed(&sw, &se, &uf_u),
+        "spec relaxed-sat"
+    );
+    assert!(
+        r1cs.is_satisfied_relaxed(&owf.w, &owf.e, &uf_u),
+        "oracle relaxed-sat"
+    );
 }
 
 #[test]
@@ -112,13 +124,15 @@ fn spec_pedersen_commit_matches_oracle() {
     let blind = s(0x9e3);
     let x_bytes: Vec<[u8; 32]> = w.iter().map(|s| s.to_bytes_le()).collect();
     let oracle = params.commit(&w, &blind);
-    let spec = volar_spec::fold::pedersen_commit(&params.g, &params.h, &x_bytes, &blind.to_bytes_le());
+    let spec =
+        volar_spec::fold::pedersen_commit(&params.g, &params.h, &x_bytes, &blind.to_bytes_le());
     assert_eq!(spec, oracle, "spec witness commit matches oracle");
 
     let e = [s(11), s(22), s(33)];
     let e_bytes: Vec<[u8; 32]> = e.iter().map(|s| s.to_bytes_le()).collect();
     let oracle_e = params.commit(&e, &blind);
-    let spec_e = volar_spec::fold::pedersen_commit(&params.g, &params.h, &e_bytes, &blind.to_bytes_le());
+    let spec_e =
+        volar_spec::fold::pedersen_commit(&params.g, &params.h, &e_bytes, &blind.to_bytes_le());
     assert_eq!(spec_e, oracle_e, "spec error commit matches oracle");
 }
 
@@ -128,11 +142,17 @@ fn spec_relaxed_sat_accepts_honest_rejects_tampered() {
     let zero_e = [Scalar::default(); 3];
 
     let honest = gate(3, 4, 5, 6);
-    assert!(spec::is_satisfied_relaxed(&honest, &zero_e, &one), "honest gate accepts");
+    assert!(
+        spec::is_satisfied_relaxed(&honest, &zero_e, &one),
+        "honest gate accepts"
+    );
 
     let mut tampered = gate(3, 4, 5, 6);
     tampered[4] = tampered[4].add(&one); // break V̂
-    assert!(!spec::is_satisfied_relaxed(&tampered, &zero_e, &one), "tampered gate rejects");
+    assert!(
+        !spec::is_satisfied_relaxed(&tampered, &zero_e, &one),
+        "tampered gate rejects"
+    );
 }
 
 #[test]
@@ -158,7 +178,8 @@ fn spec_fold_chain_matches_oracle() {
         ow = wf;
 
         let t = spec::cross_term(&sw, &su, &gates[k + 1], &nu.u);
-        let (nsw, nse) = spec::fold_witness(&sw, &se, &gates[k + 1], &[Scalar::default(); 3], &t, &rs[k]);
+        let (nsw, nse) =
+            spec::fold_witness(&sw, &se, &gates[k + 1], &[Scalar::default(); 3], &t, &rs[k]);
         sw = nsw;
         se = nse;
         su = spec::fold_u(&su, &nu.u, &rs[k]);
@@ -198,16 +219,31 @@ fn spec_fold_chain_matches_oracle_with_tampered_step_and_both_reject() {
         ow = wf;
 
         let t = spec::cross_term(&sw, &su, &gates[k + 1], &nu.u);
-        let (nsw, nse) = spec::fold_witness(&sw, &se, &gates[k + 1], &[Scalar::default(); 3], &t, &rs[k]);
+        let (nsw, nse) =
+            spec::fold_witness(&sw, &se, &gates[k + 1], &[Scalar::default(); 3], &t, &rs[k]);
         sw = nsw;
         se = nse;
         su = spec::fold_u(&su, &nu.u, &rs[k]);
     }
 
-    assert_eq!(sw.to_vec(), ow.w, "chained spec W matches oracle even with a lying step");
-    assert_eq!(se.to_vec(), ow.e, "chained spec E matches oracle even with a lying step");
-    assert!(!r1cs.is_satisfied_relaxed(&ow.w, &ow.e, &su), "oracle must reject the dishonest chain");
-    assert!(!spec::is_satisfied_relaxed(&sw, &se, &su), "spec must reject the dishonest chain too");
+    assert_eq!(
+        sw.to_vec(),
+        ow.w,
+        "chained spec W matches oracle even with a lying step"
+    );
+    assert_eq!(
+        se.to_vec(),
+        ow.e,
+        "chained spec E matches oracle even with a lying step"
+    );
+    assert!(
+        !r1cs.is_satisfied_relaxed(&ow.w, &ow.e, &su),
+        "oracle must reject the dishonest chain"
+    );
+    assert!(
+        !spec::is_satisfied_relaxed(&sw, &se, &su),
+        "spec must reject the dishonest chain too"
+    );
 }
 
 proptest! {

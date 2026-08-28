@@ -543,7 +543,11 @@ fn ed25519_base_point_on_curve_c() {
   printf("%d\n", fe_eq(lhs, rhs));
 "##;
     let out = compile_and_run(C_ED25519_SRC, verify_main);
-    assert_eq!(out.trim(), "1", "base point must satisfy the Ed25519 curve equation");
+    assert_eq!(
+        out.trim(),
+        "1",
+        "base point must satisfy the Ed25519 curve equation"
+    );
 }
 
 /// Sanity: [1]G == G.

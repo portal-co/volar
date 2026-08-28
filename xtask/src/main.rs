@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use volar_compiler::{IrFunction, IrModule, SourceInput, parse_sources};
+use volar_compiler::{parse_sources, IrFunction, IrModule, SourceInput};
 use volar_compiler_passes::{print_module_rust_dyn, print_module_typescript};
 
 fn main() {
@@ -55,23 +55,32 @@ fn gen_specs(check_only: bool) {
 
     let prim_inputs: Vec<SourceInput<'_>> = primitives_sources
         .iter()
-        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
+        .map(|(c, n)| SourceInput {
+            source: c.as_str(),
+            name: n.as_str(),
+        })
         .collect();
     let common_inputs: Vec<SourceInput<'_>> = common_sources
         .iter()
-        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
+        .map(|(c, n)| SourceInput {
+            source: c.as_str(),
+            name: n.as_str(),
+        })
         .collect();
     let spec_inputs: Vec<SourceInput<'_>> = spec_sources
         .iter()
-        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
+        .map(|(c, n)| SourceInput {
+            source: c.as_str(),
+            name: n.as_str(),
+        })
         .collect();
 
     let prim_module = parse_sources(&prim_inputs, "volar_primitives", &prim_path)
         .expect("parse volar-primitives");
-    let common_module = parse_sources(&common_inputs, "volar_common", &common_path)
-        .expect("parse volar-common");
-    let spec_module = parse_sources(&spec_inputs, "volar_spec", &spec_path)
-        .expect("parse volar-spec");
+    let common_module =
+        parse_sources(&common_inputs, "volar_common", &common_path).expect("parse volar-common");
+    let spec_module =
+        parse_sources(&spec_inputs, "volar_spec", &spec_path).expect("parse volar-spec");
 
     let combined_module = merge_modules(vec![prim_module, common_module, spec_module]);
 

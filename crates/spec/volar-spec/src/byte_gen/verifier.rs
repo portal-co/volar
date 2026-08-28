@@ -22,7 +22,7 @@ use core::ops::BitXor;
 
 use cipher::{
     consts::U1,
-    typenum::{IsGreater, Logarithm2, Max, Unsigned, B1},
+    typenum::{B1, IsGreater, Logarithm2, Max, Unsigned},
 };
 use digest::Digest;
 
@@ -79,11 +79,7 @@ impl<
         })
     }
 
-    pub fn to_vole_material_typenum_expanded<
-        M: ArraySize,
-        X: AsRef<[u8]>,
-        F: FnMut(&[u8]) -> X,
-    >(
+    pub fn to_vole_material_typenum_expanded<M: ArraySize, X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(
         &self,
         party: usize,
         mut f: F,
@@ -97,15 +93,10 @@ impl<
         })
     }
 
-    pub fn split_bit_typenum<M: ArraySize>(
-        &self,
-        party: usize,
-    ) -> Array<BSplit<B, D>, M>
+    pub fn split_bit_typenum<M: ArraySize>(&self, party: usize) -> Array<BSplit<B, D>, M>
     where
         B::OutputSize: VoleArray<u8>,
-        D: Digest<
-            OutputSize: Logarithm2<Output: ArraySize>,
-        >,
+        D: Digest<OutputSize: Logarithm2<Output: ArraySize>>,
     {
         Array::<BSplit<B, D>, M>::from_fn(|i| {
             let s = &self.openings[N::party_index(party)][i];
@@ -150,24 +141,16 @@ impl<
     U: ArraySize,
 > ABOOpening<B, D, T, U, U1>
 {
-    pub fn validate<R: AsRef<[u8]>>(
-        &self,
-        commit_: &Array<u8, D::OutputSize>,
-        rand: &R,
-    ) -> bool {
+    pub fn validate<R: AsRef<[u8]>>(&self, commit_: &Array<u8, D::OutputSize>, rand: &R) -> bool {
         let mut h = D::new();
         for i in 0..T::USIZE {
             for b in 0..U::USIZE {
                 let i2 = i | ((b as usize) << T::USIZE.ilog2());
                 if self.bad.contains(&(i2 as u64)) {
-                    h.update(
-                        &self.openings[0][i][b]
-                            [..(<D::OutputSize as Unsigned>::USIZE)],
-                    );
+                    h.update(&self.openings[0][i][b][..(<D::OutputSize as Unsigned>::USIZE)]);
                 } else {
                     h.update(&commit::<D>(
-                        &&self.openings[0][i][b]
-                            [..(<B::OutputSize as Unsigned>::USIZE)],
+                        &&self.openings[0][i][b][..(<B::OutputSize as Unsigned>::USIZE)],
                         rand,
                     ));
                 }
@@ -209,10 +192,7 @@ impl<
                 for i in 0..T::USIZE {
                     for b in 0..U::USIZE {
                         let i2 = i | ((b as usize) << T::USIZE.ilog2());
-                        h.update(&commit::<D>(
-                            &me.per_byte[ci][i2],
-                            rand,
-                        ));
+                        h.update(&commit::<D>(&me.per_byte[ci][i2], rand));
                     }
                 }
             }
@@ -225,13 +205,11 @@ impl<
                         let i2 = i | ((b as usize) << T::USIZE.ilog2());
                         if this.bad.contains(&(i2 as u64)) {
                             h.update(
-                                &this.openings[ci][i][b]
-                                    [..(<D::OutputSize as Unsigned>::USIZE)],
+                                &this.openings[ci][i][b][..(<D::OutputSize as Unsigned>::USIZE)],
                             );
                         } else {
                             h.update(&commit::<D>(
-                                &&this.openings[ci][i][b]
-                                    [..(<B::OutputSize as Unsigned>::USIZE)],
+                                &&this.openings[ci][i][b][..(<B::OutputSize as Unsigned>::USIZE)],
                                 rand,
                             ));
                         }

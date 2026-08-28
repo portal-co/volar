@@ -60,9 +60,15 @@ pub enum Weaver {
     /// VOLE ZK **verifier** (Boolar IR).
     VoleVerifier { name: String },
     /// VOLE ZK **prover** using field-level Volar IR.
-    VoleProverIr { name: String, storage_sizes: volar_weaver::StorageSizes },
+    VoleProverIr {
+        name: String,
+        storage_sizes: volar_weaver::StorageSizes,
+    },
     /// VOLE ZK **verifier** using field-level Volar IR.
-    VoleVerifierIr { name: String, storage_sizes: volar_weaver::StorageSizes },
+    VoleVerifierIr {
+        name: String,
+        storage_sizes: volar_weaver::StorageSizes,
+    },
     /// Cleartext (non-ZK) **no-op** evaluator (Boolar IR).
     NoOp { name: String },
     /// Cleartext (non-ZK) **no-op** evaluator using field-level Volar IR.
@@ -84,12 +90,22 @@ pub enum Weaver {
     /// the whole execution — the sparse init/drain cost (ADR 0002 Option A),
     /// linear in the trace and independent of `addr_bits`.
     #[cfg(feature = "weave-net")]
-    HybridNetVoleProver { name: String, ts_bits: usize, addr_bits: usize, touched_count: usize },
+    HybridNetVoleProver {
+        name: String,
+        ts_bits: usize,
+        addr_bits: usize,
+        touched_count: usize,
+    },
     /// Hybrid network-resilient VOLE **verifier** (Boolar loop circuit → CFG).
     /// Requires the `weave-net` feature.  `ts_bits` / `addr_bits` / `touched_count`
     /// as above and **must match** the prover's.
     #[cfg(feature = "weave-net")]
-    HybridNetVoleVerifier { name: String, ts_bits: usize, addr_bits: usize, touched_count: usize },
+    HybridNetVoleVerifier {
+        name: String,
+        ts_bits: usize,
+        addr_bits: usize,
+        touched_count: usize,
+    },
 }
 
 // ============================================================================
@@ -142,12 +158,27 @@ pub fn emit_woven_rust(
             let module = volar_weaver::weave_vole_verifier(&bir, name, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
-        (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            let module = volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None).into_inner();
+        (
+            Weaver::VoleProverIr {
+                name,
+                storage_sizes,
+            },
+            SavedCircuit::Volar(ir, types),
+        ) => {
+            let module = volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None)
+                .into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
-        (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            let module = volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None).into_inner();
+        (
+            Weaver::VoleVerifierIr {
+                name,
+                storage_sizes,
+            },
+            SavedCircuit::Volar(ir, types),
+        ) => {
+            let module =
+                volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+                    .into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
@@ -169,13 +200,45 @@ pub fn emit_woven_rust(
             volar_weaver::print_weaved_module(&module, false)
         }
         #[cfg(feature = "weave-net")]
-        (Weaver::HybridNetVoleProver { name, ts_bits, addr_bits, touched_count }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_hybrid_net_vole_prover(&bir, *ts_bits, *addr_bits, *touched_count, name, None, None);
+        (
+            Weaver::HybridNetVoleProver {
+                name,
+                ts_bits,
+                addr_bits,
+                touched_count,
+            },
+            SavedCircuit::Boolar(bir),
+        ) => {
+            let module = volar_weaver::weave_hybrid_net_vole_prover(
+                &bir,
+                *ts_bits,
+                *addr_bits,
+                *touched_count,
+                name,
+                None,
+                None,
+            );
             volar_weaver::print_hybrid_net_cfg_module(&module)
         }
         #[cfg(feature = "weave-net")]
-        (Weaver::HybridNetVoleVerifier { name, ts_bits, addr_bits, touched_count }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_hybrid_net_vole_verifier(&bir, *ts_bits, *addr_bits, *touched_count, name, None, None);
+        (
+            Weaver::HybridNetVoleVerifier {
+                name,
+                ts_bits,
+                addr_bits,
+                touched_count,
+            },
+            SavedCircuit::Boolar(bir),
+        ) => {
+            let module = volar_weaver::weave_hybrid_net_vole_verifier(
+                &bir,
+                *ts_bits,
+                *addr_bits,
+                *touched_count,
+                name,
+                None,
+                None,
+            );
             volar_weaver::print_hybrid_net_cfg_module(&module)
         }
         (w, c) => {
@@ -226,7 +289,13 @@ pub fn emit_woven_typescript(
 
     let module = weave_to_ir_module(weaver, circuit)?;
 
-    let output = chunk_module_ts(&module, &ChunkConfig { items_per_chunk: usize::MAX }, &[]);
+    let output = chunk_module_ts(
+        &module,
+        &ChunkConfig {
+            items_per_chunk: usize::MAX,
+        },
+        &[],
+    );
     let ts_source = output.chunks.into_iter().next().unwrap_or_default();
     std::fs::write(out_path, ts_source)?;
     Ok(())
@@ -271,7 +340,8 @@ pub fn emit_woven_typescript_chunked(
 fn weave_to_ir_module(
     weaver: &Weaver,
     circuit: SavedCircuit,
-) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, Box<dyn std::error::Error>> {
+) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, Box<dyn std::error::Error>>
+{
     let module = match (weaver, circuit) {
         (Weaver::GarbleEvaluator { name }, SavedCircuit::Boolar(bir)) => {
             volar_weaver::weave_evaluator(&bir, name, None).into_inner()
@@ -285,12 +355,23 @@ fn weave_to_ir_module(
         (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
             volar_weaver::weave_vole_verifier(&bir, name, None).into_inner()
         }
-        (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
+        (
+            Weaver::VoleProverIr {
+                name,
+                storage_sizes,
+            },
+            SavedCircuit::Volar(ir, types),
+        ) => {
             volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None).into_inner()
         }
-        (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None).into_inner()
-        }
+        (
+            Weaver::VoleVerifierIr {
+                name,
+                storage_sizes,
+            },
+            SavedCircuit::Volar(ir, types),
+        ) => volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+            .into_inner(),
         (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
             volar_weaver::weave_noop(&bir, name, None).into_inner()
         }
@@ -314,7 +395,8 @@ fn weave_to_ir_module(
             return Err(format!(
                 "weaver/circuit mismatch: {:?} cannot process {} circuit",
                 w, circuit_kind
-            ).into());
+            )
+            .into());
         }
     };
     Ok(module)
@@ -363,12 +445,22 @@ pub fn emit_woven_rust_chunked(
             (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
                 volar_weaver::weave_vole_verifier(&bir, name, None).into_inner()
             }
-            (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-                volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None).into_inner()
-            }
-            (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-                volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None).into_inner()
-            }
+            (
+                Weaver::VoleProverIr {
+                    name,
+                    storage_sizes,
+                },
+                SavedCircuit::Volar(ir, types),
+            ) => volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None)
+                .into_inner(),
+            (
+                Weaver::VoleVerifierIr {
+                    name,
+                    storage_sizes,
+                },
+                SavedCircuit::Volar(ir, types),
+            ) => volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+                .into_inner(),
             (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
                 volar_weaver::weave_noop(&bir, name, None).into_inner()
             }
@@ -392,7 +484,8 @@ pub fn emit_woven_rust_chunked(
                 return Err(format!(
                     "weaver/circuit mismatch: {:?} cannot process {} circuit",
                     w, circuit_kind
-                ).into());
+                )
+                .into());
             }
         };
 

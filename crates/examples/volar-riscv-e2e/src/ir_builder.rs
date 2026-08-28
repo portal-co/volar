@@ -48,11 +48,17 @@ pub fn clone_expr(e: IrExpr) -> IrExpr {
 }
 
 pub fn ref_expr(e: IrExpr) -> IrExpr {
-    ir_expr(IrExprKind::Unary { op: volar_compiler::ir::SpecUnaryOp::Ref, expr: Box::new(e) })
+    ir_expr(IrExprKind::Unary {
+        op: volar_compiler::ir::SpecUnaryOp::Ref,
+        expr: Box::new(e),
+    })
 }
 
 pub fn ref_mut_expr(e: IrExpr) -> IrExpr {
-    ir_expr(IrExprKind::Unary { op: volar_compiler::ir::SpecUnaryOp::RefMut, expr: Box::new(e) })
+    ir_expr(IrExprKind::Unary {
+        op: volar_compiler::ir::SpecUnaryOp::RefMut,
+        expr: Box::new(e),
+    })
 }
 
 /// `<name>.clone()`
@@ -75,24 +81,37 @@ pub fn clone_var(name: &str) -> IrExpr {
 pub fn slice_ref_mut_expr(name: &str) -> IrExpr {
     ref_mut_expr(ir_expr(IrExprKind::Index {
         base: Box::new(var(name)),
-        index: Box::new(ir_expr(IrExprKind::Range { start: None, end: None, inclusive: false })),
+        index: Box::new(ir_expr(IrExprKind::Range {
+            start: None,
+            end: None,
+            inclusive: false,
+        })),
     }))
 }
 
 /// `base.field` (used for `tup.0`/`tup.1`-style tuple field access).
 pub fn field_expr(base: &str, field: &str) -> IrExpr {
-    ir_expr(IrExprKind::Field { base: Box::new(var(base)), field: field.to_string() })
+    ir_expr(IrExprKind::Field {
+        base: Box::new(var(base)),
+        field: field.to_string(),
+    })
 }
 
 /// `base[idx]` (literal integer index).
 pub fn index_lit_expr(base: &str, idx: usize) -> IrExpr {
-    ir_expr(IrExprKind::Index { base: Box::new(var(base)), index: Box::new(int_lit(idx as i128)) })
+    ir_expr(IrExprKind::Index {
+        base: Box::new(var(base)),
+        index: Box::new(int_lit(idx as i128)),
+    })
 }
 
 /// `<base_expr>.<field>` -- the general form of [`field_expr`], for a base
 /// that's already a structured expression (not just a bare name).
 pub fn field_expr_on(base: IrExpr, field: &str) -> IrExpr {
-    ir_expr(IrExprKind::Field { base: Box::new(base), field: field.to_string() })
+    ir_expr(IrExprKind::Field {
+        base: Box::new(base),
+        field: field.to_string(),
+    })
 }
 
 /// Parse a small, tightly-scoped subset of Rust expression syntax into a
@@ -111,29 +130,51 @@ pub fn field_expr_on(base: IrExpr, field: &str) -> IrExpr {
 /// silently mis-parsed here.
 pub fn parse_leaf_expr(s: &str) -> IrExpr {
     let s = s.trim();
-    if s == "true" { return ir_expr(IrExprKind::Lit(IrLit::Bool(true))); }
-    if s == "false" { return ir_expr(IrExprKind::Lit(IrLit::Bool(false))); }
+    if s == "true" {
+        return ir_expr(IrExprKind::Lit(IrLit::Bool(true)));
+    }
+    if s == "false" {
+        return ir_expr(IrExprKind::Lit(IrLit::Bool(false)));
+    }
     if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
-        return int_lit(s.parse().unwrap_or_else(|_| panic!("parse_leaf_expr: bad integer {s:?}")));
+        return int_lit(
+            s.parse()
+                .unwrap_or_else(|_| panic!("parse_leaf_expr: bad integer {s:?}")),
+        );
     }
     let bytes = s.as_bytes();
     let mut i = 0;
-    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') { i += 1; }
-    assert!(i > 0, "parse_leaf_expr: expected identifier at start of {s:?}");
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    assert!(
+        i > 0,
+        "parse_leaf_expr: expected identifier at start of {s:?}"
+    );
     let mut expr = var(&s[..i]);
     let mut rest = &s[i..];
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix('.') {
             let ab = after.as_bytes();
             let mut j = 0;
-            while j < ab.len() && (ab[j].is_ascii_alphanumeric() || ab[j] == b'_') { j += 1; }
-            assert!(j > 0, "parse_leaf_expr: expected field name after '.' in {s:?}");
+            while j < ab.len() && (ab[j].is_ascii_alphanumeric() || ab[j] == b'_') {
+                j += 1;
+            }
+            assert!(
+                j > 0,
+                "parse_leaf_expr: expected field name after '.' in {s:?}"
+            );
             expr = field_expr_on(expr, &after[..j]);
             rest = &after[j..];
         } else if let Some(after) = rest.strip_prefix('[') {
-            let close = after.find(']').unwrap_or_else(|| panic!("parse_leaf_expr: unmatched '[' in {s:?}"));
+            let close = after
+                .find(']')
+                .unwrap_or_else(|| panic!("parse_leaf_expr: unmatched '[' in {s:?}"));
             let inner = parse_leaf_expr(&after[..close]);
-            expr = ir_expr(IrExprKind::Index { base: Box::new(expr), index: Box::new(inner) });
+            expr = ir_expr(IrExprKind::Index {
+                base: Box::new(expr),
+                index: Box::new(inner),
+            });
             rest = &after[close + 1..];
         } else {
             panic!("parse_leaf_expr: unexpected trailing text {rest:?} in {s:?}");
@@ -176,12 +217,20 @@ pub fn tuple_lit_expr(elems: Vec<IrExpr>) -> IrExpr {
 
 /// `let <name> = <init>;` (immutable, untyped).
 pub fn let_stmt(name: &str, init: IrExpr) -> IrStmt {
-    ir_stmt(IrStmtKind::Let { pattern: IrPattern::ident(name), ty: None, init: Some(init) })
+    ir_stmt(IrStmtKind::Let {
+        pattern: IrPattern::ident(name),
+        ty: None,
+        init: Some(init),
+    })
 }
 
 /// `let <name>: <ty> = <init>;`
 pub fn let_typed_stmt(name: &str, ty: IrType, init: IrExpr) -> IrStmt {
-    ir_stmt(IrStmtKind::Let { pattern: IrPattern::ident(name), ty: Some(ty), init: Some(init) })
+    ir_stmt(IrStmtKind::Let {
+        pattern: IrPattern::ident(name),
+        ty: Some(ty),
+        init: Some(init),
+    })
 }
 
 /// `let (<names...>) = <init>;` -- `names.len() == 1` still emits real
@@ -192,12 +241,19 @@ pub fn let_typed_stmt(name: &str, ty: IrType, init: IrExpr) -> IrStmt {
 /// not a 1-tuple destructure).
 pub fn let_tuple_stmt(names: &[String], init: IrExpr) -> IrStmt {
     let pat = IrPattern::Tuple(names.iter().map(|n| IrPattern::ident(n.clone())).collect());
-    ir_stmt(IrStmtKind::Let { pattern: pat, ty: None, init: Some(init) })
+    ir_stmt(IrStmtKind::Let {
+        pattern: pat,
+        ty: None,
+        init: Some(init),
+    })
 }
 
 /// `<lhs> = <rhs>;` (a bare assignment statement, not a `let`).
 pub fn assign_stmt(lhs: IrExpr, rhs: IrExpr) -> IrStmt {
-    ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign { left: Box::new(lhs), right: Box::new(rhs) })))
+    ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+        left: Box::new(lhs),
+        right: Box::new(rhs),
+    })))
 }
 
 /// `<pool>[<idx>] = <value>; <pool>_written[<idx>] = true;` -- a pool's own
@@ -207,7 +263,10 @@ pub fn assign_stmt(lhs: IrExpr, rhs: IrExpr) -> IrStmt {
 pub fn pool_write_stmts(pool: &str, written: &str, idx: usize, value: IrExpr) -> [IrStmt; 2] {
     [
         assign_stmt(index_lit_expr(pool, idx), value),
-        assign_stmt(index_lit_expr(written, idx), ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+        assign_stmt(
+            index_lit_expr(written, idx),
+            ir_expr(IrExprKind::Lit(IrLit::Bool(true))),
+        ),
     ]
 }
 
@@ -221,7 +280,10 @@ pub fn array_from_fn_expr(idx_var: &str, body: IrExpr) -> IrExpr {
             type_args: vec![],
         })),
         args: vec![ir_expr(IrExprKind::Closure {
-            params: vec![IrClosureParam { pattern: IrPattern::ident(idx_var), ty: None }],
+            params: vec![IrClosureParam {
+                pattern: IrPattern::ident(idx_var),
+                ty: None,
+            }],
             ret_type: None,
             body: Box::new(body),
         })],
@@ -230,17 +292,28 @@ pub fn array_from_fn_expr(idx_var: &str, body: IrExpr) -> IrExpr {
 
 /// `<a> * <b>`
 pub fn mul_expr(a: IrExpr, b: IrExpr) -> IrExpr {
-    ir_expr(IrExprKind::Binary { op: SpecBinOp::Mul, left: Box::new(a), right: Box::new(b) })
+    ir_expr(IrExprKind::Binary {
+        op: SpecBinOp::Mul,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 
 /// `<a> + <b>`
 pub fn add_expr(a: IrExpr, b: IrExpr) -> IrExpr {
-    ir_expr(IrExprKind::Binary { op: SpecBinOp::Add, left: Box::new(a), right: Box::new(b) })
+    ir_expr(IrExprKind::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(a),
+        right: Box::new(b),
+    })
 }
 
 /// `<a> as <ty>`
 pub fn cast_expr(a: IrExpr, ty: IrType) -> IrExpr {
-    ir_expr(IrExprKind::Cast { expr: Box::new(a), ty: Box::new(ty) })
+    ir_expr(IrExprKind::Cast {
+        expr: Box::new(a),
+        ty: Box::new(ty),
+    })
 }
 
 /// `__assert_true(<cond>, "<msg>")` -- a real function call, not the
@@ -257,7 +330,10 @@ pub fn cast_expr(a: IrExpr, ty: IrType) -> IrExpr {
 /// simplification, not a correctness change: the assertion still fires
 /// correctly, it just can't name which real step it fired on.
 pub fn assert_true_stmt(cond: IrExpr, msg: &str) -> IrStmt {
-    ir_stmt(IrStmtKind::Semi(call_expr("__assert_true", vec![cond, str_lit(msg)])))
+    ir_stmt(IrStmtKind::Semi(call_expr(
+        "__assert_true",
+        vec![cond, str_lit(msg)],
+    )))
 }
 
 /// `let <name>: [Gf128; and_count] = core::array::from_fn(|k| Gf128::from_u64(
@@ -267,14 +343,25 @@ pub fn assert_true_stmt(cond: IrExpr, msg: &str) -> IrStmt {
 /// deterministic arithmetic formula, not real Fiat-Shamir/verifier
 /// randomness" -- soundness doesn't depend on this being unpredictable
 /// here, this is a driven *test*, not a real deployment).
-pub fn r_ands_decl_stmt(name: &str, and_count: usize, step_expr: &str, and_gate_seed: u64) -> IrStmt {
+pub fn r_ands_decl_stmt(
+    name: &str,
+    and_count: usize,
+    step_expr: &str,
+    and_gate_seed: u64,
+) -> IrStmt {
     let step_as_u64 = cast_expr(var(step_expr), IrType::Primitive(PrimitiveType::U64));
     let seed_term = mul_expr(step_as_u64, int_lit(10_000_000));
-    let seed_term = add_expr(seed_term, mul_expr(int_lit(and_gate_seed as i128), int_lit(100_000)));
+    let seed_term = add_expr(
+        seed_term,
+        mul_expr(int_lit(and_gate_seed as i128), int_lit(100_000)),
+    );
     let scaled = mul_expr(seed_term, int_lit(1_000_003));
     let k_as_u64 = cast_expr(var("k"), IrType::Primitive(PrimitiveType::U64));
     let body = path_call_expr(&["Gf128", "from_u64"], vec![add_expr(scaled, k_as_u64)]);
-    let gf128_ty = IrType::Struct { kind: volar_compiler::ir::StructKind::Custom("Gf128".into()), type_args: vec![] };
+    let gf128_ty = IrType::Struct {
+        kind: volar_compiler::ir::StructKind::Custom("Gf128".into()),
+        type_args: vec![],
+    };
     let ty = IrType::Array {
         kind: volar_compiler::ir::ArrayKind::FixedArray,
         elem: Box::new(gf128_ty),
@@ -301,7 +388,10 @@ pub fn synth_pool_decl_stmts(total_vars: usize) -> Vec<IrStmt> {
     };
     let q_ty = IrType::Struct {
         kind: volar_compiler::ir::StructKind::Custom("Q".into()),
-        type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("Galois".into())],
+        type_args: vec![
+            IrType::TypeParam("N".into()),
+            IrType::TypeParam("Galois".into()),
+        ],
     };
     let vope_default = path_call_expr(&["Vope", "default"], vec![]);
     let q_default = path_call_expr(&["Q", "default"], vec![]);
@@ -314,8 +404,15 @@ pub fn synth_pool_decl_stmts(total_vars: usize) -> Vec<IrStmt> {
         }),
         ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident("_synth_pool_vope_written").as_mut(),
-            ty: Some(box_array_type(IrType::Primitive(PrimitiveType::Bool), total_vars)),
-            init: Some(box_new_array_expr(IrType::Primitive(PrimitiveType::Bool), false_lit.clone(), total_vars)),
+            ty: Some(box_array_type(
+                IrType::Primitive(PrimitiveType::Bool),
+                total_vars,
+            )),
+            init: Some(box_new_array_expr(
+                IrType::Primitive(PrimitiveType::Bool),
+                false_lit.clone(),
+                total_vars,
+            )),
         }),
         ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident("_synth_pool_q").as_mut(),
@@ -324,8 +421,15 @@ pub fn synth_pool_decl_stmts(total_vars: usize) -> Vec<IrStmt> {
         }),
         ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident("_synth_pool_q_written").as_mut(),
-            ty: Some(box_array_type(IrType::Primitive(PrimitiveType::Bool), total_vars)),
-            init: Some(box_new_array_expr(IrType::Primitive(PrimitiveType::Bool), false_lit, total_vars)),
+            ty: Some(box_array_type(
+                IrType::Primitive(PrimitiveType::Bool),
+                total_vars,
+            )),
+            init: Some(box_new_array_expr(
+                IrType::Primitive(PrimitiveType::Bool),
+                false_lit,
+                total_vars,
+            )),
         }),
     ]
 }
@@ -340,7 +444,14 @@ pub fn print_stmts(stmts: &[IrStmt]) -> String {
     use volar_compiler::printer::{DisplayRust, StmtWriter};
     let mut out = String::new();
     for stmt in stmts {
-        out.push_str(&DisplayRust(StmtWriter { stmt, level: 0, ctx: None }).to_string());
+        out.push_str(
+            &DisplayRust(StmtWriter {
+                stmt,
+                level: 0,
+                ctx: None,
+            })
+            .to_string(),
+        );
     }
     out
 }

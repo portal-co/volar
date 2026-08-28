@@ -384,10 +384,7 @@ mod tests {
             data: [0xBB; 16],
         };
 
-        let response = server_step::<4, 16, 3, 7>(
-            &mut tree,
-            ServerRequest::ReadPath { leaf: 0 },
-        );
+        let response = server_step::<4, 16, 3, 7>(&mut tree, ServerRequest::ReadPath { leaf: 0 });
         match response {
             ServerResponse::PathBuckets { buckets } => {
                 // Path to leaf 0: [0, 1, 3]

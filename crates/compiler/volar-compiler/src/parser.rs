@@ -48,7 +48,8 @@ pub fn parse_sources(
     };
 
     for input in sources {
-        let file = parse_file(input.source).map_err(|e| CompilerError::ParseError(e.to_string()))?;
+        let file =
+            parse_file(input.source).map_err(|e| CompilerError::ParseError(e.to_string()))?;
         for item in &file.items {
             match item {
                 Item::Struct(s) => {
@@ -92,7 +93,11 @@ pub fn parse_sources(
     Ok(module)
 }
 
-pub fn parse_source(source: &str, name: &str, module_path: &[String]) -> Result<IrModule<IrFunction>> {
+pub fn parse_source(
+    source: &str,
+    name: &str,
+    module_path: &[String],
+) -> Result<IrModule<IrFunction>> {
     parse_sources(&[SourceInput { source, name }], name, module_path)
 }
 
@@ -184,7 +189,11 @@ fn parse_native_volar_type(attrs: &[syn::Attribute]) -> Option<volar_ir_common::
         }
         let doc_text: String = match &attr.meta {
             syn::Meta::NameValue(nv) => {
-                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+                {
                     s.value()
                 } else {
                     continue;
@@ -205,17 +214,17 @@ fn parse_native_volar_type(attrs: &[syn::Attribute]) -> Option<volar_ir_common::
 fn volar_native_type_from_str(s: &str) -> Option<volar_ir_common::Type> {
     use volar_ir_common::Type;
     match s {
-        "Bit"               => Some(Type::Bit),
-        "AES8" | "Galois8"  => Some(Type::AES8),
-        "Galois64"          => Some(Type::Galois64),
-        "_8"  | "U8"        => Some(Type::_8),
-        "_16" | "U16"       => Some(Type::_16),
-        "_32" | "U32"       => Some(Type::_32),
-        "_64" | "U64"       => Some(Type::_64),
-        "_128"| "U128"      => Some(Type::_128),
-        "_256"              => Some(Type::_256),
-        "Z3"                => Some(Type::Z3),
-        _                   => None,
+        "Bit" => Some(Type::Bit),
+        "AES8" | "Galois8" => Some(Type::AES8),
+        "Galois64" => Some(Type::Galois64),
+        "_8" | "U8" => Some(Type::_8),
+        "_16" | "U16" => Some(Type::_16),
+        "_32" | "U32" => Some(Type::_32),
+        "_64" | "U64" => Some(Type::_64),
+        "_128" | "U128" => Some(Type::_128),
+        "_256" => Some(Type::_256),
+        "Z3" => Some(Type::Z3),
+        _ => None,
     }
 }
 
@@ -433,7 +442,8 @@ fn convert_impl(i: &syn::ItemImpl) -> Result<IrImpl> {
 
 fn convert_impl_item(item: &syn::ImplItem) -> Result<Option<IrImplItem>> {
     match item {
-        syn::ImplItem::Fn(m) => Ok(Some(IrImplItem::Method(IrFunction { no_inline: false,
+        syn::ImplItem::Fn(m) => Ok(Some(IrImplItem::Method(IrFunction {
+            no_inline: false,
             name: m.sig.ident.to_string(),
             module_path: vec![],
             generics: m
@@ -492,7 +502,8 @@ fn convert_impl_item(item: &syn::ImplItem) -> Result<Option<IrImplItem>> {
 
 fn convert_function(f: &syn::ItemFn) -> Result<IrFunction> {
     let external_kind = parse_external_kind(&f.attrs);
-    Ok(IrFunction { no_inline: false,
+    Ok(IrFunction {
+        no_inline: false,
         name: f.sig.ident.to_string(),
         module_path: vec![],
         generics: f
@@ -547,9 +558,15 @@ fn convert_function(f: &syn::ItemFn) -> Result<IrFunction> {
 /// These may be attached by external proc-macros or written directly.
 fn parse_external_kind(attrs: &[syn::Attribute]) -> ExternalKind {
     for attr in attrs {
-        if attr.path().is_ident("oracle") { return ExternalKind::Oracle; }
-        if attr.path().is_ident("action") { return ExternalKind::Action; }
-        if attr.path().is_ident("rng")    { return ExternalKind::Rng; }
+        if attr.path().is_ident("oracle") {
+            return ExternalKind::Oracle;
+        }
+        if attr.path().is_ident("action") {
+            return ExternalKind::Action;
+        }
+        if attr.path().is_ident("rng") {
+            return ExternalKind::Rng;
+        }
     }
     ExternalKind::Normal
 }
@@ -1517,7 +1534,9 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
             let prefix = &segments[..segments.len() - 1];
             if prefix == ["GenericArray"]
                 || prefix == ["Array"]
-                || prefix.iter().any(|s| s == "GenericArray" || s == "Array" || s == "Vec")
+                || prefix
+                    .iter()
+                    .any(|s| s == "GenericArray" || s == "Array" || s == "Vec")
             {
                 let (elem_ty, len) = extract_array_type_params(&params);
                 let array_ty = match elem_ty {
@@ -1552,7 +1571,9 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                 .unwrap_or(false)
                 && first.len() <= 3;
             if is_length_param {
-                return Ok(ir_expr(IrExprKind::LengthOf(ArrayLength::TypeParam(first.clone()))));
+                return Ok(ir_expr(IrExprKind::LengthOf(ArrayLength::TypeParam(
+                    first.clone(),
+                ))));
             }
         }
     }
@@ -2104,21 +2125,29 @@ fn convert_block(block: &syn::Block) -> Result<IrBlock> {
                 } else {
                     None
                 };
-                stmts.push(volar_ir_common::Node::new(IrStmtKind::Let {
-                    pattern: convert_pattern(&l.pat),
-                    ty,
-                    init: l
-                        .init
-                        .as_ref()
-                        .map(|init| convert_expr(&init.expr))
-                        .transpose()?,
-                }, (), None));
+                stmts.push(volar_ir_common::Node::new(
+                    IrStmtKind::Let {
+                        pattern: convert_pattern(&l.pat),
+                        ty,
+                        init: l
+                            .init
+                            .as_ref()
+                            .map(|init| convert_expr(&init.expr))
+                            .transpose()?,
+                    },
+                    (),
+                    None,
+                ));
             }
             syn::Stmt::Expr(e, semi) => {
                 if is_last && semi.is_none() {
                     expr = Some(Box::new(convert_expr(e)?));
                 } else {
-                    stmts.push(volar_ir_common::Node::new(IrStmtKind::Semi(convert_expr(e)?), (), None));
+                    stmts.push(volar_ir_common::Node::new(
+                        IrStmtKind::Semi(convert_expr(e)?),
+                        (),
+                        None,
+                    ));
                 }
             }
             _ => {}

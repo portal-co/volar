@@ -145,7 +145,10 @@ impl<F: Field, B: BetaOf<F>> PartialEq for Ext<F, B> {
 impl<F: Field, B: BetaOf<F>> Eq for Ext<F, B> {}
 impl<F: Field, B: BetaOf<F>> core::fmt::Debug for Ext<F, B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Ext").field("lo", &self.lo).field("hi", &self.hi).finish()
+        f.debug_struct("Ext")
+            .field("lo", &self.lo)
+            .field("hi", &self.hi)
+            .finish()
     }
 }
 impl<F: Field, B: BetaOf<F>> Default for Ext<F, B> {
@@ -165,7 +168,11 @@ pub trait BetaOf<F: Field>: Copy + Clone + core::fmt::Debug {
 
 impl<F: Field, B: BetaOf<F>> Ext<F, B> {
     pub const fn new(lo: F, hi: F) -> Self {
-        Ext { lo, hi, _beta: core::marker::PhantomData }
+        Ext {
+            lo,
+            hi,
+            _beta: core::marker::PhantomData,
+        }
     }
 }
 
@@ -274,7 +281,10 @@ mod tests {
     fn gf128_from_bytes(bytes: &[u8]) -> Gf128 {
         // Rebuild a Gf128 from 16 raw bytes via repeated halving — mirrors
         // `to_bytes`'s layout (lo half first, then hi half, recursively).
-        fn build_ext<F: Field, B: BetaOf<F>>(bytes: &[u8], from_half: impl Fn(&[u8]) -> F) -> Ext<F, B> {
+        fn build_ext<F: Field, B: BetaOf<F>>(
+            bytes: &[u8],
+            from_half: impl Fn(&[u8]) -> F,
+        ) -> Ext<F, B> {
             let half = bytes.len() / 2;
             Ext::new(from_half(&bytes[..half]), from_half(&bytes[half..]))
         }
@@ -320,10 +330,16 @@ mod tests {
     fn defining_relation_x_squared_eq_x_plus_beta() {
         // x = (0, 1) at each level; check x^2 = x + BETA.
         let x16 = Gf16::new(Galois::ZERO, Galois::ONE);
-        assert_eq!(x16.mul(&x16), x16.add(&Gf16::new(Beta8::beta(), Galois::ZERO)));
+        assert_eq!(
+            x16.mul(&x16),
+            x16.add(&Gf16::new(Beta8::beta(), Galois::ZERO))
+        );
 
         let x128 = Gf128::new(Gf64::ZERO, Gf64::ONE);
-        assert_eq!(x128.mul(&x128), x128.add(&Gf128::new(Beta64::beta(), Gf64::ZERO)));
+        assert_eq!(
+            x128.mul(&x128),
+            x128.add(&Gf128::new(Beta64::beta(), Gf64::ZERO))
+        );
     }
 
     #[test]
@@ -341,7 +357,11 @@ mod tests {
             };
             let a = gf128_from_bytes(&bytes);
             let order = u128::MAX; // 2^128 - 1
-            assert_eq!(field_pow(a, order), Gf128::ONE, "a^(2^128-1) must be 1 for {a:?}");
+            assert_eq!(
+                field_pow(a, order),
+                Gf128::ONE,
+                "a^(2^128-1) must be 1 for {a:?}"
+            );
         }
     }
 

@@ -23,11 +23,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use volar_compiler::ir::{
-    IrBlock, IrExpr, IrExprKind, IrFunction, IrIterChain, IrMatchArm, IrModule, IrStmt,
-    IrStmtKind, IterChainSource, IterStep, IterTerminal,
+    IrBlock, IrExpr, IrExprKind, IrFunction, IrIterChain, IrMatchArm, IrModule, IrStmt, IrStmtKind,
+    IterChainSource, IterStep, IterTerminal,
 };
 use volar_ir::ir::IRBlocks;
-use volar_lir_codegen::{lower_function_with_registry, mono::MonoEnv, structs::build_struct_registry};
+use volar_lir_codegen::{
+    lower_function_with_registry, mono::MonoEnv, structs::build_struct_registry,
+};
 
 use crate::VolarIrTarget;
 
@@ -184,11 +186,12 @@ fn collect_calls_expr(
             collect_calls_expr(left, name_to_idx, out);
             collect_calls_expr(right, name_to_idx, out);
         }
-        IrExprKind::Unary { expr: inner, .. }
-        | IrExprKind::Cast { expr: inner, .. } => {
+        IrExprKind::Unary { expr: inner, .. } | IrExprKind::Cast { expr: inner, .. } => {
             collect_calls_expr(inner, name_to_idx, out);
         }
-        IrExprKind::Return(Some(inner)) | IrExprKind::Break(Some(inner)) | IrExprKind::Try(inner) => {
+        IrExprKind::Return(Some(inner))
+        | IrExprKind::Break(Some(inner))
+        | IrExprKind::Try(inner) => {
             collect_calls_expr(inner, name_to_idx, out);
         }
         IrExprKind::MethodCall { receiver, args, .. } => {
@@ -224,22 +227,33 @@ fn collect_calls_expr(
             collect_calls_expr(receiver, name_to_idx, out);
             collect_calls_expr(body, name_to_idx, out);
         }
-        IrExprKind::RawZip { left, right, body, .. } => {
+        IrExprKind::RawZip {
+            left, right, body, ..
+        } => {
             collect_calls_expr(left, name_to_idx, out);
             collect_calls_expr(right, name_to_idx, out);
             collect_calls_expr(body, name_to_idx, out);
         }
-        IrExprKind::RawFold { receiver, init, body, .. } => {
+        IrExprKind::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
             collect_calls_expr(receiver, name_to_idx, out);
             collect_calls_expr(init, name_to_idx, out);
             collect_calls_expr(body, name_to_idx, out);
         }
-        IrExprKind::BoundedLoop { start, end, body, .. } => {
+        IrExprKind::BoundedLoop {
+            start, end, body, ..
+        } => {
             collect_calls_expr(start, name_to_idx, out);
             collect_calls_expr(end, name_to_idx, out);
             collect_calls_block(body, name_to_idx, out);
         }
-        IrExprKind::IterLoop { collection, body, .. } => {
+        IrExprKind::IterLoop {
+            collection, body, ..
+        } => {
             collect_calls_expr(collection, name_to_idx, out);
             collect_calls_block(body, name_to_idx, out);
         }
@@ -248,7 +262,11 @@ fn collect_calls_expr(
             collect_calls_block(body, name_to_idx, out);
         }
         IrExprKind::Block(b) => collect_calls_block(b, name_to_idx, out),
-        IrExprKind::If { cond, then_branch, else_branch } => {
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             collect_calls_expr(cond, name_to_idx, out);
             collect_calls_block(then_branch, name_to_idx, out);
             if let Some(e) = else_branch {
@@ -272,8 +290,12 @@ fn collect_calls_expr(
         IrExprKind::IterPipeline(chain) => collect_calls_chain(chain, name_to_idx, out),
 
         IrExprKind::Range { start, end, .. } => {
-            if let Some(s) = start { collect_calls_expr(s, name_to_idx, out); }
-            if let Some(e) = end   { collect_calls_expr(e, name_to_idx, out); }
+            if let Some(s) = start {
+                collect_calls_expr(s, name_to_idx, out);
+            }
+            if let Some(e) = end {
+                collect_calls_expr(e, name_to_idx, out);
+            }
         }
         // Leaf nodes — no sub-expressions containing calls.
         IrExprKind::Lit(_)

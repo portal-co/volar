@@ -251,7 +251,10 @@ fn legacy_interpreter_wat(code_bytes: &[u8], data_bytes: &[u8]) -> String {
 /// [`crate::interp::assemble_program`] / [`crate::interp::initial_data_bytes`].
 #[allow(dead_code)]
 fn legacy_test_program_wat() -> String {
-    legacy_interpreter_wat(&crate::interp::program_bytes(), &crate::interp::initial_data_bytes())
+    legacy_interpreter_wat(
+        &crate::interp::program_bytes(),
+        &crate::interp::initial_data_bytes(),
+    )
 }
 
 #[allow(dead_code)]
@@ -280,18 +283,24 @@ mod tests {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &wasm_bytes).expect("module should validate");
         let mut store = wasmtime::Store::new(&engine, ());
-        let instance =
-            wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation should succeed");
+        let instance = wasmtime::Instance::new(&mut store, &module, &[])
+            .expect("instantiation should succeed");
 
         let run = instance
             .get_typed_func::<(), i32>(&mut store, "run")
             .expect("run function should be exported with the right type");
         let actual_sum = run.call(&mut store, ()).expect("run should not trap");
 
-        let data_mem = instance.get_memory(&mut store, "data").expect("data memory export");
+        let data_mem = instance
+            .get_memory(&mut store, "data")
+            .expect("data memory export");
         let mut result_bytes = [0u8; 4];
         data_mem
-            .read(&store, crate::interp::RESULT_ADDR as usize, &mut result_bytes)
+            .read(
+                &store,
+                crate::interp::RESULT_ADDR as usize,
+                &mut result_bytes,
+            )
             .expect("result address should be in bounds");
         let actual_stored = i32::from_le_bytes(result_bytes);
 
@@ -299,13 +308,20 @@ mod tests {
         let mut expected_mem = crate::interp::initial_data_bytes();
         let expected_sum = crate::interp::native_reference(&program, &mut expected_mem);
         let expected_stored = i32::from_le_bytes(
-            expected_mem[crate::interp::RESULT_ADDR as usize..crate::interp::RESULT_ADDR as usize + 4]
+            expected_mem
+                [crate::interp::RESULT_ADDR as usize..crate::interp::RESULT_ADDR as usize + 4]
                 .try_into()
                 .unwrap(),
         );
 
-        assert_eq!(actual_sum, expected_sum, "WAT interpreter's returned sum must match native reference");
-        assert_eq!(actual_stored, expected_stored, "WAT interpreter's stored result must match native reference");
+        assert_eq!(
+            actual_sum, expected_sum,
+            "WAT interpreter's returned sum must match native reference"
+        );
+        assert_eq!(
+            actual_stored, expected_stored,
+            "WAT interpreter's stored result must match native reference"
+        );
     }
 
     /// The actual Milestone-1 checkpoint for this step: the real interpreter
@@ -327,7 +343,11 @@ mod tests {
         );
 
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
-        assert_eq!(target.module.funcs.len(), 1, "expected exactly one lowered function");
+        assert_eq!(
+            target.module.funcs.len(),
+            1,
+            "expected exactly one lowered function"
+        );
     }
 
     /// The next step of the same claim: the lowered VAFFLE module continues
@@ -349,14 +369,21 @@ mod tests {
             ir_blocks.blocks.len()
         );
         assert!(!ir_blocks.is_circuit());
-        assert_eq!(movfuscated.blocks.len(), 1, "movfuscate_ir must collapse to a single block");
+        assert_eq!(
+            movfuscated.blocks.len(),
+            1,
+            "movfuscate_ir must collapse to a single block"
+        );
         assert!(
             !movfuscated.is_circuit(),
             "the movfuscated block still self-loops (JumpCond back to Block(0)); \
              is_circuit() requires an unconditional Jmp(Return), which only the \
              *unrolled* circuit has"
         );
-        assert!(circuit.is_circuit(), "unrolled interpreter must satisfy is_circuit()");
+        assert!(
+            circuit.is_circuit(),
+            "unrolled interpreter must satisfy is_circuit()"
+        );
     }
 
     /// Shared helper: parse+lower the interpreter WAT all the way to a
@@ -425,13 +452,27 @@ mod tests {
         // versa), so alternate both until neither changes anything. Safe
         // here (unlike post-movfuscation) since it runs *before*
         // `movfuscate_ir_with_boundary` even computes boundary metadata.
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
-        let (movfuscated, boundary, accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, boundary, accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
 
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
         let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, limit, mode);
-        (ir_blocks, movfuscated, circuit, types, bit_ty, boundary, accum_info)
+        (
+            ir_blocks,
+            movfuscated,
+            circuit,
+            types,
+            bit_ty,
+            boundary,
+            accum_info,
+        )
     }
 
     /// Alternate two boolean-returning "did anything change" passes until
@@ -489,23 +530,31 @@ mod tests {
         extra_live: &[u32],
     ) -> std::collections::BTreeMap<u32, u32> {
         assert_eq!(
-            blocks.blocks.len(), 1,
+            blocks.blocks.len(),
+            1,
             "optimize_to_fixpoint_with_remap: only meaningful for a single \
              (post-movfuscation) block -- MovfuscBlockBoundary/MovfuscAccumInfo \
              var ids are only well-defined against exactly one block",
         );
         let n0 = (blocks.blocks[0].params.len() + blocks.blocks[0].stmts.len()) as u32;
-        let mut cumulative: std::collections::BTreeMap<u32, u32> = (0..n0).map(|v| (v, v)).collect();
+        let mut cumulative: std::collections::BTreeMap<u32, u32> =
+            (0..n0).map(|v| (v, v)).collect();
         loop {
             let a = pass_a(blocks, types);
             let b = pass_b(blocks, types);
-            let current_extra_live: Vec<u32> = extra_live.iter()
+            let current_extra_live: Vec<u32> = extra_live
+                .iter()
                 .filter_map(|v| cumulative.get(v).copied())
                 .collect();
-            let (c, mut remaps) = volar_ir_opt::ir::dce_ir_blocks_with_remap_and_roots(blocks, types, &current_extra_live);
+            let (c, mut remaps) = volar_ir_opt::ir::dce_ir_blocks_with_remap_and_roots(
+                blocks,
+                types,
+                &current_extra_live,
+            );
             if c {
                 let step_remap = remaps.remove(0);
-                cumulative = cumulative.into_iter()
+                cumulative = cumulative
+                    .into_iter()
                     .filter_map(|(old, mid)| step_remap.get(&mid).map(|&new| (old, new)))
                     .collect();
             }
@@ -612,13 +661,24 @@ mod tests {
         let (prover_module, prover_trace) =
             weave_vole_prover_ir_with_mode(&circuit, &types, "riscv_step", &mode, None);
         let pf = &prover_module.inner().functions[0];
-        assert_eq!(pf.name, "vole_prove_ir_riscv_step", "missing woven prover fn");
+        assert_eq!(
+            pf.name, "vole_prove_ir_riscv_step",
+            "missing woven prover fn"
+        );
 
         let (verifier_module, verifier_trace) = weave_vole_verifier_ir_with_mode_and_trace(
-            &circuit, &types, "riscv_step", &mode, &IopSink, None,
+            &circuit,
+            &types,
+            "riscv_step",
+            &mode,
+            &IopSink,
+            None,
         );
         let vf = &verifier_module.inner().functions[0];
-        assert_eq!(vf.name, "vole_verify_ir_riscv_step", "missing woven verifier fn");
+        assert_eq!(
+            vf.name, "vole_verify_ir_riscv_step",
+            "missing woven verifier fn"
+        );
         assert!(
             vf.params.iter().any(|p| p.name.starts_with("oracle_rd_")),
             "commitment-mode reads must be oracle params: {:?}",
@@ -636,7 +696,10 @@ mod tests {
         // Commitment mode: both memories' reads/writes are traced (code
         // fetch is public-but-still-committed under today's uniform-mode
         // API; data RAM is the one that actually matters for soundness).
-        assert!(!prover_trace.entries.is_empty(), "expected a non-empty memory trace for one interpreter step");
+        assert!(
+            !prover_trace.entries.is_empty(),
+            "expected a non-empty memory trace for one interpreter step"
+        );
         assert_eq!(prover_trace.entries.len(), verifier_trace.entries.len());
     }
 
@@ -671,14 +734,25 @@ mod tests {
         eprintln!("pre-movfuscation blocks: {}", ir_blocks.blocks.len());
         eprintln!(
             "pre-movfuscation total stmts: {}",
-            ir_blocks.blocks.iter().map(|b| b.stmts.len()).sum::<usize>()
+            ir_blocks
+                .blocks
+                .iter()
+                .map(|b| b.stmts.len())
+                .sum::<usize>()
         );
         eprintln!("movfuscated blocks: {}", movfuscated.blocks.len());
         eprintln!(
             "movfuscated total stmts: {}",
-            movfuscated.blocks.iter().map(|b| b.stmts.len()).sum::<usize>()
+            movfuscated
+                .blocks
+                .iter()
+                .map(|b| b.stmts.len())
+                .sum::<usize>()
         );
-        eprintln!("circuit (post lower_to_circuit_ir) blocks: {}", circuit.blocks.len());
+        eprintln!(
+            "circuit (post lower_to_circuit_ir) blocks: {}",
+            circuit.blocks.len()
+        );
         eprintln!(
             "circuit total stmts: {}",
             circuit.blocks.iter().map(|b| b.stmts.len()).sum::<usize>()
@@ -740,14 +814,19 @@ mod tests {
         let mut poly_total = 0usize;
         let mut poly_wide = 0usize;
         let mut poly_wide_supported = 0usize;
-        let mut max_degree_hist: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
-        let mut and_monos_hist: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        let mut max_degree_hist: std::collections::BTreeMap<usize, usize> =
+            std::collections::BTreeMap::new();
+        let mut and_monos_hist: std::collections::BTreeMap<usize, usize> =
+            std::collections::BTreeMap::new();
         for stmt in &circuit.blocks[0].stmts {
             if let Stmt::Poly { ty, coeffs, .. } = &stmt.kind {
                 poly_total += 1;
                 let width = test_type_width(ty, &types);
                 let max_deg = coeffs.keys().map(|m| m.len()).max().unwrap_or(0);
-                let and_count = coeffs.iter().filter(|(m, c)| *c % 2 == 1 && m.len() == 2).count();
+                let and_count = coeffs
+                    .iter()
+                    .filter(|(m, c)| *c % 2 == 1 && m.len() == 2)
+                    .count();
                 *max_degree_hist.entry(max_deg).or_insert(0) += 1;
                 if width > 1 {
                     poly_wide += 1;
@@ -758,15 +837,21 @@ mod tests {
                 }
             }
         }
-        eprintln!("poly stmts total: {poly_total}, wide (width>1): {poly_wide}, wide+degree<=2: {poly_wide_supported}");
+        eprintln!(
+            "poly stmts total: {poly_total}, wide (width>1): {poly_wide}, wide+degree<=2: {poly_wide_supported}"
+        );
         eprintln!("max-degree histogram: {max_degree_hist:?}");
         eprintln!("and-monomial-count histogram (wide only): {and_monos_hist:?}");
 
         let mode = StorageMode::Commitment;
         let (module, trace) =
             weave_vole_prover_ir_with_mode(&circuit, &types, "riscv_step", &mode, None);
-        let total_woven_stmts: usize =
-            module.inner().functions.iter().map(|f| f.body.stmts.len()).sum();
+        let total_woven_stmts: usize = module
+            .inner()
+            .functions
+            .iter()
+            .map(|f| f.body.stmts.len())
+            .sum();
         eprintln!("woven prover total stmts: {total_woven_stmts}");
         eprintln!("memory trace entries: {}", trace.entries.len());
     }
@@ -791,34 +876,66 @@ mod tests {
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_weaver::{StorageMode, weave_vole_verifier_ir_split_with_trace, IopSink};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
+        use volar_weaver::{IopSink, StorageMode, weave_vole_verifier_ir_split_with_trace};
 
         let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
         let mut target = volar_vaffle_target::VaffleTarget::new();
         let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
         );
         assert!(errors.is_empty());
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
-        let and_count_via_real_weaver = |movfuscated_types: &mut volar_ir::ir::IRTypes, movfuscated: &volar_ir::ir::IRBlocks, boundary: &[volar_ir_passes::MovfuscBlockBoundary], accum_info: &volar_ir_passes::MovfuscAccumInfo| -> usize {
+        let and_count_via_real_weaver = |movfuscated_types: &mut volar_ir::ir::IRTypes,
+                                         movfuscated: &volar_ir::ir::IRBlocks,
+                                         boundary: &[volar_ir_passes::MovfuscBlockBoundary],
+                                         accum_info: &volar_ir_passes::MovfuscAccumInfo|
+         -> usize {
             let bit_ty = movfuscated_types.intern(IRType::Primitive(Type::Bit));
-            let circuit = lower_to_circuit_ir(movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+            let circuit =
+                lower_to_circuit_ir(movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
             let mut total = 0usize;
             weave_vole_verifier_ir_split_with_trace(
-                &circuit, movfuscated_types, "cmp", &StorageMode::Commitment, &IopSink, boundary, accum_info, 1, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
-                |f| total += f.params.iter().filter(|p| p.name.starts_with("q_and_")).count(),
+                &circuit,
+                movfuscated_types,
+                "cmp",
+                &StorageMode::Commitment,
+                &IopSink,
+                boundary,
+                accum_info,
+                1,
+                volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+                |f| {
+                    total += f
+                        .params
+                        .iter()
+                        .filter(|p| p.name.starts_with("q_and_"))
+                        .count()
+                },
             );
             total
         };
 
         // WITHOUT post-movfuscation optimization.
         let mut types_no_opt = types.clone();
-        let (movfuscated_no_opt, boundary_no_opt, accum_info_no_opt) = movfuscate_ir_with_boundary(&ir_blocks, &mut types_no_opt);
-        let and_count_no_opt = and_count_via_real_weaver(&mut types_no_opt, &movfuscated_no_opt, &boundary_no_opt, &accum_info_no_opt);
+        let (movfuscated_no_opt, boundary_no_opt, accum_info_no_opt) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types_no_opt);
+        let and_count_no_opt = and_count_via_real_weaver(
+            &mut types_no_opt,
+            &movfuscated_no_opt,
+            &boundary_no_opt,
+            &accum_info_no_opt,
+        );
 
         // WITH post-movfuscation optimization. `optimize_to_fixpoint_with_remap`
         // (unlike the plain `optimize_to_fixpoint` used for the WITHOUT case
@@ -829,15 +946,31 @@ mod tests {
         // (fold_ir_blocks/store_forward_ir_blocks need no remap contribution;
         // only DCE renumbers -- see `dce_ir_blocks_with_remap`'s doc comment).
         let mut types_with_opt = types.clone();
-        let (mut movfuscated_with_opt, boundary_with_opt, accum_info_with_opt) = movfuscate_ir_with_boundary(&ir_blocks, &mut types_with_opt);
+        let (mut movfuscated_with_opt, boundary_with_opt, accum_info_with_opt) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types_with_opt);
         let extra_live = movfusc_referenced_vars(&boundary_with_opt, &accum_info_with_opt);
-        let remap = optimize_to_fixpoint_with_remap(&mut movfuscated_with_opt, &types_with_opt, &mut fold_ir_blocks, &mut store_forward_ir_blocks, &extra_live);
-        let boundary_with_opt = volar_ir_passes::remap_movfusc_boundaries(&boundary_with_opt, &remap);
-        let accum_info_with_opt = volar_ir_passes::remap_movfusc_accum_info(&accum_info_with_opt, &remap);
-        let and_count_with_opt = and_count_via_real_weaver(&mut types_with_opt, &movfuscated_with_opt, &boundary_with_opt, &accum_info_with_opt);
+        let remap = optimize_to_fixpoint_with_remap(
+            &mut movfuscated_with_opt,
+            &types_with_opt,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+            &extra_live,
+        );
+        let boundary_with_opt =
+            volar_ir_passes::remap_movfusc_boundaries(&boundary_with_opt, &remap);
+        let accum_info_with_opt =
+            volar_ir_passes::remap_movfusc_accum_info(&accum_info_with_opt, &remap);
+        let and_count_with_opt = and_count_via_real_weaver(
+            &mut types_with_opt,
+            &movfuscated_with_opt,
+            &boundary_with_opt,
+            &accum_info_with_opt,
+        );
 
         eprintln!("and_count WITHOUT post-movfuscation optimization: {and_count_no_opt}");
-        eprintln!("and_count WITH post-movfuscation optimization (boundary remapped through DCE): {and_count_with_opt}");
+        eprintln!(
+            "and_count WITH post-movfuscation optimization (boundary remapped through DCE): {and_count_with_opt}"
+        );
     }
 
     /// Milestone 1.5 Step B measurement: does the split verifier/prover
@@ -850,7 +983,10 @@ mod tests {
     #[ignore]
     fn measure_split_weave_on_real_interpreter() {
         use volar_ir_passes::LoweringMode;
-        use volar_weaver::{StorageMode, weave_vole_prover_ir_split, weave_vole_verifier_ir_split_with_trace, IopSink};
+        use volar_weaver::{
+            IopSink, StorageMode, weave_vole_prover_ir_split,
+            weave_vole_verifier_ir_split_with_trace,
+        };
 
         let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
@@ -870,14 +1006,25 @@ mod tests {
         let mut verifier_and_counts: std::vec::Vec<usize> = std::vec::Vec::new();
         let mut verifier_param_counts: std::vec::Vec<usize> = std::vec::Vec::new();
         let verifier_trace = weave_vole_verifier_ir_split_with_trace(
-            &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            &circuit,
+            &types,
+            "riscv_step",
+            &mode,
+            &IopSink,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
             |f| {
                 // `q_and` is one array-batched param (Milestone 1.6's
                 // 65535-arg-limit fix), not one scalar per gate -- read
                 // its own declared array length instead of counting params.
                 let and_count = match f.params.iter().find(|p| p.name == "q_and") {
                     Some(p) => match &p.ty {
-                        volar_compiler::ir::IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                        volar_compiler::ir::IrType::Array {
+                            len: volar_compiler::ir::ArrayLength::Const(n),
+                            ..
+                        } => *n,
                         _ => 0,
                     },
                     None => 0,
@@ -894,11 +1041,21 @@ mod tests {
         let mut prover_hats_counts: std::vec::Vec<usize> = std::vec::Vec::new();
         let mut prover_param_counts: std::vec::Vec<usize> = std::vec::Vec::new();
         let prover_trace = weave_vole_prover_ir_split(
-            &circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            &circuit,
+            &types,
+            "riscv_step",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
             |f| {
                 let hats_len = match f.return_type.as_ref().unwrap() {
                     volar_compiler::ir::IrType::Tuple(elems) => match elems.last().unwrap() {
-                        volar_compiler::ir::IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                        volar_compiler::ir::IrType::Array {
+                            len: volar_compiler::ir::ArrayLength::Const(n),
+                            ..
+                        } => *n,
                         _ => 0,
                     },
                     _ => 0,
@@ -910,11 +1067,20 @@ mod tests {
 
         eprintln!("verifier per-function q_and counts: {verifier_and_counts:?}");
         eprintln!("verifier per-function param counts: {verifier_param_counts:?}");
-        eprintln!("verifier max param count: {}", verifier_param_counts.iter().max().unwrap());
-        eprintln!("verifier total and_count (sum across functions): {}", verifier_and_counts.iter().sum::<usize>());
+        eprintln!(
+            "verifier max param count: {}",
+            verifier_param_counts.iter().max().unwrap()
+        );
+        eprintln!(
+            "verifier total and_count (sum across functions): {}",
+            verifier_and_counts.iter().sum::<usize>()
+        );
         eprintln!("prover per-function hats counts: {prover_hats_counts:?}");
         eprintln!("prover per-function param counts: {prover_param_counts:?}");
-        eprintln!("prover max param count: {}", prover_param_counts.iter().max().unwrap());
+        eprintln!(
+            "prover max param count: {}",
+            prover_param_counts.iter().max().unwrap()
+        );
         eprintln!("verifier trace entries: {}", verifier_trace.entries.len());
         eprintln!("prover trace entries: {}", prover_trace.entries.len());
 
@@ -1005,13 +1171,15 @@ mod tests {
     #[test]
     #[ignore]
     fn trace_interpreter_plain_values_matches_native_reference() {
+        use volar_fuzz::interpreter::ir::{StorageMap, apply_pre_init, eval_ir_circuit_step};
         use volar_ir_passes::LoweringMode;
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, apply_pre_init, StorageMap};
 
         let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, _boundary, _accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("param widths: {param_widths:?}");
@@ -1020,7 +1188,8 @@ mod tests {
         apply_pre_init(&mut storage, &circuit.pre_init, &types);
         eprintln!("storage map after pre_init: {} entries", storage.len());
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
 
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
@@ -1033,10 +1202,20 @@ mod tests {
         // at this circuit's scale; budget real time to run this.
         const RAW_STEP_BUDGET: usize = 1700;
         while !done && step < RAW_STEP_BUDGET {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             done = outputs[0].iter().any(|&b| b);
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
-            if step % 20 == 0 || done { eprintln!("step {step}: done={done} full_state={full_state:?}"); }
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
+            if step % 20 == 0 || done {
+                eprintln!("step {step}: done={done} full_state={full_state:?}");
+            }
             // `outputs` is `[done, state[0..state_width], ret[0..ret_width]]` --
             // state and return are separate, non-overlapping segments; only
             // the first `param_widths.len()` slots are real next-state.
@@ -1044,7 +1223,10 @@ mod tests {
             step += 1;
         }
         eprintln!("halted after {step} steps (done={done})");
-        assert!(done, "interpreter circuit must halt within RAW_STEP_BUDGET raw steps via its own termination flag");
+        assert!(
+            done,
+            "interpreter circuit must halt within RAW_STEP_BUDGET raw steps via its own termination flag"
+        );
 
         // Find whichever (StorageId, TypeId) pair holds the data RAM's
         // real byte contents (the one with pre-init data whose length
@@ -1058,19 +1240,30 @@ mod tests {
         let mut found = false;
         for seg in &circuit.pre_init {
             if seg.data.len() as i32 == RESULT_ADDR + 4 {
-                let bytes: Vec<u8> = (0..4).map(|i| {
-                    let addr = (RESULT_ADDR + i) as u64;
-                    let bits = &storage[&(seg.storage, seg.ty, addr)];
-                    bits.iter().enumerate().map(|(j, &b)| (b as u8) << j).fold(0u8, |a, b| a | b)
-                }).collect();
+                let bytes: Vec<u8> = (0..4)
+                    .map(|i| {
+                        let addr = (RESULT_ADDR + i) as u64;
+                        let bits = &storage[&(seg.storage, seg.ty, addr)];
+                        bits.iter()
+                            .enumerate()
+                            .map(|(j, &b)| (b as u8) << j)
+                            .fold(0u8, |a, b| a | b)
+                    })
+                    .collect();
                 let word = i32::from_le_bytes(bytes.try_into().unwrap());
-                eprintln!("data RAM (storage={}) result word: {word} (expected {expected})", seg.storage.0);
+                eprintln!(
+                    "data RAM (storage={}) result word: {word} (expected {expected})",
+                    seg.storage.0
+                );
                 if word == expected {
                     found = true;
                 }
             }
         }
-        assert!(found, "some pre_init-seeded storage must hold the correct result word after real steps");
+        assert!(
+            found,
+            "some pre_init-seeded storage must hold the correct result word after real steps"
+        );
     }
 
     /// Milestone 1's own real checkpoint: drive the *real* RISC-V
@@ -1103,20 +1296,19 @@ mod tests {
     #[test]
     #[ignore]
     fn honest_interpreter_run_folds_and_finalizes_with_real_memory_boundary() {
-        use volar_ir_passes::LoweringMode;
-        use volar_ir_common::TypeId;
-        use volar_weaver::{
-            weave_vole_prover_ir_split, weave_vole_qsim_ir_split,
-            weave_vole_verifier_ir_split_with_trace, print_weaved_vole_module, IopSink,
-            StorageMode,
-        };
-        use volar_compiler::ir::IrFunction;
-        use volar_verifier_iop_runtime::run_iop_verifier_multi_file_with_extra_files;
-        use volar_fuzz::interpreter::ir::{
-            eval_ir_circuit_step_with_watch, apply_pre_init, bits_to_u64, bit_width, StorageMap,
-        };
-        use crate::split_driver::{generate_split_step, slot_name, Slot};
         use crate::memory_check_driver::{MemCheckAccounting, MemOpWitness};
+        use crate::split_driver::{Slot, generate_split_step, slot_name};
+        use volar_compiler::ir::IrFunction;
+        use volar_fuzz::interpreter::ir::{
+            StorageMap, apply_pre_init, bit_width, bits_to_u64, eval_ir_circuit_step_with_watch,
+        };
+        use volar_ir_common::TypeId;
+        use volar_ir_passes::LoweringMode;
+        use volar_verifier_iop_runtime::run_iop_verifier_multi_file_with_extra_files;
+        use volar_weaver::{
+            IopSink, StorageMode, print_weaved_vole_module, weave_vole_prover_ir_split,
+            weave_vole_qsim_ir_split, weave_vole_verifier_ir_split_with_trace,
+        };
 
         // Safety cap, not a truncation -- see the doc comment above.
         const RAW_STEP_BUDGET: usize = 5;
@@ -1137,11 +1329,22 @@ mod tests {
         // (but not from a role's own full function list, which stays
         // unfiltered for printing).
         let by_pos = |fs: &std::vec::Vec<IrFunction>| -> std::vec::Vec<IrFunction> {
-            fs.iter().filter(|f| !f.name.contains("_piece_")).cloned().collect()
+            fs.iter()
+                .filter(|f| !f.name.contains("_piece_"))
+                .cloned()
+                .collect()
         };
-        let module_of = |functions: std::vec::Vec<IrFunction>, name: &str| volar_compiler::ir::IrModule {
-            name: name.into(), functions, structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
-        };
+        let module_of =
+            |functions: std::vec::Vec<IrFunction>, name: &str| volar_compiler::ir::IrModule {
+                name: name.into(),
+                functions,
+                structs: vec![],
+                enums: vec![],
+                traits: vec![],
+                impls: vec![],
+                type_aliases: vec![],
+                consts: vec![],
+            };
 
         // Each role is woven, filtered-by-position, and printed to text in
         // full before moving to the next role -- NOT all three woven first
@@ -1156,7 +1359,17 @@ mod tests {
         // full AST at a time, plus the (much smaller) printed text and
         // `_by_pos` clones already produced for earlier roles.
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        let trace = weave_vole_prover_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| prover_funcs.push(f));
+        let trace = weave_vole_prover_ir_split(
+            &circuit,
+            &types,
+            "riscv",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| prover_funcs.push(f),
+        );
         // `trace.entries` also carries synthetic pre_init entries (the
         // weaver's own compile-time-constant "seed this cell's committed
         // value" wires, materialized on a separate `syn_id` counter
@@ -1169,37 +1382,68 @@ mod tests {
         // already handles each address's first-touch/init value
         // independently of this trace. Keep only the entries that
         // genuinely need real per-step watching.
-        let n_real_vars = circuit.blocks[0].params.len() as u32 + circuit.blocks[0].stmts.len() as u32;
-        let real_entries: std::vec::Vec<_> = trace.entries.iter()
+        let n_real_vars =
+            circuit.blocks[0].params.len() as u32 + circuit.blocks[0].stmts.len() as u32;
+        let real_entries: std::vec::Vec<_> = trace
+            .entries
+            .iter()
             .filter(|e| e.addr_var < n_real_vars && e.value_var < n_real_vars)
             .cloned()
             .collect();
-        eprintln!("memory trace entries: {} total, {} real (per-step watchable)", trace.entries.len(), real_entries.len());
+        eprintln!(
+            "memory trace entries: {} total, {} real (per-step watchable)",
+            trace.entries.len(),
+            real_entries.len()
+        );
         let prover_funcs_by_pos = by_pos(&prover_funcs);
         assert_eq!(prover_funcs_by_pos.len(), n_blocks + n_chunks + 1);
         let prover_total_funcs = prover_funcs.len();
         let prover_code = print_weaved_vole_module(&module_of(prover_funcs, "prover"));
 
         let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_qsim_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| qsim_funcs.push(f));
+        weave_vole_qsim_ir_split(
+            &circuit,
+            &types,
+            "riscv",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| qsim_funcs.push(f),
+        );
         let qsim_funcs_by_pos = by_pos(&qsim_funcs);
         assert_eq!(qsim_funcs_by_pos.len(), n_blocks + n_chunks + 1);
         let qsim_code = print_weaved_vole_module(&module_of(qsim_funcs, "qsim"));
 
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| verifier_funcs.push(f));
+        weave_vole_verifier_ir_split_with_trace(
+            &circuit,
+            &types,
+            "riscv",
+            &mode,
+            &IopSink,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| verifier_funcs.push(f),
+        );
         let verifier_funcs_by_pos = by_pos(&verifier_funcs);
         assert_eq!(verifier_funcs_by_pos.len(), n_blocks + n_chunks + 1);
         let verifier_code = print_weaved_vole_module(&module_of(verifier_funcs, "verifier"));
 
         eprintln!(
             "woven: {} functions per role ({n_blocks} blocks + {n_chunks} chunks + 1 finish, {} total incl. split pieces)",
-            prover_funcs_by_pos.len(), prover_total_funcs,
+            prover_funcs_by_pos.len(),
+            prover_total_funcs,
         );
         eprintln!(
             "printed source length: {} bytes across 3 files (prover {}, qsim {}, verifier {})",
             prover_code.len() + qsim_code.len() + verifier_code.len(),
-            prover_code.len(), qsim_code.len(), verifier_code.len(),
+            prover_code.len(),
+            qsim_code.len(),
+            verifier_code.len(),
         );
 
         // Ordered watch list: every real StorageRead/StorageWrite's own
@@ -1209,20 +1453,31 @@ mod tests {
         // doc). One watch pass per step recovers every real value
         // `generate_split_step`'s own `oracle_bits` and
         // `MemCheckAccounting` both need, without hand-deriving them.
-        let watch_vars: std::vec::Vec<u32> = real_entries.iter().flat_map(|e| [e.addr_var, e.value_var]).collect();
+        let watch_vars: std::vec::Vec<u32> = real_entries
+            .iter()
+            .flat_map(|e| [e.addr_var, e.value_var])
+            .collect();
 
         let mut storage: StorageMap = StorageMap::new();
         apply_pre_init(&mut storage, &circuit.pre_init, &types);
-        let mut pre_init_map: std::collections::BTreeMap<(u32, u32, u64), u64> = std::collections::BTreeMap::new();
+        let mut pre_init_map: std::collections::BTreeMap<(u32, u32, u64), u64> =
+            std::collections::BTreeMap::new();
         for seg in &circuit.pre_init {
             for i in 0..seg.data.len() {
-                pre_init_map.insert((seg.storage.0, seg.ty.0, (seg.offset + i) as u64), seg.as_u64(i));
+                pre_init_map.insert(
+                    (seg.storage.0, seg.ty.0, (seg.offset + i) as u64),
+                    seg.as_u64(i),
+                );
             }
         }
 
-        let param_widths: std::vec::Vec<usize> = circuit.blocks[0].params.iter()
-            .map(|&tid| bit_width(tid, &types)).collect();
-        let mut inputs: std::vec::Vec<std::vec::Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let param_widths: std::vec::Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
+            .map(|&tid| bit_width(tid, &types))
+            .collect();
+        let mut inputs: std::vec::Vec<std::vec::Vec<bool>> =
+            param_widths.iter().map(|&w| vec![false; w]).collect();
 
         // Phase B: scalar top-level params are pooled via `_w_pool`
         // instead of a per-value named Rust local -- see the matching
@@ -1240,22 +1495,39 @@ mod tests {
         );
         for (i, &w) in param_widths.iter().enumerate() {
             if w <= 1 {
-                zero_stmts += &format!("_w_pool_vope[{i}] = vope_zero(); _w_pool_vope_written[{i}] = true;\n");
-                zero_stmts += &format!("_w_pool_q[{i}] = q_zero(); _w_pool_q_written[{i}] = true;\n");
+                zero_stmts += &format!(
+                    "_w_pool_vope[{i}] = vope_zero(); _w_pool_vope_written[{i}] = true;\n"
+                );
+                zero_stmts +=
+                    &format!("_w_pool_q[{i}] = q_zero(); _w_pool_q_written[{i}] = true;\n");
             } else {
-                zero_stmts += &format!("let mut w{i}_vope: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n");
-                zero_stmts += &format!("let mut w{i}_q: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n");
+                zero_stmts += &format!(
+                    "let mut w{i}_vope: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n"
+                );
+                zero_stmts += &format!(
+                    "let mut w{i}_q: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n"
+                );
             }
         }
         zero_stmts += "let mut all_ok = true;\nlet mut fold_state = iop_accumulator_fresh();\n";
-        let entry_w: std::vec::Vec<(Slot, Slot)> = param_widths.iter().enumerate().map(|(i, &w)| {
-            if w <= 1 {
-                // Never actually read -- see `mem_probe.rs`'s matching comment.
-                (Slot::Scalar("_dead_pooled_w".to_string()), Slot::Scalar("_dead_pooled_w".to_string()))
-            } else {
-                (Slot::Array(format!("w{i}_vope"), w), Slot::Array(format!("w{i}_q"), w))
-            }
-        }).collect();
+        let entry_w: std::vec::Vec<(Slot, Slot)> = param_widths
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                if w <= 1 {
+                    // Never actually read -- see `mem_probe.rs`'s matching comment.
+                    (
+                        Slot::Scalar("_dead_pooled_w".to_string()),
+                        Slot::Scalar("_dead_pooled_w".to_string()),
+                    )
+                } else {
+                    (
+                        Slot::Array(format!("w{i}_vope"), w),
+                        Slot::Array(format!("w{i}_q"), w),
+                    )
+                }
+            })
+            .collect();
 
         // ---- Host-side pass: run the real interpreter to its own real
         // halt (or the safety budget), recording one `StepWitness`
@@ -1263,36 +1535,74 @@ mod tests {
         // execution order -- exactly the same per-step data the old
         // per-step-unrolled version derived, just collected into an
         // array instead of spliced into N copies of generated text.
-        struct StepWitness { oracle_bits: std::vec::Vec<std::vec::Vec<bool>>, mem_ops: std::vec::Vec<MemOpWitness> }
+        struct StepWitness {
+            oracle_bits: std::vec::Vec<std::vec::Vec<bool>>,
+            mem_ops: std::vec::Vec<MemOpWitness>,
+        }
         let mut mem_check = MemCheckAccounting::new();
         let mut witness: std::vec::Vec<StepWitness> = std::vec::Vec::new();
         let mut done = false;
         let mut step = 0usize;
         while !done && step < RAW_STEP_BUDGET {
-            let (outputs, watched) = eval_ir_circuit_step_with_watch(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage, &watch_vars);
-            let watched_map: std::collections::BTreeMap<u32, std::vec::Vec<bool>> = watched.into_iter().collect();
+            let (outputs, watched) = eval_ir_circuit_step_with_watch(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+                &watch_vars,
+            );
+            let watched_map: std::collections::BTreeMap<u32, std::vec::Vec<bool>> =
+                watched.into_iter().collect();
 
             let mut oracle_bits: std::vec::Vec<std::vec::Vec<bool>> = std::vec::Vec::new();
-            let mut mem_ops: std::vec::Vec<MemOpWitness> = std::vec::Vec::with_capacity(real_entries.len());
+            let mut mem_ops: std::vec::Vec<MemOpWitness> =
+                std::vec::Vec::with_capacity(real_entries.len());
             for e in &real_entries {
-                let addr_bits = watched_map.get(&e.addr_var).unwrap_or_else(|| panic!("step {step}: addr_var {} not watched (dead statement?)", e.addr_var));
-                let value_bits = watched_map.get(&e.value_var).unwrap_or_else(|| panic!("step {step}: value_var {} not watched (dead statement?)", e.value_var));
+                let addr_bits = watched_map.get(&e.addr_var).unwrap_or_else(|| {
+                    panic!(
+                        "step {step}: addr_var {} not watched (dead statement?)",
+                        e.addr_var
+                    )
+                });
+                let value_bits = watched_map.get(&e.value_var).unwrap_or_else(|| {
+                    panic!(
+                        "step {step}: value_var {} not watched (dead statement?)",
+                        e.value_var
+                    )
+                });
                 let addr = bits_to_u64(addr_bits);
                 let width = bit_width(TypeId(e.type_id), &types);
                 let value = bits_to_u64(&value_bits[..width.min(64)]);
-                mem_ops.push(mem_check.record(e.storage_id, e.type_id, addr, value, e.is_write, &pre_init_map));
+                mem_ops.push(mem_check.record(
+                    e.storage_id,
+                    e.type_id,
+                    addr,
+                    value,
+                    e.is_write,
+                    &pre_init_map,
+                ));
                 if !e.is_write {
                     oracle_bits.push(value_bits.clone());
                 }
             }
-            witness.push(StepWitness { oracle_bits, mem_ops });
+            witness.push(StepWitness {
+                oracle_bits,
+                mem_ops,
+            });
 
             done = outputs[0].iter().any(|&b| b);
             inputs = outputs[1..1 + param_widths.len()].to_vec();
             step += 1;
         }
-        assert!(!mem_check.is_empty(), "the real interpreter must touch at least one real committed storage");
-        eprintln!("collected {} real steps of witness data (halted={done})", witness.len());
+        assert!(
+            !mem_check.is_empty(),
+            "the real interpreter must touch at least one real committed storage"
+        );
+        eprintln!(
+            "collected {} real steps of witness data (halted={done})",
+            witness.len()
+        );
 
         mem_check.emit_pre_loop_decls(&mut zero_stmts);
 
@@ -1302,7 +1612,8 @@ mod tests {
         // field (nested arrays of *varying* inner length aren't a single
         // homogeneous Rust array type, unlike `mem_probe.rs`'s uniform
         // s2_bits/s33_bits case).
-        let oracle_widths: std::vec::Vec<usize> = real_entries.iter()
+        let oracle_widths: std::vec::Vec<usize> = real_entries
+            .iter()
             .filter(|e| !e.is_write)
             .map(|e| bit_width(TypeId(e.type_id), &types))
             .collect();
@@ -1323,10 +1634,12 @@ mod tests {
         // no per-element AST nodes at all regardless of size -- see
         // `run_iop_verifier_multi_file_with_extra_files`'s own doc comment.
         const MEM_OP_BYTES: usize = 1 + 8 + 8 + 8 + 1 + 8 + 8 + 8; // needs_init,init_val,addr,value,is_write,old_value,old_ts,new_ts
-        let mut witness_bytes: std::vec::Vec<u8> =
-            std::vec::Vec::with_capacity(witness.len() * (total_oracle_bits + n_mem_ops * MEM_OP_BYTES));
+        let mut witness_bytes: std::vec::Vec<u8> = std::vec::Vec::with_capacity(
+            witness.len() * (total_oracle_bits + n_mem_ops * MEM_OP_BYTES),
+        );
         for w in &witness {
-            let flat_oracle_bits: std::vec::Vec<bool> = w.oracle_bits.iter().flatten().copied().collect();
+            let flat_oracle_bits: std::vec::Vec<bool> =
+                w.oracle_bits.iter().flatten().copied().collect();
             debug_assert_eq!(flat_oracle_bits.len(), total_oracle_bits);
             witness_bytes.extend(flat_oracle_bits.iter().map(|&b| b as u8));
             for m in &w.mem_ops {
@@ -1376,19 +1689,33 @@ mod tests {
         // referencing the runtime `witness[step]` array rather than a
         // literal per step -- see `split_driver.rs`'s own doc comment on
         // `generate_split_step`'s `oracle_bit_exprs` parameter.
-        let mut oracle_bit_exprs: std::vec::Vec<std::vec::Vec<String>> = std::vec::Vec::with_capacity(oracle_widths.len());
+        let mut oracle_bit_exprs: std::vec::Vec<std::vec::Vec<String>> =
+            std::vec::Vec::with_capacity(oracle_widths.len());
         {
             let mut off = 0usize;
             for &w in &oracle_widths {
-                oracle_bit_exprs.push((0..w).map(|j| format!("witness[step].oracle_bits[{}]", off + j)).collect());
+                oracle_bit_exprs.push(
+                    (0..w)
+                        .map(|j| format!("witness[step].oracle_bits[{}]", off + j))
+                        .collect(),
+                );
                 off += w;
             }
         }
 
         let total_vars = circuit.blocks[0].params.len() + circuit.blocks[0].stmts.len();
         let result = generate_split_step(
-            &prover_funcs_by_pos, &qsim_funcs_by_pos, &verifier_funcs_by_pos, &boundary, &accum_info, n_chunks, total_vars,
-            &entry_w, Some(("all_ok".to_string(), "fold_state".to_string())), &oracle_bit_exprs, "step",
+            &prover_funcs_by_pos,
+            &qsim_funcs_by_pos,
+            &verifier_funcs_by_pos,
+            &boundary,
+            &accum_info,
+            n_chunks,
+            total_vars,
+            &entry_w,
+            Some(("all_ok".to_string(), "fold_state".to_string())),
+            &oracle_bit_exprs,
+            "step",
         );
         let mut loop_body = result.stmts.clone();
         // `next_entry_w` can have MORE entries than `param_widths`/`entry_w`
@@ -1408,25 +1735,43 @@ mod tests {
         // or named local to write them into, and nothing downstream ever
         // reads them back as next-step entry state either way.
         for (i, (vope_slot, q_slot)) in result.next_entry_w.iter().enumerate() {
-            if i >= param_widths.len() { continue; }
+            if i >= param_widths.len() {
+                continue;
+            }
             if param_widths[i] <= 1 {
-                loop_body += &format!("_w_pool_vope[{i}] = {}; _w_pool_vope_written[{i}] = true;\n", slot_name(vope_slot));
-                loop_body += &format!("_w_pool_q[{i}] = {}; _w_pool_q_written[{i}] = true;\n", slot_name(q_slot));
+                loop_body += &format!(
+                    "_w_pool_vope[{i}] = {}; _w_pool_vope_written[{i}] = true;\n",
+                    slot_name(vope_slot)
+                );
+                loop_body += &format!(
+                    "_w_pool_q[{i}] = {}; _w_pool_q_written[{i}] = true;\n",
+                    slot_name(q_slot)
+                );
             } else {
                 loop_body += &format!("w{i}_vope = {};\n", slot_name(vope_slot));
                 loop_body += &format!("w{i}_q = {};\n", slot_name(q_slot));
             }
         }
-        loop_body += &format!("all_ok = {};\nfold_state = {};\n", result.final_all_ok_expr, result.final_fold_state_expr);
+        loop_body += &format!(
+            "all_ok = {};\nfold_state = {};\n",
+            result.final_all_ok_expr, result.final_fold_state_expr
+        );
         for (k, e) in real_entries.iter().enumerate() {
-            mem_check.emit_call_site(&mut loop_body, e.storage_id, e.type_id, &format!("witness[step].mem_ops[{k}]"));
+            mem_check.emit_call_site(
+                &mut loop_body,
+                e.storage_id,
+                e.type_id,
+                &format!("witness[step].mem_ops[{k}]"),
+            );
         }
 
-        let mut all_steps_stmts = format!("{witness_literal}for step in 0..witness.len() {{\n{loop_body}\n}}\n");
+        let mut all_steps_stmts =
+            format!("{witness_literal}for step in 0..witness.len() {{\n{loop_body}\n}}\n");
         let (h_produce_expr, h_consume_expr) = mem_check.finish(&mut all_steps_stmts);
         let (final_all_ok, final_fold_state) = ("all_ok".to_string(), "fold_state".to_string());
 
-        let driver = format!(r#"
+        let driver = format!(
+            r#"
             use volar_iop::field::{{Field as _, Gf128}};
             use volar_iop::transcript::FromBytes as _;
             use volar_spec::field::Galois;
@@ -1503,10 +1848,15 @@ mod tests {
                 let corrupted_ok = volar_iop::verify_iop(&proof, Some((&mem_acc_in, &corrupted_out)));
                 assert!(!corrupted_ok, "a corrupted expected memory boundary must be rejected");
             }}
-        "#);
+        "#
+        );
 
         run_iop_verifier_multi_file_with_extra_files(
-            &[("prover", &prover_code), ("qsim", &qsim_code), ("verifier", &verifier_code)],
+            &[
+                ("prover", &prover_code),
+                ("qsim", &qsim_code),
+                ("verifier", &verifier_code),
+            ],
             &driver,
             &[("witness.bin", &witness_bytes)],
         );
@@ -1523,17 +1873,87 @@ mod tests {
         const X5: Reg = Reg::T0;
         let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
         let program: Vec<(u32, Inst)> = vec![
-            (e(Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }), Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }),
-            (e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }), Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }),
-            (e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }), Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),
-            (e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }), Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),
-            (e(Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }), Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }),
-            (e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }),
+            (
+                e(Inst::Addi {
+                    imm: Imm::new_i32(4),
+                    dest: X5,
+                    src1: Reg::ZERO,
+                }),
+                Inst::Addi {
+                    imm: Imm::new_i32(4),
+                    dest: X5,
+                    src1: Reg::ZERO,
+                },
+            ),
+            (
+                e(Inst::Addi {
+                    imm: Imm::new_i32(0),
+                    dest: X1,
+                    src1: Reg::ZERO,
+                }),
+                Inst::Addi {
+                    imm: Imm::new_i32(0),
+                    dest: X1,
+                    src1: Reg::ZERO,
+                },
+            ),
+            (
+                e(Inst::Beq {
+                    offset: Imm::new_i32(12),
+                    src1: X1,
+                    src2: X5,
+                }),
+                Inst::Beq {
+                    offset: Imm::new_i32(12),
+                    src1: X1,
+                    src2: X5,
+                },
+            ),
+            (
+                e(Inst::Addi {
+                    imm: Imm::new_i32(1),
+                    dest: X1,
+                    src1: X1,
+                }),
+                Inst::Addi {
+                    imm: Imm::new_i32(1),
+                    dest: X1,
+                    src1: X1,
+                },
+            ),
+            (
+                e(Inst::Jal {
+                    offset: Imm::new_i32(-8),
+                    dest: Reg::ZERO,
+                }),
+                Inst::Jal {
+                    offset: Imm::new_i32(-8),
+                    dest: Reg::ZERO,
+                },
+            ),
+            (
+                e(Inst::Sw {
+                    offset: Imm::new_i32(RESULT_ADDR),
+                    src: X1,
+                    base: Reg::ZERO,
+                }),
+                Inst::Sw {
+                    offset: Imm::new_i32(RESULT_ADDR),
+                    src: X1,
+                    base: Reg::ZERO,
+                },
+            ),
         ];
         for (i, (word, intended)) in program.iter().enumerate() {
-            let (decoded, is_compressed) = Inst::decode(*word, Xlen::Rv32).expect("word should decode");
+            let (decoded, is_compressed) =
+                Inst::decode(*word, Xlen::Rv32).expect("word should decode");
             assert_eq!(is_compressed, rv_asm::IsCompressed::No);
-            assert_eq!(&decoded, intended, "instruction {i} (pc={}) decoded wrong -- encoding bug in the repro itself", i * 4);
+            assert_eq!(
+                &decoded,
+                intended,
+                "instruction {i} (pc={}) decoded wrong -- encoding bug in the repro itself",
+                i * 4
+            );
         }
     }
 
@@ -1574,12 +1994,35 @@ mod tests {
         const X5: Reg = Reg::T0;
         let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
         let program: Vec<u32> = vec![
-            e(Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }),
-            e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }),
-            e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),
-            e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),
-            e(Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }),
-            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }),
+            e(Inst::Addi {
+                imm: Imm::new_i32(4),
+                dest: X5,
+                src1: Reg::ZERO,
+            }),
+            e(Inst::Addi {
+                imm: Imm::new_i32(0),
+                dest: X1,
+                src1: Reg::ZERO,
+            }),
+            e(Inst::Beq {
+                offset: Imm::new_i32(12),
+                src1: X1,
+                src2: X5,
+            }),
+            e(Inst::Addi {
+                imm: Imm::new_i32(1),
+                dest: X1,
+                src1: X1,
+            }),
+            e(Inst::Jal {
+                offset: Imm::new_i32(-8),
+                dest: Reg::ZERO,
+            }),
+            e(Inst::Sw {
+                offset: Imm::new_i32(RESULT_ADDR),
+                src: X1,
+                base: Reg::ZERO,
+            }),
         ];
         // Independently verify the *program's own logic* (not just its
         // encoding) via `interp::native_reference` -- rules out a hand-trace
@@ -1589,35 +2032,62 @@ mod tests {
         // the side effect it leaves in `mem` via this program's own `SW`.
         let mut mem = vec![0u8; (RESULT_ADDR as usize) + 4];
         let _ = crate::interp::native_reference(&program, &mut mem);
-        let stored = i32::from_le_bytes(mem[RESULT_ADDR as usize..RESULT_ADDR as usize + 4].try_into().unwrap());
-        assert_eq!(stored, 4, "this repro's own program logic (independent of any circuit/movfuscation pipeline) must store 4");
+        let stored = i32::from_le_bytes(
+            mem[RESULT_ADDR as usize..RESULT_ADDR as usize + 4]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(
+            stored, 4,
+            "this repro's own program logic (independent of any circuit/movfuscation pipeline) must store 4"
+        );
 
         for (i, &word) in program.iter().enumerate() {
-            let (inst, is_compressed) = Inst::decode(word, Xlen::Rv32).expect("every assembled word must decode");
+            let (inst, is_compressed) =
+                Inst::decode(word, Xlen::Rv32).expect("every assembled word must decode");
             assert_eq!(is_compressed, rv_asm::IsCompressed::No);
             eprintln!("word {i} = {word:#010x}");
             match (i, inst) {
                 (0, Inst::Addi { imm, dest, src1 }) => {
-                    assert_eq!(imm.as_i32(), 4); assert_eq!(dest, X5); assert_eq!(src1, Reg::ZERO);
+                    assert_eq!(imm.as_i32(), 4);
+                    assert_eq!(dest, X5);
+                    assert_eq!(src1, Reg::ZERO);
                 }
                 (1, Inst::Addi { imm, dest, src1 }) => {
-                    assert_eq!(imm.as_i32(), 0); assert_eq!(dest, X1); assert_eq!(src1, Reg::ZERO);
+                    assert_eq!(imm.as_i32(), 0);
+                    assert_eq!(dest, X1);
+                    assert_eq!(src1, Reg::ZERO);
                 }
                 (2, Inst::Beq { offset, src1, src2 }) => {
-                    assert_eq!(offset.as_i32(), 12, "BEQ offset must decode as +12 bytes (pc=8 -> pc=20)");
-                    assert_eq!(src1, X1); assert_eq!(src2, X5);
+                    assert_eq!(
+                        offset.as_i32(),
+                        12,
+                        "BEQ offset must decode as +12 bytes (pc=8 -> pc=20)"
+                    );
+                    assert_eq!(src1, X1);
+                    assert_eq!(src2, X5);
                 }
                 (3, Inst::Addi { imm, dest, src1 }) => {
-                    assert_eq!(imm.as_i32(), 1); assert_eq!(dest, X1); assert_eq!(src1, X1);
+                    assert_eq!(imm.as_i32(), 1);
+                    assert_eq!(dest, X1);
+                    assert_eq!(src1, X1);
                 }
                 (4, Inst::Jal { offset, dest }) => {
-                    assert_eq!(offset.as_i32(), -8, "JAL offset must decode as -8 bytes (pc=16 -> pc=8)");
+                    assert_eq!(
+                        offset.as_i32(),
+                        -8,
+                        "JAL offset must decode as -8 bytes (pc=16 -> pc=8)"
+                    );
                     assert_eq!(dest, Reg::ZERO);
                 }
                 (5, Inst::Sw { offset, src, base }) => {
-                    assert_eq!(offset.as_i32(), RESULT_ADDR); assert_eq!(src, X1); assert_eq!(base, Reg::ZERO);
+                    assert_eq!(offset.as_i32(), RESULT_ADDR);
+                    assert_eq!(src, X1);
+                    assert_eq!(base, Reg::ZERO);
                 }
-                (i, other) => panic!("word {i}: unexpected decode shape (not necessarily wrong variant, but check manually): opcode-discriminant mismatch, got a variant that isn't the {i}-th expected one; inst={other:?}"),
+                (i, other) => panic!(
+                    "word {i}: unexpected decode shape (not necessarily wrong variant, but check manually): opcode-discriminant mismatch, got a variant that isn't the {i}-th expected one; inst={other:?}"
+                ),
             }
         }
     }
@@ -1650,18 +2120,29 @@ mod tests {
         const X1: Reg = Reg::RA;
         let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
         let program: Vec<u32> = vec![
-            e(Inst::Addi { imm: Imm::new_i32(77), dest: X1, src1: Reg::ZERO }), // pc=0: x1=77
-            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), // pc=4: mem[RESULT_ADDR]=77; halt
+            e(Inst::Addi {
+                imm: Imm::new_i32(77),
+                dest: X1,
+                src1: Reg::ZERO,
+            }), // pc=0: x1=77
+            e(Inst::Sw {
+                offset: Imm::new_i32(RESULT_ADDR),
+                src: X1,
+                base: Reg::ZERO,
+            }), // pc=4: mem[RESULT_ADDR]=77; halt
         ];
         let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
         let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
 
-        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes)).expect("wat should assemble");
+        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes))
+            .expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
 
         let mut target = volar_vaffle_target::VaffleTarget::new();
         let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
         );
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
@@ -1669,16 +2150,22 @@ mod tests {
         // internally, so cross-block values are already explicit block
         // params/jump-args by the time this returns -- no separate call
         // needed here.
-        let (ir_blocks, types) = volar_vaffle_target::lower_to_ir::lower_vaffle_to_ir(&target.module);
+        let (ir_blocks, types) =
+            volar_vaffle_target::lower_to_ir::lower_vaffle_to_ir(&target.module);
 
-        let entry_widths: Vec<usize> = ir_blocks.blocks[0].params.iter()
+        let entry_widths: Vec<usize> = ir_blocks.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         let entry_inputs: Vec<Vec<bool>> = entry_widths.iter().map(|&w| vec![false; w]).collect();
         let (ret, storage, visited, _watched) =
             volar_fuzz::interpreter::ir::eval_ir_with_trace(&ir_blocks, &types, &entry_inputs, &[]);
 
-        assert!(ret.is_some(), "interpreter should return, not hit MAX_ITERS");
+        assert!(
+            ret.is_some(),
+            "interpreter should return, not hit MAX_ITERS"
+        );
         assert!(
             visited.len() < 200,
             "halted after {} raw block hops -- expected a real $halted-triggered exit \
@@ -1687,19 +2174,30 @@ mod tests {
             visited.len(),
         );
 
-        let (result_sid, result_ty) = ir_blocks.pre_init.iter()
+        let (result_sid, result_ty) = ir_blocks
+            .pre_init
+            .iter()
             .find(|seg| seg.data.len() as i32 == RESULT_ADDR + 4)
             .map(|seg| (seg.storage, seg.ty))
             .expect("result-holding pre_init segment must exist");
-        let bytes: Vec<u8> = (0..4).map(|i| {
-            let addr = (RESULT_ADDR + i) as u64;
-            match storage.get(&(result_sid, result_ty, addr)) {
-                Some(b) => b.iter().enumerate().map(|(j, &bit)| (bit as u8) << j).fold(0u8, |a, b| a | b),
-                None => 0,
-            }
-        }).collect();
+        let bytes: Vec<u8> = (0..4)
+            .map(|i| {
+                let addr = (RESULT_ADDR + i) as u64;
+                match storage.get(&(result_sid, result_ty, addr)) {
+                    Some(b) => b
+                        .iter()
+                        .enumerate()
+                        .map(|(j, &bit)| (bit as u8) << j)
+                        .fold(0u8, |a, b| a | b),
+                    None => 0,
+                }
+            })
+            .collect();
         let stored = i32::from_le_bytes(bytes.try_into().unwrap());
-        assert_eq!(stored, 77, "RESULT_ADDR should hold 77 after the SW instruction runs");
+        assert_eq!(
+            stored, 77,
+            "RESULT_ADDR should hold 77 after the SW instruction runs"
+        );
     }
 
     /// Does `BEQ` ever take its "equal" branch at all, for two registers
@@ -1712,64 +2210,121 @@ mod tests {
     #[test]
     fn beq_equal_branch_fires_straight_line() {
         use rv_asm::{Imm, Inst, Reg, Xlen};
+        use volar_fuzz::interpreter::ir::{StorageMap, apply_pre_init, eval_ir_circuit_step};
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, apply_pre_init, StorageMap};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         const X1: Reg = Reg::RA;
         const X5: Reg = Reg::T0;
         let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
         let program: Vec<u32> = vec![
-            e(Inst::Addi { imm: Imm::new_i32(5), dest: X1, src1: Reg::ZERO }), // pc=0: x1=5
-            e(Inst::Addi { imm: Imm::new_i32(5), dest: X5, src1: Reg::ZERO }), // pc=4: x5=5
-            e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),     // pc=8: if x1==x5 goto pc=20 (should fire, they're equal)
-            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), // pc=12: BAD path -- should be skipped
-            e(Inst::Jal { offset: Imm::new_i32(0), dest: Reg::ZERO }),         // pc=16: (padding, unreachable if BEQ works)
-            e(Inst::Addi { imm: Imm::new_i32(9), dest: X1, src1: Reg::ZERO }), // pc=20: GOOD path -- x1=9
-            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), // pc=24: store 9
+            e(Inst::Addi {
+                imm: Imm::new_i32(5),
+                dest: X1,
+                src1: Reg::ZERO,
+            }), // pc=0: x1=5
+            e(Inst::Addi {
+                imm: Imm::new_i32(5),
+                dest: X5,
+                src1: Reg::ZERO,
+            }), // pc=4: x5=5
+            e(Inst::Beq {
+                offset: Imm::new_i32(12),
+                src1: X1,
+                src2: X5,
+            }), // pc=8: if x1==x5 goto pc=20 (should fire, they're equal)
+            e(Inst::Sw {
+                offset: Imm::new_i32(RESULT_ADDR),
+                src: X1,
+                base: Reg::ZERO,
+            }), // pc=12: BAD path -- should be skipped
+            e(Inst::Jal {
+                offset: Imm::new_i32(0),
+                dest: Reg::ZERO,
+            }), // pc=16: (padding, unreachable if BEQ works)
+            e(Inst::Addi {
+                imm: Imm::new_i32(9),
+                dest: X1,
+                src1: Reg::ZERO,
+            }), // pc=20: GOOD path -- x1=9
+            e(Inst::Sw {
+                offset: Imm::new_i32(RESULT_ADDR),
+                src: X1,
+                base: Reg::ZERO,
+            }), // pc=24: store 9
         ];
         let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
         let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
 
         let mut mem = data_bytes.clone();
         let native = crate::interp::native_reference(&program, &mut mem);
-        let native_stored = i32::from_le_bytes(mem[RESULT_ADDR as usize..RESULT_ADDR as usize + 4].try_into().unwrap());
+        let native_stored = i32::from_le_bytes(
+            mem[RESULT_ADDR as usize..RESULT_ADDR as usize + 4]
+                .try_into()
+                .unwrap(),
+        );
         eprintln!("native: returned x3={native} stored={native_stored}");
-        assert_eq!(native_stored, 9, "this repro's own program logic must store 9 via the GOOD path");
+        assert_eq!(
+            native_stored, 9,
+            "this repro's own program logic must store 9 via the GOOD path"
+        );
 
-        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes)).expect("wat should assemble");
+        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes))
+            .expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
 
         let mut target = volar_vaffle_target::VaffleTarget::new();
         let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
         );
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         let mut storage: StorageMap = StorageMap::new();
         apply_pre_init(&mut storage, &circuit.pre_init, &types);
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
         while !done && step < 1700 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             done = outputs[0].iter().any(|&b| b);
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
-            if step % 20 == 0 || done { eprintln!("step {step}: done={done} full_state={full_state:?}"); }
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
+            if step % 20 == 0 || done {
+                eprintln!("step {step}: done={done} full_state={full_state:?}");
+            }
             inputs = outputs[1..1 + param_widths.len()].to_vec();
             step += 1;
         }
@@ -1779,16 +2334,27 @@ mod tests {
         let mut found_word = None;
         for seg in &circuit.pre_init {
             if seg.data.len() as i32 == RESULT_ADDR + 4 {
-                let bytes: Vec<u8> = (0..4).map(|i| {
-                    let addr = (RESULT_ADDR + i) as u64;
-                    let bits = &storage[&(seg.storage, seg.ty, addr)];
-                    bits.iter().enumerate().map(|(j, &b)| (b as u8) << j).fold(0u8, |a, b| a | b)
-                }).collect();
+                let bytes: Vec<u8> = (0..4)
+                    .map(|i| {
+                        let addr = (RESULT_ADDR + i) as u64;
+                        let bits = &storage[&(seg.storage, seg.ty, addr)];
+                        bits.iter()
+                            .enumerate()
+                            .map(|(j, &b)| (b as u8) << j)
+                            .fold(0u8, |a, b| a | b)
+                    })
+                    .collect();
                 found_word = Some(i32::from_le_bytes(bytes.try_into().unwrap()));
             }
         }
-        eprintln!("circuit stored result: {found_word:?} (expect Some(9) if BEQ's equal branch fired; Some(5) if it didn't)");
-        assert_eq!(found_word, Some(9), "BEQ must take its equal branch when comparing two equal registers");
+        eprintln!(
+            "circuit stored result: {found_word:?} (expect Some(9) if BEQ's equal branch fired; Some(5) if it didn't)"
+        );
+        assert_eq!(
+            found_word,
+            Some(9),
+            "BEQ must take its equal branch when comparing two equal registers"
+        );
     }
 
     /// Isolates whether `JAL`'s *negative*-offset backward branch works
@@ -1807,52 +2373,86 @@ mod tests {
     #[test]
     fn jal_negative_offset_backward_branch() {
         use rv_asm::{Imm, Inst, Reg, Xlen};
+        use volar_fuzz::interpreter::ir::{StorageMap, apply_pre_init, eval_ir_circuit_step};
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, apply_pre_init, StorageMap};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         const X1: Reg = Reg::RA;
         let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
         let program: Vec<u32> = vec![
-            e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }), // pc=0: i=0
-            e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),        // pc=4: i+=1 (loop target)
-            e(Inst::Jal { offset: Imm::new_i32(-4), dest: Reg::ZERO }),        // pc=8: goto pc=4
+            e(Inst::Addi {
+                imm: Imm::new_i32(0),
+                dest: X1,
+                src1: Reg::ZERO,
+            }), // pc=0: i=0
+            e(Inst::Addi {
+                imm: Imm::new_i32(1),
+                dest: X1,
+                src1: X1,
+            }), // pc=4: i+=1 (loop target)
+            e(Inst::Jal {
+                offset: Imm::new_i32(-4),
+                dest: Reg::ZERO,
+            }), // pc=8: goto pc=4
         ];
         let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
         let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
 
-        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes)).expect("wat should assemble");
+        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes))
+            .expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
 
         let mut target = volar_vaffle_target::VaffleTarget::new();
         let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
         );
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         let mut storage: StorageMap = StorageMap::new();
         apply_pre_init(&mut storage, &circuit.pre_init, &types);
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         // ~30 raw steps/instruction * 3 instructions/iteration -> budget
         // for several loop iterations' worth of raw steps.
         for step in 0..500 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
-            if step % 10 == 0 { eprintln!("step {step}: full_state={full_state:?}"); }
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
+            if step % 10 == 0 {
+                eprintln!("step {step}: full_state={full_state:?}");
+            }
             inputs = outputs[1..1 + param_widths.len()].to_vec();
         }
     }
@@ -1872,67 +2472,35 @@ mod tests {
         const X5: Reg = Reg::T0;
         let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
         let program: Vec<u32> = vec![
-            e(Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }),
-            e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }),
-            e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),
-            e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),
-            e(Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }),
-            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }),
-        ];
-        let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
-
-        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes)).expect("wat should assemble");
-        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
-
-        let mut target = volar_vaffle_target::VaffleTarget::new();
-        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
-        );
-        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
-
-        eprintln!("VAFFLE module: {} funcs", target.module.funcs.len());
-        for (fi, fd) in target.module.funcs.iter().enumerate() {
-            match fd {
-                vaffle::FuncDecl::Body(body) => {
-                    let n_calls: usize = body.blocks.iter().flat_map(|b| b.stmts.iter())
-                        .filter(|&&vid| matches!(&body.values[vid.0].kind, vaffle::Value::Call { .. })).count();
-                    eprintln!("  func {fi}: {} blocks, {n_calls} Value::Call stmts", body.blocks.len());
-                }
-                _ => eprintln!("  func {fi}: non-Body"),
-            }
-        }
-
-        let (mut ir_blocks, types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
-
-        eprintln!("{}", volar_ir_passes::movfuscate::debug_dump_slot_of(&ir_blocks, &types));
-    }
-
-    /// `#[ignore]`d: still real-interpreter-scale codegen (though a much
-    /// shorter run than the full 4-word-sum program). Run manually:
-    /// `cargo test -p volar-riscv-e2e --release bound_register_survives_across_dispatch -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn bound_register_survives_across_dispatch() {
-        use rv_asm::{Imm, Inst, Reg, Xlen};
-        use volar_ir::ir::IRType;
-        use volar_ir_common::Type;
-        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, apply_pre_init, StorageMap};
-
-        const X1: Reg = Reg::RA; // loop counter
-        const X5: Reg = Reg::T0; // bound, written once
-
-        let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
-        let program: Vec<u32> = vec![
-            e(Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }),   // pc=0:  x5 = 4
-            e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }),   // pc=4:  x1 = 0
-            e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),       // pc=8:  if x1==x5 goto pc=20
-            e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),          // pc=12: x1 += 1
-            e(Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }),          // pc=16: goto pc=8
-            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), // pc=20: mem[16] = x1; halt
+            e(Inst::Addi {
+                imm: Imm::new_i32(4),
+                dest: X5,
+                src1: Reg::ZERO,
+            }),
+            e(Inst::Addi {
+                imm: Imm::new_i32(0),
+                dest: X1,
+                src1: Reg::ZERO,
+            }),
+            e(Inst::Beq {
+                offset: Imm::new_i32(12),
+                src1: X1,
+                src2: X5,
+            }),
+            e(Inst::Addi {
+                imm: Imm::new_i32(1),
+                dest: X1,
+                src1: X1,
+            }),
+            e(Inst::Jal {
+                offset: Imm::new_i32(-8),
+                dest: Reg::ZERO,
+            }),
+            e(Inst::Sw {
+                offset: Imm::new_i32(RESULT_ADDR),
+                src: X1,
+                base: Reg::ZERO,
+            }),
         ];
         let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
         let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
@@ -1943,7 +2511,107 @@ mod tests {
 
         let mut target = volar_vaffle_target::VaffleTarget::new();
         let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        eprintln!("VAFFLE module: {} funcs", target.module.funcs.len());
+        for (fi, fd) in target.module.funcs.iter().enumerate() {
+            match fd {
+                vaffle::FuncDecl::Body(body) => {
+                    let n_calls: usize = body
+                        .blocks
+                        .iter()
+                        .flat_map(|b| b.stmts.iter())
+                        .filter(|&&vid| {
+                            matches!(&body.values[vid.0].kind, vaffle::Value::Call { .. })
+                        })
+                        .count();
+                    eprintln!(
+                        "  func {fi}: {} blocks, {n_calls} Value::Call stmts",
+                        body.blocks.len()
+                    );
+                }
+                _ => eprintln!("  func {fi}: non-Body"),
+            }
+        }
+
+        let (mut ir_blocks, types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
+
+        eprintln!(
+            "{}",
+            volar_ir_passes::movfuscate::debug_dump_slot_of(&ir_blocks, &types)
+        );
+    }
+
+    /// `#[ignore]`d: still real-interpreter-scale codegen (though a much
+    /// shorter run than the full 4-word-sum program). Run manually:
+    /// `cargo test -p volar-riscv-e2e --release bound_register_survives_across_dispatch -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bound_register_survives_across_dispatch() {
+        use rv_asm::{Imm, Inst, Reg, Xlen};
+        use volar_fuzz::interpreter::ir::{StorageMap, apply_pre_init, eval_ir_circuit_step};
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
+
+        const X1: Reg = Reg::RA; // loop counter
+        const X5: Reg = Reg::T0; // bound, written once
+
+        let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
+        let program: Vec<u32> = vec![
+            e(Inst::Addi {
+                imm: Imm::new_i32(4),
+                dest: X5,
+                src1: Reg::ZERO,
+            }), // pc=0:  x5 = 4
+            e(Inst::Addi {
+                imm: Imm::new_i32(0),
+                dest: X1,
+                src1: Reg::ZERO,
+            }), // pc=4:  x1 = 0
+            e(Inst::Beq {
+                offset: Imm::new_i32(12),
+                src1: X1,
+                src2: X5,
+            }), // pc=8:  if x1==x5 goto pc=20
+            e(Inst::Addi {
+                imm: Imm::new_i32(1),
+                dest: X1,
+                src1: X1,
+            }), // pc=12: x1 += 1
+            e(Inst::Jal {
+                offset: Imm::new_i32(-8),
+                dest: Reg::ZERO,
+            }), // pc=16: goto pc=8
+            e(Inst::Sw {
+                offset: Imm::new_i32(RESULT_ADDR),
+                src: X1,
+                base: Reg::ZERO,
+            }), // pc=20: mem[16] = x1; halt
+        ];
+        let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
+
+        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes))
+            .expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
         );
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
@@ -1955,16 +2623,27 @@ mod tests {
         // values -- run manually: `SKIP_OPT=1 cargo test ... --ignored --nocapture`.
         let skip_opt = std::env::var("SKIP_OPT").is_ok();
         if !skip_opt {
-            optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+            optimize_to_fixpoint(
+                &mut ir_blocks,
+                &types,
+                &mut fold_ir_blocks,
+                &mut store_forward_ir_blocks,
+            );
         }
         let post_opt_stmts: usize = ir_blocks.blocks.iter().map(|b| b.stmts.len()).sum();
-        eprintln!("skip_opt={skip_opt} pre_opt_stmts={pre_opt_stmts} post_opt_stmts={post_opt_stmts}");
+        eprintln!(
+            "skip_opt={skip_opt} pre_opt_stmts={pre_opt_stmts} post_opt_stmts={post_opt_stmts}"
+        );
 
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("param widths: {param_widths:?}");
@@ -1988,61 +2667,95 @@ mod tests {
         // id 1. Dump every distinct nonzero storage id's entry count so
         // this isn't blind to the remap.
         let dump_stack = |storage: &StorageMap, label: &str| {
-            let mut by_sid: std::collections::BTreeMap<u32, Vec<(u64, u64)>> = std::collections::BTreeMap::new();
+            let mut by_sid: std::collections::BTreeMap<u32, Vec<(u64, u64)>> =
+                std::collections::BTreeMap::new();
             for ((sid, _ty, addr), bits) in storage.iter() {
                 if bits.iter().any(|&b| b) {
-                    let val = bits.iter().enumerate().map(|(i, &b)| (b as u64) << i).fold(0u64, |a, b| a | b);
+                    let val = bits
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &b)| (b as u64) << i)
+                        .fold(0u64, |a, b| a | b);
                     by_sid.entry(sid.0).or_default().push((*addr, val));
                 }
             }
-            eprintln!("{label}: nonzero entries by storage id: {:?}", by_sid.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>());
+            eprintln!(
+                "{label}: nonzero entries by storage id: {:?}",
+                by_sid.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>()
+            );
             for (sid, entries) in &by_sid {
-                if *sid != 35 { // storage 35 is the data RAM (already tracked separately below)
+                if *sid != 35 {
+                    // storage 35 is the data RAM (already tracked separately below)
                     eprintln!("    sid={sid}: {entries:?}");
                 }
             }
         };
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
         while !done && step < 2000 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             done = outputs[0].iter().any(|&b| b);
             // outputs[1..1+pc_width] are the pc_width individual-Bit params
             // encoding "which of the 120 original VAFFLE blocks is active
             // next" -- decode LSB-first into a block index, independent of
             // knowing which physical state slot holds any given WASM local.
             let active_block: u64 = (0..pc_width).map(|b| (outputs[1 + b][0] as u64) << b).sum();
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
             if step % 100 == 0 || done {
-                eprintln!("step {step}: done={done} active_block={active_block} full_state={full_state:?}");
+                eprintln!(
+                    "step {step}: done={done} active_block={active_block} full_state={full_state:?}"
+                );
                 dump_stack(&storage, &format!("  after step {step}"));
             }
             inputs = outputs[1..1 + param_widths.len()].to_vec();
             step += 1;
         }
         eprintln!("halted after {step} steps (done={done})");
-        assert!(done, "circuit must halt within budget via its own termination flag");
+        assert!(
+            done,
+            "circuit must halt within budget via its own termination flag"
+        );
 
         let expected: i32 = 4;
         let mut found = false;
         for seg in &circuit.pre_init {
             if seg.data.len() as i32 == RESULT_ADDR + 4 {
-                let bytes: Vec<u8> = (0..4).map(|i| {
-                    let addr = (RESULT_ADDR + i) as u64;
-                    let bits = &storage[&(seg.storage, seg.ty, addr)];
-                    bits.iter().enumerate().map(|(j, &b)| (b as u8) << j).fold(0u8, |a, b| a | b)
-                }).collect();
+                let bytes: Vec<u8> = (0..4)
+                    .map(|i| {
+                        let addr = (RESULT_ADDR + i) as u64;
+                        let bits = &storage[&(seg.storage, seg.ty, addr)];
+                        bits.iter()
+                            .enumerate()
+                            .map(|(j, &b)| (b as u8) << j)
+                            .fold(0u8, |a, b| a | b)
+                    })
+                    .collect();
                 let word = i32::from_le_bytes(bytes.try_into().unwrap());
-                eprintln!("data RAM (storage={}) result word: {word} (expected {expected})", seg.storage.0);
+                eprintln!(
+                    "data RAM (storage={}) result word: {word} (expected {expected})",
+                    seg.storage.0
+                );
                 if word == expected {
                     found = true;
                 }
             }
         }
-        assert!(found, "loop counter must read back as exactly 4 -- if not, x5 (bound) was corrupted mid-loop");
+        assert!(
+            found,
+            "loop counter must read back as exactly 4 -- if not, x5 (bound) was corrupted mid-loop"
+        );
     }
 
     /// Diagnostic (not a correctness assertion): dump the real circuit's
@@ -2062,7 +2775,9 @@ mod tests {
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
         eprintln!("n_blocks: {}", boundary.len());
         eprintln!("circuit params: {:?}", circuit.blocks[0].params);
-        let widths: std::vec::Vec<usize> = circuit.blocks[0].params.iter()
+        let widths: std::vec::Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("circuit param widths: {widths:?}");
@@ -2090,10 +2805,21 @@ mod tests {
         eprintln!("total StorageRead count: {read_count}, StorageWrite count: {write_count}");
         eprintln!("pre_init segments:");
         for seg in &circuit.pre_init {
-            eprintln!("  storage={} ty={} offset={} len={}", seg.storage.0, seg.ty.0, seg.offset, seg.data.len());
+            eprintln!(
+                "  storage={} ty={} offset={} len={}",
+                seg.storage.0,
+                seg.ty.0,
+                seg.offset,
+                seg.data.len()
+            );
         }
-        eprintln!("accum_info.init: done_acc={} next_pc.len()={} next_state.len()={} ret_vals.len()={}",
-            accum_info.init.done_acc, accum_info.init.next_pc.len(), accum_info.init.next_state.len(), accum_info.init.ret_vals.len());
+        eprintln!(
+            "accum_info.init: done_acc={} next_pc.len()={} next_state.len()={} ret_vals.len()={}",
+            accum_info.init.done_acc,
+            accum_info.init.next_pc.len(),
+            accum_info.init.next_state.len(),
+            accum_info.init.ret_vals.len()
+        );
     }
 
     /// Feasibility check (not exercised by default) for Stage 2: does the
@@ -2133,7 +2859,9 @@ mod tests {
     #[ignore]
     fn largest_chunk_function_compiles() {
         use volar_ir_passes::LoweringMode;
-        use volar_weaver::{StorageMode, weave_vole_verifier_ir_split_with_trace, print_weaved_vole_module, IopSink};
+        use volar_weaver::{
+            IopSink, StorageMode, print_weaved_vole_module, weave_vole_verifier_ir_split_with_trace,
+        };
 
         let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
@@ -2148,7 +2876,15 @@ mod tests {
 
         let mut biggest: Option<volar_compiler::ir::IrFunction> = None;
         weave_vole_verifier_ir_split_with_trace(
-            &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            &circuit,
+            &types,
+            "riscv_step",
+            &mode,
+            &IopSink,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
             |f| {
                 if biggest.as_ref().map(|b| b.params.len()).unwrap_or(0) < f.params.len() {
                     biggest = Some(f);
@@ -2156,11 +2892,21 @@ mod tests {
             },
         );
         let f = biggest.expect("at least one function woven");
-        eprintln!("largest function: {} with {} params", f.name, f.params.len());
+        eprintln!(
+            "largest function: {} with {} params",
+            f.name,
+            f.params.len()
+        );
 
         let module = volar_compiler::ir::IrModule {
-            name: "riscv_step".into(), functions: vec![f], structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step".into(),
+            functions: vec![f],
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
         let code = print_weaved_vole_module(&module);
         eprintln!("printed source length: {} bytes", code.len());
@@ -2184,7 +2930,9 @@ mod tests {
     #[ignore]
     fn probe_chunk_size_vs_largest_function_size() {
         use volar_ir_passes::LoweringMode;
-        use volar_weaver::{StorageMode, weave_vole_verifier_ir_split_with_trace, print_weaved_vole_module, IopSink};
+        use volar_weaver::{
+            IopSink, StorageMode, print_weaved_vole_module, weave_vole_verifier_ir_split_with_trace,
+        };
 
         let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
@@ -2194,7 +2942,15 @@ mod tests {
             let mut biggest: Option<volar_compiler::ir::IrFunction> = None;
             let mut n_funcs = 0usize;
             weave_vole_verifier_ir_split_with_trace(
-                &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+                &circuit,
+                &types,
+                "riscv_step",
+                &mode,
+                &IopSink,
+                &boundary,
+                &accum_info,
+                chunk_size,
+                volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
                 |f| {
                     n_funcs += 1;
                     if biggest.as_ref().map(|b| b.params.len()).unwrap_or(0) < f.params.len() {
@@ -2204,13 +2960,21 @@ mod tests {
             );
             let f = biggest.expect("at least one function woven");
             let module = volar_compiler::ir::IrModule {
-                name: "riscv_step".into(), functions: vec![f.clone()], structs: vec![], enums: vec![],
-                traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+                name: "riscv_step".into(),
+                functions: vec![f.clone()],
+                structs: vec![],
+                enums: vec![],
+                traits: vec![],
+                impls: vec![],
+                type_aliases: vec![],
+                consts: vec![],
             };
             let code = print_weaved_vole_module(&module);
             eprintln!(
                 "chunk_size={chunk_size}: {n_funcs} functions, largest={} params={} printed_len={} bytes",
-                f.name, f.params.len(), code.len(),
+                f.name,
+                f.params.len(),
+                code.len(),
             );
         }
     }
@@ -2230,17 +2994,20 @@ mod tests {
     #[ignore]
     fn probe_full_module_print_size() {
         use volar_ir_passes::LoweringMode;
-        use volar_weaver::{StorageMode, weave_vole_prover_ir_split, print_weaved_vole_module};
+        use volar_weaver::{StorageMode, print_weaved_vole_module, weave_vole_prover_ir_split};
 
         let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
         let mode = StorageMode::Commitment;
         let chunk_size = 1usize;
 
-        eprintln!("num_params (circuit.blocks[0].params.len()) = {}", circuit.blocks[0].params.len());
+        eprintln!(
+            "num_params (circuit.blocks[0].params.len()) = {}",
+            circuit.blocks[0].params.len()
+        );
         {
-            use volar_ir_common::Stmt;
             use volar_fuzz::interpreter::ir::bit_width;
+            use volar_ir_common::Stmt;
             let mut n_shuffle = 0usize;
             let mut shuffle_bits = 0usize;
             let mut n_merge = 0usize;
@@ -2253,31 +3020,59 @@ mod tests {
             let mut poly_deg2plus = 0usize; // has at least one degree>=2 monomial (AND-bearing)
             let mut poly_deg2plus_monomial_total = 0usize;
             let mut poly_width_gt1 = 0usize;
-            let mut poly_by_ty: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+            let mut poly_by_ty: std::collections::BTreeMap<u32, usize> =
+                std::collections::BTreeMap::new();
             for node in &circuit.blocks[0].stmts {
                 n_stmts += 1;
                 match &node.kind {
-                    Stmt::Shuffle { result_bits, .. } => { n_shuffle += 1; shuffle_bits += result_bits.len(); }
-                    Stmt::Merge { parts, .. } => { n_merge += 1; merge_parts += parts.len(); }
+                    Stmt::Shuffle { result_bits, .. } => {
+                        n_shuffle += 1;
+                        shuffle_bits += result_bits.len();
+                    }
+                    Stmt::Merge { parts, .. } => {
+                        n_merge += 1;
+                        merge_parts += parts.len();
+                    }
                     Stmt::Poly { ty, coeffs, .. } => {
                         n_poly += 1;
                         *poly_by_ty.entry(ty.0).or_insert(0) += 1;
                         let w = bit_width(*ty, &types);
-                        if w > 1 { poly_width_gt1 += 1; }
+                        if w > 1 {
+                            poly_width_gt1 += 1;
+                        }
                         let max_deg = coeffs.keys().map(|m| m.len()).max().unwrap_or(0);
                         let deg1_count = coeffs.keys().filter(|m| m.len() == 1).count();
                         let deg2plus_count = coeffs.keys().filter(|m| m.len() >= 2).count();
-                        if max_deg == 0 { poly_deg0 += 1; }
-                        else if max_deg == 1 && deg1_count == 1 { poly_deg1_single += 1; }
-                        else if max_deg == 1 { poly_deg1_multi += 1; }
-                        else { poly_deg2plus += 1; poly_deg2plus_monomial_total += deg2plus_count; }
+                        if max_deg == 0 {
+                            poly_deg0 += 1;
+                        } else if max_deg == 1 && deg1_count == 1 {
+                            poly_deg1_single += 1;
+                        } else if max_deg == 1 {
+                            poly_deg1_multi += 1;
+                        } else {
+                            poly_deg2plus += 1;
+                            poly_deg2plus_monomial_total += deg2plus_count;
+                        }
                     }
                     _ => {}
                 }
             }
-            eprintln!("total stmts={n_stmts} poly={n_poly} shuffle={n_shuffle} (total result_bits={shuffle_bits}) merge={n_merge} (total parts={merge_parts})");
-            eprintln!("poly breakdown: deg0(const)={poly_deg0} deg1_single={poly_deg1_single} deg1_multi(xor-chain)={poly_deg1_multi} deg2plus(and-bearing)={poly_deg2plus} (total and-monomials={poly_deg2plus_monomial_total}) width>1={poly_width_gt1}");
-            eprintln!("poly by output type id (top 10): {:?}", poly_by_ty.iter().collect::<Vec<_>>().into_iter().rev().take(10).collect::<Vec<_>>());
+            eprintln!(
+                "total stmts={n_stmts} poly={n_poly} shuffle={n_shuffle} (total result_bits={shuffle_bits}) merge={n_merge} (total parts={merge_parts})"
+            );
+            eprintln!(
+                "poly breakdown: deg0(const)={poly_deg0} deg1_single={poly_deg1_single} deg1_multi(xor-chain)={poly_deg1_multi} deg2plus(and-bearing)={poly_deg2plus} (total and-monomials={poly_deg2plus_monomial_total}) width>1={poly_width_gt1}"
+            );
+            eprintln!(
+                "poly by output type id (top 10): {:?}",
+                poly_by_ty
+                    .iter()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .take(10)
+                    .collect::<Vec<_>>()
+            );
 
             // Shuffle categorization: for each single-bit Shuffle{[(bit_idx, src)]},
             // classify src's own origin.
@@ -2301,7 +3096,9 @@ mod tests {
                 }
             };
             let is_merge_src = |var_id: u32| -> Option<usize> {
-                if (var_id as usize) < num_params { return None; }
+                if (var_id as usize) < num_params {
+                    return None;
+                }
                 match &circuit.blocks[0].stmts[var_id as usize - num_params].kind {
                     Stmt::Merge { parts, .. } => Some(parts.len()),
                     _ => None,
@@ -2325,11 +3122,14 @@ mod tests {
                     }
                 }
             }
-            eprintln!("shuffle breakdown: identity(no-op)={shuffle_identity} merge-extractable={shuffle_merge_extractable} other(genuine)={shuffle_other}");
+            eprintln!(
+                "shuffle breakdown: identity(no-op)={shuffle_identity} merge-extractable={shuffle_merge_extractable} other(genuine)={shuffle_other}"
+            );
 
             // Batching opportunity: do multiple Shuffle statements extract
             // different bits of the SAME source var? Group by source var id.
-            let mut by_src: std::collections::BTreeMap<u32, Vec<(usize, u8)>> = std::collections::BTreeMap::new();
+            let mut by_src: std::collections::BTreeMap<u32, Vec<(usize, u8)>> =
+                std::collections::BTreeMap::new();
             for (idx, node) in circuit.blocks[0].stmts.iter().enumerate() {
                 if let Stmt::Shuffle { result_bits, .. } = &node.kind {
                     if result_bits.len() == 1 {
@@ -2339,7 +3139,11 @@ mod tests {
                 }
             }
             let groups_gt1 = by_src.values().filter(|v| v.len() > 1).count();
-            let shuffles_in_groups_gt1: usize = by_src.values().filter(|v| v.len() > 1).map(|v| v.len()).sum();
+            let shuffles_in_groups_gt1: usize = by_src
+                .values()
+                .filter(|v| v.len() > 1)
+                .map(|v| v.len())
+                .sum();
             let max_group = by_src.values().map(|v| v.len()).max().unwrap_or(0);
             let src_count = by_src.len();
             eprintln!(
@@ -2352,24 +3156,47 @@ mod tests {
             let mut adjacent_pairs = 0usize;
             let mut total_pairs = 0usize;
             for v in by_src.values() {
-                if v.len() < 2 { continue; }
+                if v.len() < 2 {
+                    continue;
+                }
                 let mut idxs: Vec<usize> = v.iter().map(|(i, _)| *i).collect();
                 idxs.sort();
                 for w in idxs.windows(2) {
                     total_pairs += 1;
-                    if w[1] - w[0] <= 4 { adjacent_pairs += 1; }
+                    if w[1] - w[0] <= 4 {
+                        adjacent_pairs += 1;
+                    }
                 }
             }
-            eprintln!("shuffle group locality: {adjacent_pairs}/{total_pairs} consecutive-in-group pairs are within 4 statements of each other");
+            eprintln!(
+                "shuffle group locality: {adjacent_pairs}/{total_pairs} consecutive-in-group pairs are within 4 statements of each other"
+            );
         }
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
+        let _trace = weave_vole_prover_ir_split(
+            &circuit,
+            &types,
+            "riscv_step",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| funcs.push(f),
+        );
         eprintln!("woven: {} functions", funcs.len());
-        let avg_params = funcs.iter().map(|f| f.params.len()).sum::<usize>() as f64 / funcs.len() as f64;
+        let avg_params =
+            funcs.iter().map(|f| f.params.len()).sum::<usize>() as f64 / funcs.len() as f64;
         eprintln!("avg params per function = {avg_params:.1}");
         let module = volar_compiler::ir::IrModule {
-            name: "riscv_step".into(), functions: funcs, structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step".into(),
+            functions: funcs,
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
         let code = print_weaved_vole_module(&module);
         eprintln!("full prover module printed_len={} bytes", code.len());
@@ -2397,39 +3224,63 @@ mod tests {
     #[test]
     #[ignore]
     fn probe_split_weave_single_block_lowers_to_c() {
-        use volar_ir_passes::LoweringMode;
-        use volar_weaver::{StorageMode, weave_vole_prover_ir_split};
+        use volar_c_backend::CBackend;
         use volar_compiler::{
-            SourceInput, ir::IrType, ir::PrimitiveType,
+            SourceInput,
+            ir::IrType,
+            ir::PrimitiveType,
             linkage::{LinkageKind, LinkageSystem, LinkedSpec},
             parse_sources,
         };
+        use volar_ir_passes::LoweringMode;
         use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
-        use volar_c_backend::CBackend;
+        use volar_weaver::{StorageMode, weave_vole_prover_ir_split};
 
         fn spec_src_dir() -> std::path::PathBuf {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent().unwrap()
-                .parent().unwrap()
-                .join("spec").join("volar-spec").join("src")
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("spec")
+                .join("volar-spec")
+                .join("src")
         }
         fn read_spec(name: &str) -> (String, String) {
             let path = spec_src_dir().join(name);
             let src = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("cannot read spec file {}: {e}", path.display()));
-            let stem = std::path::Path::new(name).file_stem().unwrap().to_string_lossy().into_owned();
+            let stem = std::path::Path::new(name)
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
             (src, stem)
         }
         fn make_vole_linkage() -> LinkageSystem {
-            let files = ["lib.rs", "vole.rs", "vole/prove.rs", "vole/vope.rs", "vole/impls.rs"];
+            let files = [
+                "lib.rs",
+                "vole.rs",
+                "vole/prove.rs",
+                "vole/vope.rs",
+                "vole/impls.rs",
+            ];
             let loaded: Vec<(String, String)> = files.iter().map(|&f| read_spec(f)).collect();
-            let inputs: Vec<SourceInput> = loaded.iter()
-                .map(|(src, name)| SourceInput { source: src.as_str(), name: name.as_str() })
+            let inputs: Vec<SourceInput> = loaded
+                .iter()
+                .map(|(src, name)| SourceInput {
+                    source: src.as_str(),
+                    name: name.as_str(),
+                })
                 .collect();
             let spec_module = parse_sources(&inputs, "volar_spec", &[])
                 .unwrap_or_else(|e| panic!("make_vole_linkage failed: {e}"));
             let mut ls = LinkageSystem::new();
-            ls.add(LinkedSpec { name: "volar_spec".into(), module: spec_module, kind: LinkageKind::Inline });
+            ls.add(LinkedSpec {
+                name: "volar_spec".into(),
+                module: spec_module,
+                kind: LinkageKind::Inline,
+            });
             ls
         }
         fn galois_vole_env() -> MonoEnv {
@@ -2447,19 +3298,46 @@ mod tests {
         let chunk_size = 1usize;
 
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
+        let _trace = weave_vole_prover_ir_split(
+            &circuit,
+            &types,
+            "riscv_step",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| funcs.push(f),
+        );
         eprintln!("woven: {} functions", funcs.len());
 
-        let one_func = funcs.into_iter().next().expect("at least one function woven");
-        eprintln!("testing single function: {} ({} params)", one_func.name, one_func.params.len());
+        let one_func = funcs
+            .into_iter()
+            .next()
+            .expect("at least one function woven");
+        eprintln!(
+            "testing single function: {} ({} params)",
+            one_func.name,
+            one_func.params.len()
+        );
         let mut module = volar_compiler::ir::IrModule {
-            name: "riscv_step_probe".into(), functions: vec![one_func], structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step_probe".into(),
+            functions: vec![one_func],
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
 
         let linkage = make_vole_linkage();
         linkage.apply(&mut module);
-        eprintln!("after linkage: {} functions, {} structs", module.functions.len(), module.structs.len());
+        eprintln!(
+            "after linkage: {} functions, {} structs",
+            module.functions.len(),
+            module.structs.len()
+        );
         for s in &module.structs {
             eprintln!("struct {:?}:", s.kind);
             for f in &s.fields {
@@ -2497,20 +3375,27 @@ mod tests {
     #[test]
     #[ignore]
     fn probe_batch_ir_blocks_on_real_interpreter() {
+        use volar_fuzz::interpreter::ir::eval_ir_with_storage;
         use volar_ir_common::Stmt;
         use volar_ir_opt::ir::{batch_ir_blocks, fold_ir_blocks};
         use volar_ir_opt::store_forward::store_forward_ir_blocks;
-        use volar_fuzz::interpreter::ir::eval_ir_with_storage;
 
         let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
         let mut target = volar_vaffle_target::VaffleTarget::new();
         let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
         );
         assert!(errors.is_empty());
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
         fn count_stmts(blocks: &volar_ir::ir::IRBlocks) -> (usize, usize, usize, usize) {
             let mut poly = 0usize;
@@ -2537,22 +3422,46 @@ mod tests {
         // Run UNBATCHED to completion first (from a clone, so the batched
         // run below starts from the exact same pre-batch IR).
         let unbatched_blocks = ir_blocks.clone();
-        let (unbatched_result, unbatched_storage) = eval_ir_with_storage(&unbatched_blocks, &types, &[]);
-        eprintln!("unbatched: result={unbatched_result:?} storage entries={}", unbatched_storage.len());
+        let (unbatched_result, unbatched_storage) =
+            eval_ir_with_storage(&unbatched_blocks, &types, &[]);
+        eprintln!(
+            "unbatched: result={unbatched_result:?} storage entries={}",
+            unbatched_storage.len()
+        );
 
         let mut batched_blocks = ir_blocks.clone();
         let mut batched_types = types.clone();
         let changed = batch_ir_blocks(&mut batched_blocks, &mut batched_types);
         let (total1, poly1, shuffle1, merge1) = count_stmts(&batched_blocks);
-        eprintln!("after batching (changed={changed}): total={total1} poly={poly1} shuffle={shuffle1} merge={merge1}");
-        eprintln!("delta: total={} poly={} shuffle={} merge={}", total1 as i64 - total0 as i64, poly1 as i64 - poly0 as i64, shuffle1 as i64 - shuffle0 as i64, merge1 as i64 - merge0 as i64);
+        eprintln!(
+            "after batching (changed={changed}): total={total1} poly={poly1} shuffle={shuffle1} merge={merge1}"
+        );
+        eprintln!(
+            "delta: total={} poly={} shuffle={} merge={}",
+            total1 as i64 - total0 as i64,
+            poly1 as i64 - poly0 as i64,
+            shuffle1 as i64 - shuffle0 as i64,
+            merge1 as i64 - merge0 as i64
+        );
 
-        let (batched_result, batched_storage) = eval_ir_with_storage(&batched_blocks, &batched_types, &[]);
-        eprintln!("batched: result={batched_result:?} storage entries={}", batched_storage.len());
+        let (batched_result, batched_storage) =
+            eval_ir_with_storage(&batched_blocks, &batched_types, &[]);
+        eprintln!(
+            "batched: result={batched_result:?} storage entries={}",
+            batched_storage.len()
+        );
 
-        assert_eq!(unbatched_result, batched_result, "batching must not change the interpreter's own final return value");
-        assert_eq!(unbatched_storage, batched_storage, "batching must not change the interpreter's own final storage contents");
-        eprintln!("MATCH: batching preserved exact semantics on the real interpreter's own pre-movfuscation CFG");
+        assert_eq!(
+            unbatched_result, batched_result,
+            "batching must not change the interpreter's own final return value"
+        );
+        assert_eq!(
+            unbatched_storage, batched_storage,
+            "batching must not change the interpreter's own final storage contents"
+        );
+        eprintln!(
+            "MATCH: batching preserved exact semantics on the real interpreter's own pre-movfuscation CFG"
+        );
     }
 
     /// Structural-only measurement of `batch_ir_blocks` on the
@@ -2584,12 +3493,20 @@ mod tests {
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
         let mut target = volar_vaffle_target::VaffleTarget::new();
         let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
         );
         assert!(errors.is_empty());
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
-        let (mut movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
+        let (mut movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
 
         fn count_stmts(blocks: &volar_ir::ir::IRBlocks) -> (usize, usize, usize, usize) {
             let mut poly = 0usize;
@@ -2611,12 +3528,22 @@ mod tests {
         }
 
         let (total0, poly0, shuffle0, merge0) = count_stmts(&movfuscated);
-        eprintln!("post-movfuscation, before batching: total={total0} poly={poly0} shuffle={shuffle0} merge={merge0}");
+        eprintln!(
+            "post-movfuscation, before batching: total={total0} poly={poly0} shuffle={shuffle0} merge={merge0}"
+        );
 
         let changed = batch_ir_blocks(&mut movfuscated, &mut types);
         let (total1, poly1, shuffle1, merge1) = count_stmts(&movfuscated);
-        eprintln!("post-movfuscation, after batching (changed={changed}): total={total1} poly={poly1} shuffle={shuffle1} merge={merge1}");
-        eprintln!("delta: total={} poly={} shuffle={} merge={}", total1 as i64 - total0 as i64, poly1 as i64 - poly0 as i64, shuffle1 as i64 - shuffle0 as i64, merge1 as i64 - merge0 as i64);
+        eprintln!(
+            "post-movfuscation, after batching (changed={changed}): total={total1} poly={poly1} shuffle={shuffle1} merge={merge1}"
+        );
+        eprintln!(
+            "delta: total={} poly={} shuffle={} merge={}",
+            total1 as i64 - total0 as i64,
+            poly1 as i64 - poly0 as i64,
+            shuffle1 as i64 - shuffle0 as i64,
+            merge1 as i64 - merge0 as i64
+        );
     }
 
     /// Real-scale correctness + size check for `volar_ir_opt::ir::cse_ir_blocks`
@@ -2642,11 +3569,11 @@ mod tests {
     #[test]
     #[ignore]
     fn probe_cse_ir_blocks_on_real_interpreter() {
+        use volar_fuzz::interpreter::ir::eval_ir_with_storage;
         use volar_ir_common::Stmt;
         use volar_ir_opt::ir::{batch_ir_blocks, cse_ir_blocks, dce_ir_blocks, fold_ir_blocks};
         use volar_ir_opt::store_forward::store_forward_ir_blocks;
         use volar_ir_passes::movfuscate_ir_with_boundary;
-        use volar_fuzz::interpreter::ir::eval_ir_with_storage;
 
         fn count_stmts(blocks: &volar_ir::ir::IRBlocks) -> (usize, usize, usize, usize) {
             let mut poly = 0usize;
@@ -2671,32 +3598,64 @@ mod tests {
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
         let mut target = volar_vaffle_target::VaffleTarget::new();
         let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
         );
         assert!(errors.is_empty());
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
         // ---- Correctness: pre-movfuscation, exact interpreter match. ----
         let (total0, poly0, shuffle0, merge0) = count_stmts(&ir_blocks);
-        eprintln!("pre-movfuscation, before CSE: total={total0} poly={poly0} shuffle={shuffle0} merge={merge0}");
+        eprintln!(
+            "pre-movfuscation, before CSE: total={total0} poly={poly0} shuffle={shuffle0} merge={merge0}"
+        );
 
         let unbatched_blocks = ir_blocks.clone();
-        let (unbatched_result, unbatched_storage) = eval_ir_with_storage(&unbatched_blocks, &types, &[]);
-        eprintln!("without CSE: result={unbatched_result:?} storage entries={}", unbatched_storage.len());
+        let (unbatched_result, unbatched_storage) =
+            eval_ir_with_storage(&unbatched_blocks, &types, &[]);
+        eprintln!(
+            "without CSE: result={unbatched_result:?} storage entries={}",
+            unbatched_storage.len()
+        );
 
         let mut cse_blocks = ir_blocks.clone();
         let cse_types = types.clone();
         let changed = cse_ir_blocks(&mut cse_blocks, &cse_types);
         let (total1, poly1, shuffle1, merge1) = count_stmts(&cse_blocks);
-        eprintln!("pre-movfuscation, after CSE (changed={changed}): total={total1} poly={poly1} shuffle={shuffle1} merge={merge1}");
-        eprintln!("delta: total={} poly={} shuffle={} merge={}", total1 as i64 - total0 as i64, poly1 as i64 - poly0 as i64, shuffle1 as i64 - shuffle0 as i64, merge1 as i64 - merge0 as i64);
+        eprintln!(
+            "pre-movfuscation, after CSE (changed={changed}): total={total1} poly={poly1} shuffle={shuffle1} merge={merge1}"
+        );
+        eprintln!(
+            "delta: total={} poly={} shuffle={} merge={}",
+            total1 as i64 - total0 as i64,
+            poly1 as i64 - poly0 as i64,
+            shuffle1 as i64 - shuffle0 as i64,
+            merge1 as i64 - merge0 as i64
+        );
 
         let (cse_result, cse_storage) = eval_ir_with_storage(&cse_blocks, &cse_types, &[]);
-        eprintln!("with CSE: result={cse_result:?} storage entries={}", cse_storage.len());
-        assert_eq!(unbatched_result, cse_result, "CSE must not change the interpreter's own final return value");
-        assert_eq!(unbatched_storage, cse_storage, "CSE must not change the interpreter's own final storage contents");
-        eprintln!("MATCH: CSE preserved exact semantics on the real interpreter's own pre-movfuscation CFG");
+        eprintln!(
+            "with CSE: result={cse_result:?} storage entries={}",
+            cse_storage.len()
+        );
+        assert_eq!(
+            unbatched_result, cse_result,
+            "CSE must not change the interpreter's own final return value"
+        );
+        assert_eq!(
+            unbatched_storage, cse_storage,
+            "CSE must not change the interpreter's own final storage contents"
+        );
+        eprintln!(
+            "MATCH: CSE preserved exact semantics on the real interpreter's own pre-movfuscation CFG"
+        );
 
         // CSE then DCE, the composition this pass is meant to enable.
         let mut cse_then_dce = ir_blocks.clone();
@@ -2704,21 +3663,36 @@ mod tests {
         cse_ir_blocks(&mut cse_then_dce, &cse_then_dce_types);
         dce_ir_blocks(&mut cse_then_dce, &cse_then_dce_types);
         let (total2, poly2, shuffle2, merge2) = count_stmts(&cse_then_dce);
-        eprintln!("pre-movfuscation, after CSE+DCE: total={total2} poly={poly2} shuffle={shuffle2} merge={merge2}");
+        eprintln!(
+            "pre-movfuscation, after CSE+DCE: total={total2} poly={poly2} shuffle={shuffle2} merge={merge2}"
+        );
 
         // ---- Size only: post-movfuscation, the scale that matters. ----
-        let (mut movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut cse_then_dce_types);
+        let (mut movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut cse_then_dce_types);
         let (mtotal0, mpoly0, mshuffle0, mmerge0) = count_stmts(&movfuscated);
-        eprintln!("post-movfuscation, before CSE: total={mtotal0} poly={mpoly0} shuffle={mshuffle0} merge={mmerge0}");
+        eprintln!(
+            "post-movfuscation, before CSE: total={mtotal0} poly={mpoly0} shuffle={mshuffle0} merge={mmerge0}"
+        );
         cse_ir_blocks(&mut movfuscated, &cse_then_dce_types);
         let (mtotal1, mpoly1, mshuffle1, mmerge1) = count_stmts(&movfuscated);
-        eprintln!("post-movfuscation, after CSE alone: total={mtotal1} poly={mpoly1} shuffle={mshuffle1} merge={mmerge1}");
+        eprintln!(
+            "post-movfuscation, after CSE alone: total={mtotal1} poly={mpoly1} shuffle={mshuffle1} merge={mmerge1}"
+        );
         dce_ir_blocks(&mut movfuscated, &cse_then_dce_types);
         batch_ir_blocks(&mut movfuscated, &mut cse_then_dce_types);
         let (mtotal2, mpoly2, mshuffle2, mmerge2) = count_stmts(&movfuscated);
-        eprintln!("post-movfuscation, after CSE+DCE+batch: total={mtotal2} poly={mpoly2} shuffle={mshuffle2} merge={mmerge2}");
-        eprintln!("post-movfuscation poly delta, CSE alone: {}", mpoly1 as i64 - mpoly0 as i64);
-        eprintln!("post-movfuscation poly delta, CSE+DCE+batch vs baseline: {}", mpoly2 as i64 - mpoly0 as i64);
+        eprintln!(
+            "post-movfuscation, after CSE+DCE+batch: total={mtotal2} poly={mpoly2} shuffle={mshuffle2} merge={mmerge2}"
+        );
+        eprintln!(
+            "post-movfuscation poly delta, CSE alone: {}",
+            mpoly1 as i64 - mpoly0 as i64
+        );
+        eprintln!(
+            "post-movfuscation poly delta, CSE+DCE+batch vs baseline: {}",
+            mpoly2 as i64 - mpoly0 as i64
+        );
     }
 
     /// The number that actually matters: real printed-size impact of
@@ -2762,35 +3736,58 @@ mod tests {
     /// so the (expensive-ish, ~10s) CSE/DCE/batch pipeline runs once, not
     /// three times, when verifying all 3 roles' own split wiring.
     fn build_optimized_circuit_and_boundary() -> (
-        volar_ir::ir::IRBlocks, volar_ir::ir::IRTypes,
-        Vec<volar_ir_passes::MovfuscBlockBoundary>, volar_ir_passes::MovfuscAccumInfo,
+        volar_ir::ir::IRBlocks,
+        volar_ir::ir::IRTypes,
+        Vec<volar_ir_passes::MovfuscBlockBoundary>,
+        volar_ir_passes::MovfuscAccumInfo,
     ) {
         use std::collections::BTreeSet;
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
-        use volar_ir_opt::ir::{batch_ir_blocks_with_remap_and_members, cse_ir_blocks_with_remap, dce_ir_blocks_with_remap_and_roots, fold_ir_blocks};
+        use volar_ir_opt::ir::{
+            batch_ir_blocks_with_remap_and_members, cse_ir_blocks_with_remap,
+            dce_ir_blocks_with_remap_and_roots, fold_ir_blocks,
+        };
         use volar_ir_opt::store_forward::store_forward_ir_blocks;
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, remap_movfusc_accum_info, remap_movfusc_boundaries, thread_synthetic_slots, LoweringMode};
+        use volar_ir_passes::{
+            LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary,
+            remap_movfusc_accum_info, remap_movfusc_boundaries, thread_synthetic_slots,
+        };
 
-        fn compose(cumulative: std::collections::BTreeMap<u32, u32>, step: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<u32, u32> {
-            cumulative.into_iter().filter_map(|(old, mid)| step.get(&mid).map(|&new| (old, new))).collect()
+        fn compose(
+            cumulative: std::collections::BTreeMap<u32, u32>,
+            step: &std::collections::BTreeMap<u32, u32>,
+        ) -> std::collections::BTreeMap<u32, u32> {
+            cumulative
+                .into_iter()
+                .filter_map(|(old, mid)| step.get(&mid).map(|&new| (old, new)))
+                .collect()
         }
 
         let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
         let mut target = volar_vaffle_target::VaffleTarget::new();
         let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
-            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
         );
         assert!(errors.is_empty());
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
-        let (mut movfuscated, boundary, accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
+        let (mut movfuscated, boundary, accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
 
         let extra_live_orig = movfusc_referenced_vars(&boundary, &accum_info);
         let n_params = movfuscated.blocks[0].params.len() as u32;
         let n0 = n_params + movfuscated.blocks[0].stmts.len() as u32;
-        let mut cumulative: std::collections::BTreeMap<u32, u32> = (0..n0).map(|v| (v, v)).collect();
+        let mut cumulative: std::collections::BTreeMap<u32, u32> =
+            (0..n0).map(|v| (v, v)).collect();
 
         // One "region" per original block's own [start,end) range, plus
         // one for the shared prefix and one per accumulation-phase range
@@ -2800,27 +3797,53 @@ mod tests {
         // ORIGINAL var id and never changes -- used only to reconstruct,
         // post-optimization, which original region(s) each surviving/
         // created var serves.
-        let mut region_by_orig_var: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+        let mut region_by_orig_var: std::collections::BTreeMap<u32, u32> =
+            std::collections::BTreeMap::new();
         let mut next_region = 0u32;
         let shared_prefix_end = boundary.first().map(|b| b.start).unwrap_or(n0);
-        for v in n_params..shared_prefix_end { region_by_orig_var.insert(v, next_region); }
+        for v in n_params..shared_prefix_end {
+            region_by_orig_var.insert(v, next_region);
+        }
         next_region += 1;
-        for b in &boundary { let r = next_region; for v in b.start..b.end { region_by_orig_var.insert(v, r); } next_region += 1; }
-        { let r = next_region; for v in accum_info.init.start..accum_info.init.end { region_by_orig_var.insert(v, r); } next_region += 1; }
-        for s in &accum_info.steps { let r = next_region; for v in s.start..s.end { region_by_orig_var.insert(v, r); } next_region += 1; }
+        for b in &boundary {
+            let r = next_region;
+            for v in b.start..b.end {
+                region_by_orig_var.insert(v, r);
+            }
+            next_region += 1;
+        }
+        {
+            let r = next_region;
+            for v in accum_info.init.start..accum_info.init.end {
+                region_by_orig_var.insert(v, r);
+            }
+            next_region += 1;
+        }
+        for s in &accum_info.steps {
+            let r = next_region;
+            for v in s.start..s.end {
+                region_by_orig_var.insert(v, r);
+            }
+            next_region += 1;
+        }
 
         // ---- CSE, unconstrained. ----
         let (_, cse_remaps) = cse_ir_blocks_with_remap(&mut movfuscated, &types);
         cumulative = compose(cumulative, &cse_remaps[0]);
 
         // ---- DCE (extra_live-protected). ----
-        let current_extra_live: Vec<u32> = extra_live_orig.iter().filter_map(|v| cumulative.get(v).copied()).collect();
-        let (_, dce_remaps) = dce_ir_blocks_with_remap_and_roots(&mut movfuscated, &types, &current_extra_live);
+        let current_extra_live: Vec<u32> = extra_live_orig
+            .iter()
+            .filter_map(|v| cumulative.get(v).copied())
+            .collect();
+        let (_, dce_remaps) =
+            dce_ir_blocks_with_remap_and_roots(&mut movfuscated, &types, &current_extra_live);
         cumulative = compose(cumulative, &dce_remaps[0]);
 
         // ---- Batch, unconstrained, tracking each new var's own members. ----
         let cumulative_pre_batch = cumulative.clone();
-        let (_, batch_remaps, batch_members) = batch_ir_blocks_with_remap_and_members(&mut movfuscated, &mut types);
+        let (_, batch_remaps, batch_members) =
+            batch_ir_blocks_with_remap_and_members(&mut movfuscated, &mut types);
         cumulative = compose(cumulative, &batch_remaps[0]);
 
         // ---- Reconstruct, for every FINAL (post-batch) var, the set of
@@ -2830,16 +3853,21 @@ mod tests {
         // batch-created var (the wide Poly + its own feeding Merge, no
         // pre-optimization identity of its own) gets the union of its own
         // members' region sets instead.
-        let mut region_sets_pre_batch: std::collections::BTreeMap<u32, BTreeSet<u32>> = std::collections::BTreeMap::new();
+        let mut region_sets_pre_batch: std::collections::BTreeMap<u32, BTreeSet<u32>> =
+            std::collections::BTreeMap::new();
         for (&old, &mid) in &cumulative_pre_batch {
             if let Some(&r) = region_by_orig_var.get(&old) {
                 region_sets_pre_batch.entry(mid).or_default().insert(r);
             }
         }
-        let mut region_sets_final: std::collections::BTreeMap<u32, BTreeSet<u32>> = std::collections::BTreeMap::new();
+        let mut region_sets_final: std::collections::BTreeMap<u32, BTreeSet<u32>> =
+            std::collections::BTreeMap::new();
         for (&mid, rs) in &region_sets_pre_batch {
             if let Some(&new) = batch_remaps[0].get(&mid) {
-                region_sets_final.entry(new).or_default().extend(rs.iter().copied());
+                region_sets_final
+                    .entry(new)
+                    .or_default()
+                    .extend(rs.iter().copied());
             }
         }
         for (&new_var, members) in &batch_members[0] {
@@ -2853,9 +3881,13 @@ mod tests {
         // DIAGNOSTIC (cheap): how many statements are genuinely
         // cross-region (need synthetic threading) vs. single-region.
         let multi_count = region_sets_final.values().filter(|s| s.len() > 1).count();
-        eprintln!("region_sets_final: {} vars have a known region, {multi_count} are genuinely multi-region", region_sets_final.len());
+        eprintln!(
+            "region_sets_final: {} vars have a known region, {multi_count} are genuinely multi-region",
+            region_sets_final.len()
+        );
 
-        let new_n0 = (movfuscated.blocks[0].params.len() + movfuscated.blocks[0].stmts.len()) as u32;
+        let new_n0 =
+            (movfuscated.blocks[0].params.len() + movfuscated.blocks[0].stmts.len()) as u32;
         cumulative.insert(n0, new_n0);
 
         // Standard remap handles is_active/done/next_pc_bits/next_state/
@@ -2893,10 +3925,13 @@ mod tests {
         // lives in that `thread_synthetic_slots` already computes, since
         // CSE/batch always keep/create a survivor at its own earliest
         // (i.e. lowest-region) member's position.
-        let mut region_ranges_final: std::collections::BTreeMap<u32, (u32, u32)> = std::collections::BTreeMap::new();
+        let mut region_ranges_final: std::collections::BTreeMap<u32, (u32, u32)> =
+            std::collections::BTreeMap::new();
         for (&new_var, regions) in &region_sets_final {
             let physical_region = *regions.iter().min().unwrap();
-            let e = region_ranges_final.entry(physical_region).or_insert((new_var, new_var + 1));
+            let e = region_ranges_final
+                .entry(physical_region)
+                .or_insert((new_var, new_var + 1));
             e.0 = e.0.min(new_var);
             e.1 = e.1.max(new_var + 1);
         }
@@ -2944,7 +3979,9 @@ mod tests {
             let mut max_span: u32 = 0;
             let mut spans: Vec<u32> = Vec::new();
             for s in region_sets_final.values() {
-                if s.len() < 2 || s.contains(&0) { continue; }
+                if s.len() < 2 || s.contains(&0) {
+                    continue;
+                }
                 let lo = *s.iter().min().unwrap();
                 let hi = *s.iter().max().unwrap();
                 let span = hi - lo;
@@ -2962,7 +3999,10 @@ mod tests {
             );
         }
 
-        eprintln!("optimized circuit: {} statements", movfuscated.blocks[0].stmts.len());
+        eprintln!(
+            "optimized circuit: {} statements",
+            movfuscated.blocks[0].stmts.len()
+        );
 
         if std::env::var("VOLAR_SPAN_DIAGNOSTIC_ONLY").is_ok() {
             return (movfuscated, types, Vec::new(), accum_info);
@@ -2979,7 +4019,8 @@ mod tests {
         // movfuscated's own EXISTING statements (only appends), so
         // `boundary`/`accum_info` (computed pre-lowering) stay valid.
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
         // DIAGNOSTIC (cheap, no weave): for every range, check that
         // everything its own native fields (is_active/done/next_pc_bits/
@@ -2992,7 +4033,11 @@ mod tests {
         {
             let n_params_final = circuit.blocks[0].params.len() as u32;
             let shared_prefix_end_final = boundary[0].start;
-            let validate_range = |label: &str, start: u32, end: u32, fields: &[(&str, &[u32])], synthetic_in: &[u32]| {
+            let validate_range = |label: &str,
+                                  start: u32,
+                                  end: u32,
+                                  fields: &[(&str, &[u32])],
+                                  synthetic_in: &[u32]| {
                 let visible = |v: u32| -> bool {
                     v < n_params_final
                         || (v >= n_params_final && v < shared_prefix_end_final)
@@ -3002,15 +4047,26 @@ mod tests {
                 for (field_name, vars) in fields {
                     for &v in *vars {
                         if !visible(v) {
-                            eprintln!("VALIDATION FAILURE: {label}.{field_name} references var {v}, not visible here (start={start}, end={end}, synthetic_in={synthetic_in:?})");
+                            eprintln!(
+                                "VALIDATION FAILURE: {label}.{field_name} references var {v}, not visible here (start={start}, end={end}, synthetic_in={synthetic_in:?})"
+                            );
                         }
                     }
                 }
             };
             for (i, b) in boundary.iter().enumerate() {
                 validate_range(
-                    &format!("boundary[{i}]"), b.start, b.end,
-                    &[("is_active", &[b.is_active]), ("done", &[b.done]), ("next_pc_bits", &b.next_pc_bits), ("next_state", &b.next_state), ("ret_vals", &b.ret_vals), ("synthetic_out", &b.synthetic_out)],
+                    &format!("boundary[{i}]"),
+                    b.start,
+                    b.end,
+                    &[
+                        ("is_active", &[b.is_active]),
+                        ("done", &[b.done]),
+                        ("next_pc_bits", &b.next_pc_bits),
+                        ("next_state", &b.next_state),
+                        ("ret_vals", &b.ret_vals),
+                        ("synthetic_out", &b.synthetic_out),
+                    ],
                     &b.synthetic_in,
                 );
             }
@@ -3024,13 +4080,17 @@ mod tests {
             // this session's changes). Only `synthetic_out` -- MY OWN new
             // mechanism -- needs the physical-visibility check.
             validate_range(
-                "accum_info.init", accum_info.init.start, accum_info.init.end,
+                "accum_info.init",
+                accum_info.init.start,
+                accum_info.init.end,
                 &[("synthetic_out", &accum_info.init.synthetic_out)],
                 &accum_info.init.synthetic_in,
             );
             for (i, s) in accum_info.steps.iter().enumerate() {
                 validate_range(
-                    &format!("accum_info.steps[{i}]"), s.start, s.end,
+                    &format!("accum_info.steps[{i}]"),
+                    s.start,
+                    s.end,
                     &[("synthetic_out", &s.synthetic_out)],
                     &s.synthetic_in,
                 );
@@ -3061,29 +4121,52 @@ mod tests {
             // own exports feed the accumulator step covering it, per
             // split_driver.rs's own doc). Not part of my own synthetic_in
             // mechanism, so pass them in as `extra_visible` per call.
-            let validate_stmt_range = |label: &str, start: u32, end: u32, synthetic_in: &[u32], extra_visible: &[u32]| {
-                let visible = |v: u32| -> bool {
-                    v < n_params_final
-                        || (v >= n_params_final && v < shared_prefix_end_final)
-                        || (v >= start && v < end)
-                        || synthetic_in.contains(&v)
-                        || extra_visible.contains(&v)
-                };
-                let s = (start - n_params_final) as usize;
-                let e = (end - n_params_final) as usize;
-                for (j, stmt) in circuit.blocks[0].stmts[s..e].iter().enumerate() {
-                    for v in stmt_operand_vars(&stmt.kind) {
-                        if !visible(v) {
-                            eprintln!("STMT VALIDATION FAILURE: {label} stmt@{} (var {}) references operand var {v}, not visible here (start={start}, end={end})", s + j, n_params_final as usize + s + j);
+            let validate_stmt_range =
+                |label: &str, start: u32, end: u32, synthetic_in: &[u32], extra_visible: &[u32]| {
+                    let visible = |v: u32| -> bool {
+                        v < n_params_final
+                            || (v >= n_params_final && v < shared_prefix_end_final)
+                            || (v >= start && v < end)
+                            || synthetic_in.contains(&v)
+                            || extra_visible.contains(&v)
+                    };
+                    let s = (start - n_params_final) as usize;
+                    let e = (end - n_params_final) as usize;
+                    for (j, stmt) in circuit.blocks[0].stmts[s..e].iter().enumerate() {
+                        for v in stmt_operand_vars(&stmt.kind) {
+                            if !visible(v) {
+                                eprintln!(
+                                    "STMT VALIDATION FAILURE: {label} stmt@{} (var {}) references operand var {v}, not visible here (start={start}, end={end})",
+                                    s + j,
+                                    n_params_final as usize + s + j
+                                );
+                            }
                         }
                     }
-                }
-            };
-            validate_stmt_range("shared_prefix", n_params_final, shared_prefix_end_final, &[], &[]);
+                };
+            validate_stmt_range(
+                "shared_prefix",
+                n_params_final,
+                shared_prefix_end_final,
+                &[],
+                &[],
+            );
             for (i, b) in boundary.iter().enumerate() {
-                validate_stmt_range(&format!("boundary[{i}]"), b.start, b.end, &b.synthetic_in, &[]);
+                validate_stmt_range(
+                    &format!("boundary[{i}]"),
+                    b.start,
+                    b.end,
+                    &b.synthetic_in,
+                    &[],
+                );
             }
-            validate_stmt_range("accum_info.init", accum_info.init.start, accum_info.init.end, &accum_info.init.synthetic_in, &[]);
+            validate_stmt_range(
+                "accum_info.init",
+                accum_info.init.start,
+                accum_info.init.end,
+                &accum_info.init.synthetic_in,
+                &[],
+            );
             // chunk_size=1 in this probe -- accum_info.steps[i] covers
             // exactly boundary[i], so that block's own native export
             // fields are visible (see validate_stmt_range's own doc
@@ -3101,7 +4184,12 @@ mod tests {
                 extra_visible.extend(b.next_state.iter().copied());
                 extra_visible.extend(b.ret_vals.iter().copied());
                 let (prev_done_acc, prev_next_pc, prev_next_state, prev_ret_vals) = if i == 0 {
-                    (accum_info.init.done_acc, &accum_info.init.next_pc, &accum_info.init.next_state, &accum_info.init.ret_vals)
+                    (
+                        accum_info.init.done_acc,
+                        &accum_info.init.next_pc,
+                        &accum_info.init.next_state,
+                        &accum_info.init.ret_vals,
+                    )
                 } else {
                     let p = &accum_info.steps[i - 1];
                     (p.done_acc, &p.next_pc, &p.next_state, &p.ret_vals)
@@ -3110,7 +4198,13 @@ mod tests {
                 extra_visible.extend(prev_next_pc.iter().copied());
                 extra_visible.extend(prev_next_state.iter().copied());
                 extra_visible.extend(prev_ret_vals.iter().copied());
-                validate_stmt_range(&format!("accum_info.steps[{i}]"), s.start, s.end, &s.synthetic_in, &extra_visible);
+                validate_stmt_range(
+                    &format!("accum_info.steps[{i}]"),
+                    s.start,
+                    s.end,
+                    &s.synthetic_in,
+                    &extra_visible,
+                );
             }
 
             // "finish" (lower_to_circuit_ir's own terminator-select/padding,
@@ -3147,7 +4241,17 @@ mod tests {
         let mode = StorageMode::Commitment;
         let chunk_size = 1usize;
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
+        let _trace = weave_vole_prover_ir_split(
+            &circuit,
+            &types,
+            "riscv_step",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| funcs.push(f),
+        );
         eprintln!("woven (prover): {} functions", funcs.len());
         funcs
     }
@@ -3161,7 +4265,17 @@ mod tests {
         let mode = StorageMode::Commitment;
         let chunk_size = 1usize;
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_qsim_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
+        let _trace = weave_vole_qsim_ir_split(
+            &circuit,
+            &types,
+            "riscv_step",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| funcs.push(f),
+        );
         eprintln!("woven (qsim): {} functions", funcs.len());
         funcs
     }
@@ -3170,12 +4284,23 @@ mod tests {
     /// circuit/boundary/accum_info as the prover, different weave
     /// function. See `build_optimized_circuit_and_boundary`'s own doc.
     fn build_optimized_verifier_module_functions() -> Vec<volar_compiler::ir::IrFunction> {
-        use volar_weaver::{StorageMode, weave_vole_verifier_ir_split_with_trace, IopSink};
+        use volar_weaver::{IopSink, StorageMode, weave_vole_verifier_ir_split_with_trace};
         let (circuit, types, boundary, accum_info) = build_optimized_circuit_and_boundary();
         let mode = StorageMode::Commitment;
         let chunk_size = 1usize;
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
-        let _trace = weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE, |f| funcs.push(f));
+        let _trace = weave_vole_verifier_ir_split_with_trace(
+            &circuit,
+            &types,
+            "riscv_step",
+            &mode,
+            &IopSink,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| funcs.push(f),
+        );
         eprintln!("woven (verifier): {} functions", funcs.len());
         funcs
     }
@@ -3192,11 +4317,20 @@ mod tests {
         use volar_weaver::print_weaved_vole_module;
         let funcs = build_optimized_prover_module_functions();
         let module = volar_compiler::ir::IrModule {
-            name: "riscv_step".into(), functions: funcs, structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step".into(),
+            functions: funcs,
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
         let code = print_weaved_vole_module(&module);
-        eprintln!("optimized full prover module printed_len={} bytes (baseline was 746,002,390)", code.len());
+        eprintln!(
+            "optimized full prover module printed_len={} bytes (baseline was 746,002,390)",
+            code.len()
+        );
     }
 
     /// Builds a one-function module for `f` and returns its printed byte
@@ -3206,8 +4340,14 @@ mod tests {
     /// NOT to correlate well in practice -- see the dump tests below).
     fn printed_len_of(f: &volar_compiler::ir::IrFunction) -> usize {
         let module = volar_compiler::ir::IrModule {
-            name: "riscv_step".into(), functions: vec![f.clone()], structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step".into(),
+            functions: vec![f.clone()],
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
         volar_weaver::print_weaved_vole_module(&module).len()
     }
@@ -3234,20 +4374,41 @@ mod tests {
     #[ignore]
     fn dump_largest_optimized_function_for_compile_measurement() {
         let funcs = build_optimized_prover_module_functions();
-        let mut sized: Vec<(usize, volar_compiler::ir::IrFunction)> = funcs.into_iter().map(|f| (printed_len_of(&f), f)).collect();
+        let mut sized: Vec<(usize, volar_compiler::ir::IrFunction)> =
+            funcs.into_iter().map(|f| (printed_len_of(&f), f)).collect();
         sized.sort_by_key(|(len, _)| std::cmp::Reverse(*len));
         eprintln!(
             "top 5 by printed size (name, params, printed_bytes, rust_ir_stmt_count, bytes_per_stmt): {:?}",
-            sized.iter().take(5).map(|(len, f)| (
-                f.name.clone(), f.params.len(), *len, f.body.stmts.len(),
-                *len as f64 / f.body.stmts.len().max(1) as f64,
-            )).collect::<Vec<_>>()
+            sized
+                .iter()
+                .take(5)
+                .map(|(len, f)| (
+                    f.name.clone(),
+                    f.params.len(),
+                    *len,
+                    f.body.stmts.len(),
+                    *len as f64 / f.body.stmts.len().max(1) as f64,
+                ))
+                .collect::<Vec<_>>()
         );
-        let (len, f) = sized.into_iter().next().expect("at least one function woven");
-        eprintln!("largest function: {} with {} params, {len} printed bytes", f.name, f.params.len());
+        let (len, f) = sized
+            .into_iter()
+            .next()
+            .expect("at least one function woven");
+        eprintln!(
+            "largest function: {} with {} params, {len} printed bytes",
+            f.name,
+            f.params.len()
+        );
         let module = volar_compiler::ir::IrModule {
-            name: "riscv_step".into(), functions: vec![f], structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step".into(),
+            functions: vec![f],
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
         let code = volar_weaver::print_weaved_vole_module(&module);
         eprintln!("printed source length: {} bytes", code.len());
@@ -3279,18 +4440,31 @@ mod tests {
     fn dump_split_block_68_bundle_for_compile_measurement() {
         let funcs = build_optimized_prover_module_functions();
         let prefix = "vole_prove_ir_riscv_step_block_68";
-        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs.into_iter()
+        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs
+            .into_iter()
             .filter(|f| f.name == prefix || f.name.starts_with(&format!("{prefix}_piece_")))
             .collect();
         eprintln!(
             "block_68 bundle: {} functions: {:?}",
             bundle.len(),
-            bundle.iter().map(|f| (f.name.clone(), f.params.len(), f.body.stmts.len())).collect::<Vec<_>>()
+            bundle
+                .iter()
+                .map(|f| (f.name.clone(), f.params.len(), f.body.stmts.len()))
+                .collect::<Vec<_>>()
         );
-        assert!(bundle.len() > 1, "block_68 must actually be split at MAX_STMTS_PER_PIECE -- if this fails, the threshold or region no longer triggers splitting and this test needs retargeting");
+        assert!(
+            bundle.len() > 1,
+            "block_68 must actually be split at MAX_STMTS_PER_PIECE -- if this fails, the threshold or region no longer triggers splitting and this test needs retargeting"
+        );
         let module = volar_compiler::ir::IrModule {
-            name: "riscv_step".into(), functions: bundle, structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step".into(),
+            functions: bundle,
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
         let code = volar_weaver::print_weaved_vole_module(&module);
         eprintln!("printed source length: {} bytes", code.len());
@@ -3312,18 +4486,31 @@ mod tests {
     fn dump_split_qsim_block_bundle_for_compile_measurement() {
         let funcs = build_optimized_qsim_module_functions();
         let prefix = "vole_qsim_ir_riscv_step_block_68";
-        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs.into_iter()
+        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs
+            .into_iter()
             .filter(|f| f.name == prefix || f.name.starts_with(&format!("{prefix}_piece_")))
             .collect();
         eprintln!(
             "qsim block_68 bundle: {} functions: {:?}",
             bundle.len(),
-            bundle.iter().map(|f| (f.name.clone(), f.params.len(), f.body.stmts.len())).collect::<Vec<_>>()
+            bundle
+                .iter()
+                .map(|f| (f.name.clone(), f.params.len(), f.body.stmts.len()))
+                .collect::<Vec<_>>()
         );
-        assert!(bundle.len() > 1, "qsim block_68 must actually be split at MAX_STMTS_PER_PIECE");
+        assert!(
+            bundle.len() > 1,
+            "qsim block_68 must actually be split at MAX_STMTS_PER_PIECE"
+        );
         let module = volar_compiler::ir::IrModule {
-            name: "riscv_step".into(), functions: bundle, structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step".into(),
+            functions: bundle,
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
         let code = volar_weaver::print_weaved_vole_module(&module);
         eprintln!("printed source length: {} bytes", code.len());
@@ -3344,18 +4531,31 @@ mod tests {
     fn dump_split_verifier_block_bundle_for_compile_measurement() {
         let funcs = build_optimized_verifier_module_functions();
         let prefix = "vole_verify_ir_riscv_step_block_68";
-        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs.into_iter()
+        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs
+            .into_iter()
             .filter(|f| f.name == prefix || f.name.starts_with(&format!("{prefix}_piece_")))
             .collect();
         eprintln!(
             "verifier block_68 bundle: {} functions: {:?}",
             bundle.len(),
-            bundle.iter().map(|f| (f.name.clone(), f.params.len(), f.body.stmts.len())).collect::<Vec<_>>()
+            bundle
+                .iter()
+                .map(|f| (f.name.clone(), f.params.len(), f.body.stmts.len()))
+                .collect::<Vec<_>>()
         );
-        assert!(bundle.len() > 1, "verifier block_68 must actually be split at MAX_STMTS_PER_PIECE");
+        assert!(
+            bundle.len() > 1,
+            "verifier block_68 must actually be split at MAX_STMTS_PER_PIECE"
+        );
         let module = volar_compiler::ir::IrModule {
-            name: "riscv_step".into(), functions: bundle, structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step".into(),
+            functions: bundle,
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
         let code = volar_weaver::print_weaved_vole_module(&module);
         eprintln!("printed source length: {} bytes", code.len());
@@ -3375,13 +4575,25 @@ mod tests {
     #[ignore]
     fn dump_top3_optimized_functions_for_compile_measurement() {
         let funcs = build_optimized_prover_module_functions();
-        let mut sized: Vec<(usize, volar_compiler::ir::IrFunction)> = funcs.into_iter().map(|f| (printed_len_of(&f), f)).collect();
+        let mut sized: Vec<(usize, volar_compiler::ir::IrFunction)> =
+            funcs.into_iter().map(|f| (printed_len_of(&f), f)).collect();
         sized.sort_by_key(|(len, _)| std::cmp::Reverse(*len));
         let top3: Vec<_> = sized.into_iter().take(3).map(|(_, f)| f).collect();
-        eprintln!("top 3: {:?}", top3.iter().map(|f| (f.name.clone(), f.params.len())).collect::<Vec<_>>());
+        eprintln!(
+            "top 3: {:?}",
+            top3.iter()
+                .map(|f| (f.name.clone(), f.params.len()))
+                .collect::<Vec<_>>()
+        );
         let module = volar_compiler::ir::IrModule {
-            name: "riscv_step".into(), functions: top3, structs: vec![], enums: vec![],
-            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            name: "riscv_step".into(),
+            functions: top3,
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
         };
         let code = volar_weaver::print_weaved_vole_module(&module);
         eprintln!("printed source length: {} bytes", code.len());
@@ -3417,11 +4629,11 @@ mod tests {
     }
 
     fn minimal_state_write_repro_inner(with_result: bool) {
+        use volar_fuzz::interpreter::ir::{StorageMap, eval_ir_circuit_step};
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         let wat = if with_result {
             r#"(module
@@ -3440,7 +4652,8 @@ mod tests {
     (local.get $r1)
   )
 )
-"#.to_string()
+"#
+            .to_string()
         } else {
             r#"(module
   (func (export "run")
@@ -3457,7 +4670,8 @@ mod tests {
     )
   )
 )
-"#.to_string()
+"#
+            .to_string()
         };
         let wasm_bytes = wat::parse_str(&wat).expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
@@ -3471,27 +4685,45 @@ mod tests {
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("param widths: {param_widths:?}");
         eprintln!("circuit terminator: {:?}", circuit.blocks[0].terminator);
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut storage: StorageMap = StorageMap::new();
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
         while !done && step < 10 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             done = outputs[0].iter().any(|&b| b);
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
             eprintln!("step {step}: done={done} full_state={full_state:?}");
             inputs = outputs[1..1 + param_widths.len()].to_vec();
             step += 1;
@@ -3522,11 +4754,11 @@ mod tests {
     #[test]
     #[ignore]
     fn minimal_dispatch_write_repro() {
+        use volar_fuzz::interpreter::ir::{StorageMap, eval_ir_circuit_step};
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         let wat = format!(
             r#"(module
@@ -3551,7 +4783,8 @@ mod tests {
 "#,
             set_reg = set_reg("$idx", "$val"),
         );
-        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let wasm_bytes =
+            wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
 
         let mut target = volar_vaffle_target::VaffleTarget::new();
@@ -3563,27 +4796,45 @@ mod tests {
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("param widths: {param_widths:?}");
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut storage: StorageMap = StorageMap::new();
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
         let mut ever_saw_4: bool = false;
         while !done && step < 30 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             done = outputs[0].iter().any(|&b| b);
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
             eprintln!("step {step}: done={done} full_state={full_state:?}");
             if full_state.iter().any(|&v| v == 4) {
                 ever_saw_4 = true;
@@ -3593,7 +4844,10 @@ mod tests {
         }
         eprintln!("halted after {step} steps (done={done})");
         assert!(done, "minimal dispatch repro must halt");
-        assert!(ever_saw_4, "the dispatched register write (r1=4) must become visible in some state slot");
+        assert!(
+            ever_saw_4,
+            "the dispatched register write (r1=4) must become visible in some state slot"
+        );
     }
 
     /// Same as `minimal_dispatch_write_repro`, but skips the pre-movfuscation
@@ -3606,10 +4860,10 @@ mod tests {
     #[test]
     #[ignore]
     fn minimal_dispatch_write_repro_no_optimize() {
+        use volar_fuzz::interpreter::ir::{StorageMap, eval_ir_circuit_step};
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         let wat = format!(
             r#"(module
@@ -3634,7 +4888,8 @@ mod tests {
 "#,
             set_reg = set_reg("$idx", "$val"),
         );
-        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let wasm_bytes =
+            wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
 
         let mut target = volar_vaffle_target::VaffleTarget::new();
@@ -3648,25 +4903,38 @@ mod tests {
         let (ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
         eprintln!("block count (no optimize): {}", ir_blocks.blocks.len());
 
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("param widths: {param_widths:?}");
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut storage: StorageMap = StorageMap::new();
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
         let mut ever_saw_4: bool = false;
         while !done && step < 30 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             done = outputs[0].iter().any(|&b| b);
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
             eprintln!("step {step}: done={done} full_state={full_state:?}");
             if full_state.iter().any(|&v| v == 4) {
                 ever_saw_4 = true;
@@ -3676,7 +4944,10 @@ mod tests {
         }
         eprintln!("halted after {step} steps (done={done})");
         assert!(done, "minimal dispatch repro (no optimize) must halt");
-        assert!(ever_saw_4, "the dispatched register write (r1=4) must become visible in some state slot");
+        assert!(
+            ever_saw_4,
+            "the dispatched register write (r1=4) must become visible in some state slot"
+        );
     }
 
     /// Smallest possible repro: exactly one `if (cond) (then local.set $r1
@@ -3698,7 +4969,8 @@ mod tests {
   )
 )
 "#;
-        let wasm_bytes = wat::parse_str(wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let wasm_bytes =
+            wat::parse_str(wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
 
         for (fid, func) in module.funcs.entries() {
@@ -3714,7 +4986,7 @@ mod tests {
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
         for (fi, func) in target.module.funcs.iter().enumerate() {
-            eprintln!("=== func {fi}: {func:#?}", );
+            eprintln!("=== func {fi}: {func:#?}",);
         }
 
         let (ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
@@ -3725,21 +4997,32 @@ mod tests {
             }
         }
 
+        use volar_fuzz::interpreter::ir::{StorageMap, eval_ir_circuit_step};
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("param widths: {param_widths:?}");
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut storage: StorageMap = StorageMap::new();
         let inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
-        let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+        let outputs = eval_ir_circuit_step(
+            &circuit.blocks[0],
+            &types,
+            &circuit.oracles,
+            &inputs,
+            &mut storage,
+        );
         eprintln!("done={:?}", outputs[0]);
         let full_state: Vec<u64> = (1..outputs.len()).map(|i| to_u64(&outputs[i])).collect();
         eprintln!("full_state={full_state:?}");
@@ -3757,11 +5040,11 @@ mod tests {
     #[test]
     #[ignore]
     fn minimal_double_exit_repro() {
+        use volar_fuzz::interpreter::ir::{StorageMap, eval_ir_circuit_step};
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         let wat = r#"(module
   (func (export "run") (result i32)
@@ -3781,7 +5064,8 @@ mod tests {
   )
 )
 "#;
-        let wasm_bytes = wat::parse_str(wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let wasm_bytes =
+            wat::parse_str(wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
 
         let mut target = volar_vaffle_target::VaffleTarget::new();
@@ -3793,32 +5077,53 @@ mod tests {
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("param widths: {param_widths:?}");
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut storage: StorageMap = StorageMap::new();
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
         while !done && step < 60 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             done = outputs[0].iter().any(|&b| b);
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
             eprintln!("step {step}: done={done} full_state={full_state:?}");
             inputs = outputs[1..1 + param_widths.len()].to_vec();
             step += 1;
         }
         eprintln!("halted after {step} steps (done={done})");
-        assert!(done, "minimal double-exit repro must halt (expected via the halted-check: steps reaches 3, sets halted=1, exits with r3=3 on the next pass)");
+        assert!(
+            done,
+            "minimal double-exit repro must halt (expected via the halted-check: steps reaches 3, sets halted=1, exits with r3=3 on the next pass)"
+        );
     }
 
     /// Combines the two patterns already individually confirmed correct
@@ -3864,11 +5169,11 @@ mod tests {
     #[test]
     #[ignore]
     fn minimal_dispatch_feedback_loop_repro() {
+        use volar_fuzz::interpreter::ir::{StorageMap, eval_ir_circuit_step};
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         let wat = format!(
             r#"(module
@@ -3904,7 +5209,8 @@ mod tests {
             get_cur = get_reg("$idx", "$cur"),
             set_val = set_reg("$idx", "$val"),
         );
-        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let wasm_bytes =
+            wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
 
         let mut target = volar_vaffle_target::VaffleTarget::new();
@@ -3916,33 +5222,54 @@ mod tests {
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("param widths: {param_widths:?}");
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut storage: StorageMap = StorageMap::new();
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
         // ~26 raw steps/WAT-loop-iteration * 4 iterations to reach r3==3, + margin.
         while !done && step < 150 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             done = outputs[0].iter().any(|&b| b);
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
             eprintln!("step {step}: done={done} full_state={full_state:?}");
             inputs = outputs[1..1 + param_widths.len()].to_vec();
             step += 1;
         }
         eprintln!("halted after {step} steps (done={done})");
-        assert!(done, "dispatch-feedback-loop repro must halt (r3 climbs 1 per iteration via dispatch round trip, halts when it reads back as 3)");
+        assert!(
+            done,
+            "dispatch-feedback-loop repro must halt (r3 climbs 1 per iteration via dispatch round trip, halts when it reads back as 3)"
+        );
     }
 
     /// Same as `minimal_dispatch_feedback_loop_repro`, but with the
@@ -3966,11 +5293,11 @@ mod tests {
     #[test]
     #[ignore]
     fn minimal_dispatch_feedback_single_exit_repro() {
+        use volar_fuzz::interpreter::ir::{StorageMap, eval_ir_circuit_step};
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
-        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         let wat = format!(
             r#"(module
@@ -4002,7 +5329,8 @@ mod tests {
             get_cur = get_reg("$idx", "$cur"),
             set_val = set_reg("$idx", "$val"),
         );
-        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let wasm_bytes =
+            wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
 
         let mut target = volar_vaffle_target::VaffleTarget::new();
@@ -4014,26 +5342,44 @@ mod tests {
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
         let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        optimize_to_fixpoint(
+            &mut ir_blocks,
+            &types,
+            &mut fold_ir_blocks,
+            &mut store_forward_ir_blocks,
+        );
 
-        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, _boundary, _accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
         eprintln!("param widths: {param_widths:?}");
 
-        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let to_u64 =
+            |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
         let mut storage: StorageMap = StorageMap::new();
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
         while !done && step < 60 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             done = outputs[0].iter().any(|&b| b);
-            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            let full_state: Vec<u64> = (1..1 + param_widths.len())
+                .map(|i| to_u64(&outputs[i]))
+                .collect();
             eprintln!("step {step}: done={done} full_state={full_state:?}");
             inputs = outputs[1..1 + param_widths.len()].to_vec();
             step += 1;

@@ -106,7 +106,10 @@ impl FaestAesProver for StubFaestAesProver {
         hash_key: &UniversalHashKey,
     ) -> QuickSilverProof {
         let a_hat_out: UniversalHashOutput = vole_hash(hash_key, &big_vole.u);
-        let a_hat: Vec<u8> = a_hat_out.h0.0.to_le_bytes()
+        let a_hat: Vec<u8> = a_hat_out
+            .h0
+            .0
+            .to_le_bytes()
             .iter()
             .chain(a_hat_out.h1.0.to_le_bytes().iter())
             .cloned()

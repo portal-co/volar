@@ -29,8 +29,8 @@
 
 use core::ops::{Add, Mul};
 
-use crate::{Array, ArraySize, SpecRng};
 use crate::vole::{Delta, VoleArray};
+use crate::{Array, ArraySize, SpecRng};
 
 /// Ideal Correlated-OT functionality.
 ///
@@ -104,7 +104,9 @@ mod tests {
             delta: Array::<Galois, N16>::from_fn(|_| {
                 // avoid zero so callers that need invertible Δ can reuse this
                 let mut x = r.next_u8();
-                if x == 0 { x = 1; }
+                if x == 0 {
+                    x = 1;
+                }
                 Galois(x)
             }),
         }
@@ -125,7 +127,8 @@ mod tests {
         let (r0, v) = cot.cot(&mut rng, sample_galois, true);
         for i in 0..16 {
             assert_eq!(
-                v[i], r0[i] + cot.delta.delta[i],
+                v[i],
+                r0[i] + cot.delta.delta[i],
                 "lane {i}: v should equal r0 + Δ"
             );
         }

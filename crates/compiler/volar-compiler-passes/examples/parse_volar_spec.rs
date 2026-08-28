@@ -10,9 +10,9 @@ use volar_compiler_passes::{OperatorAnalysis, TypeContext, type_to_string};
 
 fn main() {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()  // crates/compiler
+        .parent() // crates/compiler
         .unwrap()
-        .parent()  // crates
+        .parent() // crates
         .unwrap()
         .join("spec")
         .join("volar-spec")
@@ -42,7 +42,10 @@ fn main() {
 
     let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
+        .map(|(content, name)| SourceInput {
+            source: content.as_str(),
+            name: name.as_str(),
+        })
         .collect();
 
     match parse_sources(&sources_ref, "volar_spec", &[]) {

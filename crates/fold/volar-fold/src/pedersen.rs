@@ -14,7 +14,7 @@
 
 use alloc::vec::Vec;
 
-use volar_spec::curve::{ed_add, ed_double, ed_scalar_mul, hash_to_curve, EdPoint};
+use volar_spec::curve::{EdPoint, ed_add, ed_double, ed_scalar_mul, hash_to_curve};
 
 use crate::scalar::Scalar;
 
@@ -40,7 +40,11 @@ fn scalar_window(limbs: &[u64; 4], off: usize, width: usize) -> u64 {
     let limb = off / 64;
     let bit = off % 64;
     let lo = limbs[limb] >> bit;
-    let hi = if bit == 0 || limb + 1 >= 4 { 0 } else { limbs[limb + 1] << (64 - bit) };
+    let hi = if bit == 0 || limb + 1 >= 4 {
+        0
+    } else {
+        limbs[limb + 1] << (64 - bit)
+    };
     (lo | hi) & ((1u64 << width) - 1)
 }
 
@@ -87,7 +91,10 @@ impl PedersenParams {
         let mut g = Vec::with_capacity(n);
         for i in 0..n {
             // Domain-separate generator index from the blinding generator.
-            g.push(hash_to_curve(b"volar-fold/pedersen/G", seed ^ (i as u64).wrapping_shl(1)));
+            g.push(hash_to_curve(
+                b"volar-fold/pedersen/G",
+                seed ^ (i as u64).wrapping_shl(1),
+            ));
         }
         let h = hash_to_curve(b"volar-fold/pedersen/H", seed);
         PedersenParams { g, h }
@@ -96,7 +103,10 @@ impl PedersenParams {
     /// `Σ_i x_i·G_i + ρ·H` via Pippenger MSM (the blinder term is folded in as the
     /// extra pair `(H, ρ)`).  Requires `x.len() <= self.g.len()`.
     pub fn commit(&self, x: &[Scalar], blind: &Scalar) -> EdPoint {
-        assert!(x.len() <= self.g.len(), "pedersen: message longer than generators");
+        assert!(
+            x.len() <= self.g.len(),
+            "pedersen: message longer than generators"
+        );
         let mut points: Vec<EdPoint> = self.g[..x.len()].to_vec();
         points.push(self.h);
         let mut scalars: Vec<Scalar> = x.to_vec();
@@ -114,8 +124,16 @@ mod tests {
     #[test]
     fn commit_is_additively_homomorphic() {
         let p = PedersenParams::setup(3, 42);
-        let a = [Scalar::from_u64(3), Scalar::from_u64(5), Scalar::from_u64(7)];
-        let b = [Scalar::from_u64(11), Scalar::from_u64(13), Scalar::from_u64(17)];
+        let a = [
+            Scalar::from_u64(3),
+            Scalar::from_u64(5),
+            Scalar::from_u64(7),
+        ];
+        let b = [
+            Scalar::from_u64(11),
+            Scalar::from_u64(13),
+            Scalar::from_u64(17),
+        ];
         let ra = Scalar::from_u64(99);
         let rb = Scalar::from_u64(123);
 
@@ -140,7 +158,9 @@ mod tests {
 
     #[test]
     fn msm_matches_naive_sum() {
-        let pts: Vec<EdPoint> = (0..6u64).map(|i| volar_spec::curve::hash_to_curve(b"msm/test", i)).collect();
+        let pts: Vec<EdPoint> = (0..6u64)
+            .map(|i| volar_spec::curve::hash_to_curve(b"msm/test", i))
+            .collect();
         let scs: Vec<Scalar> = [3u64, 0, 1, 0xdead_beef, 255, 256]
             .iter()
             .map(|&v| Scalar::from_u64(v))
@@ -150,7 +170,11 @@ mod tests {
         for (p, s) in pts.iter().zip(scs.iter()) {
             naive = ed_add(&naive, &scalar_mul(p, s));
         }
-        assert_eq!(msm(&pts, &scs), naive, "Pippenger MSM disagrees with naive sum");
+        assert_eq!(
+            msm(&pts, &scs),
+            naive,
+            "Pippenger MSM disagrees with naive sum"
+        );
     }
 
     #[test]

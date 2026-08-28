@@ -22,8 +22,8 @@
 
 use alloc::vec::Vec;
 
-use hybrid_array::ArraySize;
 use cipher::consts::U1;
+use hybrid_array::ArraySize;
 
 use volar_spec::curve::EdPoint;
 use volar_spec::vole::{Delta, Q, Vope};
@@ -126,7 +126,9 @@ impl KeccakDigestLink {
     }
 
     fn bits_to_scalars(bits: &[bool]) -> Vec<Scalar> {
-        bits.iter().map(|&b| if b { Scalar::ONE } else { Scalar::ZERO }).collect()
+        bits.iter()
+            .map(|&b| if b { Scalar::ONE } else { Scalar::ZERO })
+            .collect()
     }
 }
 
@@ -143,7 +145,11 @@ impl<N: ArraySize, T> BoundaryLink<N, T> for KeccakDigestLink {
         // The boundary state is a bit-string; open it and anchor to its digest.
         let bits: Vec<bool> = state.iter().map(|s| *s == Scalar::ONE).collect();
         let digest = keccak256_bits(&bits);
-        KeccakLinkProof { bits, blind: *blind, digest }
+        KeccakLinkProof {
+            bits,
+            blind: *blind,
+            digest,
+        }
     }
 
     fn verify(
@@ -180,7 +186,9 @@ mod tests {
         }
     }
     fn q(a: u64) -> Q<U2, u64> {
-        Q { q: Array::<u64, U2>::from_fn(|_| a) }
+        Q {
+            q: Array::<u64, U2>::from_fn(|_| a),
+        }
     }
 
     #[test]
@@ -188,15 +196,26 @@ mod tests {
         let link = DummyLink;
         let bits = [vope(1), vope(0)];
         let keys = [q(1), q(0)];
-        let delta = Delta { delta: Array::<u64, U2>::from_fn(|_| 9) };
+        let delta = Delta {
+            delta: Array::<u64, U2>::from_fn(|_| 9),
+        };
         let commitment = EdPoint::base();
         let state = [Scalar::ONE, Scalar::ZERO];
-        let proof = BoundaryLink::<U2, u64>::prove(&link, &bits, &commitment, &state, &Scalar::from_u64(7));
-        assert!(BoundaryLink::<U2, u64>::verify(&link, &keys, &delta, &commitment, &proof));
+        let proof =
+            BoundaryLink::<U2, u64>::prove(&link, &bits, &commitment, &state, &Scalar::from_u64(7));
+        assert!(BoundaryLink::<U2, u64>::verify(
+            &link,
+            &keys,
+            &delta,
+            &commitment,
+            &proof
+        ));
     }
 
     fn boundary(bits: &[bool]) -> std::vec::Vec<Scalar> {
-        bits.iter().map(|&b| if b { Scalar::ONE } else { Scalar::ZERO }).collect()
+        bits.iter()
+            .map(|&b| if b { Scalar::ONE } else { Scalar::ZERO })
+            .collect()
     }
 
     #[test]
@@ -214,7 +233,9 @@ mod tests {
         assert_eq!(proof.digest, keccak256_bits(&bits));
 
         let keys = [q(7)];
-        let delta = Delta { delta: Array::<u64, U2>::from_fn(|_| 9) };
+        let delta = Delta {
+            delta: Array::<u64, U2>::from_fn(|_| 9),
+        };
         assert!(
             BoundaryLink::<U2, u64>::verify(&link, &keys, &delta, &commitment, &proof),
             "honest boundary must link"
@@ -236,7 +257,9 @@ mod tests {
         proof.blind = proof.blind.add(&Scalar::ONE);
 
         let keys = [q(7)];
-        let delta = Delta { delta: Array::<u64, U2>::from_fn(|_| 9) };
+        let delta = Delta {
+            delta: Array::<u64, U2>::from_fn(|_| 9),
+        };
         assert!(
             !BoundaryLink::<U2, u64>::verify(&link, &keys, &delta, &commitment, &proof),
             "a wrong Pedersen opening must be rejected"
@@ -259,7 +282,9 @@ mod tests {
         proof.digest[3] = !proof.digest[3];
 
         let keys = [q(7)];
-        let delta = Delta { delta: Array::<u64, U2>::from_fn(|_| 9) };
+        let delta = Delta {
+            delta: Array::<u64, U2>::from_fn(|_| 9),
+        };
         assert!(
             !BoundaryLink::<U2, u64>::verify(&link, &keys, &delta, &commitment, &proof),
             "a digest that is not the boundary's hash must be rejected"

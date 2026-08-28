@@ -72,7 +72,10 @@ fn test_parse_volar_spec_combined() {
 
     let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
+        .map(|(content, name)| SourceInput {
+            source: content.as_str(),
+            name: name.as_str(),
+        })
         .collect();
 
     match parse_sources(&sources_ref, "volar_spec", &[]) {
@@ -319,29 +322,55 @@ impl Foo {
 #[test]
 #[cfg(feature = "parsing")]
 fn test_prove_module_static_print_roundtrip() {
-    use std::process::Command;
     use std::fs;
+    use std::process::Command;
 
     let prove_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join("spec/volar-spec/src/vole/prove.rs");
-    let prove_src = fs::read_to_string(&prove_path)
-        .expect("prove.rs should exist");
+    let prove_src = fs::read_to_string(&prove_path).expect("prove.rs should exist");
     let prove_src = prove_src.as_str();
     let module = volar_compiler::parse_source(prove_src, "prove", &[])
         .expect("prove.rs should parse in the total-Rust subset");
 
-    assert!(module.functions.len() >= 2, "Expected at least vole_and_prover_step and vole_and_verifier_check");
-    assert!(module.functions.iter().any(|f| f.name == "vole_and_prover_step"));
-    assert!(module.functions.iter().any(|f| f.name == "vole_and_verifier_check"));
+    assert!(
+        module.functions.len() >= 2,
+        "Expected at least vole_and_prover_step and vole_and_verifier_check"
+    );
+    assert!(
+        module
+            .functions
+            .iter()
+            .any(|f| f.name == "vole_and_prover_step")
+    );
+    assert!(
+        module
+            .functions
+            .iter()
+            .any(|f| f.name == "vole_and_verifier_check")
+    );
 
     // Print the module body using the static (non-dyn) printer
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     let body = format!("{}", DisplayRust(ModuleWriter { module: &module }));
-    assert!(body.contains("Array::<T, N>::from_fn"), "Should use static from_fn form, got:\n{}", body);
-    assert!(body.contains("Array::<Array<T, N>, U1>::from_fn"), "Should handle nested array elem_ty, got:\n{}", body);
-    assert!(body.contains("N::USIZE"), "BoundedLoop end should be N::USIZE, got:\n{}", body);
+    assert!(
+        body.contains("Array::<T, N>::from_fn"),
+        "Should use static from_fn form, got:\n{}",
+        body
+    );
+    assert!(
+        body.contains("Array::<Array<T, N>, U1>::from_fn"),
+        "Should handle nested array elem_ty, got:\n{}",
+        body
+    );
+    assert!(
+        body.contains("N::USIZE"),
+        "BoundedLoop end should be N::USIZE, got:\n{}",
+        body
+    );
 
     // Build a temp crate and cargo-check it
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -406,35 +435,65 @@ fn test_parse_primitives_and_generate_manifest() {
     use volar_compiler::manifest::emit_manifest;
 
     let prim_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join("spec/volar-primitives/src/lib.rs");
-    let prim_src = fs::read_to_string(&prim_path)
-        .expect("volar-primitives/src/lib.rs should exist");
+    let prim_src =
+        fs::read_to_string(&prim_path).expect("volar-primitives/src/lib.rs should exist");
 
     let module = volar_compiler::parse_source(&prim_src, "volar_primitives", &[])
         .expect("lib.rs should parse (macros removed, total-Rust subset)");
 
     // Verify key types are present
-    let struct_names: Vec<_> = module.structs.iter()
-        .map(|s| s.kind.to_string()).collect();
-    for expected in ["Bit", "Galois", "BitsInBytes", "Galois64", "BitsInBytes64",
-                     "Galois128", "Galois256", "U256", "Tropical"] {
-        assert!(struct_names.contains(&expected.to_string()),
-            "Missing struct '{}' in parsed module. Found: {:?}", expected, struct_names);
+    let struct_names: Vec<_> = module.structs.iter().map(|s| s.kind.to_string()).collect();
+    for expected in [
+        "Bit",
+        "Galois",
+        "BitsInBytes",
+        "Galois64",
+        "BitsInBytes64",
+        "Galois128",
+        "Galois256",
+        "U256",
+        "Tropical",
+    ] {
+        assert!(
+            struct_names.contains(&expected.to_string()),
+            "Missing struct '{}' in parsed module. Found: {:?}",
+            expected,
+            struct_names
+        );
     }
 
     // Verify compilable field functions are present
     let fn_names: Vec<_> = module.functions.iter().map(|f| f.name.as_str()).collect();
-    for expected in ["gf_mul_u8", "gf_invert_u8", "gf_mul_u64", "gf_invert_u64",
-                     "gf_mul_u128", "gf_invert_u128", "gf_mul_256", "gf_invert_256"] {
-        assert!(fn_names.contains(&expected),
-            "Missing function '{}'. Found: {:?}", expected, fn_names);
+    for expected in [
+        "gf_mul_u8",
+        "gf_invert_u8",
+        "gf_mul_u64",
+        "gf_invert_u64",
+        "gf_mul_u128",
+        "gf_invert_u128",
+        "gf_mul_256",
+        "gf_invert_256",
+    ] {
+        assert!(
+            fn_names.contains(&expected),
+            "Missing function '{}'. Found: {:?}",
+            expected,
+            fn_names
+        );
     }
 
     // Verify trait impls are present
     let impl_count = module.impls.len();
-    assert!(impl_count >= 20, "Expected at least 20 impl blocks, got {}", impl_count);
+    assert!(
+        impl_count >= 20,
+        "Expected at least 20 impl blocks, got {}",
+        impl_count
+    );
 
     // Generate manifest — should not panic
     let manifest_bytes = emit_manifest(&module, "volar-primitives", "0.1.0", &[]);
@@ -446,11 +505,19 @@ fn test_parse_primitives_and_generate_manifest() {
     assert_eq!(parsed_back.crate_name, "volar-primitives");
 
     // The manifest structs should match the original
-    let manifest_structs: Vec<_> = parsed_back.module.structs.iter()
-        .map(|s| s.kind.to_string()).collect();
+    let manifest_structs: Vec<_> = parsed_back
+        .module
+        .structs
+        .iter()
+        .map(|s| s.kind.to_string())
+        .collect();
     for expected in ["Bit", "Galois", "Galois128", "U256"] {
-        assert!(manifest_structs.contains(&expected.to_string()),
-            "Manifest missing struct '{}'. Found: {:?}", expected, manifest_structs);
+        assert!(
+            manifest_structs.contains(&expected.to_string()),
+            "Manifest missing struct '{}'. Found: {:?}",
+            expected,
+            manifest_structs
+        );
     }
 }
 
@@ -458,8 +525,10 @@ fn test_parse_primitives_and_generate_manifest() {
 #[cfg(feature = "parsing")]
 fn test_primitives_ts_transpile() {
     let prim_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join("spec/volar-primitives/src/lib.rs");
     let prim_src = fs::read_to_string(&prim_path).unwrap();
 
@@ -468,21 +537,50 @@ fn test_primitives_ts_transpile() {
     // Static Rust print — should contain from_fn and field ops
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     let rust_out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
-    assert!(rust_out.contains("fn gf_mul_u8"), "Should contain gf_mul_u8:\n{}", &rust_out[..500]);
-    assert!(rust_out.contains("fn gf_invert_u128"), "Should contain gf_invert_u128");
+    assert!(
+        rust_out.contains("fn gf_mul_u8"),
+        "Should contain gf_mul_u8:\n{}",
+        &rust_out[..500]
+    );
+    assert!(
+        rust_out.contains("fn gf_invert_u128"),
+        "Should contain gf_invert_u128"
+    );
 
     // Dyn-lower and print to TypeScript
     let dyn_module = volar_compiler_passes::lowering_dyn::lower_module_dyn(&module);
     let ts_out = volar_compiler::printer_ts::print_module_ts(&dyn_module);
 
     // Basic sanity: TS output should contain the field functions
-    assert!(ts_out.contains("gf_mul_u8"), "TS should contain gf_mul_u8:\n{}", &ts_out[..500.min(ts_out.len())]);
-    assert!(ts_out.contains("gf_invert_u8"), "TS should contain gf_invert_u8");
-    assert!(ts_out.contains("gf_mul_u64"), "TS should contain gf_mul_u64");
-    assert!(ts_out.contains("gf_mul_u128"), "TS should contain gf_mul_u128");
+    assert!(
+        ts_out.contains("gf_mul_u8"),
+        "TS should contain gf_mul_u8:\n{}",
+        &ts_out[..500.min(ts_out.len())]
+    );
+    assert!(
+        ts_out.contains("gf_invert_u8"),
+        "TS should contain gf_invert_u8"
+    );
+    assert!(
+        ts_out.contains("gf_mul_u64"),
+        "TS should contain gf_mul_u64"
+    );
+    assert!(
+        ts_out.contains("gf_mul_u128"),
+        "TS should contain gf_mul_u128"
+    );
 
     // The TS output should have class definitions for the field types
-    assert!(ts_out.contains("class Galois"), "TS should contain class Galois");
-    assert!(ts_out.contains("class Galois128"), "TS should contain class Galois128");
-    assert!(ts_out.contains("class U256"), "TS should contain class U256");
+    assert!(
+        ts_out.contains("class Galois"),
+        "TS should contain class Galois"
+    );
+    assert!(
+        ts_out.contains("class Galois128"),
+        "TS should contain class Galois128"
+    );
+    assert!(
+        ts_out.contains("class U256"),
+        "TS should contain class U256"
+    );
 }

@@ -21,8 +21,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use sha3::{
-    digest::{ExtendableOutput, Update, XofReader},
     Shake128,
+    digest::{ExtendableOutput, Update, XofReader},
 };
 
 use crate::field::Field;
@@ -45,7 +45,9 @@ impl Default for IopTranscript {
 
 impl IopTranscript {
     pub fn new() -> Self {
-        IopTranscript { sponge: Shake128::default() }
+        IopTranscript {
+            sponge: Shake128::default(),
+        }
     }
 
     /// Absorb a domain-separation label (call once, first, per logical
@@ -104,15 +106,24 @@ impl IopTranscript {
     /// `count` distinct values are found — sound as long as
     /// `count < domain_size`, which every caller here satisfies.
     pub fn squeeze_indices(&mut self, count: usize, domain_size: usize) -> Vec<usize> {
-        assert!(domain_size.is_power_of_two(), "squeeze_indices: domain_size must be a power of two");
-        assert!(count < domain_size, "squeeze_indices: count must be < domain_size to guarantee distinctness");
+        assert!(
+            domain_size.is_power_of_two(),
+            "squeeze_indices: domain_size must be a power of two"
+        );
+        assert!(
+            count < domain_size,
+            "squeeze_indices: count must be < domain_size to guarantee distinctness"
+        );
         let bits = domain_size.trailing_zeros();
         let bytes_needed = ((bits as usize) + 7) / 8;
         let mut out: Vec<usize> = Vec::with_capacity(count);
         let mut counter: u64 = 0;
         let max_tries = (domain_size as u64) * 64 + 1024; // generous bound; failure would be a transcript bug, not bad luck
         while out.len() < count {
-            assert!(counter < max_tries, "squeeze_indices: exceeded max retries — check domain_size/count");
+            assert!(
+                counter < max_tries,
+                "squeeze_indices: exceeded max retries — check domain_size/count"
+            );
             let mut sub = self.sponge.clone();
             sub.update(&counter.to_le_bytes());
             counter += 1;

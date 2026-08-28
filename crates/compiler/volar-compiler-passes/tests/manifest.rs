@@ -3,8 +3,7 @@
 use std::fs;
 use volar_compiler::{
     DisplayRust, DynPreambleWriter, IrType, MANIFEST_MARKER, PrimitiveType, RustBackend,
-    StructKind, TypeManifest, emit_manifest, is_manifest, parse_source,
-    print_module_with_deps,
+    StructKind, TypeManifest, emit_manifest, is_manifest, parse_source, print_module_with_deps,
 };
 use volar_compiler_passes::TypeContext;
 
@@ -312,7 +311,13 @@ fn test_module_overrides_dep_struct() {
 
 #[test]
 fn test_preamble_no_deps_has_no_pub_use() {
-    let preamble = format!("{}", DisplayRust(DynPreambleWriter { deps: &[], remotes: &[] }));
+    let preamble = format!(
+        "{}",
+        DisplayRust(DynPreambleWriter {
+            deps: &[],
+            remotes: &[]
+        })
+    );
     assert!(
         !preamble.contains("pub use"),
         "no deps = no pub use statements"

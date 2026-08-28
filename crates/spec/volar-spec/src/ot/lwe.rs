@@ -64,13 +64,21 @@ pub const LWE_NOISE_BOUND: u32 = 1;
 pub type Zq = u32;
 
 #[inline]
-fn zq_add(a: Zq, b: Zq) -> Zq { (a.wrapping_add(b)) & LWE_Q_MASK }
+fn zq_add(a: Zq, b: Zq) -> Zq {
+    (a.wrapping_add(b)) & LWE_Q_MASK
+}
 #[inline]
-fn zq_sub(a: Zq, b: Zq) -> Zq { (a.wrapping_sub(b)) & LWE_Q_MASK }
+fn zq_sub(a: Zq, b: Zq) -> Zq {
+    (a.wrapping_sub(b)) & LWE_Q_MASK
+}
 #[inline]
-fn zq_mul(a: Zq, b: Zq) -> Zq { (a.wrapping_mul(b)) & LWE_Q_MASK }
+fn zq_mul(a: Zq, b: Zq) -> Zq {
+    (a.wrapping_mul(b)) & LWE_Q_MASK
+}
 #[inline]
-fn zq_neg(a: Zq) -> Zq { (LWE_Q.wrapping_sub(a)) & LWE_Q_MASK }
+fn zq_neg(a: Zq) -> Zq {
+    (LWE_Q.wrapping_sub(a)) & LWE_Q_MASK
+}
 
 /// Sample a noise value uniformly in `[-B, B]`, returned as a canonical `Zq`.
 fn sample_noise<R: SpecRng>(rng: &mut R) -> Zq {
@@ -105,7 +113,9 @@ impl LweOtCrs {
             }
         }
         let mut h = [0u32; LWE_N];
-        for i in 0..LWE_N { h[i] = sample_zq(rng); }
+        for i in 0..LWE_N {
+            h[i] = sample_zq(rng);
+        }
         Self { a, h }
     }
 }
@@ -136,7 +146,9 @@ pub fn lwe_ot_recv<R: SpecRng>(
     // uniformly. Required for decryption correctness — under uniform-`s`,
     // the cross term `s^T · e_u` dwarfs the `q/4` decoding margin.
     let mut s = [0u32; LWE_N];
-    for i in 0..LWE_N { s[i] = sample_noise(rng); }
+    for i in 0..LWE_N {
+        s[i] = sample_noise(rng);
+    }
 
     // pk' = A·s + e
     let mut pk_real = [0u32; LWE_N];
@@ -152,7 +164,9 @@ pub fn lwe_ot_recv<R: SpecRng>(
     let pk0 = if c {
         // c = 1 ⇒ pk_1 = pk', pk_0 = h - pk'.
         let mut pk0 = [0u32; LWE_N];
-        for i in 0..LWE_N { pk0[i] = zq_sub(crs.h[i], pk_real[i]); }
+        for i in 0..LWE_N {
+            pk0[i] = zq_sub(crs.h[i], pk_real[i]);
+        }
         pk0
     } else {
         // c = 0 ⇒ pk_0 = pk'.
@@ -182,7 +196,9 @@ fn encrypt_branch<R: SpecRng, const L: usize>(
 ) -> ([Zq; LWE_N], [Zq; L]) {
     // r ←$ χ^n
     let mut r = [0u32; LWE_N];
-    for i in 0..LWE_N { r[i] = sample_noise(rng); }
+    for i in 0..LWE_N {
+        r[i] = sample_noise(rng);
+    }
 
     // u = A^T · r + e
     let mut u = [0u32; LWE_N];
@@ -197,7 +213,9 @@ fn encrypt_branch<R: SpecRng, const L: usize>(
 
     // base = pk^T · r ∈ Z_q
     let mut base: Zq = 0;
-    for i in 0..LWE_N { base = zq_add(base, zq_mul(pk[i], r[i])); }
+    for i in 0..LWE_N {
+        base = zq_add(base, zq_mul(pk[i], r[i]));
+    }
 
     // v_k = base + e' + ⌊q/2⌋ · msg[k]
     // API: msg[k] ∈ {0, 1} per coord (one bit per byte, not bit-packed).
@@ -220,7 +238,9 @@ pub fn lwe_ot_send<R: SpecRng, const L: usize>(
 ) -> LweOtSenderMsg<L> {
     let pk0 = recv_msg.pk0;
     let mut pk1 = [0u32; LWE_N];
-    for i in 0..LWE_N { pk1[i] = zq_sub(crs.h[i], pk0[i]); }
+    for i in 0..LWE_N {
+        pk1[i] = zq_sub(crs.h[i], pk0[i]);
+    }
 
     let (u0, v0) = encrypt_branch::<R, L>(rng, crs, &pk0, m0);
     let (u1, v1) = encrypt_branch::<R, L>(rng, crs, &pk1, m1);
@@ -244,7 +264,9 @@ pub fn lwe_ot_recv_decrypt<const L: usize>(
         (&sender_msg.u0, &sender_msg.v0)
     };
     let mut s_dot_u: Zq = 0;
-    for i in 0..LWE_N { s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[i], u[i])); }
+    for i in 0..LWE_N {
+        s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[i], u[i]));
+    }
 
     let quarter = LWE_Q / 4;
     let three_quarter = 3 * quarter;
@@ -252,7 +274,11 @@ pub fn lwe_ot_recv_decrypt<const L: usize>(
     for k in 0..L {
         let raw = zq_sub(v[k], s_dot_u);
         // Round to bit.
-        out[k] = if raw > quarter && raw <= three_quarter { 1 } else { 0 };
+        out[k] = if raw > quarter && raw <= three_quarter {
+            1
+        } else {
+            0
+        };
     }
     out
 }
@@ -296,7 +322,7 @@ mod tests {
         let mut m0 = [0u8; L];
         let mut m1 = [0u8; L];
         for k in 0..L {
-            m0[k] = (k as u8 & 1);  // alternating 0/1
+            m0[k] = (k as u8 & 1); // alternating 0/1
             m1[k] = !(k as u8 & 1) & 1;
         }
         let recovered = run_ot::<L>(false, &m0, &m1);
@@ -365,8 +391,10 @@ mod tests {
                 at_least_one_mismatch = true;
             }
         }
-        assert!(at_least_one_mismatch,
-                "cheat decode matched m_1 across all 8 seeds — privacy bug?");
+        assert!(
+            at_least_one_mismatch,
+            "cheat decode matched m_1 across all 8 seeds — privacy bug?"
+        );
     }
 
     // Allow `Add` import to be technically unused in this module.

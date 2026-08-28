@@ -183,14 +183,8 @@ where
     ///
     /// The caller (prover) supplies `old_value` and `old_ts` as public
     /// hints; if they are wrong the multiset check will fail.
-    pub fn write(
-        &mut self,
-        addr: T,
-        new_value: T,
-        timestamp: u64,
-        old_value: T,
-        old_timestamp: u64,
-    ) where
+    pub fn write(&mut self, addr: T, new_value: T, timestamp: u64, old_value: T, old_timestamp: u64)
+    where
         T: Clone,
     {
         // Produce the new entry.
@@ -207,13 +201,8 @@ where
     /// In commitment mode the `value` is an oracle hint from the prover.
     /// `write_timestamp` is a public hint identifying which write this
     /// read corresponds to.
-    pub fn read(
-        &mut self,
-        addr: T,
-        value: T,
-        timestamp: u64,
-        write_timestamp: u64,
-    ) where
+    pub fn read(&mut self, addr: T, value: T, timestamp: u64, write_timestamp: u64)
+    where
         T: Clone,
     {
         // Produce: the read re-produces the entry with the read's own
@@ -342,9 +331,9 @@ mod tests {
         let key = ChallengeKey::from_challenge(13u64);
         let mut state = MemoryCheckState::<u64, AdditiveHasher>::new(key);
 
-        state.init(5, 0);                       // addr=5, value=0, t=0
-        state.write(5, 42, 1, 0, 0);            // overwrite 0→42 at t=1
-        state.drain(5, 42, 1);                   // final state: (5, 42, 1)
+        state.init(5, 0); // addr=5, value=0, t=0
+        state.write(5, 42, 1, 0, 0); // overwrite 0→42 at t=1
+        state.drain(5, 42, 1); // final state: (5, 42, 1)
 
         assert!(state.verify());
     }
@@ -354,10 +343,10 @@ mod tests {
         let key = ChallengeKey::from_challenge(17u64);
         let mut state = MemoryCheckState::<u64, AdditiveHasher>::new(key);
 
-        state.init(3, 0);                        // (3, 0, 0)
-        state.write(3, 99, 1, 0, 0);             // overwrite: (3, 0, 0) → (3, 99, 1)
-        state.read(3, 99, 2, 1);                  // read: consume (3,99,1), produce (3,99,2)
-        state.drain(3, 99, 2);                    // drain: consume (3, 99, 2)
+        state.init(3, 0); // (3, 0, 0)
+        state.write(3, 99, 1, 0, 0); // overwrite: (3, 0, 0) → (3, 99, 1)
+        state.read(3, 99, 2, 1); // read: consume (3,99,1), produce (3,99,2)
+        state.drain(3, 99, 2); // drain: consume (3, 99, 2)
 
         assert!(state.verify());
     }
@@ -369,8 +358,8 @@ mod tests {
 
         state.init(3, 0);
         state.write(3, 99, 1, 0, 0);
-        state.read(3, 77, 2, 1);                  // WRONG value: 77 instead of 99
-        state.drain(3, 77, 2);                     // drain with the wrong value
+        state.read(3, 77, 2, 1); // WRONG value: 77 instead of 99
+        state.drain(3, 77, 2); // drain with the wrong value
 
         // The multiset won't balance because the consumed entry (3,99,1)
         // was never produced (we produced (3,77,2) instead).
@@ -384,7 +373,7 @@ mod tests {
 
         state.init(1, 0);
         state.write(1, 10, 1, 0, 0);
-        state.write(1, 20, 2, 10, 0);             // WRONG old_ts: 0 instead of 1
+        state.write(1, 20, 2, 10, 0); // WRONG old_ts: 0 instead of 1
         state.drain(1, 20, 2);
 
         assert!(!state.verify(), "wrong old timestamp should be detected");
@@ -416,10 +405,10 @@ mod tests {
         let mut state = MemoryCheckState::<u64, AdditiveHasher>::new(key);
 
         state.init(0, 0);
-        state.write(0, 10, 1, 0, 0);             // 0 → 10
-        state.write(0, 20, 2, 10, 1);            // 10 → 20
-        state.write(0, 30, 3, 20, 2);            // 20 → 30
-        state.read(0, 30, 4, 3);                  // read current value
+        state.write(0, 10, 1, 0, 0); // 0 → 10
+        state.write(0, 20, 2, 10, 1); // 10 → 20
+        state.write(0, 30, 3, 20, 2); // 20 → 30
+        state.read(0, 30, 4, 3); // read current value
         state.drain(0, 30, 4);
 
         assert!(state.verify());
@@ -434,8 +423,8 @@ mod tests {
         state.write(0, 55, 1, 0, 0);
         // Two consecutive reads — each consumes the previous entry's timestamp
         // and re-produces with its own.
-        state.read(0, 55, 2, 1);     // consume t=1, produce t=2
-        state.read(0, 55, 3, 2);     // consume t=2, produce t=3
+        state.read(0, 55, 2, 1); // consume t=1, produce t=2
+        state.read(0, 55, 3, 2); // consume t=2, produce t=3
         state.drain(0, 55, 3);
 
         assert!(state.verify());

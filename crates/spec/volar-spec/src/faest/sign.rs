@@ -45,15 +45,18 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use sha3::{Sha3_256, digest::{Digest, Update as DigestUpdate}};
+use sha3::{
+    Sha3_256,
+    digest::{Digest, Update as DigestUpdate},
+};
 
 use super::{
     aes::encrypt_block as aes128_encrypt,
     bavc::{Bavc, BavcCommitment, BavcOpening},
-    convert_to_vole::{concat_small_voles, convert_to_vole, BigVoleProver},
+    convert_to_vole::{BigVoleProver, concat_small_voles, convert_to_vole},
     leaf_commit::EmLeafCommit,
-    transcript::{chall1, chall2, chall3, grind_chall3},
     traits::{FaestAesProver, QuickSilverProof, StubFaestAesProver},
+    transcript::{chall1, chall2, chall3, grind_chall3},
     universal_hash::UniversalHashKey,
 };
 use crate::SpecRng;
@@ -195,7 +198,13 @@ pub fn sign(
 
     // ── 8. Build correction payload for chall_2 ────────────────────────────
     let corrections_flat: Vec<u8> = big_vole.c.iter().flatten().cloned().collect();
-    let chall_2 = chall2(&chall_1, &big_vole.u, &corrections_flat, LAMBDA_BYTES + 8, false);
+    let chall_2 = chall2(
+        &chall_1,
+        &big_vole.u,
+        &corrections_flat,
+        LAMBDA_BYTES + 8,
+        false,
+    );
 
     // ── 9. VOLEHash keys from chall_2 ────────────────────────────────────────
     let hash_key = hash_key_from_chall(&chall_2);
@@ -240,11 +249,7 @@ pub fn sign(
 /// Verify a [`FaestSignature`] against `pk` and `message`.
 ///
 /// Returns `true` iff the signature is valid.
-pub fn verify(
-    pk: &FaestPublicKey,
-    message: &[u8],
-    sig: &FaestSignature,
-) -> bool {
+pub fn verify(pk: &FaestPublicKey, message: &[u8], sig: &FaestSignature) -> bool {
     let iv = &sig.iv;
 
     // ── 1. Reconstruct mu and chall_1 ────────────────────────────────────────
@@ -308,7 +313,13 @@ pub fn verify(
     // (In full FAEST, the verifier reconstructs Q from the opening and
     //  checks a consistency equation instead of reusing vole_u directly.)
     let corrections_flat: Vec<u8> = sig.corrections.iter().flatten().cloned().collect();
-    let chall_2 = chall2(&chall_1, &sig.vole_u, &corrections_flat, LAMBDA_BYTES + 8, false);
+    let chall_2 = chall2(
+        &chall_1,
+        &sig.vole_u,
+        &corrections_flat,
+        LAMBDA_BYTES + 8,
+        false,
+    );
 
     // ── 7. Verify grinding: rederive chall_3 and check against signature ─────
     let hash_key = hash_key_from_chall(&chall_2);
@@ -367,8 +378,8 @@ fn expand_challenge_to_deltas(chall_1: &[u8], tau: usize, n: usize) -> Vec<usize
 /// node seeds (needed for `collect_open_nodes`).
 fn recompute_tree(r: [u8; LAMBDA_BYTES], total_leaves: usize) -> Vec<[u8; LAMBDA_BYTES]> {
     use super::prg::AesCtrLengthDoubler;
-    use hybrid_array::{Array, sizes::U16};
     use crate::byte_gen::LengthDoubler;
+    use hybrid_array::{Array, sizes::U16};
 
     let total_nodes = 2 * total_leaves - 1;
     let mut tree = vec![[0u8; LAMBDA_BYTES]; total_nodes];
@@ -384,7 +395,7 @@ fn recompute_tree(r: [u8; LAMBDA_BYTES], total_leaves: usize) -> Vec<[u8; LAMBDA
 
 /// Derive a `UniversalHashKey` from a `chall_2` byte slice.
 fn hash_key_from_chall(chall: &[u8]) -> UniversalHashKey {
-    use volar_primitives::{Galois128, Galois64};
+    use volar_primitives::{Galois64, Galois128};
     let mut r0_bytes = [0u8; 16];
     let n = chall.len().min(16);
     r0_bytes[..n].copy_from_slice(&chall[..n]);
@@ -397,7 +408,6 @@ fn hash_key_from_chall(chall: &[u8]) -> UniversalHashKey {
         r1: Galois64(u64::from_le_bytes(r1_bytes)),
     }
 }
-
 
 /// Check that `bytes` has at least `n` trailing zero bits (LE bit order).
 fn has_trailing_zero_bits(bytes: &[u8], n: u32) -> bool {
@@ -471,7 +481,10 @@ mod tests {
         let sig = sign(&sk, &pk, msg, iv_seed, &StubFaestAesProver);
         // Different message → different mu → different chall_1 → different
         // derived challenges → chall_3 mismatch in verify.
-        assert!(!verify(&pk, wrong_msg, &sig), "wrong message should not verify");
+        assert!(
+            !verify(&pk, wrong_msg, &sig),
+            "wrong message should not verify"
+        );
     }
 
     #[test]

@@ -456,16 +456,14 @@ mod tests {
         let tau = 2;
         let n = 4;
 
-        let commitment =
-            <Bavc<EmLeafCommit, 32>>::commit::<Sha3_256>(r, &iv, tau, n);
+        let commitment = <Bavc<EmLeafCommit, 32>>::commit::<Sha3_256>(r, &iv, tau, n);
 
         let leaf_count = tau * n;
         let total_nodes = 2 * leaf_count - 1;
         let tree = build_full_tree(r, total_nodes);
 
         let deltas = vec![1usize, 2];
-        let nodes =
-            <Bavc<EmLeafCommit, 32>>::collect_open_nodes(&deltas, &tree, tau, n);
+        let nodes = <Bavc<EmLeafCommit, 32>>::collect_open_nodes(&deltas, &tree, tau, n);
         let hidden_commits: Vec<[u8; 32]> = deltas
             .iter()
             .enumerate()
@@ -490,8 +488,7 @@ mod tests {
                 if j == deltas[i] {
                     // Hidden position — verifier has no info, ours is zero.
                     assert_eq!(
-                        recovered[leaf_k],
-                        [0u8; 16],
+                        recovered[leaf_k], [0u8; 16],
                         "hidden position should not be recovered"
                     );
                 } else {
@@ -513,13 +510,11 @@ mod tests {
         let tau = 2;
         let n = 4;
 
-        let commitment =
-            <Bavc<EmLeafCommit, 32>>::commit::<Sha3_256>(r, &iv, tau, n);
+        let commitment = <Bavc<EmLeafCommit, 32>>::commit::<Sha3_256>(r, &iv, tau, n);
         let tree = build_full_tree(r, 2 * tau * n - 1);
 
         let deltas = vec![0usize, 0];
-        let nodes =
-            <Bavc<EmLeafCommit, 32>>::collect_open_nodes(&deltas, &tree, tau, n);
+        let nodes = <Bavc<EmLeafCommit, 32>>::collect_open_nodes(&deltas, &tree, tau, n);
         let hidden_commits: Vec<[u8; 32]> = deltas
             .iter()
             .enumerate()
@@ -548,13 +543,11 @@ mod tests {
         let tau = 4;
         let n = 8;
 
-        let commitment =
-            <Bavc<EmLeafCommit, 32>>::commit::<Sha3_256>(r, &iv, tau, n);
+        let commitment = <Bavc<EmLeafCommit, 32>>::commit::<Sha3_256>(r, &iv, tau, n);
         let tree = build_full_tree(r, 2 * tau * n - 1);
 
         let deltas = vec![3usize, 0, 7, 5];
-        let nodes =
-            <Bavc<EmLeafCommit, 32>>::collect_open_nodes(&deltas, &tree, tau, n);
+        let nodes = <Bavc<EmLeafCommit, 32>>::collect_open_nodes(&deltas, &tree, tau, n);
         let hidden_commits: Vec<[u8; 32]> = deltas
             .iter()
             .enumerate()
@@ -570,7 +563,10 @@ mod tests {
             tau,
             n,
         );
-        assert!(recovered.is_some(), "reconstruct should succeed with τ=4,n=8");
+        assert!(
+            recovered.is_some(),
+            "reconstruct should succeed with τ=4,n=8"
+        );
     }
 
     /// Number of revealed internal nodes scales like τ · log₂(n) + ε —
@@ -582,8 +578,7 @@ mod tests {
         let n = 8; // log2(L=16) = 4
         let tree = build_full_tree(r, 2 * tau * n - 1);
         let deltas = vec![0usize, 0];
-        let nodes =
-            <Bavc<EmLeafCommit, 32>>::collect_open_nodes(&deltas, &tree, tau, n);
+        let nodes = <Bavc<EmLeafCommit, 32>>::collect_open_nodes(&deltas, &tree, tau, n);
         // Both hidden leaves are at position 0 of their vector — siblings
         // on the leftmost path. The opening should be ≤ 2·log₂(L) - 1.
         // log₂(16) = 4, so ≤ 7.

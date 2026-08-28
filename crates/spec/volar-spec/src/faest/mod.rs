@@ -24,11 +24,11 @@
 //! - `weaver` (M5) — top-level signing/verification weaver.
 
 pub mod aes;
-pub mod prg;
-pub mod leaf_commit;
 pub mod bavc;
 pub mod convert_to_vole;
-pub mod universal_hash;
-pub mod transcript;
-pub mod traits;
+pub mod leaf_commit;
+pub mod prg;
 pub mod sign;
+pub mod traits;
+pub mod transcript;
+pub mod universal_hash;

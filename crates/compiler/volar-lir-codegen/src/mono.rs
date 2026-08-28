@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, VecDeque};
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
     IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr, IrExprKind,
-    IrField, IrFunction, IrImpl, IrImplItem, IrLit, IrModule, IrParam, IrStmt, IrStmtKind, IrStruct,
-    IrType, IrTypeAlias, SpecUnaryOp, StructKind, TypeNumConst,
+    IrField, IrFunction, IrImpl, IrImplItem, IrLit, IrModule, IrParam, IrStmt, IrStmtKind,
+    IrStruct, IrType, IrTypeAlias, SpecUnaryOp, StructKind, TypeNumConst,
 };
 
 // ============================================================================
@@ -309,10 +309,9 @@ pub fn plan_flat_module<P: Clone>(
                                 .const_params
                                 .get(&parameter.name)
                                 .map(|&n| IrType::TypeParam(n.to_string())),
-                            volar_compiler::ir::IrGenericParamKind::Type => callee_env
-                                .type_params
-                                .get(&parameter.name)
-                                .cloned(),
+                            volar_compiler::ir::IrGenericParamKind::Type => {
+                                callee_env.type_params.get(&parameter.name).cloned()
+                            }
                             volar_compiler::ir::IrGenericParamKind::Lifetime => None,
                         })
                         .collect::<Vec<_>>()
@@ -506,13 +505,10 @@ fn bind_one_generic<P: Clone>(
 
 fn is_concrete_type(ty: &IrType) -> bool {
     match ty {
-        IrType::TypeParam(name) => {
-            name.parse::<usize>().is_ok() || typenum_usize(name).is_some()
-        }
+        IrType::TypeParam(name) => name.parse::<usize>().is_ok() || typenum_usize(name).is_some(),
         IrType::Primitive(_) | IrType::Unit | IrType::Never => true,
         IrType::Array { elem, len, .. } => {
-            is_concrete_type(elem)
-                && matches!(len, ArrayLength::Const(_) | ArrayLength::TypeNum(_))
+            is_concrete_type(elem) && matches!(len, ArrayLength::Const(_) | ArrayLength::TypeNum(_))
         }
         IrType::Struct { type_args, .. } => type_args.iter().all(is_concrete_type),
         IrType::Reference { elem, .. } | IrType::Vector { elem } => is_concrete_type(elem),
@@ -545,9 +541,11 @@ fn unify_into<P: Clone>(
                         function.name, name
                     )));
                 }
-            } else if function.generics.iter().any(|g| {
-                g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Type
-            }) {
+            } else if function
+                .generics
+                .iter()
+                .any(|g| g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Type)
+            {
                 if let IrType::TypeParam(nname) = concrete {
                     if let Ok(n) = nname.parse::<usize>() {
                         env.const_params.insert(name.clone(), n);
@@ -605,10 +603,9 @@ fn unify_into<P: Clone>(
             }
             Ok(())
         }
-        (
-            IrType::Reference { elem: p_elem, .. },
-            IrType::Reference { elem: c_elem, .. },
-        ) => unify_into(env, p_elem, c_elem, function, caller_env),
+        (IrType::Reference { elem: p_elem, .. }, IrType::Reference { elem: c_elem, .. }) => {
+            unify_into(env, p_elem, c_elem, function, caller_env)
+        }
         (IrType::Reference { elem: p_elem, .. }, concrete) => {
             unify_into(env, p_elem, concrete, function, caller_env)
         }
@@ -627,8 +624,12 @@ fn unify_into<P: Clone>(
 
 fn infer_expr_type<P: Clone>(expr: &IrExpr<P>, env: &MonoEnv) -> Option<IrType> {
     match &expr.kind {
-        IrExprKind::Lit(IrLit::Int(_)) => Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::U64)),
-        IrExprKind::Lit(IrLit::Bool(_)) => Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool)),
+        IrExprKind::Lit(IrLit::Int(_)) => {
+            Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::U64))
+        }
+        IrExprKind::Lit(IrLit::Bool(_)) => {
+            Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool))
+        }
         IrExprKind::FixedArray(elems) => {
             let elem_ty = elems.first().and_then(|e| infer_expr_type(e, env))?;
             Some(IrType::Array {

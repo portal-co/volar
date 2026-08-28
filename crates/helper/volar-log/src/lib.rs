@@ -21,7 +21,11 @@ impl LlmtrimLogger {
     }
 
     pub fn disabled() -> Self {
-        Self { json_mode: false, batch_mode: false, autominify: false }
+        Self {
+            json_mode: false,
+            batch_mode: false,
+            autominify: false,
+        }
     }
 
     fn now_ms() -> u64 {
@@ -84,7 +88,10 @@ impl Batch {
             level: level.to_owned(),
             phase: phase.to_owned(),
             msg: msg.to_owned(),
-            fields: fields.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            fields: fields
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             t: LlmtrimLogger::now_ms(),
         });
     }
@@ -181,22 +188,42 @@ pub fn minify_c(src: &str) -> String {
         if in_string {
             if c == '\\' {
                 out.push(c);
-                if let Some(esc) = chars.next() { out.push(esc); }
+                if let Some(esc) = chars.next() {
+                    out.push(esc);
+                }
                 prev_was_space = false;
                 continue;
             }
-            if c == '"' { in_string = false; }
+            if c == '"' {
+                in_string = false;
+            }
             out.push(c);
             prev_was_space = false;
             continue;
         }
-        if c == '"' { in_string = true; out.push(c); prev_was_space = false; continue; }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            prev_was_space = false;
+            continue;
+        }
         if c == '/' {
-            if chars.peek() == Some(&'/') { chars.next(); in_line_comment = true; continue; }
-            if chars.peek() == Some(&'*') { chars.next(); in_block_comment = true; continue; }
+            if chars.peek() == Some(&'/') {
+                chars.next();
+                in_line_comment = true;
+                continue;
+            }
+            if chars.peek() == Some(&'*') {
+                chars.next();
+                in_block_comment = true;
+                continue;
+            }
         }
         if c.is_ascii_whitespace() {
-            if !prev_was_space && !out.is_empty() { out.push(' '); prev_was_space = true; }
+            if !prev_was_space && !out.is_empty() {
+                out.push(' ');
+                prev_was_space = true;
+            }
         } else {
             out.push(c);
             prev_was_space = false;
@@ -209,9 +236,17 @@ pub fn minify_c(src: &str) -> String {
 pub fn minify_llvm_ir(src: &str) -> String {
     src.lines()
         .filter_map(|line| {
-            let code = if let Some(idx) = line.find(';') { &line[..idx] } else { line };
+            let code = if let Some(idx) = line.find(';') {
+                &line[..idx]
+            } else {
+                line
+            };
             let trimmed = code.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -221,9 +256,17 @@ pub fn minify_llvm_ir(src: &str) -> String {
 pub fn minify_ir_text(src: &str) -> String {
     src.lines()
         .filter_map(|line| {
-            let code = if let Some(idx) = line.find("//") { &line[..idx] } else { line };
+            let code = if let Some(idx) = line.find("//") {
+                &line[..idx]
+            } else {
+                line
+            };
             let trimmed = code.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -242,7 +285,10 @@ pub fn minify_rust(src: &str) -> String {
         if in_line_comment {
             if c == '\n' {
                 in_line_comment = false;
-                if !prev_was_space && !out.is_empty() { out.push(' '); prev_was_space = true; }
+                if !prev_was_space && !out.is_empty() {
+                    out.push(' ');
+                    prev_was_space = true;
+                }
             }
             continue;
         }
@@ -250,23 +296,35 @@ pub fn minify_rust(src: &str) -> String {
             if c == '*' && chars.peek() == Some(&'/') {
                 chars.next();
                 in_block_comment = false;
-                if !prev_was_space && !out.is_empty() { out.push(' '); prev_was_space = true; }
+                if !prev_was_space && !out.is_empty() {
+                    out.push(' ');
+                    prev_was_space = true;
+                }
             }
             continue;
         }
         if in_string {
             if c == '\\' {
                 out.push(c);
-                if let Some(esc) = chars.next() { out.push(esc); }
+                if let Some(esc) = chars.next() {
+                    out.push(esc);
+                }
                 prev_was_space = false;
                 continue;
             }
-            if c == '"' { in_string = false; }
+            if c == '"' {
+                in_string = false;
+            }
             out.push(c);
             prev_was_space = false;
             continue;
         }
-        if c == '"' { in_string = true; out.push(c); prev_was_space = false; continue; }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            prev_was_space = false;
+            continue;
+        }
         if c == '/' {
             match chars.peek() {
                 Some(&'/') => {
@@ -276,7 +334,9 @@ pub fn minify_rust(src: &str) -> String {
                         out.push_str("//");
                         // copy rest of line as-is
                         while let Some(&nc) = chars.peek() {
-                            if nc == '\n' { break; }
+                            if nc == '\n' {
+                                break;
+                            }
                             out.push(nc);
                             chars.next();
                         }
@@ -286,12 +346,19 @@ pub fn minify_rust(src: &str) -> String {
                     }
                     continue;
                 }
-                Some(&'*') => { chars.next(); in_block_comment = true; continue; }
+                Some(&'*') => {
+                    chars.next();
+                    in_block_comment = true;
+                    continue;
+                }
                 _ => {}
             }
         }
         if c.is_ascii_whitespace() {
-            if !prev_was_space && !out.is_empty() { out.push(' '); prev_was_space = true; }
+            if !prev_was_space && !out.is_empty() {
+                out.push(' ');
+                prev_was_space = true;
+            }
         } else {
             out.push(c);
             prev_was_space = false;

@@ -1,6 +1,5 @@
 //! Specialized analysis and transformation of the unified IR.
 
-use volar_compiler::ir::*;
 #[cfg(feature = "std")]
 use std::{
     boxed::Box,
@@ -9,6 +8,7 @@ use std::{
     string::{String, ToString},
     vec::Vec,
 };
+use volar_compiler::ir::*;
 
 #[cfg(not(feature = "std"))]
 use alloc::{

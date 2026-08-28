@@ -94,7 +94,10 @@ fn eval_points<F: Field + FromBytes>(n: usize) -> Vec<F> {
 fn rs_encode<F: Field + FromBytes>(v: &[F], n: usize) -> Vec<F> {
     let points = eval_points::<F>(n);
     let msg_points = &points[..v.len()];
-    points.iter().map(|p| lagrange_eval(msg_points, v, *p)).collect()
+    points
+        .iter()
+        .map(|p| lagrange_eval(msg_points, v, *p))
+        .collect()
 }
 
 /// The finalization proof: the Merkle root, the queried codeword positions
@@ -134,9 +137,23 @@ fn build_message<F: Field>(w: &[F], e: &[F], u: F, mem_acc_in: &[F], mem_acc_out
 /// Panics if `w.len() != 7` or `e.len() != 3` (mismatched with
 /// `crate::fold::and_check_r1cs`'s shape) — a caller error, not a runtime
 /// data condition.
-pub fn prove<F: Field + FromBytes>(w: &[F], e: &[F], u: F, mem_acc_in: &[F], mem_acc_out: &[F]) -> LigeroProof<F> {
-    assert_eq!(w.len(), 7, "prove: W must have 7 slots (and_check_r1cs shape)");
-    assert_eq!(e.len(), 3, "prove: E must have 3 slots (and_check_r1cs shape)");
+pub fn prove<F: Field + FromBytes>(
+    w: &[F],
+    e: &[F],
+    u: F,
+    mem_acc_in: &[F],
+    mem_acc_out: &[F],
+) -> LigeroProof<F> {
+    assert_eq!(
+        w.len(),
+        7,
+        "prove: W must have 7 slots (and_check_r1cs shape)"
+    );
+    assert_eq!(
+        e.len(),
+        3,
+        "prove: E must have 3 slots (and_check_r1cs shape)"
+    );
 
     let v = build_message(w, e, u, mem_acc_in, mem_acc_out);
     let (_k, n, q) = sizes(v.len());
@@ -175,7 +192,10 @@ pub fn prove<F: Field + FromBytes>(w: &[F], e: &[F], u: F, mem_acc_in: &[F], mem
 /// recovered memory boundary matches it (an improvement over the Nova
 /// path's own `c_in`/`c_out`, which are committed but never opened/checked
 /// by `verify_folded`; see `docs/prove-the-verifier-iop.md`).
-pub fn verify<F: Field + FromBytes>(proof: &LigeroProof<F>, expected_mem_acc: Option<(&[F], &[F])>) -> bool {
+pub fn verify<F: Field + FromBytes>(
+    proof: &LigeroProof<F>,
+    expected_mem_acc: Option<(&[F], &[F])>,
+) -> bool {
     if proof.w.len() != 7 || proof.e.len() != 3 {
         return false;
     }
@@ -204,7 +224,12 @@ pub fn verify<F: Field + FromBytes>(proof: &LigeroProof<F>, expected_mem_acc: Op
 
     for i in 0..q {
         let leaf = field_to_leaf(&proof.query_values[i]);
-        if !merkle::verify(&proof.root, &leaf, proof.query_indices[i], &proof.query_paths[i]) {
+        if !merkle::verify(
+            &proof.root,
+            &leaf,
+            proof.query_indices[i],
+            &proof.query_paths[i],
+        ) {
             return false;
         }
     }
@@ -212,7 +237,10 @@ pub fn verify<F: Field + FromBytes>(proof: &LigeroProof<F>, expected_mem_acc: Op
     // RS proximity test: interpolate from the first k queries, cross-check
     // the rest.
     let points = eval_points::<F>(n);
-    let anchor_points: Vec<F> = proof.query_indices[..k].iter().map(|&i| points[i]).collect();
+    let anchor_points: Vec<F> = proof.query_indices[..k]
+        .iter()
+        .map(|&i| points[i])
+        .collect();
     let anchor_values: Vec<F> = proof.query_values[..k].to_vec();
     for i in k..q {
         let at = points[proof.query_indices[i]];
@@ -241,9 +269,9 @@ pub fn verify<F: Field + FromBytes>(proof: &LigeroProof<F>, expected_mem_acc: Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::field::Gf128;
     use crate::fold::{and_check_r1cs, gate_witness};
+    use alloc::vec;
 
     fn honest_wu() -> (Vec<Gf128>, Vec<Gf128>, Gf128) {
         // A single honest AND-gate step, fresh (E = 0, u = 1).
@@ -260,9 +288,15 @@ mod tests {
     fn honest_accumulator_proof_verifies_with_no_memory_boundary() {
         let (w, e, u) = honest_wu();
         let r1cs = and_check_r1cs::<Gf128>();
-        assert!(r1cs.is_satisfied_relaxed(&w, &e, &u), "sanity: honest witness must satisfy relation");
+        assert!(
+            r1cs.is_satisfied_relaxed(&w, &e, &u),
+            "sanity: honest witness must satisfy relation"
+        );
         let proof = prove(&w, &e, u, &[], &[]);
-        assert!(verify(&proof, None), "honest accumulator's finalization proof must verify");
+        assert!(
+            verify(&proof, None),
+            "honest accumulator's finalization proof must verify"
+        );
     }
 
     #[test]
@@ -271,7 +305,10 @@ mod tests {
         let mem_in = vec![Gf128::from_u64(1), Gf128::from_u64(2)];
         let mem_out = vec![Gf128::from_u64(9), Gf128::from_u64(9)];
         let proof = prove(&w, &e, u, &mem_in, &mem_out);
-        assert!(verify(&proof, None), "honest accumulator + memory boundary must verify without an expectation");
+        assert!(
+            verify(&proof, None),
+            "honest accumulator + memory boundary must verify without an expectation"
+        );
         assert!(
             verify(&proof, Some((&mem_in, &mem_out))),
             "honest accumulator + memory boundary must verify against the matching expectation"
@@ -298,7 +335,10 @@ mod tests {
         let mem_out = vec![Gf128::from_u64(9)];
         let mut proof = prove(&w, &e, u, &mem_in, &mem_out);
         proof.mem_acc_out[0] = proof.mem_acc_out[0].add(&Gf128::ONE);
-        assert!(!verify(&proof, None), "tampering the claimed mem_acc_out without redoing the codeword must fail");
+        assert!(
+            !verify(&proof, None),
+            "tampering the claimed mem_acc_out without redoing the codeword must fail"
+        );
     }
 
     #[test]
@@ -318,7 +358,10 @@ mod tests {
         // Flip one queried codeword value (simulating a prover who lies
         // about an opened position) without fixing the Merkle path.
         proof.query_values[0] = proof.query_values[0].add(&Gf128::ONE);
-        assert!(!verify(&proof, None), "tampering an opened codeword value must fail Merkle verification");
+        assert!(
+            !verify(&proof, None),
+            "tampering an opened codeword value must fail Merkle verification"
+        );
     }
 
     #[test]
@@ -334,7 +377,10 @@ mod tests {
         let (w, e, u) = honest_wu();
         let mut proof = prove(&w, &e, u, &[], &[]);
         proof.query_indices.swap(0, 1);
-        assert!(!verify(&proof, None), "queries not matching the Fiat-Shamir-derived order must be rejected");
+        assert!(
+            !verify(&proof, None),
+            "queries not matching the Fiat-Shamir-derived order must be rejected"
+        );
     }
 
     #[test]
@@ -353,7 +399,10 @@ mod tests {
         let u = Gf128::ONE;
         assert!(!and_check_r1cs::<Gf128>().is_satisfied_relaxed(&w, &e, &u));
         let proof = prove(&w, &e, u, &[], &[]);
-        assert!(!verify(&proof, None), "an internally-consistent but relation-violating witness must be rejected");
+        assert!(
+            !verify(&proof, None),
+            "an internally-consistent but relation-violating witness must be rejected"
+        );
     }
 
     #[test]

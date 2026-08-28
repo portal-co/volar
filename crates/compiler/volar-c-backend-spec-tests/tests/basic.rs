@@ -33,10 +33,7 @@ fn test_add_two() {
     b.end_function();
 
     let c_src = b.finish();
-    let output = compile_and_run(
-        &c_src,
-        r#"  printf("%u\n", add_two(3u, 4u));"#,
-    );
+    let output = compile_and_run(&c_src, r#"  printf("%u\n", add_two(3u, 4u));"#);
     assert_eq!(output.trim(), "7");
 }
 
@@ -54,24 +51,24 @@ fn test_countdown() {
         &[LirType::U64, LirType::U64],
         Some(LirType::U64),
     );
-    let n_init   = entry_params[0][0];
+    let n_init = entry_params[0][0];
     let acc_init = entry_params[1][0];
 
     let loop_block = b.create_block();
     let counter = b.add_block_param(loop_block, LirType::U64);
-    let accum   = b.add_block_param(loop_block, LirType::U64);
+    let accum = b.add_block_param(loop_block, LirType::U64);
 
-    let done_block  = b.create_block();
+    let done_block = b.create_block();
     let done_result = b.add_block_param(done_block, LirType::U64);
 
     b.switch_to_block(entry);
     b.jump(loop_block, BranchTarget::args([n_init, acc_init]));
 
     b.switch_to_block(loop_block);
-    let zero    = b.iconst(LirType::U64, 0);
-    let cond    = b.icmp(IcmpPred::Eq, counter, zero);
+    let zero = b.iconst(LirType::U64, 0);
+    let cond = b.icmp(IcmpPred::Eq, counter, zero);
     let new_acc = b.add(accum, counter);
-    let one     = b.iconst(LirType::U64, 1);
+    let one = b.iconst(LirType::U64, 1);
     let new_ctr = b.sub(counter, one);
     b.branch(
         cond,
@@ -100,20 +97,25 @@ fn test_countdown() {
 #[test]
 fn test_if_max_via_codegen() {
     use volar_compiler::ir::{
-        ExternalKind,
-        IrBlock, IrExprKind, IrFunction, IrParam, IrType, PrimitiveType,
-        SpecBinOp,
+        ExternalKind, IrBlock, IrExprKind, IrFunction, IrParam, IrType, PrimitiveType, SpecBinOp,
     };
     use volar_lir_codegen::lower_function;
 
-    let func = IrFunction { no_inline: false,
+    let func = IrFunction {
+        no_inline: false,
         name: "ir_max".to_owned(),
         module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![
-            IrParam { name: "a".to_owned(), ty: IrType::Primitive(PrimitiveType::U32) },
-            IrParam { name: "b".to_owned(), ty: IrType::Primitive(PrimitiveType::U32) },
+            IrParam {
+                name: "a".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U32),
+            },
+            IrParam {
+                name: "b".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U32),
+            },
         ],
         return_type: Some(IrType::Primitive(PrimitiveType::U32)),
         where_clause: vec![],
@@ -159,9 +161,8 @@ fn test_if_max_via_codegen() {
 #[test]
 fn test_array_splat() {
     use volar_compiler::ir::{
-        ExternalKind,
-        ArrayKind, ArrayLength, IrBlock, IrExprKind, IrFunction, IrLit, IrModule, IrParam,
-        IrType, PrimitiveType, SpecBinOp,
+        ArrayKind, ArrayLength, ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrModule,
+        IrParam, IrType, PrimitiveType, SpecBinOp,
     };
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
@@ -173,13 +174,15 @@ fn test_array_splat() {
         elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
         len: ArrayLength::Const(4),
     };
-    let cast_index = |i: u64| ir_expr(IrExprKind::Cast {
-        expr: Box::new(ir_expr(IrExprKind::Index {
-            base: Box::new(ir_expr(IrExprKind::Var("a".to_owned()))),
-            index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(i.into())))),
-        })),
-        ty: Box::new(IrType::Primitive(PrimitiveType::U32)),
-    });
+    let cast_index = |i: u64| {
+        ir_expr(IrExprKind::Cast {
+            expr: Box::new(ir_expr(IrExprKind::Index {
+                base: Box::new(ir_expr(IrExprKind::Var("a".to_owned()))),
+                index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(i.into())))),
+            })),
+            ty: Box::new(IrType::Primitive(PrimitiveType::U32)),
+        })
+    };
     let body_expr = ir_expr(IrExprKind::Binary {
         op: SpecBinOp::Add,
         left: Box::new(ir_expr(IrExprKind::Binary {
@@ -194,15 +197,22 @@ fn test_array_splat() {
         right: Box::new(cast_index(3)),
     });
 
-    let func = IrFunction { no_inline: false,
+    let func = IrFunction {
+        no_inline: false,
         name: "arr_sum".to_owned(),
         module_path: vec![],
         generics: vec![],
         receiver: None,
-        params: vec![IrParam { name: "a".to_owned(), ty: arr_ty }],
+        params: vec![IrParam {
+            name: "a".to_owned(),
+            ty: arr_ty,
+        }],
         return_type: Some(IrType::Primitive(PrimitiveType::U32)),
         where_clause: vec![],
-        body: IrBlock { stmts: vec![], expr: Some(Box::new(body_expr)) },
+        body: IrBlock {
+            stmts: vec![],
+            expr: Some(Box::new(body_expr)),
+        },
         external_kind: ExternalKind::Normal,
     };
 
@@ -244,9 +254,8 @@ fn test_array_splat() {
 #[test]
 fn test_struct_splat() {
     use volar_compiler::ir::{
-        ExternalKind,
-        IrBlock, IrExprKind, IrField, IrFunction, IrModule, IrParam, IrStruct, IrType,
-        PrimitiveType, SpecBinOp, StructKind,
+        ExternalKind, IrBlock, IrExprKind, IrField, IrFunction, IrModule, IrParam, IrStruct,
+        IrType, PrimitiveType, SpecBinOp, StructKind,
     };
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
@@ -256,8 +265,16 @@ fn test_struct_splat() {
         module_path: vec![],
         generics: vec![],
         fields: vec![
-            IrField { name: "x".to_owned(), ty: IrType::Primitive(PrimitiveType::U32), public: true },
-            IrField { name: "y".to_owned(), ty: IrType::Primitive(PrimitiveType::U32), public: true },
+            IrField {
+                name: "x".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U32),
+                public: true,
+            },
+            IrField {
+                name: "y".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U32),
+                public: true,
+            },
         ],
         is_tuple: false,
         native_volar_type: None,
@@ -270,12 +287,16 @@ fn test_struct_splat() {
     };
 
     // fn manhattan(p: Point) -> u32 { p.x + p.y }
-    let func = IrFunction { no_inline: false,
+    let func = IrFunction {
+        no_inline: false,
         name: "manhattan".to_owned(),
         module_path: vec![],
         generics: vec![],
         receiver: None,
-        params: vec![IrParam { name: "p".to_owned(), ty: point_ty }],
+        params: vec![IrParam {
+            name: "p".to_owned(),
+            ty: point_ty,
+        }],
         return_type: Some(IrType::Primitive(PrimitiveType::U32)),
         where_clause: vec![],
         body: IrBlock {
@@ -327,21 +348,27 @@ fn test_struct_splat() {
 #[test]
 fn test_phase2_codegen_struct_array() {
     use volar_compiler::ir::{
-        ExternalKind,
-        IrBlock, IrExprKind, IrFunction, IrModule, IrParam,
-        IrType, PrimitiveType, SpecBinOp,
+        ExternalKind, IrBlock, IrExprKind, IrFunction, IrModule, IrParam, IrType, PrimitiveType,
+        SpecBinOp,
     };
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     // fn xor_bytes(x: u8, y: u8) -> u8 { x ^ y }
-    let func = IrFunction { no_inline: false,
+    let func = IrFunction {
+        no_inline: false,
         name: "xor_bytes".to_owned(),
         module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![
-            IrParam { name: "x".to_owned(), ty: IrType::Primitive(PrimitiveType::U8) },
-            IrParam { name: "y".to_owned(), ty: IrType::Primitive(PrimitiveType::U8) },
+            IrParam {
+                name: "x".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U8),
+            },
+            IrParam {
+                name: "y".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U8),
+            },
         ],
         return_type: Some(IrType::Primitive(PrimitiveType::U8)),
         where_clause: vec![],
@@ -373,7 +400,10 @@ fn test_phase2_codegen_struct_array() {
     lower_module_with_opts(&module, &mut b, &env);
     let c_src = b.finish();
 
-    let output = compile_and_run(&c_src, r#"  printf("%u\n", (unsigned)xor_bytes(0xABu, 0x0Fu));"#);
+    let output = compile_and_run(
+        &c_src,
+        r#"  printf("%u\n", (unsigned)xor_bytes(0xABu, 0x0Fu));"#,
+    );
     assert_eq!(output.trim(), format!("{}", 0xABu8 ^ 0x0Fu8));
 }
 
@@ -386,8 +416,14 @@ fn test_c_backend_abi_is_c_native() {
     use volar_lir::LirAbi;
     let b = CBackend::new();
     let abi = b.abi();
-    assert!(abi.native_aggregates, "CBackend must report native_aggregates = true");
-    assert_eq!(abi.aggregate_byval_limit, LirAbi::C_NATIVE.aggregate_byval_limit);
+    assert!(
+        abi.native_aggregates,
+        "CBackend must report native_aggregates = true"
+    );
+    assert_eq!(
+        abi.aggregate_byval_limit,
+        LirAbi::C_NATIVE.aggregate_byval_limit
+    );
 }
 
 #[test]
@@ -410,13 +446,14 @@ fn test_c_backend_pass_by_ptr_threshold() {
 #[test]
 fn test_tuple_pattern_destructuring() {
     use volar_compiler::ir::{
-        ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrModule,
-        IrPattern, IrStmtKind, IrType, PrimitiveType, SpecBinOp,
+        ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrModule, IrPattern, IrStmtKind,
+        IrType, PrimitiveType, SpecBinOp,
     };
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     // fn make_pair() -> (u32, u32) { (3, 7) }
-    let make_pair = IrFunction { no_inline: false,
+    let make_pair = IrFunction {
+        no_inline: false,
         name: "make_pair".into(),
         module_path: vec![],
         generics: vec![],
@@ -441,7 +478,8 @@ fn test_tuple_pattern_destructuring() {
     //     let (a, b) = make_pair();
     //     a + b
     // }
-    let sum_pair = IrFunction { no_inline: false,
+    let sum_pair = IrFunction {
+        no_inline: false,
         name: "sum_pair".into(),
         module_path: vec![],
         generics: vec![],
@@ -450,22 +488,28 @@ fn test_tuple_pattern_destructuring() {
         return_type: Some(IrType::Primitive(PrimitiveType::U32)),
         where_clause: vec![],
         body: IrBlock {
-            stmts: vec![
-                ir_stmt(IrStmtKind::Let {
-                    pattern: IrPattern::Tuple(vec![
-                        IrPattern::Ident { mutable: false, name: "a".into(), subpat: None },
-                        IrPattern::Ident { mutable: false, name: "b".into(), subpat: None },
-                    ]),
-                    ty: Some(IrType::Tuple(vec![
-                        IrType::Primitive(PrimitiveType::U32),
-                        IrType::Primitive(PrimitiveType::U32),
-                    ])),
-                    init: Some(ir_expr(IrExprKind::Call {
-                        func: Box::new(ir_expr(IrExprKind::Var("make_pair".into()))),
-                        args: vec![],
-                    })),
-                }),
-            ],
+            stmts: vec![ir_stmt(IrStmtKind::Let {
+                pattern: IrPattern::Tuple(vec![
+                    IrPattern::Ident {
+                        mutable: false,
+                        name: "a".into(),
+                        subpat: None,
+                    },
+                    IrPattern::Ident {
+                        mutable: false,
+                        name: "b".into(),
+                        subpat: None,
+                    },
+                ]),
+                ty: Some(IrType::Tuple(vec![
+                    IrType::Primitive(PrimitiveType::U32),
+                    IrType::Primitive(PrimitiveType::U32),
+                ])),
+                init: Some(ir_expr(IrExprKind::Call {
+                    func: Box::new(ir_expr(IrExprKind::Var("make_pair".into()))),
+                    args: vec![],
+                })),
+            })],
             expr: Some(Box::new(ir_expr(IrExprKind::Binary {
                 op: SpecBinOp::Add,
                 left: Box::new(ir_expr(IrExprKind::Var("a".into()))),
@@ -529,7 +573,10 @@ fn test_name_config_remap() {
 
     let mut remap = BTreeMap::new();
     remap.insert("add".to_string(), "vector_add".to_string());
-    let cfg = NameConfig { prefix: "pfx_".to_string(), remap };
+    let cfg = NameConfig {
+        prefix: "pfx_".to_string(),
+        remap,
+    };
 
     let mut b = CBackend::new().with_name_config(cfg);
 
@@ -574,8 +621,8 @@ fn test_corpus_smoke() {
 
 #[test]
 fn test_corpus_e2e() {
-    use volar_lir_test_corpus::generated::*;
     use volar_lir_test_corpus::ALL_CASES;
+    use volar_lir_test_corpus::generated::*;
 
     macro_rules! run_case {
         ($build_fn:ident) => {{

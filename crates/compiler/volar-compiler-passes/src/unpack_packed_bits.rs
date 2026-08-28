@@ -24,14 +24,12 @@
 //! GF(2) / Boolar pipeline — `BitsInBytes` has an efficient packed
 //! representation there.
 
-#[cfg(feature = "std")]
-use std::vec::Vec;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
-use volar_compiler::ir::{
-    ArrayKind, ArrayLength, IrType, PrimitiveType,
-};
+use volar_compiler::ir::{ArrayKind, ArrayLength, IrType, PrimitiveType};
 
 /// Rewrite `BitsInBytes` → `[Z3; 8]` and `BitsInBytes64` → `[Z3; 64]`
 /// throughout a single `IrType`.
@@ -64,9 +62,7 @@ pub fn unpack_bits_in_type(ty: IrType) -> IrType {
             kind,
             type_args: type_args.into_iter().map(unpack_bits_in_type).collect(),
         },
-        IrType::Tuple(elems) => {
-            IrType::Tuple(elems.into_iter().map(unpack_bits_in_type).collect())
-        }
+        IrType::Tuple(elems) => IrType::Tuple(elems.into_iter().map(unpack_bits_in_type).collect()),
         IrType::Reference { mutable, elem } => IrType::Reference {
             mutable,
             elem: Box::new(unpack_bits_in_type(*elem)),

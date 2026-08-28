@@ -37,9 +37,7 @@ use volar_compiler::{
     parser::parse_source,
 };
 use volar_compiler_passes::{
-    dump_ir::dump_module,
-    lowering_dyn::lower_module_dyn,
-    print_module_rust_dyn,
+    dump_ir::dump_module, lowering_dyn::lower_module_dyn, print_module_rust_dyn,
     print_module_typescript,
 };
 
@@ -119,7 +117,13 @@ fn parse_args() -> Result<Config, Box<dyn std::error::Error>> {
         "ts" => Target::Ts,
         "dyn" => Target::Dyn,
         "manifest" => Target::Manifest,
-        other => return Err(format!("Unknown target {:?}. Expected 'ts', 'dyn', or 'manifest'.", other).into()),
+        other => {
+            return Err(format!(
+                "Unknown target {:?}. Expected 'ts', 'dyn', or 'manifest'.",
+                other
+            )
+            .into());
+        }
     };
 
     // Parse remaining arguments.
@@ -135,7 +139,13 @@ fn parse_args() -> Result<Config, Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(target.default_out()));
 
-    Ok(Config { target, spec_dir, out, dump_ir, dump_ir_dyn })
+    Ok(Config {
+        target,
+        spec_dir,
+        out,
+        dump_ir,
+        dump_ir_dyn,
+    })
 }
 
 /// Return the value following `--flag value` in `args`, if present.
@@ -229,7 +239,8 @@ fn parse_spec(spec_dir: &Path, module_name: &str, crate_name: &str) -> IrModule<
     // Deduplicate: within the same top-level crate, keep first by bare name.
     // Across different crates, keep all (cross-crate duplicates get $-qualified names in TS).
     {
-        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
         let before = module.functions.len();
         module.functions.retain(|f| {
             let crate_name = f.module_path.first().cloned().unwrap_or_default();
@@ -237,11 +248,15 @@ fn parse_spec(spec_dir: &Path, module_name: &str, crate_name: &str) -> IrModule<
         });
         let removed = before - module.functions.len();
         if removed > 0 {
-            eprintln!("[volar-codegen] deduplicated {} duplicate top-level function(s)", removed);
+            eprintln!(
+                "[volar-codegen] deduplicated {} duplicate top-level function(s)",
+                removed
+            );
         }
     }
     {
-        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
         module.structs.retain(|s| {
             let crate_name = s.module_path.first().cloned().unwrap_or_default();
             seen.insert((crate_name, s.kind.to_string()))
@@ -250,7 +265,8 @@ fn parse_spec(spec_dir: &Path, module_name: &str, crate_name: &str) -> IrModule<
     {
         // Dedup consts: within the same top-level crate, keep first by bare name.
         // Across different crates, keep all (they may need $-qualified names in TS).
-        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
         module.consts.retain(|c| {
             let crate_name = c.module_path.first().cloned().unwrap_or_default();
             seen.insert((crate_name, c.name.clone()))
@@ -278,13 +294,21 @@ fn write_file(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Erro
         fs::create_dir_all(parent)?;
     }
     fs::write(path, content)?;
-    eprintln!("[volar-codegen] wrote {} byte(s) → {:?}", content.len(), path);
+    eprintln!(
+        "[volar-codegen] wrote {} byte(s) → {:?}",
+        content.len(),
+        path
+    );
     Ok(())
 }
 
 fn write_dump(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Error>> {
     fs::write(path, content)?;
-    eprintln!("[volar-codegen] IR dump ({} bytes) → {:?}", content.len(), path);
+    eprintln!(
+        "[volar-codegen] IR dump ({} bytes) → {:?}",
+        content.len(),
+        path
+    );
     Ok(())
 }
 
@@ -304,7 +328,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // Optional common layer (volar-common: hash_commitment, length_doubling)
         if let Some(common_dir) = cfg.target.common_dir() {
-            let common = parse_spec(&PathBuf::from(common_dir), cfg.target.module_name(), "volar_common");
+            let common = parse_spec(
+                &PathBuf::from(common_dir),
+                cfg.target.module_name(),
+                "volar_common",
+            );
             m.structs.extend(common.structs);
             m.enums.extend(common.enums);
             m.traits.extend(common.traits);
@@ -326,21 +354,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Re-run dedup after merge: within same crate, keep first by bare name;
         // across crates, keep all (they'll get $-qualified TS names).
         {
-            let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
             m.structs.retain(|s| {
                 let crate_name = s.module_path.first().cloned().unwrap_or_default();
                 seen.insert((crate_name, s.kind.to_string()))
             });
         }
         {
-            let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
             m.functions.retain(|f| {
                 let crate_name = f.module_path.first().cloned().unwrap_or_default();
                 seen.insert((crate_name, f.name.clone()))
             });
         }
         {
-            let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
             m.consts.retain(|c| {
                 let crate_name = c.module_path.first().cloned().unwrap_or_default();
                 seen.insert((crate_name, c.name.clone()))
@@ -378,12 +409,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Target::Manifest => {
-            let manifest_bytes = emit_manifest(
-                &module,
-                cfg.target.module_name(),
-                "0.1.0",
-                &[],
-            );
+            let manifest_bytes = emit_manifest(&module, cfg.target.module_name(), "0.1.0", &[]);
             if let Some(parent) = cfg.out.parent() {
                 fs::create_dir_all(parent)?;
             }

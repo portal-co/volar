@@ -90,7 +90,7 @@ volar-fuzz              = { version = "0.1.0", git = "https://github.com/portal-
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
 portal-pc-waffle-frontend = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
-wax-meta = { version = "0.1.0", git = "https://github.com/portal-co/wax.git" }
+wax-meta = { version = "0.1.0", git = "https://github.com/portal-co/portal-container.git" }
 
 digest = { version = "0.11.2", default-features = false }
 sha3 = { version = "0.11.0-rc.2", default-features = false }

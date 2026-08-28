@@ -11,7 +11,7 @@ use std::path::Path;
 
 use volar_c_backend::CBackend;
 use volar_compiler::parser::parse_source;
-use volar_lir_codegen::{lower_module_monomorphized, MonoPlanOptions};
+use volar_lir_codegen::{MonoPlanOptions, lower_module_monomorphized};
 use volar_lir_test_corpus::compile_and_run;
 
 fn tfhe_spec_source() -> String {

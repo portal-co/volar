@@ -26,12 +26,12 @@ use volar_ir_common::ReentryHint;
 use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 
 use mono::{
-    mono_len, mono_type, normalized_args, type_args_to_len, typenum_usize, FunctionInstanceKey,
-    MonoEnv, MonoPlan,
+    FunctionInstanceKey, MonoEnv, MonoPlan, mono_len, mono_type, normalized_args, type_args_to_len,
+    typenum_usize,
 };
 use structs::{
-    flatten_count, flatten_scalar_types, primitive_to_lir, struct_field_scalar_offset,
-    struct_field_scalar_width, EnumRegistry, StructRegistry,
+    EnumRegistry, StructRegistry, flatten_count, flatten_scalar_types, primitive_to_lir,
+    struct_field_scalar_offset, struct_field_scalar_width,
 };
 use volar_compiler::ir::IrEnum;
 
@@ -448,7 +448,9 @@ pub fn roots_by_name_prefix<P: Clone>(
         .map(|f| MonoRoot::new(f.name.clone(), env.clone()))
         .collect();
     for &helper in extra_helpers {
-        if module.functions.iter().any(|f| f.name == helper) && !roots.iter().any(|r| r.function == helper) {
+        if module.functions.iter().any(|f| f.name == helper)
+            && !roots.iter().any(|r| r.function == helper)
+        {
             roots.push(MonoRoot::new(helper, env.clone()));
         }
     }
@@ -459,7 +461,6 @@ pub fn roots_by_name_prefix<P: Clone>(
     );
     roots
 }
-
 
 /// Lower a closed set of concrete local function instances to `target`.
 ///
@@ -502,9 +503,7 @@ pub fn lower_module_with_opts<T: LirTarget<P>, P: Clone>(
     let roots = module
         .functions
         .iter()
-        .filter(|f| {
-            f.external_kind == ExternalKind::Normal && f.generics.is_empty()
-        })
+        .filter(|f| f.external_kind == ExternalKind::Normal && f.generics.is_empty())
         .map(|f| MonoRoot::new(f.name.clone(), env.clone()))
         .collect();
     lower_module_monomorphized(
@@ -553,10 +552,8 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     // Non-generic structs first; concrete generic nominals are registered
     // per planned instance via `ensure_type_nominals` (no module-wide merge).
     let empty = MonoEnv::new("");
-    let mut registry =
-        structs::build_struct_registry_with_lenient(module, target, &empty, lenient);
-    let enum_registry =
-        structs::build_enum_registry(&module.enums, &mut registry, target, &empty);
+    let mut registry = structs::build_struct_registry_with_lenient(module, target, &empty, lenient);
+    let enum_registry = structs::build_enum_registry(&module.enums, &mut registry, target, &empty);
 
     for (key, env) in &plan.instances {
         let func = module
@@ -575,13 +572,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
             structs::register_tuples_in_type(&parameter.ty, &mut registry, target, env);
         }
         if let Some(return_type) = &func.return_type {
-            structs::ensure_type_nominals(
-                return_type,
-                &mut registry,
-                target,
-                env,
-                &module.structs,
-            );
+            structs::ensure_type_nominals(return_type, &mut registry, target, env, &module.structs);
             structs::register_tuples_in_type(return_type, &mut registry, target, env);
         }
         // Register generic module structs under this instance env when every
@@ -1844,10 +1835,7 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
         other => panic!("field .{field} on non-struct type {:?}", other),
     };
 
-    let mono_args: Vec<IrType> = type_args
-        .iter()
-        .map(|a| mono_type(a, ctx.mono))
-        .collect();
+    let mono_args: Vec<IrType> = type_args.iter().map(|a| mono_type(a, ctx.mono)).collect();
     let struct_id = ctx
         .registry
         .id_for_instance(struct_kind, &mono_args)
@@ -1876,10 +1864,7 @@ fn lower_struct_expr<T: LirTarget<P>, P: Clone>(
     fields: &[(String, IrExpr<P>)],
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
-    let mut mono_args: Vec<IrType> = type_args
-        .iter()
-        .map(|a| mono_type(a, ctx.mono))
-        .collect();
+    let mut mono_args: Vec<IrType> = type_args.iter().map(|a| mono_type(a, ctx.mono)).collect();
     // `Wrap { value: x }` parses with empty type_args; infer from field exprs.
     if mono_args.is_empty() {
         if let Some(ir_struct) = ctx.module_structs.iter().find(|s| s.kind == *kind) {
@@ -2183,7 +2168,10 @@ fn is_slice_ref(ty: &IrType) -> bool {
     matches!(ty,
         IrType::Reference { elem, .. }
             if matches!(elem.as_ref(), IrType::Array { kind: ArrayKind::Slice, .. })
-    ) || matches!(volar_compiler::ir::as_box_type(ty), Some(IrType::Array { .. }))
+    ) || matches!(
+        volar_compiler::ir::as_box_type(ty),
+        Some(IrType::Array { .. })
+    )
 }
 
 /// Extract the element type from a `Reference<Slice<T>>` or `Box<[T; N]>`.
@@ -2627,14 +2615,24 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         // (but not really, just wrong) storage.
         if segments.len() == 2 && segments[0] == "Box" && segments[1] == "new" {
             let inner = args.first().expect("Box::new expects exactly one argument");
-            let IrExprKind::Call { func: inner_func, args: inner_args } = &inner.kind else {
+            let IrExprKind::Call {
+                func: inner_func,
+                args: inner_args,
+            } = &inner.kind
+            else {
                 unimplemented!(
                     "lower_call: Box::new(_) is currently only supported for a \
                      `core::array::from_fn(|_| _)` argument — see box_new_array_expr"
                 );
             };
-            let IrExprKind::Path { segments: inner_segments, .. } = &inner_func.kind else {
-                unimplemented!("lower_call: Box::new(_)'s argument must be a core::array::from_fn call");
+            let IrExprKind::Path {
+                segments: inner_segments,
+                ..
+            } = &inner_func.kind
+            else {
+                unimplemented!(
+                    "lower_call: Box::new(_)'s argument must be a core::array::from_fn call"
+                );
             };
             if inner_segments.last().map(String::as_str) != Some("from_fn") {
                 unimplemented!(
@@ -2643,7 +2641,9 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
                 );
             }
             let Some(IrExprKind::Closure { body, .. }) = inner_args.first().map(|a| &a.kind) else {
-                unimplemented!("lower_call: Box::new(core::array::from_fn(_))'s argument must be a closure");
+                unimplemented!(
+                    "lower_call: Box::new(core::array::from_fn(_))'s argument must be a closure"
+                );
             };
             if !is_zero_default_expr(body) {
                 unimplemented!(

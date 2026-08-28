@@ -73,9 +73,7 @@ fn mul_4x4(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
     for i in 0..4 {
         let mut carry: u64 = 0;
         for j in 0..4 {
-            let v = (r[i + j] as u128)
-                + (a[i] as u128) * (b[j] as u128)
-                + (carry as u128);
+            let v = (r[i + j] as u128) + (a[i] as u128) * (b[j] as u128) + (carry as u128);
             r[i + j] = v as u64;
             carry = (v >> 64) as u64;
         }
@@ -290,19 +288,27 @@ pub fn fe_invert(a: &Fe25519) -> Fe25519 {
 // Operator overloads for ergonomics within this module.
 impl Add for Fe25519 {
     type Output = Self;
-    fn add(self, rhs: Self) -> Self { fe_add(&self, &rhs) }
+    fn add(self, rhs: Self) -> Self {
+        fe_add(&self, &rhs)
+    }
 }
 impl Sub for Fe25519 {
     type Output = Self;
-    fn sub(self, rhs: Self) -> Self { fe_sub(&self, &rhs) }
+    fn sub(self, rhs: Self) -> Self {
+        fe_sub(&self, &rhs)
+    }
 }
 impl Mul for Fe25519 {
     type Output = Self;
-    fn mul(self, rhs: Self) -> Self { fe_mul(&self, &rhs) }
+    fn mul(self, rhs: Self) -> Self {
+        fe_mul(&self, &rhs)
+    }
 }
 impl Neg for Fe25519 {
     type Output = Self;
-    fn neg(self) -> Self { fe_neg(&self) }
+    fn neg(self) -> Self {
+        fe_neg(&self)
+    }
 }
 
 // ============================================================================
@@ -324,7 +330,9 @@ const D2_LIMBS: [u64; 4] = [
     0x2406_D9DC_56DF_FCE7,
 ];
 
-const fn fe_const(limbs: [u64; 4]) -> Fe25519 { Fe25519(limbs) }
+const fn fe_const(limbs: [u64; 4]) -> Fe25519 {
+    Fe25519(limbs)
+}
 
 const D: Fe25519 = fe_const(D_LIMBS);
 const D2: Fe25519 = fe_const(D2_LIMBS);
@@ -367,7 +375,12 @@ impl EdPoint {
     pub fn base() -> Self {
         let x = Fe25519(BASE_X_LIMBS);
         let y = Fe25519(BASE_Y_LIMBS);
-        Self { x, y, z: Fe25519::ONE, t: fe_mul(&x, &y) }
+        Self {
+            x,
+            y,
+            z: Fe25519::ONE,
+            t: fe_mul(&x, &y),
+        }
     }
 
     /// Affine X-Y representation. Returns `(x, y) = (X/Z, Y/Z)`.
@@ -501,7 +514,12 @@ pub fn hash_to_curve(domain: &[u8], index: u64) -> EdPoint {
         if (y.to_bytes()[0] & 1) != sign {
             y = fe_neg(&y);
         }
-        let point = EdPoint { x, y, z: Fe25519::ONE, t: fe_mul(&x, &y) };
+        let point = EdPoint {
+            x,
+            y,
+            z: Fe25519::ONE,
+            t: fe_mul(&x, &y),
+        };
         let p8 = ed_mul_cofactor(&point);
         if p8 == EdPoint::IDENTITY {
             continue;
@@ -674,9 +692,7 @@ mod tests {
     #[test]
     fn ed25519_chou_orlandi_round_trip() {
         use crate::SpecRng;
-        use crate::ot::base::{
-            ot_recv, ot_recv_finish, ot_send_finish, ot_send_setup,
-        };
+        use crate::ot::base::{ot_recv, ot_recv_finish, ot_send_finish, ot_send_setup};
         use sha2::Sha256;
 
         struct TestRng(u64);
@@ -734,7 +750,10 @@ mod tests {
             assert!(is_square(&aa));
         }
         // A non-residue must report None. 2 is a known QNR mod p (= 2^255-19).
-        assert!(fe_sqrt(&Fe25519([2, 0, 0, 0])).is_none(), "2 is a non-residue mod p");
+        assert!(
+            fe_sqrt(&Fe25519([2, 0, 0, 0])).is_none(),
+            "2 is a non-residue mod p"
+        );
         assert!(!is_square(&Fe25519([2, 0, 0, 0])));
     }
 
@@ -744,7 +763,11 @@ mod tests {
             let p = hash_to_curve(b"volar-fold/test", i);
             assert!(on_curve(&p), "hash_to_curve point {i} not on curve");
             // Prime-order: [ℓ]·P == identity (cofactor was cleared).
-            assert_eq!(ed_scalar_mul(&p, &ELL_BYTES), EdPoint::IDENTITY, "point {i} not prime-order");
+            assert_eq!(
+                ed_scalar_mul(&p, &ELL_BYTES),
+                EdPoint::IDENTITY,
+                "point {i} not prime-order"
+            );
             assert_ne!(p, EdPoint::IDENTITY);
         }
     }

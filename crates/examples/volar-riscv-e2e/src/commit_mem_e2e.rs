@@ -70,15 +70,32 @@ mod tests {
             // var 0: address 0 (params.len() == 0, so this is the first var id)
             IRStmt::Const(Constant { hi: 0, lo: 0 }, bit),
             // var 1: read the committed bit at address 0
-            IRStmt::StorageRead { storage: StorageId::memory(0), ty: bit, addr: IRVarId(0) },
+            IRStmt::StorageRead {
+                storage: StorageId::memory(0),
+                ty: bit,
+                addr: IRVarId(0),
+            },
             // var 2: literal constant 1
             IRStmt::Const(Constant { hi: 0, lo: 1 }, bit),
             // var 3: var1 AND var2 (== var1, since var2 == 1) -- the one AND gate
-            IRStmt::Poly { ty: bit, coeffs: and_coeffs, constant: Constant { hi: 0, lo: 0 } },
+            IRStmt::Poly {
+                ty: bit,
+                coeffs: and_coeffs,
+                constant: Constant { hi: 0, lo: 0 },
+            },
             // var 4: NOT(var 3) = 1 + var3 (GF(2)) -- the flipped bit
-            IRStmt::Poly { ty: bit, coeffs: not_coeffs, constant: Constant { hi: 0, lo: 1 } },
+            IRStmt::Poly {
+                ty: bit,
+                coeffs: not_coeffs,
+                constant: Constant { hi: 0, lo: 1 },
+            },
             // var 5: write the flipped bit back to address 0 (no output wire)
-            IRStmt::StorageWrite { storage: StorageId::memory(0), src: IRVarId(4), ty: bit, addr: IRVarId(0) },
+            IRStmt::StorageWrite {
+                storage: StorageId::memory(0),
+                src: IRVarId(4),
+                ty: bit,
+                addr: IRVarId(0),
+            },
         ]
         .into_iter()
         .map(|s| Node::new(s, (), None))
@@ -107,8 +124,8 @@ mod tests {
     #[test]
     fn flip_bit_weaves_with_commitment_and_one_and_gate() {
         use volar_weaver::{
-            weave_vole_prover_ir_with_mode, weave_vole_verifier_ir_with_mode_and_trace, IopSink,
-            StorageMode,
+            IopSink, StorageMode, weave_vole_prover_ir_with_mode,
+            weave_vole_verifier_ir_with_mode_and_trace,
         };
 
         let (circuit, types) = build_flip_bit_circuit();
@@ -117,17 +134,29 @@ mod tests {
         let (prover_module, prover_trace) =
             weave_vole_prover_ir_with_mode(&circuit, &types, "flip", &mode, None);
         let prover_code = volar_weaver::print_weaved_vole_module(prover_module.inner());
-        assert!(prover_code.contains("fn vole_prove_ir_flip"), "{prover_code}");
+        assert!(
+            prover_code.contains("fn vole_prove_ir_flip"),
+            "{prover_code}"
+        );
         assert!(prover_code.contains("oracle_rd_0"), "{prover_code}");
-        assert!(prover_code.contains("vole_and_prover_step::<"), "expected exactly one AND gate:\n{prover_code}");
+        assert!(
+            prover_code.contains("vole_and_prover_step::<"),
+            "expected exactly one AND gate:\n{prover_code}"
+        );
         assert_eq!(prover_trace.entries.len(), 2, "one read + one write");
 
         let (verifier_module, verifier_trace) = weave_vole_verifier_ir_with_mode_and_trace(
             &circuit, &types, "flip", &mode, &IopSink, None,
         );
         let verifier_code = volar_weaver::print_weaved_vole_module(verifier_module.inner());
-        assert!(verifier_code.contains("fn vole_verify_ir_flip"), "{verifier_code}");
-        assert!(verifier_code.contains("vole_and_verifier_check::<"), "expected exactly one AND gate:\n{verifier_code}");
+        assert!(
+            verifier_code.contains("fn vole_verify_ir_flip"),
+            "{verifier_code}"
+        );
+        assert!(
+            verifier_code.contains("vole_and_verifier_check::<"),
+            "expected exactly one AND gate:\n{verifier_code}"
+        );
         assert_eq!(verifier_trace.entries.len(), 2);
     }
 
@@ -162,11 +191,11 @@ mod tests {
     /// today) — not something this test can or should paper over.
     #[test]
     fn honest_flip_bit_run_folds_and_finalizes_with_real_memory_boundary() {
-        use volar_weaver::{
-            weave_vole_prover_ir_with_mode, weave_vole_verifier_ir_with_mode_and_trace, IopSink,
-            StorageMode, print_weaved_vole_module,
-        };
         use volar_verifier_iop_runtime::run_iop_verifier;
+        use volar_weaver::{
+            IopSink, StorageMode, print_weaved_vole_module, weave_vole_prover_ir_with_mode,
+            weave_vole_verifier_ir_with_mode_and_trace,
+        };
 
         let (circuit, types) = build_flip_bit_circuit();
         let mode = StorageMode::Commitment;
@@ -185,7 +214,9 @@ mod tests {
         // would duplicate every `use` line (a hard error, not just an
         // unused-import lint). Keep the verifier's full header and splice
         // in only the prover's function body (starting at its `pub fn`).
-        let prover_fn_only = &prover_code[prover_code.find("pub fn").expect("prover source must have a pub fn")..];
+        let prover_fn_only = &prover_code[prover_code
+            .find("pub fn")
+            .expect("prover source must have a pub fn")..];
         let rust_source = format!("{verifier_code}\n{prover_fn_only}");
 
         let driver = r#"

@@ -31,7 +31,7 @@ use volar_ir::{
     ir::{IRBlockId, IRBlockTargetId, IRVarId},
 };
 use volar_ir_common::Node;
-use volar_ir_virt::{virtualize_bir, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{DispatchMode, VirtualizeConfig, virtualize_bir};
 use volar_weaver::fhe::derive_storage_config;
 
 fn cfg_oblivious() -> VirtualizeConfig {
@@ -45,18 +45,33 @@ fn cfg_oblivious() -> VirtualizeConfig {
 /// param and returns.  Both blocks use `params = 2` so the virtualiser
 /// accepts them.
 fn mini_bir() -> BIrBlocks {
-    BIrBlocks { blocks: vec![
-        BIrBlock {
-            params: 2,
-            stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))].into_iter().map(|s| Node::new(s, (), None)).collect(),
-            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(2), IRVarId(1)], }),
-        },
-        BIrBlock {
-            params: 2,
-            stmts: vec![BIrStmt::Not(IRVarId(0))].into_iter().map(|s| Node::new(s, (), None)).collect(),
-            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2)], }),
-        },
-    ], pre_init: vec![] }
+    BIrBlocks {
+        blocks: vec![
+            BIrBlock {
+                params: 2,
+                stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))]
+                    .into_iter()
+                    .map(|s| Node::new(s, (), None))
+                    .collect(),
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Block(IRBlockId(1)),
+                    args: vec![IRVarId(2), IRVarId(1)],
+                }),
+            },
+            BIrBlock {
+                params: 2,
+                stmts: vec![BIrStmt::Not(IRVarId(0))]
+                    .into_iter()
+                    .map(|s| Node::new(s, (), None))
+                    .collect(),
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(2)],
+                }),
+            },
+        ],
+        pre_init: vec![],
+    }
 }
 
 #[test]

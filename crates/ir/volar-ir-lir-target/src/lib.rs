@@ -53,14 +53,17 @@ use std::collections::BTreeMap;
 use std::{string::String, string::ToString, vec, vec::Vec};
 
 use volar_ir::ir::{
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
-    IRTypes, IRVarId, OracleDecl, ActionDecl, IRBranchTarget};
+    ActionDecl, IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt,
+    IRTerminator, IRType, IRTypeId, IRTypes, IRVarId, OracleDecl,
+};
 use volar_ir_common::{Constant, IrType, Type as NativeType};
-use volar_lir::{BranchTarget, BitCircuitBuilder, IcmpPred, LirTarget, LirType, LirAbi, StructDef, StructId};
 use volar_lir::circuits::{
-    bc_abs, bc_add, bc_and_vec, bc_ashr, bc_eq, bc_lshr, bc_mul, bc_ne, bc_neg,
-    bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
-    bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec, StorageEmitter,
+    StorageEmitter, bc_abs, bc_add, bc_and_vec, bc_ashr, bc_eq, bc_lshr, bc_mul, bc_ne, bc_neg,
+    bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt, bc_sub, bc_udiv, bc_ule,
+    bc_ult, bc_xor_vec,
+};
+use volar_lir::{
+    BitCircuitBuilder, BranchTarget, IcmpPred, LirAbi, LirTarget, LirType, StructDef, StructId,
 };
 
 // ============================================================================
@@ -103,7 +106,11 @@ struct BlockBuilder<P: Clone = ()> {
 
 impl<P: Clone> BlockBuilder<P> {
     fn new() -> Self {
-        BlockBuilder { params: vec![], stmts: vec![], terminator: None }
+        BlockBuilder {
+            params: vec![],
+            stmts: vec![],
+            terminator: None,
+        }
     }
 
     /// Next local var ID = params.len() + stmts.len().
@@ -234,7 +241,9 @@ impl<P: Clone> VolarIrTarget<P> {
         match ty {
             LirType::Bool => self.bit_tid,
             LirType::Native(t) => self.types.intern(IrType::Primitive(*t)),
-            LirType::Ptr(_) => panic!("VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"),
+            LirType::Ptr(_) => panic!(
+                "VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"
+            ),
             _ => {
                 // For non-native multi-bit types, fall back to the bit type.
                 // Full support for U8/U16/etc. requires an IrType per LIR type;
@@ -250,13 +259,20 @@ impl<P: Clone> VolarIrTarget<P> {
         let f = self.func.as_mut().unwrap();
         let blk = &mut f.blocks[f.current];
         let id = blk.next_local_id();
-        blk.stmts.push(volar_ir_common::Node::new(stmt, self.current_prov.clone(), self.current_side));
+        blk.stmts.push(volar_ir_common::Node::new(
+            stmt,
+            self.current_prov.clone(),
+            self.current_side,
+        ));
         IRVarId(id)
     }
 
     fn bit_const(&mut self, val: bool) -> IRVarId {
         self.emit(IRStmt::Const(
-            Constant { hi: 0, lo: val as u128 },
+            Constant {
+                hi: 0,
+                lo: val as u128,
+            },
             self.bit_tid.clone(),
         ))
     }
@@ -270,7 +286,11 @@ impl<P: Clone> VolarIrTarget<P> {
         let mut coeffs = BTreeMap::new();
         coeffs.insert(vec![a], 1u8);
         coeffs.insert(vec![b], 1u8);
-        self.emit(IRStmt::Poly { ty: self.bit_tid, coeffs, constant: Constant { hi: 0, lo: 0 } })
+        self.emit(IRStmt::Poly {
+            ty: self.bit_tid,
+            coeffs,
+            constant: Constant { hi: 0, lo: 0 },
+        })
     }
 
     fn and_bit(&mut self, a: IRVarId, b: IRVarId) -> IRVarId {
@@ -281,13 +301,21 @@ impl<P: Clone> VolarIrTarget<P> {
         key.sort();
         let mut coeffs = BTreeMap::new();
         coeffs.insert(key, 1u8);
-        self.emit(IRStmt::Poly { ty: self.bit_tid, coeffs, constant: Constant { hi: 0, lo: 0 } })
+        self.emit(IRStmt::Poly {
+            ty: self.bit_tid,
+            coeffs,
+            constant: Constant { hi: 0, lo: 0 },
+        })
     }
 
     fn not_bit(&mut self, a: IRVarId) -> IRVarId {
         let mut coeffs = BTreeMap::new();
         coeffs.insert(vec![a], 1u8);
-        self.emit(IRStmt::Poly { ty: self.bit_tid, coeffs, constant: Constant { hi: 0, lo: 1 } })
+        self.emit(IRStmt::Poly {
+            ty: self.bit_tid,
+            coeffs,
+            constant: Constant { hi: 0, lo: 1 },
+        })
     }
 
     fn or_bit(&mut self, a: IRVarId, b: IRVarId) -> IRVarId {
@@ -309,13 +337,20 @@ impl<P: Clone> VolarIrTarget<P> {
     /// full subtractor (with one input negated).
     fn carry_bit(&mut self, a: IRVarId, b: IRVarId, c: IRVarId) -> IRVarId {
         let mut coeffs = BTreeMap::new();
-        let mut ab = vec![a, b]; ab.sort();
-        let mut ac = vec![a, c]; ac.sort();
-        let mut bc = vec![b, c]; bc.sort();
+        let mut ab = vec![a, b];
+        ab.sort();
+        let mut ac = vec![a, c];
+        ac.sort();
+        let mut bc = vec![b, c];
+        bc.sort();
         coeffs.insert(ab, 1u8);
         coeffs.insert(ac, 1u8);
         coeffs.insert(bc, 1u8);
-        self.emit(IRStmt::Poly { ty: self.bit_tid, coeffs, constant: Constant { hi: 0, lo: 0 } })
+        self.emit(IRStmt::Poly {
+            ty: self.bit_tid,
+            coeffs,
+            constant: Constant { hi: 0, lo: 0 },
+        })
     }
 
     /// MUX: `select(cond, a, b) = AND(cond, XOR(a,b)) XOR b`.
@@ -328,11 +363,17 @@ impl<P: Clone> VolarIrTarget<P> {
     // ---- Vectorised bit ops ------------------------------------------------
 
     fn xor_vec(&mut self, a: &[IRVarId], b: &[IRVarId]) -> Vec<IRVarId> {
-        a.iter().zip(b).map(|(&ai, &bi)| self.xor_bit(ai, bi)).collect()
+        a.iter()
+            .zip(b)
+            .map(|(&ai, &bi)| self.xor_bit(ai, bi))
+            .collect()
     }
 
     fn and_vec(&mut self, a: &[IRVarId], b: &[IRVarId]) -> Vec<IRVarId> {
-        a.iter().zip(b).map(|(&ai, &bi)| self.and_bit(ai, bi)).collect()
+        a.iter()
+            .zip(b)
+            .map(|(&ai, &bi)| self.and_bit(ai, bi))
+            .collect()
     }
 
     fn not_vec(&mut self, a: &[IRVarId]) -> Vec<IRVarId> {
@@ -340,11 +381,17 @@ impl<P: Clone> VolarIrTarget<P> {
     }
 
     fn or_vec(&mut self, a: &[IRVarId], b: &[IRVarId]) -> Vec<IRVarId> {
-        a.iter().zip(b).map(|(&ai, &bi)| self.or_bit(ai, bi)).collect()
+        a.iter()
+            .zip(b)
+            .map(|(&ai, &bi)| self.or_bit(ai, bi))
+            .collect()
     }
 
     fn select_vec(&mut self, cond: IRVarId, a: &[IRVarId], b: &[IRVarId]) -> Vec<IRVarId> {
-        a.iter().zip(b).map(|(&ai, &bi)| self.select_bit(cond, ai, bi)).collect()
+        a.iter()
+            .zip(b)
+            .map(|(&ai, &bi)| self.select_bit(cond, ai, bi))
+            .collect()
     }
 
     // ---- Integer arithmetic core -------------------------------------------
@@ -365,18 +412,27 @@ impl<P: Clone> VolarIrTarget<P> {
     }
 
     fn add_impl(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
-        VolarValue { bits: self.add_with_carry_in(&a.bits, &b.bits, false), ty: a.ty.clone() }
+        VolarValue {
+            bits: self.add_with_carry_in(&a.bits, &b.bits, false),
+            ty: a.ty.clone(),
+        }
     }
 
     fn sub_impl(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
         let not_b = self.not_vec(&b.bits);
-        VolarValue { bits: self.add_with_carry_in(&a.bits, &not_b, true), ty: a.ty.clone() }
+        VolarValue {
+            bits: self.add_with_carry_in(&a.bits, &not_b, true),
+            ty: a.ty.clone(),
+        }
     }
 
     fn negate_impl(&mut self, val: &VolarValue) -> VolarValue {
         let not_bits = self.not_vec(&val.bits);
         let zeros: Vec<IRVarId> = (0..val.bits.len()).map(|_| self.bit_const(false)).collect();
-        VolarValue { bits: self.add_with_carry_in(&not_bits, &zeros, true), ty: val.ty.clone() }
+        VolarValue {
+            bits: self.add_with_carry_in(&not_bits, &zeros, true),
+            ty: val.ty.clone(),
+        }
     }
 
     /// Two's-complement absolute value: select(MSB, −val, val).
@@ -384,10 +440,16 @@ impl<P: Clone> VolarIrTarget<P> {
         let n = val.bits.len();
         let sign = val.bits[n - 1];
         let neg = self.negate_impl(val);
-        let bits = val.bits.iter().zip(&neg.bits)
+        let bits = val
+            .bits
+            .iter()
+            .zip(&neg.bits)
             .map(|(&pos, &neg_b)| self.select_bit(sign, neg_b, pos))
             .collect();
-        VolarValue { bits, ty: val.ty.clone() }
+        VolarValue {
+            bits,
+            ty: val.ty.clone(),
+        }
     }
 
     /// n×n-bit shift-and-add multiplier.  Lower n bits of the full product.
@@ -397,12 +459,19 @@ impl<P: Clone> VolarIrTarget<P> {
         for i in 0..n {
             let pp: Vec<IRVarId> = (0..n)
                 .map(|k| {
-                    if k < i { self.bit_const(false) } else { self.and_bit(a.bits[i], b.bits[k - i]) }
+                    if k < i {
+                        self.bit_const(false)
+                    } else {
+                        self.and_bit(a.bits[i], b.bits[k - i])
+                    }
                 })
                 .collect();
             acc = self.add_with_carry_in(&acc, &pp, false);
         }
-        VolarValue { bits: acc, ty: a.ty.clone() }
+        VolarValue {
+            bits: acc,
+            ty: a.ty.clone(),
+        }
     }
 
     /// Restoring long-division: returns the quotient of `a / b`.
@@ -415,7 +484,9 @@ impl<P: Clone> VolarIrTarget<P> {
         for i in (0..n).rev() {
             let mut new_r = Vec::with_capacity(n);
             new_r.push(a.bits[i]);
-            for k in 0..n - 1 { new_r.push(r[k]); }
+            for k in 0..n - 1 {
+                new_r.push(r[k]);
+            }
             r = new_r;
             let mut borrow = self.bit_const(false);
             let mut diff = Vec::with_capacity(n);
@@ -431,7 +502,10 @@ impl<P: Clone> VolarIrTarget<P> {
             let r_copy = r.clone();
             r = self.select_vec(no_borrow, &diff, &r_copy);
         }
-        VolarValue { bits: q_bits, ty: a.ty.clone() }
+        VolarValue {
+            bits: q_bits,
+            ty: a.ty.clone(),
+        }
     }
 
     fn sdiv_impl(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
@@ -443,10 +517,16 @@ impl<P: Clone> VolarIrTarget<P> {
         let abs_q = self.udiv_impl(&abs_a, &abs_b);
         let signs_differ = self.xor_bit(sign_a, sign_b);
         let neg_q = self.negate_impl(&abs_q);
-        let bits = abs_q.bits.iter().zip(&neg_q.bits)
+        let bits = abs_q
+            .bits
+            .iter()
+            .zip(&neg_q.bits)
             .map(|(&pq, &nq)| self.select_bit(signs_differ, nq, pq))
             .collect();
-        VolarValue { bits, ty: a.ty.clone() }
+        VolarValue {
+            bits,
+            ty: a.ty.clone(),
+        }
     }
 
     // ---- Barrel shifters ---------------------------------------------------
@@ -469,12 +549,21 @@ impl<P: Clone> VolarIrTarget<P> {
         for k in 0..stages {
             let step = 1usize << k;
             let sb = shift.bits[k];
-            cur = (0..n).map(|j| {
-                if j < step { let z = self.bit_const(false); self.select_bit(sb, z, cur[j]) }
-                else { self.select_bit(sb, cur[j - step], cur[j]) }
-            }).collect();
+            cur = (0..n)
+                .map(|j| {
+                    if j < step {
+                        let z = self.bit_const(false);
+                        self.select_bit(sb, z, cur[j])
+                    } else {
+                        self.select_bit(sb, cur[j - step], cur[j])
+                    }
+                })
+                .collect();
         }
-        VolarValue { bits: cur, ty: val.ty.clone() }
+        VolarValue {
+            bits: cur,
+            ty: val.ty.clone(),
+        }
     }
 
     fn lshr_impl(&mut self, val: &VolarValue, shift: &VolarValue) -> VolarValue {
@@ -484,12 +573,21 @@ impl<P: Clone> VolarIrTarget<P> {
         for k in 0..stages {
             let step = 1usize << k;
             let sb = shift.bits[k];
-            cur = (0..n).map(|j| {
-                if j + step >= n { let z = self.bit_const(false); self.select_bit(sb, z, cur[j]) }
-                else { self.select_bit(sb, cur[j + step], cur[j]) }
-            }).collect();
+            cur = (0..n)
+                .map(|j| {
+                    if j + step >= n {
+                        let z = self.bit_const(false);
+                        self.select_bit(sb, z, cur[j])
+                    } else {
+                        self.select_bit(sb, cur[j + step], cur[j])
+                    }
+                })
+                .collect();
         }
-        VolarValue { bits: cur, ty: val.ty.clone() }
+        VolarValue {
+            bits: cur,
+            ty: val.ty.clone(),
+        }
     }
 
     fn ashr_impl(&mut self, val: &VolarValue, shift: &VolarValue) -> VolarValue {
@@ -500,12 +598,20 @@ impl<P: Clone> VolarIrTarget<P> {
         for k in 0..stages {
             let step = 1usize << k;
             let sb = shift.bits[k];
-            cur = (0..n).map(|j| {
-                if j + step >= n { self.select_bit(sb, sign, cur[j]) }
-                else { self.select_bit(sb, cur[j + step], cur[j]) }
-            }).collect();
+            cur = (0..n)
+                .map(|j| {
+                    if j + step >= n {
+                        self.select_bit(sb, sign, cur[j])
+                    } else {
+                        self.select_bit(sb, cur[j + step], cur[j])
+                    }
+                })
+                .collect();
         }
-        VolarValue { bits: cur, ty: val.ty.clone() }
+        VolarValue {
+            bits: cur,
+            ty: val.ty.clone(),
+        }
     }
 
     // ---- Comparisons -------------------------------------------------------
@@ -514,23 +620,37 @@ impl<P: Clone> VolarIrTarget<P> {
         let n = a.bits.len();
         let xors: Vec<IRVarId> = (0..n).map(|i| self.xor_bit(a.bits[i], b.bits[i])).collect();
         let not_xors: Vec<IRVarId> = (0..n).map(|i| self.not_bit(xors[i])).collect();
-        let result = if n == 0 { self.bit_const(true) } else {
+        let result = if n == 0 {
+            self.bit_const(true)
+        } else {
             let mut acc = not_xors[0];
-            for i in 1..n { acc = self.and_bit(acc, not_xors[i]); }
+            for i in 1..n {
+                acc = self.and_bit(acc, not_xors[i]);
+            }
             acc
         };
-        VolarValue { bits: vec![result], ty: LirType::Bool }
+        VolarValue {
+            bits: vec![result],
+            ty: LirType::Bool,
+        }
     }
 
     fn icmp_ne(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
         let n = a.bits.len();
         let xors: Vec<IRVarId> = (0..n).map(|i| self.xor_bit(a.bits[i], b.bits[i])).collect();
-        let result = if n == 0 { self.bit_const(false) } else {
+        let result = if n == 0 {
+            self.bit_const(false)
+        } else {
             let mut acc = xors[0];
-            for i in 1..n { acc = self.or_bit(acc, xors[i]); }
+            for i in 1..n {
+                acc = self.or_bit(acc, xors[i]);
+            }
             acc
         };
-        VolarValue { bits: vec![result], ty: LirType::Bool }
+        VolarValue {
+            bits: vec![result],
+            ty: LirType::Bool,
+        }
     }
 
     fn icmp_ult(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
@@ -540,12 +660,18 @@ impl<P: Clone> VolarIrTarget<P> {
             let not_ai = self.not_bit(a.bits[i]);
             borrow = self.carry_bit(not_ai, b.bits[i], borrow);
         }
-        VolarValue { bits: vec![borrow], ty: LirType::Bool }
+        VolarValue {
+            bits: vec![borrow],
+            ty: LirType::Bool,
+        }
     }
 
     fn icmp_ule(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
         let gt = self.icmp_ult(b, a);
-        VolarValue { bits: vec![self.not_bit(gt.bits[0])], ty: LirType::Bool }
+        VolarValue {
+            bits: vec![self.not_bit(gt.bits[0])],
+            ty: LirType::Bool,
+        }
     }
 
     fn icmp_slt(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
@@ -558,12 +684,18 @@ impl<P: Clone> VolarIrTarget<P> {
         let signs_xor = self.xor_bit(sign_a, sign_b);
         let signs_eq = self.not_bit(signs_xor);
         let same_sign_lt = self.and_bit(signs_eq, ult);
-        VolarValue { bits: vec![self.or_bit(a_neg_b_pos, same_sign_lt)], ty: LirType::Bool }
+        VolarValue {
+            bits: vec![self.or_bit(a_neg_b_pos, same_sign_lt)],
+            ty: LirType::Bool,
+        }
     }
 
     fn icmp_sle(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
         let sgt = self.icmp_slt(b, a);
-        VolarValue { bits: vec![self.not_bit(sgt.bits[0])], ty: LirType::Bool }
+        VolarValue {
+            bits: vec![self.not_bit(sgt.bits[0])],
+            ty: LirType::Bool,
+        }
     }
 
     // ---- Helpers -----------------------------------------------------------
@@ -575,7 +707,10 @@ impl<P: Clone> VolarIrTarget<P> {
     fn set_terminator(&mut self, term: IRTerminator) {
         let f = self.func.as_mut().unwrap();
         let blk = &mut f.blocks[f.current];
-        assert!(blk.terminator.is_none(), "VolarIrTarget: block already has a terminator");
+        assert!(
+            blk.terminator.is_none(),
+            "VolarIrTarget: block already has a terminator"
+        );
         blk.terminator = Some(term);
     }
 
@@ -594,9 +729,11 @@ impl<P: Clone> VolarIrTarget<P> {
         ret_ty: Option<&LirType>,
     ) -> Vec<VolarValue> {
         assert_eq!(
-            callee.params.len(), flat_args.len(),
+            callee.params.len(),
+            flat_args.len(),
             "VolarIrTarget: arg bit count mismatch (expected {}, got {})",
-            callee.params.len(), flat_args.len()
+            callee.params.len(),
+            flat_args.len()
         );
         let mut var_map: Vec<IRVarId> = flat_args;
         for stmt in &callee.stmts {
@@ -605,20 +742,35 @@ impl<P: Clone> VolarIrTarget<P> {
             var_map.push(id);
         }
         match &callee.terminator {
-            IRTerminator::Jmp { target: IRBranchTarget { dest: IRBlockTargetId::Return, args: ret_args, .. } } => {
+            IRTerminator::Jmp {
+                target:
+                    IRBranchTarget {
+                        dest: IRBlockTargetId::Return,
+                        args: ret_args,
+                        ..
+                    },
+            } => {
                 let ret_bits: Vec<IRVarId> =
                     ret_args.iter().map(|id| var_map[id.0 as usize]).collect();
                 match ret_ty {
                     Some(ty) => {
                         let n = bits_for_lir_type(ty, &self.struct_widths);
-                        assert_eq!(ret_bits.len(), n,
-                            "VolarIrTarget: return bit count mismatch");
-                        vec![VolarValue { bits: ret_bits, ty: ty.clone() }]
+                        assert_eq!(
+                            ret_bits.len(),
+                            n,
+                            "VolarIrTarget: return bit count mismatch"
+                        );
+                        vec![VolarValue {
+                            bits: ret_bits,
+                            ty: ty.clone(),
+                        }]
                     }
                     None => vec![],
                 }
             }
-            other => panic!("VolarIrTarget: single-block callee has non-Return terminator: {other:?}"),
+            other => {
+                panic!("VolarIrTarget: single-block callee has non-Return terminator: {other:?}")
+            }
         }
     }
 
@@ -647,7 +799,14 @@ impl<P: Clone> VolarIrTarget<P> {
         // Fast path: single-block with a direct unconditional Return — use the
         // simpler inline_callee which avoids allocating a continuation block.
         if callee.blocks.len() == 1 {
-            if let IRTerminator::Jmp { target: IRBranchTarget { dest: IRBlockTargetId::Return, .. } } = &callee.blocks[0].terminator {
+            if let IRTerminator::Jmp {
+                target:
+                    IRBranchTarget {
+                        dest: IRBlockTargetId::Return,
+                        ..
+                    },
+            } = &callee.blocks[0].terminator
+            {
                 return self.inline_callee(&callee.blocks[0], flat_args, ret_ty);
             }
         }
@@ -704,7 +863,10 @@ impl<P: Clone> VolarIrTarget<P> {
                 var_map.push(id);
             }
             let term = remap_terminator(
-                &callee.blocks[ci].terminator, &var_map, &new_blocks, cont_block.0,
+                &callee.blocks[ci].terminator,
+                &var_map,
+                &new_blocks,
+                cont_block.0,
             );
             self.set_terminator(term);
         }
@@ -714,7 +876,10 @@ impl<P: Clone> VolarIrTarget<P> {
 
         if ret_n > 0 {
             let ret_lir_ty = ret_ty.cloned().unwrap_or(LirType::Bool);
-            vec![VolarValue { bits: cont_params, ty: ret_lir_ty }]
+            vec![VolarValue {
+                bits: cont_params,
+                ty: ret_lir_ty,
+            }]
         } else {
             vec![]
         }
@@ -740,7 +905,10 @@ impl<P: Clone> BitCircuitBuilder for VolarIrTarget<P> {
         self.emit(IRStmt::Poly {
             ty: self.bit_tid,
             coeffs,
-            constant: Constant { hi: 0, lo: constant },
+            constant: Constant {
+                hi: 0,
+                lo: constant,
+            },
         })
     }
 
@@ -751,10 +919,18 @@ impl<P: Clone> BitCircuitBuilder for VolarIrTarget<P> {
 
     // The remaining bc_xor / bc_and / bc_not / bc_or / bc_select use the
     // existing optimized helpers (which carry idempotency short-circuits).
-    fn bc_xor(&mut self, a: IRVarId, b: IRVarId) -> IRVarId { self.xor_bit(a, b) }
-    fn bc_and(&mut self, a: IRVarId, b: IRVarId) -> IRVarId { self.and_bit(a, b) }
-    fn bc_not(&mut self, a: IRVarId)             -> IRVarId { self.not_bit(a) }
-    fn bc_or (&mut self, a: IRVarId, b: IRVarId) -> IRVarId { self.or_bit(a, b) }
+    fn bc_xor(&mut self, a: IRVarId, b: IRVarId) -> IRVarId {
+        self.xor_bit(a, b)
+    }
+    fn bc_and(&mut self, a: IRVarId, b: IRVarId) -> IRVarId {
+        self.and_bit(a, b)
+    }
+    fn bc_not(&mut self, a: IRVarId) -> IRVarId {
+        self.not_bit(a)
+    }
+    fn bc_or(&mut self, a: IRVarId, b: IRVarId) -> IRVarId {
+        self.or_bit(a, b)
+    }
     fn bc_select(&mut self, cond: IRVarId, a: IRVarId, b: IRVarId) -> IRVarId {
         self.select_bit(cond, a, b)
     }
@@ -768,24 +944,45 @@ impl<P: Clone> StorageEmitter for VolarIrTarget<P> {
         let n = bits.len();
         let bit_tid = self.bit_tid;
         let vec_ty = self.types.intern(IrType::Vec(n, bit_tid));
-        self.emit(IRStmt::Merge { parts: bits.to_vec(), ty: vec_ty })
+        self.emit(IRStmt::Merge {
+            parts: bits.to_vec(),
+            ty: vec_ty,
+        })
     }
 
     fn extract_bit(&mut self, word: IRVarId, idx: u8) -> IRVarId {
-        self.emit(IRStmt::Shuffle { result_bits: vec![(idx, word)], ty: self.bit_tid })
+        self.emit(IRStmt::Shuffle {
+            result_bits: vec![(idx, word)],
+            ty: self.bit_tid,
+        })
     }
 
-    fn emit_read(&mut self, storage: volar_ir_common::StorageId, ty: volar_ir_common::TypeId, addr_bits: &[IRVarId]) -> IRVarId {
+    fn emit_read(
+        &mut self,
+        storage: volar_ir_common::StorageId,
+        ty: volar_ir_common::TypeId,
+        addr_bits: &[IRVarId],
+    ) -> IRVarId {
         let addr = self.compose_address(addr_bits);
         self.emit(IRStmt::StorageRead { storage, ty, addr })
     }
 
-    fn emit_write(&mut self, storage: volar_ir_common::StorageId, src: IRVarId, ty: volar_ir_common::TypeId, addr_bits: &[IRVarId]) {
+    fn emit_write(
+        &mut self,
+        storage: volar_ir_common::StorageId,
+        src: IRVarId,
+        ty: volar_ir_common::TypeId,
+        addr_bits: &[IRVarId],
+    ) {
         let addr = self.compose_address(addr_bits);
-        self.emit(IRStmt::StorageWrite { storage, src, ty, addr });
+        self.emit(IRStmt::StorageWrite {
+            storage,
+            src,
+            ty,
+            addr,
+        });
     }
 }
-
 
 fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
     match ty {
@@ -799,7 +996,9 @@ fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
         LirType::Struct(id) => struct_widths[*id as usize],
         // Native field elements occupy exactly one IRVarId slot (not N bits).
         LirType::Native(_) => 1,
-        LirType::Ptr(_) => panic!("VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"),
+        LirType::Ptr(_) => panic!(
+            "VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"
+        ),
         _ => panic!("bits_for_lir_type: unhandled LirType variant — add bit-width calculation"),
     }
 }
@@ -837,13 +1036,14 @@ fn remap_terminator(
     };
     let remap_target = |t: &IRBlockTargetId| -> IRBlockTargetId {
         match t {
-            IRBlockTargetId::Return =>
-                IRBlockTargetId::Block(IRBlockId(cont_block_idx as u32)),
-            IRBlockTargetId::Block(IRBlockId(j)) =>
-                IRBlockTargetId::Block(IRBlockId(new_blocks[*j as usize] as u32)),
-            IRBlockTargetId::Dyn(v) =>
-                IRBlockTargetId::Dyn(var_map[v.0 as usize]),
-            _ => panic!("remap_target: unhandled IRBlockTargetId variant — add remapping for this variant"),
+            IRBlockTargetId::Return => IRBlockTargetId::Block(IRBlockId(cont_block_idx as u32)),
+            IRBlockTargetId::Block(IRBlockId(j)) => {
+                IRBlockTargetId::Block(IRBlockId(new_blocks[*j as usize] as u32))
+            }
+            IRBlockTargetId::Dyn(v) => IRBlockTargetId::Dyn(var_map[v.0 as usize]),
+            _ => panic!(
+                "remap_target: unhandled IRBlockTargetId variant — add remapping for this variant"
+            ),
         }
     };
     match term {
@@ -854,31 +1054,42 @@ fn remap_terminator(
                 reentry: target.reentry.clone(),
             },
         },
-        IRTerminator::JumpCond { condition, then_target, else_target } =>
-            IRTerminator::JumpCond {
-                condition: var_map[condition.0 as usize],
-                then_target: IRBranchTarget {
-                    dest: remap_target(&then_target.dest),
-                    args: remap_args(&then_target.args),
-                    reentry: then_target.reentry.clone(),
-                },
-                else_target: IRBranchTarget {
-                    dest: remap_target(&else_target.dest),
-                    args: remap_args(&else_target.args),
-                    reentry: else_target.reentry.clone(),
-                },
+        IRTerminator::JumpCond {
+            condition,
+            then_target,
+            else_target,
+        } => IRTerminator::JumpCond {
+            condition: var_map[condition.0 as usize],
+            then_target: IRBranchTarget {
+                dest: remap_target(&then_target.dest),
+                args: remap_args(&then_target.args),
+                reentry: then_target.reentry.clone(),
             },
+            else_target: IRBranchTarget {
+                dest: remap_target(&else_target.dest),
+                args: remap_args(&else_target.args),
+                reentry: else_target.reentry.clone(),
+            },
+        },
         IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
             index: var_map[index.0 as usize],
-            cases: cases.iter().map(|(k, target)| {
-                (*k, IRBranchTarget {
-                    dest: remap_target(&target.dest),
-                    args: remap_args(&target.args),
-                    reentry: target.reentry.clone(),
+            cases: cases
+                .iter()
+                .map(|(k, target)| {
+                    (
+                        *k,
+                        IRBranchTarget {
+                            dest: remap_target(&target.dest),
+                            args: remap_args(&target.args),
+                            reentry: target.reentry.clone(),
+                        },
+                    )
                 })
-            }).collect(),
+                .collect(),
         },
-        _ => panic!("remap_terminator: unhandled IRTerminator variant — add remapping for this variant"),
+        _ => panic!(
+            "remap_terminator: unhandled IRTerminator variant — add remapping for this variant"
+        ),
     }
 }
 
@@ -886,7 +1097,11 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
     let s = |id: &IRVarId| var_map[id.0 as usize]; // IRVarId: Copy
     match stmt {
         IRStmt::Const(c, ty) => IRStmt::Const(*c, ty.clone()),
-        IRStmt::Poly { ty, coeffs, constant } => IRStmt::Poly {
+        IRStmt::Poly {
+            ty,
+            coeffs,
+            constant,
+        } => IRStmt::Poly {
             ty: *ty,
             coeffs: coeffs
                 .iter()
@@ -898,45 +1113,93 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
                 .collect(),
             constant: *constant,
         },
-        IRStmt::Transmute { src, src_ty, dst_ty } => {
-            IRStmt::Transmute { src: s(src), src_ty: src_ty.clone(), dst_ty: dst_ty.clone() }
-        }
-        IRStmt::Rol { src, ty, n } => IRStmt::Rol { src: s(src), ty: ty.clone(), n: *n },
-        IRStmt::Ror { src, ty, n } => IRStmt::Ror { src: s(src), ty: ty.clone(), n: *n },
-        IRStmt::Merge { parts, ty } => {
-            IRStmt::Merge { parts: parts.iter().map(s).collect(), ty: ty.clone() }
-        }
-        IRStmt::Splat { src, ty } => IRStmt::Splat { src: s(src), ty: ty.clone() },
-        IRStmt::StorageRead { storage, ty, addr } => {
-            IRStmt::StorageRead { storage: *storage, ty: ty.clone(), addr: s(addr) }
-        }
-        IRStmt::StorageWrite { storage, src, ty, addr } => {
-            IRStmt::StorageWrite { storage: *storage, src: s(src), ty: ty.clone(), addr: s(addr) }
-        }
+        IRStmt::Transmute {
+            src,
+            src_ty,
+            dst_ty,
+        } => IRStmt::Transmute {
+            src: s(src),
+            src_ty: src_ty.clone(),
+            dst_ty: dst_ty.clone(),
+        },
+        IRStmt::Rol { src, ty, n } => IRStmt::Rol {
+            src: s(src),
+            ty: ty.clone(),
+            n: *n,
+        },
+        IRStmt::Ror { src, ty, n } => IRStmt::Ror {
+            src: s(src),
+            ty: ty.clone(),
+            n: *n,
+        },
+        IRStmt::Merge { parts, ty } => IRStmt::Merge {
+            parts: parts.iter().map(s).collect(),
+            ty: ty.clone(),
+        },
+        IRStmt::Splat { src, ty } => IRStmt::Splat {
+            src: s(src),
+            ty: ty.clone(),
+        },
+        IRStmt::StorageRead { storage, ty, addr } => IRStmt::StorageRead {
+            storage: *storage,
+            ty: ty.clone(),
+            addr: s(addr),
+        },
+        IRStmt::StorageWrite {
+            storage,
+            src,
+            ty,
+            addr,
+        } => IRStmt::StorageWrite {
+            storage: *storage,
+            src: s(src),
+            ty: ty.clone(),
+            addr: s(addr),
+        },
         IRStmt::Shuffle { result_bits, ty } => IRStmt::Shuffle {
             result_bits: result_bits.iter().map(|(b, id)| (*b, s(id))).collect(),
             ty: ty.clone(),
         },
-        IRStmt::OracleCall { name, args, output_tys, result_ty } => IRStmt::OracleCall {
+        IRStmt::OracleCall {
+            name,
+            args,
+            output_tys,
+            result_ty,
+        } => IRStmt::OracleCall {
             name: name.clone(),
             args: args.iter().map(s).collect(),
             output_tys: output_tys.clone(),
             result_ty: result_ty.clone(),
         },
-        IRStmt::OracleOutput { call, idx, ty } =>
-            IRStmt::OracleOutput { call: s(call), idx: *idx, ty: ty.clone() },
-        IRStmt::ActionCall { name, guard, args, fallbacks, output_tys, result_ty } =>
-            IRStmt::ActionCall {
-                name: name.clone(),
-                guard: s(guard),
-                args: args.iter().map(s).collect(),
-                fallbacks: fallbacks.iter().map(s).collect(),
-                output_tys: output_tys.clone(),
-                result_ty: result_ty.clone(),
-            },
-        IRStmt::ActionOutput { call, idx, ty } =>
-            IRStmt::ActionOutput { call: s(call), idx: *idx, ty: ty.clone() },
-        IRStmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: ty.clone() },
+        IRStmt::OracleOutput { call, idx, ty } => IRStmt::OracleOutput {
+            call: s(call),
+            idx: *idx,
+            ty: ty.clone(),
+        },
+        IRStmt::ActionCall {
+            name,
+            guard,
+            args,
+            fallbacks,
+            output_tys,
+            result_ty,
+        } => IRStmt::ActionCall {
+            name: name.clone(),
+            guard: s(guard),
+            args: args.iter().map(s).collect(),
+            fallbacks: fallbacks.iter().map(s).collect(),
+            output_tys: output_tys.clone(),
+            result_ty: result_ty.clone(),
+        },
+        IRStmt::ActionOutput { call, idx, ty } => IRStmt::ActionOutput {
+            call: s(call),
+            idx: *idx,
+            ty: ty.clone(),
+        },
+        IRStmt::Rng { name, ty } => IRStmt::Rng {
+            name: name.clone(),
+            ty: ty.clone(),
+        },
         _ => panic!("subst_stmt: unhandled IRStmt variant — add substitution for this variant"),
     }
 }
@@ -961,7 +1224,9 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
 
     fn define_struct(&mut self, def: StructDef) -> StructId {
         let id = self.struct_widths.len() as StructId;
-        let total: usize = def.fields.iter()
+        let total: usize = def
+            .fields
+            .iter()
             .map(|f| bits_for_lir_type(&f.ty, &self.struct_widths))
             .sum();
         self.struct_widths.push(total);
@@ -985,7 +1250,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
                 let type_id = self.types.intern(IrType::Primitive(*native_ty));
                 let id = block.params.len() as u32;
                 block.params.push(type_id);
-                groups.push(vec![VolarValue { bits: vec![IRVarId(id)], ty: ty.clone() }]);
+                groups.push(vec![VolarValue {
+                    bits: vec![IRVarId(id)],
+                    ty: ty.clone(),
+                }]);
             } else {
                 let n = bits_for_lir_type(ty, &self.struct_widths);
                 let start = block.params.len() as u32;
@@ -999,22 +1267,42 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
             }
         }
 
-        self.func = Some(FuncBuilder { name: name.to_string(), blocks: vec![block], current: 0 });
+        self.func = Some(FuncBuilder {
+            name: name.to_string(),
+            blocks: vec![block],
+            current: 0,
+        });
         (VolarBlock(0), groups)
     }
 
     fn end_function(&mut self) {
-        let func = self.func.take().expect("end_function: no function in progress");
-        let blocks = func.blocks.into_iter()
+        let func = self
+            .func
+            .take()
+            .expect("end_function: no function in progress");
+        let blocks = func
+            .blocks
+            .into_iter()
             .map(|b| IRBlock {
                 params: b.params,
                 stmts: b.stmts,
-                terminator: b.terminator.expect("VolarIrTarget: block missing terminator"),
+                terminator: b
+                    .terminator
+                    .expect("VolarIrTarget: block missing terminator"),
             })
             .collect();
         let oracles = core::mem::take(&mut self.pending_oracles);
         let actions = core::mem::take(&mut self.pending_actions);
-        self.completed.push((func.name, IRBlocks { oracles, actions, rngs: vec![], blocks, pre_init: vec![] }));
+        self.completed.push((
+            func.name,
+            IRBlocks {
+                oracles,
+                actions,
+                rngs: vec![],
+                blocks,
+                pre_init: vec![],
+            },
+        ));
     }
 
     // ---- Block management --------------------------------------------------
@@ -1033,7 +1321,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
             let blk = &mut f.blocks[block.0];
             let id = blk.params.len() as u32;
             blk.params.push(type_id);
-            return VolarValue { bits: vec![IRVarId(id)], ty };
+            return VolarValue {
+                bits: vec![IRVarId(id)],
+                ty,
+            };
         }
         let n = bits_for_lir_type(&ty, &self.struct_widths);
         let f = self.func.as_mut().unwrap();
@@ -1042,7 +1333,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
         for _ in 0..n {
             blk.params.push(self.bit_tid.clone());
         }
-        VolarValue { bits: (start..start + n as u32).map(IRVarId).collect(), ty }
+        VolarValue {
+            bits: (start..start + n as u32).map(IRVarId).collect(),
+            ty,
+        }
     }
 
     fn switch_to_block(&mut self, block: VolarBlock) {
@@ -1055,7 +1349,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
         if let LirType::Native(native_ty) = &ty {
             let type_id = self.types.intern(IrType::Primitive(*native_ty));
             let id = self.emit(IRStmt::Const(
-                Constant { hi: 0, lo: val as u128 },
+                Constant {
+                    hi: 0,
+                    lo: val as u128,
+                },
                 type_id,
             ));
             return VolarValue { bits: vec![id], ty };
@@ -1071,60 +1368,96 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
 
     fn add(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: bc_add(self, &lhs.bits, &rhs.bits, false), ty }
+        VolarValue {
+            bits: bc_add(self, &lhs.bits, &rhs.bits, false),
+            ty,
+        }
     }
     fn sub(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: bc_sub(self, &lhs.bits, &rhs.bits), ty }
+        VolarValue {
+            bits: bc_sub(self, &lhs.bits, &rhs.bits),
+            ty,
+        }
     }
     fn mul(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: bc_mul(self, &lhs.bits, &rhs.bits), ty }
+        VolarValue {
+            bits: bc_mul(self, &lhs.bits, &rhs.bits),
+            ty,
+        }
     }
     fn udiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: bc_udiv(self, &lhs.bits, &rhs.bits), ty }
+        VolarValue {
+            bits: bc_udiv(self, &lhs.bits, &rhs.bits),
+            ty,
+        }
     }
     fn sdiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: bc_sdiv(self, &lhs.bits, &rhs.bits), ty }
+        VolarValue {
+            bits: bc_sdiv(self, &lhs.bits, &rhs.bits),
+            ty,
+        }
     }
 
     fn and(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: bc_and_vec(self, &lhs.bits, &rhs.bits), ty }
+        VolarValue {
+            bits: bc_and_vec(self, &lhs.bits, &rhs.bits),
+            ty,
+        }
     }
     fn or(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: bc_or_vec(self, &lhs.bits, &rhs.bits), ty }
+        VolarValue {
+            bits: bc_or_vec(self, &lhs.bits, &rhs.bits),
+            ty,
+        }
     }
     fn xor(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: bc_xor_vec(self, &lhs.bits, &rhs.bits), ty }
+        VolarValue {
+            bits: bc_xor_vec(self, &lhs.bits, &rhs.bits),
+            ty,
+        }
     }
     fn not(&mut self, val: VolarValue) -> VolarValue {
         let ty = val.ty.clone();
-        VolarValue { bits: bc_not_vec(self, &val.bits), ty }
+        VolarValue {
+            bits: bc_not_vec(self, &val.bits),
+            ty,
+        }
     }
     fn shl(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
         let ty = val.ty.clone();
-        VolarValue { bits: bc_shl(self, &val.bits, &shift.bits), ty }
+        VolarValue {
+            bits: bc_shl(self, &val.bits, &shift.bits),
+            ty,
+        }
     }
     fn lshr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
         let ty = val.ty.clone();
-        VolarValue { bits: bc_lshr(self, &val.bits, &shift.bits), ty }
+        VolarValue {
+            bits: bc_lshr(self, &val.bits, &shift.bits),
+            ty,
+        }
     }
     fn ashr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
         let ty = val.ty.clone();
-        VolarValue { bits: bc_ashr(self, &val.bits, &shift.bits), ty }
+        VolarValue {
+            bits: bc_ashr(self, &val.bits, &shift.bits),
+            ty,
+        }
     }
 
     // ---- Comparisons -------------------------------------------------------
 
     fn icmp(&mut self, pred: IcmpPred, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let bit = match pred {
-            IcmpPred::Eq  => bc_eq(self, &lhs.bits, &rhs.bits),
-            IcmpPred::Ne  => bc_ne(self, &lhs.bits, &rhs.bits),
+            IcmpPred::Eq => bc_eq(self, &lhs.bits, &rhs.bits),
+            IcmpPred::Ne => bc_ne(self, &lhs.bits, &rhs.bits),
             IcmpPred::Ult => bc_ult(self, &lhs.bits, &rhs.bits),
             IcmpPred::Ule => bc_ule(self, &lhs.bits, &rhs.bits),
             IcmpPred::Ugt => bc_ult(self, &rhs.bits, &lhs.bits),
@@ -1134,7 +1467,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
             IcmpPred::Sgt => bc_slt(self, &rhs.bits, &lhs.bits),
             IcmpPred::Sge => bc_sle(self, &rhs.bits, &lhs.bits),
         };
-        VolarValue { bits: vec![bit], ty: LirType::Bool }
+        VolarValue {
+            bits: vec![bit],
+            ty: LirType::Bool,
+        }
     }
 
     // ---- Conversions -------------------------------------------------------
@@ -1142,7 +1478,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     fn zext(&mut self, val: VolarValue, dst_ty: LirType) -> VolarValue {
         let dst_n = bits_for_lir_type(&dst_ty, &self.struct_widths);
         let mut bits = val.bits;
-        while bits.len() < dst_n { let z = self.bit_const(false); bits.push(z); }
+        while bits.len() < dst_n {
+            let z = self.bit_const(false);
+            bits.push(z);
+        }
         VolarValue { bits, ty: dst_ty }
     }
     fn sext(&mut self, val: VolarValue, dst_ty: LirType) -> VolarValue {
@@ -1154,12 +1493,20 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     }
     fn trunc(&mut self, val: VolarValue, dst_ty: LirType) -> VolarValue {
         let dst_n = bits_for_lir_type(&dst_ty, &self.struct_widths);
-        VolarValue { bits: val.bits[..dst_n].to_vec(), ty: dst_ty }
+        VolarValue {
+            bits: val.bits[..dst_n].to_vec(),
+            ty: dst_ty,
+        }
     }
 
     // ---- Select ------------------------------------------------------------
 
-    fn select(&mut self, cond: VolarValue, then_val: VolarValue, else_val: VolarValue) -> VolarValue {
+    fn select(
+        &mut self,
+        cond: VolarValue,
+        then_val: VolarValue,
+        else_val: VolarValue,
+    ) -> VolarValue {
         let cond_bit = cond.bits[0];
         let ty = then_val.ty.clone();
         let bits = self.select_vec(cond_bit, &then_val.bits, &else_val.bits);
@@ -1193,8 +1540,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
             .externs
             .get(name)
             .unwrap_or_else(|| {
-                panic!("VolarIrTarget: extern '{name}' not registered — \
-                        provide a Volar IR implementation via add_extern()")
+                panic!(
+                    "VolarIrTarget: extern '{name}' not registered — \
+                        provide a Volar IR implementation via add_extern()"
+                )
             })
             .clone();
         // Use inline_blocks — handles both single- and multi-block callees.
@@ -1256,9 +1605,9 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     ) -> Vec<VolarValue> {
         let flat_args = Self::flatten(args);
         let output_tys: Vec<IRTypeId> = ret_tys.iter().map(|t| self.lir_to_ir_type(t)).collect();
-        let result_ty = self.types.intern(volar_ir_common::IrType::Tuple(
-            output_tys.clone(),
-        ));
+        let result_ty = self
+            .types
+            .intern(volar_ir_common::IrType::Tuple(output_tys.clone()));
         let call_var = self.emit(IRStmt::OracleCall {
             name: name.into(),
             args: flat_args,
@@ -1272,7 +1621,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
                 idx: i,
                 ty: output_tys[i],
             });
-            result.push(VolarValue { bits: vec![out], ty: t.clone() });
+            result.push(VolarValue {
+                bits: vec![out],
+                ty: t.clone(),
+            });
         }
         result
     }
@@ -1289,9 +1641,9 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
         let flat_args = Self::flatten(args);
         let flat_fallbacks: Vec<IRVarId> = Self::flatten(fallbacks);
         let output_tys: Vec<IRTypeId> = ret_tys.iter().map(|t| self.lir_to_ir_type(t)).collect();
-        let result_ty = self.types.intern(volar_ir_common::IrType::Tuple(
-            output_tys.clone(),
-        ));
+        let result_ty = self
+            .types
+            .intern(volar_ir_common::IrType::Tuple(output_tys.clone()));
         let call_var = self.emit(IRStmt::ActionCall {
             name: name.into(),
             guard: guard.bits[0],
@@ -1307,14 +1659,20 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
                 idx: i,
                 ty: output_tys[i],
             });
-            result.push(VolarValue { bits: vec![out], ty: t.clone() });
+            result.push(VolarValue {
+                bits: vec![out],
+                ty: t.clone(),
+            });
         }
         result
     }
 
     fn rng(&mut self, ty: LirType) -> VolarValue {
         let ir_ty = self.lir_to_ir_type(&ty);
-        let id = self.emit(IRStmt::Rng { name: "rng".into(), ty: ir_ty });
+        let id = self.emit(IRStmt::Rng {
+            name: "rng".into(),
+            ty: ir_ty,
+        });
         VolarValue { bits: vec![id], ty }
     }
 
@@ -1331,7 +1689,7 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
 mod tests {
     extern crate std;
     use super::*;
-    use volar_lir::{LirTarget, LirType, IcmpPred};
+    use volar_lir::{IcmpPred, LirTarget, LirType};
 
     /// Run a single-function VolarIrTarget and return its `IRBlocks<()>`.
     fn build(f: impl FnOnce(&mut VolarIrTarget<()>)) -> IRBlocks<()> {
@@ -1372,7 +1730,8 @@ mod tests {
     #[test]
     fn test_xor_bool() {
         build(|t| {
-            let (entry, params) = t.begin_function("xor_test", &[LirType::Bool, LirType::Bool], None);
+            let (entry, params) =
+                t.begin_function("xor_test", &[LirType::Bool, LirType::Bool], None);
             t.switch_to_block(entry);
             let a = params[0][0].clone();
             let b = params[1][0].clone();
@@ -1552,7 +1911,13 @@ mod tests {
             let cond = params[0][0].clone();
             let then_b = t.create_block();
             let else_b = t.create_block();
-            t.branch(cond, then_b, BranchTarget::args([]), else_b, BranchTarget::args([]));
+            t.branch(
+                cond,
+                then_b,
+                BranchTarget::args([]),
+                else_b,
+                BranchTarget::args([]),
+            );
 
             t.switch_to_block(then_b);
             let one = t.iconst(LirType::Bool, 1);
@@ -1575,7 +1940,9 @@ mod tests {
         let extern_impl = IRBlocks::new(std::vec![IRBlock {
             params: std::vec![bit_tid.clone()],
             stmts: std::vec![],
-            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],)
+            },
         }]);
 
         let blocks = build(|t| {
@@ -1597,14 +1964,20 @@ mod tests {
     #[test]
     fn test_value_scalar_type_bool() {
         let t = VolarIrTarget::<()>::new();
-        let v = VolarValue { bits: std::vec![IRVarId(0)], ty: LirType::Bool };
+        let v = VolarValue {
+            bits: std::vec![IRVarId(0)],
+            ty: LirType::Bool,
+        };
         assert_eq!(t.value_scalar_type(&v), LirType::Bool);
     }
 
     #[test]
     fn test_value_scalar_type_u64() {
         let t = VolarIrTarget::<()>::new();
-        let v = VolarValue { bits: (0..64).map(IRVarId).collect(), ty: LirType::U64 };
+        let v = VolarValue {
+            bits: (0..64).map(IRVarId).collect(),
+            ty: LirType::U64,
+        };
         assert_eq!(t.value_scalar_type(&v), LirType::U64);
     }
 
@@ -1643,9 +2016,13 @@ mod tests {
             IRBlock {
                 params: std::vec![],
                 stmts: std::vec![volar_ir_common::Node::new(
-                    IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_tid), (), None,
+                    IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_tid),
+                    (),
+                    None,
                 )],
-                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)]) }, // return the Const(1)
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)])
+                }, // return the Const(1)
             },
         ]);
 
@@ -1664,7 +2041,11 @@ mod tests {
         // The caller should now have 3 blocks:
         //   block 0 (original current) + block 1 (new for callee block 1)
         //   + continuation block.
-        assert_eq!(blocks.blocks.len(), 3, "caller should have 3 blocks after inlining");
+        assert_eq!(
+            blocks.blocks.len(),
+            3,
+            "caller should have 3 blocks after inlining"
+        );
     }
 
     /// Inline a callee that loops (self-jump), verifying that multi-block
@@ -1682,7 +2063,11 @@ mod tests {
                     {
                         let mut coeffs = std::collections::BTreeMap::new();
                         coeffs.insert(std::vec![IRVarId(0)], 1u8);
-                        IRStmt::Poly { ty: bit_tid, coeffs, constant: Constant { hi: 0, lo: 1 } }
+                        IRStmt::Poly {
+                            ty: bit_tid,
+                            coeffs,
+                            constant: Constant { hi: 0, lo: 1 },
+                        }
                     },
                     (),
                     None,
@@ -1691,7 +2076,10 @@ mod tests {
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(0),
                 then_target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)]),
-                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(0)), std::vec![IRVarId(1)]), // NOT(x)
+                else_target: IRBranchTarget::new(
+                    IRBlockTargetId::Block(IRBlockId(0)),
+                    std::vec![IRVarId(1)]
+                ), // NOT(x)
             },
         }]);
 
@@ -1734,7 +2122,11 @@ mod tests {
         let mut t = VolarIrTarget::<()>::new();
         // bits_for_lir_type is private, but begin_function exercises the same
         // path when it processes the parameter list.
-        t.begin_function("f", &[LirType::Ptr(std::boxed::Box::new(LirType::U32))], None);
+        t.begin_function(
+            "f",
+            &[LirType::Ptr(std::boxed::Box::new(LirType::U32))],
+            None,
+        );
     }
 
     #[test]

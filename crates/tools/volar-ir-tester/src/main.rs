@@ -39,14 +39,24 @@ fn main() {
 
     if _log.json_mode {
         let mut batch = _log.begin_batch("volar-ir-tester");
-        batch.event("INFO", "metrics", "IR analysis complete", &[
-            ("blocks", &block_count.to_string()),
-            ("stmts", &stmt_count.to_string()),
-            ("text_bytes", &text_bytes.to_string()),
-        ]);
+        batch.event(
+            "INFO",
+            "metrics",
+            "IR analysis complete",
+            &[
+                ("blocks", &block_count.to_string()),
+                ("stmts", &stmt_count.to_string()),
+                ("text_bytes", &text_bytes.to_string()),
+            ],
+        );
         if let Some(p) = out_path {
             fs::write(p, &text).unwrap_or_else(|e| eprintln!("warn: write failed: {e}"));
-            batch.event("INFO", "write", "wrote output", &[("path", &p.display().to_string())]);
+            batch.event(
+                "INFO",
+                "write",
+                "wrote output",
+                &[("path", &p.display().to_string())],
+            );
         }
     } else {
         println!("blocks:     {block_count}");

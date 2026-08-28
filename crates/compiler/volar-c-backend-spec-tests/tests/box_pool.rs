@@ -19,7 +19,7 @@ use volar_compiler::ir::{
     ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrLit, IrModule, IrPattern, IrStmt,
     IrStmtKind, IrType, PrimitiveType,
 };
-use volar_lir_codegen::{lower_module_monomorphized, mono::MonoEnv, MonoPlanOptions, MonoRoot};
+use volar_lir_codegen::{MonoPlanOptions, MonoRoot, lower_module_monomorphized, mono::MonoEnv};
 use volar_lir_test_corpus::compile_and_run;
 
 fn ir_expr(kind: IrExprKind) -> IrExpr {
@@ -92,7 +92,10 @@ fn build_pool_test_fn() -> IrFunction {
         params: vec![],
         return_type: Some(IrType::Primitive(PrimitiveType::U32)),
         where_clause: vec![],
-        body: IrBlock { stmts, expr: Some(Box::new(tail)) },
+        body: IrBlock {
+            stmts,
+            expr: Some(Box::new(tail)),
+        },
         external_kind: ExternalKind::Normal,
         no_inline: false,
     }
@@ -110,12 +113,26 @@ fn box_pool_indexed_write_and_read_round_trips_through_c() {
     let roots = vec![MonoRoot::new("pool_test", env)];
 
     let mut backend = CBackend::new();
-    lower_module_monomorphized(&module, &mut backend, MonoPlanOptions { roots, ..Default::default() })
-        .unwrap_or_else(|e| panic!("LIR monomorphization failed: {e}"));
+    lower_module_monomorphized(
+        &module,
+        &mut backend,
+        MonoPlanOptions {
+            roots,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("LIR monomorphization failed: {e}"));
     let c_src = backend.finish();
     assert!(!c_src.is_empty());
-    assert!(c_src.contains("calloc"), "expected a calloc-backed heap allocation in generated C:\n{c_src}");
+    assert!(
+        c_src.contains("calloc"),
+        "expected a calloc-backed heap allocation in generated C:\n{c_src}"
+    );
 
     let output = compile_and_run(&c_src, r#"  printf("%u\n", pool_test());"#);
-    assert_eq!(output.trim(), "49", "expected _pool[1] (42) + _pool[2] (7) == 49\ngenerated C:\n{c_src}");
+    assert_eq!(
+        output.trim(),
+        "49",
+        "expected _pool[1] (42) + _pool[2] (7) == 49\ngenerated C:\n{c_src}"
+    );
 }

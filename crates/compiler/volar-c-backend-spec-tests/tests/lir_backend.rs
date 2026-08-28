@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use volar_compiler::{ir::IrFunction, ir::IrModule, parser::parse_source};
-use volar_lir_codegen::{plan_flat_module, MonoPlanOptions};
+use volar_lir_codegen::{MonoPlanOptions, plan_flat_module};
 
 // ---------------------------------------------------------------------------
 // Source collection

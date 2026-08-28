@@ -66,7 +66,10 @@ pub struct GapAccumulator {
 
 impl GapAccumulator {
     pub fn new() -> Self {
-        Self { acc: None, steps: 0 }
+        Self {
+            acc: None,
+            steps: 0,
+        }
     }
 
     /// Fold in one more step: `fresh()` for the first push, `prove_fold()`
@@ -76,7 +79,8 @@ impl GapAccumulator {
             None => fresh(r1cs, params, &step.w, step.r_w),
             Some((acc_u, acc_w)) => {
                 let (su, sw) = fresh(r1cs, params, &step.w, step.r_w);
-                let (uf, wf, _) = prove_fold(r1cs, params, &acc_u, &acc_w, &su, &sw, &step.r, &step.r_t);
+                let (uf, wf, _) =
+                    prove_fold(r1cs, params, &acc_u, &acc_w, &su, &sw, &step.r, &step.r_t);
                 (uf, wf)
             }
         });
@@ -95,7 +99,9 @@ impl GapAccumulator {
         s_out: &[Scalar],
         r_out: &Scalar,
     ) -> GapProof {
-        let (final_u, final_w) = self.acc.expect("GapAccumulator::finish: need at least one push");
+        let (final_u, final_w) = self
+            .acc
+            .expect("GapAccumulator::finish: need at least one push");
         GapProof {
             final_u,
             final_w,
@@ -169,7 +175,11 @@ mod tests {
 
     fn step(a: u64, b: u64, c: u64, seed: u64) -> Step {
         Step {
-            w: vec![Scalar::from_u64(a), Scalar::from_u64(b), Scalar::from_u64(c)],
+            w: vec![
+                Scalar::from_u64(a),
+                Scalar::from_u64(b),
+                Scalar::from_u64(c),
+            ],
             r_w: Scalar::from_u64(seed.wrapping_mul(7).wrapping_add(1)),
             r: Scalar::from_u64(seed.wrapping_mul(13).wrapping_add(3)),
             r_t: Scalar::from_u64(seed.wrapping_mul(17).wrapping_add(5)),
@@ -184,7 +194,15 @@ mod tests {
         let steps: Vec<Step> = (1..=8u64).map(|i| step(i, i + 1, i * (i + 1), i)).collect();
         let s_in = vec![Scalar::from_u64(1)];
         let s_out = vec![Scalar::from_u64(99)];
-        let gp = prove_gap(&r1cs, &params, &steps, &s_in, &Scalar::from_u64(2), &s_out, &Scalar::from_u64(3));
+        let gp = prove_gap(
+            &r1cs,
+            &params,
+            &steps,
+            &s_in,
+            &Scalar::from_u64(2),
+            &s_out,
+            &Scalar::from_u64(3),
+        );
         assert_eq!(gp.steps, 8);
         // The folded instance verifies natively — and is ONE R1CS regardless of m.
         assert!(native_verify(&r1cs, &params, &gp.final_u, &gp.final_w));
@@ -201,8 +219,19 @@ mod tests {
         steps[2] = step(3, 4, 99, 3);
         let s_in = vec![Scalar::from_u64(1)];
         let s_out = vec![Scalar::from_u64(2)];
-        let gp = prove_gap(&r1cs, &params, &steps, &s_in, &Scalar::from_u64(2), &s_out, &Scalar::from_u64(3));
-        assert!(!native_verify(&r1cs, &params, &gp.final_u, &gp.final_w), "lying step must fail");
+        let gp = prove_gap(
+            &r1cs,
+            &params,
+            &steps,
+            &s_in,
+            &Scalar::from_u64(2),
+            &s_out,
+            &Scalar::from_u64(3),
+        );
+        assert!(
+            !native_verify(&r1cs, &params, &gp.final_u, &gp.final_w),
+            "lying step must fail"
+        );
     }
 
     #[test]
@@ -234,7 +263,12 @@ mod tests {
         assert_eq!(streamed.final_u.u, batch.final_u.u);
         assert_eq!(streamed.c_in, batch.c_in);
         assert_eq!(streamed.c_out, batch.c_out);
-        assert!(native_verify(&r1cs, &params, &streamed.final_u, &streamed.final_w));
+        assert!(native_verify(
+            &r1cs,
+            &params,
+            &streamed.final_u,
+            &streamed.final_w
+        ));
     }
 
     #[test]
@@ -244,6 +278,12 @@ mod tests {
         let s_in = vec![Scalar::from_u64(1)];
         let s_out = vec![Scalar::from_u64(2)];
         let acc = GapAccumulator::new();
-        let _ = acc.finish(&params, &s_in, &Scalar::from_u64(2), &s_out, &Scalar::from_u64(3));
+        let _ = acc.finish(
+            &params,
+            &s_in,
+            &Scalar::from_u64(2),
+            &s_out,
+            &Scalar::from_u64(3),
+        );
     }
 }

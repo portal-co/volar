@@ -19,9 +19,9 @@
 
 use alloc::vec::Vec;
 
-use volar_spec::curve::{ed_add, EdPoint};
+use volar_spec::curve::{EdPoint, ed_add};
 
-use crate::pedersen::{scalar_mul, PedersenParams};
+use crate::pedersen::{PedersenParams, scalar_mul};
 use crate::r1cs::{R1CS, RelaxedInstance, RelaxedWitness};
 use crate::scalar::Scalar;
 
@@ -53,9 +53,18 @@ pub fn fresh(
     r_w: Scalar,
 ) -> (RelaxedInstance, RelaxedWitness) {
     let e = alloc::vec![Scalar::ZERO; r1cs.num_cons];
-    let witness = RelaxedWitness { w: w.to_vec(), e, r_w, r_e: Scalar::ZERO };
+    let witness = RelaxedWitness {
+        w: w.to_vec(),
+        e,
+        r_w,
+        r_e: Scalar::ZERO,
+    };
     let (comm_w, comm_e) = commit_witness(params, &witness);
-    let inst = RelaxedInstance { comm_w, comm_e, u: Scalar::ONE };
+    let inst = RelaxedInstance {
+        comm_w,
+        comm_e,
+        u: Scalar::ONE,
+    };
     (inst, witness)
 }
 
@@ -161,15 +170,36 @@ mod tests {
         let r1cs = mul_gate();
         let params = PedersenParams::setup(4, 7);
         // Two satisfying assignments: 3·4=12 and 5·6=30.
-        let (u1, w1) = fresh(&r1cs, &params, &[Scalar::from_u64(3), Scalar::from_u64(4), Scalar::from_u64(12)], Scalar::from_u64(11));
-        let (u2, w2) = fresh(&r1cs, &params, &[Scalar::from_u64(5), Scalar::from_u64(6), Scalar::from_u64(30)], Scalar::from_u64(13));
+        let (u1, w1) = fresh(
+            &r1cs,
+            &params,
+            &[
+                Scalar::from_u64(3),
+                Scalar::from_u64(4),
+                Scalar::from_u64(12),
+            ],
+            Scalar::from_u64(11),
+        );
+        let (u2, w2) = fresh(
+            &r1cs,
+            &params,
+            &[
+                Scalar::from_u64(5),
+                Scalar::from_u64(6),
+                Scalar::from_u64(30),
+            ],
+            Scalar::from_u64(13),
+        );
 
         let r = Scalar::from_u64(0xabcd);
         let r_t = Scalar::from_u64(0x1357);
         let (uf, wf, proof) = prove_fold(&r1cs, &params, &u1, &w1, &u2, &w2, &r, &r_t);
 
         // Algebraic relaxed relation holds.
-        assert!(r1cs.is_satisfied_relaxed(&wf.w, &wf.e, &uf.u), "folded relation");
+        assert!(
+            r1cs.is_satisfied_relaxed(&wf.w, &wf.e, &uf.u),
+            "folded relation"
+        );
         // Prover instance == independent verifier fold.
         let uv = verify_fold(&u1, &u2, &proof, &r);
         assert_eq!(uf.comm_w, uv.comm_w);
@@ -188,13 +218,31 @@ mod tests {
         let r1cs = mul_gate();
         let params = PedersenParams::setup(4, 99);
         let mk = |a: u64, b: u64, rw: u64| {
-            fresh(&r1cs, &params, &[Scalar::from_u64(a), Scalar::from_u64(b), Scalar::from_u64(a * b)], Scalar::from_u64(rw))
+            fresh(
+                &r1cs,
+                &params,
+                &[
+                    Scalar::from_u64(a),
+                    Scalar::from_u64(b),
+                    Scalar::from_u64(a * b),
+                ],
+                Scalar::from_u64(rw),
+            )
         };
         let (mut acc_u, mut acc_w) = mk(2, 3, 1);
         for (a, b, rw, rr, rt) in [(4u64, 5u64, 2u64, 7u64, 8u64), (6, 7, 3, 9, 10)] {
             let (u2, w2) = mk(a, b, rw);
             let r = Scalar::from_u64(rr);
-            let (uf, wf, _) = prove_fold(&r1cs, &params, &acc_u, &acc_w, &u2, &w2, &r, &Scalar::from_u64(rt));
+            let (uf, wf, _) = prove_fold(
+                &r1cs,
+                &params,
+                &acc_u,
+                &acc_w,
+                &u2,
+                &w2,
+                &r,
+                &Scalar::from_u64(rt),
+            );
             acc_u = uf;
             acc_w = wf;
         }

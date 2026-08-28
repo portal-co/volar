@@ -49,11 +49,11 @@
 
 use digest::Digest;
 
-use crate::SpecRng;
 use super::base::{
     ot_recv, ot_recv_finish, ot_recv_payload, ot_send_finish, ot_send_payload, ot_send_setup,
 };
 use super::group::Group;
+use crate::SpecRng;
 
 /// Security parameter: number of base OTs and width of `Δ_ot`.
 pub const IKNP_KAPPA: usize = 128;
@@ -248,8 +248,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::group::ToyGroup;
+    use super::*;
     use sha2::Sha256;
 
     struct TestRng(u64);
@@ -280,13 +280,16 @@ mod tests {
             delta[b] = (b as u8).wrapping_mul(17).wrapping_add(3);
         }
 
-        let (r0, v) = iknp_cot_extend::<ToyGroup, Sha256, _, M, L>(
-            &mut rng_s, &mut rng_r, &bits, &delta,
-        );
+        let (r0, v) =
+            iknp_cot_extend::<ToyGroup, Sha256, _, M, L>(&mut rng_s, &mut rng_r, &bits, &delta);
 
         for j in 0..M {
             for b in 0..L {
-                let expected = if bits[j] { r0[j][b] ^ delta[b] } else { r0[j][b] };
+                let expected = if bits[j] {
+                    r0[j][b] ^ delta[b]
+                } else {
+                    r0[j][b]
+                };
                 assert_eq!(v[j][b], expected, "row {j} byte {b}: C-OT relation broken");
             }
         }
@@ -302,9 +305,8 @@ mod tests {
 
         let bits = [false; M];
         let delta = [0xFFu8; L];
-        let (r0, v) = iknp_cot_extend::<ToyGroup, Sha256, _, M, L>(
-            &mut rng_s, &mut rng_r, &bits, &delta,
-        );
+        let (r0, v) =
+            iknp_cot_extend::<ToyGroup, Sha256, _, M, L>(&mut rng_s, &mut rng_r, &bits, &delta);
         for j in 0..M {
             assert_eq!(r0[j], v[j]);
         }
@@ -323,9 +325,8 @@ mod tests {
         for b in 0..L {
             delta[b] = 0x5A ^ (b as u8);
         }
-        let (r0, v) = iknp_cot_extend::<ToyGroup, Sha256, _, M, L>(
-            &mut rng_s, &mut rng_r, &bits, &delta,
-        );
+        let (r0, v) =
+            iknp_cot_extend::<ToyGroup, Sha256, _, M, L>(&mut rng_s, &mut rng_r, &bits, &delta);
         for j in 0..M {
             for b in 0..L {
                 assert_eq!(v[j][b], r0[j][b] ^ delta[b]);
@@ -343,10 +344,12 @@ mod tests {
 
         let bits = [false; M]; // worst case — receiver_v == sender_r0
         let delta = [0u8; L];
-        let (r0, _v) = iknp_cot_extend::<ToyGroup, Sha256, _, M, L>(
-            &mut rng_s, &mut rng_r, &bits, &delta,
-        );
+        let (r0, _v) =
+            iknp_cot_extend::<ToyGroup, Sha256, _, M, L>(&mut rng_s, &mut rng_r, &bits, &delta);
         let all_zero = r0.iter().all(|row| row.iter().all(|&b| b == 0));
-        assert!(!all_zero, "sender output is all-zero — PRG/transpose likely broken");
+        assert!(
+            !all_zero,
+            "sender output is all-zero — PRG/transpose likely broken"
+        );
     }
 }

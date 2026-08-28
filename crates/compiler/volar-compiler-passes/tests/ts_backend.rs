@@ -70,7 +70,10 @@ fn parse_dir(dir: &Path, crate_name: &str, module: &mut IrModule<IrFunction>) {
                 module.type_aliases.extend(m.type_aliases);
                 module.consts.extend(m.consts);
             }
-            Err(e) => eprintln!("  warn: parse error in {}: {e}", file.file_name().unwrap().to_string_lossy()),
+            Err(e) => eprintln!(
+                "  warn: parse error in {}: {e}",
+                file.file_name().unwrap().to_string_lossy()
+            ),
         }
     }
 }
@@ -82,9 +85,21 @@ fn build_module() -> IrModule<IrFunction> {
         ..Default::default()
     };
 
-    parse_dir(&root.join("crates/spec/volar-primitives/src"), "volar_primitives", &mut module);
-    parse_dir(&root.join("crates/spec/volar-common/src"), "volar_common", &mut module);
-    parse_dir(&root.join("crates/spec/volar-spec/src"), "volar_spec", &mut module);
+    parse_dir(
+        &root.join("crates/spec/volar-primitives/src"),
+        "volar_primitives",
+        &mut module,
+    );
+    parse_dir(
+        &root.join("crates/spec/volar-common/src"),
+        "volar_common",
+        &mut module,
+    );
+    parse_dir(
+        &root.join("crates/spec/volar-spec/src"),
+        "volar_spec",
+        &mut module,
+    );
 
     // Dedup: within the same crate, keep first by bare name.
     {
@@ -119,7 +134,9 @@ fn build_module() -> IrModule<IrFunction> {
 fn find_tsc() -> Option<PathBuf> {
     let root = workspace_root();
     let candidate = root.join("node_modules/.bin/tsc");
-    if candidate.exists() { return Some(candidate); }
+    if candidate.exists() {
+        return Some(candidate);
+    }
     // Fall back to PATH
     which_tsc()
 }
@@ -128,7 +145,9 @@ fn which_tsc() -> Option<PathBuf> {
     let out = Command::new("which").arg("tsc").output().ok()?;
     if out.status.success() {
         let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !p.is_empty() { return Some(PathBuf::from(p)); }
+        if !p.is_empty() {
+            return Some(PathBuf::from(p));
+        }
     }
     None
 }
@@ -167,9 +186,12 @@ fn test_ts_backend_no_errors() {
         .args([
             "--noEmit",
             "--strict",
-            "--moduleResolution", "bundler",
-            "--target", "esnext",
-            "--module", "esnext",
+            "--moduleResolution",
+            "bundler",
+            "--target",
+            "esnext",
+            "--module",
+            "esnext",
             tmp_path.to_str().unwrap(),
         ])
         .current_dir(&root.join("packages/volar-runtime"))
@@ -189,7 +211,10 @@ fn test_ts_backend_no_errors() {
         if let Some(pos) = line.find("error TS") {
             let code_start = pos + "error ".len();
             let rest = &line[code_start..];
-            let code: String = rest.chars().take_while(|c| !c.is_whitespace() && *c != ':').collect();
+            let code: String = rest
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != ':')
+                .collect();
             by_code.entry(code).or_default().push(line.to_string());
             total += 1;
         }
@@ -210,5 +235,9 @@ fn test_ts_backend_no_errors() {
         eprintln!("  TOTAL: {}", total);
     }
 
-    assert_eq!(total, 0, "tsc --strict reported {} error(s); see above for details", total);
+    assert_eq!(
+        total, 0,
+        "tsc --strict reported {} error(s); see above for details",
+        total
+    );
 }

@@ -6,18 +6,18 @@ pub use hybrid_array::{Array, ArraySize};
 
 pub use volar_common::hash_commitment as simple;
 pub mod byte_gen;
-pub mod garble;
-pub mod ot;
-pub mod vole;
 pub mod curve;
 pub mod fold;
-pub mod mpc;
+pub mod garble;
 pub mod lwe;
+pub mod mpc;
+pub mod ot;
+pub mod vole;
 // pub mod xsat;
+pub mod faest;
 pub mod tfhe;
 #[cfg(test)]
 mod tfhe_ginx_oracle;
-pub mod faest;
 pub use volar_primitives as field;
 
 // ── Deterministic RNG trait ──────────────────────────────────────────────────

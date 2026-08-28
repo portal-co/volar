@@ -42,17 +42,12 @@ where
     N: VoleArray<T>,
     T: Clone + Add<Output = T> + Mul<Output = T> + Default,
 {
-    let u_c_inner = Array::<T, N>::from_fn(|i| {
-        vope_a.u[0][i].clone() * vope_b.u[0][i].clone()
-    });
+    let u_c_inner = Array::<T, N>::from_fn(|i| vope_a.u[0][i].clone() * vope_b.u[0][i].clone());
     let u_c = Array::<Array<T, N>, U1>::from_fn(|_| u_c_inner.clone());
     let v_c = Array::<T, N>::from_fn(|i| {
-        vope_a.v[i].clone() * vope_b.u[0][i].clone()
-            + vope_b.v[i].clone() * vope_a.u[0][i].clone()
+        vope_a.v[i].clone() * vope_b.u[0][i].clone() + vope_b.v[i].clone() * vope_a.u[0][i].clone()
     });
-    let hat = Array::<T, N>::from_fn(|i| {
-        vope_a.v[i].clone() * vope_b.v[i].clone()
-    });
+    let hat = Array::<T, N>::from_fn(|i| vope_a.v[i].clone() * vope_b.v[i].clone());
     (Vope { u: u_c, v: v_c }, hat)
 }
 

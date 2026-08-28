@@ -89,8 +89,10 @@ pub fn gf_mul_u128(a: u128, b: u128, c: u128) -> u128 {
 ///
 /// Computes `a^{-1} = a^{254}`.  Returns 0 for input 0.
 pub fn gf_invert_u8(a: u8, c: u8) -> u8 {
-    if a == 0 { return 0; }
-    let e: u32 = 7;  // w - 1
+    if a == 0 {
+        return 0;
+    }
+    let e: u32 = 7; // w - 1
     let msb: u32 = 2; // highest bit position of 7
     let mut r = a;
     let mut k: u32 = 1;
@@ -114,7 +116,9 @@ pub fn gf_invert_u8(a: u8, c: u8) -> u8 {
 ///
 /// Computes `a^{-1} = a^{2^64 - 2}`.  Returns 0 for input 0.
 pub fn gf_invert_u64(a: u64, c: u64) -> u64 {
-    if a == 0 { return 0; }
+    if a == 0 {
+        return 0;
+    }
     let e: u32 = 63;
     let msb: u32 = 5;
     let mut r = a;
@@ -139,7 +143,9 @@ pub fn gf_invert_u64(a: u64, c: u64) -> u64 {
 ///
 /// Computes `a^{-1} = a^{2^128 - 2}`.  Returns 0 for input 0.
 pub fn gf_invert_u128(a: u128, c: u128) -> u128 {
-    if a == 0 { return 0; }
+    if a == 0 {
+        return 0;
+    }
     let e: u32 = 127;
     let msb: u32 = 6;
     let mut r = a;
@@ -174,7 +180,11 @@ impl U256 {
     pub fn bit(&self, n: u32) -> bool {
         let word = (n / 64) as usize;
         let bit = n % 64;
-        if word < 4 { (self.0[word] >> bit) & 1 != 0 } else { false }
+        if word < 4 {
+            (self.0[word] >> bit) & 1 != 0
+        } else {
+            false
+        }
     }
 
     pub fn high_bit(&self) -> bool {
@@ -234,7 +244,9 @@ pub fn gf_mul_256(a: U256, b: U256, c: U256) -> U256 {
 
 /// Itoh–Tsujii inversion in GF(2^256).
 pub fn gf_invert_256(a: U256, c: U256) -> U256 {
-    if a.is_zero() { return U256::ZERO; }
+    if a.is_zero() {
+        return U256::ZERO;
+    }
     let e: u32 = 255;
     let msb: u32 = 7;
     let mut r = a;
@@ -278,7 +290,9 @@ pub struct Bit(pub bool);
 
 impl BitXor<u8> for Bit {
     type Output = Self;
-    fn bitxor(self, rhs: u8) -> Self::Output { Bit(self.0 ^ (rhs & 1 != 0)) }
+    fn bitxor(self, rhs: u8) -> Self::Output {
+        Bit(self.0 ^ (rhs & 1 != 0))
+    }
 }
 
 // ============================================================================
@@ -291,11 +305,15 @@ pub struct Galois(pub u8);
 
 impl BitXor<u8> for Galois {
     type Output = Self;
-    fn bitxor(self, rhs: u8) -> Self::Output { Galois(self.0 ^ rhs) }
+    fn bitxor(self, rhs: u8) -> Self::Output {
+        Galois(self.0 ^ rhs)
+    }
 }
 impl Add<Galois> for Galois {
     type Output = Galois;
-    fn add(self, rhs: Galois) -> Self::Output { Galois(self.0 ^ rhs.0) }
+    fn add(self, rhs: Galois) -> Self::Output {
+        Galois(self.0 ^ rhs.0)
+    }
 }
 impl Mul<Galois> for Galois {
     type Output = Galois;
@@ -305,10 +323,14 @@ impl Mul<Galois> for Galois {
 }
 impl Sub<Galois> for Galois {
     type Output = Galois;
-    fn sub(self, rhs: Galois) -> Self::Output { Galois(self.0 ^ rhs.0) }
+    fn sub(self, rhs: Galois) -> Self::Output {
+        Galois(self.0 ^ rhs.0)
+    }
 }
 impl Invert for Galois {
-    fn invert(&self) -> Self { Galois(gf_invert_u8(self.0, GF8_POLY)) }
+    fn invert(&self) -> Self {
+        Galois(gf_invert_u8(self.0, GF8_POLY))
+    }
 }
 
 // ============================================================================
@@ -321,19 +343,27 @@ pub struct BitsInBytes(pub u8);
 
 impl BitXor<u8> for BitsInBytes {
     type Output = Self;
-    fn bitxor(self, rhs: u8) -> Self::Output { BitsInBytes(self.0 ^ rhs) }
+    fn bitxor(self, rhs: u8) -> Self::Output {
+        BitsInBytes(self.0 ^ rhs)
+    }
 }
 impl Add<BitsInBytes> for BitsInBytes {
     type Output = BitsInBytes;
-    fn add(self, rhs: BitsInBytes) -> Self::Output { BitsInBytes(self.0 ^ rhs.0) }
+    fn add(self, rhs: BitsInBytes) -> Self::Output {
+        BitsInBytes(self.0 ^ rhs.0)
+    }
 }
 impl Mul<BitsInBytes> for BitsInBytes {
     type Output = BitsInBytes;
-    fn mul(self, rhs: BitsInBytes) -> Self::Output { BitsInBytes(self.0 & rhs.0) }
+    fn mul(self, rhs: BitsInBytes) -> Self::Output {
+        BitsInBytes(self.0 & rhs.0)
+    }
 }
 impl Sub<BitsInBytes> for BitsInBytes {
     type Output = BitsInBytes;
-    fn sub(self, rhs: BitsInBytes) -> Self::Output { BitsInBytes(self.0 ^ rhs.0) }
+    fn sub(self, rhs: BitsInBytes) -> Self::Output {
+        BitsInBytes(self.0 ^ rhs.0)
+    }
 }
 
 // ============================================================================
@@ -353,7 +383,9 @@ impl BitXor<u8> for Galois64 {
 }
 impl Add<Galois64> for Galois64 {
     type Output = Galois64;
-    fn add(self, rhs: Galois64) -> Self::Output { Galois64(self.0 ^ rhs.0) }
+    fn add(self, rhs: Galois64) -> Self::Output {
+        Galois64(self.0 ^ rhs.0)
+    }
 }
 impl Mul<Galois64> for Galois64 {
     type Output = Galois64;
@@ -363,10 +395,14 @@ impl Mul<Galois64> for Galois64 {
 }
 impl Sub<Galois64> for Galois64 {
     type Output = Galois64;
-    fn sub(self, rhs: Galois64) -> Self::Output { Galois64(self.0 ^ rhs.0) }
+    fn sub(self, rhs: Galois64) -> Self::Output {
+        Galois64(self.0 ^ rhs.0)
+    }
 }
 impl Invert for Galois64 {
-    fn invert(&self) -> Self { Galois64(gf_invert_u64(self.0, GF64_POLY)) }
+    fn invert(&self) -> Self {
+        Galois64(gf_invert_u64(self.0, GF64_POLY))
+    }
 }
 
 // ============================================================================
@@ -385,15 +421,21 @@ impl BitXor<u8> for BitsInBytes64 {
 }
 impl Add<BitsInBytes64> for BitsInBytes64 {
     type Output = BitsInBytes64;
-    fn add(self, rhs: BitsInBytes64) -> Self::Output { BitsInBytes64(self.0 ^ rhs.0) }
+    fn add(self, rhs: BitsInBytes64) -> Self::Output {
+        BitsInBytes64(self.0 ^ rhs.0)
+    }
 }
 impl Mul<BitsInBytes64> for BitsInBytes64 {
     type Output = BitsInBytes64;
-    fn mul(self, rhs: BitsInBytes64) -> Self::Output { BitsInBytes64(self.0 & rhs.0) }
+    fn mul(self, rhs: BitsInBytes64) -> Self::Output {
+        BitsInBytes64(self.0 & rhs.0)
+    }
 }
 impl Sub<BitsInBytes64> for BitsInBytes64 {
     type Output = BitsInBytes64;
-    fn sub(self, rhs: BitsInBytes64) -> Self::Output { BitsInBytes64(self.0 ^ rhs.0) }
+    fn sub(self, rhs: BitsInBytes64) -> Self::Output {
+        BitsInBytes64(self.0 ^ rhs.0)
+    }
 }
 
 // ============================================================================
@@ -406,11 +448,15 @@ pub struct Galois128(pub u128);
 
 impl BitXor<u8> for Galois128 {
     type Output = Self;
-    fn bitxor(self, rhs: u8) -> Self::Output { Galois128(self.0 ^ rhs as u128) }
+    fn bitxor(self, rhs: u8) -> Self::Output {
+        Galois128(self.0 ^ rhs as u128)
+    }
 }
 impl Add<Galois128> for Galois128 {
     type Output = Galois128;
-    fn add(self, rhs: Galois128) -> Self::Output { Galois128(self.0 ^ rhs.0) }
+    fn add(self, rhs: Galois128) -> Self::Output {
+        Galois128(self.0 ^ rhs.0)
+    }
 }
 impl Mul<Galois128> for Galois128 {
     type Output = Galois128;
@@ -420,10 +466,14 @@ impl Mul<Galois128> for Galois128 {
 }
 impl Sub<Galois128> for Galois128 {
     type Output = Galois128;
-    fn sub(self, rhs: Galois128) -> Self::Output { Galois128(self.0 ^ rhs.0) }
+    fn sub(self, rhs: Galois128) -> Self::Output {
+        Galois128(self.0 ^ rhs.0)
+    }
 }
 impl Invert for Galois128 {
-    fn invert(&self) -> Self { Galois128(gf_invert_u128(self.0, GF128_POLY)) }
+    fn invert(&self) -> Self {
+        Galois128(gf_invert_u128(self.0, GF128_POLY))
+    }
 }
 
 // ============================================================================
@@ -436,7 +486,9 @@ pub struct Galois256(pub U256);
 
 impl Add<Galois256> for Galois256 {
     type Output = Galois256;
-    fn add(self, rhs: Galois256) -> Self::Output { Galois256(self.0.xor(&rhs.0)) }
+    fn add(self, rhs: Galois256) -> Self::Output {
+        Galois256(self.0.xor(&rhs.0))
+    }
 }
 impl Mul<Galois256> for Galois256 {
     type Output = Galois256;
@@ -446,10 +498,14 @@ impl Mul<Galois256> for Galois256 {
 }
 impl Sub<Galois256> for Galois256 {
     type Output = Galois256;
-    fn sub(self, rhs: Galois256) -> Self::Output { Galois256(self.0.xor(&rhs.0)) }
+    fn sub(self, rhs: Galois256) -> Self::Output {
+        Galois256(self.0.xor(&rhs.0))
+    }
 }
 impl Invert for Galois256 {
-    fn invert(&self) -> Self { Galois256(gf_invert_256(self.0, GF256_POLY)) }
+    fn invert(&self) -> Self {
+        Galois256(gf_invert_256(self.0, GF256_POLY))
+    }
 }
 
 // ============================================================================
@@ -503,17 +559,23 @@ impl Z3 {
 
 impl Add<Z3> for Z3 {
     type Output = Z3;
-    fn add(self, rhs: Z3) -> Self::Output { Z3(Self::add3(self.0, rhs.0)) }
+    fn add(self, rhs: Z3) -> Self::Output {
+        Z3(Self::add3(self.0, rhs.0))
+    }
 }
 
 impl Sub<Z3> for Z3 {
     type Output = Z3;
-    fn sub(self, rhs: Z3) -> Self::Output { Z3(Self::add3(self.0, Self::neg3(rhs.0))) }
+    fn sub(self, rhs: Z3) -> Self::Output {
+        Z3(Self::add3(self.0, Self::neg3(rhs.0)))
+    }
 }
 
 impl Mul<Z3> for Z3 {
     type Output = Z3;
-    fn mul(self, rhs: Z3) -> Self::Output { Z3(Self::mul3(self.0, rhs.0)) }
+    fn mul(self, rhs: Z3) -> Self::Output {
+        Z3(Self::mul3(self.0, rhs.0))
+    }
 }
 
 // ============================================================================
@@ -525,11 +587,15 @@ pub struct Tropical<T>(pub T);
 
 impl<T: Ord> Add<Tropical<T>> for Tropical<T> {
     type Output = Tropical<T>;
-    fn add(self, rhs: Tropical<T>) -> Self::Output { Tropical(self.0.min(rhs.0)) }
+    fn add(self, rhs: Tropical<T>) -> Self::Output {
+        Tropical(self.0.min(rhs.0))
+    }
 }
 impl<T: Add<U>, U> Mul<Tropical<U>> for Tropical<T> {
     type Output = Tropical<<T as Add<U>>::Output>;
-    fn mul(self, rhs: Tropical<U>) -> Self::Output { Tropical(self.0 + rhs.0) }
+    fn mul(self, rhs: Tropical<U>) -> Self::Output {
+        Tropical(self.0 + rhs.0)
+    }
 }
 
 // ============================================================================
@@ -560,7 +626,12 @@ mod tests {
         for &a in &vals {
             let g = Galois64(a);
             let inv = g.invert();
-            assert_eq!(g * inv, Galois64(1), "Galois64({:#018x}).invert() failed", a);
+            assert_eq!(
+                g * inv,
+                Galois64(1),
+                "Galois64({:#018x}).invert() failed",
+                a
+            );
         }
     }
 
@@ -570,7 +641,12 @@ mod tests {
         for &a in &vals {
             let g = Galois128(a);
             let inv = g.invert();
-            assert_eq!(g * inv, Galois128(1), "Galois128({:#034x}).invert() failed", a);
+            assert_eq!(
+                g * inv,
+                Galois128(1),
+                "Galois128({:#034x}).invert() failed",
+                a
+            );
         }
     }
 

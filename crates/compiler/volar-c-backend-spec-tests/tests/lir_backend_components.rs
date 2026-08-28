@@ -8,8 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use volar_c_backend::CBackend;
-use volar_compiler::{ir::IrFunction, ir::IrModule, parser::parse_source};
 use volar_compiler::ir::{IrType, PrimitiveType};
+use volar_compiler::{ir::IrFunction, ir::IrModule, parser::parse_source};
 use volar_lir_codegen::{lower_module_seeded, mono::MonoEnv};
 
 // ---------------------------------------------------------------------------
@@ -81,9 +81,21 @@ fn build_module() -> IrModule<IrFunction> {
         name: "volar_lir_components".to_string(),
         ..Default::default()
     };
-    parse_dir(&root.join("crates/spec/volar-primitives/src"), "volar_primitives", &mut module);
-    parse_dir(&root.join("crates/spec/volar-common/src"), "volar_common", &mut module);
-    parse_dir(&root.join("crates/spec/volar-spec/src"), "volar_spec", &mut module);
+    parse_dir(
+        &root.join("crates/spec/volar-primitives/src"),
+        "volar_primitives",
+        &mut module,
+    );
+    parse_dir(
+        &root.join("crates/spec/volar-common/src"),
+        "volar_common",
+        &mut module,
+    );
+    parse_dir(
+        &root.join("crates/spec/volar-spec/src"),
+        "volar_spec",
+        &mut module,
+    );
     {
         let mut seen = std::collections::HashSet::new();
         module.structs.retain(|s| {
@@ -136,7 +148,11 @@ fn run_lir_component(seeds: &[&str], label: &str) {
 
     match result {
         Ok(c_output) => {
-            eprintln!("\n=== LIR component [{}]: OK ({} bytes) ===", label, c_output.len());
+            eprintln!(
+                "\n=== LIR component [{}]: OK ({} bytes) ===",
+                label,
+                c_output.len()
+            );
         }
         Err(e) => {
             let msg = if let Some(s) = e.downcast_ref::<String>() {

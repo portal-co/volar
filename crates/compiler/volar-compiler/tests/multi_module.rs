@@ -2,7 +2,7 @@
 //! cross-module import generation for both Rust and TypeScript.
 
 use volar_compiler::{
-    LinkedSpec, LinkageSystem, IrModule, IrFunction,
+    IrFunction, IrModule, LinkageSystem, LinkedSpec,
     multi_module::{MultiModuleOutput, PartitionConfig, PartitionGroup},
 };
 
@@ -23,7 +23,10 @@ fn parse(src: &str, name: &str) -> IrModule<IrFunction> {
 
 fn build_ls() -> LinkageSystem {
     let mut ls = LinkageSystem::new();
-    ls.add(LinkedSpec::new_inline("primitives", parse(PRIMITIVES_SRC, "primitives")));
+    ls.add(LinkedSpec::new_inline(
+        "primitives",
+        parse(PRIMITIVES_SRC, "primitives"),
+    ));
     ls.add(LinkedSpec::new_inline("spec", parse(SPEC_SRC, "spec")));
     ls
 }
@@ -63,16 +66,46 @@ fn test_partition_module_contents() {
     let ls = build_ls();
     let multi = ls.partition(&two_group_config());
 
-    let prim = multi.modules.iter().find(|m| m.name == "primitives").expect("primitives module");
-    let spec = multi.modules.iter().find(|m| m.name == "spec").expect("spec module");
+    let prim = multi
+        .modules
+        .iter()
+        .find(|m| m.name == "primitives")
+        .expect("primitives module");
+    let spec = multi
+        .modules
+        .iter()
+        .find(|m| m.name == "spec")
+        .expect("spec module");
 
-    let prim_names: Vec<_> = prim.module.structs.iter().map(|s| s.kind.to_string()).collect();
-    assert!(prim_names.contains(&"Bit".to_string()), "primitives must contain Bit");
-    assert!(prim_names.contains(&"Galois".to_string()), "primitives must contain Galois");
+    let prim_names: Vec<_> = prim
+        .module
+        .structs
+        .iter()
+        .map(|s| s.kind.to_string())
+        .collect();
+    assert!(
+        prim_names.contains(&"Bit".to_string()),
+        "primitives must contain Bit"
+    );
+    assert!(
+        prim_names.contains(&"Galois".to_string()),
+        "primitives must contain Galois"
+    );
 
-    let spec_names: Vec<_> = spec.module.structs.iter().map(|s| s.kind.to_string()).collect();
-    assert!(spec_names.contains(&"Delta".to_string()), "spec must contain Delta");
-    assert!(spec_names.contains(&"Vope".to_string()), "spec must contain Vope");
+    let spec_names: Vec<_> = spec
+        .module
+        .structs
+        .iter()
+        .map(|s| s.kind.to_string())
+        .collect();
+    assert!(
+        spec_names.contains(&"Delta".to_string()),
+        "spec must contain Delta"
+    );
+    assert!(
+        spec_names.contains(&"Vope".to_string()),
+        "spec must contain Vope"
+    );
 }
 
 // ── 3. Topological order: primitives before spec ─────────────────────────────
@@ -82,13 +115,18 @@ fn test_topological_order() {
     let ls = build_ls();
     let multi = ls.partition(&two_group_config());
 
-    let pos_prim = multi.modules.iter().position(|m| m.name == "primitives").unwrap();
+    let pos_prim = multi
+        .modules
+        .iter()
+        .position(|m| m.name == "primitives")
+        .unwrap();
     let pos_spec = multi.modules.iter().position(|m| m.name == "spec").unwrap();
 
     assert!(
         pos_prim < pos_spec,
         "primitives (pos {}) must come before spec (pos {})",
-        pos_prim, pos_spec
+        pos_prim,
+        pos_spec
     );
 }
 
@@ -100,7 +138,10 @@ fn test_render_rust_cross_module_import() {
     let multi = ls.partition(&two_group_config());
     let files = multi.render_rust();
 
-    let spec_src = files.iter().find(|(n, _)| n == "spec").map(|(_, s)| s.as_str())
+    let spec_src = files
+        .iter()
+        .find(|(n, _)| n == "spec")
+        .map(|(_, s)| s.as_str())
         .expect("spec file");
 
     assert!(
@@ -108,7 +149,10 @@ fn test_render_rust_cross_module_import() {
         "spec Rust output must import from test_primitives\nactual:\n{}",
         &spec_src[..spec_src.len().min(800)]
     );
-    assert!(spec_src.contains("Bit"), "cross-module import must include Bit");
+    assert!(
+        spec_src.contains("Bit"),
+        "cross-module import must include Bit"
+    );
 }
 
 // ── 5. render_rust() does NOT emit cross-module import for independent module ─
@@ -119,7 +163,10 @@ fn test_render_rust_no_spurious_import() {
     let multi = ls.partition(&two_group_config());
     let files = multi.render_rust();
 
-    let prim_src = files.iter().find(|(n, _)| n == "primitives").map(|(_, s)| s.as_str())
+    let prim_src = files
+        .iter()
+        .find(|(n, _)| n == "primitives")
+        .map(|(_, s)| s.as_str())
         .expect("primitives file");
 
     assert!(
@@ -140,7 +187,10 @@ fn test_render_ts_npm_package_import() {
 
     // We want to check the woven module that imports from spec — but in this
     // two-group test, "spec" imports from "primitives".
-    let spec_src = files.iter().find(|(n, _)| n == "spec").map(|(_, s)| s.as_str())
+    let spec_src = files
+        .iter()
+        .find(|(n, _)| n == "spec")
+        .map(|(_, s)| s.as_str())
         .expect("spec ts file");
 
     // primitives has no npm_package → falls back to ./primitives
@@ -176,5 +226,8 @@ fn test_single_group_no_deps() {
     };
     let multi = ls.partition(&config);
     assert_eq!(multi.modules.len(), 1);
-    assert!(multi.modules[0].deps.is_empty(), "single group has no cross-module deps");
+    assert!(
+        multi.modules[0].deps.is_empty(),
+        "single group has no cross-module deps"
+    );
 }

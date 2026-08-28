@@ -41,8 +41,8 @@ use alloc::vec::Vec;
 
 use crate::ir::*;
 use crate::printer::{
-    DisplayRust, EnumWriter, GenericsWriter, ImplWriter, RustBackend, StructWriter, TraitWriter, TypeWriter,
-    WhereClauseWriter,
+    DisplayRust, EnumWriter, GenericsWriter, ImplWriter, RustBackend, StructWriter, TraitWriter,
+    TypeWriter, WhereClauseWriter,
 };
 
 /// First byte of every `.volar.d` file — invalid UTF-8 poison pill.
@@ -88,7 +88,8 @@ fn strip_bodies(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     };
 
     let strip_function = |f: &IrFunction| -> IrFunction {
-        IrFunction { no_inline: false,
+        IrFunction {
+            no_inline: false,
             name: f.name.clone(),
             module_path: f.module_path.clone(),
             generics: f.generics.clone(),

@@ -28,21 +28,10 @@ use volar_common::hash_commitment::commit;
 // open — ungated, works for any N
 // ---------------------------------------------------------------------------
 
-impl<
-    B: LengthDoubler,
-    D: Digest,
-    K: ArraySize,
-    N: ArraySize,
-> ABO<B, D, K, N>
-{
+impl<B: LengthDoubler, D: Digest, K: ArraySize, N: ArraySize> ABO<B, D, K, N> {
     /// Generate an [`ABOOpening`] for each party; bad positions are replaced
     /// with hash commitments, revealing the rest directly.
-    pub fn open<
-        T: ArraySize,
-        U: ArraySize,
-        R: AsRef<[u8]>,
-        M: ArraySize,
-    >(
+    pub fn open<T: ArraySize, U: ArraySize, R: AsRef<[u8]>, M: ArraySize>(
         &self,
         bad: Array<u64, T>,
         rand: &R,
@@ -61,7 +50,9 @@ impl<
                         let i2 = i | ((j as usize) << T::USIZE.ilog2());
                         if bad.contains(&(i2 as u64)) {
                             let h = commit::<D>(&self.per_byte[ni][i2], rand);
-                            Array::<u8, M>::from_fn(|j| h.as_ref().get(j).cloned().unwrap_or_default())
+                            Array::<u8, M>::from_fn(|j| {
+                                h.as_ref().get(j).cloned().unwrap_or_default()
+                            })
                         } else {
                             Array::<u8, M>::from_fn(|j| {
                                 self.per_byte[ni][i2].get(j).cloned().unwrap_or_default()
@@ -78,13 +69,7 @@ impl<
 // Prover vole methods — gated by PartyIndex
 // ---------------------------------------------------------------------------
 
-impl<
-    B: LengthDoubler,
-    D: Digest,
-    K: ArraySize,
-    N: ArraySize + PartyIndex,
-> ABO<B, D, K, N>
-{
+impl<B: LengthDoubler, D: Digest, K: ArraySize, N: ArraySize + PartyIndex> ABO<B, D, K, N> {
     pub fn to_vole_material<const M: usize>(&self, target: usize) -> [Vope<B::OutputSize, u8>; M]
     where
         B::OutputSize: VoleArray<u8>,
@@ -122,11 +107,7 @@ impl<
         })
     }
 
-    pub fn to_vole_material_typenum_expanded<
-        M: ArraySize,
-        X: AsRef<[u8]>,
-        F: FnMut(&[u8]) -> X,
-    >(
+    pub fn to_vole_material_typenum_expanded<M: ArraySize, X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(
         &self,
         target: usize,
         mut f: F,
@@ -140,15 +121,10 @@ impl<
         })
     }
 
-    pub fn split_bit_typenum<M: ArraySize>(
-        &self,
-        target: usize,
-    ) -> Array<BSplit<B, D>, M>
+    pub fn split_bit_typenum<M: ArraySize>(&self, target: usize) -> Array<BSplit<B, D>, M>
     where
         B::OutputSize: VoleArray<u8>,
-        D: Digest<
-            OutputSize: Logarithm2<Output: ArraySize>,
-        >,
+        D: Digest<OutputSize: Logarithm2<Output: ArraySize>>,
     {
         Array::<BSplit<B, D>, M>::from_fn(|i| {
             let s = &self.per_byte[N::party_index(target)][(i * M::USIZE)..][..M::USIZE];

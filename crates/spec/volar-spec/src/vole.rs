@@ -45,7 +45,9 @@ pub struct Q<N: ArraySize, T> {
 }
 impl<N: ArraySize, T: Default> Default for Q<N, T> {
     fn default() -> Self {
-        Q { q: Default::default() }
+        Q {
+            q: Default::default(),
+        }
     }
 }
 impl<N: ArraySize, T> Delta<N, T> {
@@ -104,6 +106,6 @@ impl<N: ArraySize, T> Q<N, T> {
 }
 pub mod vope;
 pub use vope::Vope;
+pub mod bridge;
 pub mod garble;
 pub mod prove;
-pub mod bridge;

@@ -32,8 +32,8 @@ pub use volar_riscv_test_programs::parse_and_expand;
 mod tests {
     use super::*;
     use volar_vaffle_target::VaffleTarget;
-    use volar_vaffle_target::waffle_lower::lower_waffle_module;
     use volar_vaffle_target::import_config::WaffleImportConfig;
+    use volar_vaffle_target::waffle_lower::lower_waffle_module;
 
     /// Foundational spike: a real, hand-authored WAT binary, parsed via the
     /// real WASM frontend, lowered via the real `lower_waffle_module` --
@@ -55,6 +55,10 @@ mod tests {
         let errors = lower_waffle_module(&module, &mut target, &WaffleImportConfig::default());
 
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
-        assert_eq!(target.module.funcs.len(), 1, "expected exactly one lowered function");
+        assert_eq!(
+            target.module.funcs.len(),
+            1,
+            "expected exactly one lowered function"
+        );
     }
 }

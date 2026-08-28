@@ -24,7 +24,9 @@ pub struct Garble<N: VoleArray<u8>> {
 impl<N: VoleArray<u8>> Garble<N> {
     /// False-label for a constant-zero wire (all-zero bytes).
     pub fn zero() -> Self {
-        Garble { base: Array::<u8, N>::default() }
+        Garble {
+            base: Array::<u8, N>::default(),
+        }
     }
 
     /// Derive the AND gate output wire's false-label from the two input false-labels.
@@ -66,7 +68,9 @@ impl<N: VoleArray<u8>> Garble<N> {
 impl<N: VoleArray<u8>> Eval<N> {
     /// Evaluator label for a constant-zero wire (all-zero bytes, same as the false-label).
     pub fn zero() -> Self {
-        Eval { target: Array::<u8, N>::default() }
+        Eval {
+            target: Array::<u8, N>::default(),
+        }
     }
 
     pub fn open(&self, garble: &Garble<N>) -> Array<u8, N> {
@@ -87,11 +91,7 @@ impl<N: VoleArray<u8>> Eval<N> {
             }),
         }
     }
-    pub fn and_via_table<D: Digest>(
-        &self,
-        other: &Eval<N>,
-        table: &GarbleTable<N>,
-    ) -> Eval<N> {
+    pub fn and_via_table<D: Digest>(&self, other: &Eval<N>, table: &GarbleTable<N>) -> Eval<N> {
         let index = (if self.target[0] & 1 == 1 { 1 } else { 0 })
             | (if other.target[0] & 1 == 1 { 2 } else { 0 });
         let hash = {
@@ -124,7 +124,11 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
     pub fn encode(&self, garble: &Garble<N>, value: bool) -> Eval<N> {
         Eval {
             target: Array::<u8, N>::from_fn(|i| {
-                if value { self.secret[i] ^ garble.base[i] } else { garble.base[i] }
+                if value {
+                    self.secret[i] ^ garble.base[i]
+                } else {
+                    garble.base[i]
+                }
             }),
         }
     }
@@ -142,11 +146,7 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
         }
     }
 
-    pub fn gen_and_table<D: Digest>(
-        &self,
-        a: &Garble<N>,
-        b: &Garble<N>,
-    ) -> GarbleTable<N> {
+    pub fn gen_and_table<D: Digest>(&self, a: &Garble<N>, b: &Garble<N>) -> GarbleTable<N> {
         // False-label of the result wire: H(a.base || b.base).
         // This is consistent with what the evaluator computes from the (0,0) label pair.
         let result_base = a.and_result::<D>(b);

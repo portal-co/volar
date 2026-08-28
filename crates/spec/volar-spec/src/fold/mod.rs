@@ -40,8 +40,14 @@ const U: usize = 7;
 /// `z = [W ‖ u]` for the fixed verifier-gate R1CS.
 fn full_z<S: Clone>(w: &[S; AND_VARS], u: &S) -> [S; 8] {
     [
-        w[0].clone(), w[1].clone(), w[2].clone(), w[3].clone(),
-        w[4].clone(), w[5].clone(), w[6].clone(), u.clone(),
+        w[0].clone(),
+        w[1].clone(),
+        w[2].clone(),
+        w[3].clone(),
+        w[4].clone(),
+        w[5].clone(),
+        w[6].clone(),
+        u.clone(),
     ]
 }
 
@@ -124,8 +130,13 @@ where
 {
     let r2 = r.clone() * r.clone();
     let mut w = [
-        S::default(), S::default(), S::default(), S::default(),
-        S::default(), S::default(), S::default(),
+        S::default(),
+        S::default(),
+        S::default(),
+        S::default(),
+        S::default(),
+        S::default(),
+        S::default(),
     ];
     for i in 0..AND_VARS {
         w[i] = w1[i].clone() + r.clone() * w2[i].clone();
@@ -170,7 +181,7 @@ where
 // fold reproduces the oracle's `nifs::verify_fold` without needing the `F_ℓ`
 // scalar type here.
 
-use crate::curve::{ed_add, ed_scalar_mul, EdPoint};
+use crate::curve::{EdPoint, ed_add, ed_scalar_mul};
 
 /// Fold the witness commitment: `comm_W = comm_W1 + r·comm_W2`.
 pub fn fold_commit_w(comm_w1: &EdPoint, comm_w2: &EdPoint, r: &[u8; 32]) -> EdPoint {

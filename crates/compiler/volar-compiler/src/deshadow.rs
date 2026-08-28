@@ -603,8 +603,7 @@ fn deshadow_stmts(
         // Now check for shadowing in Let bindings.
         // We collect renames in a separate pass to avoid holding borrows
         // across the rename step.
-        let renames: Vec<(String, String)> = if let IrStmtKind::Let { pattern, .. } =
-            &stmts[i].kind
+        let renames: Vec<(String, String)> = if let IrStmtKind::Let { pattern, .. } = &stmts[i].kind
         {
             let bound = pattern_names(pattern);
             let mut out = Vec::new();
@@ -982,7 +981,10 @@ mod tests {
         }
 
         // The subsequent Semi should reference x_1
-        assert_eq!(block.stmts[2], Node::new(IrStmtKind::Semi(var("x_1")), (), None));
+        assert_eq!(
+            block.stmts[2],
+            Node::new(IrStmtKind::Semi(var("x_1")), (), None)
+        );
     }
 
     #[test]

@@ -72,7 +72,10 @@ pub(crate) mod tests {
         let mem = instance.get_memory(&mut store, "mem").expect("mem export");
         let mut byte = [0u8; 1];
         mem.read(&store, 0, &mut byte).expect("byte 0 in bounds");
-        assert_eq!(byte[0], STEPS as u8, "byte 0 must be incremented STEPS times");
+        assert_eq!(
+            byte[0], STEPS as u8,
+            "byte 0 must be incremented STEPS times"
+        );
     }
 
     /// Shared helper: parse+lower the probe WAT all the way to a genuine
@@ -104,7 +107,7 @@ pub(crate) mod tests {
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         let wasm_bytes = wat::parse_str(&mem_probe_wat()).expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
@@ -127,10 +130,12 @@ pub(crate) mod tests {
             }
         }
 
-        let (movfuscated, boundary, accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (movfuscated, boundary, accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
 
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
         (ir_blocks, movfuscated, circuit, types, boundary, accum_info)
     }
 
@@ -139,8 +144,14 @@ pub(crate) mod tests {
         let (ir_blocks, movfuscated, circuit, _types, boundary, accum_info) = lower_mem_probe();
         assert!(!ir_blocks.is_circuit());
         assert_eq!(movfuscated.blocks.len(), 1);
-        assert!(circuit.is_circuit(), "unrolled probe must satisfy is_circuit()");
-        assert!(!boundary.is_empty(), "boundary metadata must be non-empty for the split weave");
+        assert!(
+            circuit.is_circuit(),
+            "unrolled probe must satisfy is_circuit()"
+        );
+        assert!(
+            !boundary.is_empty(),
+            "boundary metadata must be non-empty for the split weave"
+        );
         assert_eq!(accum_info.steps.len(), boundary.len());
     }
 
@@ -153,27 +164,47 @@ pub(crate) mod tests {
     #[ignore]
     fn dump_mem_probe_signatures() {
         use volar_weaver::{
-            weave_vole_prover_ir_with_mode, weave_vole_verifier_ir_with_mode_and_trace, IopSink,
-            StorageMode,
+            IopSink, StorageMode, weave_vole_prover_ir_with_mode,
+            weave_vole_verifier_ir_with_mode_and_trace,
         };
 
         let (_ir_blocks, movfuscated, circuit, types, _boundary, _accum_info) = lower_mem_probe();
         eprintln!("movfuscated params: {:?}", movfuscated.blocks[0].params);
-        eprintln!("movfuscated terminator: {:?}", movfuscated.blocks[0].terminator);
+        eprintln!(
+            "movfuscated terminator: {:?}",
+            movfuscated.blocks[0].terminator
+        );
         eprintln!("circuit params: {:?}", circuit.blocks[0].params);
         eprintln!("circuit terminator: {:?}", circuit.blocks[0].terminator);
         eprintln!("pre_init segments:");
         for seg in &circuit.pre_init {
-            eprintln!("  storage={} ty={} offset={} len={}", seg.storage.0, seg.ty.0, seg.offset, seg.data.len());
+            eprintln!(
+                "  storage={} ty={} offset={} len={}",
+                seg.storage.0,
+                seg.ty.0,
+                seg.offset,
+                seg.data.len()
+            );
         }
         eprintln!("all StorageRead/StorageWrite stmts in circuit:");
         for (i, stmt) in circuit.blocks[0].stmts.iter().enumerate() {
             match &stmt.kind {
                 volar_ir::ir::Stmt::StorageRead { storage, ty, addr } => {
-                    eprintln!("  [{i}] READ  storage={} ty={} addr={:?}", storage.0, ty.0, addr);
+                    eprintln!(
+                        "  [{i}] READ  storage={} ty={} addr={:?}",
+                        storage.0, ty.0, addr
+                    );
                 }
-                volar_ir::ir::Stmt::StorageWrite { storage, ty, addr, src } => {
-                    eprintln!("  [{i}] WRITE storage={} ty={} addr={:?} src={:?}", storage.0, ty.0, addr, src);
+                volar_ir::ir::Stmt::StorageWrite {
+                    storage,
+                    ty,
+                    addr,
+                    src,
+                } => {
+                    eprintln!(
+                        "  [{i}] WRITE storage={} ty={} addr={:?} src={:?}",
+                        storage.0, ty.0, addr, src
+                    );
                 }
                 _ => {}
             }
@@ -191,7 +222,12 @@ pub(crate) mod tests {
         eprintln!("prover trace entries: {:?}", prover_trace.entries);
 
         let (verifier_module, verifier_trace) = weave_vole_verifier_ir_with_mode_and_trace(
-            &circuit, &types, "mem_probe", &mode, &IopSink, None,
+            &circuit,
+            &types,
+            "mem_probe",
+            &mode,
+            &IopSink,
+            None,
         );
         let vf = &verifier_module.inner().functions[0];
         eprintln!("verifier fn: {}", vf.name);
@@ -229,22 +265,38 @@ pub(crate) mod tests {
 
         let (_ir_blocks, _movfuscated, circuit, types, _boundary, _accum_info) = lower_mem_probe();
         let num_params = circuit.blocks[0].params.len();
-        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+        let param_widths: Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
-        assert_eq!(param_widths, vec![1, 1, 1, 64, 32], "probe circuit's own declared param widths");
+        assert_eq!(
+            param_widths,
+            vec![1, 1, 1, 64, 32],
+            "probe circuit's own declared param widths"
+        );
 
         let mut storage = volar_fuzz::interpreter::ir::StorageMap::new();
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         assert_eq!(inputs.len(), num_params);
 
         for step in 0..3 {
-            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let outputs = eval_ir_circuit_step(
+                &circuit.blocks[0],
+                &types,
+                &circuit.oracles,
+                &inputs,
+                &mut storage,
+            );
             // output[0] = done flag; output[1..] map 1:1 onto the next
             // step's input params -- widths must match, not silently
             // narrow (the regression this guards against).
             let widths: Vec<usize> = outputs.iter().map(|v| v.len()).collect();
-            assert_eq!(widths, vec![1, 1, 1, 1, 64, 32], "step {step}: output widths must match [done] ++ param_widths, not silently narrow");
+            assert_eq!(
+                widths,
+                vec![1, 1, 1, 1, 64, 32],
+                "step {step}: output widths must match [done] ++ param_widths, not silently narrow"
+            );
             inputs = outputs[1..].to_vec();
         }
 
@@ -256,11 +308,19 @@ pub(crate) mod tests {
         // exact numeric TypeId assigned to a byte cell depends on
         // TypeTable interning order elsewhere in the pipeline and isn't
         // itself part of this test's own contract.
-        let (_, byte_bits) = storage.iter()
+        let (_, byte_bits) = storage
+            .iter()
             .find(|((sid, _ty, addr), _)| sid.0 == 33 && *addr == 0)
             .expect("storage entry for (StorageId(33), _, addr=0) must exist");
-        let byte: u32 = byte_bits.iter().enumerate().map(|(i, &b)| (b as u32) << i).sum();
-        assert_eq!(byte, STEPS as u32, "committed byte must equal STEPS after 3 real steps");
+        let byte: u32 = byte_bits
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| (b as u32) << i)
+            .sum();
+        assert_eq!(
+            byte, STEPS as u32,
+            "committed byte must equal STEPS after 3 real steps"
+        );
     }
 
     /// Parse the VOLE-relevant spec sources into a single `IrModule`, for
@@ -274,18 +334,41 @@ pub(crate) mod tests {
     fn parse_vole_spec_for_lir() -> volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction> {
         use volar_compiler::{SourceInput, parse_sources};
         let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap().parent().unwrap()
-            .join("spec").join("volar-spec").join("src");
-        let files = ["lib.rs", "vole.rs", "vole/prove.rs", "vole/vope.rs", "vole/impls.rs", "vole/setup.rs"];
-        let loaded: std::vec::Vec<(String, String)> = files.iter().map(|&f| {
-            let path = src_dir.join(f);
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("cannot read spec file {}: {e}", path.display()));
-            let stem = std::path::Path::new(f).file_stem().unwrap().to_string_lossy().into_owned();
-            (src, stem)
-        }).collect();
-        let inputs: std::vec::Vec<SourceInput> = loaded.iter()
-            .map(|(src, name)| SourceInput { source: src.as_str(), name: name.as_str() })
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("spec")
+            .join("volar-spec")
+            .join("src");
+        let files = [
+            "lib.rs",
+            "vole.rs",
+            "vole/prove.rs",
+            "vole/vope.rs",
+            "vole/impls.rs",
+            "vole/setup.rs",
+        ];
+        let loaded: std::vec::Vec<(String, String)> = files
+            .iter()
+            .map(|&f| {
+                let path = src_dir.join(f);
+                let src = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("cannot read spec file {}: {e}", path.display()));
+                let stem = std::path::Path::new(f)
+                    .file_stem()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                (src, stem)
+            })
+            .collect();
+        let inputs: std::vec::Vec<SourceInput> = loaded
+            .iter()
+            .map(|(src, name)| SourceInput {
+                source: src.as_str(),
+                name: name.as_str(),
+            })
             .collect();
         parse_sources(&inputs, "volar_spec", &[])
             .unwrap_or_else(|e| panic!("parse_vole_spec_for_lir failed: {e}"))
@@ -321,10 +404,12 @@ pub(crate) mod tests {
     #[test]
     #[ignore]
     fn lir_probe_prover_lowers_to_c() {
-        use volar_weaver::{weave_vole_prover_ir_split, StorageMode};
-        use volar_compiler::ir::IrFunction;
-        use volar_lir_codegen::{lower_module_monomorphized, roots_by_name_prefix, MonoPlanOptions};
         use volar_c_backend::CBackend;
+        use volar_compiler::ir::IrFunction;
+        use volar_lir_codegen::{
+            MonoPlanOptions, lower_module_monomorphized, roots_by_name_prefix,
+        };
+        use volar_weaver::{StorageMode, weave_vole_prover_ir_split};
 
         let (_ir_blocks, _movfuscated, circuit, types, boundary, accum_info) = lower_mem_probe();
         let mode = StorageMode::Commitment;
@@ -332,7 +417,17 @@ pub(crate) mod tests {
         let max_stmts_per_piece = volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE;
 
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_prover_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, max_stmts_per_piece, |f| prover_funcs.push(f));
+        weave_vole_prover_ir_split(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| prover_funcs.push(f),
+        );
         eprintln!("woven prover functions: {}", prover_funcs.len());
 
         let mut module = parse_vole_spec_for_lir();
@@ -349,8 +444,15 @@ pub(crate) mod tests {
         eprintln!("roots: {}", roots.len());
 
         let mut backend = CBackend::new();
-        lower_module_monomorphized(&module, &mut backend, MonoPlanOptions { roots, ..Default::default() })
-            .unwrap_or_else(|e| panic!("LIR monomorphization failed: {e}"));
+        lower_module_monomorphized(
+            &module,
+            &mut backend,
+            MonoPlanOptions {
+                roots,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("LIR monomorphization failed: {e}"));
         let c_src = backend.finish();
         eprintln!("generated C source: {} bytes", c_src.len());
         assert!(!c_src.is_empty());
@@ -396,15 +498,16 @@ pub(crate) mod tests {
     /// `prove_and_verify_iop(..).ok` checks below would very likely fail,
     /// on top of the unconditional (not debug-gated) written-bitset guard
     /// itself panicking on any ordering violation.
-    fn honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl(max_stmts_per_piece: usize) {
-        use volar_weaver::{
-            weave_vole_prover_ir_split, weave_vole_qsim_ir_split,
-            weave_vole_verifier_ir_split_with_trace, print_weaved_vole_module, IopSink,
-            StorageMode,
-        };
+    fn honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl(
+        max_stmts_per_piece: usize,
+    ) {
+        use crate::split_driver::{Slot, generate_split_step, slot_name};
         use volar_compiler::ir::IrFunction;
         use volar_verifier_iop_runtime::run_iop_verifier;
-        use crate::split_driver::{generate_split_step, slot_name, Slot};
+        use volar_weaver::{
+            IopSink, StorageMode, print_weaved_vole_module, weave_vole_prover_ir_split,
+            weave_vole_qsim_ir_split, weave_vole_verifier_ir_split_with_trace,
+        };
 
         let (_ir_blocks, _movfuscated, circuit, types, boundary, accum_info) = lower_mem_probe();
         let mode = StorageMode::Commitment;
@@ -417,11 +520,42 @@ pub(crate) mod tests {
         let n_chunks = n_blocks.div_ceil(chunk_size);
 
         let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_prover_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, max_stmts_per_piece, |f| prover_funcs.push(f));
+        weave_vole_prover_ir_split(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| prover_funcs.push(f),
+        );
         let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_qsim_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, max_stmts_per_piece, |f| qsim_funcs.push(f));
+        weave_vole_qsim_ir_split(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| qsim_funcs.push(f),
+        );
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
-        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "mp", &mode, &IopSink, &boundary, &accum_info, chunk_size, max_stmts_per_piece, |f| verifier_funcs.push(f));
+        weave_vole_verifier_ir_split_with_trace(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &IopSink,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| verifier_funcs.push(f),
+        );
 
         // Positionally-indexed views (one entry per boundary/chunk/finish
         // position), used below for the assert and `generate_split_step`'s
@@ -436,7 +570,10 @@ pub(crate) mod tests {
         // wrapper's own generated body calls its pieces by name, so they
         // must still be emitted into the compiled source).
         let by_pos = |fs: &std::vec::Vec<IrFunction>| -> std::vec::Vec<IrFunction> {
-            fs.iter().filter(|f| !f.name.contains("_piece_")).cloned().collect()
+            fs.iter()
+                .filter(|f| !f.name.contains("_piece_"))
+                .cloned()
+                .collect()
         };
         let prover_funcs_by_pos = by_pos(&prover_funcs);
         let qsim_funcs_by_pos = by_pos(&qsim_funcs);
@@ -445,12 +582,21 @@ pub(crate) mod tests {
         assert_eq!(qsim_funcs_by_pos.len(), n_blocks + n_chunks + 1);
         assert_eq!(verifier_funcs_by_pos.len(), n_blocks + n_chunks + 1);
 
-        let module_of = |functions: std::vec::Vec<IrFunction>, name: &str| volar_compiler::ir::IrModule {
-            name: name.into(), functions, structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
-        };
+        let module_of =
+            |functions: std::vec::Vec<IrFunction>, name: &str| volar_compiler::ir::IrModule {
+                name: name.into(),
+                functions,
+                structs: vec![],
+                enums: vec![],
+                traits: vec![],
+                impls: vec![],
+                type_aliases: vec![],
+                consts: vec![],
+            };
         let prover_code = print_weaved_vole_module(&module_of(prover_funcs.clone(), "prover"));
         let qsim_code = print_weaved_vole_module(&module_of(qsim_funcs.clone(), "qsim"));
-        let verifier_code = print_weaved_vole_module(&module_of(verifier_funcs.clone(), "verifier"));
+        let verifier_code =
+            print_weaved_vole_module(&module_of(verifier_funcs.clone(), "verifier"));
 
         // Each printed module carries its own copy of the shared header;
         // keep the verifier's full header and splice in only the prover's
@@ -458,13 +604,19 @@ pub(crate) mod tests {
         // established pattern for avoiding duplicate `use` lines) -- every
         // function for a role lands in that role's one printed string, so
         // this still captures all of them, not just the first.
-        let prover_fn_only = &prover_code[prover_code.find("pub fn").expect("prover source must have a pub fn")..];
-        let qsim_fn_only = &qsim_code[qsim_code.find("pub fn").expect("qsim source must have a pub fn")..];
+        let prover_fn_only = &prover_code[prover_code
+            .find("pub fn")
+            .expect("prover source must have a pub fn")..];
+        let qsim_fn_only = &qsim_code[qsim_code
+            .find("pub fn")
+            .expect("qsim source must have a pub fn")..];
         let rust_source = format!("{verifier_code}\n{prover_fn_only}\n{qsim_fn_only}");
 
         // Per-original-circuit-param widths (1,1,1,64,32 for this circuit),
         // read directly from the real circuit rather than assumed.
-        let widths: std::vec::Vec<usize> = circuit.blocks[0].params.iter()
+        let widths: std::vec::Vec<usize> = circuit.blocks[0]
+            .params
+            .iter()
             .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
             .collect();
 
@@ -480,16 +632,23 @@ pub(crate) mod tests {
         // `generate_split_step` be called ONCE, with its own returned
         // `stmts` becoming a real `for` loop body that runs 3 times at
         // runtime, not 3 separately-generated copies of the same text.
-        struct StepWitness { s2_bits: [bool; 3], s33_bits: [bool; 8], byte_before: u8, byte_after: u8 }
-        let witness: std::vec::Vec<StepWitness> = (0..3usize).map(|step| {
-            let byte = step as u8;
-            StepWitness {
-                s2_bits: [true, false, false],
-                s33_bits: core::array::from_fn(|i| (byte >> i) & 1 == 1),
-                byte_before: byte,
-                byte_after: byte.wrapping_add(1),
-            }
-        }).collect();
+        struct StepWitness {
+            s2_bits: [bool; 3],
+            s33_bits: [bool; 8],
+            byte_before: u8,
+            byte_after: u8,
+        }
+        let witness: std::vec::Vec<StepWitness> = (0..3usize)
+            .map(|step| {
+                let byte = step as u8;
+                StepWitness {
+                    s2_bits: [true, false, false],
+                    s33_bits: core::array::from_fn(|i| (byte >> i) & 1 == 1),
+                    byte_before: byte,
+                    byte_after: byte.wrapping_add(1),
+                }
+            })
+            .collect();
         let witness_literal = format!(
             "struct StepWitness {{ s2_bits: [bool; 3], s33_bits: [bool; 8], byte_before: u8, byte_after: u8 }}\n\
              let witness: [StepWitness; {}] = [{}];\n",
@@ -524,9 +683,15 @@ pub(crate) mod tests {
         // exact values for the external multiset check to balance against
         // what's actually committed in-circuit.
         let oracle_bit_exprs: std::vec::Vec<std::vec::Vec<String>> = std::vec![
-            (0..3).map(|j| format!("witness[step].s2_bits[{j}]")).collect(),
-            (0..3).map(|j| format!("witness[step].s2_bits[{j}]")).collect(),
-            (0..16).map(|j| format!("witness[step].s33_bits[{}]", j % 8)).collect(),
+            (0..3)
+                .map(|j| format!("witness[step].s2_bits[{j}]"))
+                .collect(),
+            (0..3)
+                .map(|j| format!("witness[step].s2_bits[{j}]"))
+                .collect(),
+            (0..16)
+                .map(|j| format!("witness[step].s33_bits[{}]", j % 8))
+                .collect(),
         ];
 
         // Entry-state declarations, now OUTER `mut` bindings (no `_0`
@@ -553,30 +718,56 @@ pub(crate) mod tests {
         );
         for (i, &w) in widths.iter().enumerate() {
             if w <= 1 {
-                zero_stmts += &format!("_w_pool_vope[{i}] = vope_zero(); _w_pool_vope_written[{i}] = true;\n");
-                zero_stmts += &format!("_w_pool_q[{i}] = q_zero(); _w_pool_q_written[{i}] = true;\n");
+                zero_stmts += &format!(
+                    "_w_pool_vope[{i}] = vope_zero(); _w_pool_vope_written[{i}] = true;\n"
+                );
+                zero_stmts +=
+                    &format!("_w_pool_q[{i}] = q_zero(); _w_pool_q_written[{i}] = true;\n");
             } else {
-                zero_stmts += &format!("let mut w{i}_vope: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n");
-                zero_stmts += &format!("let mut w{i}_q: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n");
+                zero_stmts += &format!(
+                    "let mut w{i}_vope: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n"
+                );
+                zero_stmts += &format!(
+                    "let mut w{i}_q: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n"
+                );
             }
         }
         zero_stmts += "let mut all_ok = true;\nlet mut fold_state = iop_accumulator_fresh();\n";
-        let entry_w: std::vec::Vec<(Slot, Slot)> = widths.iter().enumerate().map(|(i, &w)| {
-            if w <= 1 {
-                // Never actually read: `build_call`'s own
-                // `n.starts_with("w_")` branch never fires for a pooled
-                // (scalar) param, since no callee has such a named param
-                // anymore. Placeholder only.
-                (Slot::Scalar("_dead_pooled_w".to_string()), Slot::Scalar("_dead_pooled_w".to_string()))
-            } else {
-                (Slot::Array(format!("w{i}_vope"), w), Slot::Array(format!("w{i}_q"), w))
-            }
-        }).collect();
+        let entry_w: std::vec::Vec<(Slot, Slot)> = widths
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                if w <= 1 {
+                    // Never actually read: `build_call`'s own
+                    // `n.starts_with("w_")` branch never fires for a pooled
+                    // (scalar) param, since no callee has such a named param
+                    // anymore. Placeholder only.
+                    (
+                        Slot::Scalar("_dead_pooled_w".to_string()),
+                        Slot::Scalar("_dead_pooled_w".to_string()),
+                    )
+                } else {
+                    (
+                        Slot::Array(format!("w{i}_vope"), w),
+                        Slot::Array(format!("w{i}_q"), w),
+                    )
+                }
+            })
+            .collect();
 
         let total_vars = circuit.blocks[0].params.len() + circuit.blocks[0].stmts.len();
         let result = generate_split_step(
-            &prover_funcs_by_pos, &qsim_funcs_by_pos, &verifier_funcs_by_pos, &boundary, &accum_info, n_chunks, total_vars,
-            &entry_w, Some(("all_ok".to_string(), "fold_state".to_string())), &oracle_bit_exprs, "step",
+            &prover_funcs_by_pos,
+            &qsim_funcs_by_pos,
+            &verifier_funcs_by_pos,
+            &boundary,
+            &accum_info,
+            n_chunks,
+            total_vars,
+            &entry_w,
+            Some(("all_ok".to_string(), "fold_state".to_string())),
+            &oracle_bit_exprs,
+            "step",
         );
         let mut loop_body = result.stmts.clone();
         // Reassign the OUTER mutable entry-state/accumulator bindings from
@@ -585,14 +776,23 @@ pub(crate) mod tests {
         // of a named local (see the comment above `zero_stmts`).
         for (i, (vope_slot, q_slot)) in result.next_entry_w.iter().enumerate() {
             if widths[i] <= 1 {
-                loop_body += &format!("_w_pool_vope[{i}] = {}; _w_pool_vope_written[{i}] = true;\n", slot_name(vope_slot));
-                loop_body += &format!("_w_pool_q[{i}] = {}; _w_pool_q_written[{i}] = true;\n", slot_name(q_slot));
+                loop_body += &format!(
+                    "_w_pool_vope[{i}] = {}; _w_pool_vope_written[{i}] = true;\n",
+                    slot_name(vope_slot)
+                );
+                loop_body += &format!(
+                    "_w_pool_q[{i}] = {}; _w_pool_q_written[{i}] = true;\n",
+                    slot_name(q_slot)
+                );
             } else {
                 loop_body += &format!("w{i}_vope = {};\n", slot_name(vope_slot));
                 loop_body += &format!("w{i}_q = {};\n", slot_name(q_slot));
             }
         }
-        loop_body += &format!("all_ok = {};\nfold_state = {};\n", result.final_all_ok_expr, result.final_fold_state_expr);
+        loop_body += &format!(
+            "all_ok = {};\nfold_state = {};\n",
+            result.final_all_ok_expr, result.final_fold_state_expr
+        );
         // Mirrors the real circuit's own per-step trace exactly (see the
         // oracle_bit_exprs comment above): storage 2 is gating-read, then
         // written, then read back (R,W,R); storage 33 is really loaded,
@@ -624,12 +824,12 @@ pub(crate) mod tests {
                 ts33 = write_ts33;
             }
         "#;
-        let all_steps_stmts = format!(
-            "{witness_literal}for step in 0..witness.len() {{\n{loop_body}\n}}\n",
-        );
+        let all_steps_stmts =
+            format!("{witness_literal}for step in 0..witness.len() {{\n{loop_body}\n}}\n",);
         let (final_all_ok, final_fold_state) = ("all_ok".to_string(), "fold_state".to_string());
 
-        let driver = format!(r#"
+        let driver = format!(
+            r#"
             use volar_iop::field::{{Field as _, Gf128}};
             use volar_iop::transcript::FromBytes as _;
             use volar_spec::field::Galois;
@@ -727,14 +927,17 @@ pub(crate) mod tests {
                 let corrupted_ok = volar_iop::verify_iop(&proof, Some((&mem_acc_in, &corrupted_out)));
                 assert!(!corrupted_ok, "a corrupted expected memory boundary must be rejected");
             }}
-        "#);
+        "#
+        );
 
         run_iop_verifier(&rust_source, &driver);
     }
 
     #[test]
     fn honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary() {
-        honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl(volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE);
+        honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl(
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+        );
     }
 
     /// Phase C sub-stage 1's real compile+run check: `max_stmts_per_piece

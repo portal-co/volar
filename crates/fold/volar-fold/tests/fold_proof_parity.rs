@@ -23,10 +23,10 @@
 //! `FoldProof` from `GapProof`'s output costs nothing here.
 
 use proptest::prelude::*;
-use volar_fold::ivc::{prove_gap, GapAccumulator, Step};
+use volar_fold::ivc::{GapAccumulator, Step, prove_gap};
 use volar_fold::nifs::{fresh, prove_fold, verify_fold};
 use volar_fold::pedersen::PedersenParams;
-use volar_fold::r1cs::{RelaxedInstance, R1CS};
+use volar_fold::r1cs::{R1CS, RelaxedInstance};
 use volar_fold::scalar::Scalar;
 use volar_fold::verify::native_verify;
 
@@ -67,7 +67,11 @@ fn assert_instances_eq(a: &RelaxedInstance, b: &RelaxedInstance, msg: &str) {
 /// step 0 — it's a genuinely separate reconstruction, not a telescoping
 /// tautology. Returns `recon_u`, to be compared against `prove_gap`'s
 /// `final_u` (i.e. `batch_u`).
-fn reconstruct_instance_only_leg(r1cs: &R1CS, params: &PedersenParams, steps: &[Step]) -> RelaxedInstance {
+fn reconstruct_instance_only_leg(
+    r1cs: &R1CS,
+    params: &PedersenParams,
+    steps: &[Step],
+) -> RelaxedInstance {
     assert!(!steps.is_empty());
     let (mut batch_u, mut acc_w) = fresh(r1cs, params, &steps[0].w, steps[0].r_w);
     let mut recon_u = batch_u.clone();
@@ -92,7 +96,10 @@ fn discarded_foldproofs_reconstruct_the_same_final_instance_as_prove_gap() {
     let r_out = s(3);
 
     let gp = prove_gap(&r1cs, &params, &steps, &s_in, &r_in, &s_out, &r_out);
-    assert!(native_verify(&r1cs, &params, &gp.final_u, &gp.final_w), "honest chain verifies");
+    assert!(
+        native_verify(&r1cs, &params, &gp.final_u, &gp.final_w),
+        "honest chain verifies"
+    );
 
     let reconstructed = reconstruct_instance_only_leg(&r1cs, &params, &steps);
     assert_instances_eq(
@@ -119,7 +126,10 @@ fn verify_fold_leg_matches_prove_gap_even_on_a_dishonest_chain() {
     let r_out = s(3);
 
     let gp = prove_gap(&r1cs, &params, &steps, &s_in, &r_in, &s_out, &r_out);
-    assert!(!native_verify(&r1cs, &params, &gp.final_u, &gp.final_w), "lying step must fail native_verify");
+    assert!(
+        !native_verify(&r1cs, &params, &gp.final_u, &gp.final_w),
+        "lying step must fail native_verify"
+    );
 
     let reconstructed = reconstruct_instance_only_leg(&r1cs, &params, &steps);
     assert_instances_eq(

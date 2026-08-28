@@ -9,15 +9,15 @@
 //! names are surfaced via [`LinkageSystem::remote_refs`] so preamble writers
 //! can emit `pub use` (Rust) or `import` (TypeScript) statements.
 
-#[cfg(feature = "std")]
-use std::string::{String, ToString};
 #[cfg(not(feature = "std"))]
 use alloc::string::{String, ToString};
-
 #[cfg(feature = "std")]
-use std::vec::Vec;
+use std::string::{String, ToString};
+
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 use crate::ir::{IrAnyFunction, IrCfgModule, IrFunction, IrImpl, IrModule, MapProv};
 
@@ -61,7 +61,11 @@ impl LinkedSpec {
     /// Convenience constructor for an inline spec (backward-compatible with
     /// the old two-field struct literal).
     pub fn new_inline(name: impl Into<String>, module: IrModule<IrFunction>) -> Self {
-        Self { name: name.into(), module, kind: LinkageKind::Inline }
+        Self {
+            name: name.into(),
+            module,
+            kind: LinkageKind::Inline,
+        }
     }
 
     /// Convenience constructor for a remote spec.
@@ -74,7 +78,10 @@ impl LinkedSpec {
         Self {
             name: name.into(),
             module,
-            kind: LinkageKind::Remote { rust_crate: rust_crate.into(), npm_package },
+            kind: LinkageKind::Remote {
+                rust_crate: rust_crate.into(),
+                npm_package,
+            },
         }
     }
 }
@@ -144,8 +151,12 @@ impl LinkageSystem {
             target.enums.extend(spec.module.enums.iter().cloned());
             target.traits.extend(spec.module.traits.iter().cloned());
             target.impls.extend(spec.module.impls.iter().cloned());
-            target.functions.extend(spec.module.functions.iter().cloned());
-            target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
+            target
+                .functions
+                .extend(spec.module.functions.iter().cloned());
+            target
+                .type_aliases
+                .extend(spec.module.type_aliases.iter().cloned());
         }
     }
 
@@ -165,9 +176,15 @@ impl LinkageSystem {
             target.traits.extend(spec.module.traits.iter().cloned());
             target.impls.extend(spec.module.impls.iter().cloned());
             target.functions.extend(
-                spec.module.functions.iter().cloned().map(IrAnyFunction::Flat)
+                spec.module
+                    .functions
+                    .iter()
+                    .cloned()
+                    .map(IrAnyFunction::Flat),
             );
-            target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
+            target
+                .type_aliases
+                .extend(spec.module.type_aliases.iter().cloned());
         }
     }
 
@@ -189,19 +206,27 @@ impl LinkageSystem {
             target.structs.extend(spec.module.structs.iter().cloned());
             target.enums.extend(spec.module.enums.iter().cloned());
             target.traits.extend(spec.module.traits.iter().cloned());
-            target.impls.extend(
-                spec.module.impls.iter().cloned().map(|i: IrImpl<()>| {
+            target
+                .impls
+                .extend(spec.module.impls.iter().cloned().map(|i: IrImpl<()>| {
                     let p = lib_prov();
                     i.map_prov(&|_| p.clone())
-                }),
-            );
-            target.functions.extend(
-                spec.module.functions.iter().cloned().map(|f: IrFunction<()>| {
-                    let p = lib_prov();
-                    f.map_prov(&|_| p.clone())
-                }),
-            );
-            target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
+                }));
+            target
+                .functions
+                .extend(
+                    spec.module
+                        .functions
+                        .iter()
+                        .cloned()
+                        .map(|f: IrFunction<()>| {
+                            let p = lib_prov();
+                            f.map_prov(&|_| p.clone())
+                        }),
+                );
+            target
+                .type_aliases
+                .extend(spec.module.type_aliases.iter().cloned());
         }
     }
 
@@ -221,19 +246,27 @@ impl LinkageSystem {
             target.structs.extend(spec.module.structs.iter().cloned());
             target.enums.extend(spec.module.enums.iter().cloned());
             target.traits.extend(spec.module.traits.iter().cloned());
-            target.impls.extend(
-                spec.module.impls.iter().cloned().map(|i: IrImpl<()>| {
+            target
+                .impls
+                .extend(spec.module.impls.iter().cloned().map(|i: IrImpl<()>| {
                     let p = lib_prov();
                     i.map_prov(&|_| p.clone())
-                }),
-            );
-            target.functions.extend(
-                spec.module.functions.iter().cloned().map(|f: IrFunction<()>| {
-                    let p = lib_prov();
-                    IrAnyFunction::Flat(f.map_prov(&|_| p.clone()))
-                }),
-            );
-            target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
+                }));
+            target
+                .functions
+                .extend(
+                    spec.module
+                        .functions
+                        .iter()
+                        .cloned()
+                        .map(|f: IrFunction<()>| {
+                            let p = lib_prov();
+                            IrAnyFunction::Flat(f.map_prov(&|_| p.clone()))
+                        }),
+                );
+            target
+                .type_aliases
+                .extend(spec.module.type_aliases.iter().cloned());
         }
     }
 
@@ -242,9 +275,13 @@ impl LinkageSystem {
     /// Each entry contains the crate/package name and the struct+trait names
     /// that preamble writers should emit as `pub use` (Rust) or `import` (TS).
     pub fn remote_refs(&self) -> Vec<RemoteSpecRef<'_>> {
-        self.specs.iter().filter_map(|spec| {
-            match &spec.kind {
-                LinkageKind::Remote { rust_crate, npm_package } => {
+        self.specs
+            .iter()
+            .filter_map(|spec| match &spec.kind {
+                LinkageKind::Remote {
+                    rust_crate,
+                    npm_package,
+                } => {
                     let mut type_names: Vec<String> = Vec::new();
                     for s in &spec.module.structs {
                         type_names.push(s.kind.to_string());
@@ -259,7 +296,7 @@ impl LinkageSystem {
                     })
                 }
                 LinkageKind::Inline => None,
-            }
-        }).collect()
+            })
+            .collect()
     }
 }

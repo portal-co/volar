@@ -82,7 +82,12 @@ fn in_interval_mod(x: u64, lo: u64, hi: u64, q: u64) -> bool {
 /// in `{0, q/4}`. This is an integer model of the cited arithmetic, not a
 /// ciphertext bootstrap or a noise claim.
 fn evaluate_certificate(cert: &GateCertificate, inputs: &[u64], q: u64) -> u64 {
-    assert_eq!(inputs.len(), cert.arity, "certificate {} arity mismatch", cert.name);
+    assert_eq!(
+        inputs.len(),
+        cert.arity,
+        "certificate {} arity mismatch",
+        cert.name
+    );
     let prepared = (cert.prepare)(inputs, q) % q;
     let (lo, hi) = cert.interval_true;
     let signed_eighth: i64 = if in_interval_mod(prepared, lo, hi, q) {
@@ -120,24 +125,44 @@ fn evaluate_gate(cert_eighths: &GateCertificate, inputs: &[u64], q: u64) -> u64 
 
 /// AND: `c1+c2`, true region `[3q/8, 7q/8)` ([MP20, p.15, Table 1]).
 fn cert_and() -> GateCertificate {
-    GateCertificate { name: "AND", arity: 2, prepare: |c, q| (c[0] + c[1]) % q, interval_true: (3, 7) }
+    GateCertificate {
+        name: "AND",
+        arity: 2,
+        prepare: |c, q| (c[0] + c[1]) % q,
+        interval_true: (3, 7),
+    }
 }
 
 /// NAND: `c1+c2`, true region `[-q/8, 3q/8)` ([MP20, p.15, Table 1]);
 /// represented as `(7, 3)` wrapping in eighths.
 fn cert_nand() -> GateCertificate {
-    GateCertificate { name: "NAND", arity: 2, prepare: |c, q| (c[0] + c[1]) % q, interval_true: (7, 3) }
+    GateCertificate {
+        name: "NAND",
+        arity: 2,
+        prepare: |c, q| (c[0] + c[1]) % q,
+        interval_true: (7, 3),
+    }
 }
 
 /// OR: `c1+c2`, true region `[q/8, 5q/8)` ([MP20, p.15, Table 1]).
 fn cert_or() -> GateCertificate {
-    GateCertificate { name: "OR", arity: 2, prepare: |c, q| (c[0] + c[1]) % q, interval_true: (1, 5) }
+    GateCertificate {
+        name: "OR",
+        arity: 2,
+        prepare: |c, q| (c[0] + c[1]) % q,
+        interval_true: (1, 5),
+    }
 }
 
 /// NOR: `c1+c2`, true region `[-3q/8, q/8)` ([MP20, p.15, Table 1]);
 /// represented as `(5, 1)` wrapping in eighths.
 fn cert_nor() -> GateCertificate {
-    GateCertificate { name: "NOR", arity: 2, prepare: |c, q| (c[0] + c[1]) % q, interval_true: (5, 1) }
+    GateCertificate {
+        name: "NOR",
+        arity: 2,
+        prepare: |c, q| (c[0] + c[1]) % q,
+        interval_true: (5, 1),
+    }
 }
 
 /// XOR: `2*(c1-c2)`, true region `[q/8, 5q/8)` ([MP20, p.15, Table 1]).
@@ -192,11 +217,7 @@ fn to_bool(phase: u64, q: u64) -> bool {
 }
 
 fn from_bool(b: bool, q: u64) -> u64 {
-    if b {
-        true_val(q)
-    } else {
-        FALSE
-    }
+    if b { true_val(q) } else { FALSE }
 }
 
 #[cfg(test)]
@@ -372,7 +393,10 @@ mod tests {
                 }
             }
         }
-        assert!(any_mismatch, "mutated AND offset should disagree with truth table on some input");
+        assert!(
+            any_mismatch,
+            "mutated AND offset should disagree with truth table on some input"
+        );
     }
 
     #[test]
@@ -400,7 +424,10 @@ mod tests {
                 }
             }
         }
-        assert!(any_mismatch, "XOR without doubling should disagree with truth table on some input");
+        assert!(
+            any_mismatch,
+            "XOR without doubling should disagree with truth table on some input"
+        );
     }
 
     #[test]
@@ -427,7 +454,10 @@ mod tests {
                 }
             }
         }
-        assert!(any_mismatch, "majority with OR's interval should disagree with truth table on some input");
+        assert!(
+            any_mismatch,
+            "majority with OR's interval should disagree with truth table on some input"
+        );
     }
 
     #[test]
@@ -444,8 +474,11 @@ mod tests {
                 let inputs = [from_bool(a, q), from_bool(b, q)];
                 let prepared = (cert.prepare)(&inputs, q) % q;
                 let (lo, hi) = (cert.interval_true.0 * scale, cert.interval_true.1 * scale);
-                let signed_no_restore: i64 =
-                    if in_interval_mod(prepared, lo, hi, q) { (q / 8) as i64 } else { -((q / 8) as i64) };
+                let signed_no_restore: i64 = if in_interval_mod(prepared, lo, hi, q) {
+                    (q / 8) as i64
+                } else {
+                    -((q / 8) as i64)
+                };
                 let unrestored = signed_no_restore.rem_euclid(q as i64) as u64;
                 // Canonical false=0, true=q/4; q/8 and -q/8 (mod q) are
                 // neither, so equality with the canonical encoding must fail

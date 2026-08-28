@@ -44,7 +44,9 @@ fn sub_256(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
     let mut out = [0u64; 4];
     let mut borrow = 0u128;
     for i in 0..4 {
-        let cur = (a[i] as u128).wrapping_sub(b[i] as u128).wrapping_sub(borrow);
+        let cur = (a[i] as u128)
+            .wrapping_sub(b[i] as u128)
+            .wrapping_sub(borrow);
         out[i] = cur as u64;
         borrow = (cur >> 127) & 1; // 1 if it underflowed
     }
@@ -135,7 +137,9 @@ const fn sub4(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
     let mut borrow: u128 = 0;
     let mut i = 0;
     while i < 4 {
-        let cur = (a[i] as u128).wrapping_sub(b[i] as u128).wrapping_sub(borrow);
+        let cur = (a[i] as u128)
+            .wrapping_sub(b[i] as u128)
+            .wrapping_sub(borrow);
         out[i] = cur as u64;
         borrow = (cur >> 127) & 1;
         i += 1;
@@ -153,11 +157,7 @@ const fn dbl_mod_l(a: [u64; 4]) -> [u64; 4] {
         carry = a[i] >> 63; // a < ℓ < 2^253 ⇒ top carry is 0
         i += 1;
     }
-    if ge4(&r, &L) {
-        sub4(&r, &L)
-    } else {
-        r
-    }
+    if ge4(&r, &L) { sub4(&r, &L) } else { r }
 }
 
 /// `R² = 2⁵¹² mod ℓ` via 512 modular doublings of 1.
@@ -401,7 +401,12 @@ mod tests {
             [0x1234_5678, 0x9abc_def0, 0xdead_beef, 0x0fed_cba9],
             // ℓ − 1 (largest canonical element)
             sub_256(&L, &[1, 0, 0, 0]),
-            [0xaaaa_aaaa_aaaa_aaaa, 0x5555_5555_5555_5555, 0xf0f0_f0f0_f0f0_f0f0, 0x0123],
+            [
+                0xaaaa_aaaa_aaaa_aaaa,
+                0x5555_5555_5555_5555,
+                0xf0f0_f0f0_f0f0_f0f0,
+                0x0123,
+            ],
         ];
         for a in &samples {
             for b in &samples {

@@ -44,7 +44,10 @@ fn test_specialize_volar_spec() {
     let sources = read_volar_spec_sources();
     let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
+        .map(|(content, name)| SourceInput {
+            source: content.as_str(),
+            name: name.as_str(),
+        })
         .collect();
 
     let spec = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();

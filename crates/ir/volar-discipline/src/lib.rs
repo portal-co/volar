@@ -128,7 +128,10 @@ impl<Z: ZkDiscipline, T> Tagged<Z, T> {
     /// discipline of `inner` is established (a weaver's return, a fold entry).
     #[inline]
     pub fn seal(inner: T) -> Self {
-        Tagged { inner, _marker: PhantomData }
+        Tagged {
+            inner,
+            _marker: PhantomData,
+        }
     }
 
     /// Consume the wrapper, returning the inner value.  The escape hatch for
@@ -153,7 +156,10 @@ impl<Z: ZkDiscipline, T> Tagged<Z, T> {
     /// Apply a transformation, preserving discipline `Z`.
     #[inline]
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Tagged<Z, U> {
-        Tagged { inner: f(self.inner), _marker: PhantomData }
+        Tagged {
+            inner: f(self.inner),
+            _marker: PhantomData,
+        }
     }
 
     /// The runtime mirror of this artifact's discipline.
@@ -208,7 +214,10 @@ impl<T> DynTagged<T> {
         if self.disc == expected {
             Ok(Tagged::seal(self.inner))
         } else {
-            Err(DisciplineError { expected, found: self.disc })
+            Err(DisciplineError {
+                expected,
+                found: self.disc,
+            })
         }
     }
 }

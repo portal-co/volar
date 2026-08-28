@@ -29,7 +29,7 @@
 
 use hybrid_array::{Array, sizes::U16};
 
-use super::aes::{encrypt_block, BLOCK};
+use super::aes::{BLOCK, encrypt_block};
 use crate::byte_gen::LengthDoubler;
 
 /// AES-CTR-based length doubler.

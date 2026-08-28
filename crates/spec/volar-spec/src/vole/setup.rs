@@ -27,10 +27,10 @@ use core::ops::{Add, Mul};
 
 use cipher::consts::U1;
 
-use crate::{Array, ArraySize, SpecRng};
 use crate::field::Invert;
 use crate::ot::IdealCot;
 use crate::vole::{Delta, Q, VoleArray, Vope};
+use crate::{Array, ArraySize, SpecRng};
 
 /// Sample a `Δ` whose every lane is non-zero — required when the verifier
 /// later derives an AND output share via [`derive_and_q`] (which inverts Δ).
@@ -89,9 +89,8 @@ where
 
     let u_t = bit_to_t(bit);
     let u_row: Array<T, N> = lift_bit(u_t);
-    let u: Array<Array<T, N>, U1> = Array::<Array<T, N>, U1>::from_fn(|_| {
-        Array::<T, N>::from_fn(|i| u_row[i].clone())
-    });
+    let u: Array<Array<T, N>, U1> =
+        Array::<Array<T, N>, U1>::from_fn(|_| Array::<T, N>::from_fn(|i| u_row[i].clone()));
     let q = Array::<T, N>::from_fn(|i| r0[i].clone());
     (Vope { u, v }, Q { q })
 }
@@ -170,7 +169,10 @@ mod tests {
             let (vope, q) = vole_commit_bit(&cot, &mut rng, sample_g, lift_bit_g, bit);
             for i in 0..16 {
                 let expected = vope.v[i] + vope.u[0][i] * cot.delta.delta[i];
-                assert_eq!(q.q[i], expected, "lane {i}, bit {bit}: VOLE relation broken");
+                assert_eq!(
+                    q.q[i], expected,
+                    "lane {i}, bit {bit}: VOLE relation broken"
+                );
             }
         }
     }

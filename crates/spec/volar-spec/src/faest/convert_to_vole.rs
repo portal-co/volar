@@ -57,7 +57,10 @@ pub fn convert_to_vole(
     l_hat_bytes: usize,
 ) -> ConvertOutput {
     let n = seeds.len();
-    assert!(n.is_power_of_two() && n >= 2, "ConvertToVOLE: N must be power of 2, ≥ 2");
+    assert!(
+        n.is_power_of_two() && n >= 2,
+        "ConvertToVOLE: N must be power of 2, ≥ 2"
+    );
     let d = (n.trailing_zeros()) as usize; // log2(N)
 
     // r[0..N]: the expanded seeds. Missing seed → zero vector.
@@ -123,7 +126,10 @@ pub struct BigVoleProver {
 /// - If any pair of `outs` disagrees on `l_hat_bytes` (the `u.len()` of
 ///   the first entry is taken as ground truth).
 pub fn concat_small_voles(outs: Vec<ConvertOutput>) -> BigVoleProver {
-    assert!(!outs.is_empty(), "concat_small_voles: need at least one VOLE");
+    assert!(
+        !outs.is_empty(),
+        "concat_small_voles: need at least one VOLE"
+    );
     let l_hat = outs[0].u.len();
     for o in &outs {
         assert_eq!(o.u.len(), l_hat, "small VOLEs must agree on l_hat_bytes");
@@ -274,7 +280,11 @@ mod tests {
 
             for j in 0..d {
                 let delta_j = (delta >> j) & 1 == 1;
-                let expected = if delta_j { xor(&p.v[j], &p.u) } else { p.v[j].clone() };
+                let expected = if delta_j {
+                    xor(&p.v[j], &p.u)
+                } else {
+                    p.v[j].clone()
+                };
                 assert_eq!(
                     v.v[j], expected,
                     "Proposition 5.2 mismatch at Δ={}, j={}",
@@ -323,18 +333,26 @@ mod tests {
         // Verifier side: per Proposition 5.2, slot 0 = None and slot i > 0
         // is the prover's seed at index `i ⊕ Δ`.
         let vs0: Vec<Option<[u8; 16]>> = (0..n)
-            .map(|i| if i == 0 { None } else { Some(seeds0[i ^ delta0]) })
+            .map(|i| {
+                if i == 0 {
+                    None
+                } else {
+                    Some(seeds0[i ^ delta0])
+                }
+            })
             .collect();
         let vs1: Vec<Option<[u8; 16]>> = (0..n)
-            .map(|i| if i == 0 { None } else { Some(seeds1[i ^ delta1]) })
+            .map(|i| {
+                if i == 0 {
+                    None
+                } else {
+                    Some(seeds1[i ^ delta1])
+                }
+            })
             .collect();
         let v0 = convert_to_vole(&vs0, &iv, 0, l_hat_bytes);
         let v1 = convert_to_vole(&vs1, &iv, 1, l_hat_bytes);
-        let big_v = concat_small_voles_verifier(
-            vec![v0, v1],
-            &[delta0, delta1],
-            &big_p.c,
-        );
+        let big_v = concat_small_voles_verifier(vec![v0, v1], &[delta0, delta1], &big_p.c);
         assert_eq!(big_v.q_columns.len(), tau * k_per);
 
         // Big-VOLE relation: for each bit position β ∈ [0..λ_eff),

@@ -45,12 +45,12 @@ impl KnownContainerType {
     fn from_str(s: &str) -> Option<Self> {
         match s {
             "GenericArray" => Some(Self::GenericArray),
-            "Array"        => Some(Self::Array),
-            "Vec"          => Some(Self::Vec),
-            "Option"       => Some(Self::Option),
-            "Result"       => Some(Self::Result),
-            "Box"          => Some(Self::Box),
-            _              => None,
+            "Array" => Some(Self::Array),
+            "Vec" => Some(Self::Vec),
+            "Option" => Some(Self::Option),
+            "Result" => Some(Self::Result),
+            "Box" => Some(Self::Box),
+            _ => None,
         }
     }
 
@@ -97,21 +97,24 @@ impl LoweringContext {
 
     /// Look up struct info by bare struct name (last segment of IrPath).
     pub fn get_struct_info(&self, bare_name: &str) -> Option<&StructInfo> {
-        self.struct_info.iter()
+        self.struct_info
+            .iter()
             .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(bare_name))
             .map(|(_, v)| v)
     }
 
     /// Look up struct info mutably by bare struct name.
     pub fn get_struct_info_mut(&mut self, bare_name: &str) -> Option<&mut StructInfo> {
-        self.struct_info.iter_mut()
+        self.struct_info
+            .iter_mut()
             .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(bare_name))
             .map(|(_, v)| v)
     }
 
     /// Look up fn length params by bare function name (last segment of IrPath).
     pub fn get_fn_length_params(&self, bare_name: &str) -> Option<&Vec<String>> {
-        self.fn_length_params.iter()
+        self.fn_length_params
+            .iter()
             .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(bare_name))
             .map(|(_, v)| v)
     }
@@ -127,7 +130,10 @@ impl LoweringContext {
     /// Dependency structs are registered so that lowering can see their
     /// generic structure (lengths vs type params, etc.) when generating
     /// dynamic code that references them.
-    pub fn new_with_deps(module: &IrModule<IrFunction>, deps: &[volar_compiler::manifest::TypeManifest]) -> Self {
+    pub fn new_with_deps(
+        module: &IrModule<IrFunction>,
+        deps: &[volar_compiler::manifest::TypeManifest],
+    ) -> Self {
         let mut struct_info = BTreeMap::new();
 
         // Discover length-alias traits (e.g., VoleArray: ArrayLength → length alias).
@@ -246,7 +252,8 @@ impl LoweringContext {
                 if let Some(tr) = &im.trait_ {
                     if let TraitKind::Math(MathTrait::Clone) = &tr.kind {
                         let k = kind.to_string();
-                        if let Some(entry) = struct_info.iter_mut()
+                        if let Some(entry) = struct_info
+                            .iter_mut()
                             .find(|(key, _)| key.last().map(|s| s.as_str()) == Some(k.as_str()))
                             .map(|(_, v)| v)
                         {
@@ -271,7 +278,11 @@ impl LoweringContext {
             // Collect impl-level generics with where-clause bounds merged in
             let mut impl_gen = im.generics.clone();
             for wp in &im.where_clause {
-                if let IrWherePredicate::TypeBound { ty: IrType::TypeParam(name), bounds } = wp {
+                if let IrWherePredicate::TypeBound {
+                    ty: IrType::TypeParam(name),
+                    bounds,
+                } = wp
+                {
                     if let Some(p) = impl_gen.iter_mut().find(|p| &p.name == name) {
                         p.bounds.extend(bounds.clone());
                     }
@@ -282,7 +293,8 @@ impl LoweringContext {
                 if let IrImplItem::Method(f) = item {
                     if f.receiver.is_none() {
                         // Static method — leading params come from fn_gen + impl_gen
-                        let params = fn_leading_length_params(f, &impl_gen, &aliases_ref2, is_trait_impl);
+                        let params =
+                            fn_leading_length_params(f, &impl_gen, &aliases_ref2, is_trait_impl);
                         if !params.is_empty() {
                             fn_length_params.insert(item_irpath(&f.module_path, &f.name), params);
                         }
@@ -316,7 +328,11 @@ fn fn_leading_length_params(
     let mut params: Vec<String> = Vec::new();
     let mut fn_gen = f.generics.clone();
     for wp in &f.where_clause {
-        if let IrWherePredicate::TypeBound { ty: IrType::TypeParam(name), bounds } = wp {
+        if let IrWherePredicate::TypeBound {
+            ty: IrType::TypeParam(name),
+            bounds,
+        } = wp
+        {
             if let Some(p) = fn_gen.iter_mut().find(|p| &p.name == name) {
                 p.bounds.extend(bounds.clone());
             }
@@ -357,7 +373,8 @@ pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     for s in &module.structs {
         // Only structs with generic parameters (length witnesses or type params) need
         // lowering and renaming to "Dyn". Primitives and non-generic structs pass through.
-        let needs_lowering = ctx.get_struct_info(&s.kind.to_string())
+        let needs_lowering = ctx
+            .get_struct_info(&s.kind.to_string())
             .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
             .unwrap_or(false);
         if needs_lowering {
@@ -415,7 +432,9 @@ pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     lowered.consts.extend(module.consts.iter().cloned());
 
     // Type aliases pass through unchanged (e.g. `type Zq = u32`).
-    lowered.type_aliases.extend(module.type_aliases.iter().cloned());
+    lowered
+        .type_aliases
+        .extend(module.type_aliases.iter().cloned());
 
     lowered
 }
@@ -435,16 +454,26 @@ fn collect_type_refs_in_fn(f: &IrFunction) -> Vec<String> {
 fn collect_type_refs_in_type(ty: &IrType, refs: &mut Vec<String>) {
     match ty {
         IrType::TypeParam(n) => {
-            if !refs.contains(n) { refs.push(n.clone()); }
+            if !refs.contains(n) {
+                refs.push(n.clone());
+            }
         }
         IrType::Struct { type_args, .. } => {
-            for a in type_args { collect_type_refs_in_type(a, refs); }
+            for a in type_args {
+                collect_type_refs_in_type(a, refs);
+            }
         }
         IrType::Vector { elem } | IrType::Reference { elem, .. } => {
             collect_type_refs_in_type(elem, refs);
         }
-        IrType::Array { elem, .. } => { collect_type_refs_in_type(elem, refs); }
-        IrType::Tuple(elems) => { for e in elems { collect_type_refs_in_type(e, refs); } }
+        IrType::Array { elem, .. } => {
+            collect_type_refs_in_type(elem, refs);
+        }
+        IrType::Tuple(elems) => {
+            for e in elems {
+                collect_type_refs_in_type(e, refs);
+            }
+        }
         _ => {}
     }
 }
@@ -477,7 +506,10 @@ fn extract_constant_witnesses(ty: &IrType, ctx: &LoweringContext) -> BTreeMap<St
     result
 }
 
-fn lower_trait_dyn(t: &volar_compiler::ir::IrTrait, ctx: &LoweringContext) -> volar_compiler::ir::IrTrait {
+fn lower_trait_dyn(
+    t: &volar_compiler::ir::IrTrait,
+    ctx: &LoweringContext,
+) -> volar_compiler::ir::IrTrait {
     use volar_compiler::ir::{IrMethodSig, IrTrait, IrTraitItem};
     let empty_gen: Vec<IrGenericParam> = Vec::new();
     IrTrait {
@@ -851,7 +883,8 @@ fn lower_function_dyn(
         }
     }
 
-    IrFunction { no_inline: false,
+    IrFunction {
+        no_inline: false,
         name: f.name.clone(),
         module_path: f.module_path.clone(),
         generics: lower_generics_dyn(&f.generics, impl_gen, ctx),
@@ -1396,7 +1429,8 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
         }
         IrPattern::Struct { kind, fields, rest } => {
             let kind_str = kind.to_string();
-            let has_generics = ctx.get_struct_info(&kind_str)
+            let has_generics = ctx
+                .get_struct_info(&kind_str)
                 .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
                 .unwrap_or(false);
             let (new_kind, needs_rest) = if has_generics {
@@ -1418,7 +1452,8 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
         }
         IrPattern::TupleStruct { kind, elems } => {
             let kind_str = kind.to_string();
-            let has_generics = ctx.get_struct_info(&kind_str)
+            let has_generics = ctx
+                .get_struct_info(&kind_str)
                 .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
                 .unwrap_or(false);
             let new_kind = if has_generics {
@@ -1579,11 +1614,11 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             if let MethodKind::Other(method_name) = &method {
                 if let Some(expected) = ctx.get_fn_length_params(method_name.as_str()) {
                     if !expected.is_empty() {
-                        let in_scope: Vec<String> = fn_gen.iter()
+                        let in_scope: Vec<String> = fn_gen
+                            .iter()
                             .filter_map(|p| {
-                                let kind = classify_generic_with_aliases(
-                                    p, &[fn_gen], &ctx.aliases(),
-                                );
+                                let kind =
+                                    classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases());
                                 if kind == GenericKind::Length {
                                     Some(p.name.to_lowercase())
                                 } else {
@@ -1699,12 +1734,14 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 {
                     if let Some(b_param) = fn_gen.iter().find(|p| {
                         p.name.starts_with('B')
-                            && p.bounds.iter().any(|b| matches!(
-                                &b.trait_kind,
-                                TraitKind::LengthDoubler
-                                    | TraitKind::BlockEncrypt
-                                    | TraitKind::BlockCipher
-                            ))
+                            && p.bounds.iter().any(|b| {
+                                matches!(
+                                    &b.trait_kind,
+                                    TraitKind::LengthDoubler
+                                        | TraitKind::BlockEncrypt
+                                        | TraitKind::BlockCipher
+                                )
+                            })
                     }) {
                         new_func = Some(ir_expr(IrExprKind::Path {
                             segments: vec![name.clone()],
@@ -1777,11 +1814,8 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                             let in_scope: Vec<String> = fn_gen
                                 .iter()
                                 .filter_map(|p| {
-                                    let kind = classify_generic_with_aliases(
-                                        p,
-                                        &[fn_gen],
-                                        &ctx.aliases(),
-                                    );
+                                    let kind =
+                                        classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases());
                                     if kind == GenericKind::Length {
                                         Some(p.name.to_lowercase())
                                     } else {
@@ -1814,8 +1848,8 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             };
             if let Some(ref name) = func_name {
                 if let Some(info) = ctx.get_struct_info(name.as_str()) {
-                    let has_generics = !info.length_witnesses.is_empty()
-                        || !info.type_params.is_empty();
+                    let has_generics =
+                        !info.length_witnesses.is_empty() || !info.type_params.is_empty();
                     if has_generics {
                         let dyn_name = format!("{}Dyn", name);
                         match &mut func.kind {
@@ -1850,7 +1884,8 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             rest,
         } => {
             let kind_str = kind.to_string();
-            let has_generics = ctx.get_struct_info(&kind_str)
+            let has_generics = ctx
+                .get_struct_info(&kind_str)
                 .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
                 .unwrap_or(false);
             let new_kind = if matches!(
@@ -2030,9 +2065,9 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             cond: Box::new(lower_expr_dyn(cond, ctx, fn_gen)),
             body: lower_block_dyn(body, ctx, fn_gen),
         }),
-        IrExprKind::IterPipeline(chain) => {
-            ir_expr(IrExprKind::IterPipeline(lower_iter_chain_dyn(chain, ctx, fn_gen)))
-        }
+        IrExprKind::IterPipeline(chain) => ir_expr(IrExprKind::IterPipeline(lower_iter_chain_dyn(
+            chain, ctx, fn_gen,
+        ))),
         // RawMap → receiver.into_iter().map(|var| body).collect()
         IrExprKind::RawMap {
             receiver,
@@ -3155,7 +3190,9 @@ mod tests {
     #[test]
     fn test_lower_lengthof_const() {
         let ctx = empty_ctx();
-        let expr = ir_expr(IrExprKind::LengthOf(ArrayLength::TypeParam("U16".to_string())));
+        let expr = ir_expr(IrExprKind::LengthOf(ArrayLength::TypeParam(
+            "U16".to_string(),
+        )));
         let result = lower_expr_dyn(&expr, &ctx, &[]);
         assert_eq!(result.kind, IrExprKind::Lit(IrLit::Int(16)));
     }

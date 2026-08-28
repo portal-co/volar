@@ -59,9 +59,36 @@ mod tests {
     fn folded() -> (R1CS, PedersenParams, RelaxedInstance, RelaxedWitness) {
         let r1cs = mul_gate();
         let params = PedersenParams::setup(4, 5);
-        let (u1, w1) = fresh(&r1cs, &params, &[Scalar::from_u64(3), Scalar::from_u64(4), Scalar::from_u64(12)], Scalar::from_u64(11));
-        let (u2, w2) = fresh(&r1cs, &params, &[Scalar::from_u64(5), Scalar::from_u64(6), Scalar::from_u64(30)], Scalar::from_u64(13));
-        let (uf, wf, _) = prove_fold(&r1cs, &params, &u1, &w1, &u2, &w2, &Scalar::from_u64(77), &Scalar::from_u64(88));
+        let (u1, w1) = fresh(
+            &r1cs,
+            &params,
+            &[
+                Scalar::from_u64(3),
+                Scalar::from_u64(4),
+                Scalar::from_u64(12),
+            ],
+            Scalar::from_u64(11),
+        );
+        let (u2, w2) = fresh(
+            &r1cs,
+            &params,
+            &[
+                Scalar::from_u64(5),
+                Scalar::from_u64(6),
+                Scalar::from_u64(30),
+            ],
+            Scalar::from_u64(13),
+        );
+        let (uf, wf, _) = prove_fold(
+            &r1cs,
+            &params,
+            &u1,
+            &w1,
+            &u2,
+            &w2,
+            &Scalar::from_u64(77),
+            &Scalar::from_u64(88),
+        );
         (r1cs, params, uf, wf)
     }
 

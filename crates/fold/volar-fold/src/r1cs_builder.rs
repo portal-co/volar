@@ -19,11 +19,7 @@ use crate::scalar::Scalar;
 pub(crate) const ONE_COL: usize = usize::MAX;
 
 pub(crate) fn bit_scalar(b: bool) -> Scalar {
-    if b {
-        Scalar::ONE
-    } else {
-        Scalar::ZERO
-    }
+    if b { Scalar::ONE } else { Scalar::ZERO }
 }
 
 /// A linear combination `Σ coeff_i·var_i + constant·1` over the witness.
@@ -35,13 +31,22 @@ pub(crate) struct Lc {
 
 impl Lc {
     pub(crate) fn zero() -> Lc {
-        Lc { terms: Vec::new(), constant: Scalar::ZERO }
+        Lc {
+            terms: Vec::new(),
+            constant: Scalar::ZERO,
+        }
     }
     pub(crate) fn one() -> Lc {
-        Lc { terms: Vec::new(), constant: Scalar::ONE }
+        Lc {
+            terms: Vec::new(),
+            constant: Scalar::ONE,
+        }
     }
     pub(crate) fn from_var(v: usize) -> Lc {
-        Lc { terms: alloc::vec![(v, Scalar::ONE)], constant: Scalar::ZERO }
+        Lc {
+            terms: alloc::vec![(v, Scalar::ONE)],
+            constant: Scalar::ZERO,
+        }
     }
     pub(crate) fn is_static_zero(&self) -> bool {
         self.terms.is_empty() && self.constant == Scalar::ZERO
@@ -49,12 +54,18 @@ impl Lc {
     pub(crate) fn add(&self, other: &Lc) -> Lc {
         let mut terms = self.terms.clone();
         terms.extend_from_slice(&other.terms);
-        Lc { terms, constant: self.constant.add(&other.constant) }
+        Lc {
+            terms,
+            constant: self.constant.add(&other.constant),
+        }
     }
     pub(crate) fn sub(&self, other: &Lc) -> Lc {
         let mut terms = self.terms.clone();
         terms.extend(other.terms.iter().map(|(v, c)| (*v, c.neg())));
-        Lc { terms, constant: self.constant.sub(&other.constant) }
+        Lc {
+            terms,
+            constant: self.constant.sub(&other.constant),
+        }
     }
     pub(crate) fn scale(&self, s: &Scalar) -> Lc {
         Lc {
@@ -172,11 +183,7 @@ impl Builder {
 
     /// XOR with a public constant bit — free (`⊕0` identity, `⊕1` is NOT).
     pub(crate) fn xor_const(&self, a: &Lc, bit: bool) -> Lc {
-        if bit {
-            self.not(a)
-        } else {
-            a.clone()
-        }
+        if bit { self.not(a) } else { a.clone() }
     }
 
     /// Finalize into an [`R1CS`]; returns `(r1cs, witness W)` with `z = [W ‖ 1]`.
@@ -190,7 +197,13 @@ impl Builder {
                 }
             }
         }
-        let r1cs = R1CS { num_cons: self.num_cons, num_vars, a: self.a, b: self.b, c: self.c };
+        let r1cs = R1CS {
+            num_cons: self.num_cons,
+            num_vars,
+            a: self.a,
+            b: self.b,
+            c: self.c,
+        };
         (r1cs, self.w)
     }
 }

@@ -30,8 +30,8 @@
 //! accounts for it — see `docs/agent-context/discipline.md` and
 //! `docs/prove-the-verifier-iop.md`.
 
-use volar_compiler::ir::{IrFunction, IrModule};
 use volar_c_backend::CBackend;
+use volar_compiler::ir::{IrFunction, IrModule};
 use volar_discipline::{Tagged, Transparent};
 use volar_lir_codegen::lower_module_with_opts;
 use volar_lir_codegen::mono::MonoEnv;
@@ -71,14 +71,16 @@ pub fn emit_verifier_rust(verifier: &Tagged<Transparent, IrModule<IrFunction>>) 
 mod tests {
     use super::*;
     use volar_compiler::ir::{
-        ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrLit, IrModule, IrType, PrimitiveType,
+        ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrLit, IrModule, IrType,
+        PrimitiveType,
     };
 
     /// Minimal woven-verifier stand-in: a single function the C backend can
     /// lower without spec linkage.  Exercises [`emit_verifier_c`] end-to-end
     /// (the real verifier→C path is covered by `volar-c-backend`'s vole tests).
     fn minimal_module() -> Tagged<Transparent, IrModule<IrFunction>> {
-        let func = IrFunction { no_inline: false,
+        let func = IrFunction {
+            no_inline: false,
             name: "verifier_ok".into(),
             module_path: vec![],
             generics: vec![],
@@ -88,7 +90,11 @@ mod tests {
             where_clause: vec![],
             body: IrBlock {
                 stmts: vec![],
-                expr: Some(Box::new(IrExpr::new(IrExprKind::Lit(IrLit::Bool(true)), (), None))),
+                expr: Some(Box::new(IrExpr::new(
+                    IrExprKind::Lit(IrLit::Bool(true)),
+                    (),
+                    None,
+                ))),
             },
             external_kind: ExternalKind::Normal,
         };
@@ -109,15 +115,27 @@ mod tests {
         let module = minimal_module();
         let env = MonoEnv::new("verifier");
         let c_src = emit_verifier_c(&module, &env);
-        assert!(!c_src.is_empty(), "C backend must emit source for the verifier module");
-        assert!(c_src.contains("verifier_ok"), "emitted C should name the verifier function");
+        assert!(
+            !c_src.is_empty(),
+            "C backend must emit source for the verifier module"
+        );
+        assert!(
+            c_src.contains("verifier_ok"),
+            "emitted C should name the verifier function"
+        );
     }
 
     #[test]
     fn emit_verifier_rust_produces_nonempty_source() {
         let module = minimal_module();
         let rust_src = emit_verifier_rust(&module);
-        assert!(!rust_src.is_empty(), "Rust printer must emit source for the verifier module");
-        assert!(rust_src.contains("verifier_ok"), "emitted Rust should name the verifier function");
+        assert!(
+            !rust_src.is_empty(),
+            "Rust printer must emit source for the verifier module"
+        );
+        assert!(
+            rust_src.contains("verifier_ok"),
+            "emitted Rust should name the verifier function"
+        );
     }
 }

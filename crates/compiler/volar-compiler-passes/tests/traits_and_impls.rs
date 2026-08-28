@@ -4,10 +4,10 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    AssociatedType, DisplayRust, ExprWriter, IrGenericParamKind,
-    IrImpl, IrImplItem, IrMethodSig, IrTrait, IrTraitItem, IrTraitRef, IrType, MathTrait,
-    ModuleWriter, PrimitiveType, RustBackend, SourceInput, SpecBinOp, SpecUnaryOp, StructKind, TraitKind,
-    TypeWriter, builtin_trait_defs, parse_source, parse_sources,
+    AssociatedType, DisplayRust, ExprWriter, IrGenericParamKind, IrImpl, IrImplItem, IrMethodSig,
+    IrTrait, IrTraitItem, IrTraitRef, IrType, MathTrait, ModuleWriter, PrimitiveType, RustBackend,
+    SourceInput, SpecBinOp, SpecUnaryOp, StructKind, TraitKind, TypeWriter, builtin_trait_defs,
+    parse_source, parse_sources,
 };
 use volar_compiler_passes::{ConstAnalysis, GenericKind, TypeContext};
 
@@ -738,7 +738,10 @@ fn test_volar_spec_length_doubler_is_custom_trait() {
     let sources = read_volar_spec_sources();
     let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
+        .map(|(c, n)| SourceInput {
+            source: c.as_str(),
+            name: n.as_str(),
+        })
         .collect();
     let module = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();
 
@@ -770,7 +773,10 @@ fn test_volar_spec_length_doubler_output_size_is_const() {
     let sources = read_volar_spec_sources();
     let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
+        .map(|(c, n)| SourceInput {
+            source: c.as_str(),
+            name: n.as_str(),
+        })
         .collect();
     let module = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();
     let analysis = ConstAnalysis::from_module(&module);
@@ -786,7 +792,10 @@ fn test_volar_spec_add_impls_have_output() {
     let sources = read_volar_spec_sources();
     let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
+        .map(|(c, n)| SourceInput {
+            source: c.as_str(),
+            name: n.as_str(),
+        })
         .collect();
     let module = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);
@@ -826,7 +835,10 @@ fn test_volar_spec_type_context_validates_impls() {
     let sources = read_volar_spec_sources();
     let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
+        .map(|(c, n)| SourceInput {
+            source: c.as_str(),
+            name: n.as_str(),
+        })
         .collect();
     let module = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);

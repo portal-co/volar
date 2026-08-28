@@ -123,13 +123,13 @@ impl MultiModuleOutput {
                     .deps
                     .iter()
                     .filter_map(|dep_name| {
-                        type_name_map.get(dep_name.as_str()).map(|(dep_mod, names)| {
-                            RemoteSpecRef {
+                        type_name_map
+                            .get(dep_name.as_str())
+                            .map(|(dep_mod, names)| RemoteSpecRef {
                                 rust_crate: dep_mod.rust_crate_name.as_str(),
                                 npm_package: dep_mod.npm_package.as_deref(),
                                 type_names: names.clone(),
-                            }
-                        })
+                            })
                     })
                     .collect();
                 let src = print_module_with_remotes(&m.module, &[], &remotes);
@@ -176,13 +176,18 @@ fn build_ts_with_local_deps<'a>(
         .deps
         .iter()
         .filter_map(|dep_name| {
-            type_name_map.get(dep_name.as_str()).map(|(dep_mod, names)| {
-                let pkg = dep_mod
-                    .npm_package
-                    .clone()
-                    .unwrap_or_else(|| format!("./{}", dep_mod.name));
-                OwnedRemote { pkg, type_names: names.clone() }
-            })
+            type_name_map
+                .get(dep_name.as_str())
+                .map(|(dep_mod, names)| {
+                    let pkg = dep_mod
+                        .npm_package
+                        .clone()
+                        .unwrap_or_else(|| format!("./{}", dep_mod.name));
+                    OwnedRemote {
+                        pkg,
+                        type_names: names.clone(),
+                    }
+                })
         })
         .collect();
 
@@ -241,7 +246,8 @@ impl LinkageSystem {
                     m.traits.extend(spec.module.traits.iter().cloned());
                     m.impls.extend(spec.module.impls.iter().cloned());
                     m.functions.extend(spec.module.functions.iter().cloned());
-                    m.type_aliases.extend(spec.module.type_aliases.iter().cloned());
+                    m.type_aliases
+                        .extend(spec.module.type_aliases.iter().cloned());
                 }
             }
         }
@@ -251,8 +257,12 @@ impl LinkageSystem {
             .iter()
             .map(|m| {
                 let mut names = BTreeSet::new();
-                for s in &m.structs { names.insert(s.kind.to_string()); }
-                for t in &m.traits { names.insert(t.kind.to_string()); }
+                for s in &m.structs {
+                    names.insert(s.kind.to_string());
+                }
+                for t in &m.traits {
+                    names.insert(t.kind.to_string());
+                }
                 names
             })
             .collect();
@@ -262,7 +272,9 @@ impl LinkageSystem {
         for i in 0..n {
             let refs = collect_type_refs(&group_modules[i]);
             for j in 0..n {
-                if i == j { continue; }
+                if i == j {
+                    continue;
+                }
                 if exported[j].iter().any(|name| refs.contains(name)) {
                     dep_indices[i].push(j);
                 }
@@ -314,30 +326,49 @@ pub(crate) fn collect_type_refs(module: &IrModule<IrFunction>) -> BTreeSet<Strin
         match ty {
             IrType::Struct { kind, type_args } => {
                 out.insert(kind.to_string());
-                for a in type_args { walk(a, out); }
+                for a in type_args {
+                    walk(a, out);
+                }
             }
             // Primitive types like Bit, Galois, Z3 may be exported as named structs
             // by a primitives spec group, so include their display names in refs.
-            IrType::Primitive(p) => { out.insert(p.to_string()); }
+            IrType::Primitive(p) => {
+                out.insert(p.to_string());
+            }
             IrType::Array { elem, .. } => walk(elem, out),
             IrType::Vector { elem } => walk(elem, out),
             IrType::Reference { elem, .. } => walk(elem, out),
-            IrType::Tuple(ts) => { for t in ts { walk(t, out); } }
-            IrType::Projection { base, trait_args, .. } => {
+            IrType::Tuple(ts) => {
+                for t in ts {
+                    walk(t, out);
+                }
+            }
+            IrType::Projection {
+                base, trait_args, ..
+            } => {
                 walk(base, out);
-                for a in trait_args { walk(a, out); }
+                for a in trait_args {
+                    walk(a, out);
+                }
             }
             IrType::FnPtr { params, ret } => {
-                for p in params { walk(p, out); }
+                for p in params {
+                    walk(p, out);
+                }
                 walk(ret, out);
             }
             IrType::Existential { bounds } => {
                 for b in bounds {
-                    for a in &b.type_args { walk(a, out); }
+                    for a in &b.type_args {
+                        walk(a, out);
+                    }
                 }
             }
-            IrType::TypeParam(_) | IrType::Unit
-            | IrType::Never | IrType::Infer | IrType::Param { .. } => {}
+            IrType::TypeParam(_)
+            | IrType::Unit
+            | IrType::Never
+            | IrType::Infer
+            | IrType::Param { .. } => {}
         }
     }
 

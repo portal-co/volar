@@ -260,7 +260,9 @@ fn dump_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
             dump_expr(out, expr, level);
             let _ = writeln!(out);
         }
-        _ => { let _ = write!(out, "<unknown-stmt>"); }
+        _ => {
+            let _ = write!(out, "<unknown-stmt>");
+        }
     }
 }
 
@@ -684,7 +686,9 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
         IrExprKind::Continue => {
             let _ = write!(out, "continue");
         }
-        _ => { let _ = write!(out, "<unknown-expr>"); }
+        _ => {
+            let _ = write!(out, "<unknown-expr>");
+        }
     }
 }
 

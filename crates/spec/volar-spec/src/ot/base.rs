@@ -39,8 +39,8 @@ use core::marker::PhantomData;
 
 use digest::Digest;
 
-use crate::SpecRng;
 use super::group::Group;
+use crate::SpecRng;
 
 /// Sender state across a single base OT instance.
 pub struct BaseOtSender<G: Group, D: Digest> {
@@ -72,7 +72,12 @@ pub fn ot_send_setup<G: Group, D: Digest, R: SpecRng>(
     let s = G::scalar_mul(&g, &y);
     let t = G::scalar_mul(&s, &y);
     (
-        BaseOtSender { y, s: s.clone(), t, _d: PhantomData },
+        BaseOtSender {
+            y,
+            s: s.clone(),
+            t,
+            _d: PhantomData,
+        },
         s,
     )
 }
@@ -92,7 +97,12 @@ pub fn ot_recv<G: Group, D: Digest, R: SpecRng>(
     let gx = G::scalar_mul(&g, &x);
     let r = if c { G::add(&s, &gx) } else { gx };
     (
-        BaseOtReceiver { x, s, c, _d: PhantomData },
+        BaseOtReceiver {
+            x,
+            s,
+            c,
+            _d: PhantomData,
+        },
         OtReceiverMsg { r },
     )
 }
@@ -120,9 +130,7 @@ pub fn ot_send_finish<G: Group, D: Digest>(
 }
 
 /// Step 3b: receiver derives `k_c = H(S^x)`.
-pub fn ot_recv_finish<G: Group, D: Digest>(
-    state: &BaseOtReceiver<G, D>,
-) -> digest::Output<D> {
+pub fn ot_recv_finish<G: Group, D: Digest>(state: &BaseOtReceiver<G, D>) -> digest::Output<D> {
     let sx = G::scalar_mul(&state.s, &state.x);
     let mut h = D::new();
     G::write_element::<D>(&sx, &mut h);
@@ -155,25 +163,27 @@ pub fn ot_send_payload<D: Digest>(
     debug_assert_eq!(m1.len(), e1.len());
     debug_assert!(m0.len() <= k0.len());
     debug_assert!(m1.len() <= k1.len());
-    for i in 0..m0.len() { e0[i] = m0[i] ^ k0[i]; }
-    for i in 0..m1.len() { e1[i] = m1[i] ^ k1[i]; }
+    for i in 0..m0.len() {
+        e0[i] = m0[i] ^ k0[i];
+    }
+    for i in 0..m1.len() {
+        e1[i] = m1[i] ^ k1[i];
+    }
 }
 
 /// Receiver-side payload decrypt: `m_c = e_c ⊕ k_c`.
-pub fn ot_recv_payload<D: Digest>(
-    kc: &digest::Output<D>,
-    ec: &[u8],
-    mc: &mut [u8],
-) {
+pub fn ot_recv_payload<D: Digest>(kc: &digest::Output<D>, ec: &[u8], mc: &mut [u8]) {
     debug_assert_eq!(ec.len(), mc.len());
     debug_assert!(ec.len() <= kc.len());
-    for i in 0..ec.len() { mc[i] = ec[i] ^ kc[i]; }
+    for i in 0..ec.len() {
+        mc[i] = ec[i] ^ kc[i];
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::group::ToyGroup;
+    use super::*;
     use sha2::Sha256;
 
     struct TestRng(u64);
@@ -188,7 +198,13 @@ mod tests {
     }
 
     /// One full base-OT exchange — receiver's key matches sender's `k_c`.
-    fn run_rot(c: bool) -> (digest::Output<Sha256>, digest::Output<Sha256>, digest::Output<Sha256>) {
+    fn run_rot(
+        c: bool,
+    ) -> (
+        digest::Output<Sha256>,
+        digest::Output<Sha256>,
+        digest::Output<Sha256>,
+    ) {
         let mut rng = TestRng(0xA5A5_A5A5_A5A5_A5A5);
         let (sender, s) = ot_send_setup::<ToyGroup, Sha256, _>(&mut rng);
         let (receiver, msg) = ot_recv::<ToyGroup, Sha256, _>(&mut rng, s, c);

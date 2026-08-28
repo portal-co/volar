@@ -56,11 +56,7 @@ pub trait LeafCommit<const SD_BYTES: usize, const COM_BYTES: usize> {
     /// Produce `(sd, com) = LeafCommit(r, iv, tweak)`. `sd` is the
     /// leaf-level VOLE seed; `com` is the binding commitment that gets
     /// hashed up the tree.
-    fn commit(
-        r: &[u8; SD_BYTES],
-        iv: &[u8; 16],
-        tweak: u32,
-    ) -> ([u8; SD_BYTES], [u8; COM_BYTES]);
+    fn commit(r: &[u8; SD_BYTES], iv: &[u8; 16], tweak: u32) -> ([u8; SD_BYTES], [u8; COM_BYTES]);
 }
 
 /// FAEST §5.1 `BAVC.LeafCommit` (Figure 5.3, top variant) — random-oracle
@@ -80,11 +76,7 @@ impl<D: Digest, const SD_BYTES: usize, const COM_BYTES: usize> LeafCommit<SD_BYT
 where
     D: Digest,
 {
-    fn commit(
-        r: &[u8; SD_BYTES],
-        iv: &[u8; 16],
-        tweak: u32,
-    ) -> ([u8; SD_BYTES], [u8; COM_BYTES]) {
+    fn commit(r: &[u8; SD_BYTES], iv: &[u8; 16], tweak: u32) -> ([u8; SD_BYTES], [u8; COM_BYTES]) {
         // Caller must pick `D` such that D::OutputSize >= SD_BYTES + COM_BYTES.
         // We panic on mismatch rather than smuggling it through the type
         // system because the const generics here can't talk to D's
@@ -124,11 +116,7 @@ pub struct EmLeafCommit;
 impl<const SD_BYTES: usize, const COM_BYTES: usize> LeafCommit<SD_BYTES, COM_BYTES>
     for EmLeafCommit
 {
-    fn commit(
-        r: &[u8; SD_BYTES],
-        iv: &[u8; 16],
-        tweak: u32,
-    ) -> ([u8; SD_BYTES], [u8; COM_BYTES]) {
+    fn commit(r: &[u8; SD_BYTES], iv: &[u8; 16], tweak: u32) -> ([u8; SD_BYTES], [u8; COM_BYTES]) {
         // EM variant requires SD_BYTES == 16 because the PRG keys with a
         // 16-byte AES key. Other parameter sets aren't supported yet.
         assert_eq!(

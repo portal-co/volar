@@ -20,8 +20,8 @@
 pub mod ideal_cot;
 pub use ideal_cot::IdealCot;
 
-pub mod group;
 pub mod base;
+pub mod group;
 pub mod iknp;
-pub mod softspoken;
 pub mod lwe;
+pub mod softspoken;

@@ -167,7 +167,9 @@ where
     N: ArraySize,
     T: Clone + Mul<Output = T>,
 {
-    Q { q: Array::<T, N>::from_fn(|i| q.q[i].clone() * c.clone()) }
+    Q {
+        q: Array::<T, N>::from_fn(|i| q.q[i].clone() * c.clone()),
+    }
 }
 
 /// In-circuit multiset-hash absorb on verifier `Q` shares (mirror of
@@ -205,10 +207,14 @@ where
     N: ArraySize,
     T: Clone + Add<Output = T> + Mul<Output = T> + Default,
 {
-    let mut acc = Q { q: Array::<T, N>::from_fn(|_| T::default()) };
+    let mut acc = Q {
+        q: Array::<T, N>::from_fn(|_| T::default()),
+    };
     for index in 0..BITS {
         let scaled = q_scale_const(&bits[index], &pow2[index]);
-        acc = Q { q: Array::<T, N>::from_fn(|i| acc.q[i].clone() + scaled.q[i].clone()) };
+        acc = Q {
+            q: Array::<T, N>::from_fn(|i| acc.q[i].clone() + scaled.q[i].clone()),
+        };
     }
     acc
 }
@@ -289,7 +295,9 @@ mod tests {
     use hybrid_array::Array;
 
     fn q<const A: u64, const B: u64>() -> Q<U2, u64> {
-        Q { q: Array::<u64, U2>::from_fn(|i| if i == 0 { A } else { B }) }
+        Q {
+            q: Array::<u64, U2>::from_fn(|i| if i == 0 { A } else { B }),
+        }
     }
 
     #[test]
@@ -297,9 +305,13 @@ mod tests {
         // Mechanical check (mirrors drain_check's test style): accept iff
         // K_w + opening == Δ lane-wise.  In GF(2^k) for a value-1 wire
         // K = M + Δ and opening = M, so K + M = Δ.
-        let delta = Delta { delta: Array::<u64, U2>::from_fn(|i| if i == 0 { 10 } else { 20 }) };
+        let delta = Delta {
+            delta: Array::<u64, U2>::from_fn(|i| if i == 0 { 10 } else { 20 }),
+        };
         let opening = Array::<u64, U2>::from_fn(|i| if i == 0 { 3 } else { 7 });
-        let k_good = Q { q: Array::<u64, U2>::from_fn(|i| delta.delta[i] - opening[i]) };
+        let k_good = Q {
+            q: Array::<u64, U2>::from_fn(|i| delta.delta[i] - opening[i]),
+        };
         assert!(assert_one_check(&k_good, &opening, &delta));
         let mut k_bad = k_good;
         k_bad.q[0] += 1; // value ≠ 1
@@ -392,7 +404,17 @@ mod tests {
         let acc = q::<0, 0>();
         // `one` (Q-share of public 1) = Δ; use Δ = [1,1] so r0·Δ = r0 in lane 0.
         let one = q::<1, 1>();
-        let out = mem_acc_absorb_q(acc, &one, &q::<1, 1>(), &q::<11, 11>(), &q::<2, 2>(), &r0, &r1, &r2, &r3);
+        let out = mem_acc_absorb_q(
+            acc,
+            &one,
+            &q::<1, 1>(),
+            &q::<11, 11>(),
+            &q::<2, 2>(),
+            &r0,
+            &r1,
+            &r2,
+            &r3,
+        );
         assert_eq!(out.q[0], 1 * r0 + 1 * r1 + 11 * r2 + 2 * r3);
     }
 

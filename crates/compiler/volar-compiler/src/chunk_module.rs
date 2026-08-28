@@ -88,44 +88,58 @@ pub fn chunk_module_rust(
     let n = chunk_modules.len();
 
     // Build per-chunk exported type-name sets.
-    let exported: Vec<BTreeSet<String>> = chunk_modules.iter().map(|m| {
-        let mut names = BTreeSet::new();
-        for s in &m.structs { names.insert(s.kind.to_string()); }
-        for t in &m.traits  { names.insert(t.kind.to_string()); }
-        names
-    }).collect();
+    let exported: Vec<BTreeSet<String>> = chunk_modules
+        .iter()
+        .map(|m| {
+            let mut names = BTreeSet::new();
+            for s in &m.structs {
+                names.insert(s.kind.to_string());
+            }
+            for t in &m.traits {
+                names.insert(t.kind.to_string());
+            }
+            names
+        })
+        .collect();
 
     // Render each chunk with intra-chunk dep imports + external remotes.
-    let chunks: Vec<String> = (0..n).map(|i| {
-        // Collect intra-chunk deps: which prior chunks does chunk i reference?
-        let refs = collect_type_refs(&chunk_modules[i]);
-        let mut intra_remotes: Vec<OwnedRemote> = Vec::new();
-        for j in 0..i {
-            let names: Vec<String> = exported[j].iter()
-                .filter(|name| refs.contains(*name))
-                .cloned()
-                .collect();
-            if !names.is_empty() {
-                intra_remotes.push(OwnedRemote {
-                    rust_crate: format!("super::chunk_{j}"),
-                    npm_package: None,
-                    type_names: names,
-                });
+    let chunks: Vec<String> = (0..n)
+        .map(|i| {
+            // Collect intra-chunk deps: which prior chunks does chunk i reference?
+            let refs = collect_type_refs(&chunk_modules[i]);
+            let mut intra_remotes: Vec<OwnedRemote> = Vec::new();
+            for j in 0..i {
+                let names: Vec<String> = exported[j]
+                    .iter()
+                    .filter(|name| refs.contains(*name))
+                    .cloned()
+                    .collect();
+                if !names.is_empty() {
+                    intra_remotes.push(OwnedRemote {
+                        rust_crate: format!("super::chunk_{j}"),
+                        npm_package: None,
+                        type_names: names,
+                    });
+                }
             }
-        }
 
-        let combined_remotes: Vec<RemoteSpecRef<'_>> = remotes.iter().map(|r| RemoteSpecRef {
-            rust_crate: r.rust_crate,
-            npm_package: r.npm_package,
-            type_names: r.type_names.clone(),
-        }).chain(intra_remotes.iter().map(|r| RemoteSpecRef {
-            rust_crate: r.rust_crate.as_str(),
-            npm_package: r.npm_package.as_deref(),
-            type_names: r.type_names.clone(),
-        })).collect();
+            let combined_remotes: Vec<RemoteSpecRef<'_>> = remotes
+                .iter()
+                .map(|r| RemoteSpecRef {
+                    rust_crate: r.rust_crate,
+                    npm_package: r.npm_package,
+                    type_names: r.type_names.clone(),
+                })
+                .chain(intra_remotes.iter().map(|r| RemoteSpecRef {
+                    rust_crate: r.rust_crate.as_str(),
+                    npm_package: r.npm_package.as_deref(),
+                    type_names: r.type_names.clone(),
+                }))
+                .collect();
 
-        print_module_with_remotes(&chunk_modules[i], &[], &combined_remotes)
-    }).collect();
+            print_module_with_remotes(&chunk_modules[i], &[], &combined_remotes)
+        })
+        .collect();
 
     // Build wrapper (mod.rs).
     let wrapper = build_rust_wrapper(n);
@@ -159,42 +173,56 @@ pub fn chunk_module_ts(
     let chunk_modules = split_module(module, config.items_per_chunk);
     let n = chunk_modules.len();
 
-    let exported: Vec<BTreeSet<String>> = chunk_modules.iter().map(|m| {
-        let mut names = BTreeSet::new();
-        for s in &m.structs { names.insert(s.kind.to_string()); }
-        for t in &m.traits  { names.insert(t.kind.to_string()); }
-        names
-    }).collect();
-
-    let chunks: Vec<String> = (0..n).map(|i| {
-        let refs = collect_type_refs(&chunk_modules[i]);
-        let mut intra_remotes: Vec<OwnedRemote> = Vec::new();
-        for j in 0..i {
-            let names: Vec<String> = exported[j].iter()
-                .filter(|name| refs.contains(*name))
-                .cloned()
-                .collect();
-            if !names.is_empty() {
-                intra_remotes.push(OwnedRemote {
-                    rust_crate: format!("./chunk_{j}"),
-                    npm_package: None,
-                    type_names: names,
-                });
+    let exported: Vec<BTreeSet<String>> = chunk_modules
+        .iter()
+        .map(|m| {
+            let mut names = BTreeSet::new();
+            for s in &m.structs {
+                names.insert(s.kind.to_string());
             }
-        }
+            for t in &m.traits {
+                names.insert(t.kind.to_string());
+            }
+            names
+        })
+        .collect();
 
-        let combined_remotes: Vec<RemoteSpecRef<'_>> = remotes.iter().map(|r| RemoteSpecRef {
-            rust_crate: r.rust_crate,
-            npm_package: r.npm_package,
-            type_names: r.type_names.clone(),
-        }).chain(intra_remotes.iter().map(|r| RemoteSpecRef {
-            rust_crate: r.rust_crate.as_str(),
-            npm_package: r.npm_package.as_deref(),
-            type_names: r.type_names.clone(),
-        })).collect();
+    let chunks: Vec<String> = (0..n)
+        .map(|i| {
+            let refs = collect_type_refs(&chunk_modules[i]);
+            let mut intra_remotes: Vec<OwnedRemote> = Vec::new();
+            for j in 0..i {
+                let names: Vec<String> = exported[j]
+                    .iter()
+                    .filter(|name| refs.contains(*name))
+                    .cloned()
+                    .collect();
+                if !names.is_empty() {
+                    intra_remotes.push(OwnedRemote {
+                        rust_crate: format!("./chunk_{j}"),
+                        npm_package: None,
+                        type_names: names,
+                    });
+                }
+            }
 
-        print_module_ts_with_imports(&chunk_modules[i], &combined_remotes)
-    }).collect();
+            let combined_remotes: Vec<RemoteSpecRef<'_>> = remotes
+                .iter()
+                .map(|r| RemoteSpecRef {
+                    rust_crate: r.rust_crate,
+                    npm_package: r.npm_package,
+                    type_names: r.type_names.clone(),
+                })
+                .chain(intra_remotes.iter().map(|r| RemoteSpecRef {
+                    rust_crate: r.rust_crate.as_str(),
+                    npm_package: r.npm_package.as_deref(),
+                    type_names: r.type_names.clone(),
+                }))
+                .collect();
+
+            print_module_ts_with_imports(&chunk_modules[i], &combined_remotes)
+        })
+        .collect();
 
     let wrapper = build_ts_wrapper(n);
 
@@ -218,10 +246,17 @@ fn build_ts_wrapper(n: usize) -> String {
 /// chunk_0 gets all types (structs, enums, traits, type_aliases, consts) plus
 /// the first `items_per_chunk` functions.  Subsequent chunks get pure function
 /// slices.  Always returns at least one chunk.
-fn split_module(module: &IrModule<IrFunction>, items_per_chunk: usize) -> Vec<IrModule<IrFunction>> {
+fn split_module(
+    module: &IrModule<IrFunction>,
+    items_per_chunk: usize,
+) -> Vec<IrModule<IrFunction>> {
     let per_chunk = items_per_chunk.max(1);
     let fns = &module.functions;
-    let num_chunks = if fns.is_empty() { 1 } else { (fns.len() + per_chunk - 1) / per_chunk };
+    let num_chunks = if fns.is_empty() {
+        1
+    } else {
+        (fns.len() + per_chunk - 1) / per_chunk
+    };
 
     let mut chunks: Vec<IrModule<IrFunction>> = Vec::with_capacity(num_chunks);
 
@@ -255,17 +290,28 @@ fn split_module(module: &IrModule<IrFunction>, items_per_chunk: usize) -> Vec<Ir
     // sort for correctness when items_per_chunk is very large or types
     // reference each other across chunks).
     let n = chunks.len();
-    let exported: Vec<BTreeSet<String>> = chunks.iter().map(|m| {
-        let mut names = BTreeSet::new();
-        for s in &m.structs { names.insert(s.kind.to_string()); }
-        for t in &m.traits  { names.insert(t.kind.to_string()); }
-        names
-    }).collect();
+    let exported: Vec<BTreeSet<String>> = chunks
+        .iter()
+        .map(|m| {
+            let mut names = BTreeSet::new();
+            for s in &m.structs {
+                names.insert(s.kind.to_string());
+            }
+            for t in &m.traits {
+                names.insert(t.kind.to_string());
+            }
+            names
+        })
+        .collect();
 
-    let deps: Vec<Vec<usize>> = (0..n).map(|i| {
-        let refs = collect_type_refs(&chunks[i]);
-        (0..n).filter(|&j| j != i && exported[j].iter().any(|name| refs.contains(name))).collect()
-    }).collect();
+    let deps: Vec<Vec<usize>> = (0..n)
+        .map(|i| {
+            let refs = collect_type_refs(&chunks[i]);
+            (0..n)
+                .filter(|&j| j != i && exported[j].iter().any(|name| refs.contains(name)))
+                .collect()
+        })
+        .collect();
 
     let order = topo_sort(n, &deps);
     order.into_iter().map(|i| chunks[i].clone()).collect()

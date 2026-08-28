@@ -110,7 +110,10 @@ pub enum Slot {
 
 fn slot_from_ty(local_name: &str, ty: &IrType) -> Slot {
     match ty {
-        IrType::Array { len: ArrayLength::Const(n), .. } => Slot::Array(local_name.to_string(), *n),
+        IrType::Array {
+            len: ArrayLength::Const(n),
+            ..
+        } => Slot::Array(local_name.to_string(), *n),
         _ => Slot::Scalar(local_name.to_string()),
     }
 }
@@ -163,14 +166,31 @@ fn tuple_elems(ty: &IrType) -> Vec<IrType> {
 /// already bound to that whole (possibly-tuple) `output` value; this
 /// destructures it into one fresh, individually-addressable `Slot` per
 /// terminator return arg.
-fn destructure_finish_output(stmts: &mut Vec<IrStmt>, f: &IrFunction, state_local: &str, uid: &str) -> Vec<Slot> {
-    let output_ty = tuple_elems(f.return_type.as_ref().expect("finish function must have a return type"))
-        .into_iter().next().expect("finish function's return type must have an output element");
+fn destructure_finish_output(
+    stmts: &mut Vec<IrStmt>,
+    f: &IrFunction,
+    state_local: &str,
+    uid: &str,
+) -> Vec<Slot> {
+    let output_ty = tuple_elems(
+        f.return_type
+            .as_ref()
+            .expect("finish function must have a return type"),
+    )
+    .into_iter()
+    .next()
+    .expect("finish function's return type must have an output element");
     match output_ty {
         IrType::Tuple(elem_tys) => {
-            let names: Vec<String> = (0..elem_tys.len()).map(|k| format!("_{uid}_out_{k}")).collect();
+            let names: Vec<String> = (0..elem_tys.len())
+                .map(|k| format!("_{uid}_out_{k}"))
+                .collect();
             stmts.push(let_tuple_stmt(&names, var(state_local)));
-            names.iter().zip(elem_tys.iter()).map(|(n, ty)| slot_from_ty(n, ty)).collect()
+            names
+                .iter()
+                .zip(elem_tys.iter())
+                .map(|(n, ty)| slot_from_ty(n, ty))
+                .collect()
         }
         other => vec![slot_from_ty(state_local, &other)],
     }
@@ -181,7 +201,10 @@ fn destructure_finish_output(stmts: &mut Vec<IrStmt>, f: &IrFunction, state_loca
 /// scalar param per read; oracle reads aren't array-batched), directly
 /// from its own real signature (never assumed).
 fn count_params_prefixed(f: &IrFunction, prefix: &str) -> usize {
-    f.params.iter().filter(|p| p.name.starts_with(prefix)).count()
+    f.params
+        .iter()
+        .filter(|p| p.name.starts_with(prefix))
+        .count()
 }
 
 /// This function's own per-gate AND-check count -- read back from its
@@ -191,7 +214,10 @@ fn count_params_prefixed(f: &IrFunction, prefix: &str) -> usize {
 fn and_count_of(f: &IrFunction) -> usize {
     match f.params.iter().find(|p| p.name == "q_and") {
         Some(p) => match &p.ty {
-            IrType::Array { len: ArrayLength::Const(n), .. } => *n,
+            IrType::Array {
+                len: ArrayLength::Const(n),
+                ..
+            } => *n,
             other => panic!("expected q_and to be an array param, got {other:?}"),
         },
         None => 0,
@@ -210,7 +236,10 @@ fn slot_widths_from_params(f: &IrFunction, prefix: &str, n_slots: usize) -> Vec<
         if let Some(rest) = p.name.strip_prefix(prefix) {
             let k: usize = rest.parse().unwrap();
             widths[k] = match &p.ty {
-                IrType::Array { len: ArrayLength::Const(n), .. } => *n,
+                IrType::Array {
+                    len: ArrayLength::Const(n),
+                    ..
+                } => *n,
                 _ => 1,
             };
         }
@@ -292,8 +321,17 @@ pub fn generate_split_step(
     step_expr: &str,
 ) -> StepResult {
     let ir = generate_split_step_ir(
-        prover_funcs, qsim_funcs, verifier_funcs, boundary, accum_info, n_chunks, total_vars,
-        entry_w, all_ok_fold_state_in, oracle_bit_exprs, step_expr,
+        prover_funcs,
+        qsim_funcs,
+        verifier_funcs,
+        boundary,
+        accum_info,
+        n_chunks,
+        total_vars,
+        entry_w,
+        all_ok_fold_state_in,
+        oracle_bit_exprs,
+        step_expr,
     );
     StepResult {
         stmts: print_stmts(&ir.stmts),
@@ -334,8 +372,14 @@ pub fn generate_split_step_ir(
     let (mut all_ok_expr, mut fold_state_expr) = match &all_ok_fold_state_in {
         Some((a, f)) => (a.clone(), f.clone()),
         None => {
-            stmts.push(let_stmt("_all_ok_init", ir_expr(IrExprKind::Lit(IrLit::Bool(true)))));
-            stmts.push(let_stmt("_fold_state_init", call_expr("iop_accumulator_fresh", vec![])));
+            stmts.push(let_stmt(
+                "_all_ok_init",
+                ir_expr(IrExprKind::Lit(IrLit::Bool(true))),
+            ));
+            stmts.push(let_stmt(
+                "_fold_state_init",
+                call_expr("iop_accumulator_fresh", vec![]),
+            ));
             ("_all_ok_init".to_string(), "_fold_state_init".to_string())
         }
     };
@@ -358,7 +402,10 @@ pub fn generate_split_step_ir(
     // masked by an earlier step's own writes. Statically sized via `Box`
     // (see `ir_builder::synth_pool_decl_stmts`), not `Vec` -- the same
     // heap-allocation abstraction `volar-weaver`'s own pools use.
-    let synth_pool_active = prover_funcs.iter().chain(qsim_funcs).chain(verifier_funcs)
+    let synth_pool_active = prover_funcs
+        .iter()
+        .chain(qsim_funcs)
+        .chain(verifier_funcs)
         .any(|f| f.params.iter().any(|p| p.name == "_synth_pool"));
     if synth_pool_active {
         stmts.extend(synth_pool_decl_stmts(total_vars));
@@ -405,12 +452,18 @@ pub fn generate_split_step_ir(
     // makes wherever it appears), so if a var/category is ever unpooled,
     // every real consumer has the matching named param; if it's pooled,
     // none does (consumers read `_synth_pool[v]` directly instead).
-    let named_param_present: std::collections::BTreeSet<String> = prover_funcs.iter().chain(qsim_funcs).chain(verifier_funcs)
+    let named_param_present: std::collections::BTreeSet<String> = prover_funcs
+        .iter()
+        .chain(qsim_funcs)
+        .chain(verifier_funcs)
         .flat_map(|f| f.params.iter())
         .map(|p| p.name.clone())
         .collect();
     let unpooled_synth_out = |all: &[u32]| -> Vec<u32> {
-        all.iter().copied().filter(|v| named_param_present.contains(&format!("synth_{v}"))).collect()
+        all.iter()
+            .copied()
+            .filter(|v| named_param_present.contains(&format!("synth_{v}")))
+            .collect()
     };
     // Take the next slot from `slots[*idx]` and advance `idx`, but only
     // if `name` is still a real, tuple-threaded param somewhere (i.e.
@@ -421,7 +474,12 @@ pub fn generate_split_step_ir(
     // reads `_synth_pool[v]` directly rather than taking a named param,
     // so `exported_vope`/`exported_q`/`running_in` never need (or get) an
     // entry for it.
-    fn take_if_named(slots: &[Slot], idx: &mut usize, named_param_present: &std::collections::BTreeSet<String>, name: &str) -> Option<Slot> {
+    fn take_if_named(
+        slots: &[Slot],
+        idx: &mut usize,
+        named_param_present: &std::collections::BTreeSet<String>,
+        name: &str,
+    ) -> Option<Slot> {
         if named_param_present.contains(name) {
             let s = slots[*idx].clone();
             *idx += 1;
@@ -444,9 +502,16 @@ pub fn generate_split_step_ir(
         for (j, bit_expr) in bit_exprs.iter().enumerate() {
             let vn = format!("_orv_{uid}_{j}");
             let qn = format!("_orq_{uid}_{j}");
-            let call = call_expr("vole_commit_bit", vec![
-                ref_expr(var("cot")), ref_mut_expr(var("rng")), var("sample_g"), var("lift_bit_g"), parse_leaf_expr(bit_expr),
-            ]);
+            let call = call_expr(
+                "vole_commit_bit",
+                vec![
+                    ref_expr(var("cot")),
+                    ref_mut_expr(var("rng")),
+                    var("sample_g"),
+                    var("lift_bit_g"),
+                    parse_leaf_expr(bit_expr),
+                ],
+            );
             stmts.push(let_tuple_stmt(&[vn.clone(), qn.clone()], call));
             vope_names.push(vn);
             q_names.push(qn);
@@ -455,8 +520,14 @@ pub fn generate_split_step_ir(
         // handling is uniform regardless of width.
         let vope_arr = format!("_orv_{uid}_arr");
         let q_arr = format!("_orq_{uid}_arr");
-        stmts.push(let_stmt(&vope_arr, array_lit_expr(vope_names.iter().map(|n| clone_var(n)).collect())));
-        stmts.push(let_stmt(&q_arr, array_lit_expr(q_names.iter().map(|n| clone_var(n)).collect())));
+        stmts.push(let_stmt(
+            &vope_arr,
+            array_lit_expr(vope_names.iter().map(|n| clone_var(n)).collect()),
+        ));
+        stmts.push(let_stmt(
+            &q_arr,
+            array_lit_expr(q_names.iter().map(|n| clone_var(n)).collect()),
+        ));
         (vope_arr, q_arr)
     };
 
@@ -475,10 +546,10 @@ pub fn generate_split_step_ir(
         stmts: &mut Vec<IrStmt>,
         f: &IrFunction,
         entry_w: &[(Slot, Slot)],
-        entry_w_index: usize, // 0 = vope side, 1 = q side
+        entry_w_index: usize,    // 0 = vope side, 1 = q side
         hat_in: Option<&Slot>, // hat_k input array: qsim consumes the prover's hats; verifier does too (both hat_k and q_and_k are separate verifier params)
         q_and_in: Option<&Slot>, // q_and_k input array: verifier only, sourced from qsim's own output
-        r_ands: Option<&str>, // verifier only: name of a pre-bound [Gf128; n] local
+        r_ands: Option<&str>,    // verifier only: name of a pre-bound [Gf128; n] local
         running_in: Option<(&str, &str, &str, &str)>, // (done_acc, next_pc_arr, next_state_arr_of_arrs, ret_val_arr_of_arrs) local names, chunk/finish only
         block_exports: &BTreeMap<String, Slot>,
         synth_exported: &BTreeMap<u32, Slot>, // cross-chunk-shared values, keyed by var id -- see its own declaration site
@@ -490,9 +561,18 @@ pub fn generate_split_step_ir(
         let mut args: Vec<IrExpr> = Vec::new();
         for p in &f.params {
             let n = &p.name;
-            if n == "delta" { args.push(ref_expr(var("delta"))); continue; }
-            if n == "vope_one" { args.push(call_expr("vope_one", vec![ref_expr(var("delta"))])); continue; }
-            if n == "q_one" { args.push(call_expr("q_one", vec![ref_expr(var("delta"))])); continue; }
+            if n == "delta" {
+                args.push(ref_expr(var("delta")));
+                continue;
+            }
+            if n == "vope_one" {
+                args.push(call_expr("vope_one", vec![ref_expr(var("delta"))]));
+                continue;
+            }
+            if n == "q_one" {
+                args.push(call_expr("q_one", vec![ref_expr(var("delta"))]));
+                continue;
+            }
             if n == "hat" {
                 let arr = hat_in.expect("hat param but no hat input array given");
                 match arr {
@@ -519,7 +599,11 @@ pub fn generate_split_step_ir(
                 // array-batched (one `w_{i}: [T; width]` param), no more
                 // `w_{i}_{j}` per-lane scalars.
                 let i: usize = n["w_".len()..].parse().unwrap();
-                let slot = if entry_w_index == 0 { &entry_w[i].0 } else { &entry_w[i].1 };
+                let slot = if entry_w_index == 0 {
+                    &entry_w[i].0
+                } else {
+                    &entry_w[i].1
+                };
                 args.push(slot_clone_expr(slot));
                 continue;
             }
@@ -533,11 +617,19 @@ pub fn generate_split_step_ir(
             // all -- unlike `is_active_*`/`synth_{v}`, this is not a
             // per-value named param, just a shared handle passed once.
             if n == "_synth_pool" {
-                args.push(slice_ref_mut_expr(if entry_w_index == 0 { "_synth_pool_vope" } else { "_synth_pool_q" }));
+                args.push(slice_ref_mut_expr(if entry_w_index == 0 {
+                    "_synth_pool_vope"
+                } else {
+                    "_synth_pool_q"
+                }));
                 continue;
             }
             if n == "_synth_pool_written" {
-                args.push(slice_ref_mut_expr(if entry_w_index == 0 { "_synth_pool_vope_written" } else { "_synth_pool_q_written" }));
+                args.push(slice_ref_mut_expr(if entry_w_index == 0 {
+                    "_synth_pool_vope_written"
+                } else {
+                    "_synth_pool_q_written"
+                }));
                 continue;
             }
             // Phase B (`w_i` pooling): same dispatch shape as `_synth_pool`
@@ -549,11 +641,19 @@ pub fn generate_split_step_ir(
             // itself never emits this pool's own declaration; it just
             // references `_w_pool_vope`/`_w_pool_q` as already in scope.
             if n == "_w_pool" {
-                args.push(slice_ref_mut_expr(if entry_w_index == 0 { "_w_pool_vope" } else { "_w_pool_q" }));
+                args.push(slice_ref_mut_expr(if entry_w_index == 0 {
+                    "_w_pool_vope"
+                } else {
+                    "_w_pool_q"
+                }));
                 continue;
             }
             if n == "_w_pool_written" {
-                args.push(slice_ref_mut_expr(if entry_w_index == 0 { "_w_pool_vope_written" } else { "_w_pool_q_written" }));
+                args.push(slice_ref_mut_expr(if entry_w_index == 0 {
+                    "_w_pool_vope_written"
+                } else {
+                    "_w_pool_q_written"
+                }));
                 continue;
             }
             if n.starts_with("oracle_rd_") {
@@ -562,10 +662,18 @@ pub fn generate_split_step_ir(
                 args.push(clone_expr(index_lit_expr(arr, idx)));
                 continue;
             }
-            if n == "all_ok_in" { args.push(var(all_ok_in)); continue; }
-            if n == "fold_state_in" { args.push(var(fold_state_in)); continue; }
+            if n == "all_ok_in" {
+                args.push(var(all_ok_in));
+                continue;
+            }
+            if n == "fold_state_in" {
+                args.push(var(fold_state_in));
+                continue;
+            }
             if n.starts_with("in_done_acc") {
-                args.push(clone_var(running_in.expect("running accumulator input expected").0));
+                args.push(clone_var(
+                    running_in.expect("running accumulator input expected").0,
+                ));
                 continue;
             }
             if n.starts_with("in_next_pc_") {
@@ -596,10 +704,15 @@ pub fn generate_split_step_ir(
                 args.push(clone_expr_of(field_expr(tup, &m.to_string())));
                 continue;
             }
-            if n.starts_with("is_active_") || n.starts_with("done_")
-                || n.starts_with("next_pc_") || n.starts_with("next_state_") || n.starts_with("ret_val_")
+            if n.starts_with("is_active_")
+                || n.starts_with("done_")
+                || n.starts_with("next_pc_")
+                || n.starts_with("next_state_")
+                || n.starts_with("ret_val_")
             {
-                let slot = block_exports.get(n).unwrap_or_else(|| panic!("missing export for param {n}"));
+                let slot = block_exports
+                    .get(n)
+                    .unwrap_or_else(|| panic!("missing export for param {n}"));
                 // `bind_scalar` array-batches a wide export into one param
                 // (no per-lane `_{j}` suffix), so `slot` may be a whole
                 // array here -- clone it directly either way.
@@ -607,7 +720,9 @@ pub fn generate_split_step_ir(
                 continue;
             }
             if let Some(rest) = n.strip_prefix("synth_") {
-                let v: u32 = rest.parse().unwrap_or_else(|_| panic!("malformed synthetic param name: {n}"));
+                let v: u32 = rest
+                    .parse()
+                    .unwrap_or_else(|_| panic!("malformed synthetic param name: {n}"));
                 let slot = synth_exported.get(&v).unwrap_or_else(|| panic!(
                     "missing synthetic export for var {v} (param {n}) -- its own producer range must be called before this consumer, in real driver call order"
                 ));
@@ -617,18 +732,29 @@ pub fn generate_split_step_ir(
             panic!("unrecognized param name: {n}");
         }
 
-        let ret_ty = f.return_type.as_ref().expect("woven function must have a return type");
+        let ret_ty = f
+            .return_type
+            .as_ref()
+            .expect("woven function must have a return type");
         let elems = tuple_elems(ret_ty);
         let call = call_expr(&f.name, args);
         let n_locals = elems.len();
-        let local_names: Vec<String> = (0..n_locals).map(|i| format!("_r_{call_uid}_{i}")).collect();
+        let local_names: Vec<String> = (0..n_locals)
+            .map(|i| format!("_r_{call_uid}_{i}"))
+            .collect();
         if n_locals == 1 {
             stmts.push(let_stmt(&local_names[0], call));
         } else {
             stmts.push(let_tuple_stmt(&local_names, call));
         }
-        let slots: Vec<Slot> = local_names.iter().zip(elems.iter()).map(|(n, ty)| slot_from_ty(n, ty)).collect();
-        CallOutcome { finish_output: slots }
+        let slots: Vec<Slot> = local_names
+            .iter()
+            .zip(elems.iter())
+            .map(|(n, ty)| slot_from_ty(n, ty))
+            .collect();
+        CallOutcome {
+            finish_output: slots,
+        }
     }
 
     // `<expr>.clone()` for an already-built expression (`field_expr`'s own
@@ -657,12 +783,26 @@ pub fn generate_split_step_ir(
         let (oracle_vope, oracle_q) = if local_oracle_count > 0 {
             let (v, q) = emit_oracle(&mut stmts, &uid);
             (Some(v), Some(q))
-        } else { (None, None) };
+        } else {
+            (None, None)
+        };
 
         // Prover.
         let p_outcome = build_call(
-            &mut stmts, pf, entry_w, 0, None, None, None, None, &exported_vope, &synth_exported_vope,
-            "", "", oracle_vope.as_deref(), &format!("p_{uid}"),
+            &mut stmts,
+            pf,
+            entry_w,
+            0,
+            None,
+            None,
+            None,
+            None,
+            &exported_vope,
+            &synth_exported_vope,
+            "",
+            "",
+            oracle_vope.as_deref(),
+            &format!("p_{uid}"),
         );
         let p_slots = p_outcome.finish_output;
         // Layout: [is_active, done, next_pc.., next_state.., ret_vals.., hats, synth_out..] --
@@ -670,24 +810,81 @@ pub fn generate_split_step_ir(
         // over entirely (see its own doc, and `unpooled_synth_out`'s
         // matching reasoning below).
         let mut idx = 0usize;
-        let p_is_active = take_if_named(&p_slots, &mut idx, &named_param_present, &format!("is_active_{i}"));
-        let p_done = take_if_named(&p_slots, &mut idx, &named_param_present, &format!("done_{i}"));
-        let p_next_pc: Vec<Option<Slot>> = (0..n_pc).map(|j| take_if_named(&p_slots, &mut idx, &named_param_present, &format!("next_pc_{i}_{j}"))).collect();
-        let p_next_state: Vec<Option<Slot>> = (0..n_state).map(|k| take_if_named(&p_slots, &mut idx, &named_param_present, &format!("next_state_{i}_{k}"))).collect();
-        let p_ret_vals: Vec<Option<Slot>> = (0..n_ret).map(|m| take_if_named(&p_slots, &mut idx, &named_param_present, &format!("ret_val_{i}_{m}"))).collect();
-        let p_hats = p_slots[idx].clone(); idx += 1;
+        let p_is_active = take_if_named(
+            &p_slots,
+            &mut idx,
+            &named_param_present,
+            &format!("is_active_{i}"),
+        );
+        let p_done = take_if_named(
+            &p_slots,
+            &mut idx,
+            &named_param_present,
+            &format!("done_{i}"),
+        );
+        let p_next_pc: Vec<Option<Slot>> = (0..n_pc)
+            .map(|j| {
+                take_if_named(
+                    &p_slots,
+                    &mut idx,
+                    &named_param_present,
+                    &format!("next_pc_{i}_{j}"),
+                )
+            })
+            .collect();
+        let p_next_state: Vec<Option<Slot>> = (0..n_state)
+            .map(|k| {
+                take_if_named(
+                    &p_slots,
+                    &mut idx,
+                    &named_param_present,
+                    &format!("next_state_{i}_{k}"),
+                )
+            })
+            .collect();
+        let p_ret_vals: Vec<Option<Slot>> = (0..n_ret)
+            .map(|m| {
+                take_if_named(
+                    &p_slots,
+                    &mut idx,
+                    &named_param_present,
+                    &format!("ret_val_{i}_{m}"),
+                )
+            })
+            .collect();
+        let p_hats = p_slots[idx].clone();
+        idx += 1;
         let p_synth_out = unpooled_synth_out(&b.synthetic_out);
-        assert_eq!(p_synth_out.len(), p_slots.len() - idx, "block {i}: prover unpooled synth_out count must match trailing tuple slots");
+        assert_eq!(
+            p_synth_out.len(),
+            p_slots.len() - idx,
+            "block {i}: prover unpooled synth_out count must match trailing tuple slots"
+        );
         for (&v, s) in p_synth_out.iter().zip(&p_slots[idx..]) {
             insert_synth_export(&mut synth_exported_vope, v, s.clone());
         }
 
         // QSim: consumes prover's hats as hat_k input.
         let local_oracle_count_q = count_params_prefixed(qf, "oracle_rd_");
-        assert_eq!(local_oracle_count_q, local_oracle_count, "block {i}: qsim/prover oracle count mismatch");
+        assert_eq!(
+            local_oracle_count_q, local_oracle_count,
+            "block {i}: qsim/prover oracle count mismatch"
+        );
         let q_outcome = build_call(
-            &mut stmts, qf, entry_w, 1, Some(&p_hats), None, None, None, &exported_q, &synth_exported_q,
-            "", "", oracle_q.as_deref(), &format!("q_{uid}"),
+            &mut stmts,
+            qf,
+            entry_w,
+            1,
+            Some(&p_hats),
+            None,
+            None,
+            None,
+            &exported_q,
+            &synth_exported_q,
+            "",
+            "",
+            oracle_q.as_deref(),
+            &format!("q_{uid}"),
         );
         let q_slots = q_outcome.finish_output;
         // QSim's own is_active/done/next_pc/next_state/ret_vals values are
@@ -696,11 +893,42 @@ pub fn generate_split_step_ir(
         // whichever of them are NOT pooled, to land on `q_and_arr` at the
         // right position.
         let mut idx = 0usize;
-        let _q_is_active = take_if_named(&q_slots, &mut idx, &named_param_present, &format!("is_active_{i}"));
-        let _q_done = take_if_named(&q_slots, &mut idx, &named_param_present, &format!("done_{i}"));
-        for j in 0..n_pc { take_if_named(&q_slots, &mut idx, &named_param_present, &format!("next_pc_{i}_{j}")); }
-        for k in 0..n_state { take_if_named(&q_slots, &mut idx, &named_param_present, &format!("next_state_{i}_{k}")); }
-        for m in 0..n_ret { take_if_named(&q_slots, &mut idx, &named_param_present, &format!("ret_val_{i}_{m}")); }
+        let _q_is_active = take_if_named(
+            &q_slots,
+            &mut idx,
+            &named_param_present,
+            &format!("is_active_{i}"),
+        );
+        let _q_done = take_if_named(
+            &q_slots,
+            &mut idx,
+            &named_param_present,
+            &format!("done_{i}"),
+        );
+        for j in 0..n_pc {
+            take_if_named(
+                &q_slots,
+                &mut idx,
+                &named_param_present,
+                &format!("next_pc_{i}_{j}"),
+            );
+        }
+        for k in 0..n_state {
+            take_if_named(
+                &q_slots,
+                &mut idx,
+                &named_param_present,
+                &format!("next_state_{i}_{k}"),
+            );
+        }
+        for m in 0..n_ret {
+            take_if_named(
+                &q_slots,
+                &mut idx,
+                &named_param_present,
+                &format!("ret_val_{i}_{m}"),
+            );
+        }
         let q_and_arr = q_slots[idx].clone();
         // QSim's own synthetic outputs are discarded, same as its is_active/done/etc above.
 
@@ -708,30 +936,102 @@ pub fn generate_split_step_ir(
         let and_count = and_count_of(vf);
         let r_ands_name = format!("_rands_{uid}");
         and_gate_seed += 1;
-        stmts.push(r_ands_decl_stmt(&r_ands_name, and_count, step_expr, and_gate_seed));
+        stmts.push(r_ands_decl_stmt(
+            &r_ands_name,
+            and_count,
+            step_expr,
+            and_gate_seed,
+        ));
 
         let local_oracle_count_v = count_params_prefixed(vf, "oracle_rd_");
-        assert_eq!(local_oracle_count_v, local_oracle_count, "block {i}: verifier/prover oracle count mismatch");
+        assert_eq!(
+            local_oracle_count_v, local_oracle_count,
+            "block {i}: verifier/prover oracle count mismatch"
+        );
         let v_outcome = build_call(
-            &mut stmts, vf, entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), None, &exported_q, &synth_exported_q,
-            &all_ok_expr, &fold_state_expr, oracle_q.as_deref(), &format!("v_{uid}"),
+            &mut stmts,
+            vf,
+            entry_w,
+            1,
+            Some(&p_hats),
+            Some(&q_and_arr),
+            Some(&r_ands_name),
+            None,
+            &exported_q,
+            &synth_exported_q,
+            &all_ok_expr,
+            &fold_state_expr,
+            oracle_q.as_deref(),
+            &format!("v_{uid}"),
         );
         let v_slots = v_outcome.finish_output;
         let mut idx = 0usize;
-        let v_is_active = take_if_named(&v_slots, &mut idx, &named_param_present, &format!("is_active_{i}"));
-        let v_done = take_if_named(&v_slots, &mut idx, &named_param_present, &format!("done_{i}"));
-        let v_next_pc: Vec<Option<Slot>> = (0..n_pc).map(|j| take_if_named(&v_slots, &mut idx, &named_param_present, &format!("next_pc_{i}_{j}"))).collect();
-        let v_next_state: Vec<Option<Slot>> = (0..n_state).map(|k| take_if_named(&v_slots, &mut idx, &named_param_present, &format!("next_state_{i}_{k}"))).collect();
-        let v_ret_vals: Vec<Option<Slot>> = (0..n_ret).map(|m| take_if_named(&v_slots, &mut idx, &named_param_present, &format!("ret_val_{i}_{m}"))).collect();
-        let v_all_ok = match &v_slots[idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; idx += 1;
-        let v_fold_state = match &v_slots[idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; idx += 1;
+        let v_is_active = take_if_named(
+            &v_slots,
+            &mut idx,
+            &named_param_present,
+            &format!("is_active_{i}"),
+        );
+        let v_done = take_if_named(
+            &v_slots,
+            &mut idx,
+            &named_param_present,
+            &format!("done_{i}"),
+        );
+        let v_next_pc: Vec<Option<Slot>> = (0..n_pc)
+            .map(|j| {
+                take_if_named(
+                    &v_slots,
+                    &mut idx,
+                    &named_param_present,
+                    &format!("next_pc_{i}_{j}"),
+                )
+            })
+            .collect();
+        let v_next_state: Vec<Option<Slot>> = (0..n_state)
+            .map(|k| {
+                take_if_named(
+                    &v_slots,
+                    &mut idx,
+                    &named_param_present,
+                    &format!("next_state_{i}_{k}"),
+                )
+            })
+            .collect();
+        let v_ret_vals: Vec<Option<Slot>> = (0..n_ret)
+            .map(|m| {
+                take_if_named(
+                    &v_slots,
+                    &mut idx,
+                    &named_param_present,
+                    &format!("ret_val_{i}_{m}"),
+                )
+            })
+            .collect();
+        let v_all_ok = match &v_slots[idx] {
+            Slot::Scalar(n) => n.clone(),
+            _ => unreachable!(),
+        };
+        idx += 1;
+        let v_fold_state = match &v_slots[idx] {
+            Slot::Scalar(n) => n.clone(),
+            _ => unreachable!(),
+        };
+        idx += 1;
         let v_synth_out = unpooled_synth_out(&b.synthetic_out);
-        assert_eq!(v_synth_out.len(), v_slots.len() - idx, "block {i}: verifier unpooled synth_out count must match trailing tuple slots");
+        assert_eq!(
+            v_synth_out.len(),
+            v_slots.len() - idx,
+            "block {i}: verifier unpooled synth_out count must match trailing tuple slots"
+        );
         for (&v, s) in v_synth_out.iter().zip(&v_slots[idx..]) {
             insert_synth_export(&mut synth_exported_q, v, s.clone());
         }
 
-        stmts.push(assert_true_stmt(var(&v_all_ok), &format!("block {i}: honest run must pass the woven verifier's own check")));
+        stmts.push(assert_true_stmt(
+            var(&v_all_ok),
+            &format!("block {i}: honest run must pass the woven verifier's own check"),
+        ));
         all_ok_expr = v_all_ok;
         fold_state_expr = v_fold_state;
 
@@ -744,28 +1044,48 @@ pub fn generate_split_step_ir(
         // map insertion at all -- its consumer reads `_synth_pool[v]`
         // directly instead of taking a named param, so nothing ever looks
         // it up in `exported_vope`/`exported_q`.
-        if let Some(s) = p_is_active { insert_export(&mut exported_vope, format!("is_active_{i}"), s); }
-        if let Some(s) = p_done { insert_export(&mut exported_vope, format!("done_{i}"), s); }
+        if let Some(s) = p_is_active {
+            insert_export(&mut exported_vope, format!("is_active_{i}"), s);
+        }
+        if let Some(s) = p_done {
+            insert_export(&mut exported_vope, format!("done_{i}"), s);
+        }
         for (j, s) in p_next_pc.into_iter().enumerate() {
-            if let Some(s) = s { insert_export(&mut exported_vope, format!("next_pc_{i}_{j}"), s); }
+            if let Some(s) = s {
+                insert_export(&mut exported_vope, format!("next_pc_{i}_{j}"), s);
+            }
         }
         for (k, s) in p_next_state.into_iter().enumerate() {
-            if let Some(s) = s { insert_export(&mut exported_vope, format!("next_state_{i}_{k}"), s); }
+            if let Some(s) = s {
+                insert_export(&mut exported_vope, format!("next_state_{i}_{k}"), s);
+            }
         }
         for (m, s) in p_ret_vals.into_iter().enumerate() {
-            if let Some(s) = s { insert_export(&mut exported_vope, format!("ret_val_{i}_{m}"), s); }
+            if let Some(s) = s {
+                insert_export(&mut exported_vope, format!("ret_val_{i}_{m}"), s);
+            }
         }
 
-        if let Some(s) = v_is_active { insert_export(&mut exported_q, format!("is_active_{i}"), s); }
-        if let Some(s) = v_done { insert_export(&mut exported_q, format!("done_{i}"), s); }
+        if let Some(s) = v_is_active {
+            insert_export(&mut exported_q, format!("is_active_{i}"), s);
+        }
+        if let Some(s) = v_done {
+            insert_export(&mut exported_q, format!("done_{i}"), s);
+        }
         for (j, s) in v_next_pc.into_iter().enumerate() {
-            if let Some(s) = s { insert_export(&mut exported_q, format!("next_pc_{i}_{j}"), s); }
+            if let Some(s) = s {
+                insert_export(&mut exported_q, format!("next_pc_{i}_{j}"), s);
+            }
         }
         for (k, s) in v_next_state.into_iter().enumerate() {
-            if let Some(s) = s { insert_export(&mut exported_q, format!("next_state_{i}_{k}"), s); }
+            if let Some(s) = s {
+                insert_export(&mut exported_q, format!("next_state_{i}_{k}"), s);
+            }
         }
         for (m, s) in v_ret_vals.into_iter().enumerate() {
-            if let Some(s) = s { insert_export(&mut exported_q, format!("ret_val_{i}_{m}"), s); }
+            if let Some(s) = s {
+                insert_export(&mut exported_q, format!("ret_val_{i}_{m}"), s);
+            }
         }
     }
 
@@ -790,27 +1110,39 @@ pub fn generate_split_step_ir(
     let mut running_next_pc_q = "_acc_init_pc_q".to_string();
     let mut running_next_state_q = "_acc_init_state_q".to_string();
     let mut running_ret_vals_q = "_acc_init_ret_q".to_string();
-    stmts.push(let_stmt(&running_done_acc_vope, call_expr("vope_zero", vec![])));
+    stmts.push(let_stmt(
+        &running_done_acc_vope,
+        call_expr("vope_zero", vec![]),
+    ));
     stmts.push(let_stmt(&running_done_acc_q, call_expr("q_zero", vec![])));
     let vope_n_ty = IrType::Struct {
         kind: volar_compiler::ir::StructKind::Custom("Vope".into()),
         type_args: vec![
-            IrType::TypeParam("N".into()), IrType::TypeParam("Galois".into()), IrType::TypeParam("cipher::consts::U1".into()),
+            IrType::TypeParam("N".into()),
+            IrType::TypeParam("Galois".into()),
+            IrType::TypeParam("cipher::consts::U1".into()),
         ],
     };
     let q_n_ty = IrType::Struct {
         kind: volar_compiler::ir::StructKind::Custom("Q".into()),
-        type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("Galois".into())],
+        type_args: vec![
+            IrType::TypeParam("N".into()),
+            IrType::TypeParam("Galois".into()),
+        ],
     };
     let fixed_array_ty = |elem: IrType, n: usize| IrType::Array {
-        kind: volar_compiler::ir::ArrayKind::FixedArray, elem: Box::new(elem), len: ArrayLength::Const(n),
+        kind: volar_compiler::ir::ArrayKind::FixedArray,
+        elem: Box::new(elem),
+        len: ArrayLength::Const(n),
     };
     stmts.push(let_typed_stmt(
-        &running_next_pc_vope, fixed_array_ty(vope_n_ty.clone(), accum_info.init.next_pc.len()),
+        &running_next_pc_vope,
+        fixed_array_ty(vope_n_ty.clone(), accum_info.init.next_pc.len()),
         crate::ir_builder::array_from_fn_expr("_", call_expr("vope_zero", vec![])),
     ));
     stmts.push(let_typed_stmt(
-        &running_next_pc_q, fixed_array_ty(q_n_ty.clone(), accum_info.init.next_pc.len()),
+        &running_next_pc_q,
+        fixed_array_ty(q_n_ty.clone(), accum_info.init.next_pc.len()),
         crate::ir_builder::array_from_fn_expr("_", call_expr("q_zero", vec![])),
     ));
     // Slot widths aren't recorded by `MovfuscAccumInfo` itself (only slot
@@ -847,25 +1179,58 @@ pub fn generate_split_step_ir(
         init_state_locals_vope.push(slot_name(vope_slot).to_string());
         init_state_locals_q.push(slot_name(q_slot).to_string());
     }
-    stmts.push(let_stmt(&running_next_state_vope, tuple_lit_expr(init_state_locals_vope.iter().map(|n| clone_var(n)).collect())));
-    stmts.push(let_stmt(&running_next_state_q, tuple_lit_expr(init_state_locals_q.iter().map(|n| clone_var(n)).collect())));
+    stmts.push(let_stmt(
+        &running_next_state_vope,
+        tuple_lit_expr(
+            init_state_locals_vope
+                .iter()
+                .map(|n| clone_var(n))
+                .collect(),
+        ),
+    ));
+    stmts.push(let_stmt(
+        &running_next_state_q,
+        tuple_lit_expr(init_state_locals_q.iter().map(|n| clone_var(n)).collect()),
+    ));
     let mut init_ret_locals_vope = Vec::with_capacity(n_ret);
     let mut init_ret_locals_q = Vec::with_capacity(n_ret);
     for (m, &w) in ret_widths.iter().enumerate() {
         let name_vope = format!("_acc_init_ret_vope_{m}");
         let name_q = format!("_acc_init_ret_q_{m}");
         if w <= 1 {
-            stmts.push(let_typed_stmt(&name_vope, vope_n_ty.clone(), call_expr("vope_zero", vec![])));
-            stmts.push(let_typed_stmt(&name_q, q_n_ty.clone(), call_expr("q_zero", vec![])));
+            stmts.push(let_typed_stmt(
+                &name_vope,
+                vope_n_ty.clone(),
+                call_expr("vope_zero", vec![]),
+            ));
+            stmts.push(let_typed_stmt(
+                &name_q,
+                q_n_ty.clone(),
+                call_expr("q_zero", vec![]),
+            ));
         } else {
-            stmts.push(let_typed_stmt(&name_vope, fixed_array_ty(vope_n_ty.clone(), w), crate::ir_builder::array_from_fn_expr("_", call_expr("vope_zero", vec![]))));
-            stmts.push(let_typed_stmt(&name_q, fixed_array_ty(q_n_ty.clone(), w), crate::ir_builder::array_from_fn_expr("_", call_expr("q_zero", vec![]))));
+            stmts.push(let_typed_stmt(
+                &name_vope,
+                fixed_array_ty(vope_n_ty.clone(), w),
+                crate::ir_builder::array_from_fn_expr("_", call_expr("vope_zero", vec![])),
+            ));
+            stmts.push(let_typed_stmt(
+                &name_q,
+                fixed_array_ty(q_n_ty.clone(), w),
+                crate::ir_builder::array_from_fn_expr("_", call_expr("q_zero", vec![])),
+            ));
         }
         init_ret_locals_vope.push(name_vope);
         init_ret_locals_q.push(name_q);
     }
-    stmts.push(let_stmt(&running_ret_vals_vope, tuple_lit_expr(init_ret_locals_vope.iter().map(|n| var(n)).collect())));
-    stmts.push(let_stmt(&running_ret_vals_q, tuple_lit_expr(init_ret_locals_q.iter().map(|n| var(n)).collect())));
+    stmts.push(let_stmt(
+        &running_ret_vals_vope,
+        tuple_lit_expr(init_ret_locals_vope.iter().map(|n| var(n)).collect()),
+    ));
+    stmts.push(let_stmt(
+        &running_ret_vals_q,
+        tuple_lit_expr(init_ret_locals_q.iter().map(|n| var(n)).collect()),
+    ));
 
     // Chunk 0's own INCOMING running-accumulator state (`accum_info.init`)
     // is a pure host-side value (zero for done_acc/next_pc/ret_vals; the
@@ -879,20 +1244,60 @@ pub fn generate_split_step_ir(
     // entry here explicitly, mirroring what a real producer's own
     // `export_scalar_or_tuple` would have emitted.
     if synth_pool_active {
-        let emit_pool_init = |stmts: &mut Vec<IrStmt>, var_id: u32, name: &str, value_vope: IrExpr, value_q: IrExpr| {
-            if named_param_present.contains(name) { return; } // still tuple-threaded (wide) -- no pool write needed
-            stmts.extend(pool_write_stmts("_synth_pool_vope", "_synth_pool_vope_written", var_id as usize, value_vope));
-            stmts.extend(pool_write_stmts("_synth_pool_q", "_synth_pool_q_written", var_id as usize, value_q));
+        let emit_pool_init = |stmts: &mut Vec<IrStmt>,
+                              var_id: u32,
+                              name: &str,
+                              value_vope: IrExpr,
+                              value_q: IrExpr| {
+            if named_param_present.contains(name) {
+                return;
+            } // still tuple-threaded (wide) -- no pool write needed
+            stmts.extend(pool_write_stmts(
+                "_synth_pool_vope",
+                "_synth_pool_vope_written",
+                var_id as usize,
+                value_vope,
+            ));
+            stmts.extend(pool_write_stmts(
+                "_synth_pool_q",
+                "_synth_pool_q_written",
+                var_id as usize,
+                value_q,
+            ));
         };
-        emit_pool_init(&mut stmts, accum_info.init.done_acc, "in_done_acc", call_expr("vope_zero", vec![]), call_expr("q_zero", vec![]));
+        emit_pool_init(
+            &mut stmts,
+            accum_info.init.done_acc,
+            "in_done_acc",
+            call_expr("vope_zero", vec![]),
+            call_expr("q_zero", vec![]),
+        );
         for (j, &v) in accum_info.init.next_pc.iter().enumerate() {
-            emit_pool_init(&mut stmts, v, &format!("in_next_pc_{j}"), call_expr("vope_zero", vec![]), call_expr("q_zero", vec![]));
+            emit_pool_init(
+                &mut stmts,
+                v,
+                &format!("in_next_pc_{j}"),
+                call_expr("vope_zero", vec![]),
+                call_expr("q_zero", vec![]),
+            );
         }
         for (k, &v) in accum_info.init.next_state.iter().enumerate() {
-            emit_pool_init(&mut stmts, v, &format!("in_next_state_{k}"), clone_var(&init_state_locals_vope[k]), clone_var(&init_state_locals_q[k]));
+            emit_pool_init(
+                &mut stmts,
+                v,
+                &format!("in_next_state_{k}"),
+                clone_var(&init_state_locals_vope[k]),
+                clone_var(&init_state_locals_q[k]),
+            );
         }
         for (m, &v) in accum_info.init.ret_vals.iter().enumerate() {
-            emit_pool_init(&mut stmts, v, &format!("in_ret_val_{m}"), clone_var(&init_ret_locals_vope[m]), clone_var(&init_ret_locals_q[m]));
+            emit_pool_init(
+                &mut stmts,
+                v,
+                &format!("in_ret_val_{m}"),
+                clone_var(&init_ret_locals_vope[m]),
+                clone_var(&init_ret_locals_q[m]),
+            );
         }
     }
 
@@ -912,11 +1317,31 @@ pub fn generate_split_step_ir(
     // stays correct if that ever changes. Takes `idx` by `&mut` (rather
     // than returning it) so callers can locate whatever trails (hats, or
     // all_ok/fold_state) at the correct position afterward.
-    let parse_running_output = |slots: &[Slot], idx: &mut usize| -> (Option<Slot>, Vec<Option<Slot>>, Vec<Option<Slot>>, Vec<Option<Slot>>) {
+    let parse_running_output = |slots: &[Slot],
+                                idx: &mut usize|
+     -> (
+        Option<Slot>,
+        Vec<Option<Slot>>,
+        Vec<Option<Slot>>,
+        Vec<Option<Slot>>,
+    ) {
         let done_acc = take_if_named(slots, idx, &named_param_present, "in_done_acc");
-        let next_pc: Vec<Option<Slot>> = (0..pc_w).map(|j| take_if_named(slots, idx, &named_param_present, &format!("in_next_pc_{j}"))).collect();
-        let next_state: Vec<Option<Slot>> = (0..st_w).map(|k| take_if_named(slots, idx, &named_param_present, &format!("in_next_state_{k}"))).collect();
-        let ret_vals: Vec<Option<Slot>> = (0..rv_w).map(|m| take_if_named(slots, idx, &named_param_present, &format!("in_ret_val_{m}"))).collect();
+        let next_pc: Vec<Option<Slot>> = (0..pc_w)
+            .map(|j| take_if_named(slots, idx, &named_param_present, &format!("in_next_pc_{j}")))
+            .collect();
+        let next_state: Vec<Option<Slot>> = (0..st_w)
+            .map(|k| {
+                take_if_named(
+                    slots,
+                    idx,
+                    &named_param_present,
+                    &format!("in_next_state_{k}"),
+                )
+            })
+            .collect();
+        let ret_vals: Vec<Option<Slot>> = (0..rv_w)
+            .map(|m| take_if_named(slots, idx, &named_param_present, &format!("in_ret_val_{m}")))
+            .collect();
         (done_acc, next_pc, next_state, ret_vals)
     };
     // A field of the running-accumulator's own OUTGOING tuple/array local
@@ -945,31 +1370,73 @@ pub fn generate_split_step_ir(
         let (oracle_vope, oracle_q) = if local_oracle_count > 0 {
             let (v, q) = emit_oracle(&mut stmts, &uid);
             (Some(v), Some(q))
-        } else { (None, None) };
+        } else {
+            (None, None)
+        };
 
-        let running_in_vope = (running_done_acc_vope.as_str(), running_next_pc_vope.as_str(), running_next_state_vope.as_str(), running_ret_vals_vope.as_str());
-        let running_in_q = (running_done_acc_q.as_str(), running_next_pc_q.as_str(), running_next_state_q.as_str(), running_ret_vals_q.as_str());
+        let running_in_vope = (
+            running_done_acc_vope.as_str(),
+            running_next_pc_vope.as_str(),
+            running_next_state_vope.as_str(),
+            running_ret_vals_vope.as_str(),
+        );
+        let running_in_q = (
+            running_done_acc_q.as_str(),
+            running_next_pc_q.as_str(),
+            running_next_state_q.as_str(),
+            running_ret_vals_q.as_str(),
+        );
 
         let p_outcome = build_call(
-            &mut stmts, pf, entry_w, 0, None, None, None, Some(running_in_vope), &exported_vope, &synth_exported_vope,
-            "", "", oracle_vope.as_deref(), &format!("p_{uid}"),
+            &mut stmts,
+            pf,
+            entry_w,
+            0,
+            None,
+            None,
+            None,
+            Some(running_in_vope),
+            &exported_vope,
+            &synth_exported_vope,
+            "",
+            "",
+            oracle_vope.as_deref(),
+            &format!("p_{uid}"),
         );
         let p_slots = p_outcome.finish_output;
         // Layout: [done_acc, next_pc.., next_state.., ret_vals.., hats, synth_out..]
         // -- MINUS any pooled entries (see `parse_running_output`'s own doc).
         let mut p_idx = 0usize;
-        let (p_new_done_acc, p_new_next_pc, p_new_next_state, p_new_ret_vals) = parse_running_output(&p_slots, &mut p_idx);
-        let p_hats = p_slots[p_idx].clone(); p_idx += 1;
+        let (p_new_done_acc, p_new_next_pc, p_new_next_state, p_new_ret_vals) =
+            parse_running_output(&p_slots, &mut p_idx);
+        let p_hats = p_slots[p_idx].clone();
+        p_idx += 1;
         let out_step_for_lo_hi = &accum_info.steps[hi - 1];
         let p_chunk_synth_out = unpooled_synth_out(&out_step_for_lo_hi.synthetic_out);
-        assert_eq!(p_chunk_synth_out.len(), p_slots.len() - p_idx, "chunk {c}: prover unpooled synth_out count must match trailing tuple slots");
+        assert_eq!(
+            p_chunk_synth_out.len(),
+            p_slots.len() - p_idx,
+            "chunk {c}: prover unpooled synth_out count must match trailing tuple slots"
+        );
         for (&v, s) in p_chunk_synth_out.iter().zip(&p_slots[p_idx..]) {
             insert_synth_export(&mut synth_exported_vope, v, s.clone());
         }
 
         let q_outcome = build_call(
-            &mut stmts, qf, entry_w, 1, Some(&p_hats), None, None, Some(running_in_q), &exported_q, &synth_exported_q,
-            "", "", oracle_q.as_deref(), &format!("q_{uid}"),
+            &mut stmts,
+            qf,
+            entry_w,
+            1,
+            Some(&p_hats),
+            None,
+            None,
+            Some(running_in_q),
+            &exported_q,
+            &synth_exported_q,
+            "",
+            "",
+            oracle_q.as_deref(),
+            &format!("q_{uid}"),
         );
         let q_slots = q_outcome.finish_output;
         // QSim's own running state is discarded downstream (only Verifier's
@@ -983,25 +1450,58 @@ pub fn generate_split_step_ir(
         let and_count = and_count_of(vf);
         let r_ands_name = format!("_rands_{uid}");
         and_gate_seed += 1;
-        stmts.push(r_ands_decl_stmt(&r_ands_name, and_count, step_expr, and_gate_seed));
+        stmts.push(r_ands_decl_stmt(
+            &r_ands_name,
+            and_count,
+            step_expr,
+            and_gate_seed,
+        ));
         let v_outcome = build_call(
-            &mut stmts, vf, entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), Some(running_in_q), &exported_q, &synth_exported_q,
-            &all_ok_expr, &fold_state_expr, oracle_q.as_deref(), &format!("v_{uid}"),
+            &mut stmts,
+            vf,
+            entry_w,
+            1,
+            Some(&p_hats),
+            Some(&q_and_arr),
+            Some(&r_ands_name),
+            Some(running_in_q),
+            &exported_q,
+            &synth_exported_q,
+            &all_ok_expr,
+            &fold_state_expr,
+            oracle_q.as_deref(),
+            &format!("v_{uid}"),
         );
         let v_slots = v_outcome.finish_output;
         // Layout: [done_acc, next_pc.., next_state.., ret_vals.., all_ok, fold_state, synth_out..]
         // -- MINUS any pooled entries, same as the prover call above.
         let mut v_idx = 0usize;
-        let (v_new_done_acc, v_new_next_pc, v_new_next_state, v_new_ret_vals) = parse_running_output(&v_slots, &mut v_idx);
-        let v_all_ok = match &v_slots[v_idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; v_idx += 1;
-        let v_fold_state = match &v_slots[v_idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; v_idx += 1;
+        let (v_new_done_acc, v_new_next_pc, v_new_next_state, v_new_ret_vals) =
+            parse_running_output(&v_slots, &mut v_idx);
+        let v_all_ok = match &v_slots[v_idx] {
+            Slot::Scalar(n) => n.clone(),
+            _ => unreachable!(),
+        };
+        v_idx += 1;
+        let v_fold_state = match &v_slots[v_idx] {
+            Slot::Scalar(n) => n.clone(),
+            _ => unreachable!(),
+        };
+        v_idx += 1;
         let v_chunk_synth_out = unpooled_synth_out(&out_step_for_lo_hi.synthetic_out);
-        assert_eq!(v_chunk_synth_out.len(), v_slots.len() - v_idx, "chunk {c}: verifier unpooled synth_out count must match trailing tuple slots");
+        assert_eq!(
+            v_chunk_synth_out.len(),
+            v_slots.len() - v_idx,
+            "chunk {c}: verifier unpooled synth_out count must match trailing tuple slots"
+        );
         for (&v, s) in v_chunk_synth_out.iter().zip(&v_slots[v_idx..]) {
             insert_synth_export(&mut synth_exported_q, v, s.clone());
         }
 
-        stmts.push(assert_true_stmt(var(&v_all_ok), &format!("chunk {c}: honest run must pass the woven verifier's own check")));
+        stmts.push(assert_true_stmt(
+            var(&v_all_ok),
+            &format!("chunk {c}: honest run must pass the woven verifier's own check"),
+        ));
         all_ok_expr = v_all_ok;
         fold_state_expr = v_fold_state;
 
@@ -1010,22 +1510,76 @@ pub fn generate_split_step_ir(
         // zero placeholders for pooled ones (see `running_field_expr`'s own
         // doc: a pooled field is never read back from here at all).
         let done_acc_vope_name = format!("_acc_done_vope_{uid}");
-        stmts.push(let_stmt(&done_acc_vope_name, running_field_expr(&p_new_done_acc, "vope_zero")));
+        stmts.push(let_stmt(
+            &done_acc_vope_name,
+            running_field_expr(&p_new_done_acc, "vope_zero"),
+        ));
         let pc_arr_vope = format!("_acc_pc_vope_{uid}");
-        stmts.push(let_stmt(&pc_arr_vope, array_lit_expr(p_new_next_pc.iter().map(|s| running_field_expr(s, "vope_zero")).collect())));
+        stmts.push(let_stmt(
+            &pc_arr_vope,
+            array_lit_expr(
+                p_new_next_pc
+                    .iter()
+                    .map(|s| running_field_expr(s, "vope_zero"))
+                    .collect(),
+            ),
+        ));
         let st_arr_vope = format!("_acc_st_vope_{uid}");
-        stmts.push(let_stmt(&st_arr_vope, tuple_lit_expr(p_new_next_state.iter().map(|s| running_field_expr(s, "vope_zero")).collect())));
+        stmts.push(let_stmt(
+            &st_arr_vope,
+            tuple_lit_expr(
+                p_new_next_state
+                    .iter()
+                    .map(|s| running_field_expr(s, "vope_zero"))
+                    .collect(),
+            ),
+        ));
         let rv_arr_vope = format!("_acc_rv_vope_{uid}");
-        stmts.push(let_stmt(&rv_arr_vope, tuple_lit_expr(p_new_ret_vals.iter().map(|s| running_field_expr(s, "vope_zero")).collect())));
+        stmts.push(let_stmt(
+            &rv_arr_vope,
+            tuple_lit_expr(
+                p_new_ret_vals
+                    .iter()
+                    .map(|s| running_field_expr(s, "vope_zero"))
+                    .collect(),
+            ),
+        ));
 
         let done_acc_q_name = format!("_acc_done_q_{uid}");
-        stmts.push(let_stmt(&done_acc_q_name, running_field_expr(&v_new_done_acc, "q_zero")));
+        stmts.push(let_stmt(
+            &done_acc_q_name,
+            running_field_expr(&v_new_done_acc, "q_zero"),
+        ));
         let pc_arr_q = format!("_acc_pc_q_{uid}");
-        stmts.push(let_stmt(&pc_arr_q, array_lit_expr(v_new_next_pc.iter().map(|s| running_field_expr(s, "q_zero")).collect())));
+        stmts.push(let_stmt(
+            &pc_arr_q,
+            array_lit_expr(
+                v_new_next_pc
+                    .iter()
+                    .map(|s| running_field_expr(s, "q_zero"))
+                    .collect(),
+            ),
+        ));
         let st_arr_q = format!("_acc_st_q_{uid}");
-        stmts.push(let_stmt(&st_arr_q, tuple_lit_expr(v_new_next_state.iter().map(|s| running_field_expr(s, "q_zero")).collect())));
+        stmts.push(let_stmt(
+            &st_arr_q,
+            tuple_lit_expr(
+                v_new_next_state
+                    .iter()
+                    .map(|s| running_field_expr(s, "q_zero"))
+                    .collect(),
+            ),
+        ));
         let rv_arr_q = format!("_acc_rv_q_{uid}");
-        stmts.push(let_stmt(&rv_arr_q, tuple_lit_expr(v_new_ret_vals.iter().map(|s| running_field_expr(s, "q_zero")).collect())));
+        stmts.push(let_stmt(
+            &rv_arr_q,
+            tuple_lit_expr(
+                v_new_ret_vals
+                    .iter()
+                    .map(|s| running_field_expr(s, "q_zero"))
+                    .collect(),
+            ),
+        ));
 
         running_done_acc_vope = done_acc_vope_name;
         running_next_pc_vope = pc_arr_vope;
@@ -1049,14 +1603,38 @@ pub fn generate_split_step_ir(
         let (oracle_vope, oracle_q) = if local_oracle_count > 0 {
             let (v, q) = emit_oracle(&mut stmts, &uid);
             (Some(v), Some(q))
-        } else { (None, None) };
+        } else {
+            (None, None)
+        };
 
-        let running_in_vope = (running_done_acc_vope.as_str(), running_next_pc_vope.as_str(), running_next_state_vope.as_str(), running_ret_vals_vope.as_str());
-        let running_in_q = (running_done_acc_q.as_str(), running_next_pc_q.as_str(), running_next_state_q.as_str(), running_ret_vals_q.as_str());
+        let running_in_vope = (
+            running_done_acc_vope.as_str(),
+            running_next_pc_vope.as_str(),
+            running_next_state_vope.as_str(),
+            running_ret_vals_vope.as_str(),
+        );
+        let running_in_q = (
+            running_done_acc_q.as_str(),
+            running_next_pc_q.as_str(),
+            running_next_state_q.as_str(),
+            running_ret_vals_q.as_str(),
+        );
 
         let p_outcome = build_call(
-            &mut stmts, pf, entry_w, 0, None, None, None, Some(running_in_vope), &exported_vope, &synth_exported_vope,
-            "", "", oracle_vope.as_deref(), &format!("p_{uid}"),
+            &mut stmts,
+            pf,
+            entry_w,
+            0,
+            None,
+            None,
+            None,
+            Some(running_in_vope),
+            &exported_vope,
+            &synth_exported_vope,
+            "",
+            "",
+            oracle_vope.as_deref(),
+            &format!("p_{uid}"),
         );
         // Unlike block/chunk functions, finish's return type is doubly
         // nested (`(output, hats)` where `output` is itself the raw
@@ -1064,35 +1642,81 @@ pub fn generate_split_step_ir(
         // rather than treating `finish_output` as flat.
         let p_slots = p_outcome.finish_output;
         let p_hats = p_slots[1].clone();
-        let p_state_local = match &p_slots[0] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
-        let p_terminator_out = destructure_finish_output(&mut stmts, pf, &p_state_local, &format!("p_{uid}"));
+        let p_state_local = match &p_slots[0] {
+            Slot::Scalar(n) => n.clone(),
+            _ => unreachable!(),
+        };
+        let p_terminator_out =
+            destructure_finish_output(&mut stmts, pf, &p_state_local, &format!("p_{uid}"));
         // Element 0 of the terminator's own return args is the movfuscated
         // circuit's `done` flag, not one of the original circuit params --
         // drop it so `p_output` lines up 1:1 with `entry_w`.
         let p_output: Vec<Slot> = p_terminator_out[1..].to_vec();
 
         let q_outcome = build_call(
-            &mut stmts, qf, entry_w, 1, Some(&p_hats), None, None, Some(running_in_q), &exported_q, &synth_exported_q,
-            "", "", oracle_q.as_deref(), &format!("q_{uid}"),
+            &mut stmts,
+            qf,
+            entry_w,
+            1,
+            Some(&p_hats),
+            None,
+            None,
+            Some(running_in_q),
+            &exported_q,
+            &synth_exported_q,
+            "",
+            "",
+            oracle_q.as_deref(),
+            &format!("q_{uid}"),
         );
         let q_slots = q_outcome.finish_output;
         let q_and_arr = q_slots[1].clone();
-        let q_state_local = match &q_slots[0] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
-        let q_terminator_out = destructure_finish_output(&mut stmts, qf, &q_state_local, &format!("q_{uid}"));
+        let q_state_local = match &q_slots[0] {
+            Slot::Scalar(n) => n.clone(),
+            _ => unreachable!(),
+        };
+        let q_terminator_out =
+            destructure_finish_output(&mut stmts, qf, &q_state_local, &format!("q_{uid}"));
         let q_output: Vec<Slot> = q_terminator_out[1..].to_vec();
 
         let and_count = and_count_of(vf);
         let r_ands_name = format!("_rands_{uid}");
         and_gate_seed += 1;
-        stmts.push(r_ands_decl_stmt(&r_ands_name, and_count, step_expr, and_gate_seed));
+        stmts.push(r_ands_decl_stmt(
+            &r_ands_name,
+            and_count,
+            step_expr,
+            and_gate_seed,
+        ));
         let v_outcome = build_call(
-            &mut stmts, vf, entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), Some(running_in_q), &exported_q, &synth_exported_q,
-            &all_ok_expr, &fold_state_expr, oracle_q.as_deref(), &format!("v_{uid}"),
+            &mut stmts,
+            vf,
+            entry_w,
+            1,
+            Some(&p_hats),
+            Some(&q_and_arr),
+            Some(&r_ands_name),
+            Some(running_in_q),
+            &exported_q,
+            &synth_exported_q,
+            &all_ok_expr,
+            &fold_state_expr,
+            oracle_q.as_deref(),
+            &format!("v_{uid}"),
         );
         let v_slots = v_outcome.finish_output;
-        let v_all_ok = match &v_slots[v_slots.len() - 2] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
-        let v_fold_state = match &v_slots[v_slots.len() - 1] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
-        stmts.push(assert_true_stmt(var(&v_all_ok), "finish: honest run must pass the woven verifier's own check"));
+        let v_all_ok = match &v_slots[v_slots.len() - 2] {
+            Slot::Scalar(n) => n.clone(),
+            _ => unreachable!(),
+        };
+        let v_fold_state = match &v_slots[v_slots.len() - 1] {
+            Slot::Scalar(n) => n.clone(),
+            _ => unreachable!(),
+        };
+        stmts.push(assert_true_stmt(
+            var(&v_all_ok),
+            "finish: honest run must pass the woven verifier's own check",
+        ));
 
         // Next step's entry state: the finish function's own real output
         // (the terminator's actual return args), Vope side from the real

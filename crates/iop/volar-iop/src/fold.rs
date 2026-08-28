@@ -82,7 +82,13 @@ pub fn and_check_r1cs<F: Field>() -> R1CS<F> {
     R1CS {
         num_cons: 3,
         num_vars: 8,
-        a: vec![(0, K_A, one), (1, K_C, one), (2, P1, one), (2, V_HAT, one), (2, P2, neg_one)],
+        a: vec![
+            (0, K_A, one),
+            (1, K_C, one),
+            (2, P1, one),
+            (2, V_HAT, one),
+            (2, P2, neg_one),
+        ],
         b: vec![(0, K_B, one), (1, DELTA, one), (2, U_COL, one)],
         c: vec![(0, P1, one), (1, P2, one)],
     }
@@ -132,7 +138,9 @@ impl<F: Field> IopAccumulator<F> {
         Self::default()
     }
     pub fn witness(&self) -> Option<(&[F], &[F], &F)> {
-        self.inner.as_ref().map(|(w, e, u)| (w.as_slice(), e.as_slice(), u))
+        self.inner
+            .as_ref()
+            .map(|(w, e, u)| (w.as_slice(), e.as_slice(), u))
     }
 }
 
@@ -140,19 +148,39 @@ impl<F: Field> IopAccumulator<F> {
 /// `and_check_r1cs` shape — no bit-expansion, no `GF(2^k)→F_ℓ` lift needed.
 /// `r` is this gate's fold challenge (see the module doc's pointer to the
 /// per-gate Fiat–Shamir honest-scope note).
-pub fn fold_gate<F: Field>(state: IopAccumulator<F>, k_a: F, k_b: F, k_c: F, delta: F, v_hat: F, r: F) -> IopAccumulator<F> {
+pub fn fold_gate<F: Field>(
+    state: IopAccumulator<F>,
+    k_a: F,
+    k_b: F,
+    k_c: F,
+    delta: F,
+    v_hat: F,
+    r: F,
+) -> IopAccumulator<F> {
     let r1cs = and_check_r1cs::<F>();
     let gate_w = gate_witness(k_a, k_b, k_c, delta, v_hat);
     match state.inner {
-        None => IopAccumulator { inner: Some((gate_w, vec![F::ZERO; r1cs.num_cons], F::ONE)) },
+        None => IopAccumulator {
+            inner: Some((gate_w, vec![F::ZERO; r1cs.num_cons], F::ONE)),
+        },
         Some((w1, e1, u1)) => {
             let t = cross_term_z(&r1cs, &w1, &u1, &gate_w, &F::ONE);
-            let w: Vec<F> = w1.iter().zip(gate_w.iter()).map(|(x, y)| x.add(&r.mul(y))).collect();
+            let w: Vec<F> = w1
+                .iter()
+                .zip(gate_w.iter())
+                .map(|(x, y)| x.add(&r.mul(y)))
+                .collect();
             // The incoming gate is fresh (u2 = 1, E2 = 0), so its r² term
             // vanishes.
-            let e: Vec<F> = e1.iter().zip(t.iter()).map(|(x, ti)| x.add(&r.mul(ti))).collect();
+            let e: Vec<F> = e1
+                .iter()
+                .zip(t.iter())
+                .map(|(x, ti)| x.add(&r.mul(ti)))
+                .collect();
             let u = u1.add(&r);
-            IopAccumulator { inner: Some((w, e, u)) }
+            IopAccumulator {
+                inner: Some((w, e, u)),
+            }
         }
     }
 }
@@ -221,7 +249,10 @@ mod tests {
             state = fold_gate(state, ka, kb, kc, delta, v_hat, r);
         }
         let (w, e, u) = state.witness().expect("folded after five gates");
-        assert!(r1cs.is_satisfied_relaxed(w, e, u), "chain of honest gates must stay relaxed-satisfied");
+        assert!(
+            r1cs.is_satisfied_relaxed(w, e, u),
+            "chain of honest gates must stay relaxed-satisfied"
+        );
     }
 
     #[test]
@@ -238,6 +269,9 @@ mod tests {
             state = fold_gate(state, ka, kb, kc, delta, v_hat, r);
         }
         let (w, e, u) = state.witness().expect("folded after five gates");
-        assert!(!r1cs.is_satisfied_relaxed(w, e, u), "a tampered gate must break the fold");
+        assert!(
+            !r1cs.is_satisfied_relaxed(w, e, u),
+            "a tampered gate must break the fold"
+        );
     }
 }
