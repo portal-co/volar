@@ -984,6 +984,14 @@ impl<P: Clone> StorageEmitter for VolarIrTarget<P> {
     }
 }
 
+/// Wrap a single IR var as a one-bit `VolarValue`.
+fn bit_var(id: IRVarId) -> VolarValue {
+    VolarValue {
+        bits: vec![id],
+        ty: LirType::Bool,
+    }
+}
+
 fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
     match ty {
         LirType::Bool => 1,
@@ -1550,6 +1558,28 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
         self.inline_blocks(&impl_blocks, flat_args, ret_ty.as_ref())
     }
 
+    // ---- Sibling (intra-module) calls --------------------------------------
+
+    /// Call a function defined in this same module.
+    ///
+    /// `VolarIrTarget` represents module siblings as inlinable
+    /// implementations registered via [`add_extern`](Self::add_extern) —
+    /// there is no separate sibling namespace — so a sibling call resolves
+    /// through the same table as [`call_extern`](Self::call_extern) and
+    /// inlines the callee at the call site (forward references and mutual
+    /// recursion work exactly when the corresponding implementation is
+    /// registered before `finish`). Argument/return marshalling matches
+    /// `call_extern`.
+    fn call(
+        &mut self,
+        name: &str,
+        arg_tys: &[LirType],
+        args: &[VolarValue],
+        ret_ty: Option<LirType>,
+    ) -> Vec<VolarValue> {
+        self.call_extern(name, arg_tys, args, ret_ty)
+    }
+
     // ---- Terminators -------------------------------------------------------
 
     fn jump(&mut self, target: VolarBlock, branch: BranchTarget<VolarValue>) {
@@ -1592,6 +1622,189 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
         self.set_terminator(IRTerminator::Jmp {
             target: IRBranchTarget::new(IRBlockTargetId::Return, flat),
         });
+    }
+
+    /// A multi-way branch on an integer index.
+    ///
+    /// A single-var (native-typed) index emits Volar IR's native
+    /// [`IRTerminator::JumpTable`] directly: case keys become the map's
+    /// `Constant`s and every constant the cases don't cover routes to the
+    /// default target, so the map is total per index type.
+    ///
+    /// A bit-packed index (one IR var per bit — the representation all
+    /// integer arithmetic in this target produces) has no single var to
+    /// index a `JumpTable` with, so it lowers to a comparison cascade:
+    /// one `bc_eq` + conditional branch per case, falling through to the
+    /// default. Each case arm jumps to its destination from a fresh
+    /// side block so per-case args stay independent.
+    fn switch(
+        &mut self,
+        index: VolarValue,
+        cases: &[(i64, VolarBlock, BranchTarget<VolarValue>)],
+        default_block: VolarBlock,
+        default_branch: BranchTarget<VolarValue>,
+    ) {
+        if index.bits.len() == 1 {
+            // Single-var index (e.g. a native-typed param): native JumpTable.
+            let mut table: BTreeMap<Constant, IRBranchTarget<IRVarId>> = BTreeMap::new();
+            for (key, block, branch) in cases {
+                table.insert(
+                    Constant {
+                        hi: 0,
+                        lo: *key as u128,
+                    },
+                    IRBranchTarget {
+                        dest: IRBlockTargetId::Block(IRBlockId(block.0 as u32)),
+                        args: Self::flatten(&branch.args),
+                        reentry: branch.reentry.clone(),
+                    },
+                );
+            }
+            // Fill every other constant of the index type with the default.
+            let covered: std::collections::BTreeSet<u128> =
+                cases.iter().map(|(k, _, _)| *k as u128).collect();
+            let type_width = match &index.ty {
+                LirType::Native(_) => 1usize,
+                other => bits_for_lir_type(other, &self.struct_widths),
+            };
+            let domain = 1u128 << type_width.min(12);
+            for raw in 0u128..domain {
+                if covered.contains(&raw) {
+                    continue;
+                }
+                table.insert(
+                    Constant { hi: 0, lo: raw },
+                    IRBranchTarget {
+                        dest: IRBlockTargetId::Block(IRBlockId(default_block.0 as u32)),
+                        args: Self::flatten(&default_branch.args),
+                        reentry: default_branch.reentry.clone(),
+                    },
+                );
+            }
+            self.set_terminator(IRTerminator::JumpTable {
+                index: index.bits[0],
+                cases: table,
+            });
+            return;
+        }
+
+        // Bit-packed index: comparison cascade.
+        //
+        // Evaluated Volar IR vars are per-block, so the cascade is a chain
+        // of check blocks that thread BOTH the index bits and every case
+        // arg bit through block params: each check block receives
+        // [index bits…, arg bits…] as its params, tests one case key with
+        // `bc_eq`, and branches — the then-arm forwards the arg params to
+        // the case block, the else-arm forwards index+args to the next
+        // check. The final check falls through to the default target.
+        let index_len = index.bits.len();
+        let flat_case_args: Vec<Vec<IRVarId>> = cases
+            .iter()
+            .map(|(_, _, branch)| Self::flatten(&branch.args))
+            .collect();
+        let flat_default_args = Self::flatten(&default_branch.args);
+        let arg_len = flat_default_args.len();
+        for (i, flat) in flat_case_args.iter().enumerate() {
+            assert_eq!(
+                flat.len(),
+                arg_len,
+                "switch: case {i} arg count {} != default arg count {arg_len}",
+                flat.len()
+            );
+        }
+
+        // Values visible in the CURRENT block: the index and every case's
+        // args (callers materialize them before calling switch).
+        let mut thread_vals: Vec<IRVarId> = index.bits.clone();
+        thread_vals.extend(flat_case_args.iter().flatten().copied());
+        thread_vals.extend(flat_default_args.iter().copied());
+        let thread_len = thread_vals.len();
+
+        // Create the check blocks: one per case + the default exit.
+        let mut checks: Vec<VolarBlock> = Vec::with_capacity(cases.len() + 1);
+        for _ in 0..=cases.len() {
+            let b = self.create_block();
+            for _ in 0..thread_len {
+                self.add_block_param(b, LirType::Bool);
+            }
+            checks.push(b);
+        }
+
+        // Wire the current block to the first check, threading all values.
+        self.jump(
+            checks[0],
+            BranchTarget {
+                args: thread_vals.iter().map(|id| bit_var(*id)).collect(),
+                reentry: None,
+            },
+        );
+
+        for (ci, (key, block, branch)) in cases.iter().enumerate() {
+            self.switch_to_block(checks[ci]);
+            // Param layout: [0..index_len) = index, then case-arg groups,
+            // then default-arg group.
+            let index_here: Vec<IRVarId> = (0..index_len as u32).map(IRVarId).collect();
+            let mut arg_cursor = index_len as u32;
+            let case_args_here: Vec<Vec<IRVarId>> = flat_case_args
+                .iter()
+                .map(|flat| {
+                    let start = arg_cursor;
+                    arg_cursor += flat.len() as u32;
+                    (start..arg_cursor).map(IRVarId).collect()
+                })
+                .collect();
+            let default_args_here: Vec<IRVarId> = {
+                let start = arg_cursor;
+                (start..arg_cursor + arg_len as u32).map(IRVarId).collect()
+            };
+
+            let key_bits: Vec<IRVarId> = (0..index_len)
+                .map(|b| self.bit_const((*key as u64 >> b) & 1 != 0))
+                .collect();
+            let matched_bit = bc_eq(self, &index_here, &key_bits);
+            let matched = VolarValue {
+                bits: vec![matched_bit],
+                ty: LirType::Bool,
+            };
+
+            // Then-arm: forward this case's arg params to the case block.
+            let then_args: Vec<VolarValue> =
+                case_args_here[ci].iter().map(|id| bit_var(*id)).collect();
+            // Else-arm: forward the whole thread (index + all args).
+            let else_args: Vec<VolarValue> =
+                (0..thread_len as u32).map(IRVarId).map(bit_var).collect();
+
+            self.branch(
+                matched,
+                *block,
+                BranchTarget {
+                    args: then_args,
+                    reentry: branch.reentry.clone(),
+                },
+                checks[ci + 1],
+                BranchTarget {
+                    args: else_args,
+                    reentry: None,
+                },
+            );
+        }
+
+        // Final check block: forward the default args and jump.
+        let last = *checks.last().unwrap();
+        self.switch_to_block(last);
+        let default_start =
+            (index_len + flat_case_args.iter().map(|f| f.len()).sum::<usize>()) as u32;
+        let default_args: Vec<VolarValue> = (default_start..default_start + arg_len as u32)
+            .map(IRVarId)
+            .map(bit_var)
+            .collect();
+        self.jump(
+            default_block,
+            BranchTarget {
+                args: default_args,
+                reentry: default_branch.reentry.clone(),
+            },
+        );
     }
 
     // ---- External access primitives ----------------------------------------
@@ -2145,5 +2358,154 @@ mod tests {
     #[test]
     fn test_corpus_smoke() {
         volar_lir_test_corpus::for_each_build!(VolarIrTarget::<()>::new());
+    }
+
+    // ========================================================================
+    // Sibling `call` + `switch`: execution-backed tests (volar-fuzz `eval_ir`)
+    // ========================================================================
+
+    use volar_fuzz::interpreter::ir::IrValue;
+
+    /// Execute a completed single-function module on `inputs` (as u64s).
+    ///
+    /// Test functions take `bits_for(LirType::U8) == 8` `Bit`-typed params
+    /// per input, so each input is expanded LSB-first into 8 single-bit
+    /// `IrValue`s. Returns the first return value (bit-packed to u64).
+    fn exec(blocks: &IRBlocks<()>, types: &IRTypes, inputs: &[u64]) -> u64 {
+        let mut bit_inputs: Vec<IrValue> = Vec::new();
+        for v in inputs {
+            for b in 0..8 {
+                bit_inputs.push(vec![(v >> b) & 1 != 0]);
+            }
+        }
+        let outs = volar_fuzz::interpreter::ir::eval_ir(blocks, types, &bit_inputs)
+            .expect("eval_ir: execution reached a return");
+        // Each returned IrValue is one returned bit var (1 bit); pack them
+        // LSB-first in return order.
+        let mut out = 0u64;
+        for (i, val) in outs.iter().enumerate() {
+            if val.first() == Some(&true) {
+                out |= 1 << i;
+            }
+        }
+        out
+    }
+
+    /// `call` forwards an argument to a sibling and returns its result:
+    /// `entry(x) = sibling(x + 3) * 2`, with `sibling(x) = x * 10`.
+    /// Exercises a forward-referenced sibling call from the entry function.
+    #[test]
+    fn probe_identity_executes() {
+        let mut t = VolarIrTarget::<()>::new();
+        let (entry, params) = t.begin_function("id", &[LirType::U8], Some(LirType::U8));
+        t.switch_to_block(entry);
+        let x = params[0][0].clone();
+        t.ret(&[x]);
+        t.end_function();
+        let types = t.types.clone();
+        let (_, blocks) = t.completed.into_iter().next().unwrap();
+        assert_eq!(exec(&blocks, &types, &[5]), 5);
+    }
+
+    #[test]
+    fn sibling_call_executes() {
+        // Build the sibling's IR with its own target, then register it as
+        // an inlinable implementation on the entry target — mirroring how
+        // spec linkage feeds `VolarIrTarget::add_extern`.
+        let mut sib_target = VolarIrTarget::<()>::new();
+        let (sib, sib_params) =
+            sib_target.begin_function("times_ten", &[LirType::U8], Some(LirType::U8));
+        sib_target.switch_to_block(sib);
+        let y = sib_params[0][0].clone();
+        let ten = sib_target.iconst(LirType::U8, 10);
+        let product = sib_target.mul(y, ten);
+        sib_target.ret(&[product]);
+        sib_target.end_function();
+        let (_, sib_blocks) = sib_target.completed.into_iter().next().unwrap();
+
+        let mut t = VolarIrTarget::<()>::new();
+        t.add_extern("times_ten", sib_blocks);
+
+        // Entry: calls the sibling before it is defined (forward reference).
+        let (entry, params) = t.begin_function("entry", &[LirType::U8], Some(LirType::U8));
+        t.switch_to_block(entry);
+        let x = params[0][0].clone();
+        let three = t.iconst(LirType::U8, 3);
+        let shifted = t.add(x, three);
+        let called = t.call("times_ten", &[LirType::U8], &[shifted], Some(LirType::U8));
+        let two = t.iconst(LirType::U8, 2);
+        let doubled = t.mul(called[0].clone(), two);
+        t.ret(&[doubled]);
+        t.end_function();
+
+        let types = t.types.clone();
+        let (_, blocks) = t.completed.into_iter().next().unwrap();
+
+        // entry(5) = (5+3)*10*2 = 160 (mod 256).
+        assert_eq!(exec(&blocks, &types, &[5]), 160);
+        // entry(0) = 60.
+        assert_eq!(exec(&blocks, &types, &[0]), 60);
+        // Wrapping: entry(200) = ((200+3) mod 256 = 203) * 10 * 2 = 4060
+        // mod 256 = 220.
+        assert_eq!(exec(&blocks, &types, &[200]), 220);
+    }
+
+    /// `switch` dispatches on an integer index with heterogeneous per-case
+    /// args and a default branch: `classify(n)` returns 100 for n=1,
+    /// 200 for n=2, and -1 (0xFF for U8) otherwise.
+    #[test]
+    fn switch_executes_with_default() {
+        let mut t = VolarIrTarget::<()>::new();
+        let (entry, params) = t.begin_function("classify", &[LirType::U8], Some(LirType::U8));
+        let n = params[0][0].clone();
+
+        // U8 values in this target are 8 `Bit`-typed vars, so the case
+        // blocks take 8 single-bit params which reassemble into the U8.
+        let add_u8_param = |t: &mut VolarIrTarget<()>, blk| {
+            let bits: Vec<VolarValue> = (0..8)
+                .map(|_| t.add_block_param(blk, LirType::Bool))
+                .collect();
+            VolarValue {
+                bits: bits.into_iter().flat_map(|v| v.bits).collect(),
+                ty: LirType::U8,
+            }
+        };
+        let one_block = t.create_block();
+        let one_param = add_u8_param(&mut t, one_block);
+        let two_block = t.create_block();
+        let two_param = add_u8_param(&mut t, two_block);
+        let default_block = t.create_block();
+        let default_param = add_u8_param(&mut t, default_block);
+
+        t.switch_to_block(entry);
+        let hundred = t.iconst(LirType::U8, 100);
+        let twohundred = t.iconst(LirType::U8, 200);
+        let neg1 = t.iconst(LirType::U8, -1i64 as u64 as i64);
+        t.switch(
+            n,
+            &[
+                (1, one_block, BranchTarget::args(vec![hundred])),
+                (2, two_block, BranchTarget::args(vec![twohundred])),
+            ],
+            default_block,
+            BranchTarget::args(vec![neg1]),
+        );
+
+        t.switch_to_block(one_block);
+        t.ret(&[one_param]);
+        t.switch_to_block(two_block);
+        t.ret(&[two_param]);
+        t.switch_to_block(default_block);
+        t.ret(&[default_param]);
+        t.end_function();
+
+        let types = t.types.clone();
+        let (_, blocks) = t.completed.into_iter().next().unwrap();
+
+        assert_eq!(exec(&blocks, &types, &[1]), 100);
+        assert_eq!(exec(&blocks, &types, &[2]), 200);
+        // Default arm for an uncovered index.
+        assert_eq!(exec(&blocks, &types, &[9]), 0xFF);
+        assert_eq!(exec(&blocks, &types, &[0]), 0xFF);
     }
 }

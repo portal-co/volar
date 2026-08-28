@@ -16,3 +16,4 @@ volar-compiler     = { path = "../../compiler/volar-compiler" }
 
 [dev-dependencies]
 volar-lir-test-corpus = { workspace = true }
+volar-fuzz = { workspace = true }
