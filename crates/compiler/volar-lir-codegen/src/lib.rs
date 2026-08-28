@@ -3311,6 +3311,12 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
         // Keys match the planner's canonical arg-types string (no generic
         // prefix; see mono.rs calls insert).
         let args_key = arg_types_key;
+        if std::env::var("VOLAR_KEY_DEBUG").is_ok() && method_name.contains("mul_generalized") {
+            eprintln!(
+                "[key-debug] lower method {method_name} caller={:?} args_key={args_key}",
+                caller.source_name,
+            );
+        }
         if let Some(callee) = plan.local_call_deduce(caller, method_name, &args_key) {
             let emitted_name = plan.emitted_name(callee);
             let ret_ty = ctx

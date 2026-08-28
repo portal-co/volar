@@ -475,6 +475,7 @@ pub fn plan_flat_module<P: Clone>(
             .or_else(|| definitions.get(&key.source_name).copied())
             .expect("queued source definition exists");
         instances.insert(key.clone(), env.clone());
+        let caller_name = key.source_name.clone();
         for (callee, type_args, arg_tys, expected) in
             direct_calls(definition, &env, &definitions, &struct_table)
         {
@@ -762,6 +763,12 @@ pub fn plan_flat_module<P: Clone>(
             // arg types already imply identical instantiation — the receiver's
             // impl-level generics show up in the receiver arg's type.
             let args = arg_types_key;
+            if std::env::var("VOLAR_KEY_DEBUG").is_ok() && callee.contains("mul_generalized") {
+                eprintln!(
+                    "[key-debug] plan {caller_name} -> {callee} key={args} target={}",
+                    callee_key.source_name.clone()
+                );
+            }
             calls.insert((key.clone(), callee.clone(), args), callee_key.clone());
             if !instances.contains_key(&callee_key) {
                 queue.push_back((callee_key, callee_env));

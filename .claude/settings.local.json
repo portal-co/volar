@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk find *)",
+      "Bash(rtk grep *)",
+      "Bash(rtk wc *)",
+      "Bash(rtk read *)",
+      "Bash(rtk proxy *)",
+      "Bash(rtk ls *)",
+      "Bash(rustc --version)",
+      "Bash(rustup toolchain *)"
+    ]
+  }
+}
