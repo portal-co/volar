@@ -222,13 +222,46 @@ Tranche 2 fixes (2026-08-28, same commit series):
    (non-numeric bindings created self-referential substitutions that
    overflowed the stack — caught and fixed during this tranche).
 
+Tranche 3 fixes (2026-08-28, commits d09a323 + 0e74253): **`vole_prover` and
+`vole_verifier` GREEN** (plus `tfhe` still passing; `lir_backend_components`
+now 3/5). Fixes en route:
+
+1. **Operator-impl dispatch**: `Binary Mul` on structs with a declared `Mul`
+   impl routes through the impl's method via the plan. Operator impls are
+   keyed by receiver struct (`mul__<StructKind>`) end-to-end — planning
+   collection, definitions registry, and lowering — because several impls
+   share the method name `mul` in the source (Vope\*Delta, Galois\*Galois, …)
+   and a plain name key bled one impl's body/associated type into another's
+   instance.
+2. **Derived-instance typing**: receiver materialization re-attaches the
+   impl-level generics erased by the parser (names appearing in the method's
+   params/return become the derived fn's own generics) so `bind_call_args`
+   unifies them from concrete self/arg types; `Self::Output` in the derived
+   signature resolves from the impl's associated-type declaration; numeric
+   spellings (`K2::Output` → `TypeParam("2")`) are treated as already-concrete
+   literals — never re-bound as generics or defaulted (defaulting them against
+   impl-level bindings corrupted instance return types).
+3. **Tuple-struct fields** now carry positional names (`"0"`, …) from the
+   parser, so `g.0` on `Galois(pub u8)` resolves through the struct registry
+   (fixes `struct S62 has no field '0'`).
+4. **Reference receivers unify against pointees** (value-semantics
+   flattening): a `&Delta` argument binds `Delta<N,U>`'s generics.
+5. **IterPipeline lowering**: `iter()/map()/enumerate()/fold()/collect()`
+   chains unroll per-element (tuple `(i, elem)` patterns split into
+   index+element), covering `Mul::mul`'s `iter().enumerate().fold()` body.
+6. **Parser keeps type args on generic paths**: `Delta<N, U>` no longer
+   collapses to a bare `Delta` name — the impl's own generic survives into
+   the method signature for unification.
+7. Cross-module nominals that shadow their generic slot (`big_vole: &
+   BigVoleProver`) resolve layouts through the registry instead of erroring
+   as unbindable generics.
+
 Remaining named gaps (component → concrete error):
 
 | Component | Gap |
 |---|---|
-| `vole_setup` | Generic params over external traits (`R: SpecRng`) have no concrete LIR instance; RNG-generic spec functions need a driver-side decision (seeded RNG as data, or trait-dispatch exclusion from LIR roots). |
-| `faest_core` | Same `R: SpecRng` gap (`impl SpecRng` params) plus the full FAEST body-lowering surface. |
-| `vole_prover`/`vole_verifier` | **Receiver type loss**: the parser records `IrReceiver::{Value,Ref,RefMut}` on impl methods but discards the self TYPE (`&self` on `impl Vope<N,T,K>`), so (a) `bind_call_args` cannot bind impl-level params like `K` from the receiver, and two `mul_generalized` sites with receiver K=1 vs K=2 collide onto one instance (ABI mismatch `expected 80 scalars, provided 64`), and (b) `vope * delta` operator impls cannot specialize (the `Binary Mul: 64 vs 16` width error). Fix requires materializing the receiver as an explicit typed param at parse time (or carrying the impl self-ty generic mapping on the method), then rebinding as above. |
+| `vole_setup` | `cot`/`vole_commit_bit`/`random_nonzero_delta` are generic over `R: SpecRng` and call `sample_t(rng)` closures — the existential-RNG surface has no LIR lowering design yet (seeded RNG as data, or trait-dispatch exclusion from LIR roots). Binding `R` to the test-mod `TestRng` struct was probed: the struct lives inside `#[cfg(test)] mod tests` and does not reach the parsed module's registry. |
+| `faest_core` | Same `R: SpecRng` gap (`prove_aes_witness` via the `impl FaestAesProver` existential, `keygen(rng: &mut impl SpecRng)`) plus the full FAEST body-lowering surface. |
 | TS backend | Deferred by decision (2026-08-28); LIR→WASM is the second Phase 4 target. |
 
 The fast path is only real if linked spec functions lower through LIR. Today
