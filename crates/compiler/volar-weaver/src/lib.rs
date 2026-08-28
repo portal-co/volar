@@ -538,7 +538,7 @@ pub(crate) mod tests_common {
     pub fn run_compile_check_tfhe_cfg(code: &str, test_name: &str) {
         let uses = "use volar_spec::tfhe::{BootstrappingKey, LweCiphertext, \
                     tfhe_gate_bootstrapping_and, tfhe_gate_bootstrapping_or, \
-                    tfhe_xor, tfhe_not, tfhe_trivial_zero, \
+                    tfhe_not, tfhe_trivial_zero, \
                     tfhe_trivial_one, tfhe_trivial_encrypt, tfhe_cmux};\n\
                     use volar_macros::volar_action;\n";
         let with_imports = if let Some(newline) = code.find('\n') {

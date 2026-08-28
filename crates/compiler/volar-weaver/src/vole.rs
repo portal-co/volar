@@ -1227,7 +1227,14 @@ where
 
     // Pre-scan for external primitives (oracle calls, action calls, RNG sources).
     // Track (name, bit_count) for actions so we can look up per-action public configs.
+    //
+    // Oracles are keyed by NAME: current lowering emits one direct
+    // `OracleBit { name, args, bit, occurrence }` statement per output bit
+    // (no aggregate handle), so all bits of one oracle share the name key.
+    // Legacy handle-form circuits (`OracleCall` + `OracleProjectedBit`) keep
+    // the call-var key for compatibility.
     let mut oracle_handle_map = BTreeMap::<u32, usize>::new();
+    let mut oracle_name_map = BTreeMap::<alloc::string::String, usize>::new();
     let mut oracle_bit_counts: Vec<usize> = Vec::new();
     let mut action_handle_map = BTreeMap::<u32, usize>::new();
     let mut action_infos: Vec<(String, usize)> = Vec::new(); // (name, num_bits)
@@ -1238,6 +1245,18 @@ where
                 let k = oracle_bit_counts.len();
                 oracle_handle_map.insert(result_id.0, k);
                 oracle_bit_counts.push(*num_bits);
+            }
+            BIrStmt::OracleBit { name, bit, .. } => {
+                let k = match oracle_name_map.get(name) {
+                    Some(&k) => k,
+                    None => {
+                        let k = oracle_bit_counts.len();
+                        oracle_name_map.insert(name.clone(), k);
+                        oracle_bit_counts.push(0);
+                        k
+                    }
+                };
+                oracle_bit_counts[k] = oracle_bit_counts[k].max(bit + 1);
             }
             BIrStmt::ActionCall { name: action_name, num_bits, .. } => {
                 let k = action_infos.len();
@@ -1422,7 +1441,16 @@ where
                 continue;
             }
 
-            BIrStmt::OracleBit { call, bit } => {
+            BIrStmt::OracleBit { name, bit, .. } => {
+                let k = oracle_name_map[name];
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
+                    pattern: IrPattern::ident(&let_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&format!("vope_oracle_{}_bit_{}", k, bit)))),
+                }, q.clone()));
+            }
+
+            BIrStmt::OracleProjectedBit { call, bit } => {
                 let k = oracle_handle_map[&call.0];
                 stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
@@ -1672,7 +1700,14 @@ where
     });
 
     // Pre-scan: track (name, bit_count) for actions.
+    //
+    // Oracles are keyed by NAME: current lowering emits one direct
+    // `OracleBit { name, args, bit, occurrence }` statement per output bit
+    // (no aggregate handle), so all bits of one oracle share the name key.
+    // Legacy handle-form circuits (`OracleCall` + `OracleProjectedBit`) keep
+    // the call-var key for compatibility.
     let mut oracle_handle_map = BTreeMap::<u32, usize>::new();
+    let mut oracle_name_map = BTreeMap::<alloc::string::String, usize>::new();
     let mut oracle_bit_counts: Vec<usize> = Vec::new();
     let mut action_handle_map = BTreeMap::<u32, usize>::new();
     let mut action_infos: Vec<(String, usize)> = Vec::new(); // (name, num_bits)
@@ -1683,6 +1718,18 @@ where
                 let k = oracle_bit_counts.len();
                 oracle_handle_map.insert(result_id.0, k);
                 oracle_bit_counts.push(*num_bits);
+            }
+            BIrStmt::OracleBit { name, bit, .. } => {
+                let k = match oracle_name_map.get(name) {
+                    Some(&k) => k,
+                    None => {
+                        let k = oracle_bit_counts.len();
+                        oracle_name_map.insert(name.clone(), k);
+                        oracle_bit_counts.push(0);
+                        k
+                    }
+                };
+                oracle_bit_counts[k] = oracle_bit_counts[k].max(bit + 1);
             }
             BIrStmt::ActionCall { name: action_name, num_bits, .. } => {
                 let k = action_infos.len();
@@ -1961,7 +2008,16 @@ where
                 continue;
             }
 
-            BIrStmt::OracleBit { call, bit } => {
+            BIrStmt::OracleBit { name, bit, .. } => {
+                let k = oracle_name_map[name];
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
+                    pattern: IrPattern::ident(&let_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&format!("q_oracle_{}_bit_{}", k, bit)))),
+                }, q.clone()));
+            }
+
+            BIrStmt::OracleProjectedBit { call, bit } => {
                 let k = oracle_handle_map[&call.0];
                 stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
