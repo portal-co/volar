@@ -1,7 +1,8 @@
 # Direct-to-LIR Weaver Fast Path — Plan
 
-**Status:** Phase 1 complete (2026-08-28); Phase 2 in progress. TS backend
-work is explicitly deferred (see Phase 2 note).
+**Status:** Phase 1 complete (2026-08-28); Phase 2 in progress — first
+monomorphizer tranche landed, gap inventory below. TS backend work is
+explicitly deferred (see Phase 2 note).
 **@ai:** assisted
 **Base evidence:** local `volar` tree @ `76a670b` + working tree (115 modified
 files), local `volar-ir` checkout @ `71597e6` ("execute packed wide values in
@@ -161,12 +162,54 @@ commands in `PROGRESS.md`.
 
 ## Phase 2 — Finish spec-to-LIR compilation
 
+## Phase 2 — Finish spec-to-LIR compilation
+
 > **Scope note (2026-08-28):** TypeScript backend work is deferred. The TS
 > printer's generated output carries ~178 pre-existing strict-mode errors
 > (verified identical under tsc 5.9 and 7.0 — not a TS7 regression); the
 > `test_ts_backend_no_errors` harness now supports TS7 via `--ignoreConfig`
 > probing (`0f7a324`). Phase 4 dual-path coverage should treat the LIR→WASM
 > backend as the second target, not the TS printer.
+
+### Phase 2 gap inventory (2026-08-28, after first fix tranche)
+
+Tranche 1 fixes (all in `volar-lir-codegen`, evidence:
+`lir_backend_components` tfhe went from "root 'tfhe_xor' is not a local
+function" to a concrete array-assign semantics issue; no regressions in
+`vole_e2e`/`lir_backend`/`e2e`):
+
+1. Var-aware call-site argument inference (`mono.rs`): `direct_calls` now
+   threads a var→type map seeded from fn params and `let` bindings (declared
+   type → inferred init type → resolved callee return type), so `lwe_add(ct_a,
+   ct_b)` style calls specialize without turbofish.
+2. Const-generic binding from argument positions in `unify_into` (callee
+   const params appearing as plain type params, e.g. `LweCiphertext<N_LWE>`).
+3. `N: ArraySize` params bound from return-position array lengths via the
+   `let` annotation (bidirectional hint: `let u: Array<T,N> = lift_bit(u_t)`).
+4. Same-name ambient const fallback for zero-arg helpers
+   (`and_test_poly::<BIG_N>()`) — context-driven, still errors when a name is
+   unbound anywhere in the chain (root discipline kept).
+5. Module-level consts participate in monomorphization: `MonoEnv.consts`
+   populated from `IrModule.consts` (with a small const folder for `1 << 30`
+   style initializers), consulted in `mono_len`, `ensure_struct_instance`
+   field mapping, and value-level `Var` lowering (e.g. TFHE `Q4`).
+6. Registry coverage: `Vec<T>` synthesized as fat-pointer `{data: Ptr<T>,
+   len: U64}`; `str` fields → byte pointer; `FnPtr` fields → opaque word;
+   type aliases (`Zq = u32`) resolved; enums registered before structs with
+   lenient payload mapping for external wrapper variants (Sponge::Shake128).
+7. Stale seed `tfhe_xor` (removed from spec by 92dfc28) dropped from the
+   component table; TFHE root const params bound to the spec toy profile
+   (T_N_LWE=8, T_BIG_N=64, …).
+
+Remaining named gaps (component → concrete error):
+
+| Component | Gap |
+|---|---|
+| `vole_setup` | Generic params over external traits (`R: SpecRng`) have no concrete LIR instance; RNG-generic spec functions need a driver-side decision (seeded RNG as data, or trait-dispatch exclusion from LIR roots). |
+| `faest_core` | Same `R: SpecRng` gap (`impl SpecRng` params) plus the full FAEST body-lowering surface. |
+| `tfhe` | Array element-assign path sees an empty env for `[u32; N_LWE]` locals (`len 0, index 0` in the indexed-assign select loop) — array-literal initialization with const-generic lengths under-instantiates. |
+| `vole_prover`/`vole_verifier` | Real lowering width bug: `Binary Mul: operand widths 64 vs 16` — a u64 scalar multiplies a 16-bit element without an explicit widening; needs a targeted reproducer in `vole.rs` sources. |
+| TS backend | Deferred by decision (2026-08-28); LIR→WASM is the second Phase 4 target. |
 
 The fast path is only real if linked spec functions lower through LIR. Today
 the LIR path covers the VOLE-relevant spec slice (rooted instances of

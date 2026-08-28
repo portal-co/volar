@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, VecDeque};
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
     IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr, IrExprKind,
-    IrField, IrFunction, IrImpl, IrImplItem, IrLit, IrModule, IrParam, IrStmt, IrStmtKind,
-    IrStruct, IrType, IrTypeAlias, SpecUnaryOp, StructKind, TypeNumConst,
+    IrField, IrFunction, IrImpl, IrImplItem, IrLit, IrModule, IrParam, IrPattern, IrStmt,
+    IrStmtKind, IrStruct, IrType, IrTypeAlias, SpecBinOp, SpecUnaryOp, StructKind, TypeNumConst,
 };
 
 // ============================================================================
@@ -96,6 +96,11 @@ pub struct MonoEnv {
     /// Concrete name suffix for the `D: Digest` trait parameter.
     /// e.g., `"sha256"`. Appended to crypto extern function names.
     pub hash_suffix: String,
+    /// Module-level `const NAME: usize = v;` values (name → value), used to
+    /// resolve named constants in array lengths during monomorphization
+    /// (e.g. FAEST's `LAMBDA_BYTES`). Populated from `IrModule.consts` by
+    /// the planning entry points; left empty for hand-built envs.
+    pub consts: BTreeMap<String, usize>,
 }
 
 impl MonoEnv {
@@ -105,6 +110,7 @@ impl MonoEnv {
             type_params: BTreeMap::new(),
             projections: BTreeMap::new(),
             hash_suffix: hash_suffix.into(),
+            consts: BTreeMap::new(),
         }
     }
 
@@ -246,6 +252,18 @@ pub fn plan_flat_module<P: Clone>(
         .iter()
         .map(|function| (function.name.clone(), function))
         .collect();
+    let struct_table: StructTable = module
+        .structs
+        .iter()
+        .map(|s| (s.kind.to_string(), s.clone()))
+        .collect();
+    // Named module-level constants (e.g. FAEST's LAMBDA_BYTES) participate
+    // in array-length resolution for every planned instance.
+    let module_consts: BTreeMap<String, usize> = module
+        .consts
+        .iter()
+        .filter_map(|c| const_eval_expr(&c.value).map(|v| (c.name.clone(), v)))
+        .collect();
     let selected: Vec<(String, MonoEnv)> = if roots.is_empty() {
         module
             .functions
@@ -272,6 +290,8 @@ pub fn plan_flat_module<P: Clone>(
             )));
         };
         if definition.external_kind == volar_compiler::ir::ExternalKind::Normal {
+            let mut env = env;
+            env.consts.extend(module_consts.clone());
             queue.push_back((instance_key(&name, &env), env));
         }
     }
@@ -289,14 +309,17 @@ pub fn plan_flat_module<P: Clone>(
             .get(&key.source_name)
             .expect("queued source definition exists");
         instances.insert(key.clone(), env.clone());
-        for (callee, type_args, arg_tys) in direct_calls(&definition.body, &env) {
+        for (callee, type_args, arg_tys, expected) in
+            direct_calls(definition, &env, &definitions, &struct_table)
+        {
             let Some(callee_def) = definitions.get(&callee) else {
                 continue;
             };
             if callee_def.external_kind != volar_compiler::ir::ExternalKind::Normal {
                 continue;
             }
-            let callee_env = bind_call_args(callee_def, &type_args, &arg_tys, &env)?;
+            let callee_env =
+                bind_call_args(callee_def, &type_args, &arg_tys, &env, expected.as_ref())?;
             let args = normalized_args(
                 &if type_args.is_empty() {
                     // Prefer inferred concrete args for the call key when turbofish
@@ -361,6 +384,7 @@ fn bind_call_args<P: Clone>(
     type_args: &[IrType],
     arg_tys: &[Option<IrType>],
     caller_env: &MonoEnv,
+    expected: Option<&IrType>,
 ) -> Result<MonoEnv, MonoError> {
     if function.generics.is_empty() {
         if !type_args.is_empty() {
@@ -399,15 +423,36 @@ fn bind_call_args<P: Clone>(
         let arg_ty = mono_type(arg_ty, caller_env);
         unify_into(&mut env, &param.ty, &arg_ty, function, caller_env)?;
     }
+    // Bidirectional hint: unify the callee's return type against the
+    // expected type from the call site (a `let` annotation) to bind
+    // generics that appear only in the return position (e.g.
+    // `lift_bit<N, T>(bit: T) -> Array<T, N>` assigned to `Array<T, N>`).
+    if let Some(expected) = expected {
+        if let Some(ret) = &function.return_type {
+            unify_into(&mut env, ret, expected, function, caller_env)?;
+        }
+    }
     // Every layout-relevant generic must be concrete after inference.
     for parameter in &function.generics {
         match parameter.kind {
             volar_compiler::ir::IrGenericParamKind::Const => {
                 if !env.const_params.contains_key(&parameter.name) {
-                    return Err(MonoError::new(format!(
-                        "generic local call '{}': const parameter '{}' could not be inferred",
-                        function.name, parameter.name
-                    )));
+                    // Fallback: same-name ambient const binding from the
+                    // caller. Spec code threads const params (e.g. BIG_N)
+                    // through helper chains under one name; zero-arg helpers
+                    // like `and_test_poly::<BIG_N>()` carry no inference
+                    // evidence of their own, so the caller's binding is the
+                    // only available (and intended) source. This is
+                    // context-driven resolution — an unbound name anywhere
+                    // in the chain still errors, keeping the root discipline.
+                    if let Some(value) = caller_env.const_params.get(&parameter.name) {
+                        env.const_params.insert(parameter.name.clone(), *value);
+                    } else {
+                        return Err(MonoError::new(format!(
+                            "generic local call '{}': const parameter '{}' could not be inferred",
+                            function.name, parameter.name
+                        )));
+                    }
                 }
             }
             volar_compiler::ir::IrGenericParamKind::Type => {
@@ -437,6 +482,7 @@ fn bind_call_args<P: Clone>(
 fn ambient_callee_env<P: Clone>(function: &IrFunction<P>, caller_env: &MonoEnv) -> MonoEnv {
     let shadows = |name: &str| function.generics.iter().any(|g| g.name == name);
     let mut env = MonoEnv::new(caller_env.hash_suffix.clone());
+    env.consts = caller_env.consts.clone();
     for (name, value) in &caller_env.const_params {
         if !shadows(name) {
             env.const_params.insert(name.clone(), *value);
@@ -503,6 +549,20 @@ fn bind_one_generic<P: Clone>(
     Ok(())
 }
 
+/// Extract a concrete `usize` from a monomorphized type parameter shape:
+/// `TypeParam("2")` / numeric-literal names, or typenum marker names
+/// (`U4`, …). `mono_type` rewrites bound const generics to numeric strings,
+/// so this is the only form that reaches unification for call-site args.
+fn concrete_usize(ty: &IrType) -> Option<usize> {
+    if let IrType::TypeParam(name) = ty {
+        if let Ok(n) = name.parse::<usize>() {
+            return Some(n);
+        }
+        return typenum_usize(name);
+    }
+    None
+}
+
 fn is_concrete_type(ty: &IrType) -> bool {
     match ty {
         IrType::TypeParam(name) => name.parse::<usize>().is_ok() || typenum_usize(name).is_some(),
@@ -554,6 +614,28 @@ fn unify_into<P: Clone>(
                     }
                 }
                 env.type_params.insert(name.clone(), concrete.clone());
+            } else if function
+                .generics
+                .iter()
+                .any(|g| g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Const)
+            {
+                // Const-generic parameter of the callee appearing as a plain
+                // type parameter (e.g. `LweCiphertext<N_LWE>` field/param
+                // types): bind it from the concrete numeric argument so
+                // call sites without turbofish still specialize. TFHE's
+                // `lwe_add`/`rlwe_add` are the motivating shapes.
+                if let Some(n) = concrete_usize(concrete) {
+                    if let Some(existing) = env.const_params.get(name) {
+                        if *existing != n {
+                            return Err(MonoError::new(format!(
+                                "generic local call '{}': contradictory const binding for '{}'",
+                                function.name, name
+                            )));
+                        }
+                    } else {
+                        env.const_params.insert(name.clone(), n);
+                    }
+                }
             }
             Ok(())
         }
@@ -583,6 +665,24 @@ fn unify_into<P: Clone>(
                         }
                     } else {
                         env.const_params.insert(name.clone(), *n);
+                    }
+                } else if function.generics.iter().any(|g| {
+                    g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Type
+                }) {
+                    // `N: ArraySize` (hybrid-array) params appear as type
+                    // params used in array-length position; bind them as
+                    // concrete numeric type params so the layout check
+                    // below sees them as resolved.
+                    let concrete = IrType::TypeParam(n.to_string());
+                    if let Some(existing) = env.type_params.get(name) {
+                        if existing != &concrete {
+                            return Err(MonoError::new(format!(
+                                "generic local call '{}': contradictory binding for '{}'",
+                                function.name, name
+                            )));
+                        }
+                    } else {
+                        env.type_params.insert(name.clone(), concrete);
                     }
                 }
             }
@@ -622,8 +722,68 @@ fn unify_into<P: Clone>(
     }
 }
 
-fn infer_expr_type<P: Clone>(expr: &IrExpr<P>, env: &MonoEnv) -> Option<IrType> {
+/// Struct definitions by rendered kind name, for field-type inference.
+pub(crate) type StructTable = BTreeMap<String, IrStruct>;
+
+/// Substitute struct-generic names with concrete type arguments.
+fn substitute_type_args(ty: &IrType, generics: &[String], args: &[IrType]) -> IrType {
+    match ty {
+        IrType::TypeParam(name) => {
+            if let Some(pos) = generics.iter().position(|g| g == name) {
+                args.get(pos).cloned().unwrap_or_else(|| ty.clone())
+            } else {
+                ty.clone()
+            }
+        }
+        IrType::Array { kind, elem, len } => IrType::Array {
+            kind: *kind,
+            elem: Box::new(substitute_type_args(elem, generics, args)),
+            len: len.clone(),
+        },
+        IrType::Struct { kind, type_args } => IrType::Struct {
+            kind: kind.clone(),
+            type_args: type_args
+                .iter()
+                .map(|a| substitute_type_args(a, generics, args))
+                .collect(),
+        },
+        IrType::Reference { mutable, elem } => IrType::Reference {
+            mutable: *mutable,
+            elem: Box::new(substitute_type_args(elem, generics, args)),
+        },
+        IrType::Tuple(elems) => IrType::Tuple(
+            elems
+                .iter()
+                .map(|e| substitute_type_args(e, generics, args))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn infer_expr_type<P: Clone>(
+    expr: &IrExpr<P>,
+    env: &MonoEnv,
+    vars: Option<&VarTypes>,
+    structs: Option<&StructTable>,
+) -> Option<IrType> {
     match &expr.kind {
+        IrExprKind::Var(name) => vars.and_then(|m| m.get(name).cloned()),
+        IrExprKind::Field { base, field, .. } => {
+            let base_ty = infer_expr_type(base, env, vars, structs)?;
+            // Strip one reference level (`&bk.ksk` → base is the ref).
+            let base_ty = match base_ty {
+                IrType::Reference { elem, .. } => *elem,
+                other => other,
+            };
+            let IrType::Struct { kind, type_args } = base_ty else {
+                return None;
+            };
+            let def = structs?.get(&kind.to_string())?;
+            let generic_names: Vec<String> = def.generics.iter().map(|g| g.name.clone()).collect();
+            let field = def.fields.iter().find(|f| &f.name == field)?;
+            Some(substitute_type_args(&field.ty, &generic_names, &type_args))
+        }
         IrExprKind::Lit(IrLit::Int(_)) => {
             Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::U64))
         }
@@ -631,7 +791,9 @@ fn infer_expr_type<P: Clone>(expr: &IrExpr<P>, env: &MonoEnv) -> Option<IrType> 
             Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool))
         }
         IrExprKind::FixedArray(elems) => {
-            let elem_ty = elems.first().and_then(|e| infer_expr_type(e, env))?;
+            let elem_ty = elems
+                .first()
+                .and_then(|e| infer_expr_type(e, env, vars, structs))?;
             Some(IrType::Array {
                 kind: ArrayKind::FixedArray,
                 elem: Box::new(elem_ty),
@@ -639,7 +801,9 @@ fn infer_expr_type<P: Clone>(expr: &IrExpr<P>, env: &MonoEnv) -> Option<IrType> 
             })
         }
         IrExprKind::Array(elems) => {
-            let elem_ty = elems.first().and_then(|e| infer_expr_type(e, env))?;
+            let elem_ty = elems
+                .first()
+                .and_then(|e| infer_expr_type(e, env, vars, structs))?;
             Some(IrType::Array {
                 kind: ArrayKind::FixedArray,
                 elem: Box::new(elem_ty),
@@ -656,14 +820,14 @@ fn infer_expr_type<P: Clone>(expr: &IrExpr<P>, env: &MonoEnv) -> Option<IrType> 
         IrExprKind::Unary {
             op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
             expr,
-        } => infer_expr_type(expr, env).map(|elem| IrType::Reference {
+        } => infer_expr_type(expr, env, vars, structs).map(|elem| IrType::Reference {
             mutable: false,
             elem: Box::new(elem),
         }),
         IrExprKind::Unary {
             op: SpecUnaryOp::Deref,
             expr,
-        } => match infer_expr_type(expr, env)? {
+        } => match infer_expr_type(expr, env, vars, structs)? {
             IrType::Reference { elem, .. } => Some(*elem),
             other => Some(other),
         },
@@ -671,37 +835,207 @@ fn infer_expr_type<P: Clone>(expr: &IrExpr<P>, env: &MonoEnv) -> Option<IrType> 
     }
 }
 
+/// Local variable types for call-site argument inference: name → declared/
+/// inferred type. Seeded from function parameters, extended by `let`
+/// bindings. Scoped nesting (blocks, loops) pushes/pops entries; shadowing
+/// by a later binding simply overwrites.
+pub(crate) type VarTypes = std::collections::BTreeMap<String, IrType>;
+
+/// Constant-fold a module const initializer down to a `usize`.
+/// Handles integer literals and the arithmetic/shift/logic binary ops the
+/// spec sources use in const expressions (e.g. `Q4 = 1 << 30`).
+fn const_eval_expr(expr: &IrExpr) -> Option<usize> {
+    match &expr.kind {
+        IrExprKind::Lit(IrLit::Int(v)) => Some(*v as usize),
+        IrExprKind::Lit(IrLit::Bool(b)) => Some(*b as usize),
+        IrExprKind::Unary {
+            op: SpecUnaryOp::Neg,
+            expr,
+        } => const_eval_expr(expr).map(|v| v.wrapping_neg()),
+        IrExprKind::Unary {
+            op: SpecUnaryOp::Not,
+            expr,
+        } => const_eval_expr(expr).map(|v| !v),
+        IrExprKind::Binary { op, left, right } => {
+            let l = const_eval_expr(left)?;
+            let r = const_eval_expr(right)?;
+            Some(match op {
+                SpecBinOp::Add => l.wrapping_add(r),
+                SpecBinOp::Sub => l.wrapping_sub(r),
+                SpecBinOp::Mul => l.wrapping_mul(r),
+                SpecBinOp::Div if r != 0 => l / r,
+                SpecBinOp::Rem if r != 0 => l % r,
+                SpecBinOp::BitAnd => l & r,
+                SpecBinOp::BitOr => l | r,
+                SpecBinOp::BitXor => l ^ r,
+                SpecBinOp::Shl if r < 64 => l << r,
+                SpecBinOp::Shr if r < 64 => l >> r,
+                _ => return None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Collect the identifier names a pattern binds (ignoring subpatterns beyond
+/// tuple/struct nesting, which is all spec sources emit).
+fn pattern_idents(pattern: &IrPattern, out: &mut Vec<String>) {
+    match pattern {
+        IrPattern::Ident { name, .. } => out.push(name.clone()),
+        IrPattern::Tuple(elems) => {
+            for e in elems {
+                pattern_idents(e, out);
+            }
+        }
+        IrPattern::Struct { fields, .. } => {
+            for (_, p) in fields {
+                pattern_idents(p, out);
+            }
+        }
+        IrPattern::TupleStruct { elems, .. } | IrPattern::Slice(elems) => {
+            for p in elems {
+                pattern_idents(p, out);
+            }
+        }
+        IrPattern::Ref { pat, .. } => pattern_idents(pat, out),
+        _ => {}
+    }
+}
+
 fn direct_calls<P: Clone>(
-    block: &volar_compiler::ir::IrBlock<P>,
+    function: &IrFunction<P>,
     env: &MonoEnv,
-) -> Vec<(String, Vec<IrType>, Vec<Option<IrType>>)> {
+    defs: &BTreeMap<String, &IrFunction<P>>,
+    structs: &StructTable,
+) -> Vec<(String, Vec<IrType>, Vec<Option<IrType>>, Option<IrType>)> {
+    let mut var_types: VarTypes = function
+        .params
+        .iter()
+        .map(|p| (p.name.clone(), p.ty.clone()))
+        .collect();
+    let block = &function.body;
     let mut calls = Vec::new();
     for stmt in &block.stmts {
-        collect_stmt_calls(stmt, env, &mut calls);
+        collect_stmt_calls(stmt, env, defs, structs, &mut var_types, &mut calls);
     }
     if let Some(expr) = &block.expr {
-        collect_expr_calls(expr, env, &mut calls);
+        collect_expr_calls(expr, env, defs, structs, &mut var_types, &mut calls);
     }
     calls
+}
+/// Infer the result type of a call expression whose callee is a known local
+/// function: bind the call-site generics, then monomorphize the callee's
+/// declared return type. Returns `None` when the callee is not local or
+/// binding fails (a later plan step will surface the real error).
+fn call_result_type<P: Clone>(
+    expr: &IrExpr<P>,
+    env: &MonoEnv,
+    defs: &BTreeMap<String, &IrFunction<P>>,
+    var_types: &VarTypes,
+    structs: &StructTable,
+) -> Option<IrType> {
+    let IrExprKind::Call { func, args } = &expr.kind else {
+        return None;
+    };
+    let name = match &func.kind {
+        IrExprKind::Path { segments, .. } => segments.join("_"),
+        IrExprKind::Var(name) => name.clone(),
+        _ => return None,
+    };
+    let callee = *defs.get(&name)?;
+    let type_args = match &func.kind {
+        IrExprKind::Path { type_args, .. } => type_args.clone(),
+        _ => Vec::new(),
+    };
+    let arg_tys: Vec<Option<IrType>> = args
+        .iter()
+        .map(|a| infer_expr_type(a, env, Some(var_types), Some(structs)))
+        .collect();
+    let callee_env = bind_call_args(callee, &type_args, &arg_tys, env, None).ok()?;
+    callee
+        .return_type
+        .as_ref()
+        .map(|ret| mono_type(ret, &callee_env))
 }
 fn collect_stmt_calls<P: Clone>(
     stmt: &IrStmt<P>,
     env: &MonoEnv,
-    calls: &mut Vec<(String, Vec<IrType>, Vec<Option<IrType>>)>,
+    defs: &BTreeMap<String, &IrFunction<P>>,
+    structs: &StructTable,
+    var_types: &mut VarTypes,
+    calls: &mut Vec<(String, Vec<IrType>, Vec<Option<IrType>>, Option<IrType>)>,
 ) {
     match &stmt.kind {
-        IrStmtKind::Let {
-            init: Some(expr), ..
+        IrStmtKind::Let { pattern, ty, init } => {
+            if let Some(expr) = init {
+                let expected = ty.clone();
+                // If init is a direct call, record it with the expected type.
+                if let IrExprKind::Call { func, args } = &expr.kind {
+                    let callee = match &func.kind {
+                        IrExprKind::Path {
+                            segments,
+                            type_args,
+                        } => Some((segments.join("_"), type_args.clone())),
+                        IrExprKind::Var(name) => Some((name.clone(), Vec::new())),
+                        _ => None,
+                    };
+                    if let Some((name, type_args)) = callee {
+                        let arg_tys: Vec<Option<IrType>> = args
+                            .iter()
+                            .map(|a| infer_expr_type(a, env, Some(var_types), Some(structs)))
+                            .collect();
+                        calls.push((name, type_args, arg_tys, expected.clone()));
+                        // Record the call exactly once: collect_expr_calls
+                        // below must not re-walk the top-level Call (it
+                        // would push a duplicate without the expected type).
+                        for arg in args {
+                            collect_expr_calls(arg, env, defs, structs, var_types, calls);
+                        }
+                        // Bind the pattern to the declared type, else the
+                        // inferred init type — enough for call-argument
+                        // inference downstream.
+                        let binding = ty
+                            .clone()
+                            .or_else(|| call_result_type(expr, env, defs, var_types, structs));
+                        if let Some(binding) = binding {
+                            let mut idents = Vec::new();
+                            pattern_idents(pattern, &mut idents);
+                            for name in idents {
+                                var_types.insert(name, binding.clone());
+                            }
+                        }
+                        return;
+                    }
+                }
+                collect_expr_calls(expr, env, defs, structs, var_types, calls);
+                // Bind the pattern to the declared type, else the inferred
+                // init type — enough for call-argument inference downstream.
+                let binding = ty
+                    .clone()
+                    .or_else(|| infer_expr_type(expr, env, Some(var_types), Some(structs)))
+                    .or_else(|| call_result_type(expr, env, defs, var_types, structs));
+                if let Some(binding) = binding {
+                    let mut idents = Vec::new();
+                    pattern_idents(pattern, &mut idents);
+                    for name in idents {
+                        var_types.insert(name, binding.clone());
+                    }
+                }
+            }
         }
-        | IrStmtKind::Semi(expr)
-        | IrStmtKind::Expr(expr) => collect_expr_calls(expr, env, calls),
+        IrStmtKind::Semi(expr) | IrStmtKind::Expr(expr) => {
+            collect_expr_calls(expr, env, defs, structs, var_types, calls)
+        }
         _ => {}
     }
 }
 fn collect_expr_calls<P: Clone>(
     expr: &IrExpr<P>,
     env: &MonoEnv,
-    calls: &mut Vec<(String, Vec<IrType>, Vec<Option<IrType>>)>,
+    defs: &BTreeMap<String, &IrFunction<P>>,
+    structs: &StructTable,
+    var_types: &mut VarTypes,
+    calls: &mut Vec<(String, Vec<IrType>, Vec<Option<IrType>>, Option<IrType>)>,
 ) {
     use IrExprKind::*;
     match &expr.kind {
@@ -715,36 +1049,41 @@ fn collect_expr_calls<P: Clone>(
                 _ => None,
             };
             if let Some((name, type_args)) = callee {
-                let arg_tys = args.iter().map(|a| infer_expr_type(a, env)).collect();
-                calls.push((name, type_args, arg_tys));
+                let arg_tys = args
+                    .iter()
+                    .map(|a| infer_expr_type(a, env, Some(var_types), Some(structs)))
+                    .collect();
+                calls.push((name, type_args, arg_tys, None));
             }
             for arg in args {
-                collect_expr_calls(arg, env, calls);
+                collect_expr_calls(arg, env, defs, structs, var_types, calls);
             }
         }
         Binary { left, right, .. }
         | Assign { left, right }
         | AssignOp { left, right, .. }
         | RawZip { left, right, .. } => {
-            collect_expr_calls(left, env, calls);
-            collect_expr_calls(right, env, calls);
+            collect_expr_calls(left, env, defs, structs, var_types, calls);
+            collect_expr_calls(right, env, defs, structs, var_types, calls);
         }
         Unary { expr, .. }
         | Field { base: expr, .. }
         | Try(expr)
         | Cast { expr, .. }
         | RawMap { receiver: expr, .. }
-        | RawFold { receiver: expr, .. } => collect_expr_calls(expr, env, calls),
+        | RawFold { receiver: expr, .. } => {
+            collect_expr_calls(expr, env, defs, structs, var_types, calls)
+        }
         Index { base, index } => {
-            collect_expr_calls(base, env, calls);
-            collect_expr_calls(index, env, calls);
+            collect_expr_calls(base, env, defs, structs, var_types, calls);
+            collect_expr_calls(index, env, defs, structs, var_types, calls);
         }
         Block(block) | BoundedLoop { body: block, .. } => {
             for stmt in &block.stmts {
-                collect_stmt_calls(stmt, env, calls);
+                collect_stmt_calls(stmt, env, defs, structs, var_types, calls);
             }
             if let Some(expr) = &block.expr {
-                collect_expr_calls(expr, env, calls);
+                collect_expr_calls(expr, env, defs, structs, var_types, calls);
             }
         }
         If {
@@ -752,28 +1091,28 @@ fn collect_expr_calls<P: Clone>(
             then_branch,
             else_branch,
         } => {
-            collect_expr_calls(cond, env, calls);
+            collect_expr_calls(cond, env, defs, structs, var_types, calls);
             for stmt in &then_branch.stmts {
-                collect_stmt_calls(stmt, env, calls);
+                collect_stmt_calls(stmt, env, defs, structs, var_types, calls);
             }
             if let Some(expr) = &then_branch.expr {
-                collect_expr_calls(expr, env, calls);
+                collect_expr_calls(expr, env, defs, structs, var_types, calls);
             }
             if let Some(expr) = else_branch {
-                collect_expr_calls(expr, env, calls);
+                collect_expr_calls(expr, env, defs, structs, var_types, calls);
             }
         }
         Tuple(values) | Array(values) | FixedArray(values) => {
             for value in values {
-                collect_expr_calls(value, env, calls);
+                collect_expr_calls(value, env, defs, structs, var_types, calls);
             }
         }
         StructExpr { fields, .. } => {
             for (_, value) in fields {
-                collect_expr_calls(value, env, calls);
+                collect_expr_calls(value, env, defs, structs, var_types, calls);
             }
         }
-        Return(Some(expr)) => collect_expr_calls(expr, env, calls),
+        Return(Some(expr)) => collect_expr_calls(expr, env, defs, structs, var_types, calls),
         _ => {}
     }
 }
@@ -1205,6 +1544,9 @@ pub(crate) fn mono_len(len: &ArrayLength, env: &MonoEnv) -> ArrayLength {
                 return ArrayLength::Const(n);
             }
             if let Some(n) = typenum_usize(name) {
+                return ArrayLength::Const(n);
+            }
+            if let Some(&n) = env.consts.get(name) {
                 return ArrayLength::Const(n);
             }
             len.clone()

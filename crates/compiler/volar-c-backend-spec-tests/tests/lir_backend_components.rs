@@ -127,6 +127,14 @@ fn component_env() -> MonoEnv {
         .with_len("U1", 1)
         .with_len("U0", 0)
         .with_len("K", 1)
+        // TFHE ciphertext const params (root-level, harness-bound like N/K),
+        // mirroring the spec's toy test profile (tfhe.rs T_* consts).
+        .with_len("N_LWE", 8)
+        .with_len("BIG_N", 64)
+        .with_len("BS_ELL", 2)
+        .with_len("KS_ELL", 2)
+        .with_len("BS_BG_LOG", 16)
+        .with_len("KS_BG_LOG", 16)
         .with_type("T", IrType::Primitive(PrimitiveType::U8))
 }
 
@@ -200,7 +208,6 @@ lir_component! {
         "derive_and_q",
     ],
     tfhe: [
-        "tfhe_xor",
         "tfhe_not",
         "tfhe_gate_bootstrapping_and",
         "tfhe_cmux",

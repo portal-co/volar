@@ -551,9 +551,15 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
 ) {
     // Non-generic structs first; concrete generic nominals are registered
     // per planned instance via `ensure_type_nominals` (no module-wide merge).
+    // Enums register before structs so struct field types naming an enum
+    // (which the parser may emit as a bare TypeParam when the path crosses
+    // modules) resolve through the registry during field mapping.
     let empty = MonoEnv::new("");
-    let mut registry = structs::build_struct_registry_with_lenient(module, target, &empty, lenient);
+    let mut registry = structs::StructRegistry::new();
+    registry.lenient = lenient;
     let enum_registry = structs::build_enum_registry(&module.enums, &mut registry, target, &empty);
+    let mut registry =
+        structs::build_struct_registry_with_lenient(module, target, &empty, lenient, registry);
 
     for (key, env) in &plan.instances {
         let func = module
@@ -568,11 +574,19 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
                 target,
                 env,
                 &module.structs,
+                &module.enums,
             );
             structs::register_tuples_in_type(&parameter.ty, &mut registry, target, env);
         }
         if let Some(return_type) = &func.return_type {
-            structs::ensure_type_nominals(return_type, &mut registry, target, env, &module.structs);
+            structs::ensure_type_nominals(
+                return_type,
+                &mut registry,
+                target,
+                env,
+                &module.structs,
+                &module.enums,
+            );
             structs::register_tuples_in_type(return_type, &mut registry, target, env);
         }
         // Register generic module structs under this instance env when every
@@ -615,6 +629,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
                     target,
                     env,
                     &module.structs,
+                    &module.enums,
                 );
             }
         }
@@ -1011,6 +1026,10 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             // Const-generic names in parsed repeat lengths and type-level
             // arithmetic are expression nodes, not runtime locals.
             if let Some(&value) = ctx.mono.const_params.get(name.as_str()) {
+                return vec![ctx.target.iconst(LirType::U64, value as i64)];
+            }
+            // Module-level constants (e.g. TFHE's Q4) are compile-time words.
+            if let Some(&value) = ctx.mono.consts.get(name.as_str()) {
                 return vec![ctx.target.iconst(LirType::U64, value as i64)];
             }
             // See `digit_var_as_literal`'s own doc: an all-digit `Var` name
