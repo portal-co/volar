@@ -1,6 +1,7 @@
 # Direct-to-LIR Weaver Fast Path — Plan
 
-**Status:** plan (not yet started)
+**Status:** Phase 1 complete (2026-08-28); Phase 2 in progress. TS backend
+work is explicitly deferred (see Phase 2 note).
 **@ai:** assisted
 **Base evidence:** local `volar` tree @ `76a670b` + working tree (115 modified
 files), local `volar-ir` checkout @ `71597e6` ("execute packed wide values in
@@ -151,7 +152,21 @@ Exit criteria: every non-LLVM-dependent crate compiles and its tests pass on
 the current `volar-ir` checkout; both environment blockers recorded with exact
 commands in `PROGRESS.md`.
 
+> **Phase 1 complete (2026-08-28).** Evidence in `PROGRESS.md` top section.
+> The LLVM blocker resolved differently than anticipated: the workspace was
+> bumped to inkwell 0.10 / `llvm22-1` (`0594043`), matching the installed
+> Homebrew LLVM 22 — no llvm-sys 20 environment needed. Standing-suite
+> results recorded; the `lir_backend_components` monomorphization failures
+> feed directly into Phase 2's inventory.
+
 ## Phase 2 — Finish spec-to-LIR compilation
+
+> **Scope note (2026-08-28):** TypeScript backend work is deferred. The TS
+> printer's generated output carries ~178 pre-existing strict-mode errors
+> (verified identical under tsc 5.9 and 7.0 — not a TS7 regression); the
+> `test_ts_backend_no_errors` harness now supports TS7 via `--ignoreConfig`
+> probing (`0f7a324`). Phase 4 dual-path coverage should treat the LIR→WASM
+> backend as the second target, not the TS printer.
 
 The fast path is only real if linked spec functions lower through LIR. Today
 the LIR path covers the VOLE-relevant spec slice (rooted instances of

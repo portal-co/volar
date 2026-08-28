@@ -2,6 +2,33 @@
 
 > Load at the start of a session to see what's done and what's next.
 
+## Direct-to-LIR fast path — Phase 1 green baseline (2026-08-28)
+
+Evidence: `docs/direct-to-lir-weaver-fast-path-plan.md`; commits `f196e94`
+(checkpoint), `b7fbb53` (plan), `7153a9b` (weaver Boolar shapes), `3728443`
+(`VolarIrTarget::call`/`switch` + execution-backed tests), `0594043`
+(inkwell 0.10 / llvm22-1), `0f7a324` (BareFn→FnPtr parsing, TS7 support);
+volar-ir `9c172e4` (schema-generated codecs + fuzz `OracleBit` eval).
+
+Suite status on 2026-08-28 against volar-ir `9c172e4`:
+
+- `cargo check --workspace` clean (both repos), including the llvm-sys path
+  (resolved by the LLVM 22 pin; the "LLVM environment not installed"
+  blocker is closed on dev machines).
+- Green: volar-spec (165), volar-compiler (61), volar-compiler-passes
+  (113; `test_ts_backend_no_errors` still fails on 178 pre-existing
+  generated-code strict errors — verified identical under tsc 5.9/7.0,
+  TS codegen deferred), volar-weaver (139), volar-lir-codegen,
+  volar-ir-lir-target (28 incl. new `call`/`switch` exec tests),
+  volar-c-backend-spec-tests (lir_backend, vole_e2e, e2e, basic,
+  box_pool, curve_e2e), and the full volar-ir workspace (fuzz 70 incl.
+  prop_d2, vaffle 32, ir-passes 109, backends).
+- Standing failures (pre-existing, documented):
+  `volar-c-backend-spec-tests --test lir_backend_components` — 5 of 6
+  components fail monomorphization (`Vec__mono_Primitive_U8_` registry,
+  `tfhe_xor` root removed from spec, `lift_bit` unbound `N`). This is
+  exactly the Phase 2 spec-to-LIR gap inventory input.
+
 ## Merged-tree update — 2026-07-22
 
 Evidence: `08d1d33` and [merge-recovery handoffs](docs/handoffs/merge-recovery/index.md).
