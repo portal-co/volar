@@ -899,7 +899,7 @@ fn test_display_rust_module_writer() {
         pub struct Foo { pub x: u8 }
     "#;
     let module = parse_source(source, "test", &[]).unwrap();
-    let s = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+    let s = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
     assert!(s.contains("pub struct Foo"));
     assert!(s.contains("pub x: u8"));
 }
@@ -911,7 +911,7 @@ fn test_display_rust_expr_writer() {
         (),
         None,
     );
-    let s = format!("{}", DisplayRust(ExprWriter { expr: &expr }));
+    let s = format!("{}", DisplayRust(ExprWriter { expr: &expr, ctx: None }));
     assert_eq!(s, "42");
 }
 
@@ -935,7 +935,7 @@ fn test_module_writer_no_preamble() {
         pub struct Baz { pub z: u32 }
     "#;
     let module = parse_source(source, "test", &[]).unwrap();
-    let s = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+    let s = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
     // Should NOT contain the preamble
     assert!(!s.contains("Auto-generated"));
     assert!(!s.contains("extern crate"));

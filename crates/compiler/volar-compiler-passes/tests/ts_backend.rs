@@ -182,18 +182,35 @@ fn test_ts_backend_no_errors() {
         }
     };
 
+    // TypeScript 7 (the native port) refuses to compile files given on the
+    // command line when a tsconfig.json is present in the directory tree,
+    // failing with TS5112 unless --ignoreConfig is passed. TypeScript 5.x
+    // silently ignored the tsconfig in that situation (CLI options won),
+    // which is the behavior this test depends on — so probe for --ignoreConfig
+    // support and pass it only when available.
+    let ignore_config_supported = Command::new(&tsc)
+        .args(["--ignoreConfig", "--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let mut args: Vec<String> = vec![
+        "--noEmit".into(),
+        "--strict".into(),
+        "--moduleResolution".into(),
+        "bundler".into(),
+        "--target".into(),
+        "esnext".into(),
+        "--module".into(),
+        "esnext".into(),
+    ];
+    if ignore_config_supported {
+        args.push("--ignoreConfig".into());
+    }
+    args.push(tmp_path.to_str().unwrap().into());
+
     let output = Command::new(&tsc)
-        .args([
-            "--noEmit",
-            "--strict",
-            "--moduleResolution",
-            "bundler",
-            "--target",
-            "esnext",
-            "--module",
-            "esnext",
-            tmp_path.to_str().unwrap(),
-        ])
+        .args(&args)
         .current_dir(&root.join("packages/volar-runtime"))
         .output()
         .expect("tsc command failed to launch");

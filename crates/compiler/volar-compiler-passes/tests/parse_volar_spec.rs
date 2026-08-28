@@ -355,7 +355,7 @@ fn test_prove_module_static_print_roundtrip() {
 
     // Print the module body using the static (non-dyn) printer
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
-    let body = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+    let body = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
     assert!(
         body.contains("Array::<T, N>::from_fn"),
         "Should use static from_fn form, got:\n{}",
@@ -390,7 +390,7 @@ fn test_prove_module_static_print_roundtrip() {
          use alloc::vec::Vec;\n\
          use core::ops::{{Add, Mul}};\n\
          use hybrid_array::{{Array, ArraySize}};\n\
-         use cipher::consts::U1;\n\
+         use cipher::consts::{{U1, U2, U3}};\n\
          use volar_spec::vole::{{Delta, Q, Vope, VoleArray}};\n\
          \n\
          {body}\n",
@@ -536,7 +536,7 @@ fn test_primitives_ts_transpile() {
 
     // Static Rust print — should contain from_fn and field ops
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
-    let rust_out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+    let rust_out = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
     assert!(
         rust_out.contains("fn gf_mul_u8"),
         "Should contain gf_mul_u8:\n{}",

@@ -990,6 +990,21 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 .flatten()
                 .collect(),
         }),
+        Type::BareFn(f) => {
+            // Function-pointer type (e.g. `fn(inputs: &[u64], q: u64) -> u64`).
+            // Parameter names are Rust-only sugar; the IR FnPtr keeps types
+            // only. BareFnArg names arrive as `name: Type` — skip the ident.
+            let params = f
+                .inputs
+                .iter()
+                .map(|arg| convert_type(&arg.ty))
+                .collect::<Result<Vec<_>>>()?;
+            let ret = match &f.output {
+                ReturnType::Default => Box::new(IrType::Unit),
+                ReturnType::Type(_, ty) => Box::new(convert_type(ty)?),
+            };
+            Ok(IrType::FnPtr { params, ret })
+        }
         Type::Infer(_) => Ok(IrType::Infer),
         _ => Err(CompilerError::Unsupported(format!("Type: {:?}", ty))),
     }
