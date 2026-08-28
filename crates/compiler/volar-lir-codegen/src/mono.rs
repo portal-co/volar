@@ -13,7 +13,8 @@ use volar_compiler::ir::{
     ArrayKind, ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
     IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr, IrExprKind,
     IrField, IrFunction, IrImpl, IrImplItem, IrLit, IrModule, IrParam, IrPattern, IrStmt,
-    IrStmtKind, IrStruct, IrType, IrTypeAlias, SpecBinOp, SpecUnaryOp, StructKind, TypeNumConst,
+    IrStmtKind, IrStruct, IrType, IrTypeAlias, MethodKind, SpecBinOp, SpecUnaryOp, StructKind,
+    TypeNumConst,
 };
 
 // ============================================================================
@@ -187,6 +188,35 @@ impl MonoPlan {
         self.calls
             .get(&(caller.clone(), callee.to_owned(), args.to_owned()))
     }
+
+    /// Resolve a local call whose lower-time `args` key may be coarser than
+    /// the planning-time key. Planning infers omitted turbofish generics
+    /// (so two sites differing only in an impl-level receiver parameter get
+    /// distinct keys like `"1"` and `"2"`), while lowering only sees the
+    /// written type arguments (`""`). When the exact key misses, fall back
+    /// to the unique entry for `(caller, callee)` — ambiguous multi-entry
+    /// cases require the exact key.
+    pub fn local_call_deduce(
+        &self,
+        caller: &FunctionInstanceKey,
+        callee: &str,
+        args: &str,
+    ) -> Option<&FunctionInstanceKey> {
+        if let Some(found) = self.local_call(caller, callee, args) {
+            return Some(found);
+        }
+        let lower = (caller.clone(), callee.to_owned(), String::new());
+        let upper = (caller.clone(), callee.to_owned(), char::MAX.to_string());
+        let mut matches = self
+            .calls
+            .range(lower..=upper)
+            .filter(|((c, _n, _a), _)| c == caller && _n == callee);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None; // ambiguous — require exact match
+        }
+        Some(first.1)
+    }
 }
 
 impl MonoEnv {
@@ -208,7 +238,7 @@ impl MonoEnv {
     }
 }
 
-fn canonical_type(ty: &IrType) -> String {
+pub(crate) fn canonical_type(ty: &IrType) -> String {
     format!("{ty:?}")
 }
 pub(crate) fn normalized_args(type_args: &[IrType], env: &MonoEnv) -> String {
@@ -247,11 +277,20 @@ pub fn plan_flat_module<P: Clone>(
     roots: &[crate::MonoRoot],
     max_instances: usize,
 ) -> Result<MonoPlan, MonoError> {
-    let definitions: BTreeMap<String, &IrFunction<P>> = module
+    let mut definitions: BTreeMap<String, &IrFunction<P>> = module
         .functions
         .iter()
         .map(|function| (function.name.clone(), function))
         .collect();
+    // Impl methods are full functions too: register them so method calls
+    // (`vope.mul_generalized(..)`) plan and specialize like free calls.
+    for ir_impl in &module.impls {
+        for item in &ir_impl.items {
+            if let volar_compiler::ir::IrImplItem::Method(method) = item {
+                definitions.entry(method.name.clone()).or_insert(method);
+            }
+        }
+    }
     let struct_table: StructTable = module
         .structs
         .iter()
@@ -344,6 +383,25 @@ pub fn plan_flat_module<P: Clone>(
                 &env,
             );
             let callee_key = instance_key(&callee, &callee_env);
+            // The plain generic-args key can collide when two sites differ
+            // only in impl-level receiver parameters (e.g. `self: Vope<..,K>`
+            // with K=1 vs K=2). Append the canonical argument types — the
+            // same string the lowering side derives from `infer_type` — so
+            // each static call site maps to its own instance.
+            let arg_types_key: String = arg_tys
+                .iter()
+                .map(|ty| {
+                    ty.as_ref()
+                        .map(|t| canonical_type(&mono_type(t, &env)))
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join("|");
+            let args = if args.is_empty() {
+                arg_types_key
+            } else {
+                format!("{args}#{arg_types_key}")
+            };
             calls.insert((key.clone(), callee.clone(), args), callee_key.clone());
             if !instances.contains_key(&callee_key) {
                 queue.push_back((callee_key, callee_env));
@@ -400,6 +458,26 @@ fn bind_call_args<P: Clone>(
     // Seed with ambient caller bindings that this function does not shadow
     // (typenum defaults, VOLE `U1`/`U0`, hash suffix, etc.).
     let mut env = ambient_callee_env(function, caller_env);
+    // Impl-level parameters (bound by the receiver's `impl`, e.g. `K` in
+    // `impl Vope<N, T, K> { fn m<K2>(...) }`) are per-call-site: strip any
+    // ambient binding so unification below binds them from the actual
+    // argument types instead of silently inheriting the caller's value.
+    {
+        let mut impl_level: std::collections::BTreeSet<String> = Default::default();
+        for param in &function.params {
+            collect_type_params(&param.ty, &mut impl_level);
+        }
+        if let Some(ret) = &function.return_type {
+            collect_type_params(ret, &mut impl_level);
+        }
+        for name in function.generics.iter().map(|g| &g.name) {
+            impl_level.remove(name);
+        }
+        for name in &impl_level {
+            env.const_params.remove(name);
+            env.type_params.remove(name);
+        }
+    }
     // Explicit turbofish bindings first.
     if !type_args.is_empty() {
         if type_args.len() != function.generics.len() {
@@ -636,6 +714,22 @@ fn unify_into<P: Clone>(
                         env.const_params.insert(name.clone(), n);
                     }
                 }
+            } else if !function.generics.iter().any(|g| g.name == *name) {
+                // Impl-level parameter: a name bound by the receiver's
+                // `impl` block, not the method's own generics (e.g. `K` in
+                // `impl Vope<N, T, K> { fn mul_generalized<K2>(...) }`).
+                // Bind only numeric concretes; binding non-numeric types
+                // here can create self-referential substitutions (K2::Output
+                // projections) that never resolve.
+                if let IrType::TypeParam(nname) = concrete {
+                    if let Ok(n) = nname.parse::<usize>() {
+                        env.const_params.insert(name.clone(), n);
+                    } else if let Some(n) = typenum_usize(nname) {
+                        env.const_params.insert(name.clone(), n);
+                    } else {
+                        return Ok(());
+                    }
+                }
             }
             Ok(())
         }
@@ -840,6 +934,34 @@ fn infer_expr_type<P: Clone>(
 /// bindings. Scoped nesting (blocks, loops) pushes/pops entries; shadowing
 /// by a later binding simply overwrites.
 pub(crate) type VarTypes = std::collections::BTreeMap<String, IrType>;
+
+/// Collect every generic-parameter name appearing in a type (used to detect
+/// impl-level parameters during call binding).
+fn collect_type_params(ty: &IrType, out: &mut std::collections::BTreeSet<String>) {
+    match ty {
+        IrType::TypeParam(name) => {
+            out.insert(name.clone());
+        }
+        IrType::Array { elem, len, .. } => {
+            collect_type_params(elem, out);
+            if let ArrayLength::TypeParam(name) = len {
+                out.insert(name.clone());
+            }
+        }
+        IrType::Struct { type_args, .. } => {
+            for a in type_args {
+                collect_type_params(a, out);
+            }
+        }
+        IrType::Reference { elem, .. } | IrType::Vector { elem } => collect_type_params(elem, out),
+        IrType::Tuple(elems) => {
+            for e in elems {
+                collect_type_params(e, out);
+            }
+        }
+        _ => {}
+    }
+}
 
 /// Constant-fold a module const initializer down to a `usize`.
 /// Handles integer literals and the arithmetic/shift/logic binary ops the
@@ -1055,6 +1177,27 @@ fn collect_expr_calls<P: Clone>(
                     .collect();
                 calls.push((name, type_args, arg_tys, None));
             }
+            for arg in args {
+                collect_expr_calls(arg, env, defs, structs, var_types, calls);
+            }
+        }
+        MethodCall {
+            receiver,
+            method: MethodKind::Other(name),
+            type_args,
+            args,
+        } => {
+            // User-defined impl method: callee is the method name with the
+            // receiver as the first argument (mirrors the lowering side).
+            let arg_tys: Vec<Option<IrType>> = std::iter::once(receiver)
+                .map(|r| infer_expr_type(r, env, Some(var_types), Some(structs)))
+                .chain(
+                    args.iter()
+                        .map(|a| infer_expr_type(a, env, Some(var_types), Some(structs))),
+                )
+                .collect();
+            calls.push((name.clone(), type_args.clone(), arg_tys, None));
+            collect_expr_calls(receiver, env, defs, structs, var_types, calls);
             for arg in args {
                 collect_expr_calls(arg, env, defs, structs, var_types, calls);
             }
@@ -1526,6 +1669,14 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
 
         // Primitive, Unit, Never, Infer, Existential, FnPtr, Param
         other => other.clone(),
+    }
+}
+
+/// The concrete length when fully resolved (`Const`); `None` otherwise.
+pub(crate) fn array_len_const(len: &ArrayLength) -> Option<usize> {
+    match len {
+        ArrayLength::Const(n) => Some(*n),
+        _ => None,
     }
 }
 

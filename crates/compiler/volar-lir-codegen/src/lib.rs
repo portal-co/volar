@@ -19,10 +19,9 @@ use std::collections::BTreeMap;
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgFunction, IrCfgJump,
     IrCfgModule, IrCfgTerminator, IrExpr, IrExprKind, IrFunction, IrLit, IrModule, IrPattern,
-    IrStmt, IrStmtKind, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StdMethod,
-    StructKind,
+    IrStmt, IrStmtKind, IrType, MethodKind, PrimitiveType, ReentryHint, SpecBinOp, SpecUnaryOp,
+    StdMethod, StructKind,
 };
-use volar_ir_common::ReentryHint;
 use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 
 use mono::{
@@ -290,8 +289,16 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                     _ => return None,
                 };
                 if let (Some(plan), Some(caller)) = (self.mono_plan, self.current_instance) {
-                    let args = normalized_args(type_args, self.mono);
-                    if let Some(callee) = plan.local_call(caller, &name, &args) {
+                    // Mirror the planning-side key: generics plus canonical
+                    // argument types (see mono.rs calls.insert).
+                    let generic_key = normalized_args(type_args, self.mono);
+                    let arg_types_key = String::new(); // args not available here; deduce falls back
+                    let args = if generic_key.is_empty() {
+                        arg_types_key
+                    } else {
+                        format!("{generic_key}#{arg_types_key}")
+                    };
+                    if let Some(callee) = plan.local_call_deduce(caller, &name, &args) {
                         return self
                             .ir_func_ret_types
                             .get(plan.emitted_name(callee))
@@ -322,6 +329,17 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 })
             }
 
+            // Struct literal: the struct type is the literal's kind + args.
+            IrExprKind::StructExpr {
+                kind, type_args, ..
+            } => Some(IrType::Struct {
+                kind: kind.clone(),
+                type_args: type_args
+                    .iter()
+                    .map(|a| crate::mono::mono_type(a, &self.mono))
+                    .collect(),
+            }),
+
             // Parsed `[value; N]`: preserve the concrete or const-generic
             // length so later indexed assignments can update the flattened
             // local array.
@@ -351,14 +369,6 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
 }
 
 /// Extract the `StructKind` from a type (stripping references).
-fn extract_struct_kind(ty: &IrType) -> Option<&StructKind> {
-    match ty {
-        IrType::Struct { kind, .. } => Some(kind),
-        IrType::Reference { elem, .. } => extract_struct_kind(elem),
-        _ => None,
-    }
-}
-
 static EMPTY_EXTERNAL_FNS: LazyLock<BTreeMap<String, ExternalFnInfo>> =
     LazyLock::new(BTreeMap::new);
 static EMPTY_FUNC_SIGS: LazyLock<BTreeMap<String, FuncSigInfo>> = LazyLock::new(BTreeMap::new);
@@ -729,11 +739,24 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
 ) {
-    let param_lir_tys = func
+    let param_lir_tys: Vec<_> = func
         .params
         .iter()
-        .map(|param| registry.ir_type_to_lir(&param.ty, env))
-        .collect::<Vec<_>>();
+        .map(|param| {
+            let lir = registry.ir_type_to_lir(&param.ty, env);
+            if std::env::var("VOLAR_PARAM_DEBUG").is_ok() {
+                eprintln!(
+                    "[param-debug] {} param {} ty={:?} lir={:?} width={}",
+                    emitted_name,
+                    param.name,
+                    mono_type(&param.ty, env),
+                    lir,
+                    flatten_count(&lir, registry)
+                );
+            }
+            lir
+        })
+        .collect();
     let ret_ty = func
         .return_type
         .as_ref()
@@ -881,6 +904,24 @@ fn lower_block<T: LirTarget<P>, P: Clone>(
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
     for stmt in &block.stmts {
+        // `continue` inside an unrolled loop body: stop this block's lowering.
+        // The unroller re-invokes lower_block for the next iteration, so the
+        // remaining statements of THIS iteration are skipped — exactly the
+        // Rust semantics — while later iterations still execute. Blocks
+        // lowered outside any enclosing unrolled loop never contain
+        // `continue` (validated by external-source checks upstream).
+        if matches!(
+            stmt.kind,
+            IrStmtKind::Expr(IrExpr {
+                kind: IrExprKind::Continue,
+                ..
+            }) | IrStmtKind::Semi(IrExpr {
+                kind: IrExprKind::Continue,
+                ..
+            })
+        ) {
+            return Vec::new();
+        }
         ctx.target.set_prov(stmt.prov.clone());
         ctx.target.set_side(stmt.side);
         lower_stmt(stmt, ctx);
@@ -1163,6 +1204,41 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
         } => lower_raw_zip(left, right, left_var, right_var, body, ctx),
 
         // ---- Phase 2: bounded loop ------------------------------------------
+        IrExprKind::IterLoop {
+            pattern,
+            collection,
+            body,
+        } => {
+            // Recognize `(start..end).rev()` — a reversed bounded loop — and
+            // unroll it descending. Other iterator shapes are not supported.
+            let reversed_range = match &collection.kind {
+                IrExprKind::MethodCall {
+                    receiver,
+                    method: MethodKind::Known(StdMethod::Rev),
+                    args,
+                    ..
+                } if args.is_empty() => Some(receiver.as_ref()),
+                _ => None,
+            };
+            if let Some(IrExpr {
+                kind:
+                    IrExprKind::Range {
+                        start: Some(start),
+                        end: Some(end),
+                        ..
+                    },
+                ..
+            }) = reversed_range
+            {
+                // `Range` itself never carries `inclusive`; `.rev()` of an
+                // inclusive range is not expressible in Rust source, so this
+                // is always exclusive.
+                lower_bounded_loop_descending(pattern, start, end, body, ctx);
+                return Vec::new();
+            }
+            unimplemented!("lower_expr: unsupported iterator loop shape")
+        }
+
         IrExprKind::BoundedLoop {
             var,
             start,
@@ -1281,7 +1357,11 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             unimplemented!("lower_expr: unresolved Path {:?}", segments)
         }
 
-        _other => unimplemented!("lower_expr: unsupported expr"),
+        other => unimplemented!(
+            "lower_expr: unsupported expr {:?} in instance {:?}",
+            std::mem::discriminant(other),
+            ctx.current_instance.as_ref().map(|c| c.source_name.clone())
+        ),
     }
 }
 
@@ -1325,7 +1405,12 @@ fn lower_binop<T: LirTarget<P>, P: Clone>(
         SpecBinOp::Sub => ctx.target.sub(lv, rv),
         SpecBinOp::Mul => ctx.target.mul(lv, rv),
         SpecBinOp::Div => ctx.target.udiv(lv, rv),
-        SpecBinOp::Rem => unimplemented!("Rem not in LirTarget"),
+        SpecBinOp::Rem => {
+            // a % b = a - (a / b) * b (unsigned); LirTarget has udiv.
+            let q = ctx.target.udiv(lv.clone(), rv.clone());
+            let prod = ctx.target.mul(q, rv);
+            ctx.target.sub(lv, prod)
+        }
         SpecBinOp::BitAnd => ctx.target.and(lv, rv),
         SpecBinOp::BitOr => ctx.target.or(lv, rv),
         SpecBinOp::BitXor => ctx.target.xor(lv, rv),
@@ -1999,11 +2084,13 @@ fn resolve_const_expr_len<P: Clone>(len: &IrExpr<P>, mono: &MonoEnv) -> usize {
         IrExprKind::Var(name) => mono
             .const_params
             .get(name)
+            .or_else(|| mono.consts.get(name.as_str()))
             .copied()
             .unwrap_or_else(|| panic!("array length '{name}' is not concrete")),
         IrExprKind::Path { segments, .. } if segments.len() == 2 && segments[1] == "USIZE" => mono
             .const_params
             .get(&segments[0])
+            .or_else(|| mono.consts.get(segments[0].as_str()))
             .copied()
             .unwrap_or_else(|| panic!("array length '{}' is not concrete", segments[0])),
         _ => panic!("array length must be a concrete integer"),
@@ -2194,167 +2281,6 @@ fn is_slice_ref(ty: &IrType) -> bool {
 }
 
 /// Extract the element type from a `Reference<Slice<T>>` or `Box<[T; N]>`.
-/// Panics if `ty` is neither (see [`is_slice_ref`]).
-fn slice_ref_elem(ty: &IrType) -> IrType {
-    if let Some(IrType::Array { elem: inner, .. }) = volar_compiler::ir::as_box_type(ty) {
-        return *inner.clone();
-    }
-    match ty {
-        IrType::Reference { elem, .. } => match elem.as_ref() {
-            IrType::Array { elem: inner, .. } => *inner.clone(),
-            _ => panic!("slice_ref_elem: not a slice"),
-        },
-        _ => panic!("slice_ref_elem: not a reference or Box"),
-    }
-}
-
-// ============================================================================
-// Phase 2: array index (runtime mux tree)
-// ============================================================================
-
-fn lower_index<T: LirTarget<P>, P: Clone>(
-    base: &IrExpr<P>,
-    index: &IrExpr<P>,
-    ctx: &mut LowerCtx<T, P>,
-) -> Vec<T::Value> {
-    let base_ir_ty = ctx
-        .infer_type(base)
-        .unwrap_or_else(|| panic!("Index: could not infer base type"));
-
-    // Pointer-based indexing: Reference<Slice<T>> → Ptr(T) in LIR.
-    // Use ptr_index_load instead of the flat mux tree.
-    if is_slice_ref(&base_ir_ty) {
-        let elem_ir_ty = slice_ref_elem(&base_ir_ty);
-        let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
-        let ptr_vals = lower_expr(base, ctx);
-        let ptr = ptr_vals
-            .into_iter()
-            .next()
-            .expect("pointer should be a single scalar");
-        let idx_val = into_scalar(lower_expr(index, ctx), "array index");
-        return ctx.target.ptr_index_load(ptr, idx_val, &elem_lir_ty);
-    }
-
-    let (elem_ir_ty, n) = array_elem_and_len(&base_ir_ty, ctx.mono);
-    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
-    let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
-
-    let arr_vals = lower_expr(base, ctx); // n * elem_width scalars
-    let idx_val = into_scalar(lower_expr(index, ctx), "array index");
-
-    // Build a select mux tree for each scalar position within the element.
-    // result[j] = select chain over arr_vals[0*ew+j], arr_vals[1*ew+j], ...
-    (0..elem_width)
-        .map(|j| {
-            let mut result = arr_vals[j].clone(); // element 0's j-th scalar
-            for k in 1..n {
-                let k_val = ctx.target.iconst(LirType::U64, k as i64);
-                let cond = ctx.target.icmp(IcmpPred::Eq, idx_val.clone(), k_val);
-                result = ctx
-                    .target
-                    .select(cond, arr_vals[k * elem_width + j].clone(), result);
-            }
-            result
-        })
-        .collect()
-}
-
-// ============================================================================
-// Phase 2: assignment (storage writes, variable updates)
-// ============================================================================
-
-fn lower_assign<T: LirTarget<P>, P: Clone>(
-    left: &IrExpr<P>,
-    right: &IrExpr<P>,
-    ctx: &mut LowerCtx<T, P>,
-) {
-    match &left.kind {
-        // Assignment to an indexed location: base[index] = rhs
-        IrExprKind::Index { base, index } => {
-            let base_ir_ty = ctx
-                .infer_type(base)
-                .unwrap_or_else(|| panic!("Assign: could not infer base type"));
-
-            if is_slice_ref(&base_ir_ty) {
-                // Pointer-based store: ptr[idx] = pack(rhs_vals)
-                let elem_ir_ty = slice_ref_elem(&base_ir_ty);
-                let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
-                let ptr_vals = lower_expr(base, ctx);
-                let ptr = ptr_vals
-                    .into_iter()
-                    .next()
-                    .expect("pointer should be a single scalar");
-                let idx_val = into_scalar(lower_expr(index, ctx), "assign index");
-                let rhs_vals = lower_expr(right, ctx);
-                ctx.target
-                    .ptr_index_store(ptr, idx_val, &rhs_vals, &elem_lir_ty);
-            } else {
-                // In-memory array: update env with new values.
-                // For flat-scalar arrays this replaces the slice at the right index.
-                let (elem_ir_ty, _n) = array_elem_and_len(&base_ir_ty, ctx.mono);
-                let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
-                let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
-
-                let idx_val = into_scalar(lower_expr(index, ctx), "assign index");
-                let rhs_vals = lower_expr(right, ctx);
-
-                // We need the variable name to update env.
-                if let IrExprKind::Var(name) = &base.kind {
-                    let mut arr_vals = ctx
-                        .env
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_else(|| panic!("undefined variable: {name}"));
-                    // For each element position, conditionally update using select.
-                    let n = arr_vals.len() / elem_width;
-                    for k in 0..n {
-                        let k_val = ctx.target.iconst(LirType::U64, k as i64);
-                        let cond = ctx.target.icmp(IcmpPred::Eq, idx_val.clone(), k_val);
-                        for j in 0..elem_width {
-                            let old = arr_vals[k * elem_width + j].clone();
-                            let new = rhs_vals[j].clone();
-                            arr_vals[k * elem_width + j] =
-                                ctx.target.select(cond.clone(), new, old);
-                        }
-                    }
-                    ctx.env.insert(name.clone(), arr_vals);
-                } else {
-                    unimplemented!("assign to non-variable indexed base");
-                }
-            }
-        }
-        // Simple variable assignment: `x = rhs`
-        IrExprKind::Var(name) => {
-            let rhs_vals = lower_expr(right, ctx);
-            let inferred_ty = ctx.infer_type(right);
-            if let Some(ty) = inferred_ty {
-                ctx.env_types.insert(name.clone(), ty);
-            }
-            ctx.env.insert(name.clone(), rhs_vals);
-        }
-        // Field assignment is not supported in value-semantics LIR.
-        _other => unimplemented!("lower_assign: unsupported lhs"),
-    }
-}
-
-// ============================================================================
-// Phase 2: BoundedLoop
-// ============================================================================
-
-fn concrete_usize_expr<T: LirTarget<P>, P: Clone>(
-    expr: &IrExpr<P>,
-    ctx: &LowerCtx<T, P>,
-) -> Option<usize> {
-    match &expr.kind {
-        IrExprKind::Lit(IrLit::Int(value)) => usize::try_from(*value).ok(),
-        IrExprKind::Var(name) => ctx.mono.const_params.get(name).copied(),
-        IrExprKind::Path { segments, .. } if segments.len() == 2 && segments[1] == "USIZE" => {
-            ctx.mono.const_params.get(&segments[0]).copied()
-        }
-        _ => None,
-    }
-}
-
 fn lower_bounded_loop<T: LirTarget<P>, P: Clone>(
     var: &str,
     start: &IrExpr<P>,
@@ -2482,9 +2408,373 @@ fn lower_bounded_loop<T: LirTarget<P>, P: Clone>(
     ctx.env_types.remove(var);
 }
 
+/// Panics if `ty` is neither (see [`is_slice_ref`]).
+fn slice_ref_elem(ty: &IrType) -> IrType {
+    if let Some(IrType::Array { elem: inner, .. }) = volar_compiler::ir::as_box_type(ty) {
+        return *inner.clone();
+    }
+    match ty {
+        IrType::Reference { elem, .. } => match elem.as_ref() {
+            IrType::Array { elem: inner, .. } => *inner.clone(),
+            _ => panic!("slice_ref_elem: not a slice"),
+        },
+        _ => panic!("slice_ref_elem: not a reference or Box"),
+    }
+}
+
 // ============================================================================
-// Phase 2: method calls
+// Phase 2: array index (runtime mux tree)
 // ============================================================================
+
+fn lower_index<T: LirTarget<P>, P: Clone>(
+    base: &IrExpr<P>,
+    index: &IrExpr<P>,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let base_ir_ty = ctx
+        .infer_type(base)
+        .unwrap_or_else(|| panic!("Index: could not infer base type"));
+
+    // Pointer-based indexing: Reference<Slice<T>> → Ptr(T) in LIR.
+    // Use ptr_index_load instead of the flat mux tree.
+    if is_slice_ref(&base_ir_ty) {
+        let elem_ir_ty = slice_ref_elem(&base_ir_ty);
+        let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+        let ptr_vals = lower_expr(base, ctx);
+        let ptr = ptr_vals
+            .into_iter()
+            .next()
+            .expect("pointer should be a single scalar");
+        let idx_val = into_scalar(lower_expr(index, ctx), "array index");
+        return ctx.target.ptr_index_load(ptr, idx_val, &elem_lir_ty);
+    }
+
+    let (elem_ir_ty, n) = array_elem_and_len(&base_ir_ty, ctx.mono);
+    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+    let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+
+    let arr_vals = lower_expr(base, ctx); // n * elem_width scalars
+    let idx_val = into_scalar(lower_expr(index, ctx), "array index");
+
+    // Build a select mux tree for each scalar position within the element.
+    // result[j] = select chain over arr_vals[0*ew+j], arr_vals[1*ew+j], ...
+    (0..elem_width)
+        .map(|j| {
+            let mut result = arr_vals[j].clone(); // element 0's j-th scalar
+            for k in 1..n {
+                let k_val = ctx.target.iconst(LirType::U64, k as i64);
+                let cond = ctx.target.icmp(IcmpPred::Eq, idx_val.clone(), k_val);
+                result = ctx
+                    .target
+                    .select(cond, arr_vals[k * elem_width + j].clone(), result);
+            }
+            result
+        })
+        .collect()
+}
+
+// ============================================================================
+// Phase 2: assignment (storage writes, variable updates)
+// ============================================================================
+
+fn lower_assign<T: LirTarget<P>, P: Clone>(
+    left: &IrExpr<P>,
+    right: &IrExpr<P>,
+    ctx: &mut LowerCtx<T, P>,
+) {
+    match &left.kind {
+        // Assignment to an indexed location: base[index] = rhs
+        IrExprKind::Index { base, index } => {
+            let base_ir_ty = ctx
+                .infer_type(base)
+                .unwrap_or_else(|| panic!("Assign: could not infer base type"));
+
+            if is_slice_ref(&base_ir_ty) {
+                // Pointer-based store: ptr[idx] = pack(rhs_vals)
+                let elem_ir_ty = slice_ref_elem(&base_ir_ty);
+                let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+                let ptr_vals = lower_expr(base, ctx);
+                let ptr = ptr_vals
+                    .into_iter()
+                    .next()
+                    .expect("pointer should be a single scalar");
+                let idx_val = into_scalar(lower_expr(index, ctx), "assign index");
+                let rhs_vals = lower_expr(right, ctx);
+                ctx.target
+                    .ptr_index_store(ptr, idx_val, &rhs_vals, &elem_lir_ty);
+            } else {
+                // In-memory array: update env with new values.
+                // For flat-scalar arrays this replaces the slice at the right index.
+                let (elem_ir_ty, _n) = array_elem_and_len(&base_ir_ty, ctx.mono);
+                let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+                let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+
+                // Peel nested index chains (`result[j][i] = …`): collect the
+                // index expressions outermost-first, derive each subscripted
+                // array's length from the base type, and fold into a single
+                // linear element position over the flattened aggregate
+                // (outer index major, matching flatten order).
+                let mut chain: Vec<&IrExpr<P>> = Vec::new(); // index exprs, outermost first
+                let mut chain_bases_last = base;
+                {
+                    // The outermost index is the arm's own `index`; peel the
+                    // remaining nested Index layers from `base`.
+                    chain.push(index);
+                    let mut cursor = base;
+                    while let IrExprKind::Index { base: inner, index } = &cursor.kind {
+                        chain.insert(0, index);
+                        cursor = inner;
+                    }
+                    chain_bases_last = cursor;
+                }
+                // Array lengths per depth: base type is Array<L0, len0>; the
+                // element subscripted by chain[0] is L0, whose length feeds
+                // the multiplier for chain[0], etc.
+                let mut lens: Vec<Option<usize>> = Vec::new();
+                {
+                    let mut ty = Some(&base_ir_ty);
+                    for _ in 0..chain.len() {
+                        match ty {
+                            Some(IrType::Array { elem, len, .. }) => {
+                                lens.push(mono::array_len_const(&mono_len(len, ctx.mono)));
+                                ty = Some(elem.as_ref());
+                            }
+                            _ => {
+                                lens.push(None);
+                                ty = None;
+                            }
+                        }
+                    }
+                }
+                // pos = Σ_{d} idx[d] * Π_{e>d} len[e]
+                if chain.is_empty() {
+                    panic!("Assign: empty index chain for base type {base_ir_ty:?}");
+                }
+                let mut pos = into_scalar(lower_expr(chain[0], ctx), "assign index");
+                for (d, index_expr) in chain.iter().enumerate().skip(1) {
+                    // product of lens[d+1..]
+                    let mut factor: Option<usize> = Some(1usize);
+                    for l in lens[d..].iter() {
+                        match (factor, l) {
+                            (Some(f), Some(v)) => factor = Some(f * v),
+                            _ => {
+                                factor = None;
+                                break;
+                            }
+                        }
+                    }
+                    let idx_v = into_scalar(lower_expr(index_expr, ctx), "assign index");
+                    let scaled = match factor {
+                        Some(f) if f > 1 => {
+                            let f_val = ctx.target.iconst(LirType::U64, f as i64);
+                            ctx.target.mul(pos.clone(), f_val)
+                        }
+                        _ => pos.clone(),
+                    };
+                    pos = ctx.target.add(scaled, idx_v);
+                }
+                let idx_val = pos;
+                let rhs_vals = lower_expr(right, ctx);
+
+                // The innermost base after peeling must be a variable.
+                let final_base = chain_bases_last;
+                // We need the variable name to update env.
+                if let IrExprKind::Var(name) = &final_base.kind {
+                    let mut arr_vals = ctx
+                        .env
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| panic!("undefined variable: {name}"));
+                    if arr_vals.is_empty() {
+                        panic!("Assign: {name} has empty env (elem_width={elem_width})");
+                    }
+                    // For each element position, conditionally update using select.
+                    let n = arr_vals.len() / elem_width;
+                    for k in 0..n {
+                        let k_val = ctx.target.iconst(LirType::U64, k as i64);
+                        let cond = ctx.target.icmp(IcmpPred::Eq, idx_val.clone(), k_val);
+                        for j in 0..elem_width {
+                            if j >= rhs_vals.len() {
+                                panic!(
+                                    "Assign: rhs empty (rhs_len={} arr_len={elem_width} n={n} base={})",
+                                    rhs_vals.len(),
+                                    if let IrExprKind::Var(nm) = &base.kind {
+                                        nm.as_str()
+                                    } else {
+                                        "?"
+                                    }
+                                );
+                            }
+                            let old = arr_vals[k * elem_width + j].clone();
+                            let new = rhs_vals[j].clone();
+                            arr_vals[k * elem_width + j] =
+                                ctx.target.select(cond.clone(), new, old);
+                        }
+                    }
+                    ctx.env.insert(name.clone(), arr_vals);
+                } else {
+                    unimplemented!("assign to non-variable indexed base");
+                }
+            }
+        }
+        // Simple variable assignment: `x = rhs`
+        IrExprKind::Var(name) => {
+            let rhs_vals = lower_expr(right, ctx);
+            let inferred_ty = ctx.infer_type(right);
+            if let Some(ty) = inferred_ty {
+                ctx.env_types.insert(name.clone(), ty);
+            }
+            ctx.env.insert(name.clone(), rhs_vals);
+        }
+        // Field assignment `struct_var.field = rhs`: update the flattened
+        // scalars at the field's offset using the same select pattern as
+        // indexed assignment (unconditional here — no runtime index).
+        IrExprKind::Field { base, field } => {
+            let base_ir_ty = ctx
+                .infer_type(base)
+                .unwrap_or_else(|| panic!("Field assign: could not infer base type"));
+            let base_ir_ty = match base_ir_ty {
+                IrType::Reference { elem, .. } => *elem,
+                other => other,
+            };
+            let IrType::Struct { kind, type_args } = &base_ir_ty else {
+                unimplemented!("lower_assign: field assign on non-struct {base_ir_ty:?}");
+            };
+            let ir_struct = ctx
+                .module_structs
+                .iter()
+                .find(|s| s.kind == *kind)
+                .unwrap_or_else(|| panic!("Field assign: struct {kind:?} not found"));
+            let field_def = ir_struct
+                .fields
+                .iter()
+                .find(|f| f.name == *field)
+                .unwrap_or_else(|| panic!("Field assign: no field {field} in {kind:?}"));
+
+            // Field offset in flattened scalars: widths of preceding fields.
+            let mut offset = 0usize;
+            for f in &ir_struct.fields {
+                if f.name == *field {
+                    break;
+                }
+                let ty = crate::mono::mono_type(&f.ty, ctx.mono);
+                let lir = ctx.registry.ir_type_to_lir(&ty, ctx.mono);
+                offset += flatten_count(&lir, ctx.registry);
+            }
+            let field_lir = ctx
+                .registry
+                .ir_type_to_lir(&crate::mono::mono_type(&field_def.ty, ctx.mono), ctx.mono);
+            let field_width = flatten_count(&field_lir, ctx.registry);
+            let rhs_vals = lower_expr(right, ctx);
+
+            let IrExprKind::Var(name) = &base.kind else {
+                unimplemented!("lower_assign: field assign on non-variable base");
+            };
+            let mut arr_vals = ctx
+                .env
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| panic!("undefined variable: {name}"));
+            for j in 0..field_width {
+                arr_vals[offset + j] = rhs_vals[j].clone();
+            }
+            ctx.env.insert(name.clone(), arr_vals);
+        }
+        // Field assignment is not supported in value-semantics LIR.
+        _other => unimplemented!("lower_assign: unsupported lhs"),
+    }
+}
+
+// ============================================================================
+// Phase 2: BoundedLoop
+// ============================================================================
+
+fn concrete_usize_expr<T: LirTarget<P>, P: Clone>(
+    expr: &IrExpr<P>,
+    ctx: &LowerCtx<T, P>,
+) -> Option<usize> {
+    match &expr.kind {
+        IrExprKind::Lit(IrLit::Int(value)) => usize::try_from(*value).ok(),
+        IrExprKind::Var(name) => ctx
+            .mono
+            .const_params
+            .get(name)
+            .or_else(|| ctx.mono.consts.get(name.as_str()))
+            .copied(),
+        IrExprKind::Path { segments, .. } if segments.len() == 2 && segments[1] == "USIZE" => ctx
+            .mono
+            .const_params
+            .get(&segments[0])
+            .or_else(|| ctx.mono.consts.get(segments[0].as_str()))
+            .copied(),
+        // Const arithmetic on parameters (`2 * BIG_N`, `BIG_N / 2`): fold
+        // recursively through this resolver.
+        IrExprKind::Binary { op, left, right } => {
+            let l = concrete_usize_expr(left, ctx)?;
+            let r = concrete_usize_expr(right, ctx)?;
+            Some(match op {
+                SpecBinOp::Add => l.wrapping_add(r),
+                SpecBinOp::Sub => l.wrapping_sub(r),
+                SpecBinOp::Mul => l.wrapping_mul(r),
+                SpecBinOp::Div if r != 0 => l / r,
+                SpecBinOp::Rem if r != 0 => l % r,
+                SpecBinOp::BitAnd => l & r,
+                SpecBinOp::BitOr => l | r,
+                SpecBinOp::BitXor => l ^ r,
+                SpecBinOp::Shl if r < 64 => l << r,
+                SpecBinOp::Shr if r < 64 => l >> r,
+                _ => return None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn lower_bounded_loop_descending<T: LirTarget<P>, P: Clone>(
+    pattern: &IrPattern,
+    start: &IrExpr<P>,
+    end: &IrExpr<P>,
+    body: &IrBlock<P>,
+    ctx: &mut LowerCtx<T, P>,
+) {
+    let Some(start) = concrete_usize_expr(start, ctx) else {
+        unimplemented!("lower_expr: reversed iterator loop with non-concrete start");
+    };
+    let Some(end) = concrete_usize_expr(end, ctx) else {
+        unimplemented!("lower_expr: reversed iterator loop with non-concrete end");
+    };
+    let Some(name) = (match pattern {
+        IrPattern::Ident { name, .. } => Some(name.clone()),
+        _ => None,
+    }) else {
+        unimplemented!("lower_expr: reversed iterator loop with non-ident pattern");
+    };
+    let prior_values = ctx.env.remove(&name);
+    let prior_type = ctx.env_types.remove(&name);
+    let mut indices = Vec::new();
+    let mut k = end;
+    while k > start {
+        k -= 1;
+        indices.push(k);
+    }
+    for index in indices {
+        let value = ctx.target.iconst(LirType::U64, index as i64);
+        ctx.env.insert(name.clone(), vec![value]);
+        ctx.env_types
+            .insert(name.clone(), IrType::Primitive(PrimitiveType::Usize));
+        lower_block(body, ctx);
+    }
+    if let Some(values) = prior_values {
+        ctx.env.insert(name.clone(), values);
+    } else {
+        ctx.env.remove(&name);
+    }
+    if let Some(ty) = prior_type {
+        ctx.env_types.insert(name.clone(), ty);
+    } else {
+        ctx.env_types.remove(&name);
+    }
+}
 
 fn lower_method_call<T: LirTarget<P>, P: Clone>(
     receiver: &IrExpr<P>,
@@ -2515,6 +2805,48 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
             let lhs = into_scalar(lower_expr(receiver, ctx), "wrapping_mul receiver");
             vec![ctx.target.mul(lhs, rhs)]
         }
+        MethodKind::Known(StdMethod::WrappingNeg) => {
+            let lhs = into_scalar(lower_expr(receiver, ctx), "wrapping_neg receiver");
+            let zero = ctx.target.iconst(LirType::U64, 0);
+            vec![ctx.target.sub(zero, lhs)]
+        }
+        MethodKind::Known(StdMethod::SaturatingAdd) => {
+            let rhs = into_scalar(lower_expr(&args[0], ctx), "saturating_add rhs");
+            let lhs = into_scalar(lower_expr(receiver, ctx), "saturating_add receiver");
+            let sum = ctx.target.add(lhs.clone(), rhs.clone());
+            // Overflow when sum < lhs (unsigned wraparound).
+            let wrapped = ctx.target.icmp(IcmpPred::Ult, sum.clone(), lhs);
+            let max = ctx.target.iconst(LirType::U64, u64::MAX as i64);
+            vec![ctx.target.select(wrapped, max, sum)]
+        }
+        MethodKind::Known(StdMethod::SaturatingSub) => {
+            let rhs = into_scalar(lower_expr(&args[0], ctx), "saturating_sub rhs");
+            let lhs = into_scalar(lower_expr(receiver, ctx), "saturating_sub receiver");
+            let diff = ctx.target.sub(lhs.clone(), rhs.clone());
+            let negative = ctx.target.icmp(IcmpPred::Ult, lhs, rhs);
+            let zero = ctx.target.iconst(LirType::U64, 0);
+            vec![ctx.target.select(negative, zero, diff)]
+        }
+        MethodKind::Known(StdMethod::TrailingZeros) => {
+            // Unrolled select chain over the 64 bit positions:
+            // result = lowest set bit index, or 64 when the value is zero.
+            let val = into_scalar(lower_expr(receiver, ctx), "trailing_zeros receiver");
+            let mut tz = ctx.target.iconst(LirType::U64, 64);
+            for k in 0..64u32 {
+                let k_val = ctx.target.iconst(LirType::U64, k as i64);
+                let one = ctx.target.iconst(LirType::U64, 1);
+                let one_cmp = ctx.target.iconst(LirType::U64, 1);
+                let shifted = ctx.target.lshr(val.clone(), k_val);
+                let bit = ctx.target.and(shifted, one);
+                let is_set = ctx.target.icmp(IcmpPred::Eq, bit, one_cmp);
+                let k_val2 = ctx.target.iconst(LirType::U64, k as i64);
+                let take_new = ctx.target.icmp(IcmpPred::Ugt, tz.clone(), k_val2);
+                let take = ctx.target.and(is_set, take_new);
+                let k_val3 = ctx.target.iconst(LirType::U64, k as i64);
+                tz = ctx.target.select(take, k_val3, tz);
+            }
+            vec![tz]
+        }
 
         // Reference methods — transparent.
         MethodKind::Known(StdMethod::AsRef | StdMethod::AsSlice) => lower_expr(receiver, ctx),
@@ -2543,10 +2875,51 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
 fn lower_method_extern<T: LirTarget<P>, P: Clone>(
     receiver: &IrExpr<P>,
     method_name: &str,
-    _type_args: &[IrType],
+    type_args: &[IrType],
     args: &[IrExpr<P>],
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
+    // A non-std method is a user-defined impl fn: resolve it through the
+    // monomorphization plan exactly like a free-function call, with the
+    // receiver as the first argument.
+    if let (Some(plan), Some(caller)) = (ctx.mono_plan, ctx.current_instance) {
+        let generic_key = crate::mono::normalized_args(type_args, ctx.mono);
+        let arg_types_key: String = std::iter::once(receiver)
+            .chain(args.iter())
+            .map(|a| {
+                ctx.infer_type(a)
+                    .map(|ty| crate::mono::canonical_type(&crate::mono::mono_type(&ty, ctx.mono)))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        let args_key = if generic_key.is_empty() {
+            arg_types_key
+        } else {
+            format!("{generic_key}#{arg_types_key}")
+        };
+        if let Some(callee) = plan.local_call_deduce(caller, method_name, &args_key) {
+            let emitted_name = plan.emitted_name(callee);
+            let ret_ty = ctx
+                .func_sigs
+                .get(emitted_name)
+                .and_then(|sig| sig.return_type.clone());
+            let mut arg_tys = Vec::new();
+            let mut flat_args = Vec::new();
+            for a in std::iter::once(receiver).chain(args.iter()) {
+                let a_ty = ctx
+                    .infer_type(a)
+                    .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
+                    .unwrap_or(LirType::U64);
+                arg_tys.push(a_ty);
+                flat_args.extend(lower_expr(a, ctx));
+            }
+            return ctx
+                .target
+                .call_extern(emitted_name, &arg_tys, &flat_args, ret_ty);
+        }
+    }
+
     let extern_name = if ctx.mono.hash_suffix.is_empty() {
         method_name.to_owned()
     } else {
@@ -2797,8 +3170,24 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     // The plan owns specialization resolution, so a source-name collision
     // cannot accidentally call a differently-instantiated local function.
     if let (Some(plan), Some(caller)) = (ctx.mono_plan, ctx.current_instance) {
-        let args_key = normalized_args(type_args, ctx.mono);
-        if let Some(callee) = plan.local_call(caller, &func_name, &args_key) {
+        let args_key = {
+            let generic_key = normalized_args(type_args, ctx.mono);
+            let arg_types_key: String = args
+                .iter()
+                .map(|a| {
+                    ctx.infer_type(a)
+                        .map(|ty| mono::canonical_type(&crate::mono::mono_type(&ty, ctx.mono)))
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join("|");
+            if generic_key.is_empty() {
+                arg_types_key
+            } else {
+                format!("{generic_key}#{arg_types_key}")
+            }
+        };
+        if let Some(callee) = plan.local_call_deduce(caller, &func_name, &args_key) {
             let emitted_name = plan.emitted_name(callee);
             let ret_ty = ctx
                 .func_sigs

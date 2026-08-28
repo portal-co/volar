@@ -201,14 +201,34 @@ function" to a concrete array-assign semantics issue; no regressions in
    component table; TFHE root const params bound to the spec toy profile
    (T_N_LWE=8, T_BIG_N=64, …).
 
+Tranche 2 fixes (2026-08-28, same commit series):
+
+1. **`tfhe` component GREEN** — lowered the full TFHE spec slice to C and
+   passes. Fixes en route: repeat-array length resolution consults module
+   consts; `WrappingNeg`/`SaturatingAdd`/`SaturatingSub`/`TrailingZeros`
+   method lowering (trailing zeros as an unrolled 64-step select chain;
+   `Rem` via `a - (a/b)*b`); indexed assignment supports nested index chains
+   (`result[j][i]`) with a type-driven suffix-product linear position;
+   field assignment (`ct.b = …`) updates flattened struct scalars; struct
+   literals participate in `infer_type` so struct-typed locals flatten.
+
+2. Impl-method calls now plan through the monomorphizer (planning collects
+   `MethodCall(Other)` sites and registers impl methods as definitions), and
+   the plan/call lookup keys include canonical argument types so two sites
+   differing only in an impl-level receiver parameter map to distinct
+   instances; `local_call_deduce` falls back to a unique `(caller, callee)`
+   entry when the lower-time key is coarser than the planning-time key.
+   Unification binds impl-level parameters from numeric concretes only
+   (non-numeric bindings created self-referential substitutions that
+   overflowed the stack — caught and fixed during this tranche).
+
 Remaining named gaps (component → concrete error):
 
 | Component | Gap |
 |---|---|
 | `vole_setup` | Generic params over external traits (`R: SpecRng`) have no concrete LIR instance; RNG-generic spec functions need a driver-side decision (seeded RNG as data, or trait-dispatch exclusion from LIR roots). |
 | `faest_core` | Same `R: SpecRng` gap (`impl SpecRng` params) plus the full FAEST body-lowering surface. |
-| `tfhe` | Array element-assign path sees an empty env for `[u32; N_LWE]` locals (`len 0, index 0` in the indexed-assign select loop) — array-literal initialization with const-generic lengths under-instantiates. |
-| `vole_prover`/`vole_verifier` | Real lowering width bug: `Binary Mul: operand widths 64 vs 16` — a u64 scalar multiplies a 16-bit element without an explicit widening; needs a targeted reproducer in `vole.rs` sources. |
+| `vole_prover`/`vole_verifier` | **Receiver type loss**: the parser records `IrReceiver::{Value,Ref,RefMut}` on impl methods but discards the self TYPE (`&self` on `impl Vope<N,T,K>`), so (a) `bind_call_args` cannot bind impl-level params like `K` from the receiver, and two `mul_generalized` sites with receiver K=1 vs K=2 collide onto one instance (ABI mismatch `expected 80 scalars, provided 64`), and (b) `vope * delta` operator impls cannot specialize (the `Binary Mul: 64 vs 16` width error). Fix requires materializing the receiver as an explicit typed param at parse time (or carrying the impl self-ty generic mapping on the method), then rebinding as above. |
 | TS backend | Deferred by decision (2026-08-28); LIR→WASM is the second Phase 4 target. |
 
 The fast path is only real if linked spec functions lower through LIR. Today
