@@ -92,7 +92,12 @@ impl StructRegistry {
                     .field_names
                     .iter()
                     .position(|n| n == field)
-                    .unwrap_or_else(|| panic!("struct S{id} has no field '{field}'"));
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "struct S{id} has no field '{field}' (fields: {:?})",
+                            entry.field_names
+                        )
+                    });
             }
         }
         panic!("StructId {id} not in registry")
@@ -334,6 +339,9 @@ pub fn ensure_struct_instance<T: LirTarget<P>, P: Clone>(
         return;
     }
     let concrete_args: Vec<IrType> = type_args.iter().map(|a| mono_type(a, outer)).collect();
+    if std::env::var("VOLAR_KEY_DEBUG").is_ok() {
+        eprintln!("[key-debug] ensure {name} args={concrete_args:?}");
+    }
     // Refuse to register when any type arg is still an unbound param name.
     // Numeric `TypeParam("16")` is a resolved const-generic spelling.
     if concrete_args.iter().any(|a| match a {
@@ -627,11 +635,15 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                         panic!("unsubstituted TypeParam length '{name}' — add it to MonoEnv")
                     }
                 }
-                ArrayLength::Projection { .. } => {
+                ArrayLength::Projection { r#type, field, .. } => {
                     if registry.lenient {
                         0
                     } else {
-                        unimplemented!("Projection array length in LIR lowering")
+                        unimplemented!(
+                            "Projection array length in LIR lowering: type={type:?} field={field:?} [{}]",
+                            crate::CURRENT_INSTANCE_DEBUG
+                                .with(|c| c.borrow().clone())
+                        )
                     }
                 }
             };
@@ -675,8 +687,9 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                 }
                 None => {
                     panic!(
-                        "struct '{}' not in registry — was ensure_struct_instance called?",
-                        nominal_instance_name(kind, type_args)
+                        "struct '{}' not in registry — was ensure_struct_instance called? [instance: {}]",
+                        nominal_instance_name(kind, type_args),
+                        crate::CURRENT_INSTANCE_DEBUG.with(|c| c.borrow().clone()),
                     )
                 }
             }

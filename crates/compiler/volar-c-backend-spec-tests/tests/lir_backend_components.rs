@@ -125,6 +125,8 @@ fn component_env() -> MonoEnv {
     MonoEnv::new("volar_lir_components")
         .with_len("N", 16)
         .with_len("U1", 1)
+        .with_len("U2", 2)
+        .with_len("U3", 3)
         .with_len("U0", 0)
         .with_len("K", 1)
         // TFHE ciphertext const params (root-level, harness-bound like N/K),

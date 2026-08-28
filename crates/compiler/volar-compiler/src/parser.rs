@@ -117,12 +117,14 @@ fn convert_struct(s: &syn::ItemStruct) -> Result<IrStruct> {
             syn::Fields::Named(fields) => fields
                 .named
                 .iter()
-                .map(convert_field)
+                .enumerate()
+                .map(|(i, f)| convert_field(f, i))
                 .collect::<Result<Vec<_>>>()?,
             syn::Fields::Unnamed(fields) => fields
                 .unnamed
                 .iter()
-                .map(convert_field)
+                .enumerate()
+                .map(|(i, f)| convert_field(f, i))
                 .collect::<Result<Vec<_>>>()?,
             syn::Fields::Unit => Vec::new(),
         },
@@ -163,7 +165,8 @@ fn convert_enum_variant(v: &syn::Variant) -> Result<IrEnumVariant> {
             fields
                 .named
                 .iter()
-                .map(convert_field)
+                .enumerate()
+                .map(|(i, f)| convert_field(f, i))
                 .collect::<Result<Vec<_>>>()?,
         ),
     };
@@ -258,9 +261,16 @@ fn parse_derives(attrs: &[syn::Attribute]) -> Vec<String> {
     derives
 }
 
-fn convert_field(f: &syn::Field) -> Result<IrField> {
+fn convert_field(f: &syn::Field, index: usize) -> Result<IrField> {
     Ok(IrField {
-        name: f.ident.as_ref().map(|i| i.to_string()).unwrap_or_default(),
+        // Tuple-struct fields have no source identifier; synthesize the
+        // positional access name (".0", ".1", ...) so lowering can resolve
+        // tuple field access against the struct registry.
+        name: f
+            .ident
+            .as_ref()
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| index.to_string()),
         ty: convert_type(&f.ty)?,
         public: matches!(f.vis, Visibility::Public(_)),
     })
@@ -905,6 +915,31 @@ fn convert_type(ty: &Type) -> Result<IrType> {
 
             if let Some(prim) = PrimitiveType::from_str(&name) {
                 return Ok(IrType::Primitive(prim));
+            }
+
+            // Multi-segment generic paths (e.g. `Delta<N, U>` where `Delta`
+            // has type args) must keep the args — a bare TypeParam would
+            // silently drop the impl's own generic from operator-impl
+            // self-types. Detect via the LAST segment's arguments. Only the
+            // FINAL segment can carry the arguments, so this never confuses
+            // a qualified path's head name with its own type.
+            if name != "Array" && name != "GenericArray" {
+                if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
+                    let type_args: Vec<IrType> = args
+                        .args
+                        .iter()
+                        .map(convert_generic_arg)
+                        .collect::<Result<Vec<Option<_>>>>()?
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                    if !type_args.is_empty() {
+                        return Ok(IrType::Struct {
+                            kind: StructKind::from_str(&name),
+                            type_args,
+                        });
+                    }
+                }
             }
 
             if let Some(tn) = TypeNumConst::from_str(&name) {

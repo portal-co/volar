@@ -146,7 +146,7 @@ struct LowerCtx<'t, T: LirTarget<P>, P: Clone = ()> {
     ir_func_ret_types: &'t BTreeMap<String, IrType>,
     /// Current concrete local function and the closed specialization plan.
     current_instance: Option<&'t FunctionInstanceKey>,
-    mono_plan: Option<&'t MonoPlan>,
+    mono_plan: Option<&'t MonoPlan<P>>,
     _p: std::marker::PhantomData<P>,
 }
 
@@ -259,10 +259,100 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 ..
             } => self.infer_type(receiver),
 
+            // User-defined method: resolve through the monomorphization plan
+            // (the receiver's type is the method's receiver type, not the
+            // result type).
+            IrExprKind::MethodCall {
+                receiver,
+                method: MethodKind::Other(name),
+                type_args,
+                args,
+                ..
+            } => {
+                if let (Some(plan), Some(caller)) = (self.mono_plan, self.current_instance) {
+                    let generic_key = normalized_args(type_args, self.mono);
+                    let arg_types_key: String = std::iter::once(receiver.as_ref())
+                        .chain(args.iter())
+                        .map(|a| {
+                            self.infer_type(a)
+                                .map(|ty| {
+                                    crate::mono::canonical_type(&crate::mono::mono_type(
+                                        &ty, self.mono,
+                                    ))
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    // Keys match the planner's canonical arg-types string
+                    // (no generic prefix; see mono.rs calls insert).
+                    let args_key = arg_types_key;
+                    if let Some(callee) = plan.local_call_deduce(caller, name, &args_key) {
+                        return self
+                            .ir_func_ret_types
+                            .get(plan.emitted_name(callee))
+                            .cloned();
+                    }
+                }
+                self.ir_func_ret_types.get(name).cloned()
+            }
+
             IrExprKind::Unary {
                 op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
                 expr: inner,
             } => self.infer_type(inner),
+
+            // Operator overload on a struct with a declared `Mul` impl
+            // (e.g. `let q = vope * delta;`): the result is the impl method's
+            // return type — resolve through the plan just like a method call,
+            // with the same `mul__<StructKind>` dispatch key as lowering.
+            IrExprKind::Binary {
+                op: SpecBinOp::Mul,
+                left,
+                right,
+            } => {
+                let is_mul_impl = self
+                    .infer_type(left)
+                    .map(|ty| match &ty {
+                        IrType::Struct { kind, .. } => self
+                            .mono_plan
+                            .map(|p| p.mul_impl_structs.contains_key(&kind.to_string()))
+                            .unwrap_or(false),
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if !is_mul_impl {
+                    return None;
+                }
+                let callee = match self.infer_type(left).as_ref() {
+                    Some(IrType::Struct { kind, .. }) => {
+                        format!("mul__{}", crate::structs::kind_name(kind))
+                    }
+                    _ => return None,
+                };
+                if let (Some(plan), Some(caller)) = (self.mono_plan, self.current_instance) {
+                    let arg_types_key: String = std::iter::once(left.as_ref())
+                        .chain(std::iter::once(right.as_ref()))
+                        .map(|a| {
+                            self.infer_type(a)
+                                .map(|ty| {
+                                    crate::mono::canonical_type(&crate::mono::mono_type(
+                                        &ty, self.mono,
+                                    ))
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    if let Some(found) = plan.local_call_deduce(caller, &callee, &arg_types_key) {
+                        return self
+                            .ir_func_ret_types
+                            .get(plan.emitted_name(found))
+                            .cloned();
+                    }
+                }
+                self.ir_func_ret_types.get(&callee).cloned()
+            }
 
             IrExprKind::Unary {
                 op: SpecUnaryOp::Deref,
@@ -288,16 +378,17 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                     IrExprKind::Var(name) => (name.clone(), &[]),
                     _ => return None,
                 };
+                let func_kind_segments_last_is_default = matches!(
+                    &func.kind,
+                    IrExprKind::Path { segments, .. }
+                        if segments.last().map(String::as_str) == Some("default")
+                );
                 if let (Some(plan), Some(caller)) = (self.mono_plan, self.current_instance) {
-                    // Mirror the planning-side key: generics plus canonical
-                    // argument types (see mono.rs calls.insert).
-                    let generic_key = normalized_args(type_args, self.mono);
-                    let arg_types_key = String::new(); // args not available here; deduce falls back
-                    let args = if generic_key.is_empty() {
-                        arg_types_key
-                    } else {
-                        format!("{generic_key}#{arg_types_key}")
-                    };
+                    // Mirror the planning-side key: canonical argument types
+                    // with no generic prefix (see mono.rs calls.insert). Args
+                    // are not available here, so the key is empty and deduce
+                    // falls back to the unique (caller, callee) entry.
+                    let args = String::new();
                     if let Some(callee) = plan.local_call_deduce(caller, &name, &args) {
                         return self
                             .ir_func_ret_types
@@ -305,8 +396,55 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                             .cloned();
                     }
                 }
+                // `Array::<E, L>::default()`: the result type is the array
+                // itself — recoverable from the turbofish arguments.
+                if type_args.len() == 2
+                    && func_kind_segments_last_is_default
+                    && type_args
+                        .first()
+                        .map(|a| matches!(a, IrType::Array { .. }))
+                        .unwrap_or(false)
+                {
+                    if let IrType::Array { elem, kind, .. } = &type_args[0] {
+                        return Some(IrType::Array {
+                            kind: *kind,
+                            elem: Box::new(elem.as_ref().clone()),
+                            len: ArrayLength::TypeParam(match &type_args[1] {
+                                IrType::TypeParam(n) => n.clone(),
+                                other => match crate::mono::type_args_to_len(
+                                    Some(other),
+                                    self.mono,
+                                ) {
+                                    volar_compiler::ir::ArrayLength::TypeParam(n) => n,
+                                    volar_compiler::ir::ArrayLength::Const(n) => n.to_string(),
+                                    _ => "_unresolved".to_owned(),
+                                },
+                            }),
+                        });
+                    }
+                }
                 self.ir_func_ret_types.get(&name).cloned()
             }
+
+            // Default value: the type is carried by the expression itself
+            // (e.g. `Array::<_, K2::Output>::default()`).
+            IrExprKind::DefaultValue { ty } => ty.as_deref().cloned(),
+
+            // If-expression: both branches share a type; infer from the then
+            // branch, falling back to the else branch.
+            IrExprKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => then_branch
+                .expr
+                .as_deref()
+                .and_then(|e| self.infer_type(e))
+                .or_else(|| {
+                    else_branch
+                        .as_deref()
+                        .and_then(|e| self.infer_type(e))
+                }),
 
             // Literal: infer primitive type from the literal variant.
             IrExprKind::Lit(lit) => match lit {
@@ -369,6 +507,13 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
 }
 
 /// Extract the `StructKind` from a type (stripping references).
+thread_local! {
+    /// Debug aid: the instance currently being lowered (set by
+    /// `lower_function_instance`).
+    pub static CURRENT_INSTANCE_DEBUG: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
+}
+
 static EMPTY_EXTERNAL_FNS: LazyLock<BTreeMap<String, ExternalFnInfo>> =
     LazyLock::new(BTreeMap::new);
 static EMPTY_FUNC_SIGS: LazyLock<BTreeMap<String, FuncSigInfo>> = LazyLock::new(BTreeMap::new);
@@ -556,7 +701,7 @@ pub fn lower_module_seeded<T: LirTarget>(
 fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     module: &IrModule<IrFunction<P>, P>,
     target: &mut T,
-    plan: &MonoPlan,
+    plan: &MonoPlan<P>,
     lenient: bool,
 ) {
     // Non-generic structs first; concrete generic nominals are registered
@@ -572,10 +717,32 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
         structs::build_struct_registry_with_lenient(module, target, &empty, lenient, registry);
 
     for (key, env) in &plan.instances {
-        let func = module
-            .functions
-            .iter()
-            .find(|func| func.name == key.source_name)
+        // Impl methods live in `module.impls`, not `module.functions`; only
+        // their parameters' nominals matter here (the instance's own
+        // lowering uses the materialized definition when present).
+        let func = plan
+            .materialized
+            .get(key)
+            .cloned()
+            .or_else(|| {
+                module
+                    .functions
+                    .iter()
+                    .find(|func| func.name == key.source_name)
+                    .cloned()
+            })
+            .or_else(|| {
+                module.impls.iter().find_map(|ir_impl| {
+                    ir_impl.items.iter().find_map(|item| match item {
+                        volar_compiler::ir::IrImplItem::Method(m)
+                            if m.name == key.source_name =>
+                        {
+                            Some(m.clone())
+                        }
+                        _ => None,
+                    })
+                })
+            })
             .expect("planned source function exists");
         for parameter in &func.params {
             structs::ensure_type_nominals(
@@ -674,11 +841,32 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     let mut func_sigs = BTreeMap::new();
     let mut ir_func_ret_types = BTreeMap::new();
     for (key, env) in &plan.instances {
-        let func = module
-            .functions
-            .iter()
-            .find(|func| func.name == key.source_name)
-            .expect("planned source function exists");
+        let func = plan
+            .materialized
+            .get(key)
+            .unwrap_or_else(|| {
+                module
+                    .functions
+                    .iter()
+                    .find(|func| func.name == key.source_name)
+                    .unwrap_or_else(|| {
+                        // Impl methods live outside `module.functions`.
+                        module
+                            .impls
+                            .iter()
+                            .find_map(|ir_impl| {
+                                ir_impl.items.iter().find_map(|item| match item {
+                                    volar_compiler::ir::IrImplItem::Method(m)
+                                        if m.name == key.source_name =>
+                                    {
+                                        Some(m)
+                                    }
+                                    _ => None,
+                                })
+                            })
+                            .expect("planned source function exists")
+                    })
+            });
         let emitted = plan.emitted_name(key).to_owned();
         func_sigs.insert(
             emitted.clone(),
@@ -700,11 +888,18 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     }
 
     for (key, env) in &plan.instances {
-        let func = module
-            .functions
-            .iter()
-            .find(|func| func.name == key.source_name)
-            .expect("planned source function exists");
+        // Materialized method instances lower from their derived definition
+        // (receiver promoted to a typed `self` param).
+        let func = plan
+            .materialized
+            .get(key)
+            .unwrap_or_else(|| {
+                module
+                    .functions
+                    .iter()
+                    .find(|func| func.name == key.source_name)
+                    .expect("planned source function exists")
+            });
         lower_function_instance(
             func,
             plan.emitted_name(key),
@@ -728,7 +923,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     func: &IrFunction<P>,
     emitted_name: &str,
     instance: &FunctionInstanceKey,
-    plan: &MonoPlan,
+    plan: &MonoPlan<P>,
     target: &mut T,
     registry: &StructRegistry,
     enum_registry: &EnumRegistry,
@@ -739,6 +934,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
 ) {
+    CURRENT_INSTANCE_DEBUG.with(|c| *c.borrow_mut() = emitted_name.to_owned());
     let param_lir_tys: Vec<_> = func
         .params
         .iter()
@@ -1082,6 +1278,42 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
         }
 
         IrExprKind::Binary { op, left, right } => {
+            // Operator overloads on user structs stay as Binary in IR (the
+            // parser has no type info to resolve `a * b`), but element-wise
+            // lowering is wrong when the operands are struct instances with
+            // a declared operator impl (e.g. `Vope * Delta` where the Vope
+            // is 48 scalars and Delta 16). Route those through the impl's
+            // method via the monomorphization plan.
+            if let Some(plan) = ctx.mono_plan.as_ref() {
+                let left_is_struct_mul = ctx
+                    .infer_type(left)
+                    .map(|ty| match &ty {
+                        IrType::Struct { kind, .. } => {
+                            plan.mul_impl_structs.contains_key(&kind.to_string())
+                        }
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if left_is_struct_mul {
+                    // Dispatch by receiver struct: several `Mul` impls share
+                    // the method name `mul` in the source module, so the
+                    // callee is keyed as `mul__<StructKind>` (mirroring the
+                    // planner) to keep impls distinct.
+                    let callee = match ctx.infer_type(left).as_ref() {
+                        Some(IrType::Struct { kind, .. }) => {
+                            format!("mul__{}", crate::structs::kind_name(kind))
+                        }
+                        _ => unreachable!("checked struct receiver above"),
+                    };
+                    return lower_method_extern(
+                        left,
+                        &callee,
+                        &[],
+                        std::slice::from_ref(right.as_ref()),
+                        ctx,
+                    );
+                }
+            }
             let lv = lower_expr(left, ctx);
             let rv = lower_expr(right, ctx);
             if lv.len() == 1 && rv.len() == 1 {
@@ -1321,6 +1553,12 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             elem_var,
             body,
         } => lower_raw_fold(receiver, init, acc_var, elem_var, body, ctx),
+
+        // Iterator pipelines: lower the shapes the spec uses. The chain is
+        // normalized to a fold-like unrolled loop over the source collection.
+        IrExprKind::IterPipeline(chain) => {
+            lower_iter_chain(chain, ctx)
+        }
 
         // ---- Path: may be a unit enum variant or a type-level size constant --
         IrExprKind::Path { segments, .. } => {
@@ -1930,13 +2168,14 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
         return base_vals[offset..offset + width].to_vec();
     }
 
-    let (struct_kind, type_args) = match &base_ir_ty {
+    // Peel any reference layers before the struct lookup.
+    let peeled = match &base_ir_ty {
+        IrType::Reference { elem, .. } => elem.as_ref().clone(),
+        other => other.clone(),
+    };
+    let (struct_kind, type_args) = match &peeled {
         IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
-        IrType::Reference { elem, .. } => match elem.as_ref() {
-            IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
-            other => panic!("field .{field} on non-struct type {:?}", other),
-        },
-        other => panic!("field .{field} on non-struct type {:?}", other),
+        other => panic!("field .{field} on non-struct type {other:?}"),
     };
 
     let mono_args: Vec<IrType> = type_args.iter().map(|a| mono_type(a, ctx.mono)).collect();
@@ -1950,6 +2189,13 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
             )
         });
 
+    if std::env::var("VOLAR_FIELD_DEBUG").is_ok() {
+        eprintln!(
+            "[field-debug] caller={:?} struct_id={} field=.{field}",
+            ctx.current_instance.map(|k| k.source_name.clone()),
+            struct_id,
+        );
+    }
     let field_idx = ctx.registry.field_index(struct_id, field);
     let offset = struct_field_scalar_offset(ctx.registry, struct_id, field_idx);
     let width = struct_field_scalar_width(ctx.registry, struct_id, field_idx);
@@ -2205,6 +2451,155 @@ fn bind_map_pattern<T: LirTarget<P>, P: Clone>(
     }
 }
 
+
+// ============================================================================
+// IterPipeline (unrolled iterator chain)
+// ============================================================================
+
+/// Bind one pipeline element to its pattern. Tuple patterns (e.g. `(i, b)`
+/// after `enumerate()`) split into (index, elem); identifiers bind the elem.
+fn bind_chain_elem_pattern<T: LirTarget<P>, P: Clone>(
+    pattern: &IrPattern,
+    index: Option<usize>,
+    elem_vals: &[T::Value],
+    elem_ty: &IrType,
+    ctx: &mut LowerCtx<T, P>,
+) {
+    match pattern {
+        IrPattern::Tuple(sub_pats) if sub_pats.len() == 2 => {
+            if let Some(i) = index {
+                bind_map_pattern(&sub_pats[0],
+                    vec![ctx.target.iconst(LirType::U64, i as i64)],
+                    &IrType::Primitive(PrimitiveType::U64), ctx);
+            } else {
+                unimplemented!("IterChain tuple pattern without enumerate index");
+            }
+            bind_map_pattern(&sub_pats[1], elem_vals.to_vec(), elem_ty, ctx);
+        }
+        IrPattern::Ident { .. } | IrPattern::Wild => {
+            bind_map_pattern(pattern, elem_vals.to_vec(), elem_ty, ctx);
+        }
+        other => unimplemented!("IterChain elem pattern {other:?}"),
+    }
+}
+
+/// Lower an iterator chain by unrolling it into per-element computations.
+///
+/// Supported shapes (everything the VOLE/FAEST spec bodies use):
+/// - sources: `expr.iter()` / `.into_iter()` over a flat array, and ranges;
+/// - steps: `map`, `enumerate` (in any relative order);
+/// - terminals: `fold(init, |acc, elem| ..)` and `.collect()`.
+fn lower_iter_chain<T: LirTarget<P>, P: Clone>(
+    chain: &volar_compiler::ir::IrIterChain<P>,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    use volar_compiler::ir::{IterChainSource, IterStep, IterTerminal};
+
+    // ---- Gather (index, elem) pairs from the source ----
+    let mut elems: Vec<(Option<usize>, Vec<T::Value>, IrType)> = match &chain.source {
+        IterChainSource::Method { collection, .. } => {
+            let coll_ty = ctx
+                .infer_type(collection)
+                .unwrap_or_else(|| panic!("IterChain: could not infer collection type"));
+            let (elem_ir_ty, n) = array_elem_and_len(&coll_ty, ctx.mono);
+            let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+            let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+            let recv_vals = lower_expr(collection, ctx);
+            (0..n)
+                .map(|k| {
+                    (
+                        None,
+                        recv_vals[k * elem_width..(k + 1) * elem_width].to_vec(),
+                        elem_ir_ty.clone(),
+                    )
+                })
+                .collect()
+        }
+        IterChainSource::Range { start, end, .. } => {
+            let s = concrete_usize_expr(start, ctx)
+                .expect("IterChain range start must be concrete");
+            let e = concrete_usize_expr(end, ctx)
+                .expect("IterChain range end must be concrete");
+            (s..e)
+                .map(|i| {
+                    (
+                        Some(i),
+                        vec![ctx.target.iconst(LirType::U64, i as i64)],
+                        IrType::Primitive(PrimitiveType::U64),
+                    )
+                })
+                .collect()
+        }
+        other => unimplemented!("IterChain source {:?}", std::mem::discriminant(other)),
+    };
+
+    // ---- Apply intermediate steps ----
+    for step in &chain.steps {
+        match step {
+            IterStep::Enumerate => {
+                for (k, (idx, _, _)) in elems.iter_mut().enumerate() {
+                    if idx.is_none() {
+                        *idx = Some(k);
+                    }
+                }
+            }
+            IterStep::Map { var, body } => {
+                let mut next = Vec::with_capacity(elems.len());
+                for (k, (idx, vals, ty)) in elems.into_iter().enumerate() {
+                    let body_ty_hint = ctx.infer_type(body);
+                    bind_map_pattern(var, vals.clone(), &ty, ctx);
+                    let out = lower_expr(body, ctx);
+                    let out_ty = body_ty_hint.unwrap_or_else(|| ty.clone());
+                    if let IrPattern::Ident { name, .. } = var {
+                        ctx.env.remove(name);
+                        ctx.env_types.remove(name);
+                    }
+                    next.push((idx.or(Some(k)), out, out_ty));
+                }
+                elems = next;
+            }
+            other => unimplemented!("IterChain step {:?}", std::mem::discriminant(other)),
+        }
+    }
+
+    // ---- Terminal ----
+    match &chain.terminal {
+        IterTerminal::Fold {
+            init,
+            acc_var,
+            elem_var,
+            body,
+        } => {
+            let init_ty = ctx.infer_type(init);
+            let acc_ty = init_ty.unwrap_or_else(|| {
+                elems.first().map(|(_, _, ty)| ty.clone()).unwrap_or(IrType::Primitive(PrimitiveType::U64))
+            });
+            let mut acc_vals = lower_expr(init, ctx);
+            for (idx, elem_vals, elem_ty) in &elems {
+                bind_chain_elem_pattern(elem_var, *idx, elem_vals, elem_ty, ctx);
+                bind_map_pattern(acc_var, acc_vals.clone(), &acc_ty, ctx);
+                acc_vals = lower_expr(body, ctx);
+            }
+            if let IrPattern::Ident { name, .. } = elem_var {
+                ctx.env.remove(name);
+                ctx.env_types.remove(name);
+            }
+            if let IrPattern::Ident { name, .. } = acc_var {
+                ctx.env.remove(name);
+                ctx.env_types.remove(name);
+            }
+            acc_vals
+        }
+        IterTerminal::Collect | IterTerminal::CollectTyped(_) => {
+            let mut out: Vec<T::Value> = Vec::new();
+            for (_, vals, _) in &elems {
+                out.extend(vals.iter().cloned());
+            }
+            out
+        }
+        other => unimplemented!("IterChain terminal {:?}", std::mem::discriminant(other)),
+    }
+}
 // ============================================================================
 // RawFold (unrolled accumulation over a flat array)
 // ============================================================================
@@ -2431,9 +2826,23 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     index: &IrExpr<P>,
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
-    let base_ir_ty = ctx
-        .infer_type(base)
-        .unwrap_or_else(|| panic!("Index: could not infer base type"));
+    let base_ir_ty = ctx.infer_type(base).unwrap_or_else(|| {
+        panic!(
+            "Index: could not infer base type, base {}, caller={:?}",
+            match &base.kind {
+                IrExprKind::Var(n) => format!("var '{n}'"),
+                IrExprKind::Field { base: fb, field, .. } => {
+                    if let IrExprKind::Var(vn) = &fb.kind {
+                        format!("var '{vn}.{field}'")
+                    } else {
+                        format!("field .{field}")
+                    }
+                }
+                other => format!("kind {:?}", std::mem::discriminant(other)),
+            },
+            ctx.current_instance.map(|k| k.source_name.clone()),
+        )
+    });
 
     // Pointer-based indexing: Reference<Slice<T>> → Ptr(T) in LIR.
     // Use ptr_index_load instead of the flat mux tree.
@@ -2485,9 +2894,12 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
     match &left.kind {
         // Assignment to an indexed location: base[index] = rhs
         IrExprKind::Index { base, index } => {
-            let base_ir_ty = ctx
-                .infer_type(base)
-                .unwrap_or_else(|| panic!("Assign: could not infer base type"));
+            let base_ir_ty = ctx.infer_type(base).unwrap_or_else(|| {
+                panic!(
+                    "Assign: could not infer indexed base type, base kind {:?}",
+                    std::mem::discriminant(&base.kind)
+                )
+            });
 
             if is_slice_ref(&base_ir_ty) {
                 // Pointer-based store: ptr[idx] = pack(rhs_vals)
@@ -2630,9 +3042,12 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
         // scalars at the field's offset using the same select pattern as
         // indexed assignment (unconditional here — no runtime index).
         IrExprKind::Field { base, field } => {
-            let base_ir_ty = ctx
-                .infer_type(base)
-                .unwrap_or_else(|| panic!("Field assign: could not infer base type"));
+            let base_ir_ty = ctx.infer_type(base).unwrap_or_else(|| {
+                panic!(
+                    "Assign: could not infer base type for field .{field} on base kind {:?}",
+                    std::mem::discriminant(&base.kind)
+                )
+            });
             let base_ir_ty = match base_ir_ty {
                 IrType::Reference { elem, .. } => *elem,
                 other => other,
@@ -2893,11 +3308,9 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
             })
             .collect::<Vec<_>>()
             .join("|");
-        let args_key = if generic_key.is_empty() {
-            arg_types_key
-        } else {
-            format!("{generic_key}#{arg_types_key}")
-        };
+        // Keys match the planner's canonical arg-types string (no generic
+        // prefix; see mono.rs calls insert).
+        let args_key = arg_types_key;
         if let Some(callee) = plan.local_call_deduce(caller, method_name, &args_key) {
             let emitted_name = plan.emitted_name(callee);
             let ret_ty = ctx
@@ -3170,23 +3583,17 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     // The plan owns specialization resolution, so a source-name collision
     // cannot accidentally call a differently-instantiated local function.
     if let (Some(plan), Some(caller)) = (ctx.mono_plan, ctx.current_instance) {
-        let args_key = {
-            let generic_key = normalized_args(type_args, ctx.mono);
-            let arg_types_key: String = args
-                .iter()
-                .map(|a| {
-                    ctx.infer_type(a)
-                        .map(|ty| mono::canonical_type(&crate::mono::mono_type(&ty, ctx.mono)))
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>()
-                .join("|");
-            if generic_key.is_empty() {
-                arg_types_key
-            } else {
-                format!("{generic_key}#{arg_types_key}")
-            }
-        };
+        // Keys match the planner's canonical arg-types string (no generic
+        // prefix; see mono.rs calls insert).
+        let args_key: String = args
+            .iter()
+            .map(|a| {
+                ctx.infer_type(a)
+                    .map(|ty| mono::canonical_type(&crate::mono::mono_type(&ty, ctx.mono)))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("|");
         if let Some(callee) = plan.local_call_deduce(caller, &func_name, &args_key) {
             let emitted_name = plan.emitted_name(callee);
             let ret_ty = ctx

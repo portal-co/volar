@@ -9,6 +9,8 @@
 //! Trait-dispatch parameters (e.g. `D: Digest`) use `MonoEnv::hash_suffix`.
 
 use std::collections::{BTreeMap, VecDeque};
+
+use crate::structs::kind_name;
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
     IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr, IrExprKind,
@@ -102,6 +104,11 @@ pub struct MonoEnv {
     /// (e.g. FAEST's `LAMBDA_BYTES`). Populated from `IrModule.consts` by
     /// the planning entry points; left empty for hand-built envs.
     pub consts: BTreeMap<String, usize>,
+    /// Struct kind names with a declared `Mul` operator impl (see
+    /// `MonoPlan::mul_impl_structs`); needed at planning time to recognize
+    /// operator-overload call sites inside function bodies. Populated by
+    /// `plan_flat_module`; empty for hand-built envs.
+    pub mul_impl_structs: BTreeMap<String, ()>,
 }
 
 impl MonoEnv {
@@ -112,6 +119,7 @@ impl MonoEnv {
             projections: BTreeMap::new(),
             hash_suffix: hash_suffix.into(),
             consts: BTreeMap::new(),
+            mul_impl_structs: BTreeMap::new(),
         }
     }
 
@@ -167,13 +175,23 @@ pub struct FunctionInstanceKey {
 
 /// A closed, deterministic collection of emitted local function instances.
 #[derive(Clone, Debug)]
-pub struct MonoPlan {
+pub struct MonoPlan<P: Clone = ()> {
     pub instances: BTreeMap<FunctionInstanceKey, MonoEnv>,
     pub emitted_names: BTreeMap<FunctionInstanceKey, String>,
     pub calls: BTreeMap<(FunctionInstanceKey, String, String), FunctionInstanceKey>,
+    /// Impl methods planned with their receiver materialized as an explicit
+    /// first parameter: the parser records only the receiver's ref kind, so
+    /// the planner derives a per-instance function whose `self` param carries
+    /// the concrete receiver type from the call site (keyed by instance).
+    pub materialized: BTreeMap<FunctionInstanceKey, IrFunction<P>>,
+    /// Struct kind names whose module declares a `Mul` operator impl
+    /// (`impl Mul<Rhs> for Struct`). The parser cannot resolve `a * b`
+    /// without type info, so such sites stay as `Binary Mul`; lowering
+    /// routes them through the impl's `mul` method via the plan.
+    pub mul_impl_structs: std::collections::BTreeMap<String, ()>,
 }
 
-impl MonoPlan {
+impl<P: Clone> MonoPlan<P> {
     pub fn emitted_name(&self, key: &FunctionInstanceKey) -> &str {
         self.emitted_names
             .get(key)
@@ -276,7 +294,7 @@ pub fn plan_flat_module<P: Clone>(
     module: &IrModule<IrFunction<P>, P>,
     roots: &[crate::MonoRoot],
     max_instances: usize,
-) -> Result<MonoPlan, MonoError> {
+) -> Result<MonoPlan<P>, MonoError> {
     let mut definitions: BTreeMap<String, &IrFunction<P>> = module
         .functions
         .iter()
@@ -288,6 +306,30 @@ pub fn plan_flat_module<P: Clone>(
         for item in &ir_impl.items {
             if let volar_compiler::ir::IrImplItem::Method(method) = item {
                 definitions.entry(method.name.clone()).or_insert(method);
+            }
+        }
+    }
+    // Operator impls are additionally keyed by receiver struct
+    // (`mul__Vope`, `mul__Galois`, …): several impls share the method name
+    // `mul` in the source, and the dispatch key keeps their instances
+    // distinct end to end.
+    for ir_impl in &module.impls {
+        let Some(volar_compiler::ir::IrTraitRef {
+            kind: volar_compiler::ir::TraitKind::Math(volar_compiler::ir::MathTrait::Mul),
+            ..
+        }) = &ir_impl.trait_
+        else {
+            continue;
+        };
+        let volar_compiler::ir::IrType::Struct { kind, .. } = &ir_impl.self_ty else {
+            continue;
+        };
+        let dispatched = format!("mul__{}", kind_name(kind));
+        for item in &ir_impl.items {
+            if let volar_compiler::ir::IrImplItem::Method(method) = item {
+                if method.name == "mul" {
+                    definitions.insert(dispatched.clone(), method);
+                }
             }
         }
     }
@@ -319,8 +361,88 @@ pub fn plan_flat_module<P: Clone>(
             .map(|root| (root.function.clone(), root.env.clone()))
             .collect()
     };
+    let mul_impl_structs: std::collections::BTreeMap<String, ()> = module
+        .impls
+        .iter()
+        .filter_map(|ir_impl| {
+            match (&ir_impl.trait_, &ir_impl.self_ty) {
+                (
+                    Some(volar_compiler::ir::IrTraitRef {
+                        kind: volar_compiler::ir::TraitKind::Math(
+                            volar_compiler::ir::MathTrait::Mul,
+                        ),
+                        ..
+                    }),
+                    IrType::Struct { kind, .. },
+                ) => Some((kind.to_string(), ())),
+                _ => None,
+            }
+        })
+        .collect();
+    // For each impl with an associated-type declaration (`type Output = ...`),
+    // map method name -> the declared type so `Self::Output` in the method's
+    // signature resolves per call site (e.g. `Mul::mul` returning
+    // `Self::Output = Q<N, O>`).
+    //
+    // Several impls declare methods with the SAME source name (`mul` on
+    // Vope, on Galois, …), so operator impls are keyed by their dispatched
+    // name (`mul__<StructKind>`) — a plain method-name key would bleed one
+    // impl's associated type into another's instance. Non-operator impls
+    // keep the plain method-name key (first impl wins).
+    let mut impl_assoc_dispatched: BTreeMap<String, Vec<(String, IrType)>> =
+        BTreeMap::new();
+    let mut impl_assoc_plain: BTreeMap<String, Vec<(String, IrType)>> = BTreeMap::new();
+    for ir_impl in &module.impls {
+        let is_mul_op = matches!(
+            &ir_impl.trait_,
+            Some(volar_compiler::ir::IrTraitRef {
+                kind: volar_compiler::ir::TraitKind::Math(volar_compiler::ir::MathTrait::Mul),
+                ..
+            })
+        ) && matches!(&ir_impl.self_ty, IrType::Struct { .. });
+        let dispatched = if is_mul_op {
+            match &ir_impl.self_ty {
+                IrType::Struct { kind, .. } => {
+                    Some(format!("mul__{}", kind_name(kind)))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let assoc: Vec<(String, IrType)> = ir_impl
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                volar_compiler::ir::IrImplItem::AssociatedType { name, ty } => {
+                    Some((name.to_string(), ty.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        if assoc.is_empty() {
+            continue;
+        }
+        for item in &ir_impl.items {
+            if let volar_compiler::ir::IrImplItem::Method(method) = item {
+                if let Some(key) = &dispatched {
+                    if method.name == "mul" {
+                        impl_assoc_dispatched
+                            .entry(key.clone())
+                            .or_default()
+                            .extend(assoc.iter().cloned());
+                    }
+                } else {
+                    impl_assoc_plain
+                        .entry(method.name.clone())
+                        .or_insert_with(|| assoc.clone());
+                }
+            }
+        }
+    }
     let mut instances = BTreeMap::new();
     let mut calls = BTreeMap::new();
+    let mut materialized: BTreeMap<FunctionInstanceKey, IrFunction<P>> = BTreeMap::new();
     let mut queue = VecDeque::new();
     for (name, env) in selected {
         let Some(definition) = definitions.get(&name) else {
@@ -331,10 +453,11 @@ pub fn plan_flat_module<P: Clone>(
         if definition.external_kind == volar_compiler::ir::ExternalKind::Normal {
             let mut env = env;
             env.consts.extend(module_consts.clone());
+            env.mul_impl_structs = mul_impl_structs.clone();
             queue.push_back((instance_key(&name, &env), env));
         }
     }
-    while let Some((key, env)) = queue.pop_front() {
+    while let Some((key, mut env)) = queue.pop_front() {
         if instances.contains_key(&key) {
             continue;
         }
@@ -344,8 +467,12 @@ pub fn plan_flat_module<P: Clone>(
                 key.source_name
             )));
         }
-        let definition = definitions
-            .get(&key.source_name)
+        // A materialized method instance (receiver promoted to a param) uses
+        // its derived definition; free functions use the module definition.
+        let definition = materialized
+            .get(&key)
+            .map(|derived| derived as &IrFunction<P>)
+            .or_else(|| definitions.get(&key.source_name).copied())
             .expect("queued source definition exists");
         instances.insert(key.clone(), env.clone());
         for (callee, type_args, arg_tys, expected) in
@@ -357,8 +484,240 @@ pub fn plan_flat_module<P: Clone>(
             if callee_def.external_kind != volar_compiler::ir::ExternalKind::Normal {
                 continue;
             }
-            let callee_env =
-                bind_call_args(callee_def, &type_args, &arg_tys, &env, expected.as_ref())?;
+            let mut derived_for_binding: Option<std::rc::Rc<IrFunction<P>>> = None;
+            let mut derived_held: Option<std::rc::Rc<IrFunction<P>>> = None;
+            // Impl method with a receiver: the parser records the receiver's
+            // ref kind but not its type, so `params` excludes `self`. For
+            // this call site, derive a definition with `self` promoted to an
+            // explicit parameter typed from the receiver's concrete type —
+            // that type participates in unification (binding impl-level
+            // parameters like `K`) and becomes the instance's first C param.
+            let (callee_def, arg_tys): (&IrFunction<P>, Vec<Option<IrType>>) =
+                match (&callee_def.receiver, callee_def.params.len()) {
+                    (Some(receiver_kind), n) if arg_tys.len() == n + 1 => {
+                        let Some(recv_ty) = arg_tys[0].clone() else {
+                            continue;
+                        };
+                        // Value receivers hold the type directly; reference
+                        // receivers wrap it (flattening is transparent).
+                        let self_ty = match receiver_kind {
+                            volar_compiler::ir::IrReceiver::Ref
+                            | volar_compiler::ir::IrReceiver::RefMut => {
+                                // The inferred receiver type may already be a
+                                // reference (e.g. `&self` on a struct param);
+                                // wrap only when it is a bare value.
+                                match &recv_ty {
+                                    r @ IrType::Reference { .. } => r.clone(),
+                                    v => IrType::Reference {
+                                        mutable: matches!(
+                                            receiver_kind,
+                                            volar_compiler::ir::IrReceiver::RefMut
+                                        ),
+                                        elem: Box::new(v.clone()),
+                                    },
+                                }
+                            }
+                            volar_compiler::ir::IrReceiver::Value => recv_ty.clone(),
+                        };
+                        // Distinguish instances by the receiver's lane
+                        // count: it is an impl-level parameter with no name
+                        // inside the method, so record it under a reserved
+                        // key that flows into the instance's canonical env.
+                        if let Some(recv_k) = trailing_numeric_slot(&recv_ty) {
+                            env.const_params.insert("#recv_k".to_owned(), recv_k);
+                        }
+                        let mut derived = (*callee_def).clone();
+                        derived.receiver = None;
+                        derived.params.insert(
+                            0,
+                            volar_compiler::ir::IrParam {
+                                name: "self".to_owned(),
+                                ty: self_ty.clone(),
+                            },
+                        );
+                        // The parser erases the impl's own generics from the
+                        // method (they live only on the impl). Re-attach the
+                        // names appearing in the method's signature as its
+                        // own generics so bind_call_args unifies them from
+                        // the concrete self/arg types instead of skipping
+                        // inference entirely (fn mul has no declared
+                        // generics, which would early-return an ambient-only
+                        // env and leave `U` unsubstituted).
+                        {
+                            let mut names: std::collections::BTreeSet<String> =
+                                Default::default();
+                            for param in &derived.params {
+                                collect_type_params(&param.ty, &mut names);
+                            }
+                            if let Some(ret) = &derived.return_type {
+                                collect_type_params(ret, &mut names);
+                            }
+                            let declared: Vec<String> =
+                                derived.generics.iter().map(|g| g.name.clone()).collect();
+                            for name in &declared {
+                                names.remove(name);
+                            }
+                            for name in names {
+                                // Numeric/typenum spellings are const bindings;
+                                // everything else is a genuine type param.
+                                let kind = if name.parse::<usize>().is_ok()
+                                    || typenum_usize(&name).is_some()
+                                {
+                                    volar_compiler::ir::IrGenericParamKind::Const
+                                } else {
+                                    volar_compiler::ir::IrGenericParamKind::Type
+                                };
+                                derived.generics.push(volar_compiler::ir::IrGenericParam {
+                                    name,
+                                    kind,
+                                    const_ty: None,
+                                    bounds: Vec::new(),
+                                    default: None,
+                                });
+                            }
+                        }
+                        // Rewrite `Generic::Output` projections in the derived
+                        // signature. The parser erases the impl's own generic
+                        // (`K`) from the method, so an associated-type result
+                        // like `Vope<N, T, K2::Output>` (the sum of receiver
+                        // and argument lane counts) cannot be resolved by
+                        // unification. Recover it arithmetically: the callee
+                        // generic appearing in the other param's last struct
+                        // type-arg slot binds to that argument's numeric
+                        // lane count; the receiver supplies its own.
+                        let other_arg_ty = arg_tys.get(1).cloned().flatten();
+                        if let (Some(other_ty), Some(ret_ty)) =
+                            (other_arg_ty, derived.return_type.as_ref())
+                        {
+                            let recv_k = trailing_numeric_slot(&self_ty);
+                            let other_k = trailing_numeric_slot(&other_ty);
+                            if std::env::var("VOLAR_KEY_DEBUG").is_ok() {
+                                eprintln!(
+                                    "[key-debug] derive probe: recv_k={recv_k:?} other_k={other_k:?} other_arg={other_ty:?}"
+                                );
+                            }
+                            if let (Some(recv_k), Some(other_k)) = (recv_k, other_k) {
+                                // Rewrite every `G::Output` projection whose
+                                // generic `G` occupies the other param's
+                                // trailing slot: with the impl-level lane
+                                // count erased from the method, the
+                                // associated type resolves arithmetically to
+                                // `receiver_k + other_k`.
+                                let other_param_generic = callee_def
+                                    .params
+                                    .first()
+                                    .and_then(|p| trailing_generic_name(&p.ty));
+                                if let Some(g) = other_param_generic {
+                                    let sum = recv_k + other_k;
+                                    if let Some(ret) = derived.return_type.as_mut() {
+                                        substitute_projection_output(ret, &g, sum);
+                                    }
+                                    for param in derived.params.iter_mut() {
+                                        substitute_projection_output(
+                                            &mut param.ty,
+                                            &g,
+                                            sum,
+                                        );
+                                    }
+                                    substitute_projection_output_in_block(
+                                        &mut derived.body,
+                                        &g,
+                                        sum,
+                                    );
+                                }
+                            }
+                        }
+                        // Resolve `Self::Output` in the derived signature:
+                        // the parser keeps the projection, but the impl's
+                        // `type Output = ...` declaration gives the concrete
+                        // shape once its own generics are bound by
+                        // unification at bind_call_args time. Substitute the
+                        // declaration now; unresolved impl generics inside it
+                        // (e.g. `O`) are bound later by unification against
+                        // the call's expected type or args.
+                        let assocs = impl_assoc_dispatched
+                            .get(&callee)
+                            .or_else(|| impl_assoc_plain.get(callee_def.name.as_str()));
+                        if let Some(assocs) = assocs {
+                            for (assoc_name, assoc_ty) in assocs {
+                                let projection_ty = IrType::Projection {
+                                    base: Box::new(IrType::TypeParam("Self".to_owned())),
+                                    trait_path: None,
+                                    trait_args: Vec::new(),
+                                    assoc: volar_compiler::ir::AssociatedType::from_str(
+                                        assoc_name,
+                                    ),
+                                };
+                                if let Some(ret) = derived.return_type.as_mut() {
+                                    substitute_type_for_projection(
+                                        ret,
+                                        &projection_ty,
+                                        assoc_ty,
+                                    );
+                                }
+                                for param in derived.params.iter_mut() {
+                                    substitute_type_for_projection(
+                                        &mut param.ty,
+                                        &projection_ty,
+                                        assoc_ty,
+                                    );
+                                }
+                                substitute_type_for_projection_in_block(
+                                    &mut derived.body,
+                                    &projection_ty,
+                                    assoc_ty,
+                                );
+                            }
+                        }
+                        let derived = std::rc::Rc::new(derived);
+                        derived_held = Some(derived);
+                        // Keep the full arg list: the derived `self` param
+                        // pairs with the receiver argument, restoring the
+                        // 1:1 param/arg alignment lost by the parser.
+                        (derived_held.as_deref().unwrap(), arg_tys)
+                    }
+                    _ => (callee_def, arg_tys),
+                };
+            let mut callee_env = bind_call_args(
+                callee_def,
+                &type_args,
+                &arg_tys,
+                &env,
+                expected.as_ref(),
+            )?;
+            if let Some(derived) = derived_held.as_ref() {
+                // Default unbound return-position generics: a field-mul
+                // output (`O` in `T: Mul<U, Output = O>`) has the same layout
+                // as the operand element type. Bind any still-unbound generic
+                // that appears ONLY in the return type to the receiver's
+                // element generic concrete (`T`), else to the first bound
+                // type param.
+                if let Some(ret) = &derived.return_type {
+                    let mut ret_names: std::collections::BTreeSet<String> =
+                        Default::default();
+                    collect_type_params(ret, &mut ret_names);
+                    let mut param_names: std::collections::BTreeSet<String> =
+                        Default::default();
+                    for param in &derived.params {
+                        collect_type_params(&param.ty, &mut param_names);
+                    }
+                    let t_concrete = param_names
+                        .iter()
+                        .find_map(|n| callee_env.type_params.get(n).cloned());
+                    for name in ret_names {
+                        if param_names.contains(&name) {
+                            continue;
+                        }
+                        if !callee_env.type_params.contains_key(&name) {
+                            if let Some(concrete) = &t_concrete {
+                                callee_env.type_params.insert(name, concrete.clone());
+                            }
+                        }
+                    }
+                }
+                materialized.insert(instance_key(&callee, &callee_env), (**derived).clone());
+            }
+            derived_for_binding = None;
             let args = normalized_args(
                 &if type_args.is_empty() {
                     // Prefer inferred concrete args for the call key when turbofish
@@ -397,11 +756,12 @@ pub fn plan_flat_module<P: Clone>(
                 })
                 .collect::<Vec<_>>()
                 .join("|");
-            let args = if args.is_empty() {
-                arg_types_key
-            } else {
-                format!("{args}#{arg_types_key}")
-            };
+            // Key on the canonical arg-types string alone. The generic-args
+            // prefix mismatches the lowering side whenever the turbofish is
+            // omitted (lowering computes an empty generic key), and identical
+            // arg types already imply identical instantiation — the receiver's
+            // impl-level generics show up in the receiver arg's type.
+            let args = arg_types_key;
             calls.insert((key.clone(), callee.clone(), args), callee_key.clone());
             if !instances.contains_key(&callee_key) {
                 queue.push_back((callee_key, callee_env));
@@ -430,10 +790,16 @@ pub fn plan_flat_module<P: Clone>(
             (key.clone(), emitted)
         })
         .collect();
+    let materialized = materialized
+        .into_iter()
+        .map(|(k, v)| (k, v.clone()))
+        .collect();
     Ok(MonoPlan {
         instances,
         emitted_names,
+        materialized,
         calls,
+        mul_impl_structs,
     })
 }
 
@@ -536,6 +902,10 @@ fn bind_call_args<P: Clone>(
             volar_compiler::ir::IrGenericParamKind::Type => {
                 match env.type_params.get(&parameter.name) {
                     Some(ty) if is_concrete_type(ty) => {}
+                    // Cross-module nominal shadowing its own generic slot
+                    // (`BigVoleProver`): the registry resolves the layout.
+                    Some(IrType::TypeParam(self_name))
+                        if self_name == &parameter.name => {}
                     Some(ty) => {
                         return Err(MonoError::new(format!(
                             "generic local call '{}': type parameter '{}' inferred non-concrete ({ty:?})",
@@ -543,10 +913,22 @@ fn bind_call_args<P: Clone>(
                         )));
                     }
                     None => {
-                        return Err(MonoError::new(format!(
-                            "generic local call '{}': type parameter '{}' could not be inferred",
-                            function.name, parameter.name
-                        )));
+                        // Cross-module struct/enum names parse as bare
+                        // TypeParams. When a generic slot's name is a
+                        // nominal type name (multi-char, uppercase-initial
+                        // — e.g. `BigVoleProver`), it self-describes its
+                        // layout: leave it unbound here; mono_type keeps the
+                        // TypeParam spelling and ensure_type_nominals
+                        // resolves the registry entry.
+                        let name = parameter.name.as_str();
+                        let looks_nominal = name.len() > 2
+                            && name.chars().next().map(char::is_uppercase).unwrap_or(false);
+                        if !looks_nominal {
+                            return Err(MonoError::new(format!(
+                                "generic local call '{}': type parameter '{}' could not be inferred",
+                                function.name, parameter.name
+                            )));
+                        }
                     }
                 }
             }
@@ -666,6 +1048,16 @@ fn unify_into<P: Clone>(
     let concrete = mono_type(concrete, caller_env);
     match (&pattern, &concrete) {
         (IrType::TypeParam(name), concrete) => {
+            // Cross-module struct/enum names parse as bare TypeParams; when a
+            // param type and its call-site argument are the SAME unresolved
+            // name (e.g. `big_vole: &BigVoleProver` passed straight through),
+            // there is nothing to learn — the registry resolves the nominal
+            // later. Skip instead of erroring.
+            if let IrType::TypeParam(cname) = concrete {
+                if cname == name {
+                    return Ok(());
+                }
+            }
             if !is_concrete_type(concrete) {
                 return Err(MonoError::new(format!(
                     "generic local call '{}': cannot bind '{}' to non-concrete {concrete:?}",
@@ -718,17 +1110,18 @@ fn unify_into<P: Clone>(
                 // Impl-level parameter: a name bound by the receiver's
                 // `impl` block, not the method's own generics (e.g. `K` in
                 // `impl Vope<N, T, K> { fn mul_generalized<K2>(...) }`).
-                // Bind only numeric concretes; binding non-numeric types
-                // here can create self-referential substitutions (K2::Output
-                // projections) that never resolve.
+                // Bind numeric concretes as consts; bind other concrete
+                // types as type params. Projections (`K2::Output`) are
+                // skipped: binding them creates self-referential
+                // substitutions that never resolve.
                 if let IrType::TypeParam(nname) = concrete {
                     if let Ok(n) = nname.parse::<usize>() {
                         env.const_params.insert(name.clone(), n);
                     } else if let Some(n) = typenum_usize(nname) {
                         env.const_params.insert(name.clone(), n);
-                    } else {
-                        return Ok(());
                     }
+                } else if !matches!(concrete, IrType::Projection { .. }) {
+                    env.type_params.insert(name.clone(), concrete.clone());
                 }
             }
             Ok(())
@@ -792,6 +1185,7 @@ fn unify_into<P: Clone>(
                 type_args: c_args,
             },
         ) if p_kind == c_kind && p_args.len() == c_args.len() => {
+
             for (p, c) in p_args.iter().zip(c_args.iter()) {
                 unify_into(env, p, c, function, caller_env)?;
             }
@@ -801,6 +1195,8 @@ fn unify_into<P: Clone>(
             unify_into(env, p_elem, c_elem, function, caller_env)
         }
         (IrType::Reference { elem: p_elem, .. }, concrete) => {
+            // Value-semantics flattening: a `&T` argument carries T's layout,
+            // so a reference on either side unifies against the pointee.
             unify_into(env, p_elem, concrete, function, caller_env)
         }
         (pattern, IrType::Reference { elem: c_elem, .. }) => {
@@ -911,6 +1307,10 @@ fn infer_expr_type<P: Clone>(
             type_args: type_args.iter().map(|a| mono_type(a, env)).collect(),
         }),
         IrExprKind::Cast { ty, .. } => Some(mono_type(ty, env)),
+        // `.clone()` / `.deref()` preserve the receiver's type — resolving
+        // through it keeps call-arg inference alive for arguments like
+        // `delta.clone()` passed to operator-impl methods.
+        IrExprKind::MethodCall { receiver, .. } => infer_expr_type(receiver, env, vars, structs),
         IrExprKind::Unary {
             op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
             expr,
@@ -959,6 +1359,381 @@ fn collect_type_params(ty: &IrType, out: &mut std::collections::BTreeSet<String>
                 collect_type_params(e, out);
             }
         }
+        _ => {}
+    }
+}
+
+/// The trailing generic name in a struct-typed parameter (`Vope<N, T, K2>`
+/// → `"K2"`), used to identify which callee generic occupies the argument's
+/// lane-count slot.
+fn trailing_generic_name(ty: &IrType) -> Option<String> {
+    match ty {
+        IrType::Reference { elem, .. } => trailing_generic_name(elem),
+        IrType::Struct { type_args, .. } => match type_args.last()? {
+            IrType::TypeParam(name) => Some(name.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The numeric value of a struct type's trailing type argument
+/// (`Vope<.., U2>` / `Vope<.., TypeParam("2")>` → `2`).
+fn trailing_numeric_slot(ty: &IrType) -> Option<usize> {
+    match ty {
+        IrType::Reference { elem, .. } => trailing_numeric_slot(elem),
+        IrType::Struct { type_args, .. } => {
+            let last = type_args.last()?;
+            match last {
+                IrType::TypeParam(name) => {
+                    name.parse::<usize>().ok().or_else(|| typenum_usize(name))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Replace `Projection{ base: TypeParam(g), assoc: Output }` lengths in a
+/// type with the concrete sum value (as `TypeParam(n)`).
+
+/// Replace every occurrence of `projection` (e.g. `Self::Output`) in a type
+/// position with `replacement` (the impl's associated-type declaration).
+fn substitute_type_for_projection(ty: &mut IrType, projection: &IrType, replacement: &IrType) {
+    if ty == projection {
+        *ty = replacement.clone();
+        return;
+    }
+    match ty {
+        IrType::Struct { type_args, .. } => {
+            for a in type_args.iter_mut() {
+                substitute_type_for_projection(a, projection, replacement);
+            }
+        }
+        IrType::Reference { elem, .. } | IrType::Vector { elem } => {
+            substitute_type_for_projection(elem, projection, replacement)
+        }
+        IrType::Array { elem, len, .. } => {
+            substitute_type_for_projection(elem, projection, replacement);
+            // A projection can also appear in an array-length position
+            // (`Array<_, Self::Output>`); leave those for the later
+            // projection-rewrite pass, which handles length positions.
+        }
+        _ => {}
+    }
+}
+
+fn substitute_type_for_projection_in_block<P: Clone>(
+    block: &mut volar_compiler::ir::IrBlock<P>,
+    projection: &IrType,
+    replacement: &IrType,
+) {
+    for stmt in &mut block.stmts {
+        substitute_type_for_projection_in_stmt(stmt, projection, replacement);
+    }
+    if let Some(expr) = &mut block.expr {
+        substitute_type_for_projection_in_expr(expr, projection, replacement);
+    }
+}
+
+fn substitute_type_for_projection_in_stmt<P: Clone>(
+    stmt: &mut volar_compiler::ir::IrStmt<P>,
+    projection: &IrType,
+    replacement: &IrType,
+) {
+    match &mut stmt.kind {
+        IrStmtKind::Let { ty, init, .. } => {
+            if let Some(ty) = ty {
+                substitute_type_for_projection(ty, projection, replacement);
+            }
+            if let Some(init) = init {
+                substitute_type_for_projection_in_expr(init, projection, replacement);
+            }
+        }
+        IrStmtKind::Expr(expr) | IrStmtKind::Semi(expr) => {
+            substitute_type_for_projection_in_expr(expr, projection, replacement)
+        }
+        _ => {}
+    }
+}
+
+fn substitute_type_for_projection_in_expr<P: Clone>(
+    expr: &mut IrExpr<P>,
+    projection: &IrType,
+    replacement: &IrType,
+) {
+    match &mut expr.kind {
+        IrExprKind::Call { func, args } => {
+            substitute_type_for_projection_in_expr(func, projection, replacement);
+            for a in args {
+                substitute_type_for_projection_in_expr(a, projection, replacement);
+            }
+        }
+        IrExprKind::MethodCall {
+            receiver,
+            type_args,
+            args,
+            ..
+        } => {
+            substitute_type_for_projection_in_expr(receiver, projection, replacement);
+            for a in type_args.iter_mut() {
+                substitute_type_for_projection(a, projection, replacement);
+            }
+            for a in args {
+                substitute_type_for_projection_in_expr(a, projection, replacement);
+            }
+        }
+        IrExprKind::StructExpr { type_args, fields, .. } => {
+            for a in type_args.iter_mut() {
+                substitute_type_for_projection(a, projection, replacement);
+            }
+            for (_, v) in fields {
+                substitute_type_for_projection_in_expr(v, projection, replacement);
+            }
+        }
+        IrExprKind::Block(b) => {
+            substitute_type_for_projection_in_block(b, projection, replacement)
+        }
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            substitute_type_for_projection_in_expr(cond, projection, replacement);
+            substitute_type_for_projection_in_block(then_branch, projection, replacement);
+            if let Some(e) = else_branch {
+                substitute_type_for_projection_in_expr(e, projection, replacement);
+            }
+        }
+        IrExprKind::Unary { expr, .. } | IrExprKind::Field { base: expr, .. } => {
+            substitute_type_for_projection_in_expr(expr, projection, replacement)
+        }
+        IrExprKind::Binary { left, right, .. }
+        | IrExprKind::Assign { left, right }
+        | IrExprKind::AssignOp { left, right, .. } => {
+            substitute_type_for_projection_in_expr(left, projection, replacement);
+            substitute_type_for_projection_in_expr(right, projection, replacement);
+        }
+        IrExprKind::Index { base, index } => {
+            substitute_type_for_projection_in_expr(base, projection, replacement);
+            substitute_type_for_projection_in_expr(index, projection, replacement);
+        }
+        IrExprKind::Tuple(values) | IrExprKind::Array(values) | IrExprKind::FixedArray(values) => {
+            for v in values {
+                substitute_type_for_projection_in_expr(v, projection, replacement);
+            }
+        }
+        IrExprKind::DefaultValue { ty } => {
+            if let Some(ty) = ty {
+                substitute_type_for_projection(ty, projection, replacement);
+            }
+        }
+        IrExprKind::Closure { ret_type, body, .. } => {
+            if let Some(rt) = ret_type {
+                substitute_type_for_projection(rt, projection, replacement);
+            }
+            substitute_type_for_projection_in_expr(body, projection, replacement);
+        }
+        _ => {}
+    }
+}
+
+fn substitute_projection_output(ty: &mut IrType, generic: &str, value: usize) {
+    match ty {
+        IrType::Projection { base, assoc, .. } => {
+            if matches!(base.as_ref(), IrType::TypeParam(n) if n == generic)
+                && assoc.to_string() == "Output"
+            {
+                *ty = IrType::TypeParam(value.to_string());
+            }
+        }
+        IrType::Struct { type_args, .. } => {
+            for a in type_args.iter_mut() {
+                substitute_projection_output(a, generic, value);
+            }
+        }
+        IrType::Reference { elem, .. } | IrType::Vector { elem } => {
+            substitute_projection_output(elem, generic, value)
+        }
+        IrType::Array { elem, len, .. } => {
+            substitute_projection_output(elem, generic, value);
+            // Array-length positions carry their own projection shape
+            // (`Array::<_, K2::Output>` in method bodies).
+            if let volar_compiler::ir::ArrayLength::Projection { r#type, field, .. } = len {
+                if matches!(r#type.as_ref(), IrType::TypeParam(n) if n == generic)
+                    && field.to_string() == "Output"
+                {
+                    *len = volar_compiler::ir::ArrayLength::Const(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn substitute_projection_output_in_block<P: Clone>(
+    block: &mut volar_compiler::ir::IrBlock<P>,
+    generic: &str,
+    value: usize,
+) {
+    for stmt in block.stmts.iter_mut() {
+        substitute_projection_output_in_stmt(stmt, generic, value);
+    }
+    if let Some(expr) = block.expr.as_mut() {
+        substitute_projection_output_in_expr(expr, generic, value);
+    }
+}
+
+fn substitute_projection_output_in_stmt<P: Clone>(
+    stmt: &mut volar_compiler::ir::IrStmt<P>,
+    generic: &str,
+    value: usize,
+) {
+    use volar_compiler::ir::IrStmtKind;
+    match &mut stmt.kind {
+        IrStmtKind::Let { ty, init, .. } => {
+            if let Some(ty) = ty {
+                substitute_projection_output(ty, generic, value);
+            }
+            if let Some(init) = init {
+                substitute_projection_output_in_expr(init, generic, value);
+            }
+        }
+        IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+            substitute_projection_output_in_expr(e, generic, value)
+        }
+        _ => {}
+    }
+}
+
+fn substitute_projection_output_in_expr<P: Clone>(
+    expr: &mut volar_compiler::ir::IrExpr<P>,
+    generic: &str,
+    value: usize,
+) {
+    use volar_compiler::ir::IrExprKind;
+    match &mut expr.kind {
+        IrExprKind::Call { func, args } => {
+            substitute_projection_output_in_expr(func, generic, value);
+            for a in args.iter_mut() {
+                substitute_projection_output_in_expr(a, generic, value);
+            }
+        }
+        IrExprKind::MethodCall {
+            receiver,
+            args,
+            type_args,
+            ..
+        } => {
+            substitute_projection_output_in_expr(receiver, generic, value);
+            for a in args.iter_mut() {
+                substitute_projection_output_in_expr(a, generic, value);
+            }
+            for a in type_args.iter_mut() {
+                substitute_projection_output(a, generic, value);
+            }
+        }
+        IrExprKind::Binary { left, right, .. }
+        | IrExprKind::Assign { left, right }
+        | IrExprKind::AssignOp { left, right, .. } => {
+            substitute_projection_output_in_expr(left, generic, value);
+            substitute_projection_output_in_expr(right, generic, value);
+        }
+        IrExprKind::Unary { expr, .. } | IrExprKind::Try(expr) => {
+            substitute_projection_output_in_expr(expr, generic, value)
+        }
+        IrExprKind::Field { base, .. } | IrExprKind::Index { base, .. } => {
+            substitute_projection_output_in_expr(base, generic, value)
+        }
+        IrExprKind::StructExpr { type_args, fields, .. } => {
+            for a in type_args.iter_mut() {
+                substitute_projection_output(a, generic, value);
+            }
+            let _ = fields;
+        }
+        IrExprKind::Repeat { elem, len, .. } => {
+            substitute_projection_output_in_expr(elem, generic, value);
+            substitute_projection_output_in_expr(len, generic, value);
+        }
+        IrExprKind::FixedArray(elems) | IrExprKind::Tuple(elems) | IrExprKind::Array(elems) => {
+            for e in elems.iter_mut() {
+                substitute_projection_output_in_expr(e, generic, value);
+            }
+        }
+        IrExprKind::Block(b) => substitute_projection_output_in_block(b, generic, value),
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            substitute_projection_output_in_expr(cond, generic, value);
+            substitute_projection_output_in_block(then_branch, generic, value);
+            if let Some(e) = else_branch {
+                substitute_projection_output_in_expr(e, generic, value);
+            }
+        }
+        IrExprKind::BoundedLoop {
+            start,
+            end,
+            body,
+            ..
+        } => {
+            substitute_projection_output_in_expr(start, generic, value);
+            substitute_projection_output_in_expr(end, generic, value);
+            substitute_projection_output_in_block(body, generic, value);
+        }
+        IrExprKind::Cast { expr, .. } => substitute_projection_output_in_expr(expr, generic, value),
+        IrExprKind::Path { type_args, .. } => {
+            for a in type_args.iter_mut() {
+                substitute_projection_output(a, generic, value);
+            }
+        }
+        IrExprKind::DefaultValue { ty } => {
+            if let Some(t) = ty.as_mut() {
+                substitute_projection_output(t, generic, value);
+            }
+        }
+        IrExprKind::Closure { ret_type, body, .. } => {
+            if let Some(rt) = ret_type {
+                substitute_projection_output(rt, generic, value);
+            }
+            substitute_projection_output_in_expr(body, generic, value);
+        }
+        IrExprKind::WhileLoop { body, .. } => {
+            substitute_projection_output_in_block(body, generic, value)
+        }
+        IrExprKind::IterLoop { collection, body, .. } => {
+            substitute_projection_output_in_expr(collection, generic, value);
+            substitute_projection_output_in_block(body, generic, value);
+        }
+        IrExprKind::ArrayGenerate { elem_ty, len, body, .. } => {
+            if let Some(t) = elem_ty {
+                substitute_projection_output(t, generic, value);
+            }
+            if let volar_compiler::ir::ArrayLength::Projection { r#type, field, .. } = len {
+                if matches!(r#type.as_ref(), IrType::TypeParam(n) if n == generic)
+                    && field.to_string() == "Output"
+                {
+                    *len = volar_compiler::ir::ArrayLength::Const(value);
+                }
+            }
+            substitute_projection_output_in_expr(body, generic, value);
+        }
+        IrExprKind::RawMap { receiver, body, .. } | IrExprKind::RawFold { receiver, body, .. } => {
+            substitute_projection_output_in_expr(receiver, generic, value);
+            substitute_projection_output_in_expr(body, generic, value);
+        }
+        IrExprKind::RawZip { left, right, body, .. } => {
+            substitute_projection_output_in_expr(left, generic, value);
+            substitute_projection_output_in_expr(right, generic, value);
+            substitute_projection_output_in_expr(body, generic, value);
+        }
+        IrExprKind::BoundedLoop { body, .. } => {
+            substitute_projection_output_in_block(body, generic, value)
+        }
+        IrExprKind::Match { .. } => {}
         _ => {}
     }
 }
@@ -1201,6 +1976,39 @@ fn collect_expr_calls<P: Clone>(
             for arg in args {
                 collect_expr_calls(arg, env, defs, structs, var_types, calls);
             }
+        }
+        Binary {
+            op: SpecBinOp::Mul,
+            left,
+            right,
+        } => {
+            // Operator-overload sites: `struct * rhs` with a declared `Mul`
+            // impl lowers via the impl's `mul` method, so plan that call.
+            let left_ty = infer_expr_type(left, env, Some(var_types), Some(structs));
+            let is_mul_impl = left_ty
+                .as_ref()
+                .map(|ty| match ty {
+                    IrType::Struct { kind, .. } => {
+                        env.mul_impl_structs.contains_key(&kind.to_string())
+                    }
+                    _ => false,
+                })
+                .unwrap_or(false);
+            if is_mul_impl {
+                let arg_tys: Vec<Option<IrType>> = std::iter::once(left)
+                    .chain(std::iter::once(right))
+                    .map(|a| infer_expr_type(a, env, Some(var_types), Some(structs)))
+                    .collect();
+                // Dispatch by receiver struct: several `Mul` impls share the
+                // method name `mul` in the source module, so the callee is
+                // keyed as `mul__<StructKind>` to keep impls distinct.
+                if let Some(IrType::Struct { kind, .. }) = &left_ty {
+                    let callee = format!("mul__{}", kind_name(kind));
+                    calls.push((callee, Vec::new(), arg_tys, None));
+                }
+            }
+            collect_expr_calls(left, env, defs, structs, var_types, calls);
+            collect_expr_calls(right, env, defs, structs, var_types, calls);
         }
         Binary { left, right, .. }
         | Assign { left, right }
