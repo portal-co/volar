@@ -2189,13 +2189,6 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
             )
         });
 
-    if std::env::var("VOLAR_FIELD_DEBUG").is_ok() {
-        eprintln!(
-            "[field-debug] caller={:?} struct_id={} field=.{field}",
-            ctx.current_instance.map(|k| k.source_name.clone()),
-            struct_id,
-        );
-    }
     let field_idx = ctx.registry.field_index(struct_id, field);
     let offset = struct_field_scalar_offset(ctx.registry, struct_id, field_idx);
     let width = struct_field_scalar_width(ctx.registry, struct_id, field_idx);
@@ -3311,12 +3304,6 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
         // Keys match the planner's canonical arg-types string (no generic
         // prefix; see mono.rs calls insert).
         let args_key = arg_types_key;
-        if std::env::var("VOLAR_KEY_DEBUG").is_ok() && method_name.contains("mul_generalized") {
-            eprintln!(
-                "[key-debug] lower method {method_name} caller={:?} args_key={args_key}",
-                caller.source_name,
-            );
-        }
         if let Some(callee) = plan.local_call_deduce(caller, method_name, &args_key) {
             let emitted_name = plan.emitted_name(callee);
             let ret_ty = ctx

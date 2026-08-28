@@ -339,9 +339,6 @@ pub fn ensure_struct_instance<T: LirTarget<P>, P: Clone>(
         return;
     }
     let concrete_args: Vec<IrType> = type_args.iter().map(|a| mono_type(a, outer)).collect();
-    if std::env::var("VOLAR_KEY_DEBUG").is_ok() {
-        eprintln!("[key-debug] ensure {name} args={concrete_args:?}");
-    }
     // Refuse to register when any type arg is still an unbound param name.
     // Numeric `TypeParam("16")` is a resolved const-generic spelling.
     if concrete_args.iter().any(|a| match a {
@@ -687,9 +684,8 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                 }
                 None => {
                     panic!(
-                        "struct '{}' not in registry — was ensure_struct_instance called? [instance: {}]",
+                        "struct '{}' not in registry — was ensure_struct_instance called?",
                         nominal_instance_name(kind, type_args),
-                        crate::CURRENT_INSTANCE_DEBUG.with(|c| c.borrow().clone()),
                     )
                 }
             }

@@ -475,7 +475,6 @@ pub fn plan_flat_module<P: Clone>(
             .or_else(|| definitions.get(&key.source_name).copied())
             .expect("queued source definition exists");
         instances.insert(key.clone(), env.clone());
-        let caller_name = key.source_name.clone();
         for (callee, type_args, arg_tys, expected) in
             direct_calls(definition, &env, &definitions, &struct_table)
         {
@@ -558,6 +557,12 @@ pub fn plan_flat_module<P: Clone>(
                             for name in &declared {
                                 names.remove(name);
                             }
+                            // Numeric spellings in the rewritten signature
+                            // (`K2::Output` → TypeParam("2")) are already
+                            // concrete constants, not generic names.
+                            names.retain(|n| {
+                                n.parse::<usize>().is_err() && typenum_usize(n).is_none()
+                            });
                             for name in names {
                                 // Numeric/typenum spellings are const bindings;
                                 // everything else is a genuine type param.
@@ -592,11 +597,6 @@ pub fn plan_flat_module<P: Clone>(
                         {
                             let recv_k = trailing_numeric_slot(&self_ty);
                             let other_k = trailing_numeric_slot(&other_ty);
-                            if std::env::var("VOLAR_KEY_DEBUG").is_ok() {
-                                eprintln!(
-                                    "[key-debug] derive probe: recv_k={recv_k:?} other_k={other_k:?} other_arg={other_ty:?}"
-                                );
-                            }
                             if let (Some(recv_k), Some(other_k)) = (recv_k, other_k) {
                                 // Rewrite every `G::Output` projection whose
                                 // generic `G` occupies the other param's
@@ -706,7 +706,12 @@ pub fn plan_flat_module<P: Clone>(
                         .iter()
                         .find_map(|n| callee_env.type_params.get(n).cloned());
                     for name in ret_names {
-                        if param_names.contains(&name) {
+                        // Rewritten projection slots (`K2::Output` → "2")
+                        // are concrete literals — never default them.
+                        if param_names.contains(&name)
+                            || name.parse::<usize>().is_ok()
+                            || typenum_usize(&name).is_some()
+                        {
                             continue;
                         }
                         if !callee_env.type_params.contains_key(&name) {
@@ -763,12 +768,6 @@ pub fn plan_flat_module<P: Clone>(
             // arg types already imply identical instantiation — the receiver's
             // impl-level generics show up in the receiver arg's type.
             let args = arg_types_key;
-            if std::env::var("VOLAR_KEY_DEBUG").is_ok() && callee.contains("mul_generalized") {
-                eprintln!(
-                    "[key-debug] plan {caller_name} -> {callee} key={args} target={}",
-                    callee_key.source_name.clone()
-                );
-            }
             calls.insert((key.clone(), callee.clone(), args), callee_key.clone());
             if !instances.contains_key(&callee_key) {
                 queue.push_back((callee_key, callee_env));
