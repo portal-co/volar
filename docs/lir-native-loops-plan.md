@@ -268,22 +268,32 @@ Deviations discovered during implementation (evidence-first):
 - **Descending loops stay concrete-unrolled** (`lower_bounded_loop_descending`
   unchanged); per §3.4's original note they remain unrolled in `Auto`
   mode initially.
-- **Pre-existing emission gap (unrelated to loops, both modes):** the C
-  backend emits `Arr_U8_32* data;` (Vec fat-pointer field) without the
-  matching `typedef struct { ... } Arr_U8_32;`, so standalone `cc`
-  compilation of the vole_prover/vole_verifier/tfhe component outputs
-  fails in *both* modes. `lir_backend_components` never compiles its
-  outputs, which is why this was invisible. The Stage-4 harness gates its
-  compile check on the unrolled baseline so the gap is not misattributed
-  to Native; fixing it is a separate C-backend task.
+- **Standalone-cc failures (pre-existing, both modes — fixed 2026-08-29):**
+  compiling component outputs with `cc` exposed four bugs unrelated to
+  loops: (1) the C backend emitted `Ptr(Arr)` struct fields (Vec
+  fat-pointer `data`) without the referenced array typedef — fixed in
+  volar-ir `7bcf716` (typedef recursion through pointers, alloca/heap
+  element registration, extern-vs-definition reconciliation);
+  (2) `StdMethod::Into` lowered to a call to an undefined extern — fixed
+  as identity (T == O in all instances reaching it); (3) distinct
+  instances of operator methods (`mul__<Struct>`) shared one emitted name —
+  fixed with full-name dedup + `__dupN`; (4) `infer_expr_type` lacked an
+  Index arm so `&a[j]` call args went unplanned — fixed. After the fixes:
+  **tfhe native output compiles and links** (14.97 MB); vole_prover and
+  vole_verifier compile and link in both modes. The 283 MB unrolled tfhe
+  output is syntax-valid but exceeds any practical cc budget — itself the
+  motivation for native loops; the harness skips it above a 64 MB budget.
 
-### Measurements (component C output, unrolled vs native)
+### Measurements (component C output, unrolled vs native, post-fix)
 
 | Component | Unrolled | Native | Ratio |
 |---|---|---|---|
-| tfhe | 40,974,575 B | 6,474,678 B | **6.3× smaller** |
-| vole_verifier | 784,346 B | 622,771 B | 1.3× smaller |
-| vole_prover | 2,509,424 B | 2,451,494 B | 1.02× (≈unchanged) |
+| tfhe | 283,409,389 B | 14,976,602 B | **18.9× smaller** |
+| vole_verifier | 782,409 B | 620,850 B | 1.3× smaller |
+| vole_prover | 2,509,023 B | 2,451,093 B | 1.02× (≈unchanged) |
+
+(The earlier 6.3× tfhe ratio was depressed by the unplanned-call fallout;
+18.9× is the true figure.)
 
 Behavioral-parity tests (compile-and-run, `cc`): native `sum_to(10)=45`,
 native concrete-bounds loops, aggregate index writes (`fill4`),
