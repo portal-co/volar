@@ -106,8 +106,8 @@ struct ExternalFnInfo {
 /// Signature metadata for any function in the module (normal or external).
 /// Used to infer return types at call sites.
 struct FuncSigInfo {
-    /// LIR types of the declared parameters.
-    #[allow(dead_code)]
+    /// LIR types of the declared parameters (authoritative ABI for planned
+    /// local calls).
     param_tys: Vec<LirType>,
     /// LIR return type.
     return_type: Option<LirType>,
@@ -263,6 +263,27 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 }
             }
 
+            // A block expression's type is its tail expression's type. The
+            // split weave's pooled-wire reads (`pooled_read_expr`) are
+            // exactly this shape: `Block { stmts: [debug_check…], expr:
+            // pool[slot].clone() }` — call arguments that must infer for
+            // the call to be planned.
+            IrExprKind::Block(b) => match &b.expr {
+                Some(tail) => self.infer_type(tail),
+                None => None,
+            },
+
+            // `(a, b, c)`: tuple of the elements' types. Tuple-pattern lets
+            // with block/tuple inits (`let (w_a, w_b) = { …; (x, y) }`, the
+            // weave's per-lane extraction shape) need widths for the flat
+            // split — without this, every sub-pattern silently binds ONE
+            // scalar and every later use misindexes.
+            IrExprKind::Tuple(elems) => {
+                let tys: Option<Vec<IrType>> =
+                    elems.iter().map(|e| self.infer_type(e)).collect();
+                Some(IrType::Tuple(tys?))
+            }
+
             IrExprKind::MethodCall {
                 receiver,
                 method: MethodKind::Known(StdMethod::Clone | StdMethod::Deref),
@@ -362,6 +383,16 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                     }
                 }
                 self.ir_func_ret_types.get(&callee).cloned()
+            }
+
+            // Arithmetic preserves the operand type: Vope+Vope → Vope,
+            // Galois*Galois → Galois. The weave's per-lane arithmetic lets
+            // (`let w = a.clone() + b…`) bind from these. Left is
+            // authoritative; right is a fallback for `lit + typed` shapes
+            // where the literal side has no type. (Placed AFTER the
+            // operator-overload arm above, which it must not shadow.)
+            IrExprKind::Binary { left, right, .. } => {
+                self.infer_type(left).or_else(|| self.infer_type(right))
             }
 
             IrExprKind::Unary {
@@ -608,6 +639,107 @@ fn target_alloca<T: LirTarget<P>, P: Clone>(
         "native loop aggregate promotion requires a target with StackAllocExt (stack allocation)",
     );
     ext.alloca(elem_ty, count)
+}
+
+/// Threshold (flattened scalars) above which a by-value fixed-array param
+/// becomes a pointer in the local-call ABI. Above this, per-call by-value
+/// copies plus runtime-index select muxes dominate generated code size;
+/// pointer semantics (like slice refs) keep both O(1) per access.
+const PTR_ABI_PARAM_THRESHOLD: usize = 512;
+
+/// Lower one call argument against its DECLARED ABI type. When the callee
+/// takes a pointer (large-array param) but the caller holds flat values,
+/// spill to a fresh alloca and pass the pointer; when the caller itself
+/// holds a promoted slot / pointer-backed value (a promoted local or a
+/// promoted param of the caller), pass that pointer through unchanged.
+fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
+    arg: &IrExpr<P>,
+    declared: Option<&LirType>,
+    ctx: &mut LowerCtx<T, P>,
+) -> (LirType, Vec<T::Value>) {
+    let ptr_needed = matches!(declared, Some(LirType::Ptr(_)));
+    if ptr_needed {
+        // Pass-through: arg is a name whose values are already pointer-backed.
+        if let IrExprKind::Var(name) = &arg.kind {
+            if let Some(slot) = ctx.promoted.get(name.as_str()) {
+                let ptr = slot.ptr.clone();
+                let elem_ty = match &slot.layout {
+                    PromotedLayout::Array { elem_ty, .. } => elem_ty.clone(),
+                    PromotedLayout::Whole { agg_ty } => agg_ty.clone(),
+                };
+                let ty = declared.cloned().unwrap_or(LirType::Ptr(Box::new(elem_ty)));
+                return (ty, vec![ptr]);
+            }
+        }
+        // Spill: lower flat, allocate, store element-wise.
+        let elem_lir = match declared {
+            Some(LirType::Ptr(e)) => (**e).clone(),
+            _ => LirType::U64,
+        };
+        let elem_width = flatten_count(&elem_lir, ctx.registry);
+        let flat = lower_expr(arg, ctx);
+        if elem_width > 0 && flat.len() % elem_width == 0 && !flat.is_empty() {
+            let n = flat.len() / elem_width;
+            let ptr = target_alloca(ctx, elem_lir.clone(), n);
+            for (k, chunk) in flat.chunks(elem_width).enumerate() {
+                let k_val = ctx.target.iconst(LirType::U64, k as i64);
+                ctx.target
+                    .ptr_index_store(ptr.clone(), k_val, chunk, &elem_lir);
+            }
+            let ty = declared.cloned().unwrap_or(LirType::Ptr(Box::new(elem_lir)));
+            return (ty, vec![ptr]);
+        }
+        // Irregular: fall through to flat lowering under the declared type
+        // (the call_extern arity check will catch real mismatches).
+        let ty = declared.cloned().unwrap_or(LirType::U64);
+        return (ty, flat);
+    }
+    let ty = declared
+        .cloned()
+        .unwrap_or_else(|| {
+            ctx.infer_type(arg)
+                .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
+                .unwrap_or(LirType::U64)
+        });
+    let values = lower_expr(arg, ctx);
+    (ty, values)
+}
+
+/// The ABI LirType for a param: large fixed arrays map to `Ptr(elem)`
+/// (memory-backed, like slice refs); everything else maps normally.
+/// Must be used identically at definition (`begin_function`) and every
+/// call site so arg counts line up.
+fn param_abi_lir_type(
+    registry: &StructRegistry,
+    ty: &IrType,
+    env: &MonoEnv,
+    memory_capable: bool,
+) -> LirType {
+    if memory_capable {
+        if let IrType::Array { elem, len, .. } = ty {
+            if let ArrayLength::Const(n) = mono_len(len, env) {
+                let elem_lir = registry.ir_type_to_lir(elem, env);
+                let ew = flatten_count(&elem_lir, registry);
+                if n > 0 && ew * n >= PTR_ABI_PARAM_THRESHOLD {
+                    return LirType::Ptr(Box::new(elem_lir));
+                }
+            }
+        }
+    }
+    registry.ir_type_to_lir(ty, env)
+}
+
+/// Same as [`target_alloca`] for call sites that hold the target directly
+/// (param promotion runs before the `LowerCtx` exists).
+fn target_alloc_for_promotion<T: LirTarget<P>, P: Clone>(
+    target: &mut T,
+    elem_ty: &LirType,
+    count: usize,
+) -> T::Value {
+    let ext = target.stack_alloc_ext().expect(
+        "aggregate param promotion requires a target with StackAllocExt (stack allocation)",
+    );
+    ext.alloca(elem_ty.clone(), count)
 }
 
 /// Load the whole current value of a promoted slot as flat scalars.
@@ -1013,13 +1145,16 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
                     })
             });
         let emitted = plan.emitted_name(key).to_owned();
+        let memory_capable = target.stack_alloc_ext().is_some();
         func_sigs.insert(
             emitted.clone(),
             FuncSigInfo {
                 param_tys: func
                     .params
                     .iter()
-                    .map(|param| registry.ir_type_to_lir(&param.ty, env))
+                    .map(|param| {
+                        param_abi_lir_type(&registry, &param.ty, env, memory_capable)
+                    })
                     .collect(),
                 return_type: func
                     .return_type
@@ -1082,11 +1217,12 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     loop_lowering: LoopLowering,
 ) {
     CURRENT_INSTANCE_DEBUG.with(|c| *c.borrow_mut() = emitted_name.to_owned());
+    let memory_capable = target.stack_alloc_ext().is_some();
     let param_lir_tys: Vec<_> = func
         .params
         .iter()
         .map(|param| {
-            let lir = registry.ir_type_to_lir(&param.ty, env);
+            let lir = param_abi_lir_type(&registry, &param.ty, env, memory_capable);
             if std::env::var("VOLAR_PARAM_DEBUG").is_ok() {
                 eprintln!(
                     "[param-debug] {} param {} ty={:?} lir={:?} width={}",
@@ -1106,11 +1242,51 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
         .map(|ty| registry.ir_type_to_lir(ty, env));
     let (entry, param_val_groups) = target.begin_function(emitted_name, &param_lir_tys, ret_ty);
     target.switch_to_block(entry.clone());
-    let named_params = func
+
+    // Large fixed-array params (the weave's `[Vope; W]` per-lane pools)
+    // arrive as POINTERS under the pointer ABI (see
+    // `param_abi_lir_type`): bind them as promoted slots backed by the
+    // param pointer itself — zero copies, and every runtime-indexed read
+    // becomes one `ptr_index_load` instead of an (n × width)-way select
+    // mux (1.4M+ ternaries per function at mem_probe scale).
+    let mut param_promotions: std::vec::Vec<(String, PromotedSlot<T::Value>)> =
+        std::vec::Vec::new();
+    let named_params: std::vec::Vec<(String, Vec<T::Value>, IrType)> = func
         .params
         .iter()
+        .zip(param_lir_tys.iter())
         .zip(param_val_groups)
-        .map(|(param, values)| (param.name.clone(), values, mono_type(&param.ty, env)))
+        .map(|((param, param_lir), values)| {
+            if memory_capable {
+                if let (LirType::Ptr(elem_lir), [ptr_val]) = (param_lir, values.as_slice()) {
+                    if let IrType::Array { len, .. } = &param.ty {
+                        if let ArrayLength::Const(n) = mono_len(len, env) {
+                            if n > 0 {
+                                let elem_width =
+                                    flatten_count(&elem_lir.clone(), registry);
+                                param_promotions.push((
+                                    param.name.clone(),
+                                    PromotedSlot {
+                                        ptr: ptr_val.clone(),
+                                        layout: PromotedLayout::Array {
+                                            elem_ty: (**elem_lir).clone(),
+                                            n,
+                                            elem_width,
+                                        },
+                                    },
+                                ));
+                                return (
+                                    param.name.clone(),
+                                    std::vec::Vec::new(),
+                                    mono_type(&param.ty, env),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            (param.name.clone(), values.clone(), mono_type(&param.ty, env))
+        })
         .collect();
     let mut ctx = LowerCtx::new(
         target,
@@ -1122,6 +1298,9 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
         module_structs,
         module_enums,
     );
+    for (name, slot) in param_promotions {
+        ctx.promoted.insert(name, slot);
+    }
     ctx.external_fns = external_fns;
     ctx.func_sigs = func_sigs;
     ctx.ir_func_ret_types = ir_func_ret_types;
@@ -1323,6 +1502,62 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
     match &stmt.kind {
         IrStmtKind::Let { pattern, ty, init } => {
             if let Some(init_expr) = init {
+                // `let arr: [Elem; W] = core::array::from_fn(|i| ..)` (or
+                // `Array::<E, L>::from_fn`): when the call carries no
+                // turbofish, the Let's own type annotation is the only
+                // source of the element type and length — the Rust
+                // typechecker infers them from it, the IR must be told.
+                if let IrExprKind::Call { func, args } = &init_expr.kind {
+                    if let IrExprKind::Path { segments, type_args } = &func.kind {
+                        if segments.last().map(String::as_str) == Some("from_fn") {
+                            if let Some(IrExprKind::Closure { params, body, .. }) =
+                                args.first().map(|a| &a.kind)
+                            {
+                                if let Some(volar_compiler::ir::IrClosureParam {
+                                    pattern: IrPattern::Ident { name: idx, .. },
+                                    ..
+                                }) = params.first()
+                                {
+                                    let annotated = ty.as_ref().and_then(|t| match t {
+                                        IrType::Array { elem, len, .. } => {
+                                            Some((elem.as_ref().clone(), len.clone()))
+                                        }
+                                        _ => None,
+                                    });
+                                    let (elem_ir_ty, len) = match annotated {
+                                        Some(pair) => pair,
+                                        None => (
+                                            type_args
+                                                .first()
+                                                .map(|t| mono_type(t, ctx.mono))
+                                                .expect("from_fn without turbofish or annotation needs an element type"),
+                                            type_args_to_len(type_args.get(1), ctx.mono),
+                                        ),
+                                    };
+                                    if let IrPattern::Ident { name, .. } = pattern {
+                                        ctx.env_types.insert(
+                                            name.clone(),
+                                            IrType::Array {
+                                                kind: ArrayKind::FixedArray,
+                                                elem: Box::new(elem_ir_ty.clone()),
+                                                len: len.clone(),
+                                            },
+                                        );
+                                    }
+                                    let vals = lower_array_generate(
+                                        Some(&elem_ir_ty),
+                                        &len,
+                                        idx,
+                                        body,
+                                        ctx,
+                                    );
+                                    bind_pattern(pattern, vals, ty.as_ref(), ctx);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
                 // When the init expression is a literal and we have a type
                 // annotation, pass the type hint so the literal gets the
                 // correct narrow type (e.g. U8 instead of U64).
@@ -1335,11 +1570,71 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                 // For tuple patterns, split by element widths derived from the type.
                 if let IrPattern::Tuple(sub_pats) = pattern {
                     let tuple_ty = ty.clone().or_else(|| ctx.infer_type(init_expr));
+                    if std::env::var("VOLAR_LIR_DEBUG").is_ok() && tuple_ty.is_none() {
+                        eprintln!(
+                            "[tuple-let] untyped tuple-pattern let ({} sub-pats, {} vals), init_disc={:?} caller={:?}",
+                            sub_pats.len(), vals.len(),
+                            std::mem::discriminant(&init_expr.kind),
+                            ctx.current_instance.map(|k| k.source_name.as_str())
+                        );
+                    }
                     bind_tuple_pattern(sub_pats, vals, tuple_ty.as_ref(), ctx);
                     return;
                 }
                 if let IrPattern::Ident { name, .. } = pattern {
                     let ir_ty = ty.clone().or_else(|| ctx.infer_type(init_expr));
+                    // Large flat aggregate locals (the weave's per-lane
+                    // `[Vope; W]` from_fn arrays, hats, bundles) promote to
+                    // stack slots when the target can allocate: every
+                    // later runtime-indexed access would otherwise build a
+                    // (n × width)-way select mux over the flat values,
+                    // which dominates generated C size at mem_probe scale
+                    // (hundreds of MB per function). Small aggregates keep
+                    // the SSA-flat model.
+                    if let Some(ir_ty) = &ir_ty {
+                        let promote = ctx.target.stack_alloc_ext().is_some()
+                            && ctx.promoted.get(name.as_str()).is_none()
+                            && match ir_ty {
+                                IrType::Array { elem, len, .. } => {
+                                    matches!(mono_len(len, ctx.mono), ArrayLength::Const(n) if n > 0)
+                                        && {
+                                            let elem_lir =
+                                                ctx.registry.ir_type_to_lir(elem, ctx.mono);
+                                            let ew = flatten_count(&elem_lir, ctx.registry);
+                                            let n = match mono_len(len, ctx.mono) {
+                                                ArrayLength::Const(n) => n,
+                                                _ => 0,
+                                            };
+                                            ew * n >= 512 && vals.len() == ew * n
+                                        }
+                                }
+                                _ => false,
+                            };
+                        if promote {
+                            if let IrType::Array { elem, len, .. } = ir_ty {
+                                let elem_lir = ctx.registry.ir_type_to_lir(elem, ctx.mono);
+                                let elem_width = flatten_count(&elem_lir, ctx.registry);
+                                let n = match mono_len(len, ctx.mono) {
+                                    ArrayLength::Const(n) => n,
+                                    _ => unreachable!("checked above"),
+                                };
+                                let ptr = target_alloca(ctx, elem_lir.clone(), n);
+                                let slot = PromotedSlot {
+                                    ptr,
+                                    layout: PromotedLayout::Array {
+                                        elem_ty: elem_lir.clone(),
+                                        n,
+                                        elem_width,
+                                    },
+                                };
+                                promoted_whole_store(&slot.ptr, &slot.layout, &vals, ctx);
+                                ctx.env.remove(name);
+                                ctx.promoted.insert(name.clone(), slot);
+                                ctx.env_types.insert(name.clone(), ir_ty.clone());
+                                return;
+                            }
+                        }
+                    }
                     if let Some(ir_ty) = ir_ty {
                         ctx.env_types.insert(name.clone(), ir_ty);
                     }
@@ -1389,6 +1684,53 @@ fn bind_tuple_pattern<T: LirTarget<P>, P: Clone>(
         bind_pattern(sub_pat, slice, elem_ty_hint, ctx);
         offset += width;
     }
+}
+
+/// Lower a zero-arg `T::default()` call to its zero value: one zero scalar
+/// per flattened scalar of the resolved type, each carrying its own scalar
+/// LirType (Vole/Q/Array/Galois/int defaults are all all-zeros, matching
+/// the C model's zero-init pools and `is_zero_default_expr`'s calloc story).
+fn lower_default_zero_values<T: LirTarget<P>, P: Clone>(
+    ir_ty: &IrType,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    fn zeros<T2: LirTarget<P2>, P2: Clone>(
+        lir_ty: &LirType,
+        out: &mut Vec<T2::Value>,
+        ctx: &mut LowerCtx<T2, P2>,
+    ) {
+        match lir_ty {
+            LirType::Arr(elem, len) => {
+                for _ in 0..*len {
+                    zeros(elem, out, ctx);
+                }
+            }
+            LirType::Struct(id) => {
+                let mut idx = 0usize;
+                loop {
+                    let ok = {
+                        // field_type panics past the last field; probe by
+                        // catching nothing — instead count via field_names.
+                        let n = ctx.registry.field_names(*id).len();
+                        idx < n
+                    };
+                    if !ok {
+                        break;
+                    }
+                    let f = ctx.registry.field_type(*id, idx).clone();
+                    zeros(&f, out, ctx);
+                    idx += 1;
+                }
+            }
+            scalar => {
+                out.push(ctx.target.iconst(scalar.clone(), 0));
+            }
+        }
+    }
+    let lir_ty = ctx.registry.ir_type_to_lir(ir_ty, ctx.mono);
+    let mut out = Vec::new();
+    zeros(&lir_ty, &mut out, ctx);
+    out
 }
 
 fn bind_pattern<T: LirTarget<P>, P: Clone>(
@@ -1528,10 +1870,11 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
                     .collect()
             } else {
                 panic!(
-                    "Binary {:?}: operand widths {} vs {} — cannot apply element-wise",
+                    "Binary {:?}: operand widths {} vs {} — cannot apply element-wise [caller {:?}]",
                     op,
                     lv.len(),
-                    rv.len()
+                    rv.len(),
+                    ctx.current_instance.map(|k| k.source_name.clone())
                 )
             }
         }
@@ -2518,9 +2861,52 @@ fn lower_struct_expr<T: LirTarget<P>, P: Clone>(
                 .copied()
                 .or_else(|| fields.iter().find(|(n, _)| n == name).map(|(_, e)| e))
                 .unwrap_or_else(|| panic!("StructExpr missing field '{name}'"));
+            // A bare `Array::default()` (no turbofish) carries no type of
+            // its own — take the field's declared type instead.
+            if is_bare_default_call(expr) {
+                let ir_struct = ctx
+                    .module_structs
+                    .iter()
+                    .find(|s| s.kind == *kind)
+                    .expect("StructExpr kind must be a module struct");
+                let field_ty = ir_struct
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *name)
+                    .expect("StructExpr field must exist on struct")
+                    .ty
+                    .clone();
+                let mut local = MonoEnv::new(ctx.mono.hash_suffix.clone());
+                for (g, a) in ir_struct.generics.iter().zip(&mono_args) {
+                    match g.kind {
+                        volar_compiler::ir::IrGenericParamKind::Type => {
+                            local.type_params.insert(g.name.clone(), a.clone());
+                        }
+                        volar_compiler::ir::IrGenericParamKind::Const => {
+                            if let ArrayLength::Const(n) =
+                                mono_len(&type_args_to_len(Some(a), ctx.mono), ctx.mono)
+                            {
+                                local.const_params.insert(g.name.clone(), n);
+                            }
+                        }
+                        volar_compiler::ir::IrGenericParamKind::Lifetime => {}
+                    }
+                }
+                let field_mono = mono_type(&field_ty, &local);
+                return lower_default_zero_values(&field_mono, ctx);
+            }
             lower_expr(expr, ctx)
         })
         .collect()
+}
+
+/// A zero-arg `T::default()` call with no turbofish (any receiver path).
+fn is_bare_default_call<P: Clone>(expr: &IrExpr<P>) -> bool {
+    matches!(&expr.kind, IrExprKind::Call { func, args }
+        if args.is_empty()
+            && matches!(&func.kind, IrExprKind::Path { segments, .. }
+                if segments.last().map(String::as_str) == Some("default"))
+            && matches!(&func.kind, IrExprKind::Path { type_args, .. } if type_args.is_empty()))
 }
 
 // ============================================================================
@@ -2601,23 +2987,56 @@ fn lower_array_generate<T: LirTarget<P>, P: Clone>(
     body: &IrExpr<P>,
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
-    let n = const_len(len, ctx.mono);
+    let mut n = const_len(len, ctx.mono);
+
+    // A turbofish-less `core::array::from_fn(|i| ..)` carries no length
+    // (the Rust typechecker infers it from context, which the IR does not
+    // carry). Each iteration contributes the same number of flat scalars,
+    // so probe the body once at index 0 and take its scalar count as the
+    // width (valid while elements are flat scalars — the only producer of
+    // this shape is the weaver's `fixed_array_from_fn`).
+    let mut probe: Option<Vec<T::Value>> = None;
+    if n == 0 {
+        let idx_val = ctx.target.iconst(LirType::U64, 0);
+        ctx.env.insert(index_var.to_owned(), vec![idx_val]);
+        ctx.env_types.insert(
+            index_var.to_owned(),
+            IrType::Primitive(PrimitiveType::Usize),
+        );
+        let first = lower_expr(body, ctx);
+        ctx.env.remove(index_var);
+        ctx.env_types.remove(index_var);
+        if first.is_empty() {
+            return first;
+        }
+        n = first.len();
+        probe = Some(first);
+    }
+    assert!(
+        n > 0,
+        "lower_array_generate: zero-length from_fn with no derivable width"
+    );
 
     // Unroll: evaluate body once per index, concatenate flat scalar lists.
-    let result: Vec<T::Value> = (0..n)
-        .flat_map(|k| {
-            let idx_val = ctx.target.iconst(LirType::U64, k as i64);
-            ctx.env.insert(index_var.to_owned(), vec![idx_val]);
-            ctx.env_types.insert(
-                index_var.to_owned(),
-                IrType::Primitive(PrimitiveType::Usize),
-            );
-            lower_expr(body, ctx)
-        })
-        .collect();
-
-    ctx.env.remove(index_var);
-    ctx.env_types.remove(index_var);
+    let mut result: Vec<T::Value> = Vec::new();
+    for k in 0..n {
+        if k == 0 {
+            if let Some(first) = probe.take() {
+                result.extend(first);
+                continue;
+            }
+        }
+        let idx_val = ctx.target.iconst(LirType::U64, k as i64);
+        ctx.env.insert(index_var.to_owned(), vec![idx_val]);
+        ctx.env_types.insert(
+            index_var.to_owned(),
+            IrType::Primitive(PrimitiveType::Usize),
+        );
+        let values = lower_expr(body, ctx);
+        ctx.env.remove(index_var);
+        ctx.env_types.remove(index_var);
+        result.extend(values);
+    }
     result
 }
 
@@ -3926,6 +4345,13 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     index: &IrExpr<P>,
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
+    // Full-slice indexing `name[..]` (Range with no bounds): pass through
+    // all base values — the slice-ref model treats the pool as its flat
+    // values, and `&mut pool[..]` (the weaver's `slice_ref_mut_expr`) is
+    // value-identical to the pool itself.
+    if let IrExprKind::Range { start: None, end: None, .. } = &index.kind {
+        return lower_expr(base, ctx);
+    }
     let base_ir_ty = ctx.infer_type(base).unwrap_or_else(|| {
         panic!(
             "Index: could not infer base type, base {}, caller={:?}",
@@ -3963,7 +4389,41 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
 
     let arr_vals = lower_expr(base, ctx); // n * elem_width scalars
+
+    // Constant index: select the element directly instead of building an
+    // n-way select mux. The weave's per-gate hat/r_and/bundle accesses are
+    // constant-indexed; mux trees there dominated generated C size.
+    let const_idx = match &index.kind {
+        IrExprKind::Lit(IrLit::Int(v)) => Some(*v as usize),
+        IrExprKind::Var(name) => volar_compiler::ir::digit_var_as_literal(name)
+            .map(|v| v as usize)
+            .or_else(|| ctx.mono.const_params.get(name.as_str()).copied()),
+        _ => None,
+    };
+    if let Some(k) = const_idx {
+        let base = k * elem_width;
+        return arr_vals
+            .into_iter()
+            .skip(base)
+            .take(elem_width)
+            .collect();
+    }
+
     let idx_val = into_scalar(lower_expr(index, ctx), "array index");
+    if std::env::var("VOLAR_LIR_DEBUG").is_ok() && arr_vals.len() < n * elem_width {
+        let base_desc = match &base.kind {
+            IrExprKind::Var(v) => format!("Var({v})"),
+            IrExprKind::Field { field, .. } => format!("Field .{field}"),
+            IrExprKind::Index { .. } => "Index".to_string(),
+            IrExprKind::Block(_) => "Block".to_string(),
+            other => format!("disc {:?}", std::mem::discriminant(other)),
+        };
+        eprintln!(
+            "[index-short] base={base_desc} n={n} elem_width={elem_width} vals={} ty={}",
+            arr_vals.len(),
+            crate::mono::canonical_type(&base_ir_ty)
+        );
+    }
 
     // Build a select mux tree for each scalar position within the element.
     // result[j] = select chain over arr_vals[0*ew+j], arr_vals[1*ew+j], ...
@@ -4522,19 +4982,17 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
         let args_key = arg_types_key;
         if let Some(callee) = plan.local_call_deduce(caller, method_name, &args_key) {
             let emitted_name = plan.emitted_name(callee);
-            let ret_ty = ctx
-                .func_sigs
-                .get(emitted_name)
-                .and_then(|sig| sig.return_type.clone());
+            let sig = ctx.func_sigs.get(emitted_name);
+            let ret_ty = sig.and_then(|sig| sig.return_type.clone());
+            // Same ABI-authoritative reasoning as lower_call's planned path.
+            let declared: Vec<LirType> =
+                sig.map(|sig| sig.param_tys.clone()).unwrap_or_default();
             let mut arg_tys = Vec::new();
             let mut flat_args = Vec::new();
-            for a in std::iter::once(receiver).chain(args.iter()) {
-                let a_ty = ctx
-                    .infer_type(a)
-                    .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
-                    .unwrap_or(LirType::U64);
+            for (i, a) in std::iter::once(receiver).chain(args.iter()).enumerate() {
+                let (a_ty, values) = lower_call_arg_for_abi(a, declared.get(i), ctx);
                 arg_tys.push(a_ty);
-                flat_args.extend(lower_expr(a, ctx));
+                flat_args.extend(values);
             }
             return ctx
                 .target
@@ -4590,7 +5048,13 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     {
         if segments.len() >= 2
             && (segments[segments.len() - 2] == "Array"
-                || segments[segments.len() - 2] == "GenericArray")
+                || segments[segments.len() - 2] == "GenericArray"
+                // `core::array::from_fn(|i| ..)` — a plain `[Elem; W]` Rust
+                // array (the weaver's `fixed_array_from_fn`), unrelated to
+                // hybrid_array's `Array<T, N>`.
+                || (segments.len() == 3
+                    && segments[0] == "core"
+                    && segments[1] == "array"))
             && segments[segments.len() - 1] == "from_fn"
         {
             if let Some(IrExprKind::Closure { params, body, .. }) = args.first().map(|a| &a.kind) {
@@ -4692,6 +5156,66 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         IrExprKind::Var(name) => (name.clone(), &[] as &[IrType]),
         _other => unimplemented!("lower_call: non-path func"),
     };
+
+    // Zero-arg `T::default()` constructors: `Vope::default()` /
+    // `Q::default()` / `Array::<T, N>::default()`. The Rust printer handles
+    // these by emitting real Rust; the flat scalar model needs explicit
+    // zero scalars (all-default types are all-zeros, matching the pools'
+    // calloc zero-init story).
+    if args.is_empty() {
+        if let IrExprKind::Path { segments, type_args } = &func.kind {
+            if segments.last().map(String::as_str) == Some("default") {
+                // Array::<E, L>::default() — turbofish carries [elem, len].
+                if segments.len() == 2 && segments[0] == "Array" && type_args.len() == 2 {
+                    let elem = mono_type(&type_args[0], ctx.mono);
+                    let len = type_args_to_len(Some(&type_args[1]), ctx.mono);
+                    let arr_ty = IrType::Array {
+                        kind: ArrayKind::FixedArray,
+                        elem: Box::new(elem),
+                        len,
+                    };
+                    return lower_default_zero_values(&arr_ty, ctx);
+                }
+                // <Struct>::default() — resolve the struct's declared type,
+                // mono'ing declared generics from the instance env when the
+                // call site omits the turbofish.
+                if segments.len() == 2 {
+                    if let Some(ir_struct) = ctx
+                        .module_structs
+                        .iter()
+                        .find(|s| s.kind.to_string() == segments[0])
+                    {
+                        let mono_args: Vec<IrType> = if type_args.is_empty() {
+                            ir_struct
+                                .generics
+                                .iter()
+                                .filter_map(|g| match g.kind {
+                                    volar_compiler::ir::IrGenericParamKind::Const => ctx
+                                        .mono
+                                        .const_params
+                                        .get(&g.name)
+                                        .map(|&n| IrType::TypeParam(n.to_string())),
+                                    volar_compiler::ir::IrGenericParamKind::Type => ctx
+                                        .mono
+                                        .type_params
+                                        .get(&g.name)
+                                        .cloned(),
+                                    _ => None,
+                                })
+                                .collect()
+                        } else {
+                            type_args.iter().map(|a| mono_type(a, ctx.mono)).collect()
+                        };
+                        let struct_ty = IrType::Struct {
+                            kind: ir_struct.kind.clone(),
+                            type_args: mono_args,
+                        };
+                        return lower_default_zero_values(&struct_ty, ctx);
+                    }
+                }
+            }
+        }
+    }
 
     // ---- Enum variant construction (Tuple variant) -------------------------
     // Check if this call is `EnumKind::VariantName(args...)` — a tuple variant constructor.
@@ -4805,19 +5329,22 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
             .join("|");
         if let Some(callee) = plan.local_call_deduce(caller, &func_name, &args_key) {
             let emitted_name = plan.emitted_name(callee);
-            let ret_ty = ctx
-                .func_sigs
-                .get(emitted_name)
-                .and_then(|sig| sig.return_type.clone());
+            let sig = ctx.func_sigs.get(emitted_name);
+            let ret_ty = sig.and_then(|sig| sig.return_type.clone());
+            // The callee instance's ABI is fixed by the plan — its declared
+            // param types are authoritative. Local inference is only a
+            // fallback (for arity mismatches, where something else is wrong
+            // anyway): it loses reference/struct shape and collapses args
+            // to U64, producing spurious call_extern arity panics.
+            let declared: Vec<LirType> =
+                sig.map(|sig| sig.param_tys.clone()).unwrap_or_default();
             let mut arg_tys = Vec::new();
             let mut flat_args = Vec::new();
-            for arg in args {
-                let arg_ty = ctx
-                    .infer_type(arg)
-                    .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
-                    .unwrap_or(LirType::U64);
+            for (i, arg) in args.iter().enumerate() {
+                let (arg_ty, values) =
+                    lower_call_arg_for_abi(arg, declared.get(i), ctx);
                 arg_tys.push(arg_ty);
-                flat_args.extend(lower_expr(arg, ctx));
+                flat_args.extend(values);
             }
             return ctx
                 .target
@@ -4845,6 +5372,22 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         flat_args.extend(lower_expr(a, ctx));
     }
 
+    if std::env::var("VOLAR_LIR_DEBUG").is_ok() {
+        let argdesc = args.iter().map(|a| match &a.kind {
+            IrExprKind::Var(v) => format!("Var({v})"),
+            IrExprKind::Block(_) => "Block".to_string(),
+            IrExprKind::Index { base, .. } => match &base.kind {
+                IrExprKind::Var(v) => format!("Idx({v})"),
+                _ => "Idx".to_string(),
+            },
+            other => format!("disc{:?}", std::mem::discriminant(other)),
+        }).collect::<std::vec::Vec<_>>().join(",");
+        eprintln!(
+            "[call-fallback] fn={func_name} caller={:?} args=[{argdesc}] arg_tys={:?}",
+            ctx.current_instance.map(|k| k.source_name.as_str()),
+            arg_tys.iter().map(|t| format!("{t:?}")).collect::<std::vec::Vec<_>>()
+        );
+    }
     ctx.target
         .call_extern(&func_name, &arg_tys, &flat_args, ret_ty)
 }

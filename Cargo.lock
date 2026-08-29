@@ -3092,87 +3092,7 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "portal-solutions-sdk"
-version = "0.0.2"
-
-[[patch.unused]]
 name = "volar-lir-text"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-container-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-container-select"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-container-wasm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcomp-ir-plugin-host"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcomp-plugin-common"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-arena"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-codegen"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-cps"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-cps-c-backend"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-e2e-tests"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-edu"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-fast-ir"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-lower"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-mini-target"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-minibc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-minibc-c-interp"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dreamcompiler-minibc-interp"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "wax-tags"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -3185,6 +3105,18 @@ version = "0.1.0"
 
 [[patch.unused]]
 name = "pit-rust-generic"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-pc-asm-common"
+version = "0.1.1"
+
+[[patch.unused]]
+name = "volar-llvm-constchain"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-llvm-import-core"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -3216,88 +3148,104 @@ name = "portal-progress-web"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-llvm-constchain"
+name = "os-abi-codegen"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-llvm-import-core"
+name = "os-abi-spec"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-aarch64"
+name = "os-abi-stubs"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-jvm"
+name = "os-async"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-regalloc"
+name = "os-build"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-riscv64"
+name = "os-codesign-macho"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-semantics"
+name = "os-ctx"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-x86-64"
+name = "os-daemon"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-x86-64-shim"
+name = "os-daemon-hook"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle"
-version = "0.6.0-alpha.1"
+name = "os-daemon-protocol"
+version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle-backend"
-version = "0.6.0-alpha.1"
+name = "os-darwin-wasi"
+version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle-copying"
-version = "0.6.0-alpha.1"
+name = "os-host-api"
+version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle-copying-passes"
-version = "0.6.0-alpha.1"
+name = "os-linux-wasi"
+version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle-fuzzing"
-version = "0.6.0-alpha.1"
+name = "os-page"
+version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle-hooking"
-version = "0.6.0-alpha.1"
+name = "os-page-codegen"
+version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle-lowering"
-version = "0.6.0-alpha.1"
+name = "os-rewrite-elf"
+version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle-passes"
-version = "0.6.0-alpha.1"
+name = "os-rewrite-macho"
+version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle-passes-shared"
-version = "0.6.0-alpha.1"
+name = "os-syscall-emit"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-target-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-target-native"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-target-wax"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-transform-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-unix-emulation"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-unix-wasi"
+version = "0.1.0"
 
 [[patch.unused]]
 name = "pit-core"
 version = "0.5.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-solutions-swibb"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-asm-common"
-version = "0.1.1"
 
 [[patch.unused]]
 name = "ast-traits"
@@ -3404,6 +3352,66 @@ name = "portal-jsc-swc-util"
 version = "0.8.0-pre.11"
 
 [[patch.unused]]
+name = "dreamcomp-ir-plugin-host"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcomp-plugin-common"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-arena"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-codegen"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-cps"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-cps-c-backend"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-e2e-tests"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-edu"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-fast-ir"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-lower"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-mini-target"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-minibc"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-minibc-c-interp"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-minibc-interp"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "px-wsdom"
 version = "0.0.6"
 
@@ -3432,97 +3440,89 @@ name = "px-wsdom-macros-decl"
 version = "0.0.6"
 
 [[patch.unused]]
-name = "os-abi-codegen"
+name = "portal-solutions-swibb"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-solutions-asm-aarch64"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-abi-spec"
+name = "portal-solutions-asm-jvm"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-abi-stubs"
+name = "portal-solutions-asm-regalloc"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-async"
+name = "portal-solutions-asm-riscv64"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-build"
+name = "portal-solutions-asm-semantics"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-codesign-macho"
+name = "portal-solutions-asm-x86-64"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-ctx"
+name = "portal-solutions-asm-x86-64-shim"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-daemon"
+name = "portal-container-core"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-daemon-hook"
+name = "portal-container-select"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-daemon-protocol"
+name = "portal-container-wasm"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "os-darwin-wasi"
-version = "0.1.0"
+name = "portal-solutions-sdk"
+version = "0.0.2"
 
 [[patch.unused]]
-name = "os-host-api"
-version = "0.1.0"
+name = "portal-pc-waffle"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "os-linux-wasi"
-version = "0.1.0"
+name = "portal-pc-waffle-backend"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "os-page"
-version = "0.1.0"
+name = "portal-pc-waffle-copying"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "os-page-codegen"
-version = "0.1.0"
+name = "portal-pc-waffle-copying-passes"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "os-rewrite-elf"
-version = "0.1.0"
+name = "portal-pc-waffle-fuzzing"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "os-rewrite-macho"
-version = "0.1.0"
+name = "portal-pc-waffle-hooking"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "os-syscall-emit"
-version = "0.1.0"
+name = "portal-pc-waffle-lowering"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "os-target-core"
-version = "0.1.0"
+name = "portal-pc-waffle-passes"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "os-target-native"
-version = "0.1.0"
+name = "portal-pc-waffle-passes-shared"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "os-target-wax"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "os-transform-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "os-unix-emulation"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "os-unix-wasi"
+name = "wax-tags"
 version = "0.1.0"

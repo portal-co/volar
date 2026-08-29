@@ -455,6 +455,24 @@ pub(crate) mod tests {
         .unwrap_or_else(|e| panic!("LIR monomorphization failed: {e}"));
         let c_src = backend.finish();
         eprintln!("generated C source: {} bytes", c_src.len());
+        if std::env::var("VOLAR_DUMP_PROBE_C").is_ok() {
+            std::fs::write("/tmp/probe_prover.c", &c_src).unwrap();
+            // Per-function sizes: split on column-0 closing braces.
+            let mut sizes: std::vec::Vec<(String, usize)> = std::vec::Vec::new();
+            for part in c_src.split("\n}\n") {
+                let sig = part
+                    .lines()
+                    .find(|l| (l.starts_with(char::is_alphabetic) || l.starts_with('_'))
+                        && l.contains('(') && l.ends_with('{'))
+                    .unwrap_or("?")
+                    .to_string();
+                sizes.push((sig, part.len()));
+            }
+            sizes.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            for (sig, n) in sizes.iter().take(10) {
+                eprintln!("  {:>12} bytes  {}", n, &sig[..sig.len().min(100)]);
+            }
+        }
         assert!(!c_src.is_empty());
     }
 
@@ -932,6 +950,7 @@ pub(crate) mod tests {
 
         run_iop_verifier(&rust_source, &driver);
     }
+
 
     #[test]
     fn honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary() {

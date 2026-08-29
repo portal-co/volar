@@ -1335,6 +1335,31 @@ fn infer_expr_type<P: Clone>(
             type_args: type_args.iter().map(|a| mono_type(a, env)).collect(),
         }),
         IrExprKind::Cast { ty, .. } => Some(mono_type(ty, env)),
+        // Block expressions type as their tail expression (the split
+        // weave's pooled-wire reads are `Block { debug_check…, pool[i] }`).
+        IrExprKind::Block(b) => match &b.expr {
+            Some(tail) => infer_expr_type(tail, env, vars, structs),
+            None => None,
+        },
+        // Arithmetic preserves the (left) operand's type.
+        IrExprKind::Binary { left, .. } => infer_expr_type(left, env, vars, structs),
+        // `[a, b, c]`: fixed array of the elements' common type.
+        IrExprKind::FixedArray(elems) => {
+            let elem_ty = elems.first().and_then(|e| infer_expr_type(e, env, vars, structs))?;
+            Some(IrType::Array {
+                kind: ArrayKind::FixedArray,
+                elem: Box::new(elem_ty),
+                len: ArrayLength::Const(elems.len()),
+            })
+        }
+        // `(a, b)`: tuple of the elements' types.
+        IrExprKind::Tuple(elems) => {
+            let tys: Option<Vec<IrType>> = elems
+                .iter()
+                .map(|e| infer_expr_type(e, env, vars, structs))
+                .collect();
+            Some(IrType::Tuple(tys?))
+        }
         // Indexing an array yields its element type (`&a_decomp[j]` passed as
         // a call argument must infer so the call is planned rather than
         // falling back to call_extern).
