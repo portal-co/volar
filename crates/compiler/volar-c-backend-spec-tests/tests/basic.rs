@@ -868,23 +868,191 @@ fn test_native_loop_concrete_bounds_and_aggregate_fallback() {
         external_kind: ExternalKind::Normal,
     };
 
-    // The aggregate (`arr[i] = …`) assignment makes the body native-ineligible
-    // (Stage 1); the loop must fall back to concrete unrolling and still
-    // produce the right answer.
+    // Stage 2: the aggregate (`arr[i] = …`) assignment now promotes `arr` to
+    // an alloca slot and lowers the loop natively (memory survives the
+    // back-edge; aggregates need no block-param threading).
     let mut b = CBackend::new();
     lower_function_with_loop_lowering(&build(), &mut b, LoopLowering::Native);
     let c_src = b.finish();
     assert!(
-        !c_src.contains("goto block"),
-        "aggregate-assign loop must fall back to unrolled straight-line code"
+        c_src.contains("goto block"),
+        "aggregate-assign loop must lower natively (Stage 2 promotion)"
     );
-    std::fs::write("/tmp/fill4.c", &c_src).unwrap();
-    let output = compile_and_run(
+    assert!(
+        c_src.contains("slot_"),
+        "aggregate assignment must promote to an alloca slot"
+    );
+    let native_output = compile_and_run(
         &c_src,
         r#"
   Arr_U64_4 r = fill4();
   printf("%llu %llu %llu %llu\n", (unsigned long long)r.data[0], (unsigned long long)r.data[1], (unsigned long long)r.data[2], (unsigned long long)r.data[3]);
 "#,
     );
-    assert_eq!(output.trim(), "1 2 3 4");
+    assert_eq!(native_output.trim(), "1 2 3 4");
+
+    // Unroll parity on the same function.
+    let mut b = CBackend::new();
+    lower_function_with_loop_lowering(&build(), &mut b, LoopLowering::Unroll);
+    let c_src = b.finish();
+    let unroll_output = compile_and_run(
+        &c_src,
+        r#"
+  Arr_U64_4 r = fill4();
+  printf("%llu %llu %llu %llu\n", (unsigned long long)r.data[0], (unsigned long long)r.data[1], (unsigned long long)r.data[2], (unsigned long long)r.data[3]);
+"#,
+    );
+    assert_eq!(unroll_output.trim(), "1 2 3 4");
+}
+
+// ============================================================================
+// Native loop, Stage 2: field writes on a promoted struct inside a loop
+// (load-modify-store splice through the slot), plus an aggregate whose value
+// is also *read* inside the loop.
+//
+// struct acc { sum: u64, count: u64 }
+// fn accumulate(n: u64) -> acc {
+//     let mut a = acc { sum: 0, count: 0 };
+//     for i in 0..n {
+//         a.sum = a.sum + (i as u64);
+//         a.count = a.count + 1;
+//     }
+//     a
+// }
+// ============================================================================
+
+#[test]
+fn test_native_loop_struct_field_accumulate() {
+    use volar_compiler::ir::{
+        ExternalKind, IrBlock, IrExprKind, IrField, IrFunction, IrLit, IrModule, IrParam,
+        IrPattern, IrStmtKind, IrStruct, IrType, PrimitiveType, SpecBinOp, StructKind,
+    };
+    use volar_lir_codegen::{
+        LoopLowering, MonoPlanOptions, lower_module_monomorphized, mono::MonoEnv, MonoRoot,
+    };
+
+    let struct_def = IrStruct {
+        kind: StructKind::Custom("Acc".to_owned()),
+        module_path: vec![],
+        generics: vec![],
+        fields: vec![
+            IrField {
+                name: "sum".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U64),
+                public: true,
+            },
+            IrField {
+                name: "count".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U64),
+                public: true,
+            },
+        ],
+        is_tuple: false,
+        native_volar_type: None,
+        derives: vec![],
+    };
+    let acc_ty = IrType::Struct {
+        kind: StructKind::Custom("Acc".to_owned()),
+        type_args: vec![],
+    };
+    let u64_field_expr = |base: &str, field: &str| {
+        ir_expr(IrExprKind::Field {
+            base: Box::new(ir_expr(IrExprKind::Var(base.to_owned()))),
+            field: field.to_owned(),
+        })
+    };
+
+    let func = IrFunction {
+        no_inline: false,
+        name: "accumulate".to_owned(),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params: vec![IrParam {
+            name: "n".to_owned(),
+            ty: IrType::Primitive(PrimitiveType::U64),
+        }],
+        return_type: Some(acc_ty.clone()),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident {
+                        mutable: true,
+                        name: "a".to_owned(),
+                        subpat: None,
+                    },
+                    ty: Some(acc_ty.clone()),
+                    init: Some(ir_expr(IrExprKind::StructExpr {
+                        kind: StructKind::Custom("Acc".to_owned()),
+                        type_args: vec![],
+                        fields: vec![
+                            ("sum".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                            ("count".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                        ],
+                        rest: None,
+                    })),
+                }),
+                ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::BoundedLoop {
+                    var: "i".to_owned(),
+                    start: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                    end: Box::new(ir_expr(IrExprKind::Var("n".to_owned()))),
+                    inclusive: false,
+                    body: IrBlock {
+                        stmts: vec![
+                            ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                                left: Box::new(u64_field_expr("a", "sum")),
+                                right: Box::new(ir_expr(IrExprKind::Binary {
+                                    op: SpecBinOp::Add,
+                                    left: Box::new(u64_field_expr("a", "sum")),
+                                    right: Box::new(ir_expr(IrExprKind::Cast {
+                                        expr: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                                        ty: Box::new(IrType::Primitive(PrimitiveType::U64)),
+                                    })),
+                                })),
+                            }))),
+                            ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                                left: Box::new(u64_field_expr("a", "count")),
+                                right: Box::new(ir_expr(IrExprKind::Binary {
+                                    op: SpecBinOp::Add,
+                                    left: Box::new(u64_field_expr("a", "count")),
+                                    right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(1)))),
+                                })),
+                            }))),
+                        ],
+                        expr: None,
+                    },
+                }))),
+            ],
+            expr: Some(Box::new(ir_expr(IrExprKind::Var("a".to_owned())))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut module = IrModule::<IrFunction>::default();
+    module.name = "native_loop_struct".to_owned();
+    module.structs = vec![struct_def];
+    module.functions = vec![func];
+
+    let env = MonoEnv::new("");
+    let mut b = CBackend::new();
+    lower_module_monomorphized(
+        &module,
+        &mut b,
+        MonoPlanOptions {
+            roots: vec![MonoRoot::new("accumulate", env)],
+            loop_lowering: LoopLowering::Native,
+            ..Default::default()
+        },
+    );
+    let c_src = b.finish();
+    assert!(c_src.contains("slot_"), "struct accumulator must be promoted to a slot");
+    let output = compile_and_run(
+        &c_src,
+        r#"
+  Acc r = accumulate(4ull);
+  printf("%llu %llu\n", (unsigned long long)r.sum, (unsigned long long)r.count);
+"#,
+    );
+    assert_eq!(output.trim(), "6 4");
 }

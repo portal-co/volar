@@ -151,6 +151,9 @@ struct LowerCtx<'t, T: LirTarget<P>, P: Clone = ()> {
     loop_mode: LoopLowering,
     /// Enclosing native loops while lowering a native loop body (plan §3.5).
     loop_stack: Vec<LoopFrame<T::Block>>,
+    /// Variables promoted to memory by the innermost native loop (plan §3.3).
+    /// Cleared when the loop body finishes lowering.
+    promoted: BTreeMap<String, PromotedSlot<T::Value>>,
     _p: std::marker::PhantomData<P>,
 }
 
@@ -188,6 +191,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             mono_plan: None,
             loop_mode: LoopLowering::Unroll,
             loop_stack: Vec::new(),
+            promoted: BTreeMap::new(),
             _p: std::marker::PhantomData,
         }
     }
@@ -565,6 +569,91 @@ pub enum LoopLowering {
     /// Native when the loop qualifies, unroll otherwise.
     Auto,
 }
+
+/// A loop-body variable promoted to memory for the native path (plan §3.3).
+/// While the body lowers, reads/writes of the name route through
+/// `ptr_index_load`/`ptr_index_store` instead of the flat `env` vector.
+#[derive(Clone)]
+struct PromotedSlot<V: Clone> {
+    /// The alloca pointer.
+    ptr: V,
+    /// Memory layout of the slot region.
+    layout: PromotedLayout,
+}
+
+/// Slot addressing for a promoted variable.
+#[derive(Clone)]
+enum PromotedLayout {
+    /// Flat array `elem[n]`: element k lives at `ptr[k]`, k flat scalars
+    /// wide. Supports runtime-indexed element stores.
+    Array {
+        elem_ty: LirType,
+        n: usize,
+        elem_width: usize,
+    },
+    /// One aggregate value at `ptr[0]`; whole-value loads/stores only
+    /// (field writes splice through a load-modify-store of the whole).
+    Whole { agg_ty: LirType },
+}
+
+/// Allocate a stack slot through the target's optional `StackAllocExt`.
+/// Aggregate promotion (plan §3.3) requires a memory-capable target; the C
+/// backend provides one.
+fn target_alloca<T: LirTarget<P>, P: Clone>(
+    ctx: &mut LowerCtx<'_, T, P>,
+    elem_ty: LirType,
+    count: usize,
+) -> T::Value {
+    let ext = ctx.target.stack_alloc_ext().expect(
+        "native loop aggregate promotion requires a target with StackAllocExt (stack allocation)",
+    );
+    ext.alloca(elem_ty, count)
+}
+
+/// Load the whole current value of a promoted slot as flat scalars.
+fn promoted_whole_load<T: LirTarget<P>, P: Clone>(
+    ptr: &T::Value,
+    layout: &PromotedLayout,
+    ctx: &mut LowerCtx<'_, T, P>,
+) -> Vec<T::Value> {
+    match layout {
+        PromotedLayout::Array { elem_ty, n, .. } => {
+            let mut out = Vec::new();
+            for k in 0..*n {
+                let k_val = ctx.target.iconst(LirType::U64, k as i64);
+                out.extend(ctx.target.ptr_index_load(ptr.clone(), k_val, elem_ty));
+            }
+            out
+        }
+        PromotedLayout::Whole { agg_ty } => {
+            let zero = ctx.target.iconst(LirType::U64, 0);
+            ctx.target.ptr_index_load(ptr.clone(), zero, agg_ty)
+        }
+    }
+}
+
+/// Store a whole value (flat scalars) into a promoted slot.
+fn promoted_whole_store<T: LirTarget<P>, P: Clone>(
+    ptr: &T::Value,
+    layout: &PromotedLayout,
+    vals: &[T::Value],
+    ctx: &mut LowerCtx<'_, T, P>,
+) {
+    match layout {
+        PromotedLayout::Array { elem_ty, n, elem_width } => {
+            for k in 0..*n {
+                let k_val = ctx.target.iconst(LirType::U64, k as i64);
+                let chunk = &vals[k * elem_width..(k + 1) * elem_width];
+                ctx.target.ptr_index_store(ptr.clone(), k_val, chunk, elem_ty);
+            }
+        }
+        PromotedLayout::Whole { agg_ty } => {
+            let zero = ctx.target.iconst(LirType::U64, 0);
+            ctx.target.ptr_index_store(ptr.clone(), zero, vals, agg_ty);
+        }
+    }
+}
+
 
 /// Bookkeeping for the enclosing native loop while lowering its body
 /// (plan §3.5). Populated only by the native-loop lowering path; unrolled
@@ -1339,6 +1428,13 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
         IrExprKind::Lit(lit) => vec![lower_lit(lit, ctx, None)],
 
         IrExprKind::Var(name) => {
+            // Promoted loop variables live in memory (plan §3.3): load the
+            // whole aggregate from the slot instead of consulting `env`.
+            if let Some(slot) = ctx.promoted.get(name.as_str()) {
+                let slot = slot.clone();
+                let (p, l) = (slot.ptr.clone(), slot.layout.clone());
+                return promoted_whole_load(&p, &l, ctx);
+            }
             if let Some(values) = ctx.env.get(name.as_str()) {
                 return values.clone();
             }
@@ -2780,10 +2876,20 @@ fn lower_bounded_loop<T: LirTarget<P>, P: Clone>(
         }
         LoopLowering::Native | LoopLowering::Auto => {
             match scan_native_loop_body(body, ctx) {
-                Ok(assigned) => {
-                    let carried: Vec<String> =
-                        assigned.into_iter().filter(|name| name != var).collect();
-                    lower_bounded_loop_native(var, start, end, inclusive, body, &carried, ctx);
+                Ok(info) => {
+                    let carried: Vec<String> = info
+                        .scalar_assigned
+                        .into_iter()
+                        .filter(|name| name != var)
+                        .collect();
+                    let promoted: Vec<String> = info
+                        .agg_assigned
+                        .into_iter()
+                        .filter(|name| name != var)
+                        .collect();
+                    lower_bounded_loop_native(
+                        var, start, end, inclusive, body, &carried, &promoted, ctx,
+                    );
                 }
                 Err(reason) => {
                     // Not native-eligible: fall back to concrete unrolling
@@ -2837,9 +2943,11 @@ fn unroll_bounded_loop<T: LirTarget<P>, P: Clone>(
 }
 
 /// Analyze a loop body for the native path (plan §3.4). On success returns
-/// the names of scalar variables assigned inside the body (loop-carried
-/// candidates). On failure returns the reason the body is not
-/// native-eligible and the loop must fall back to unrolling.
+/// the assignment classification: whole-var **scalar** assigns become
+/// loop-carried block params, aggregate assigns (whole-var, indexed, or
+/// field) become alloca promotions (plan §3.3). On failure returns the
+/// reason the body is not native-eligible and the loop must fall back to
+/// unrolling.
 ///
 /// The scan is a whitelist walker: expression shapes it cannot fully
 /// analyze are rejection reasons, never silently ignored — an unrecognized
@@ -2847,20 +2955,37 @@ fn unroll_bounded_loop<T: LirTarget<P>, P: Clone>(
 fn scan_native_loop_body<T: LirTarget<P>, P: Clone>(
     body: &IrBlock<P>,
     ctx: &LowerCtx<T, P>,
-) -> Result<std::collections::BTreeSet<String>, String> {
-    let mut assigned = std::collections::BTreeSet::new();
-    scan_native_block(body, ctx, &mut assigned)?;
-    // Every assigned name must be a scalar with a live value at loop entry
-    // so it can be threaded as a loop-carried block param.
-    for name in &assigned {
+) -> Result<NativeLoopBodyInfo, String> {
+    let mut info = NativeLoopBodyInfo::default();
+    scan_native_block(body, ctx, &mut info)?;
+    // Every assigned name must be defined before the loop with a live value
+    // so it can be carried as a block param or initialized into an alloca.
+    let mut all: Vec<&String> = info.scalar_assigned.iter().chain(info.agg_assigned.iter()).collect();
+    all.sort();
+    all.dedup();
+    for name in all {
         let ty = ctx.env_types.get(name).ok_or_else(|| {
             format!("assignment to '{name}' which is not defined before the loop")
         })?;
         let lir = ctx.registry.ir_type_to_lir(ty, ctx.mono);
-        if flatten_count(&lir, ctx.registry) > 1 {
+        let width = flatten_count(&lir, ctx.registry);
+        if info.scalar_assigned.contains(name)
+            && info.agg_assigned.contains(name)
+        {
             return Err(format!(
-                "aggregate assignment to '{name}' (Stage 2: alloca promotion)"
+                "'{name}' is both whole-assigned and part-assigned in the loop; \
+                 the value model cannot mix env scalars and promoted memory"
             ));
+        }
+        if info.scalar_assigned.contains(name) {
+            if width > 1 {
+                return Err(format!(
+                    "whole-var assign of aggregate '{name}' (unsupported)"
+                ));
+            }
+        }
+        if info.agg_assigned.contains(name) && width < 1 {
+            return Err(format!("'{name}' has zero flattened scalars"));
         }
         if !ctx.env.contains_key(name) {
             return Err(format!(
@@ -2868,19 +2993,29 @@ fn scan_native_loop_body<T: LirTarget<P>, P: Clone>(
             ));
         }
     }
-    Ok(assigned)
+    Ok(info)
+}
+
+/// Assignment classification for a native-eligible loop body (plan §3.2/§3.3).
+#[derive(Default)]
+struct NativeLoopBodyInfo {
+    /// Names whole-assigned as scalars: loop-carried block params.
+    scalar_assigned: std::collections::BTreeSet<String>,
+    /// Names assigned through aggregates (whole-var / indexed / field):
+    /// alloca-promoted, memory-backed across the back-edge.
+    agg_assigned: std::collections::BTreeSet<String>,
 }
 
 fn scan_native_block<T: LirTarget<P>, P: Clone>(
     block: &IrBlock<P>,
     ctx: &LowerCtx<T, P>,
-    assigned: &mut std::collections::BTreeSet<String>,
+    info: &mut NativeLoopBodyInfo,
 ) -> Result<(), String> {
     for stmt in &block.stmts {
-        scan_native_stmt(stmt, ctx, assigned)?;
+        scan_native_stmt(stmt, ctx, info)?;
     }
     if let Some(expr) = &block.expr {
-        scan_native_expr(expr, ctx, assigned)?;
+        scan_native_expr(expr, ctx, info)?;
     }
     Ok(())
 }
@@ -2888,17 +3023,17 @@ fn scan_native_block<T: LirTarget<P>, P: Clone>(
 fn scan_native_stmt<T: LirTarget<P>, P: Clone>(
     stmt: &IrStmt<P>,
     ctx: &LowerCtx<T, P>,
-    assigned: &mut std::collections::BTreeSet<String>,
+    info: &mut NativeLoopBodyInfo,
 ) -> Result<(), String> {
     match &stmt.kind {
         IrStmtKind::Let { init, .. } => {
             if let Some(init) = init {
-                scan_native_expr(init, ctx, assigned)?;
+                scan_native_expr(init, ctx, info)?;
             }
             Ok(())
         }
         IrStmtKind::Semi(expr) | IrStmtKind::Expr(expr) => {
-            scan_native_expr(expr, ctx, assigned)
+            scan_native_expr(expr, ctx, info)
         }
         // Catch-all for IR kinds added in parallel development (design rule
         // #4): unanalyzed statements make the loop ineligible.
@@ -2909,7 +3044,7 @@ fn scan_native_stmt<T: LirTarget<P>, P: Clone>(
 fn scan_native_expr<T: LirTarget<P>, P: Clone>(
     expr: &IrExpr<P>,
     ctx: &LowerCtx<T, P>,
-    assigned: &mut std::collections::BTreeSet<String>,
+    info: &mut NativeLoopBodyInfo,
 ) -> Result<(), String> {
     match &expr.kind {
         // Leaves.
@@ -2926,74 +3061,74 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
             base: left,
             index: right,
         } => {
-            scan_native_expr(left, ctx, assigned)?;
-            scan_native_expr(right, ctx, assigned)
+            scan_native_expr(left, ctx, info)?;
+            scan_native_expr(right, ctx, info)
         }
         IrExprKind::Unary { expr: inner, .. }
         | IrExprKind::Field { base: inner, .. }
-        | IrExprKind::Cast { expr: inner, .. } => scan_native_expr(inner, ctx, assigned),
+        | IrExprKind::Cast { expr: inner, .. } => scan_native_expr(inner, ctx, info),
         IrExprKind::Call { func, args } => {
-            scan_native_expr(func, ctx, assigned)?;
+            scan_native_expr(func, ctx, info)?;
             for arg in args {
-                scan_native_expr(arg, ctx, assigned)?;
+                scan_native_expr(arg, ctx, info)?;
             }
             Ok(())
         }
         IrExprKind::MethodCall {
             receiver, args, ..
         } => {
-            scan_native_expr(receiver, ctx, assigned)?;
+            scan_native_expr(receiver, ctx, info)?;
             for arg in args {
-                scan_native_expr(arg, ctx, assigned)?;
+                scan_native_expr(arg, ctx, info)?;
             }
             Ok(())
         }
         IrExprKind::Path { .. } => Ok(()),
         IrExprKind::StructExpr { fields, rest, .. } => {
             for (_, field) in fields {
-                scan_native_expr(field, ctx, assigned)?;
+                scan_native_expr(field, ctx, info)?;
             }
             if let Some(rest) = rest {
-                scan_native_expr(rest, ctx, assigned)?;
+                scan_native_expr(rest, ctx, info)?;
             }
             Ok(())
         }
         IrExprKind::Tuple(elems) | IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
             for elem in elems {
-                scan_native_expr(elem, ctx, assigned)?;
+                scan_native_expr(elem, ctx, info)?;
             }
             Ok(())
         }
         IrExprKind::Repeat { elem, len } => {
-            scan_native_expr(elem, ctx, assigned)?;
-            scan_native_expr(len, ctx, assigned)
+            scan_native_expr(elem, ctx, info)?;
+            scan_native_expr(len, ctx, info)
         }
-        IrExprKind::ArrayGenerate { body, .. } => scan_native_expr(body, ctx, assigned),
-        IrExprKind::Block(block) => scan_native_block(block, ctx, assigned),
+        IrExprKind::ArrayGenerate { body, .. } => scan_native_expr(body, ctx, info),
+        IrExprKind::Block(block) => scan_native_block(block, ctx, info),
         IrExprKind::If {
             cond,
             then_branch,
             else_branch,
         } => {
-            scan_native_expr(cond, ctx, assigned)?;
-            scan_native_block(then_branch, ctx, assigned)?;
+            scan_native_expr(cond, ctx, info)?;
+            scan_native_block(then_branch, ctx, info)?;
             if let Some(else_expr) = else_branch {
-                scan_native_expr(else_expr, ctx, assigned)?;
+                scan_native_expr(else_expr, ctx, info)?;
             }
             Ok(())
         }
         IrExprKind::BoundedLoop { start, end, body, .. } => {
-            scan_native_expr(start, ctx, assigned)?;
-            scan_native_expr(end, ctx, assigned)?;
-            scan_native_block(body, ctx, assigned)
+            scan_native_expr(start, ctx, info)?;
+            scan_native_expr(end, ctx, info)?;
+            scan_native_block(body, ctx, info)
         }
         IrExprKind::WhileLoop { cond, body } => {
-            scan_native_expr(cond, ctx, assigned)?;
-            scan_native_block(body, ctx, assigned)
+            scan_native_expr(cond, ctx, info)?;
+            scan_native_block(body, ctx, info)
         }
         IrExprKind::RawMap { receiver, body, .. } => {
-            scan_native_expr(receiver, ctx, assigned)?;
-            scan_native_expr(body, ctx, assigned)
+            scan_native_expr(receiver, ctx, info)?;
+            scan_native_expr(body, ctx, info)
         }
         IrExprKind::RawFold {
             receiver,
@@ -3001,9 +3136,9 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
             body,
             ..
         } => {
-            scan_native_expr(receiver, ctx, assigned)?;
-            scan_native_expr(init, ctx, assigned)?;
-            scan_native_expr(body, ctx, assigned)
+            scan_native_expr(receiver, ctx, info)?;
+            scan_native_expr(init, ctx, info)?;
+            scan_native_expr(body, ctx, info)
         }
         IrExprKind::RawZip {
             left,
@@ -3011,22 +3146,50 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
             body,
             ..
         } => {
-            scan_native_expr(left, ctx, assigned)?;
-            scan_native_expr(right, ctx, assigned)?;
-            scan_native_expr(body, ctx, assigned)
+            scan_native_expr(left, ctx, info)?;
+            scan_native_expr(right, ctx, info)?;
+            scan_native_expr(body, ctx, info)
         }
 
-        // Assignment shapes: whole-variable scalar assigns are the carried
-        // candidates; everything else is a Stage-2+ concern.
+        // Assignment shapes: whole-var scalar assigns become carried block
+        // params; aggregate assigns (whole-var/indexed/field) become alloca
+        // promotions; the two are never mixed for the same name (checked in
+        // `scan_native_loop_body`).
         IrExprKind::Assign { left, .. } | IrExprKind::AssignOp { left, .. } => {
             match &left.kind {
                 IrExprKind::Var(name) => {
-                    assigned.insert(name.clone());
+                    let ty = ctx.env_types.get(name);
+                    let is_agg = ty.is_some_and(|ty| {
+                        let lir = ctx.registry.ir_type_to_lir(ty, ctx.mono);
+                        flatten_count(&lir, ctx.registry) > 1
+                    });
+                    if is_agg {
+                        info.agg_assigned.insert(name.clone());
+                    } else {
+                        info.scalar_assigned.insert(name.clone());
+                    }
                     Ok(())
                 }
-                IrExprKind::Index { .. } | IrExprKind::Field { .. } => Err(
-                    "indexed/field assignment (Stage 2: alloca promotion)".to_owned(),
-                ),
+                IrExprKind::Index { base, .. } | IrExprKind::Field { base, .. } => {
+                    // Peel Reference/index chains to the innermost base var.
+                    let mut cursor = base.as_ref();
+                    loop {
+                        match &cursor.kind {
+                            IrExprKind::Var(name) => {
+                                info.agg_assigned.insert(name.clone());
+                                return Ok(());
+                            }
+                            IrExprKind::Index { base: inner, .. }
+                            | IrExprKind::Field { base: inner, .. } => cursor = inner.as_ref(),
+                            IrExprKind::Cast { expr: inner, .. } => cursor = inner.as_ref(),
+                            _ => {
+                                return Err(
+                                    "assignment to a non-variable aggregate base".to_owned()
+                                )
+                            }
+                        }
+                    }
+                }
                 _ => Err("unsupported assignment target".to_owned()),
             }
         }
@@ -3064,10 +3227,81 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
     inclusive: bool,
     body: &IrBlock<P>,
     carried_names: &[String],
+    promoted_names: &[String],
     ctx: &mut LowerCtx<T, P>,
 ) {
     let prior_var_vals = ctx.env.remove(var);
     let prior_var_ty = ctx.env_types.remove(var);
+
+    // Alloca promotion (plan §3.3): aggregate-assigned names move to memory
+    // so writes survive the back-edge without block-param threading. Slots
+    // live for the whole function (backends emit allocas into the function
+    // preamble); the pre-loop value initializes the slot and the final
+    // memory content is loaded back into `env` on exit.
+    //
+    // Names already promoted by an enclosing native loop keep their existing
+    // slots (memory persists across blocks — no re-promotion).
+    let mut promoted_restore: Vec<(String, IrType)> = Vec::new();
+    for name in promoted_names {
+        if ctx.promoted.contains_key(name) {
+            continue;
+        }
+        let ty = ctx
+            .env_types
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| panic!("native loop: promoted var '{name}' has no type"));
+        let base_ty = match &ty {
+            IrType::Reference { elem, .. } => (**elem).clone(),
+            other => other.clone(),
+        };
+        let lir = ctx.registry.ir_type_to_lir(&base_ty, ctx.mono);
+        let width = flatten_count(&lir, ctx.registry);
+        let init_vals = ctx
+            .env
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("native loop: promoted var '{name}' has no value at loop entry")
+            });
+        assert_eq!(
+            init_vals.len(),
+            width,
+            "native loop: promoted var '{name}' width mismatch (env {} vs lir {width})",
+            init_vals.len()
+        );
+        // Flat arrays get element-granularity slots (runtime indexed stores);
+        // everything else is a single whole-value slot.
+        let slot = if let IrType::Array { elem, len, .. } = &base_ty {
+            let elem_ir = (**elem).clone();
+            let elem_lir = ctx.registry.ir_type_to_lir(&elem_ir, ctx.mono);
+            let elem_width = flatten_count(&elem_lir, ctx.registry);
+            let n = mono::array_len_const(&mono_len(len, ctx.mono))
+                .unwrap_or_else(|| panic!("native loop: promoted array '{name}' has non-constant length"));
+            let ptr = target_alloca(ctx, elem_lir.clone(), n);
+            let slot = PromotedSlot {
+                ptr,
+                layout: PromotedLayout::Array {
+                    elem_ty: elem_lir,
+                    n,
+                    elem_width,
+                },
+            };
+            promoted_whole_store(&slot.ptr, &slot.layout, &init_vals, ctx);
+            slot
+        } else {
+            let ptr = target_alloca(ctx, lir.clone(), 1);
+            let slot = PromotedSlot {
+                ptr,
+                layout: PromotedLayout::Whole { agg_ty: lir },
+            };
+            promoted_whole_store(&slot.ptr, &slot.layout, &init_vals, ctx);
+            slot
+        };
+        ctx.env.remove(name);
+        ctx.promoted.insert(name.clone(), slot);
+        promoted_restore.push((name.clone(), ty));
+    }
 
     // Threaded entries: loop-carried scalars, then the loop var's outer
     // binding (if any) under the loop var's own name.
@@ -3227,7 +3461,9 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
         BranchTarget::args(header_args).with_reentry(ReentryHint::bounded_loop_ascending()),
     );
 
-    // Exit: carried names land as final-iteration values.
+    // Exit: carried names land as final-iteration values; promoted names
+    // read their final memory content back into `env` once (plan §3.3),
+    // then their promotion entries are retired.
     ctx.target.switch_to_block(exit.clone());
     ctx.current_block = exit;
     for ((name, _), vals) in carried.iter().zip(&exit_carried) {
@@ -3235,6 +3471,12 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
     }
     if let Some(ty) = prior_var_ty {
         ctx.env_types.insert(var.to_owned(), ty);
+    }
+    for (name, _) in &promoted_restore {
+        let slot = ctx.promoted.get(name).expect("promoted slot present").clone();
+        let vals = promoted_whole_load(&slot.ptr, &slot.layout, ctx);
+        ctx.env.insert(name.clone(), vals);
+        ctx.promoted.remove(name);
     }
 }
 
@@ -3527,6 +3769,49 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
 
                 // The innermost base after peeling must be a variable.
                 let final_base = chain_bases_last;
+                // Promoted base: the folded position addresses the element
+                // inside the slot array (plan §3.3). Requires a single-level
+                // chain whose element width matches the rhs (nested chains
+                // were rejected by the eligibility scan).
+                if let IrExprKind::Var(name) = &final_base.kind {
+                    if let Some(slot) = ctx.promoted.get(name.as_str()).cloned() {
+                        let rhs_vals = lower_expr(right, ctx);
+                        match &slot.layout {
+                            PromotedLayout::Array { elem_ty, .. } => {
+                                if chain.len() != 1 {
+                                    unimplemented!(
+                                        "assign to nested index chain of promoted base '{name}'"
+                                    );
+                                }
+                                ctx.target
+                                    .ptr_index_store(slot.ptr, idx_val, &rhs_vals, elem_ty);
+                            }
+                            PromotedLayout::Whole { agg_ty } => {
+                                // Runtime position inside the whole value:
+                                // load, select-splice at the element's scalar
+                                // offset, store back (same mux discipline as
+                                // the env path, but memory-backed).
+                                let elem_width = rhs_vals.len();
+                                let mut whole = promoted_whole_load(&slot.ptr, &slot.layout, ctx);
+                                let n = whole.len() / elem_width;
+                                for k in 0..n {
+                                    let k_val = ctx.target.iconst(LirType::U64, k as i64);
+                                    let cond =
+                                        ctx.target.icmp(IcmpPred::Eq, idx_val.clone(), k_val);
+                                    for j in 0..elem_width {
+                                        let old = whole[k * elem_width + j].clone();
+                                        let new = rhs_vals[j].clone();
+                                        whole[k * elem_width + j] =
+                                            ctx.target.select(cond.clone(), new, old);
+                                    }
+                                }
+                                let zero = ctx.target.iconst(LirType::U64, 0);
+                                ctx.target.ptr_index_store(slot.ptr, zero, &whole, agg_ty);
+                            }
+                        }
+                        return;
+                    }
+                }
                 // We need the variable name to update env.
                 if let IrExprKind::Var(name) = &final_base.kind {
                     let mut arr_vals = ctx
@@ -3572,6 +3857,12 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
             let inferred_ty = ctx.infer_type(right);
             if let Some(ty) = inferred_ty {
                 ctx.env_types.insert(name.clone(), ty);
+            }
+            // Promoted name: store the whole aggregate into the slot.
+            if let Some(slot) = ctx.promoted.get(name.as_str()) {
+                let slot = slot.clone();
+                promoted_whole_store(&slot.ptr, &slot.layout, &rhs_vals, ctx);
+                return;
             }
             ctx.env.insert(name.clone(), rhs_vals);
         }
@@ -3622,6 +3913,16 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
             let IrExprKind::Var(name) = &base.kind else {
                 unimplemented!("lower_assign: field assign on non-variable base");
             };
+            // Promoted struct base: load whole, splice the field's scalars,
+            // store back (memory-backed, survives the back-edge).
+            if let Some(slot) = ctx.promoted.get(name.as_str()).cloned() {
+                let mut whole = promoted_whole_load(&slot.ptr, &slot.layout, ctx);
+                for j in 0..field_width {
+                    whole[offset + j] = rhs_vals[j].clone();
+                }
+                promoted_whole_store(&slot.ptr, &slot.layout, &whole, ctx);
+                return;
+            }
             let mut arr_vals = ctx
                 .env
                 .get(name)
