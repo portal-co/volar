@@ -1,12 +1,40 @@
 # Memory-backed locals in the LIR weaver + C emitter expression folding
 
-> Status: approved direction (user request, 2026-08-29). This is the "deeper
-> fix (full memory-promotion of aggregate locals / real-C-control-flow joins)"
-> recorded as the accepted boundary in
-> [`direct-to-lir-weaver-fast-path-plan.md`](direct-to-lir-weaver-fast-path-plan.md)
-> after the M1 first checkpoint (~1.03 GB of C for the mem_probe prover,
-> ~1.45M isolated per-scalar ternaries from runtime-index mux trees and
-> select threading).
+> Status: **implemented** (stages 1–3 complete, 2026-08-29). Measurements in
+> the stage record below.
+
+## Stage record (2026-08-29)
+
+| Stage | Commit | Content |
+|---|---|---|
+| 0 | volar `16a8433` | this plan |
+| 1 | volar-ir `a6be4c6` | record-then-render C emission: use-count DCE + single-use folding + comma sequencing + hazard-checked jump edges |
+| 2 | volar `e5f8a62` | memory-backed aggregate locals by default (`aggregate_locals`, `bind_ident_mem_backed`, pointer-walk index/assign, native-loop exemption) |
+| 3 | (this doc) | measurements below |
+
+**`lir_probe_prover_lowers_to_c` (mem_probe split prover, 14 woven fns,
+2,740 real AND gates):**
+
+| Configuration | C source bytes | lower wall-clock |
+|---|---|---|
+| session start (flat locals, eager emitter) | 1,025,561,412 | ~330 s |
+| + folding emitter only (stage 1) | 425,100,841 | 329 s |
+| + memory-backed locals (stage 2) | **53,616,407** | **18.6 s** |
+
+**Harness wall-clock:** native_loop_equiv 813 s → 409 s;
+lir_backend_components 805 s → 406 s (same pre-existing failures).
+
+Suite status after both stages: volar-c-backend-spec-tests basic 21
+(18 + 3 new memory-backed tests), lir_backend 1, curve_e2e 6, e2e 14,
+box_pool 1, native_loop_equiv 3 — all pass; lir_backend_components 3
+passed / 2 failed (standing vole_setup + faest_core `R: SpecRng` gap);
+volar-riscv-e2e 20 passed / 1 failed (standing
+`trace_mem_probe_plain_values_has_correct_widths`); volar-weaver 138;
+volar-ir workspace green except the standing `prop_d2` proptest case.
+
+The `VOLAR_C_FOLD_STATS=1` env var prints per-function fold counters
+(defs / dropped / inlined / body bytes); `VOLAR_C_NOFOLD=1` disables the
+C-side folding pass for A/B debugging.
 
 ## Problem
 
@@ -97,13 +125,6 @@ value/block handle API is unchanged, so callers (volar-lir-codegen) are
 unaffected.
 
 ## Stages
-
-| Stage | Content | Commit |
-|---|---|---|
-| 0 | this plan | (this commit) |
-| 1 | Part B in volar-ir: buffered emission, use counts, DCE + inlining + folding, focused unit tests; full volar-c-backend + volar workspace sweep | volar-ir |
-| 2 | Part A in volar: promote-all-aggregate locals, joinless if-into-slot, index/field routing, loop interactions, focused tests; full sweep | volar |
-| 3 | measure mem_probe prover C bytes + `cc` wall-clock vs the 789698d records; update this doc + fast-path plan | volar |
 
 ## Success criteria
 
