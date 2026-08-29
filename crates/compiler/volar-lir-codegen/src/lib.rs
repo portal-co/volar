@@ -4098,14 +4098,55 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
                     if let Some(slot) = ctx.promoted.get(name.as_str()).cloned() {
                         let rhs_vals = lower_expr(right, ctx);
                         match &slot.layout {
-                            PromotedLayout::Array { elem_ty, .. } => {
-                                if chain.len() != 1 {
-                                    unimplemented!(
-                                        "assign to nested index chain of promoted base '{name}'"
+                            PromotedLayout::Array { elem_ty, elem_width, .. } => {
+                                if chain.len() == 1 {
+                                    // Whole-element store at the runtime index.
+                                    ctx.target.ptr_index_store(
+                                        slot.ptr, idx_val, &rhs_vals, elem_ty,
                                     );
+                                } else {
+                                    // Nested chain (`a[k][i] = …`): the folded
+                                    // position is a flat scalar position inside
+                                    // the whole value — load, select-splice,
+                                    // store back (same mux discipline as the
+                                    // env path, memory-backed).
+                                    if rhs_vals.len() != 1 {
+                                        unimplemented!(
+                                        "assign to nested index chain with multi-scalar inner element of promoted base '{name}'"
+                                    );
+                                    }
+                                    let innermost_len = lens
+                                        .last()
+                                        .and_then(|l| *l)
+                                        .unwrap_or(*elem_width);
+                                    let rhs = &rhs_vals[0];
+                                    let mut whole =
+                                        promoted_whole_load(&slot.ptr, &slot.layout, ctx);
+                                    let n_elems = whole.len() / elem_width;
+                                    for k in 0..n_elems {
+                                        // pos[k] = idx_val * innermost_len + inner
+                                        // where inner = idx_val mod innermost? No —
+                                        // the folded pos already covers both levels;
+                                        // compare against the flat element-scalar
+                                        // position k * elem_width + j.
+                                        for j in 0..*elem_width {
+                                            let flat =
+                                                ctx.target.iconst(LirType::U64, (k * elem_width + j) as i64);
+                                            let cond = ctx.target.icmp(
+                                                IcmpPred::Eq,
+                                                idx_val.clone(),
+                                                flat,
+                                            );
+                                            let old_v = whole[k * elem_width + j].clone();
+                                            whole[k * elem_width + j] =
+                                                ctx.target.select(cond, rhs.clone(), old_v);
+                                        }
+                                    }
+                                    let _ = innermost_len;
+                                    let zero = ctx.target.iconst(LirType::U64, 0);
+                                    ctx.target
+                                        .ptr_index_store(slot.ptr, zero, &whole, elem_ty);
                                 }
-                                ctx.target
-                                    .ptr_index_store(slot.ptr, idx_val, &rhs_vals, elem_ty);
                             }
                             PromotedLayout::Whole { agg_ty } => {
                                 // Runtime position inside the whole value:

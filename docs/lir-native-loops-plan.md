@@ -1,6 +1,8 @@
 # LIR-native loops for the spec backend — plan
 
-**Status:** Draft for review (2026-08-28). No code landed yet.
+**Status:** Implemented (2026-08-28). Stages 0–4 landed; see §8 for the
+commit record and measurements. Descent loops intentionally remain
+concrete-unrolled (see §3.4).
 **Scope:** `volar-lir-codegen` (flat + CFG paths), `volar-c-backend-spec-tests`
 (regressions), optionally `volar-ir-lir-target` (interpreter parity).
 **Relation to other work:** builds on the direct-to-LIR fast path
@@ -241,7 +243,55 @@ consumer; if a construction works on C but panics the interpreter, it is a
 threading bug in our emission, not an interpreter bug (per the switch-cascade
 precedent).
 
-## 5. Stages (per-stage commits, per repo discipline)
+## 5. Implementation record (2026-08-28)
+
+All four stages landed on `main` as single per-stage commits:
+
+| Stage | Commit | Notes / deviations from this draft |
+|---|---|---|
+| 0 — plumbing | `76d5ca0` | `LoopLowering` on `MonoPlanOptions`; `LowerCtx.loop_mode`/`loop_stack`; legacy skeleton documented as unsound |
+| 1 — native bounded loops | `36b629b` | Carried scalars as block params (phi); whitelist body scan with fallback. `lower_function_with_loop_lowering` test entry |
+| 2 — alloca promotion | `58f6d27` | Promoted layouts: flat arrays get element-granularity slots (runtime-indexed `ptr_index_store`); other aggregates get one whole-value slot with load-splice-store for element/field writes. Mixing whole+part assigns of one name is a rejection reason. Promotion requires `StackAllocExt` |
+| 3 — while/continue/break | `a6b8a4f` | `lower_while_loop` (condition evaluated in the header; **carried names must be rebound to header params before the condition lowers** — the initial draft omitted this and the while test caught it). `LoopFrame` distinguishes native/unrolled frames so `continue`/`break` bind to the innermost loop; unrolled `break` signals through an atomic flag the unroller observes per iteration |
+| 4 — equivalence harness | (this stage) | `native_loop_equiv.rs`: identical instance sets, compile gating on the unrolled baseline, size recording |
+
+Deviations discovered during implementation (evidence-first):
+
+- **The flat path's If/match lowering never threaded values across
+  blocks** (`lower_if` branches with empty args and lowers branch bodies
+  referencing outer `env` values directly). The "strict target" §3.2
+  stance therefore reduces to: loop-carried values must be threaded
+  because their *values change per iteration* (a semantic requirement on
+  every target), not for block purity. Free variables are raw-referenced,
+  consistent with the rest of the path. The loop var's outer binding is
+  saved/restored like the unroll path instead of threaded.
+- **Descending loops stay concrete-unrolled** (`lower_bounded_loop_descending`
+  unchanged); per §3.4's original note they remain unrolled in `Auto`
+  mode initially.
+- **Pre-existing emission gap (unrelated to loops, both modes):** the C
+  backend emits `Arr_U8_32* data;` (Vec fat-pointer field) without the
+  matching `typedef struct { ... } Arr_U8_32;`, so standalone `cc`
+  compilation of the vole_prover/vole_verifier/tfhe component outputs
+  fails in *both* modes. `lir_backend_components` never compiles its
+  outputs, which is why this was invisible. The Stage-4 harness gates its
+  compile check on the unrolled baseline so the gap is not misattributed
+  to Native; fixing it is a separate C-backend task.
+
+### Measurements (component C output, unrolled vs native)
+
+| Component | Unrolled | Native | Ratio |
+|---|---|---|---|
+| tfhe | 40,974,575 B | 6,474,678 B | **6.3× smaller** |
+| vole_verifier | 784,346 B | 622,771 B | 1.3× smaller |
+| vole_prover | 2,509,424 B | 2,451,494 B | 1.02× (≈unchanged) |
+
+Behavioral-parity tests (compile-and-run, `cc`): native `sum_to(10)=45`,
+native concrete-bounds loops, aggregate index writes (`fill4`),
+field-splice struct accumulator (`accumulate(4) = 6 4`), dynamic
+`while` (`count_down(10)=55`), `continue`+`break` (`sum_selected(10)=25`),
+each with an Unroll-parity counterpart where a baseline exists.
+
+## 6. Stages (original plan — kept for review trail)
 
 | Stage | Content | Exit criteria |
 |---|---|---|
@@ -255,7 +305,7 @@ Each stage is one commit (or a small series), suites green before commit, and
 the gap table in `direct-to-lir-weaver-fast-path-plan.md` gains a pointer here
 when Stage 1 lands.
 
-## 6. Risks & mitigations
+## 7. Risks & mitigations
 
 | Risk | Mitigation |
 |---|---|
@@ -266,7 +316,7 @@ when Stage 1 lands.
 | `ReentryHint` consumers disagree on `bounded_loop_ascending` semantics | Before Stage 1 commits to emitting it on every latch, confirm with the downstream pass that consumes reentry hints (vaffle/IR passes); if unsettled, emit without the hint and record it as a follow-up. |
 | Two divergent loop implementations drift over time | The dual-path harness (Stage 4) runs both modes on every component seed set as a standing regression. |
 
-## 7. Non-goals
+## 8. Non-goals
 
 - No change to `plan_flat_module` / monomorphization keys (loops are a
   lowering concern; instance identity is unaffected).
