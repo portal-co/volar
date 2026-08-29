@@ -111,8 +111,8 @@ fn build_module() -> IrModule<IrFunction> {
 }
 
 /// Env with common VOLE/TFHE const-generic bindings for seeded generic roots.
-fn component_env() -> MonoEnv {
-    MonoEnv::new("volar_lir_components")
+fn component_env() -> volar_lir_codegen::mono::MonoEnv {
+    volar_lir_codegen::mono::MonoEnv::new("volar_lir_components")
         .with_len("N", 16)
         .with_len("U1", 1)
         .with_len("U2", 2)

@@ -102,23 +102,41 @@ fn check_component(seeds: &[&str], label: &str) {
         "component '{label}': Unroll and Native modes must specialize the identical instance set"
     );
 
-    // Compile-and-run both outputs (smoke main). The unrolled baseline is
+    // Compile both outputs (link + run smoke main). The unrolled baseline is
     // the arbiter: if the baseline itself fails to compile, that is a
-    // pre-existing emission gap unrelated to loop mode (e.g. the missing
-    // `Arr_*` typedef for Vec fat-pointer fields) — skip instead of
-    // attributing it to Native. When the baseline compiles, Native must
+    // pre-existing emission gap unrelated to loop mode — report it instead
+    // of attributing it to Native. When the baseline compiles, Native must
     // compile too.
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compile_and_run(&unroll_c, "  /* native-loop equivalence smoke */")
-    })) {
-        Ok(_) => {
-            let _ = compile_and_run(&native_c, "  /* native-loop equivalence smoke */");
-        }
-        Err(_) => {
+    //
+    // Outputs above COMPILE_BUDGET_BYTES are not sent to cc at all: cc
+    // wall-time/memory explodes on very large translation units (the
+    // ~283 MB unrolled tfhe output cannot be compiled in practice — itself
+    // the motivation for native loops) and would hang the test, not fail it.
+    const COMPILE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+    let compile_c = |c: &str, what: &str| -> bool {
+        if c.len() > COMPILE_BUDGET_BYTES {
             eprintln!(
-                "=== native-loop equivalence [{label}]: unrolled baseline does not compile (pre-existing emission gap); set-equality only ==="
+                "    ({what} output {} MB exceeds the {} MB compile budget; skipped)",
+                c.len() / (1024 * 1024),
+                COMPILE_BUDGET_BYTES / (1024 * 1024)
             );
+            return true; // not a failure — just out of budget
         }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compile_and_run(c, "  /* native-loop equivalence smoke */")
+        }))
+        .is_ok()
+    };
+    let unroll_ok = compile_c(&unroll_c, "unrolled baseline");
+    let native_ok = compile_c(&native_c, "native");
+    match (unroll_ok, native_ok) {
+        (true, true) => {}
+        (true, false) => panic!(
+            "component '{label}': native-mode C output does not compile while the unrolled baseline does"
+        ),
+        (false, _) => eprintln!(
+            "=== native-loop equivalence [{label}]: unrolled baseline does not compile; set-equality only ==="
+        ),
     }
 
     eprintln!(

@@ -776,7 +776,17 @@ pub fn plan_flat_module<P: Clone>(
     }
     // First specialization of each source name keeps the bare name for C ABI /
     // harness friendliness (mirrors nominal struct emission).
+    //
+    // Distinct instances must never share an emitted name: the C backend
+    // renders one definition per instance, and duplicate names with differing
+    // signatures are conflicting-type errors. The per-source bare claim alone
+    // is not sufficient — a source registered with erased generics (e.g. the
+    // `mul__<Struct>` operator-method entries) reports `generics.is_empty()`
+    // for every instance, so each would keep the bare name. After the bare/
+    // mangled candidate, fall back to a deterministic numeric disambiguator.
     let mut claimed_bare: BTreeMap<String, ()> = BTreeMap::new();
+    let mut used_names: BTreeMap<String, ()> = BTreeMap::new();
+    let mut dup_counters: BTreeMap<String, usize> = BTreeMap::new();
     let emitted_names = instances
         .iter()
         .map(|(key, env)| {
@@ -786,13 +796,25 @@ pub fn plan_flat_module<P: Clone>(
                 .generics
                 .len()
                 > 0;
-            let emitted = if !generic {
+            let mut emitted = if !generic {
                 key.source_name.clone()
             } else if claimed_bare.insert(key.source_name.clone(), ()).is_none() {
                 key.source_name.clone()
             } else {
                 mangle(&key.source_name, env, true)
             };
+            if used_names.insert(emitted.clone(), ()).is_some() {
+                // The candidate collides with another instance: mangle, then
+                // (if even that is taken — e.g. an empty canonical) append a
+                // deterministic sequence number until fresh.
+                emitted = mangle(&key.source_name, env, true);
+                let n = dup_counters.entry(key.source_name.clone()).or_insert(0);
+                while used_names.contains_key(&emitted) {
+                    *n += 1;
+                    emitted = format!("{}__dup{}", key.source_name, n);
+                }
+                used_names.insert(emitted.clone(), ());
+            }
             (key.clone(), emitted)
         })
         .collect();
@@ -1313,6 +1335,21 @@ fn infer_expr_type<P: Clone>(
             type_args: type_args.iter().map(|a| mono_type(a, env)).collect(),
         }),
         IrExprKind::Cast { ty, .. } => Some(mono_type(ty, env)),
+        // Indexing an array yields its element type (`&a_decomp[j]` passed as
+        // a call argument must infer so the call is planned rather than
+        // falling back to call_extern).
+        IrExprKind::Index { base, .. } => {
+            let base_ty = infer_expr_type(base, env, vars, structs)?;
+            let base_ty = match base_ty {
+                IrType::Reference { elem, .. } => *elem,
+                other => other,
+            };
+            match base_ty {
+                IrType::Array { elem, .. } => Some(*elem),
+                IrType::Vector { elem } => Some(*elem),
+                _ => None,
+            }
+        }
         // `.clone()` / `.deref()` preserve the receiver's type — resolving
         // through it keeps call-arg inference alive for arguments like
         // `delta.clone()` passed to operator-impl methods.

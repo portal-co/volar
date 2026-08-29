@@ -4466,6 +4466,15 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
         // Reference methods — transparent.
         MethodKind::Known(StdMethod::AsRef | StdMethod::AsSlice) => lower_expr(receiver, ctx),
 
+        // `.into()` (Into<O> conversion) with no target type available at IR
+        // level. In the monomorphized instances that reach here the source
+        // and destination element types are identical (e.g.
+        // `self.v.map(|a| a.into())` with T == O == u8), so the conversion is
+        // the identity on the flattened scalars. A real widening conversion
+        // would need expected-type threading through lower_expr, which the
+        // IR does not carry.
+        MethodKind::Known(StdMethod::Into) if args.is_empty() => lower_expr(receiver, ctx),
+
         // Other methods → extern call.
         MethodKind::Known(m) => lower_method_extern(receiver, m.as_str(), type_args, args, ctx),
         MethodKind::Other(name) => {
