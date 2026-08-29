@@ -671,3 +671,220 @@ fn test_corpus_e2e() {
     run_case!(build_branch_merge_u32);
     run_case!(build_loop_sum_u32);
 }
+
+// ============================================================================
+// Native loop lowering (docs/lir-native-loops-plan.md, Stage 1)
+//
+// fn sum_to(n: u64) -> u64 {
+//     let mut acc = 0u64;
+//     for i in 0..n { acc = acc + (i as u64); }
+//     acc
+// }
+// ============================================================================
+
+#[test]
+fn test_native_loop_sum_to() {
+    use volar_compiler::ir::{
+        ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrParam, IrPattern, IrStmtKind,
+        IrType, PrimitiveType, SpecBinOp,
+    };
+    use volar_lir_codegen::{LoopLowering, lower_function_with_loop_lowering};
+
+    let build = || IrFunction {
+        no_inline: false,
+        name: "sum_to".to_owned(),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params: vec![IrParam {
+            name: "n".to_owned(),
+            ty: IrType::Primitive(PrimitiveType::U64),
+        }],
+        return_type: Some(IrType::Primitive(PrimitiveType::U64)),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident {
+                        mutable: true,
+                        name: "acc".to_owned(),
+                        subpat: None,
+                    },
+                    ty: Some(IrType::Primitive(PrimitiveType::U64)),
+                    init: Some(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                }),
+                ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::BoundedLoop {
+                    var: "i".to_owned(),
+                    start: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                    end: Box::new(ir_expr(IrExprKind::Var("n".to_owned()))),
+                    inclusive: false,
+                    body: IrBlock {
+                        stmts: vec![],
+                        expr: Some(Box::new(ir_expr(IrExprKind::Assign {
+                            left: Box::new(ir_expr(IrExprKind::Var("acc".to_owned()))),
+                            right: Box::new(ir_expr(IrExprKind::Binary {
+                                op: SpecBinOp::Add,
+                                left: Box::new(ir_expr(IrExprKind::Var("acc".to_owned()))),
+                                right: Box::new(ir_expr(IrExprKind::Cast {
+                                    expr: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                                    ty: Box::new(IrType::Primitive(PrimitiveType::U64)),
+                                })),
+                            })),
+                        }))),
+                    },
+                }))),
+            ],
+            expr: Some(Box::new(ir_expr(IrExprKind::Var("acc".to_owned())))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    // Native mode: the loop lowers to a CFG back-edge (block params carry the
+    // loop variable and the loop-carried accumulator), not unrolled code.
+    {
+        let mut b = CBackend::new();
+        lower_function_with_loop_lowering(&build(), &mut b, LoopLowering::Native);
+        let c_src = b.finish();
+        std::fs::write("/tmp/test_c_src.c", &c_src).unwrap();
+        if std::env::var("VOLAR_DUMP_NATIVE_C").is_ok() { eprintln!("{c_src}"); }
+        assert!(
+            c_src.contains("goto block"),
+            "native mode must emit a CFG back-edge, got straight-line code"
+        );
+        let output = compile_and_run(
+            &c_src,
+            r#"  printf("%llu\n", (unsigned long long)sum_to(10ull));"#,
+        );
+        assert_eq!(output.trim(), "45");
+    }
+
+    // Unroll mode on the same loop shape with a concrete bound: the unrolled
+    // path must produce the same result as the native CFG loop (dual-path
+    // parity). (With a dynamic bound, `Unroll` selects the legacy skeleton,
+    // whose discarded-aggregate/loop-carried writes are documented as
+    // unsound — it is not a parity baseline.)
+    {
+        let mut func = build();
+        let loop_body = match &func.body.stmts[1].kind {
+            IrStmtKind::Semi(e) => match &e.kind {
+                IrExprKind::BoundedLoop { body, .. } => body.clone(),
+                other => panic!("unexpected stmt kind {other:?}"),
+            },
+            other => panic!("unexpected stmt kind {other:?}"),
+        };
+        func.body.stmts[1] = ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::BoundedLoop {
+            var: "i".to_owned(),
+            start: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+            end: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(10)))),
+            inclusive: false,
+            body: loop_body,
+        })));
+        let mut b = CBackend::new();
+        lower_function_with_loop_lowering(&func, &mut b, LoopLowering::Unroll);
+        let c_src = b.finish();
+        let output = compile_and_run(
+            &c_src,
+            r#"  printf("%llu\n", (unsigned long long)sum_to(10ull));"#,
+        );
+        assert_eq!(output.trim(), "45");
+    }
+}
+
+// ============================================================================
+// Native loop with concrete bounds still lowers to a CFG loop under Native
+// mode (unrolling is opt-out, not implicit), and an aggregate-assign body is
+// rejected from the native path and falls back to unrolling.
+// ============================================================================
+
+#[test]
+fn test_native_loop_concrete_bounds_and_aggregate_fallback() {
+    use volar_compiler::ir::{
+        ArrayKind, ArrayLength, ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrParam,
+        IrPattern, IrStmtKind, IrType, PrimitiveType, SpecBinOp,
+    };
+    use volar_lir_codegen::{LoopLowering, lower_function_with_loop_lowering};
+
+    // fn fill4() -> [u64; 4] {
+    //     let mut arr = [0u64; 4];
+    //     for i in 0..4 { arr[i] = (i as u64) + 1; }
+    //     arr
+    // }
+    let arr_ty = IrType::Array {
+        kind: ArrayKind::FixedArray,
+        elem: Box::new(IrType::Primitive(PrimitiveType::U64)),
+        len: ArrayLength::Const(4),
+    };
+    let build = || IrFunction {
+        no_inline: false,
+        name: "fill4".to_owned(),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params: vec![],
+        return_type: Some(arr_ty.clone()),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident {
+                        mutable: true,
+                        name: "arr".to_owned(),
+                        subpat: None,
+                    },
+                    ty: Some(arr_ty.clone()),
+                    init: Some(ir_expr(IrExprKind::FixedArray(vec![
+                        ir_expr(IrExprKind::Lit(IrLit::Int(0))),
+                        ir_expr(IrExprKind::Lit(IrLit::Int(0))),
+                        ir_expr(IrExprKind::Lit(IrLit::Int(0))),
+                        ir_expr(IrExprKind::Lit(IrLit::Int(0))),
+                    ]))),
+                }),
+                ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::BoundedLoop {
+                    var: "i".to_owned(),
+                    start: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                    end: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(4)))),
+                    inclusive: false,
+                    body: IrBlock {
+                        stmts: vec![],
+                        expr: Some(Box::new(ir_expr(IrExprKind::Assign {
+                            left: Box::new(ir_expr(IrExprKind::Index {
+                                base: Box::new(ir_expr(IrExprKind::Var("arr".to_owned()))),
+                                index: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                            })),
+                            right: Box::new(ir_expr(IrExprKind::Binary {
+                                op: SpecBinOp::Add,
+                                left: Box::new(ir_expr(IrExprKind::Cast {
+                                    expr: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                                    ty: Box::new(IrType::Primitive(PrimitiveType::U64)),
+                                })),
+                                right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(1)))),
+                            })),
+                        }))),
+                    },
+                }))),
+            ],
+            expr: Some(Box::new(ir_expr(IrExprKind::Var("arr".to_owned())))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    // The aggregate (`arr[i] = …`) assignment makes the body native-ineligible
+    // (Stage 1); the loop must fall back to concrete unrolling and still
+    // produce the right answer.
+    let mut b = CBackend::new();
+    lower_function_with_loop_lowering(&build(), &mut b, LoopLowering::Native);
+    let c_src = b.finish();
+    assert!(
+        !c_src.contains("goto block"),
+        "aggregate-assign loop must fall back to unrolled straight-line code"
+    );
+    std::fs::write("/tmp/fill4.c", &c_src).unwrap();
+    let output = compile_and_run(
+        &c_src,
+        r#"
+  Arr_U64_4 r = fill4();
+  printf("%llu %llu %llu %llu\n", (unsigned long long)r.data[0], (unsigned long long)r.data[1], (unsigned long long)r.data[2], (unsigned long long)r.data[3]);
+"#,
+    );
+    assert_eq!(output.trim(), "1 2 3 4");
+}

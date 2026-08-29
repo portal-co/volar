@@ -148,11 +148,9 @@ struct LowerCtx<'t, T: LirTarget<P>, P: Clone = ()> {
     current_instance: Option<&'t FunctionInstanceKey>,
     mono_plan: Option<&'t MonoPlan<P>>,
     /// Loop lowering policy (see [`LoopLowering`]).
-    #[allow(dead_code)] // consumed by the native-loop path (Stage 1)
     loop_mode: LoopLowering,
     /// Enclosing native loops while lowering a native loop body (plan §3.5).
-    #[allow(dead_code)] // consumed by the native-loop path (Stage 1)
-    loop_stack: Vec<LoopFrame<T>>,
+    loop_stack: Vec<LoopFrame<T::Block>>,
     _p: std::marker::PhantomData<P>,
 }
 
@@ -571,7 +569,7 @@ pub enum LoopLowering {
 /// Bookkeeping for the enclosing native loop while lowering its body
 /// (plan §3.5). Populated only by the native-loop lowering path; unrolled
 /// lowering leaves the stack empty.
-struct LoopFrame<B> {
+struct LoopFrame<B: Clone> {
     /// Block the body jumps back to (carrying `i+1` and loop-carried values).
     latch: B,
     /// Block entered when the loop condition fails.
@@ -1100,6 +1098,42 @@ pub fn lower_function_with_registry<T: LirTarget>(
     env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
 ) {
+    lower_function_with_registry_opts(
+        func,
+        target,
+        registry,
+        env,
+        module_structs,
+        LoopLowering::Unroll,
+    );
+}
+
+/// Lower a single `IrFunction` with an explicit loop-lowering policy.
+pub fn lower_function_with_loop_lowering<T: LirTarget>(
+    func: &IrFunction,
+    target: &mut T,
+    loop_lowering: LoopLowering,
+) {
+    static EMPTY_ENV: std::sync::LazyLock<MonoEnv> = std::sync::LazyLock::new(|| MonoEnv::new(""));
+    let empty_registry = StructRegistry::empty();
+    lower_function_with_registry_opts(
+        func,
+        target,
+        &empty_registry,
+        &EMPTY_ENV,
+        &[],
+        loop_lowering,
+    );
+}
+
+fn lower_function_with_registry_opts<T: LirTarget>(
+    func: &IrFunction,
+    target: &mut T,
+    registry: &StructRegistry,
+    env: &MonoEnv,
+    module_structs: &[volar_compiler::ir::IrStruct],
+    loop_lowering: LoopLowering,
+) {
     let param_lir_tys: Vec<LirType> = func
         .params
         .iter()
@@ -1130,6 +1164,7 @@ pub fn lower_function_with_registry<T: LirTarget>(
         module_structs,
         &EMPTY_ENUMS,
     );
+    ctx.loop_mode = loop_lowering;
 
     let tail_vals = lower_block(&func.body, &mut ctx);
     ctx.target.ret(&tail_vals);
@@ -2725,69 +2760,521 @@ fn lower_bounded_loop<T: LirTarget<P>, P: Clone>(
     ctx: &mut LowerCtx<T, P>,
 ) {
     // Const-generic spec loops have a concrete trip count after planning.
-    // Unroll them so updates to flattened local aggregates remain ordinary SSA
-    // bindings. A CFG back-edge can only carry block parameters; the old path
-    // carried `i` but silently discarded assignments to e.g. `result[i]`.
-    if let (Some(start), Some(end)) = (
+    // Unrolling keeps updates to flattened local aggregates as ordinary SSA
+    // bindings. A CFG back-edge can only carry block parameters, so the
+    // native path threads loop-carried scalars as block params instead (and
+    // Stage 2 will promote aggregate assignment to allocas).
+    let concrete = (
         concrete_usize_expr(start, ctx),
         concrete_usize_expr(end, ctx),
-    ) {
-        let end = end
-            .checked_add(usize::from(inclusive))
-            .expect("loop bound overflow");
-        let prior_values = ctx.env.remove(var);
-        let prior_type = ctx.env_types.remove(var);
-        for index in start..end {
-            let value = ctx.target.iconst(LirType::U64, index as i64);
-            ctx.env.insert(var.to_owned(), vec![value]);
-            ctx.env_types
-                .insert(var.to_owned(), IrType::Primitive(PrimitiveType::Usize));
-            lower_block(body, ctx);
+    );
+    match ctx.loop_mode {
+        LoopLowering::Unroll => {
+            if let (Some(start_idx), Some(end_idx)) = concrete {
+                unroll_bounded_loop(var, start_idx, end_idx, inclusive, body, ctx);
+                return;
+            }
+            // Non-concrete bounds under `Unroll`: legacy native skeleton.
+            // UNSOUND for aggregate/loop-carried writes — see its doc.
+            lower_bounded_loop_legacy_native(var, start, end, inclusive, body, ctx);
         }
-        if let Some(values) = prior_values {
-            ctx.env.insert(var.to_owned(), values);
-        } else {
-            ctx.env.remove(var);
+        LoopLowering::Native | LoopLowering::Auto => {
+            match scan_native_loop_body(body, ctx) {
+                Ok(assigned) => {
+                    let carried: Vec<String> =
+                        assigned.into_iter().filter(|name| name != var).collect();
+                    lower_bounded_loop_native(var, start, end, inclusive, body, &carried, ctx);
+                }
+                Err(reason) => {
+                    // Not native-eligible: fall back to concrete unrolling
+                    // where possible; never silently mix semantics.
+                    if let (Some(start_idx), Some(end_idx)) = concrete {
+                        unroll_bounded_loop(var, start_idx, end_idx, inclusive, body, ctx);
+                    } else {
+                        panic!(
+                            "LIR native loop: loop is not native-eligible ({reason}) and its \
+                             bounds are non-concrete, so no sound lowering exists"
+                        );
+                    }
+                }
+            }
         }
-        if let Some(ty) = prior_type {
-            ctx.env_types.insert(var.to_owned(), ty);
-        } else {
-            ctx.env_types.remove(var);
+    }
+}
+
+/// Unroll a loop with concrete bounds into straight-line code (one
+/// `lower_block` invocation per iteration).
+fn unroll_bounded_loop<T: LirTarget<P>, P: Clone>(
+    var: &str,
+    start: usize,
+    end: usize,
+    inclusive: bool,
+    body: &IrBlock<P>,
+    ctx: &mut LowerCtx<T, P>,
+) {
+    let end = end
+        .checked_add(usize::from(inclusive))
+        .expect("loop bound overflow");
+    let prior_values = ctx.env.remove(var);
+    let prior_type = ctx.env_types.remove(var);
+    for index in start..end {
+        let value = ctx.target.iconst(LirType::U64, index as i64);
+        ctx.env.insert(var.to_owned(), vec![value]);
+        ctx.env_types
+            .insert(var.to_owned(), IrType::Primitive(PrimitiveType::Usize));
+        lower_block(body, ctx);
+    }
+    if let Some(values) = prior_values {
+        ctx.env.insert(var.to_owned(), values);
+    } else {
+        ctx.env.remove(var);
+    }
+    if let Some(ty) = prior_type {
+        ctx.env_types.insert(var.to_owned(), ty);
+    } else {
+        ctx.env_types.remove(var);
+    }
+}
+
+/// Analyze a loop body for the native path (plan §3.4). On success returns
+/// the names of scalar variables assigned inside the body (loop-carried
+/// candidates). On failure returns the reason the body is not
+/// native-eligible and the loop must fall back to unrolling.
+///
+/// The scan is a whitelist walker: expression shapes it cannot fully
+/// analyze are rejection reasons, never silently ignored — an unrecognized
+/// construct must not hide an assignment or an oracle/action call.
+fn scan_native_loop_body<T: LirTarget<P>, P: Clone>(
+    body: &IrBlock<P>,
+    ctx: &LowerCtx<T, P>,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let mut assigned = std::collections::BTreeSet::new();
+    scan_native_block(body, ctx, &mut assigned)?;
+    // Every assigned name must be a scalar with a live value at loop entry
+    // so it can be threaded as a loop-carried block param.
+    for name in &assigned {
+        let ty = ctx.env_types.get(name).ok_or_else(|| {
+            format!("assignment to '{name}' which is not defined before the loop")
+        })?;
+        let lir = ctx.registry.ir_type_to_lir(ty, ctx.mono);
+        if flatten_count(&lir, ctx.registry) > 1 {
+            return Err(format!(
+                "aggregate assignment to '{name}' (Stage 2: alloca promotion)"
+            ));
         }
-        return;
+        if !ctx.env.contains_key(name) {
+            return Err(format!(
+                "'{name}' is assigned in the loop but has no value at loop entry"
+            ));
+        }
+    }
+    Ok(assigned)
+}
+
+fn scan_native_block<T: LirTarget<P>, P: Clone>(
+    block: &IrBlock<P>,
+    ctx: &LowerCtx<T, P>,
+    assigned: &mut std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    for stmt in &block.stmts {
+        scan_native_stmt(stmt, ctx, assigned)?;
+    }
+    if let Some(expr) = &block.expr {
+        scan_native_expr(expr, ctx, assigned)?;
+    }
+    Ok(())
+}
+
+fn scan_native_stmt<T: LirTarget<P>, P: Clone>(
+    stmt: &IrStmt<P>,
+    ctx: &LowerCtx<T, P>,
+    assigned: &mut std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    match &stmt.kind {
+        IrStmtKind::Let { init, .. } => {
+            if let Some(init) = init {
+                scan_native_expr(init, ctx, assigned)?;
+            }
+            Ok(())
+        }
+        IrStmtKind::Semi(expr) | IrStmtKind::Expr(expr) => {
+            scan_native_expr(expr, ctx, assigned)
+        }
+        // Catch-all for IR kinds added in parallel development (design rule
+        // #4): unanalyzed statements make the loop ineligible.
+        _ => Err("unsupported statement in native loop body".to_owned()),
+    }
+}
+
+fn scan_native_expr<T: LirTarget<P>, P: Clone>(
+    expr: &IrExpr<P>,
+    ctx: &LowerCtx<T, P>,
+    assigned: &mut std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    match &expr.kind {
+        // Leaves.
+        IrExprKind::Lit(_)
+        | IrExprKind::Var(_)
+        | IrExprKind::LengthOf(_)
+        | IrExprKind::DefaultValue { .. }
+        | IrExprKind::TypenumUsize { .. }
+        | IrExprKind::Range { .. } => Ok(()),
+
+        // Sub-expression shapes.
+        IrExprKind::Binary { left, right, .. }
+        | IrExprKind::Index {
+            base: left,
+            index: right,
+        } => {
+            scan_native_expr(left, ctx, assigned)?;
+            scan_native_expr(right, ctx, assigned)
+        }
+        IrExprKind::Unary { expr: inner, .. }
+        | IrExprKind::Field { base: inner, .. }
+        | IrExprKind::Cast { expr: inner, .. } => scan_native_expr(inner, ctx, assigned),
+        IrExprKind::Call { func, args } => {
+            scan_native_expr(func, ctx, assigned)?;
+            for arg in args {
+                scan_native_expr(arg, ctx, assigned)?;
+            }
+            Ok(())
+        }
+        IrExprKind::MethodCall {
+            receiver, args, ..
+        } => {
+            scan_native_expr(receiver, ctx, assigned)?;
+            for arg in args {
+                scan_native_expr(arg, ctx, assigned)?;
+            }
+            Ok(())
+        }
+        IrExprKind::Path { .. } => Ok(()),
+        IrExprKind::StructExpr { fields, rest, .. } => {
+            for (_, field) in fields {
+                scan_native_expr(field, ctx, assigned)?;
+            }
+            if let Some(rest) = rest {
+                scan_native_expr(rest, ctx, assigned)?;
+            }
+            Ok(())
+        }
+        IrExprKind::Tuple(elems) | IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
+            for elem in elems {
+                scan_native_expr(elem, ctx, assigned)?;
+            }
+            Ok(())
+        }
+        IrExprKind::Repeat { elem, len } => {
+            scan_native_expr(elem, ctx, assigned)?;
+            scan_native_expr(len, ctx, assigned)
+        }
+        IrExprKind::ArrayGenerate { body, .. } => scan_native_expr(body, ctx, assigned),
+        IrExprKind::Block(block) => scan_native_block(block, ctx, assigned),
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            scan_native_expr(cond, ctx, assigned)?;
+            scan_native_block(then_branch, ctx, assigned)?;
+            if let Some(else_expr) = else_branch {
+                scan_native_expr(else_expr, ctx, assigned)?;
+            }
+            Ok(())
+        }
+        IrExprKind::BoundedLoop { start, end, body, .. } => {
+            scan_native_expr(start, ctx, assigned)?;
+            scan_native_expr(end, ctx, assigned)?;
+            scan_native_block(body, ctx, assigned)
+        }
+        IrExprKind::WhileLoop { cond, body } => {
+            scan_native_expr(cond, ctx, assigned)?;
+            scan_native_block(body, ctx, assigned)
+        }
+        IrExprKind::RawMap { receiver, body, .. } => {
+            scan_native_expr(receiver, ctx, assigned)?;
+            scan_native_expr(body, ctx, assigned)
+        }
+        IrExprKind::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
+            scan_native_expr(receiver, ctx, assigned)?;
+            scan_native_expr(init, ctx, assigned)?;
+            scan_native_expr(body, ctx, assigned)
+        }
+        IrExprKind::RawZip {
+            left,
+            right,
+            body,
+            ..
+        } => {
+            scan_native_expr(left, ctx, assigned)?;
+            scan_native_expr(right, ctx, assigned)?;
+            scan_native_expr(body, ctx, assigned)
+        }
+
+        // Assignment shapes: whole-variable scalar assigns are the carried
+        // candidates; everything else is a Stage-2+ concern.
+        IrExprKind::Assign { left, .. } | IrExprKind::AssignOp { left, .. } => {
+            match &left.kind {
+                IrExprKind::Var(name) => {
+                    assigned.insert(name.clone());
+                    Ok(())
+                }
+                IrExprKind::Index { .. } | IrExprKind::Field { .. } => Err(
+                    "indexed/field assignment (Stage 2: alloca promotion)".to_owned(),
+                ),
+                _ => Err("unsupported assignment target".to_owned()),
+            }
+        }
+
+        // Stage-3 concerns: control flow into the latch/exit edges.
+        IrExprKind::Continue => Err("continue (Stage 3)".to_owned()),
+        IrExprKind::Break(_) => Err("break (Stage 3)".to_owned()),
+
+        // Everything else: not analyzed, not eligible. Never guess.
+        _ => Err(format!(
+            "unsupported expression in native loop body (kind {:?})",
+            std::mem::discriminant(&expr.kind)
+        )),
+    }
+}
+
+/// Lower a native-eligible bounded loop as a CFG loop (plan §3.2):
+///
+/// ```text
+/// before:            start/limit computed; jump header(start, limit, carried…)
+/// header(i, n, cs):  branch i < n → body(i, n, cs) / exit(cs)
+/// body(i, n, cs):    env[i] = block param; carried names rebind to params;
+///                    <body>; jump latch(i, n, carried…)
+/// latch(i, n, cs):   jump header(i+1, n, cs)  [ReentryHint::bounded_loop_ascending]
+/// exit(cs):          carried names rebind to final-iteration values
+/// ```
+///
+/// Loop-carried scalars are the block params (the phi). The loop var's
+/// outer binding, if any, is threaded too and restored on exit, mirroring
+/// the unroll path's save/restore.
+fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
+    var: &str,
+    start: &IrExpr<P>,
+    end: &IrExpr<P>,
+    inclusive: bool,
+    body: &IrBlock<P>,
+    carried_names: &[String],
+    ctx: &mut LowerCtx<T, P>,
+) {
+    let prior_var_vals = ctx.env.remove(var);
+    let prior_var_ty = ctx.env_types.remove(var);
+
+    // Threaded entries: loop-carried scalars, then the loop var's outer
+    // binding (if any) under the loop var's own name.
+    let mut carried: Vec<(String, Vec<T::Value>)> = carried_names
+        .iter()
+        .map(|name| {
+            let vals = ctx.env.get(name).cloned().unwrap_or_else(|| {
+                panic!(
+                    "native loop: carried var '{name}' has no values at loop entry"
+                )
+            });
+            (name.clone(), vals)
+        })
+        .collect();
+    if let Some(vals) = &prior_var_vals {
+        carried.push((var.to_owned(), vals.clone()));
     }
 
-    // Strategy: loop_header(counter: U64, limit: U64)
-    //
-    // LEGACY NATIVE SKELETON — reached only in `LoopLowering::Unroll` mode
-    // when bounds are non-concrete (which the planner avoids producing).
-    // This skeleton is UNSOUND for loop bodies that assign aggregate locals
-    // or loop-carried scalars: those updates live only in this block's `env`
-    // and are silently discarded across the back-edge (the historical
-    // "silently discarded assignments to result[i]" bug). The sound native
-    // path — loop-carried values as block params, aggregate assignment via
-    // alloca promotion — is specified in docs/lir-native-loops-plan.md and
-    // selected by `LoopLowering::Native`/`Auto`.
-    //
-    // before:
-    //   start_val = lower(start)
-    //   end_val   = lower(end)
-    //   if inclusive: limit = end_val + 1, else limit = end_val
-    //   jump loop_header(start_val, limit)
-    //
-    // loop_header(counter, limit):
-    //   cmp = counter < limit
-    //   branch cmp → body_block, done_block
-    //
-    // body_block:
-    //   env[var] = counter
-    //   lower(body)
-    //   next = counter + 1
-    //   jump loop_header(next, limit)
-    //
-    // done_block:
-    //   (unit)
+    let header = ctx.target.create_block();
+    let body_block = ctx.target.create_block();
+    let latch = ctx.target.create_block();
+    let exit = ctx.target.create_block();
 
+    // Header params: induction var, limit, carried values.
+    let i_header = ctx.target.add_block_param(header.clone(), LirType::U64);
+    let limit_header = ctx.target.add_block_param(header.clone(), LirType::U64);
+    let mut header_carried = Vec::new();
+    for (_, vals) in &carried {
+        for v in vals {
+            let ty = ctx.target.value_scalar_type(v);
+            header_carried.push(ctx.target.add_block_param(header.clone(), ty));
+        }
+    }
+
+    // Body params: induction var, limit (forwarded to the latch edge),
+    // carried values.
+    let body_i = ctx
+        .target
+        .add_block_param(body_block.clone(), LirType::U64);
+    let body_limit = ctx
+        .target
+        .add_block_param(body_block.clone(), LirType::U64);
+    let mut body_carried: Vec<Vec<T::Value>> = Vec::new();
+    for (_, vals) in &carried {
+        let mut group = Vec::new();
+        for v in vals {
+            let ty = ctx.target.value_scalar_type(v);
+            group.push(ctx.target.add_block_param(body_block.clone(), ty));
+        }
+        body_carried.push(group);
+    }
+
+    // Latch params: induction var, limit, carried values.
+    let latch_i = ctx.target.add_block_param(latch.clone(), LirType::U64);
+    let latch_limit = ctx.target.add_block_param(latch.clone(), LirType::U64);
+    let mut latch_carried = Vec::new();
+    for (_, vals) in &carried {
+        for v in vals {
+            let ty = ctx.target.value_scalar_type(v);
+            latch_carried.push(ctx.target.add_block_param(latch.clone(), ty));
+        }
+    }
+
+    // Exit params: carried values only (the loop var is scoped to the loop;
+    // its outer binding, if any, is part of the carried set and restored
+    // below).
+    let mut exit_carried: Vec<Vec<T::Value>> = Vec::new();
+    for (_, vals) in &carried {
+        let mut group = Vec::new();
+        for v in vals {
+            let ty = ctx.target.value_scalar_type(v);
+            group.push(ctx.target.add_block_param(exit.clone(), ty));
+        }
+        exit_carried.push(group);
+    }
+
+    // Before block: compute bounds, jump header with the carried values.
+    let start_val = into_scalar(lower_expr(start, ctx), "loop start");
+    let end_val = into_scalar(lower_expr(end, ctx), "loop end");
+    let limit_val = if inclusive {
+        let one = ctx.target.iconst(LirType::U64, 1);
+        ctx.target.add(end_val, one)
+    } else {
+        end_val
+    };
+    let start_u64 = ctx.target.zext(start_val, LirType::U64);
+    let mut header_args = vec![start_u64, limit_val];
+    for (_, vals) in &carried {
+        header_args.extend(vals.iter().cloned());
+    }
+    ctx.target
+        .jump(header.clone(), BranchTarget::args(header_args));
+
+    // Header: test and dispatch.
+    ctx.target.switch_to_block(header.clone());
+    ctx.current_block = header.clone();
+    let cmp = ctx
+        .target
+        .icmp(IcmpPred::Ult, i_header.clone(), limit_header.clone());
+    let mut body_args = vec![i_header.clone(), limit_header.clone()];
+    body_args.extend(header_carried.iter().cloned());
+    let mut exit_args: Vec<T::Value> = Vec::new();
+    exit_args.extend(header_carried.iter().cloned());
+    ctx.target.branch(
+        cmp,
+        body_block.clone(),
+        BranchTarget::args(body_args),
+        exit.clone(),
+        BranchTarget::args(exit_args),
+    );
+
+    // Body block: rebind the induction var and carried names to params.
+    ctx.target.switch_to_block(body_block.clone());
+    ctx.current_block = body_block.clone();
+    ctx.env.insert(var.to_owned(), vec![body_i.clone()]);
+    ctx.env_types
+        .insert(var.to_owned(), IrType::Primitive(PrimitiveType::Usize));
+    for ((name, _), vals) in carried.iter().zip(&body_carried) {
+        if name != var {
+            ctx.env.insert(name.clone(), vals.clone());
+        }
+    }
+
+    ctx.loop_stack.push(LoopFrame {
+        latch: latch.clone(),
+        exit: exit.clone(),
+        var: var.to_owned(),
+        carried: carried_names.to_vec(),
+    });
+    lower_block(body, ctx);
+    ctx.loop_stack.pop();
+
+    // Latch edge: thread post-body carried values; the loop var's prior
+    // binding comes from its body-block params (it was shadowed by `i`).
+    let mut latch_args = vec![body_i, body_limit];
+    for ((name, _), vals) in carried.iter().zip(&body_carried) {
+        if name == var {
+            latch_args.extend(vals.iter().cloned());
+        } else {
+            let post = ctx.env.get(name).unwrap_or_else(|| {
+                panic!("native loop: carried var '{name}' disappeared in the loop body")
+            });
+            latch_args.extend(post.iter().cloned());
+        }
+    }
+    ctx.target.jump(latch.clone(), BranchTarget::args(latch_args));
+
+    // Latch: increment and repeat.
+    ctx.target.switch_to_block(latch.clone());
+    ctx.current_block = latch.clone();
+    let one = ctx.target.iconst(LirType::U64, 1);
+    let next = ctx.target.add(latch_i, one);
+    let mut header_args = vec![next, latch_limit];
+    header_args.extend(latch_carried.iter().cloned());
+    ctx.target.jump(
+        header,
+        BranchTarget::args(header_args).with_reentry(ReentryHint::bounded_loop_ascending()),
+    );
+
+    // Exit: carried names land as final-iteration values.
+    ctx.target.switch_to_block(exit.clone());
+    ctx.current_block = exit;
+    for ((name, _), vals) in carried.iter().zip(&exit_carried) {
+        ctx.env.insert(name.clone(), vals.clone());
+    }
+    if let Some(ty) = prior_var_ty {
+        ctx.env_types.insert(var.to_owned(), ty);
+    }
+}
+
+/// Legacy native skeleton for non-concrete bounds under `Unroll` mode.
+///
+/// UNSOUND for loop bodies that assign aggregate locals or loop-carried
+/// scalars: those updates live only in the current block's `env` and are
+/// silently discarded across the back-edge (the historical "silently
+/// discarded assignments to result[i]" bug). Kept only for `Unroll`-mode
+/// reachability with non-concrete bounds; the sound native path is
+/// `lower_bounded_loop_native` (selected by `LoopLowering::Native`/`Auto`).
+///
+/// Strategy: loop_header(counter: U64, limit: U64)
+///
+// before:
+//   start_val = lower(start)
+//   end_val   = lower(end)
+//   if inclusive: limit = end_val + 1, else limit = end_val
+//   jump loop_header(start_val, limit)
+//
+// loop_header(counter, limit):
+//   cmp = counter < limit
+//   branch cmp → body_block, done_block
+//
+// body_block:
+//   env[var] = counter
+//   lower(body)
+//   next = counter + 1
+//   jump loop_header(next, limit)
+//
+// done_block:
+//   (unit)
+fn lower_bounded_loop_legacy_native<T: LirTarget<P>, P: Clone>(
+    var: &str,
+    start: &IrExpr<P>,
+    end: &IrExpr<P>,
+    inclusive: bool,
+    body: &IrBlock<P>,
+    ctx: &mut LowerCtx<T, P>,
+) {
     let loop_header = ctx.target.create_block();
     let body_block = ctx.target.create_block();
     let done_block = ctx.target.create_block();
