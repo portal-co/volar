@@ -1253,3 +1253,347 @@ fn test_native_loop_continue_break() {
     );
     assert_eq!(output.trim(), "25");
 }
+
+// ============================================================================
+// Memory-backed aggregate locals (bind_ident_mem_backed)
+// ============================================================================
+
+/// `let a = Acc { .. }; a.sum += i; a.count += 1` over a plain (non-loop)
+/// body: the struct local binds to a stack slot, reads load through memory,
+/// field writes splice through the slot. Exercises the memory-backed model
+/// without any native loop.
+#[test]
+fn test_mem_backed_struct_local() {
+    use volar_compiler::ir::{
+        ExternalKind, IrBlock, IrExprKind, IrField, IrFunction, IrLit, IrModule, IrParam,
+        IrPattern, IrStmtKind, IrStruct, IrType, PrimitiveType, SpecBinOp, StructKind,
+    };
+    use volar_lir_codegen::{MonoPlanOptions, lower_module_monomorphized, mono::MonoEnv, MonoRoot};
+
+    let struct_def = IrStruct {
+        kind: StructKind::Custom("Acc".to_owned()),
+        module_path: vec![],
+        generics: vec![],
+        fields: vec![
+            IrField {
+                name: "sum".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U64),
+                public: true,
+            },
+            IrField {
+                name: "count".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U64),
+                public: true,
+            },
+        ],
+        is_tuple: false,
+        native_volar_type: None,
+        derives: vec![],
+    };
+    let acc_ty = IrType::Struct {
+        kind: StructKind::Custom("Acc".to_owned()),
+        type_args: vec![],
+    };
+    let u64_field_expr = |base: &str, field: &str| {
+        ir_expr(IrExprKind::Field {
+            base: Box::new(ir_expr(IrExprKind::Var(base.to_owned()))),
+            field: field.to_owned(),
+        })
+    };
+
+    let func = IrFunction {
+        no_inline: false,
+        name: "accumulate".to_owned(),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params: vec![IrParam {
+            name: "n".to_owned(),
+            ty: IrType::Primitive(PrimitiveType::U64),
+        }],
+        return_type: Some(IrType::Primitive(PrimitiveType::U64)),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident {
+                        mutable: true,
+                        name: "a".to_owned(),
+                        subpat: None,
+                    },
+                    ty: Some(acc_ty.clone()),
+                    init: Some(ir_expr(IrExprKind::StructExpr {
+                        kind: StructKind::Custom("Acc".to_owned()),
+                        type_args: vec![],
+                        fields: vec![
+                            ("sum".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                            ("count".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                        ],
+                        rest: None,
+                    })),
+                }),
+                ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::BoundedLoop {
+                    var: "i".to_owned(),
+                    start: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                    end: Box::new(ir_expr(IrExprKind::Var("n".to_owned()))),
+                    inclusive: false,
+                    body: IrBlock {
+                        stmts: vec![
+                            ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                                left: Box::new(u64_field_expr("a", "sum")),
+                                right: Box::new(ir_expr(IrExprKind::Binary {
+                                    op: SpecBinOp::Add,
+                                    left: Box::new(u64_field_expr("a", "sum")),
+                                    right: Box::new(ir_expr(IrExprKind::Cast {
+                                        expr: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                                        ty: Box::new(IrType::Primitive(PrimitiveType::U64)),
+                                    })),
+                                })),
+                            }))),
+                            ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                                left: Box::new(u64_field_expr("a", "count")),
+                                right: Box::new(ir_expr(IrExprKind::Binary {
+                                    op: SpecBinOp::Add,
+                                    left: Box::new(u64_field_expr("a", "count")),
+                                    right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(1)))),
+                                })),
+                            }))),
+                        ],
+                        expr: None,
+                    },
+                }))),
+            ],
+            expr: Some(Box::new(u64_field_expr("a", "sum"))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut module = IrModule::<IrFunction>::default();
+    module.name = "mem_backed_struct".to_owned();
+    module.structs = vec![struct_def];
+    module.functions = vec![func];
+
+    let env = MonoEnv::new("");
+    let mut b = CBackend::new();
+    lower_module_monomorphized(
+        &module,
+        &mut b,
+        MonoPlanOptions {
+            roots: vec![MonoRoot::new("accumulate", env)],
+            ..Default::default()
+        },
+    );
+    let c_src = b.finish();
+    let output = compile_and_run(
+        &c_src,
+        r#"  printf("%llu\n", (unsigned long long)accumulate(4ull));"#,
+    );
+    assert_eq!(output.trim(), "6");
+}
+
+/// Runtime-indexed read and element store over a memory-backed array local
+/// (`let arr = [..]; arr[i] = x; s += arr[i]`): the read lowers to a single
+/// memory load, not a select mux over flat scalars.
+#[test]
+fn test_mem_backed_array_runtime_index() {
+    use volar_compiler::ir::{
+        ArrayKind, ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrParam, IrPattern,
+        IrStmtKind, IrType, ArrayLength, PrimitiveType, SpecBinOp,
+    };
+    use volar_lir_codegen::{lower_function_with_loop_lowering, LoopLowering};
+
+    let arr_ty = IrType::Array {
+        kind: ArrayKind::FixedArray,
+        elem: Box::new(IrType::Primitive(PrimitiveType::U64)),
+        len: ArrayLength::Const(4),
+    };
+    let idx_expr = |name: &str| {
+        ir_expr(IrExprKind::Index {
+            base: Box::new(ir_expr(IrExprKind::Var(name.to_owned()))),
+            index: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+        })
+    };
+
+    let func = IrFunction {
+        no_inline: false,
+        name: "index_roundtrip".to_owned(),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params: vec![IrParam {
+            name: "i".to_owned(),
+            ty: IrType::Primitive(PrimitiveType::U64),
+        }],
+        return_type: Some(IrType::Primitive(PrimitiveType::U64)),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident {
+                        mutable: true,
+                        name: "arr".to_owned(),
+                        subpat: None,
+                    },
+                    ty: Some(arr_ty.clone()),
+                    init: Some(ir_expr(IrExprKind::FixedArray(vec![
+                        ir_expr(IrExprKind::Lit(IrLit::Int(10))),
+                        ir_expr(IrExprKind::Lit(IrLit::Int(20))),
+                        ir_expr(IrExprKind::Lit(IrLit::Int(30))),
+                        ir_expr(IrExprKind::Lit(IrLit::Int(40))),
+                    ]))),
+                }),
+                // arr[i] = arr[i] + 5
+                ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                    left: Box::new(idx_expr("arr")),
+                    right: Box::new(ir_expr(IrExprKind::Binary {
+                        op: SpecBinOp::Add,
+                        left: Box::new(idx_expr("arr")),
+                        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(5)))),
+                    })),
+                }))),
+            ],
+            expr: Some(Box::new(idx_expr("arr"))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut b = CBackend::new();
+    lower_function_with_loop_lowering(&func, &mut b, LoopLowering::Unroll);
+    let c_src = b.finish();
+    // i=2: 30 + 5 = 35
+    let output = compile_and_run(
+        &c_src,
+        r#"  printf("%llu\n", (unsigned long long)index_roundtrip(2ull));"#,
+    );
+    assert_eq!(output.trim(), "35");
+}
+
+/// A `let` whose init is an `if` over a struct-typed condition arm: both
+/// branches store into the memory-backed slot and the join block carries no
+/// aggregate params (joinless if-into-slot).
+#[test]
+fn test_mem_backed_if_join_struct() {
+    use volar_compiler::ir::{
+        ExternalKind, IrBlock, IrExprKind, IrField, IrFunction, IrLit, IrModule, IrParam,
+        IrPattern, IrStmtKind, IrStruct, IrType, PrimitiveType, SpecBinOp, StructKind,
+    };
+    use volar_lir_codegen::{MonoPlanOptions, lower_module_monomorphized, mono::MonoEnv, MonoRoot};
+
+    let struct_def = IrStruct {
+        kind: StructKind::Custom("Pair".to_owned()),
+        module_path: vec![],
+        generics: vec![],
+        fields: vec![
+            IrField {
+                name: "a".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U64),
+                public: true,
+            },
+            IrField {
+                name: "b".to_owned(),
+                ty: IrType::Primitive(PrimitiveType::U64),
+                public: true,
+            },
+        ],
+        is_tuple: false,
+        native_volar_type: None,
+        derives: vec![],
+    };
+    let pair_ty = IrType::Struct {
+        kind: StructKind::Custom("Pair".to_owned()),
+        type_args: vec![],
+    };
+    let field_expr = |base: &str, field: &str| {
+        ir_expr(IrExprKind::Field {
+            base: Box::new(ir_expr(IrExprKind::Var(base.to_owned()))),
+            field: field.to_owned(),
+        })
+    };
+
+    let func = IrFunction {
+        no_inline: false,
+        name: "pick".to_owned(),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params: vec![IrParam {
+            name: "flag".to_owned(),
+            ty: IrType::Primitive(PrimitiveType::U64),
+        }],
+        return_type: Some(IrType::Primitive(PrimitiveType::U64)),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident {
+                        mutable: false,
+                        name: "p".to_owned(),
+                        subpat: None,
+                    },
+                    ty: Some(pair_ty.clone()),
+                    init: Some(ir_expr(IrExprKind::If {
+                        cond: Box::new(ir_expr(IrExprKind::Binary {
+                            op: SpecBinOp::Ne,
+                            left: Box::new(ir_expr(IrExprKind::Var("flag".to_owned()))),
+                            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                        })),
+                        then_branch: IrBlock {
+                            stmts: vec![],
+                            expr: Some(Box::new(ir_expr(IrExprKind::StructExpr {
+                                kind: StructKind::Custom("Pair".to_owned()),
+                                type_args: vec![],
+                                fields: vec![
+                                    ("a".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(10)))),
+                                    ("b".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(20)))),
+                                ],
+                                rest: None,
+                            }))),
+                        },
+                        else_branch: Some(Box::new(ir_expr(IrExprKind::StructExpr {
+                            kind: StructKind::Custom("Pair".to_owned()),
+                            type_args: vec![],
+                            fields: vec![
+                                ("a".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(100)))),
+                                ("b".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(200)))),
+                            ],
+                            rest: None,
+                        }))),
+                    })),
+                }),
+            ],
+            expr: Some(Box::new(ir_expr(IrExprKind::Binary {
+                op: SpecBinOp::Add,
+                left: Box::new(field_expr("p", "a")),
+                right: Box::new(field_expr("p", "b")),
+            }))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut module = IrModule::<IrFunction>::default();
+    module.name = "mem_backed_if_join".to_owned();
+    module.structs = vec![struct_def];
+    module.functions = vec![func];
+
+    let env = MonoEnv::new("");
+    let mut b = CBackend::new();
+    lower_module_monomorphized(
+        &module,
+        &mut b,
+        MonoPlanOptions {
+            roots: vec![MonoRoot::new("pick", env)],
+            ..Default::default()
+        },
+    );
+    let c_src = b.finish();
+    let out_true = compile_and_run(
+        &c_src,
+        r#"  printf("%llu\n", (unsigned long long)pick(1ull));"#,
+    );
+    assert_eq!(out_true.trim(), "30");
+    let out_false = compile_and_run(
+        &c_src,
+        r#"  printf("%llu\n", (unsigned long long)pick(0ull));"#,
+    );
+    assert_eq!(out_false.trim(), "300");
+}

@@ -638,8 +638,7 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                     } else {
                         unimplemented!(
                             "Projection array length in LIR lowering: type={type:?} field={field:?} [{}]",
-                            crate::CURRENT_INSTANCE_DEBUG
-                                .with(|c| c.borrow().clone())
+                            crate::CURRENT_INSTANCE_DEBUG.with(|c| c.borrow().clone())
                         )
                     }
                 }

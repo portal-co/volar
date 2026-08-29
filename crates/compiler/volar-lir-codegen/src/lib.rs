@@ -149,6 +149,8 @@ struct LowerCtx<'t, T: LirTarget<P>, P: Clone = ()> {
     mono_plan: Option<&'t MonoPlan<P>>,
     /// Loop lowering policy (see [`LoopLowering`]).
     loop_mode: LoopLowering,
+    /// Memory-backed aggregate locals (see [`MonoPlanOptions::aggregate_locals`]).
+    agg_locals: bool,
     /// Enclosing native loops while lowering a native loop body (plan §3.5).
     loop_stack: Vec<LoopFrame<T::Block>>,
     /// Variables promoted to memory by the innermost native loop (plan §3.3).
@@ -190,6 +192,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             current_instance: None,
             mono_plan: None,
             loop_mode: LoopLowering::Unroll,
+            agg_locals: true,
             loop_stack: Vec::new(),
             promoted: BTreeMap::new(),
             _p: std::marker::PhantomData,
@@ -279,8 +282,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             // split — without this, every sub-pattern silently binds ONE
             // scalar and every later use misindexes.
             IrExprKind::Tuple(elems) => {
-                let tys: Option<Vec<IrType>> =
-                    elems.iter().map(|e| self.infer_type(e)).collect();
+                let tys: Option<Vec<IrType>> = elems.iter().map(|e| self.infer_type(e)).collect();
                 Some(IrType::Tuple(tys?))
             }
 
@@ -452,14 +454,13 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                             elem: Box::new(elem.as_ref().clone()),
                             len: ArrayLength::TypeParam(match &type_args[1] {
                                 IrType::TypeParam(n) => n.clone(),
-                                other => match crate::mono::type_args_to_len(
-                                    Some(other),
-                                    self.mono,
-                                ) {
-                                    volar_compiler::ir::ArrayLength::TypeParam(n) => n,
-                                    volar_compiler::ir::ArrayLength::Const(n) => n.to_string(),
-                                    _ => "_unresolved".to_owned(),
-                                },
+                                other => {
+                                    match crate::mono::type_args_to_len(Some(other), self.mono) {
+                                        volar_compiler::ir::ArrayLength::TypeParam(n) => n,
+                                        volar_compiler::ir::ArrayLength::Const(n) => n.to_string(),
+                                        _ => "_unresolved".to_owned(),
+                                    }
+                                }
                             }),
                         });
                     }
@@ -481,11 +482,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 .expr
                 .as_deref()
                 .and_then(|e| self.infer_type(e))
-                .or_else(|| {
-                    else_branch
-                        .as_deref()
-                        .and_then(|e| self.infer_type(e))
-                }),
+                .or_else(|| else_branch.as_deref().and_then(|e| self.infer_type(e))),
 
             // Literal: infer primitive type from the literal variant.
             IrExprKind::Lit(lit) => match lit {
@@ -686,7 +683,9 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
                 ctx.target
                     .ptr_index_store(ptr.clone(), k_val, chunk, &elem_lir);
             }
-            let ty = declared.cloned().unwrap_or(LirType::Ptr(Box::new(elem_lir)));
+            let ty = declared
+                .cloned()
+                .unwrap_or(LirType::Ptr(Box::new(elem_lir)));
             return (ty, vec![ptr]);
         }
         // Irregular: fall through to flat lowering under the declared type
@@ -694,13 +693,11 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
         let ty = declared.cloned().unwrap_or(LirType::U64);
         return (ty, flat);
     }
-    let ty = declared
-        .cloned()
-        .unwrap_or_else(|| {
-            ctx.infer_type(arg)
-                .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
-                .unwrap_or(LirType::U64)
-        });
+    let ty = declared.cloned().unwrap_or_else(|| {
+        ctx.infer_type(arg)
+            .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
+            .unwrap_or(LirType::U64)
+    });
     let values = lower_expr(arg, ctx);
     (ty, values)
 }
@@ -772,11 +769,16 @@ fn promoted_whole_store<T: LirTarget<P>, P: Clone>(
     ctx: &mut LowerCtx<'_, T, P>,
 ) {
     match layout {
-        PromotedLayout::Array { elem_ty, n, elem_width } => {
+        PromotedLayout::Array {
+            elem_ty,
+            n,
+            elem_width,
+        } => {
             for k in 0..*n {
                 let k_val = ctx.target.iconst(LirType::U64, k as i64);
                 let chunk = &vals[k * elem_width..(k + 1) * elem_width];
-                ctx.target.ptr_index_store(ptr.clone(), k_val, chunk, elem_ty);
+                ctx.target
+                    .ptr_index_store(ptr.clone(), k_val, chunk, elem_ty);
             }
         }
         PromotedLayout::Whole { agg_ty } => {
@@ -785,7 +787,6 @@ fn promoted_whole_store<T: LirTarget<P>, P: Clone>(
         }
     }
 }
-
 
 /// Bookkeeping for the enclosing native loop while lowering its body
 /// (plan §3.5). Populated only by the native-loop lowering path; unrolled
@@ -828,6 +829,11 @@ pub struct MonoPlanOptions {
     pub include_auxiliary: bool,
     /// Loop lowering policy (see [`LoopLowering`]).
     pub loop_lowering: LoopLowering,
+    /// Memory-backed local model: aggregate locals (arrays, structs, tuples)
+    /// bind to stack slots via the target's `StackAllocExt` instead of flat
+    /// SSA scalars — binding is storing, reads/writes go through memory.
+    /// Targets without stack allocation (and `false`) keep the flat model.
+    pub aggregate_locals: bool,
 }
 
 impl Default for MonoPlanOptions {
@@ -838,6 +844,7 @@ impl Default for MonoPlanOptions {
             lenient: false,
             include_auxiliary: true,
             loop_lowering: LoopLowering::Unroll,
+            aggregate_locals: true,
         }
     }
 }
@@ -904,7 +911,14 @@ pub fn lower_module_monomorphized<T: LirTarget<P>, P: Clone>(
     options: MonoPlanOptions,
 ) -> Result<(), MonoError> {
     let plan = mono::plan_flat_module(module, &options.roots, options.max_instances)?;
-    lower_planned_module(module, target, &plan, options.lenient, options.loop_lowering);
+    lower_planned_module(
+        module,
+        target,
+        &plan,
+        options.lenient,
+        options.loop_lowering,
+        options.aggregate_locals,
+    );
     Ok(())
 }
 
@@ -980,6 +994,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     plan: &MonoPlan<P>,
     lenient: bool,
     loop_lowering: LoopLowering,
+    aggregate_locals: bool,
 ) {
     // Non-generic structs first; concrete generic nominals are registered
     // per planned instance via `ensure_type_nominals` (no module-wide merge).
@@ -1011,9 +1026,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
             .or_else(|| {
                 module.impls.iter().find_map(|ir_impl| {
                     ir_impl.items.iter().find_map(|item| match item {
-                        volar_compiler::ir::IrImplItem::Method(m)
-                            if m.name == key.source_name =>
-                        {
+                        volar_compiler::ir::IrImplItem::Method(m) if m.name == key.source_name => {
                             Some(m.clone())
                         }
                         _ => None,
@@ -1118,32 +1131,29 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     let mut func_sigs = BTreeMap::new();
     let mut ir_func_ret_types = BTreeMap::new();
     for (key, env) in &plan.instances {
-        let func = plan
-            .materialized
-            .get(key)
-            .unwrap_or_else(|| {
-                module
-                    .functions
-                    .iter()
-                    .find(|func| func.name == key.source_name)
-                    .unwrap_or_else(|| {
-                        // Impl methods live outside `module.functions`.
-                        module
-                            .impls
-                            .iter()
-                            .find_map(|ir_impl| {
-                                ir_impl.items.iter().find_map(|item| match item {
-                                    volar_compiler::ir::IrImplItem::Method(m)
-                                        if m.name == key.source_name =>
-                                    {
-                                        Some(m)
-                                    }
-                                    _ => None,
-                                })
+        let func = plan.materialized.get(key).unwrap_or_else(|| {
+            module
+                .functions
+                .iter()
+                .find(|func| func.name == key.source_name)
+                .unwrap_or_else(|| {
+                    // Impl methods live outside `module.functions`.
+                    module
+                        .impls
+                        .iter()
+                        .find_map(|ir_impl| {
+                            ir_impl.items.iter().find_map(|item| match item {
+                                volar_compiler::ir::IrImplItem::Method(m)
+                                    if m.name == key.source_name =>
+                                {
+                                    Some(m)
+                                }
+                                _ => None,
                             })
-                            .expect("planned source function exists")
-                    })
-            });
+                        })
+                        .expect("planned source function exists")
+                })
+        });
         let emitted = plan.emitted_name(key).to_owned();
         let memory_capable = target.stack_alloc_ext().is_some();
         func_sigs.insert(
@@ -1152,9 +1162,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
                 param_tys: func
                     .params
                     .iter()
-                    .map(|param| {
-                        param_abi_lir_type(&registry, &param.ty, env, memory_capable)
-                    })
+                    .map(|param| param_abi_lir_type(&registry, &param.ty, env, memory_capable))
                     .collect(),
                 return_type: func
                     .return_type
@@ -1170,16 +1178,13 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     for (key, env) in &plan.instances {
         // Materialized method instances lower from their derived definition
         // (receiver promoted to a typed `self` param).
-        let func = plan
-            .materialized
-            .get(key)
-            .unwrap_or_else(|| {
-                module
-                    .functions
-                    .iter()
-                    .find(|func| func.name == key.source_name)
-                    .expect("planned source function exists")
-            });
+        let func = plan.materialized.get(key).unwrap_or_else(|| {
+            module
+                .functions
+                .iter()
+                .find(|func| func.name == key.source_name)
+                .expect("planned source function exists")
+        });
         lower_function_instance(
             func,
             plan.emitted_name(key),
@@ -1195,6 +1200,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
             &func_sigs,
             &ir_func_ret_types,
             loop_lowering,
+            aggregate_locals,
         );
     }
 }
@@ -1215,6 +1221,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
     loop_lowering: LoopLowering,
+    aggregate_locals: bool,
 ) {
     CURRENT_INSTANCE_DEBUG.with(|c| *c.borrow_mut() = emitted_name.to_owned());
     let memory_capable = target.stack_alloc_ext().is_some();
@@ -1262,8 +1269,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
                     if let IrType::Array { len, .. } = &param.ty {
                         if let ArrayLength::Const(n) = mono_len(len, env) {
                             if n > 0 {
-                                let elem_width =
-                                    flatten_count(&elem_lir.clone(), registry);
+                                let elem_width = flatten_count(&elem_lir.clone(), registry);
                                 param_promotions.push((
                                     param.name.clone(),
                                     PromotedSlot {
@@ -1285,7 +1291,11 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
                     }
                 }
             }
-            (param.name.clone(), values.clone(), mono_type(&param.ty, env))
+            (
+                param.name.clone(),
+                values.clone(),
+                mono_type(&param.ty, env),
+            )
         })
         .collect();
     let mut ctx = LowerCtx::new(
@@ -1307,6 +1317,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     ctx.current_instance = Some(instance);
     ctx.mono_plan = Some(plan);
     ctx.loop_mode = loop_lowering;
+    ctx.agg_locals = aggregate_locals;
     let tail_vals = lower_block(&func.body, &mut ctx);
     ctx.target.ret(&tail_vals);
     ctx.target.end_function();
@@ -1508,7 +1519,11 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                 // source of the element type and length — the Rust
                 // typechecker infers them from it, the IR must be told.
                 if let IrExprKind::Call { func, args } = &init_expr.kind {
-                    if let IrExprKind::Path { segments, type_args } = &func.kind {
+                    if let IrExprKind::Path {
+                        segments,
+                        type_args,
+                    } = &func.kind
+                    {
                         if segments.last().map(String::as_str) == Some("from_fn") {
                             if let Some(IrExprKind::Closure { params, body, .. }) =
                                 args.first().map(|a| &a.kind)
@@ -1544,14 +1559,24 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                                             },
                                         );
                                     }
-                                    let vals = lower_array_generate(
+                                    let mut vals = lower_array_generate(
                                         Some(&elem_ir_ty),
                                         &len,
                                         idx,
                                         body,
                                         ctx,
                                     );
-                                    bind_pattern(pattern, vals, ty.as_ref(), ctx);
+                                    let handled =
+                                        if let (IrPattern::Ident { name, .. }, Some(ann)) =
+                                            (pattern, ty.as_ref())
+                                        {
+                                            bind_ident_mem_backed(name, &mut vals, ann, ctx)
+                                        } else {
+                                            false
+                                        };
+                                    if !handled {
+                                        bind_pattern(pattern, vals, ty.as_ref(), ctx);
+                                    }
                                     return;
                                 }
                             }
@@ -1561,7 +1586,7 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                 // When the init expression is a literal and we have a type
                 // annotation, pass the type hint so the literal gets the
                 // correct narrow type (e.g. U8 instead of U64).
-                let vals = match &init_expr.kind {
+                let mut vals = match &init_expr.kind {
                     IrExprKind::Lit(lit) => {
                         vec![lower_lit(lit, ctx, ty.as_ref())]
                     }
@@ -1573,7 +1598,8 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                     if std::env::var("VOLAR_LIR_DEBUG").is_ok() && tuple_ty.is_none() {
                         eprintln!(
                             "[tuple-let] untyped tuple-pattern let ({} sub-pats, {} vals), init_disc={:?} caller={:?}",
-                            sub_pats.len(), vals.len(),
+                            sub_pats.len(),
+                            vals.len(),
                             std::mem::discriminant(&init_expr.kind),
                             ctx.current_instance.map(|k| k.source_name.as_str())
                         );
@@ -1582,61 +1608,15 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                     return;
                 }
                 if let IrPattern::Ident { name, .. } = pattern {
-                    let ir_ty = ty.clone().or_else(|| ctx.infer_type(init_expr));
-                    // Large flat aggregate locals (the weave's per-lane
-                    // `[Vope; W]` from_fn arrays, hats, bundles) promote to
-                    // stack slots when the target can allocate: every
-                    // later runtime-indexed access would otherwise build a
-                    // (n × width)-way select mux over the flat values,
-                    // which dominates generated C size at mem_probe scale
-                    // (hundreds of MB per function). Small aggregates keep
-                    // the SSA-flat model.
-                    if let Some(ir_ty) = &ir_ty {
-                        let promote = ctx.target.stack_alloc_ext().is_some()
-                            && ctx.promoted.get(name.as_str()).is_none()
-                            && match ir_ty {
-                                IrType::Array { elem, len, .. } => {
-                                    matches!(mono_len(len, ctx.mono), ArrayLength::Const(n) if n > 0)
-                                        && {
-                                            let elem_lir =
-                                                ctx.registry.ir_type_to_lir(elem, ctx.mono);
-                                            let ew = flatten_count(&elem_lir, ctx.registry);
-                                            let n = match mono_len(len, ctx.mono) {
-                                                ArrayLength::Const(n) => n,
-                                                _ => 0,
-                                            };
-                                            ew * n >= 512 && vals.len() == ew * n
-                                        }
-                                }
-                                _ => false,
-                            };
-                        if promote {
-                            if let IrType::Array { elem, len, .. } = ir_ty {
-                                let elem_lir = ctx.registry.ir_type_to_lir(elem, ctx.mono);
-                                let elem_width = flatten_count(&elem_lir, ctx.registry);
-                                let n = match mono_len(len, ctx.mono) {
-                                    ArrayLength::Const(n) => n,
-                                    _ => unreachable!("checked above"),
-                                };
-                                let ptr = target_alloca(ctx, elem_lir.clone(), n);
-                                let slot = PromotedSlot {
-                                    ptr,
-                                    layout: PromotedLayout::Array {
-                                        elem_ty: elem_lir.clone(),
-                                        n,
-                                        elem_width,
-                                    },
-                                };
-                                promoted_whole_store(&slot.ptr, &slot.layout, &vals, ctx);
-                                ctx.env.remove(name);
-                                ctx.promoted.insert(name.clone(), slot);
-                                ctx.env_types.insert(name.clone(), ir_ty.clone());
-                                return;
-                            }
+                    if let Some(ir_ty) = ty.clone().or_else(|| ctx.infer_type(init_expr)) {
+                        ctx.env_types.insert(name.clone(), ir_ty.clone());
+                        // Memory-backed aggregate local (plan: mem-backed
+                        // locals): any array / struct / tuple binds to a
+                        // stack slot when the target can allocate. Binding
+                        // is storing; reads and writes go through memory.
+                        if bind_ident_mem_backed(name, &mut vals, &ir_ty, ctx) {
+                            return;
                         }
-                    }
-                    if let Some(ir_ty) = ir_ty {
-                        ctx.env_types.insert(name.clone(), ir_ty);
                     }
                 }
                 bind_pattern(pattern, vals, None, ctx);
@@ -1647,6 +1627,109 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
         }
         _ => panic!("lower_stmt: unhandled IrStmt variant — add lowering for this variant"),
     }
+}
+
+/// Memory-backed aggregate local binding. When `ir_ty` is an aggregate
+/// (fixed array with a constant positive length, struct, or tuple), the
+/// target supports stack allocation, and the model is enabled, `name` binds
+/// to a promoted slot: allocate (once), store the whole value, and route all
+/// later reads/writes through memory — binding is storing. Scalars keep the
+/// flat env model. Re-binding an already-promoted name with a compatible
+/// layout stores into the existing slot; an incompatible layout drops the
+/// slot and falls back to flat env values.
+///
+/// On success `vals` is consumed and the caller must not bind the pattern
+/// again; on failure `vals` is untouched and the caller falls back to
+/// `bind_pattern`.
+fn bind_ident_mem_backed<T: LirTarget<P>, P: Clone>(
+    name: &str,
+    vals: &mut Vec<T::Value>,
+    ir_ty: &IrType,
+    ctx: &mut LowerCtx<T, P>,
+) -> bool {
+    if !ctx.agg_locals || ctx.target.stack_alloc_ext().is_none() {
+        return false;
+    }
+    let base_ty = match ir_ty {
+        IrType::Reference { elem, .. } => elem.as_ref().clone(),
+        other => other.clone(),
+    };
+    // Promotable aggregate layout: flat arrays get element-granularity slots
+    // (runtime-indexed stores); structs and tuples get one whole-value slot.
+    let layout: PromotedLayout = match &base_ty {
+        IrType::Array { elem, len, .. } => {
+            let Some(n) = mono::array_len_const(&mono_len(len, ctx.mono)) else {
+                return false;
+            };
+            if n == 0 {
+                return false;
+            }
+            let elem_lir = ctx.registry.ir_type_to_lir(elem, ctx.mono);
+            let ew = flatten_count(&elem_lir, ctx.registry);
+            if ew == 0 {
+                return false;
+            }
+            PromotedLayout::Array {
+                elem_ty: elem_lir,
+                n,
+                elem_width: ew,
+            }
+        }
+        IrType::Struct { .. } | IrType::Tuple { .. } => {
+            let lir = ctx.registry.ir_type_to_lir(&base_ty, ctx.mono);
+            if flatten_count(&lir, ctx.registry) <= 1 {
+                return false;
+            }
+            PromotedLayout::Whole { agg_ty: lir }
+        }
+        _ => return false,
+    };
+    let width = match &layout {
+        PromotedLayout::Array { n, elem_width, .. } => n * elem_width,
+        PromotedLayout::Whole { agg_ty } => flatten_count(agg_ty, ctx.registry),
+    };
+    if vals.len() != width {
+        return false;
+    }
+    // Re-binding an already-promoted name with the same layout: store into
+    // the existing slot (binding is storing, not re-allocation).
+    if let Some(slot) = ctx.promoted.get(name) {
+        let same = match (&slot.layout, &layout) {
+            (
+                PromotedLayout::Array {
+                    elem_ty,
+                    n,
+                    elem_width,
+                },
+                PromotedLayout::Array {
+                    elem_ty: e2,
+                    n: n2,
+                    elem_width: w2,
+                },
+            ) => elem_ty == e2 && n == n2 && elem_width == w2,
+            (PromotedLayout::Whole { agg_ty }, PromotedLayout::Whole { agg_ty: a2 }) => {
+                agg_ty == a2
+            }
+            _ => false,
+        };
+        if same {
+            let slot = slot.clone();
+            promoted_whole_store(&slot.ptr, &slot.layout, vals, ctx);
+            return true;
+        }
+        // Incompatible rebind: drop the slot, use the flat env model.
+        ctx.promoted.remove(name);
+    }
+    let (elem_or_agg, count) = match &layout {
+        PromotedLayout::Array { elem_ty, n, .. } => (elem_ty.clone(), *n),
+        PromotedLayout::Whole { agg_ty } => (agg_ty.clone(), 1),
+    };
+    let ptr = target_alloca(ctx, elem_or_agg, count);
+    let slot = PromotedSlot { ptr, layout };
+    promoted_whole_store(&slot.ptr, &slot.layout, vals, ctx);
+    ctx.env.remove(name);
+    ctx.promoted.insert(name.to_string(), slot);
+    true
 }
 
 /// Split flat scalars across a tuple sub-pattern list using element type widths.
@@ -2153,9 +2236,7 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
 
         // Iterator pipelines: lower the shapes the spec uses. The chain is
         // normalized to a fold-like unrolled loop over the source collection.
-        IrExprKind::IterPipeline(chain) => {
-            lower_iter_chain(chain, ctx)
-        }
+        IrExprKind::IterPipeline(chain) => lower_iter_chain(chain, ctx),
 
         // ---- Path: may be a unit enum variant or a type-level size constant --
         IrExprKind::Path { segments, .. } => {
@@ -3117,7 +3198,6 @@ fn bind_map_pattern<T: LirTarget<P>, P: Clone>(
     }
 }
 
-
 // ============================================================================
 // IterPipeline (unrolled iterator chain)
 // ============================================================================
@@ -3134,9 +3214,12 @@ fn bind_chain_elem_pattern<T: LirTarget<P>, P: Clone>(
     match pattern {
         IrPattern::Tuple(sub_pats) if sub_pats.len() == 2 => {
             if let Some(i) = index {
-                bind_map_pattern(&sub_pats[0],
+                bind_map_pattern(
+                    &sub_pats[0],
                     vec![ctx.target.iconst(LirType::U64, i as i64)],
-                    &IrType::Primitive(PrimitiveType::U64), ctx);
+                    &IrType::Primitive(PrimitiveType::U64),
+                    ctx,
+                );
             } else {
                 unimplemented!("IterChain tuple pattern without enumerate index");
             }
@@ -3182,10 +3265,9 @@ fn lower_iter_chain<T: LirTarget<P>, P: Clone>(
                 .collect()
         }
         IterChainSource::Range { start, end, .. } => {
-            let s = concrete_usize_expr(start, ctx)
-                .expect("IterChain range start must be concrete");
-            let e = concrete_usize_expr(end, ctx)
-                .expect("IterChain range end must be concrete");
+            let s =
+                concrete_usize_expr(start, ctx).expect("IterChain range start must be concrete");
+            let e = concrete_usize_expr(end, ctx).expect("IterChain range end must be concrete");
             (s..e)
                 .map(|i| {
                     (
@@ -3238,7 +3320,10 @@ fn lower_iter_chain<T: LirTarget<P>, P: Clone>(
         } => {
             let init_ty = ctx.infer_type(init);
             let acc_ty = init_ty.unwrap_or_else(|| {
-                elems.first().map(|(_, _, ty)| ty.clone()).unwrap_or(IrType::Primitive(PrimitiveType::U64))
+                elems
+                    .first()
+                    .map(|(_, _, ty)| ty.clone())
+                    .unwrap_or(IrType::Primitive(PrimitiveType::U64))
             });
             let mut acc_vals = lower_expr(init, ctx);
             for (idx, elem_vals, elem_ty) in &elems {
@@ -3471,18 +3556,25 @@ fn scan_native_loop_body<T: LirTarget<P>, P: Clone>(
     scan_native_block(body, ctx, &mut info)?;
     // Every assigned name must be defined before the loop with a live value
     // so it can be carried as a block param or initialized into an alloca.
-    let mut all: Vec<&String> = info.scalar_assigned.iter().chain(info.agg_assigned.iter()).collect();
+    let mut all: Vec<&String> = info
+        .scalar_assigned
+        .iter()
+        .chain(info.agg_assigned.iter())
+        .collect();
     all.sort();
     all.dedup();
     for name in all {
+        // Already-promoted names are memory-backed function locals: loop
+        // writes go through the existing slot, no carrying or re-promotion.
+        if ctx.promoted.contains_key(name.as_str()) {
+            continue;
+        }
         let ty = ctx.env_types.get(name).ok_or_else(|| {
             format!("assignment to '{name}' which is not defined before the loop")
         })?;
         let lir = ctx.registry.ir_type_to_lir(ty, ctx.mono);
         let width = flatten_count(&lir, ctx.registry);
-        if info.scalar_assigned.contains(name)
-            && info.agg_assigned.contains(name)
-        {
+        if info.scalar_assigned.contains(name) && info.agg_assigned.contains(name) {
             return Err(format!(
                 "'{name}' is both whole-assigned and part-assigned in the loop; \
                  the value model cannot mix env scalars and promoted memory"
@@ -3543,9 +3635,7 @@ fn scan_native_stmt<T: LirTarget<P>, P: Clone>(
             }
             Ok(())
         }
-        IrStmtKind::Semi(expr) | IrStmtKind::Expr(expr) => {
-            scan_native_expr(expr, ctx, info)
-        }
+        IrStmtKind::Semi(expr) | IrStmtKind::Expr(expr) => scan_native_expr(expr, ctx, info),
         // Catch-all for IR kinds added in parallel development (design rule
         // #4): unanalyzed statements make the loop ineligible.
         _ => Err("unsupported statement in native loop body".to_owned()),
@@ -3585,9 +3675,7 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
             }
             Ok(())
         }
-        IrExprKind::MethodCall {
-            receiver, args, ..
-        } => {
+        IrExprKind::MethodCall { receiver, args, .. } => {
             scan_native_expr(receiver, ctx, info)?;
             for arg in args {
                 scan_native_expr(arg, ctx, info)?;
@@ -3628,7 +3716,9 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
             }
             Ok(())
         }
-        IrExprKind::BoundedLoop { start, end, body, .. } => {
+        IrExprKind::BoundedLoop {
+            start, end, body, ..
+        } => {
             scan_native_expr(start, ctx, info)?;
             scan_native_expr(end, ctx, info)?;
             scan_native_block(body, ctx, info)
@@ -3652,10 +3742,7 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
             scan_native_expr(body, ctx, info)
         }
         IrExprKind::RawZip {
-            left,
-            right,
-            body,
-            ..
+            left, right, body, ..
         } => {
             scan_native_expr(left, ctx, info)?;
             scan_native_expr(right, ctx, info)?;
@@ -3694,9 +3781,7 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
                             | IrExprKind::Field { base: inner, .. } => cursor = inner.as_ref(),
                             IrExprKind::Cast { expr: inner, .. } => cursor = inner.as_ref(),
                             _ => {
-                                return Err(
-                                    "assignment to a non-variable aggregate base".to_owned()
-                                )
+                                return Err("assignment to a non-variable aggregate base".to_owned());
                             }
                         }
                     }
@@ -3769,13 +3854,9 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
         };
         let lir = ctx.registry.ir_type_to_lir(&base_ty, ctx.mono);
         let width = flatten_count(&lir, ctx.registry);
-        let init_vals = ctx
-            .env
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!("native loop: promoted var '{name}' has no value at loop entry")
-            });
+        let init_vals = ctx.env.get(name).cloned().unwrap_or_else(|| {
+            panic!("native loop: promoted var '{name}' has no value at loop entry")
+        });
         assert_eq!(
             init_vals.len(),
             width,
@@ -3788,8 +3869,9 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
             let elem_ir = (**elem).clone();
             let elem_lir = ctx.registry.ir_type_to_lir(&elem_ir, ctx.mono);
             let elem_width = flatten_count(&elem_lir, ctx.registry);
-            let n = mono::array_len_const(&mono_len(len, ctx.mono))
-                .unwrap_or_else(|| panic!("native loop: promoted array '{name}' has non-constant length"));
+            let n = mono::array_len_const(&mono_len(len, ctx.mono)).unwrap_or_else(|| {
+                panic!("native loop: promoted array '{name}' has non-constant length")
+            });
             let ptr = target_alloca(ctx, elem_lir.clone(), n);
             let slot = PromotedSlot {
                 ptr,
@@ -3821,9 +3903,7 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
         .iter()
         .map(|name| {
             let vals = ctx.env.get(name).cloned().unwrap_or_else(|| {
-                panic!(
-                    "native loop: carried var '{name}' has no values at loop entry"
-                )
+                panic!("native loop: carried var '{name}' has no values at loop entry")
             });
             (name.clone(), vals)
         })
@@ -3850,12 +3930,8 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
 
     // Body params: induction var, limit (forwarded to the latch edge),
     // carried values.
-    let body_i = ctx
-        .target
-        .add_block_param(body_block.clone(), LirType::U64);
-    let body_limit = ctx
-        .target
-        .add_block_param(body_block.clone(), LirType::U64);
+    let body_i = ctx.target.add_block_param(body_block.clone(), LirType::U64);
+    let body_limit = ctx.target.add_block_param(body_block.clone(), LirType::U64);
     let mut body_carried: Vec<Vec<T::Value>> = Vec::new();
     for (_, vals) in &carried {
         let mut group = Vec::new();
@@ -3964,7 +4040,8 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
             latch_args.extend(post.iter().cloned());
         }
     }
-    ctx.target.jump(latch.clone(), BranchTarget::args(latch_args));
+    ctx.target
+        .jump(latch.clone(), BranchTarget::args(latch_args));
 
     // Latch: increment and repeat.
     ctx.target.switch_to_block(latch.clone());
@@ -3990,7 +4067,11 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
         ctx.env_types.insert(var.to_owned(), ty);
     }
     for (name, _) in &promoted_restore {
-        let slot = ctx.promoted.get(name).expect("promoted slot present").clone();
+        let slot = ctx
+            .promoted
+            .get(name)
+            .expect("promoted slot present")
+            .clone();
         let vals = promoted_whole_load(&slot.ptr, &slot.layout, ctx);
         ctx.env.insert(name.clone(), vals);
         ctx.promoted.remove(name);
@@ -4017,14 +4098,8 @@ fn lower_while_loop<T: LirTarget<P>, P: Clone>(
     let info = scan_native_loop_body(body, ctx).unwrap_or_else(|reason| {
         panic!("LIR native while loop: body is not native-eligible ({reason})")
     });
-    let carried_names: Vec<String> = info
-        .scalar_assigned
-        .into_iter()
-        .collect();
-    let promoted_names: Vec<String> = info
-        .agg_assigned
-        .into_iter()
-        .collect();
+    let carried_names: Vec<String> = info.scalar_assigned.into_iter().collect();
+    let promoted_names: Vec<String> = info.agg_assigned.into_iter().collect();
 
     // Same promotion protocol as lower_bounded_loop_native.
     let mut promoted_restore: Vec<(String, IrType)> = Vec::new();
@@ -4055,8 +4130,9 @@ fn lower_while_loop<T: LirTarget<P>, P: Clone>(
             let elem_ir = (**elem).clone();
             let elem_lir = ctx.registry.ir_type_to_lir(&elem_ir, ctx.mono);
             let elem_width = flatten_count(&elem_lir, ctx.registry);
-            let n = mono::array_len_const(&mono_len(len, ctx.mono))
-                .unwrap_or_else(|| panic!("native while: promoted array '{name}' non-constant length"));
+            let n = mono::array_len_const(&mono_len(len, ctx.mono)).unwrap_or_else(|| {
+                panic!("native while: promoted array '{name}' non-constant length")
+            });
             let ptr = target_alloca(ctx, elem_lir.clone(), n);
             let slot = PromotedSlot {
                 ptr,
@@ -4101,9 +4177,7 @@ fn lower_while_loop<T: LirTarget<P>, P: Clone>(
 
     // Header/body/latch/exit params: carried values only, grouped per name
     // so the zip in each block maps names to their param groups.
-    let mut make_params = |block: &T::Block,
-                           ctx: &mut LowerCtx<T, P>|
-     -> Vec<Vec<T::Value>> {
+    let mut make_params = |block: &T::Block, ctx: &mut LowerCtx<T, P>| -> Vec<Vec<T::Value>> {
         let mut groups = Vec::new();
         for (_, group) in &carried {
             let mut vals = Vec::new();
@@ -4179,7 +4253,8 @@ fn lower_while_loop<T: LirTarget<P>, P: Clone>(
         });
         latch_args.extend(post.iter().cloned());
     }
-    ctx.target.jump(latch.clone(), BranchTarget::args(latch_args));
+    ctx.target
+        .jump(latch.clone(), BranchTarget::args(latch_args));
 
     // Latch: repeat.
     ctx.target.switch_to_block(latch.clone());
@@ -4201,7 +4276,11 @@ fn lower_while_loop<T: LirTarget<P>, P: Clone>(
         ctx.env.insert(name.clone(), vals.clone());
     }
     for (name, _) in &promoted_restore {
-        let slot = ctx.promoted.get(name).expect("promoted slot present").clone();
+        let slot = ctx
+            .promoted
+            .get(name)
+            .expect("promoted slot present")
+            .clone();
         let vals = promoted_whole_load(&slot.ptr, &slot.layout, ctx);
         ctx.env.insert(name.clone(), vals);
         ctx.promoted.remove(name);
@@ -4349,7 +4428,12 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     // all base values — the slice-ref model treats the pool as its flat
     // values, and `&mut pool[..]` (the weaver's `slice_ref_mut_expr`) is
     // value-identical to the pool itself.
-    if let IrExprKind::Range { start: None, end: None, .. } = &index.kind {
+    if let IrExprKind::Range {
+        start: None,
+        end: None,
+        ..
+    } = &index.kind
+    {
         return lower_expr(base, ctx);
     }
     let base_ir_ty = ctx.infer_type(base).unwrap_or_else(|| {
@@ -4357,7 +4441,9 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
             "Index: could not infer base type, base {}, caller={:?}",
             match &base.kind {
                 IrExprKind::Var(n) => format!("var '{n}'"),
-                IrExprKind::Field { base: fb, field, .. } => {
+                IrExprKind::Field {
+                    base: fb, field, ..
+                } => {
                     if let IrExprKind::Var(vn) = &fb.kind {
                         format!("var '{vn}.{field}'")
                     } else {
@@ -4388,6 +4474,60 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
     let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
 
+    // Memory-backed local: walk the slot with pointer arithmetic and a
+    // single load per read — no mux tree over flat values. Handles nested
+    // chains (`a[k][i]`) via `ptr_offset` at the intermediate levels.
+    {
+        let mut chain: Vec<&IrExpr<P>> = vec![index];
+        let mut cursor = base;
+        while let IrExprKind::Index { base: inner, index } = &cursor.kind {
+            chain.insert(0, index);
+            cursor = inner;
+        }
+        if let IrExprKind::Var(name) = &cursor.kind {
+            if let Some(slot) = ctx.promoted.get(name.as_str()).cloned() {
+                if let PromotedLayout::Array { .. } = &slot.layout {
+                    // The root var's type drives the per-level element types.
+                    let root_ty = ctx
+                        .env_types
+                        .get(name.as_str())
+                        .map(|ty| match ty {
+                            IrType::Reference { elem, .. } => (**elem).clone(),
+                            other => other.clone(),
+                        })
+                        .unwrap_or_else(|| base_ir_ty.clone());
+                    let last = chain.len() - 1;
+                    let mut walked_ok = true;
+                    let mut ptr = slot.ptr.clone();
+                    let mut level_ty = root_ty;
+                    for (d, idx_expr) in chain.iter().enumerate() {
+                        let IrType::Array { elem, .. } = &level_ty else {
+                            walked_ok = false;
+                            break;
+                        };
+                        let level_elem_lir = ctx.registry.ir_type_to_lir(elem, ctx.mono);
+                        if d < last {
+                            let idx_val = into_scalar(lower_expr(idx_expr, ctx), "array index");
+                            let ext = ctx.target.stack_alloc_ext().expect(
+                                "memory-backed local access requires a target with StackAllocExt",
+                            );
+                            ptr = ext.ptr_offset(ptr, idx_val);
+                            level_ty = (**elem).clone();
+                        } else {
+                            let idx_val = into_scalar(lower_expr(idx_expr, ctx), "array index");
+                            return ctx.target.ptr_index_load(ptr, idx_val, &level_elem_lir);
+                        }
+                    }
+                    if walked_ok {
+                        unreachable!("memory-backed index chain must return at the last level");
+                    }
+                    // Non-array level inside the chain: fall through to the
+                    // flat-value path below.
+                }
+            }
+        }
+    }
+
     let arr_vals = lower_expr(base, ctx); // n * elem_width scalars
 
     // Constant index: select the element directly instead of building an
@@ -4402,11 +4542,7 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     };
     if let Some(k) = const_idx {
         let base = k * elem_width;
-        return arr_vals
-            .into_iter()
-            .skip(base)
-            .take(elem_width)
-            .collect();
+        return arr_vals.into_iter().skip(base).take(elem_width).collect();
     }
 
     let idx_val = into_scalar(lower_expr(index, ctx), "array index");
@@ -4556,42 +4692,70 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
                 // were rejected by the eligibility scan).
                 if let IrExprKind::Var(name) = &final_base.kind {
                     if let Some(slot) = ctx.promoted.get(name.as_str()).cloned() {
-                        let rhs_vals = lower_expr(right, ctx);
                         match &slot.layout {
-                            PromotedLayout::Array { elem_ty, elem_width, .. } => {
+                            PromotedLayout::Array {
+                                elem_ty,
+                                elem_width,
+                                ..
+                            } => {
                                 if chain.len() == 1 {
                                     // Whole-element store at the runtime index.
+                                    ctx.target
+                                        .ptr_index_store(slot.ptr, idx_val, &rhs_vals, elem_ty);
+                                } else if lens.iter().take(chain.len() - 1).all(|l| l.is_some()) {
+                                    // Nested chain (`a[k][i] = …`) over array
+                                    // levels: pointer walk through the
+                                    // intermediate levels, then one element
+                                    // store at the innermost index — memory
+                                    // addressing, no load-splice-select mux.
+                                    let mut ptr = slot.ptr.clone();
+                                    let mut level_ty = base_ir_ty.clone();
+                                    for index_expr in chain.iter().take(chain.len() - 1) {
+                                        let IrType::Array { elem, .. } = &level_ty else {
+                                            unimplemented!(
+                                                "assign to nested index chain with non-array intermediate level of promoted base '{name}'"
+                                            );
+                                        };
+                                        let idx = into_scalar(
+                                            lower_expr(index_expr, ctx),
+                                            "assign index",
+                                        );
+                                        let ext = ctx.target.stack_alloc_ext().expect(
+                                            "memory-backed local access requires a target with StackAllocExt",
+                                        );
+                                        ptr = ext.ptr_offset(ptr, idx);
+                                        level_ty = (**elem).clone();
+                                    }
+                                    let innermost_elem_lir =
+                                        ctx.registry.ir_type_to_lir(&level_ty, ctx.mono);
+                                    let last_idx = into_scalar(
+                                        lower_expr(chain[chain.len() - 1], ctx),
+                                        "assign index",
+                                    );
                                     ctx.target.ptr_index_store(
-                                        slot.ptr, idx_val, &rhs_vals, elem_ty,
+                                        ptr,
+                                        last_idx,
+                                        &rhs_vals,
+                                        &innermost_elem_lir,
                                     );
                                 } else {
-                                    // Nested chain (`a[k][i] = …`): the folded
-                                    // position is a flat scalar position inside
-                                    // the whole value — load, select-splice,
-                                    // store back (same mux discipline as the
-                                    // env path, memory-backed).
+                                    // Irregular nested chain: load, select-splice,
+                                    // store back (same mux discipline as the env
+                                    // path, memory-backed).
                                     if rhs_vals.len() != 1 {
                                         unimplemented!(
-                                        "assign to nested index chain with multi-scalar inner element of promoted base '{name}'"
-                                    );
+                                            "assign to nested index chain with multi-scalar inner element of promoted base '{name}'"
+                                        );
                                     }
-                                    let innermost_len = lens
-                                        .last()
-                                        .and_then(|l| *l)
-                                        .unwrap_or(*elem_width);
                                     let rhs = &rhs_vals[0];
                                     let mut whole =
                                         promoted_whole_load(&slot.ptr, &slot.layout, ctx);
                                     let n_elems = whole.len() / elem_width;
                                     for k in 0..n_elems {
-                                        // pos[k] = idx_val * innermost_len + inner
-                                        // where inner = idx_val mod innermost? No —
-                                        // the folded pos already covers both levels;
-                                        // compare against the flat element-scalar
-                                        // position k * elem_width + j.
                                         for j in 0..*elem_width {
-                                            let flat =
-                                                ctx.target.iconst(LirType::U64, (k * elem_width + j) as i64);
+                                            let flat = ctx
+                                                .target
+                                                .iconst(LirType::U64, (k * elem_width + j) as i64);
                                             let cond = ctx.target.icmp(
                                                 IcmpPred::Eq,
                                                 idx_val.clone(),
@@ -4602,10 +4766,8 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
                                                 ctx.target.select(cond, rhs.clone(), old_v);
                                         }
                                     }
-                                    let _ = innermost_len;
                                     let zero = ctx.target.iconst(LirType::U64, 0);
-                                    ctx.target
-                                        .ptr_index_store(slot.ptr, zero, &whole, elem_ty);
+                                    ctx.target.ptr_index_store(slot.ptr, zero, &whole, elem_ty);
                                 }
                             }
                             PromotedLayout::Whole { agg_ty } => {
@@ -4985,8 +5147,7 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
             let sig = ctx.func_sigs.get(emitted_name);
             let ret_ty = sig.and_then(|sig| sig.return_type.clone());
             // Same ABI-authoritative reasoning as lower_call's planned path.
-            let declared: Vec<LirType> =
-                sig.map(|sig| sig.param_tys.clone()).unwrap_or_default();
+            let declared: Vec<LirType> = sig.map(|sig| sig.param_tys.clone()).unwrap_or_default();
             let mut arg_tys = Vec::new();
             let mut flat_args = Vec::new();
             for (i, a) in std::iter::once(receiver).chain(args.iter()).enumerate() {
@@ -5163,7 +5324,11 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     // zero scalars (all-default types are all-zeros, matching the pools'
     // calloc zero-init story).
     if args.is_empty() {
-        if let IrExprKind::Path { segments, type_args } = &func.kind {
+        if let IrExprKind::Path {
+            segments,
+            type_args,
+        } = &func.kind
+        {
             if segments.last().map(String::as_str) == Some("default") {
                 // Array::<E, L>::default() — turbofish carries [elem, len].
                 if segments.len() == 2 && segments[0] == "Array" && type_args.len() == 2 {
@@ -5195,11 +5360,9 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
                                         .const_params
                                         .get(&g.name)
                                         .map(|&n| IrType::TypeParam(n.to_string())),
-                                    volar_compiler::ir::IrGenericParamKind::Type => ctx
-                                        .mono
-                                        .type_params
-                                        .get(&g.name)
-                                        .cloned(),
+                                    volar_compiler::ir::IrGenericParamKind::Type => {
+                                        ctx.mono.type_params.get(&g.name).cloned()
+                                    }
                                     _ => None,
                                 })
                                 .collect()
@@ -5336,13 +5499,11 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
             // fallback (for arity mismatches, where something else is wrong
             // anyway): it loses reference/struct shape and collapses args
             // to U64, producing spurious call_extern arity panics.
-            let declared: Vec<LirType> =
-                sig.map(|sig| sig.param_tys.clone()).unwrap_or_default();
+            let declared: Vec<LirType> = sig.map(|sig| sig.param_tys.clone()).unwrap_or_default();
             let mut arg_tys = Vec::new();
             let mut flat_args = Vec::new();
             for (i, arg) in args.iter().enumerate() {
-                let (arg_ty, values) =
-                    lower_call_arg_for_abi(arg, declared.get(i), ctx);
+                let (arg_ty, values) = lower_call_arg_for_abi(arg, declared.get(i), ctx);
                 arg_tys.push(arg_ty);
                 flat_args.extend(values);
             }
@@ -5373,19 +5534,26 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     }
 
     if std::env::var("VOLAR_LIR_DEBUG").is_ok() {
-        let argdesc = args.iter().map(|a| match &a.kind {
-            IrExprKind::Var(v) => format!("Var({v})"),
-            IrExprKind::Block(_) => "Block".to_string(),
-            IrExprKind::Index { base, .. } => match &base.kind {
-                IrExprKind::Var(v) => format!("Idx({v})"),
-                _ => "Idx".to_string(),
-            },
-            other => format!("disc{:?}", std::mem::discriminant(other)),
-        }).collect::<std::vec::Vec<_>>().join(",");
+        let argdesc = args
+            .iter()
+            .map(|a| match &a.kind {
+                IrExprKind::Var(v) => format!("Var({v})"),
+                IrExprKind::Block(_) => "Block".to_string(),
+                IrExprKind::Index { base, .. } => match &base.kind {
+                    IrExprKind::Var(v) => format!("Idx({v})"),
+                    _ => "Idx".to_string(),
+                },
+                other => format!("disc{:?}", std::mem::discriminant(other)),
+            })
+            .collect::<std::vec::Vec<_>>()
+            .join(",");
         eprintln!(
             "[call-fallback] fn={func_name} caller={:?} args=[{argdesc}] arg_tys={:?}",
             ctx.current_instance.map(|k| k.source_name.as_str()),
-            arg_tys.iter().map(|t| format!("{t:?}")).collect::<std::vec::Vec<_>>()
+            arg_tys
+                .iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<std::vec::Vec<_>>()
         );
     }
     ctx.target

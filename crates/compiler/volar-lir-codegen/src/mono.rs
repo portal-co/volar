@@ -364,19 +364,15 @@ pub fn plan_flat_module<P: Clone>(
     let mul_impl_structs: std::collections::BTreeMap<String, ()> = module
         .impls
         .iter()
-        .filter_map(|ir_impl| {
-            match (&ir_impl.trait_, &ir_impl.self_ty) {
-                (
-                    Some(volar_compiler::ir::IrTraitRef {
-                        kind: volar_compiler::ir::TraitKind::Math(
-                            volar_compiler::ir::MathTrait::Mul,
-                        ),
-                        ..
-                    }),
-                    IrType::Struct { kind, .. },
-                ) => Some((kind.to_string(), ())),
-                _ => None,
-            }
+        .filter_map(|ir_impl| match (&ir_impl.trait_, &ir_impl.self_ty) {
+            (
+                Some(volar_compiler::ir::IrTraitRef {
+                    kind: volar_compiler::ir::TraitKind::Math(volar_compiler::ir::MathTrait::Mul),
+                    ..
+                }),
+                IrType::Struct { kind, .. },
+            ) => Some((kind.to_string(), ())),
+            _ => None,
         })
         .collect();
     // For each impl with an associated-type declaration (`type Output = ...`),
@@ -389,8 +385,7 @@ pub fn plan_flat_module<P: Clone>(
     // name (`mul__<StructKind>`) — a plain method-name key would bleed one
     // impl's associated type into another's instance. Non-operator impls
     // keep the plain method-name key (first impl wins).
-    let mut impl_assoc_dispatched: BTreeMap<String, Vec<(String, IrType)>> =
-        BTreeMap::new();
+    let mut impl_assoc_dispatched: BTreeMap<String, Vec<(String, IrType)>> = BTreeMap::new();
     let mut impl_assoc_plain: BTreeMap<String, Vec<(String, IrType)>> = BTreeMap::new();
     for ir_impl in &module.impls {
         let is_mul_op = matches!(
@@ -402,9 +397,7 @@ pub fn plan_flat_module<P: Clone>(
         ) && matches!(&ir_impl.self_ty, IrType::Struct { .. });
         let dispatched = if is_mul_op {
             match &ir_impl.self_ty {
-                IrType::Struct { kind, .. } => {
-                    Some(format!("mul__{}", kind_name(kind)))
-                }
+                IrType::Struct { kind, .. } => Some(format!("mul__{}", kind_name(kind))),
                 _ => None,
             }
         } else {
@@ -544,8 +537,7 @@ pub fn plan_flat_module<P: Clone>(
                         // generics, which would early-return an ambient-only
                         // env and leave `U` unsubstituted).
                         {
-                            let mut names: std::collections::BTreeSet<String> =
-                                Default::default();
+                            let mut names: std::collections::BTreeSet<String> = Default::default();
                             for param in &derived.params {
                                 collect_type_params(&param.ty, &mut names);
                             }
@@ -614,11 +606,7 @@ pub fn plan_flat_module<P: Clone>(
                                         substitute_projection_output(ret, &g, sum);
                                     }
                                     for param in derived.params.iter_mut() {
-                                        substitute_projection_output(
-                                            &mut param.ty,
-                                            &g,
-                                            sum,
-                                        );
+                                        substitute_projection_output(&mut param.ty, &g, sum);
                                     }
                                     substitute_projection_output_in_block(
                                         &mut derived.body,
@@ -645,16 +633,10 @@ pub fn plan_flat_module<P: Clone>(
                                     base: Box::new(IrType::TypeParam("Self".to_owned())),
                                     trait_path: None,
                                     trait_args: Vec::new(),
-                                    assoc: volar_compiler::ir::AssociatedType::from_str(
-                                        assoc_name,
-                                    ),
+                                    assoc: volar_compiler::ir::AssociatedType::from_str(assoc_name),
                                 };
                                 if let Some(ret) = derived.return_type.as_mut() {
-                                    substitute_type_for_projection(
-                                        ret,
-                                        &projection_ty,
-                                        assoc_ty,
-                                    );
+                                    substitute_type_for_projection(ret, &projection_ty, assoc_ty);
                                 }
                                 for param in derived.params.iter_mut() {
                                     substitute_type_for_projection(
@@ -679,13 +661,8 @@ pub fn plan_flat_module<P: Clone>(
                     }
                     _ => (callee_def, arg_tys),
                 };
-            let mut callee_env = bind_call_args(
-                callee_def,
-                &type_args,
-                &arg_tys,
-                &env,
-                expected.as_ref(),
-            )?;
+            let mut callee_env =
+                bind_call_args(callee_def, &type_args, &arg_tys, &env, expected.as_ref())?;
             if let Some(derived) = derived_held.as_ref() {
                 // Default unbound return-position generics: a field-mul
                 // output (`O` in `T: Mul<U, Output = O>`) has the same layout
@@ -694,11 +671,9 @@ pub fn plan_flat_module<P: Clone>(
                 // element generic concrete (`T`), else to the first bound
                 // type param.
                 if let Some(ret) = &derived.return_type {
-                    let mut ret_names: std::collections::BTreeSet<String> =
-                        Default::default();
+                    let mut ret_names: std::collections::BTreeSet<String> = Default::default();
                     collect_type_params(ret, &mut ret_names);
-                    let mut param_names: std::collections::BTreeSet<String> =
-                        Default::default();
+                    let mut param_names: std::collections::BTreeSet<String> = Default::default();
                     for param in &derived.params {
                         collect_type_params(&param.ty, &mut param_names);
                     }
@@ -932,8 +907,7 @@ fn bind_call_args<P: Clone>(
                     Some(ty) if is_concrete_type(ty) => {}
                     // Cross-module nominal shadowing its own generic slot
                     // (`BigVoleProver`): the registry resolves the layout.
-                    Some(IrType::TypeParam(self_name))
-                        if self_name == &parameter.name => {}
+                    Some(IrType::TypeParam(self_name)) if self_name == &parameter.name => {}
                     Some(ty) => {
                         return Err(MonoError::new(format!(
                             "generic local call '{}': type parameter '{}' inferred non-concrete ({ty:?})",
@@ -1213,7 +1187,6 @@ fn unify_into<P: Clone>(
                 type_args: c_args,
             },
         ) if p_kind == c_kind && p_args.len() == c_args.len() => {
-
             for (p, c) in p_args.iter().zip(c_args.iter()) {
                 unify_into(env, p, c, function, caller_env)?;
             }
@@ -1345,7 +1318,9 @@ fn infer_expr_type<P: Clone>(
         IrExprKind::Binary { left, .. } => infer_expr_type(left, env, vars, structs),
         // `[a, b, c]`: fixed array of the elements' common type.
         IrExprKind::FixedArray(elems) => {
-            let elem_ty = elems.first().and_then(|e| infer_expr_type(e, env, vars, structs))?;
+            let elem_ty = elems
+                .first()
+                .and_then(|e| infer_expr_type(e, env, vars, structs))?;
             Some(IrType::Array {
                 kind: ArrayKind::FixedArray,
                 elem: Box::new(elem_ty),
@@ -1552,7 +1527,9 @@ fn substitute_type_for_projection_in_expr<P: Clone>(
                 substitute_type_for_projection_in_expr(a, projection, replacement);
             }
         }
-        IrExprKind::StructExpr { type_args, fields, .. } => {
+        IrExprKind::StructExpr {
+            type_args, fields, ..
+        } => {
             for a in type_args.iter_mut() {
                 substitute_type_for_projection(a, projection, replacement);
             }
@@ -1560,9 +1537,7 @@ fn substitute_type_for_projection_in_expr<P: Clone>(
                 substitute_type_for_projection_in_expr(v, projection, replacement);
             }
         }
-        IrExprKind::Block(b) => {
-            substitute_type_for_projection_in_block(b, projection, replacement)
-        }
+        IrExprKind::Block(b) => substitute_type_for_projection_in_block(b, projection, replacement),
         IrExprKind::If {
             cond,
             then_branch,
@@ -1714,7 +1689,9 @@ fn substitute_projection_output_in_expr<P: Clone>(
         IrExprKind::Field { base, .. } | IrExprKind::Index { base, .. } => {
             substitute_projection_output_in_expr(base, generic, value)
         }
-        IrExprKind::StructExpr { type_args, fields, .. } => {
+        IrExprKind::StructExpr {
+            type_args, fields, ..
+        } => {
             for a in type_args.iter_mut() {
                 substitute_projection_output(a, generic, value);
             }
@@ -1743,10 +1720,7 @@ fn substitute_projection_output_in_expr<P: Clone>(
             }
         }
         IrExprKind::BoundedLoop {
-            start,
-            end,
-            body,
-            ..
+            start, end, body, ..
         } => {
             substitute_projection_output_in_expr(start, generic, value);
             substitute_projection_output_in_expr(end, generic, value);
@@ -1772,11 +1746,15 @@ fn substitute_projection_output_in_expr<P: Clone>(
         IrExprKind::WhileLoop { body, .. } => {
             substitute_projection_output_in_block(body, generic, value)
         }
-        IrExprKind::IterLoop { collection, body, .. } => {
+        IrExprKind::IterLoop {
+            collection, body, ..
+        } => {
             substitute_projection_output_in_expr(collection, generic, value);
             substitute_projection_output_in_block(body, generic, value);
         }
-        IrExprKind::ArrayGenerate { elem_ty, len, body, .. } => {
+        IrExprKind::ArrayGenerate {
+            elem_ty, len, body, ..
+        } => {
             if let Some(t) = elem_ty {
                 substitute_projection_output(t, generic, value);
             }
@@ -1793,7 +1771,9 @@ fn substitute_projection_output_in_expr<P: Clone>(
             substitute_projection_output_in_expr(receiver, generic, value);
             substitute_projection_output_in_expr(body, generic, value);
         }
-        IrExprKind::RawZip { left, right, body, .. } => {
+        IrExprKind::RawZip {
+            left, right, body, ..
+        } => {
             substitute_projection_output_in_expr(left, generic, value);
             substitute_projection_output_in_expr(right, generic, value);
             substitute_projection_output_in_expr(body, generic, value);
