@@ -147,6 +147,12 @@ struct LowerCtx<'t, T: LirTarget<P>, P: Clone = ()> {
     /// Current concrete local function and the closed specialization plan.
     current_instance: Option<&'t FunctionInstanceKey>,
     mono_plan: Option<&'t MonoPlan<P>>,
+    /// Loop lowering policy (see [`LoopLowering`]).
+    #[allow(dead_code)] // consumed by the native-loop path (Stage 1)
+    loop_mode: LoopLowering,
+    /// Enclosing native loops while lowering a native loop body (plan §3.5).
+    #[allow(dead_code)] // consumed by the native-loop path (Stage 1)
+    loop_stack: Vec<LoopFrame<T>>,
     _p: std::marker::PhantomData<P>,
 }
 
@@ -182,6 +188,8 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             ir_func_ret_types: &EMPTY_IR_RET_TYPES,
             current_instance: None,
             mono_plan: None,
+            loop_mode: LoopLowering::Unroll,
+            loop_stack: Vec::new(),
             _p: std::marker::PhantomData,
         }
     }
@@ -542,6 +550,38 @@ impl MonoRoot {
     }
 }
 
+/// How bounded loops are lowered to a [`LirTarget`]. See
+/// [`docs/lir-native-loops-plan.md`](../../docs/lir-native-loops-plan.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopLowering {
+    /// Today's behavior: concrete-bounds loops unroll into straight-line
+    /// scalar code; non-concrete bounds fall back to the legacy native
+    /// skeleton (unsound for aggregate writes — see `lower_bounded_loop`).
+    /// Default.
+    Unroll,
+    /// Bounded loops lower to CFG loops (header/latch/exit blocks with
+    /// loop-carried values as block params); unrolling only where a loop
+    /// is deemed non-convertible, with the reason recorded in the panic
+    /// message.
+    Native,
+    /// Native when the loop qualifies, unroll otherwise.
+    Auto,
+}
+
+/// Bookkeeping for the enclosing native loop while lowering its body
+/// (plan §3.5). Populated only by the native-loop lowering path; unrolled
+/// lowering leaves the stack empty.
+struct LoopFrame<B> {
+    /// Block the body jumps back to (carrying `i+1` and loop-carried values).
+    latch: B,
+    /// Block entered when the loop condition fails.
+    exit: B,
+    /// Induction variable name.
+    var: String,
+    /// Names threaded through header/body/latch/exit block params (the phi).
+    carried: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct MonoPlanOptions {
     /// Explicit entry instances. Empty selects every non-generic normal function.
@@ -553,6 +593,8 @@ pub struct MonoPlanOptions {
     pub lenient: bool,
     /// For CFG modules: whether to emit flat auxiliary function bodies.
     pub include_auxiliary: bool,
+    /// Loop lowering policy (see [`LoopLowering`]).
+    pub loop_lowering: LoopLowering,
 }
 
 impl Default for MonoPlanOptions {
@@ -562,6 +604,7 @@ impl Default for MonoPlanOptions {
             max_instances: 4_096,
             lenient: false,
             include_auxiliary: true,
+            loop_lowering: LoopLowering::Unroll,
         }
     }
 }
@@ -628,7 +671,7 @@ pub fn lower_module_monomorphized<T: LirTarget<P>, P: Clone>(
     options: MonoPlanOptions,
 ) -> Result<(), MonoError> {
     let plan = mono::plan_flat_module(module, &options.roots, options.max_instances)?;
-    lower_planned_module(module, target, &plan, options.lenient);
+    lower_planned_module(module, target, &plan, options.lenient, options.loop_lowering);
     Ok(())
 }
 
@@ -703,6 +746,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     target: &mut T,
     plan: &MonoPlan<P>,
     lenient: bool,
+    loop_lowering: LoopLowering,
 ) {
     // Non-generic structs first; concrete generic nominals are registered
     // per planned instance via `ensure_type_nominals` (no module-wide merge).
@@ -914,6 +958,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
             &external_fns,
             &func_sigs,
             &ir_func_ret_types,
+            loop_lowering,
         );
     }
 }
@@ -933,6 +978,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
+    loop_lowering: LoopLowering,
 ) {
     CURRENT_INSTANCE_DEBUG.with(|c| *c.borrow_mut() = emitted_name.to_owned());
     let param_lir_tys: Vec<_> = func
@@ -980,6 +1026,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     ctx.ir_func_ret_types = ir_func_ret_types;
     ctx.current_instance = Some(instance);
     ctx.mono_plan = Some(plan);
+    ctx.loop_mode = loop_lowering;
     let tail_vals = lower_block(&func.body, &mut ctx);
     ctx.target.ret(&tail_vals);
     ctx.target.end_function();
@@ -2711,6 +2758,16 @@ fn lower_bounded_loop<T: LirTarget<P>, P: Clone>(
     }
 
     // Strategy: loop_header(counter: U64, limit: U64)
+    //
+    // LEGACY NATIVE SKELETON — reached only in `LoopLowering::Unroll` mode
+    // when bounds are non-concrete (which the planner avoids producing).
+    // This skeleton is UNSOUND for loop bodies that assign aggregate locals
+    // or loop-carried scalars: those updates live only in this block's `env`
+    // and are silently discarded across the back-edge (the historical
+    // "silently discarded assignments to result[i]" bug). The sound native
+    // path — loop-carried values as block params, aggregate assignment via
+    // alloca promotion — is specified in docs/lir-native-loops-plan.md and
+    // selected by `LoopLowering::Native`/`Auto`.
     //
     // before:
     //   start_val = lower(start)
