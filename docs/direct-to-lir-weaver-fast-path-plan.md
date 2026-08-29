@@ -372,6 +372,20 @@ CI-runnable without the LLVM feature path.
 
 ## Phase 5 — M1 enablement
 
+**Status: first checkpoint landed 2026-08-29 (e24578e).** The split VOLE-weaved
+mem_probe prover module lowers end-to-end through
+`lower_module_monomorphized` + `CBackend` (14 woven functions, piece
+splitting included) — the weave no longer requires the Rust printer to
+reach executable code. Required fixes: type-inference arms for the
+weave's expression shapes (Block/Binary/FixedArray/Tuple/Index), zero
+constructors for `default()` calls, `core::array::from_fn` unrolling with
+Let-annotation lengths, and a pointer ABI for large fixed-array params.
+**Remaining wall:** ~1 GB of C for the prover module, dominated by
+per-scalar value-selects from if-join threading of per-lane closures —
+the value model needs memory-backed locals throughout (the C-path analog
+of the printed path's `let mut` regalloc) before size is competitive;
+`cc` of the full output is impractical until then.
+
 With Phases 1–4 done, the M1 track (mem-probe → real-interpreter split weave)
 stops printing Rust for circuit bodies:
 
