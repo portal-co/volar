@@ -667,7 +667,21 @@ struct LoopFrame<B: Clone> {
     var: String,
     /// Names threaded through header/body/latch/exit block params (the phi).
     carried: Vec<String>,
+    /// Unrolled frames record the iteration-restore points so `break` can
+    /// stop the block's lowering (unrolled `continue` keeps its existing
+    /// "stop this block's lowering" semantics); native frames use the latch
+    /// and exit blocks directly.
+    unrolled: bool,
+    /// Body-block induction variable and limit values, in latch-param order
+    /// (bounded loops only; `continue` needs them to build the latch edge).
+    induction: Option<String>,
+    limit: Option<String>,
 }
+
+/// Signal cell for `break` inside an unrolled loop: lower_block has no
+/// short-circuit channel, so `lower_expr(Break)` sets the flag and the
+/// unroller stops after the current iteration. Cleared on frame pop.
+static BREAK_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Debug)]
 pub struct MonoPlanOptions {
@@ -1271,12 +1285,9 @@ fn lower_block<T: LirTarget<P>, P: Clone>(
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
     for stmt in &block.stmts {
-        // `continue` inside an unrolled loop body: stop this block's lowering.
-        // The unroller re-invokes lower_block for the next iteration, so the
-        // remaining statements of THIS iteration are skipped — exactly the
-        // Rust semantics — while later iterations still execute. Blocks
-        // lowered outside any enclosing unrolled loop never contain
-        // `continue` (validated by external-source checks upstream).
+        // `continue` as a statement: dispatched via lower_expr's Continue arm
+        // (native frames jump to the latch; unrolled frames fall through to
+        // the return below, skipping the rest of this iteration).
         if matches!(
             stmt.kind,
             IrStmtKind::Expr(IrExpr {
@@ -1287,6 +1298,14 @@ fn lower_block<T: LirTarget<P>, P: Clone>(
                 ..
             })
         ) {
+            let native = matches!(ctx.loop_stack.last(), Some(f) if !f.unrolled);
+            if native {
+                lower_stmt(stmt, ctx);
+            }
+            // Unrolled: stop this block's lowering. The unroller re-invokes
+            // lower_block for the next iteration, so the remaining statements
+            // of THIS iteration are skipped — exactly the Rust semantics —
+            // while later iterations still execute.
             return Vec::new();
         }
         ctx.target.set_prov(stmt.prov.clone());
@@ -1660,6 +1679,11 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             vec![] // loops are ()-typed
         }
 
+        IrExprKind::WhileLoop { cond, body } => {
+            lower_while_loop(cond, body, ctx);
+            vec![] // loops are ()-typed
+        }
+
         // ---- Phase 2: method calls ------------------------------------------
         IrExprKind::MethodCall {
             receiver,
@@ -1689,6 +1713,58 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             }
             vec![]
         }
+
+        // ---- break / continue (loop-aware; see LoopFrame) -----------------
+        // Native frames jump to the exit/latch blocks; unrolled frames use
+        // the existing "stop this block's lowering" convention (continue)
+        // plus the BREAK_SIGNAL flag (break).
+        IrExprKind::Break(_) => {
+            match ctx.loop_stack.last() {
+                Some(frame) if !frame.unrolled => {
+                    // Exit params are the carried values only (final
+                    // iteration's env state at the break point).
+                    let mut args = Vec::new();
+                    for name in &frame.carried {
+                        if let Some(vals) = ctx.env.get(name) {
+                            args.extend(vals.iter().cloned());
+                        }
+                    }
+                    let exit = frame.exit.clone();
+                    ctx.target.jump(exit, BranchTarget::args(args));
+                }
+                Some(_) => BREAK_SIGNAL.store(true, std::sync::atomic::Ordering::Relaxed),
+                None => panic!("break outside of any loop"),
+            }
+            vec![]
+        }
+        IrExprKind::Continue => match ctx.loop_stack.last() {
+            Some(frame) if !frame.unrolled => {
+                // Latch param order: [induction?, limit?, carried...]. The
+                // induction/limit values live in `env` under their names
+                // (the body block rebinds them to its block params).
+                let mut arg_names: Vec<String> = Vec::new();
+                if let Some(i) = &frame.induction {
+                    arg_names.push(i.clone());
+                }
+                if let Some(l) = &frame.limit {
+                    arg_names.push(l.clone());
+                }
+                arg_names.extend(frame.carried.iter().cloned());
+                let mut args = Vec::new();
+                for name in &arg_names {
+                    if let Some(vals) = ctx.env.get(name) {
+                        args.extend(vals.iter().cloned());
+                    }
+                }
+                let latch = frame.latch.clone();
+                ctx.target.jump(latch, BranchTarget::args(args));
+                vec![]
+            }
+            // Unrolled (or nested block inside unrolled): stop this block's
+            // lowering; the unroller proceeds with the next iteration.
+            Some(_) => Vec::new(),
+            None => panic!("continue outside of any loop"),
+        },
 
         // ---- TypenumUsize and LengthOf — resolve to concrete usize const ------
         IrExprKind::TypenumUsize { ty } => {
@@ -2928,7 +3004,23 @@ fn unroll_bounded_loop<T: LirTarget<P>, P: Clone>(
         ctx.env.insert(var.to_owned(), vec![value]);
         ctx.env_types
             .insert(var.to_owned(), IrType::Primitive(PrimitiveType::Usize));
+        let frame = LoopFrame {
+            // Unused by unrolled frames; `break` signals through the
+            // BREAK_SIGNAL flag (see BreakSignal).
+            latch: ctx.current_block.clone(),
+            exit: ctx.current_block.clone(),
+            var: var.to_owned(),
+            carried: Vec::new(),
+            unrolled: true,
+            induction: None,
+            limit: None,
+        };
+        ctx.loop_stack.push(frame);
         lower_block(body, ctx);
+        ctx.loop_stack.pop();
+        if BREAK_SIGNAL.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            break; // `break` in the just-lowered iteration: stop unrolling
+        }
     }
     if let Some(values) = prior_values {
         ctx.env.insert(var.to_owned(), values);
@@ -3194,9 +3286,10 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
             }
         }
 
-        // Stage-3 concerns: control flow into the latch/exit edges.
-        IrExprKind::Continue => Err("continue (Stage 3)".to_owned()),
-        IrExprKind::Break(_) => Err("break (Stage 3)".to_owned()),
+        // Control flow into the latch/exit edges is supported natively
+        // (Stage 3): `continue`/`break` bind to the innermost frame at
+        // lowering time.
+        IrExprKind::Continue | IrExprKind::Break(_) => Ok(()),
 
         // Everything else: not analyzed, not eligible. Never guess.
         _ => Err(format!(
@@ -3419,6 +3512,8 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
     ctx.env.insert(var.to_owned(), vec![body_i.clone()]);
     ctx.env_types
         .insert(var.to_owned(), IrType::Primitive(PrimitiveType::Usize));
+    ctx.env
+        .insert("__native_loop_limit".to_owned(), vec![body_limit.clone()]);
     for ((name, _), vals) in carried.iter().zip(&body_carried) {
         if name != var {
             ctx.env.insert(name.clone(), vals.clone());
@@ -3430,6 +3525,9 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
         exit: exit.clone(),
         var: var.to_owned(),
         carried: carried_names.to_vec(),
+        unrolled: false,
+        induction: Some(var.to_owned()),
+        limit: Some("__native_loop_limit".to_owned()),
     });
     lower_block(body, ctx);
     ctx.loop_stack.pop();
@@ -3471,6 +3569,217 @@ fn lower_bounded_loop_native<T: LirTarget<P>, P: Clone>(
     }
     if let Some(ty) = prior_var_ty {
         ctx.env_types.insert(var.to_owned(), ty);
+    }
+    for (name, _) in &promoted_restore {
+        let slot = ctx.promoted.get(name).expect("promoted slot present").clone();
+        let vals = promoted_whole_load(&slot.ptr, &slot.layout, ctx);
+        ctx.env.insert(name.clone(), vals);
+        ctx.promoted.remove(name);
+    }
+}
+
+/// Lower a `while cond { body }` loop natively (plan §3.2/§3.4):
+///
+/// ```text
+/// before:           jump header(carried…)
+/// header(cs):       c = <cond>; branch c → body / exit
+/// body(cs):         carried names rebind to params; <body>; jump latch(cs)
+/// latch(cs):        jump header(cs)  [ReentryHint::bounded_loop_ascending]
+/// exit(cs):         carried names land as final-iteration values
+/// ```
+///
+/// While loops are always native (they have no concrete trip count to
+/// unroll); bodies that are not native-eligible panic via the scan.
+fn lower_while_loop<T: LirTarget<P>, P: Clone>(
+    cond: &IrExpr<P>,
+    body: &IrBlock<P>,
+    ctx: &mut LowerCtx<T, P>,
+) {
+    let info = scan_native_loop_body(body, ctx).unwrap_or_else(|reason| {
+        panic!("LIR native while loop: body is not native-eligible ({reason})")
+    });
+    let carried_names: Vec<String> = info
+        .scalar_assigned
+        .into_iter()
+        .collect();
+    let promoted_names: Vec<String> = info
+        .agg_assigned
+        .into_iter()
+        .collect();
+
+    // Same promotion protocol as lower_bounded_loop_native.
+    let mut promoted_restore: Vec<(String, IrType)> = Vec::new();
+    for name in &promoted_names {
+        if ctx.promoted.contains_key(name) {
+            continue;
+        }
+        let ty = ctx
+            .env_types
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| panic!("native while: promoted var '{name}' has no type"));
+        let base_ty = match &ty {
+            IrType::Reference { elem, .. } => (**elem).clone(),
+            other => other.clone(),
+        };
+        let lir = ctx.registry.ir_type_to_lir(&base_ty, ctx.mono);
+        let width = flatten_count(&lir, ctx.registry);
+        let init_vals = ctx.env.get(name).cloned().unwrap_or_else(|| {
+            panic!("native while: promoted var '{name}' has no value at loop entry")
+        });
+        assert_eq!(
+            init_vals.len(),
+            width,
+            "native while: promoted var '{name}' width mismatch"
+        );
+        let slot = if let IrType::Array { elem, len, .. } = &base_ty {
+            let elem_ir = (**elem).clone();
+            let elem_lir = ctx.registry.ir_type_to_lir(&elem_ir, ctx.mono);
+            let elem_width = flatten_count(&elem_lir, ctx.registry);
+            let n = mono::array_len_const(&mono_len(len, ctx.mono))
+                .unwrap_or_else(|| panic!("native while: promoted array '{name}' non-constant length"));
+            let ptr = target_alloca(ctx, elem_lir.clone(), n);
+            let slot = PromotedSlot {
+                ptr,
+                layout: PromotedLayout::Array {
+                    elem_ty: elem_lir,
+                    n,
+                    elem_width,
+                },
+            };
+            promoted_whole_store(&slot.ptr, &slot.layout, &init_vals, ctx);
+            slot
+        } else {
+            let ptr = target_alloca(ctx, lir.clone(), 1);
+            let slot = PromotedSlot {
+                ptr,
+                layout: PromotedLayout::Whole { agg_ty: lir },
+            };
+            promoted_whole_store(&slot.ptr, &slot.layout, &init_vals, ctx);
+            slot
+        };
+        ctx.env.remove(name);
+        ctx.promoted.insert(name.clone(), slot);
+        promoted_restore.push((name.clone(), ty));
+    }
+
+    // Threaded entries: loop-carried scalars (while loops have no induction
+    // variable).
+    let mut carried: Vec<(String, Vec<T::Value>)> = carried_names
+        .iter()
+        .map(|name| {
+            let vals = ctx.env.get(name).cloned().unwrap_or_else(|| {
+                panic!("native while: carried var '{name}' has no values at loop entry")
+            });
+            (name.clone(), vals)
+        })
+        .collect();
+
+    let header = ctx.target.create_block();
+    let body_block = ctx.target.create_block();
+    let latch = ctx.target.create_block();
+    let exit = ctx.target.create_block();
+
+    // Header/body/latch/exit params: carried values only, grouped per name
+    // so the zip in each block maps names to their param groups.
+    let mut make_params = |block: &T::Block,
+                           ctx: &mut LowerCtx<T, P>|
+     -> Vec<Vec<T::Value>> {
+        let mut groups = Vec::new();
+        for (_, group) in &carried {
+            let mut vals = Vec::new();
+            for v in group {
+                let ty = ctx.target.value_scalar_type(v);
+                vals.push(ctx.target.add_block_param(block.clone(), ty));
+            }
+            groups.push(vals);
+        }
+        groups
+    };
+    let header_carried = make_params(&header, ctx);
+    let body_carried = make_params(&body_block, ctx);
+    let latch_carried = make_params(&latch, ctx);
+    let exit_carried = make_params(&exit, ctx);
+
+    // Before block: jump header with carried values.
+    let mut header_args: Vec<T::Value> = Vec::new();
+    for (_, vals) in &carried {
+        header_args.extend(vals.iter().cloned());
+    }
+    ctx.target
+        .jump(header.clone(), BranchTarget::args(header_args));
+
+    // Header: evaluate the condition, branch to body/exit. Carried names
+    // must first rebind to the header's block params (a new block sees only
+    // its params — the raw entry values live in the previous block).
+    ctx.target.switch_to_block(header.clone());
+    ctx.current_block = header.clone();
+    for ((name, _), params) in carried.iter().zip(&header_carried) {
+        ctx.env.insert(name.clone(), params.clone());
+    }
+    let mut body_args: Vec<T::Value> = Vec::new();
+    for group in &header_carried {
+        body_args.extend(group.iter().cloned());
+    }
+    let mut exit_args: Vec<T::Value> = Vec::new();
+    for group in &header_carried {
+        exit_args.extend(group.iter().cloned());
+    }
+    let cond_val = into_scalar(lower_expr(cond, ctx), "while condition");
+    ctx.target.branch(
+        cond_val,
+        body_block.clone(),
+        BranchTarget::args(body_args),
+        exit.clone(),
+        BranchTarget::args(exit_args),
+    );
+
+    // Body block.
+    ctx.target.switch_to_block(body_block.clone());
+    ctx.current_block = body_block.clone();
+    for ((name, _), vals) in carried.iter().zip(&body_carried) {
+        ctx.env.insert(name.clone(), vals.clone());
+    }
+    ctx.loop_stack.push(LoopFrame {
+        latch: latch.clone(),
+        exit: exit.clone(),
+        var: String::new(),
+        carried: carried_names.clone(),
+        unrolled: false,
+        induction: None,
+        limit: None,
+    });
+    lower_block(body, ctx);
+    ctx.loop_stack.pop();
+
+    // Latch edge: thread post-body carried values.
+    let mut latch_args: Vec<T::Value> = Vec::new();
+    for (name, _) in &carried {
+        let post = ctx.env.get(name).unwrap_or_else(|| {
+            panic!("native while: carried var '{name}' disappeared in the loop body")
+        });
+        latch_args.extend(post.iter().cloned());
+    }
+    ctx.target.jump(latch.clone(), BranchTarget::args(latch_args));
+
+    // Latch: repeat.
+    ctx.target.switch_to_block(latch.clone());
+    ctx.current_block = latch.clone();
+    let mut header_args: Vec<T::Value> = Vec::new();
+    for group in &latch_carried {
+        header_args.extend(group.iter().cloned());
+    }
+    ctx.target.jump(
+        header,
+        BranchTarget::args(header_args).with_reentry(ReentryHint::bounded_loop_ascending()),
+    );
+
+    // Exit: carried names land as final-iteration values; promoted names
+    // load their final memory content back into `env`.
+    ctx.target.switch_to_block(exit.clone());
+    ctx.current_block = exit;
+    for ((name, _), vals) in carried.iter().zip(&exit_carried) {
+        ctx.env.insert(name.clone(), vals.clone());
     }
     for (name, _) in &promoted_restore {
         let slot = ctx.promoted.get(name).expect("promoted slot present").clone();
@@ -3564,7 +3873,19 @@ fn lower_bounded_loop_legacy_native<T: LirTarget<P>, P: Clone>(
     ctx.env.insert(var.to_owned(), vec![counter.clone()]);
     ctx.env_types
         .insert(var.to_owned(), IrType::Primitive(PrimitiveType::Usize));
+    ctx.env
+        .insert("__native_loop_limit".to_owned(), vec![limit_val.clone()]);
+    ctx.loop_stack.push(LoopFrame {
+        latch: loop_header.clone(),
+        exit: done_block.clone(),
+        var: var.to_owned(),
+        carried: Vec::new(),
+        unrolled: false,
+        induction: Some(var.to_owned()),
+        limit: Some("__native_loop_limit".to_owned()),
+    });
     lower_block(body, ctx);
+    ctx.loop_stack.pop();
     let one = ctx.target.iconst(LirType::U64, 1);
     let next = ctx.target.add(counter, one);
     ctx.target.jump(

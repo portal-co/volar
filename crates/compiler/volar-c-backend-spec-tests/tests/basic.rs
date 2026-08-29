@@ -1056,3 +1056,200 @@ fn test_native_loop_struct_field_accumulate() {
     );
     assert_eq!(output.trim(), "6 4");
 }
+
+// ============================================================================
+// Native loops, Stage 3: `while` (dynamic condition), `continue`, and
+// `break` inside a native bounded loop.
+//
+// fn count_down(n: u64) -> u64 {
+//     let mut i = n; let mut acc = 0u64;
+//     while i > 0 { acc = acc + i; i = i - 1; }
+//     acc
+// }
+//
+// fn sum_selected(n: u64) -> u64 {
+//     let mut acc = 0u64;
+//     for i in 0..n {
+//         if i == 3 { continue; }
+//         if i == 8 { break; }
+//         acc = acc + i;
+//     }
+//     acc
+// }
+// ============================================================================
+
+#[test]
+fn test_native_while_loop() {
+    use volar_compiler::ir::{
+        ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrParam, IrPattern, IrStmtKind,
+        IrType, PrimitiveType, SpecBinOp,
+    };
+    use volar_lir_codegen::{LoopLowering, lower_function_with_loop_lowering};
+
+    let build = || IrFunction {
+        no_inline: false,
+        name: "count_down".to_owned(),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params: vec![IrParam {
+            name: "n".to_owned(),
+            ty: IrType::Primitive(PrimitiveType::U64),
+        }],
+        return_type: Some(IrType::Primitive(PrimitiveType::U64)),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident {
+                        mutable: true,
+                        name: "i".to_owned(),
+                        subpat: None,
+                    },
+                    ty: Some(IrType::Primitive(PrimitiveType::U64)),
+                    init: Some(ir_expr(IrExprKind::Var("n".to_owned()))),
+                }),
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident {
+                        mutable: true,
+                        name: "acc".to_owned(),
+                        subpat: None,
+                    },
+                    ty: Some(IrType::Primitive(PrimitiveType::U64)),
+                    init: Some(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                }),
+                ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::WhileLoop {
+                    cond: Box::new(ir_expr(IrExprKind::Binary {
+                        op: SpecBinOp::Gt,
+                        left: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                    })),
+                    body: IrBlock {
+                        stmts: vec![
+                            ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                                left: Box::new(ir_expr(IrExprKind::Var("acc".to_owned()))),
+                                right: Box::new(ir_expr(IrExprKind::Binary {
+                                    op: SpecBinOp::Add,
+                                    left: Box::new(ir_expr(IrExprKind::Var("acc".to_owned()))),
+                                    right: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                                })),
+                            }))),
+                            ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                                left: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                                right: Box::new(ir_expr(IrExprKind::Binary {
+                                    op: SpecBinOp::Sub,
+                                    left: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                                    right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(1)))),
+                                })),
+                            }))),
+                        ],
+                        expr: None,
+                    },
+                }))),
+            ],
+            expr: Some(Box::new(ir_expr(IrExprKind::Var("acc".to_owned())))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut b = CBackend::new();
+    lower_function_with_loop_lowering(&build(), &mut b, LoopLowering::Native);
+    let c_src = b.finish();
+    assert!(c_src.contains("goto block"), "while loop must lower to a CFG loop");
+    let output = compile_and_run(
+        &c_src,
+        r#"  printf("%llu\n", (unsigned long long)count_down(10ull));"#,
+    );
+    assert_eq!(output.trim(), "55");
+}
+
+#[test]
+fn test_native_loop_continue_break() {
+    use volar_compiler::ir::{
+        ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrParam, IrPattern, IrStmtKind,
+        IrType, PrimitiveType, SpecBinOp,
+    };
+    use volar_lir_codegen::{LoopLowering, lower_function_with_loop_lowering};
+
+    let if_continue = |n: u64| {
+        ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::If {
+            cond: Box::new(ir_expr(IrExprKind::Binary {
+                op: SpecBinOp::Eq,
+                left: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(n as i128)))),
+            })),
+            then_branch: IrBlock {
+                stmts: vec![],
+                expr: Some(Box::new(ir_expr(if n == 8 {
+                    IrExprKind::Break(None)
+                } else {
+                    IrExprKind::Continue
+                }))),
+            },
+            else_branch: None,
+        })))
+    };
+
+    let func = IrFunction {
+        no_inline: false,
+        name: "sum_selected".to_owned(),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params: vec![IrParam {
+            name: "n".to_owned(),
+            ty: IrType::Primitive(PrimitiveType::U64),
+        }],
+        return_type: Some(IrType::Primitive(PrimitiveType::U64)),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident {
+                        mutable: true,
+                        name: "acc".to_owned(),
+                        subpat: None,
+                    },
+                    ty: Some(IrType::Primitive(PrimitiveType::U64)),
+                    init: Some(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                }),
+                ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::BoundedLoop {
+                    var: "i".to_owned(),
+                    start: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                    end: Box::new(ir_expr(IrExprKind::Var("n".to_owned()))),
+                    inclusive: false,
+                    body: IrBlock {
+                        stmts: vec![
+                            if_continue(3), // continue
+                            if_continue(8), // break
+                            ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                                left: Box::new(ir_expr(IrExprKind::Var("acc".to_owned()))),
+                                right: Box::new(ir_expr(IrExprKind::Binary {
+                                    op: SpecBinOp::Add,
+                                    left: Box::new(ir_expr(IrExprKind::Var("acc".to_owned()))),
+                                    right: Box::new(ir_expr(IrExprKind::Cast {
+                                        expr: Box::new(ir_expr(IrExprKind::Var("i".to_owned()))),
+                                        ty: Box::new(IrType::Primitive(PrimitiveType::U64)),
+                                    })),
+                                })),
+                            }))),
+                        ],
+                        expr: None,
+                    },
+                }))),
+            ],
+            expr: Some(Box::new(ir_expr(IrExprKind::Var("acc".to_owned())))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut b = CBackend::new();
+    lower_function_with_loop_lowering(&func, &mut b, LoopLowering::Native);
+    let c_src = b.finish();
+    // n=10, skip 3, stop before adding 8: 0+1+2+4+5+6+7 = 25
+    let output = compile_and_run(
+        &c_src,
+        r#"  printf("%llu\n", (unsigned long long)sum_selected(10ull));"#,
+    );
+    assert_eq!(output.trim(), "25");
+}
