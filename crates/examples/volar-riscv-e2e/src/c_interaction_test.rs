@@ -70,7 +70,8 @@ fn c_interaction_lowers_runs_and_verifies() {
         let out = work.join(format!("{}.o", c.trim_end_matches(".c")));
         if !out.exists() {
             run(Command::new("cc")
-                .args(["-O0", "-w", "-std=c99", "-c"])
+                .args(["-O0", "-w", "-std=c99", "-c", "-I"])
+                .arg(&work)
                 .arg(manifest_dir().join(HARNESS_DIR).join(c))
                 .arg("-o")
                 .arg(&out));

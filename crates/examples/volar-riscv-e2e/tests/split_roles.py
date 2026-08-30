@@ -39,15 +39,33 @@ open(os.path.join(workdir, 'header.h'), 'w').write(header)
 chunks = rest.split('\n}\n')
 idx = 0
 manifest = []
+sigs = []
 for c in chunks:
     if not c.strip():
         continue
-    sig = c.split('(')[0]
-    name = re.findall(r'([A-Za-z_][A-Za-z0-9_]*)\s*$', sig.strip())[0]
+    # The definition signature: the first line that ends with ') {' and is
+    # not a static/extern decl (externs between functions are already in
+    # the header's extern set).
+    sig = None
+    for line in c.split('\n'):
+        ls = line.strip()
+        if ls.endswith('{') and '(' in ls and not ls.startswith('static') and not ls.startswith('extern'):
+            sig = ls[:-1].strip()
+            break
+    assert sig is not None, f"no definition line in chunk: {c[:120]!r}"
+    name = re.findall(r'([A-Za-z_][A-Za-z0-9_]*)\s*$', sig.split('(')[0].strip())[0]
     fname = os.path.join(workdir, f'f_{idx:02d}_{re.sub(r"[^A-Za-z0-9_]", "_", name)[:60]}.c')
     open(fname, 'w').write('#include "header.h"\n' + c + '\n}\n')
     manifest.append(fname)
+    sigs.append(sig + ';')
     idx += 1
+
+# Cross-TU forward declarations: each function lives in its own TU, so
+# every signature must be visible everywhere.
+with open(os.path.join(workdir, 'header.h'), 'a') as h:
+    h.write('\n/* ---- cross-TU forward declarations ---- */\n')
+    h.write('\n'.join(dict.fromkeys(sigs)))
+    h.write('\n')
 
 # The wrapper functions' local piece-pool slots are sized by the C emit's
 # per-slot count, but the pieces index them by raw global var ids (up to
@@ -70,5 +88,5 @@ for mf in list(manifest):
     if patched != src:
         open(mf, 'w').write(patched)
 
-open(os.path.join(workdir, 'manifest.txt'), 'w').write('\n'.join(manifest))
+open(os.path.join(workdir, 'manifest.txt'), 'w').write('\n'.join(manifest) + '\n')
 print(f'split: header + {idx} TUs')

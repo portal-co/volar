@@ -8,5 +8,5 @@ while read -r f; do
   if [ ! -f "$o" ]; then
     cc -O0 -w -std=c99 -c "$f" -o "$o" || { echo "cc failed: $f"; exit 1; }
   fi
-done < manifest.txt
+done < <(sed -e '$a\' manifest.txt)
 exit 0
