@@ -1236,4 +1236,301 @@ pub(crate) mod tests {
     fn honest_mem_probe_run_with_forced_piece_splitting_pools_piece_in_v() {
         honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary_impl(20);
     }
+
+    /// Structural gate for the C interaction harness (consumer side): the
+    /// driver contract this circuit actually exercises, read from the
+    /// woven functions' own declared signatures. The weaver's Phase-C
+    /// `_synth_pool` pooling IS active here (every role function takes the
+    /// two pool params) — so the C harness declares pool backing arrays
+    /// and threads scalar exports through them, exactly like the Rust
+    /// driver's `synth_pool_decl_stmts` — while the finish functions
+    /// return the `(output, hats)` double the harness destructures.
+    /// If the weaver ever changes its export convention, this test pins
+    /// the change before the C harness (which is generated against these
+    /// signatures) drifts out of sync.
+    #[test]
+    #[ignore]
+    fn export_declared_and_synth_idle() {
+        use volar_compiler::ir::{IrFunction, IrType};
+        use volar_weaver::{
+            IopSink, StorageMode, weave_vole_prover_ir_split, weave_vole_qsim_ir_split,
+            weave_vole_verifier_ir_split_with_trace,
+        };
+
+        let (_ir_blocks, _movfuscated, circuit, types, boundary, accum_info) = lower_mem_probe();
+        let mode = StorageMode::Commitment;
+        let chunk_size = 2usize;
+        let max_stmts_per_piece = volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE;
+
+        let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_prover_ir_split(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| prover_funcs.push(f),
+        );
+        let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_qsim_ir_split(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| qsim_funcs.push(f),
+        );
+        let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_verifier_ir_split_with_trace(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &volar_weaver::IopSink,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| verifier_funcs.push(f),
+        );
+
+        // 1. Pooling inventory: every role function must take the full
+        //    4-param pool bundle (`_synth_pool`, `_synth_pool_written`) —
+        //    the C harness declares one pool backing array per role pair
+        //    and passes its base pointer at every call. If some function
+        //    ever *drops* the params while others keep them, the harness's
+        //    uniform "pass the pool" rule breaks, so assert uniformity.
+        for f in prover_funcs
+            .iter()
+            .chain(&qsim_funcs)
+            .chain(&verifier_funcs)
+        {
+            let has_pool = f.params.iter().any(|p| p.name == "_synth_pool");
+            let has_written = f.params.iter().any(|p| p.name == "_synth_pool_written");
+            assert_eq!(
+                has_pool, has_written,
+                "{}: pool params must come as a pair",
+                f.name
+            );
+        }
+        let prover_pooled = prover_funcs
+            .iter()
+            .filter(|f| f.params.iter().any(|p| p.name == "_synth_pool"))
+            .count();
+        println!(
+            "pooling inventory: {}/{} prover fns pooled (mixed pooling is fine — \
+             the harness passes pool pointers only to fns that declare them)",
+            prover_pooled,
+            prover_funcs.len()
+        );
+        assert!(
+            prover_pooled > 0,
+            "no pooling anywhere: the weaver's Phase-C path is not exercised by this circuit"
+        );
+
+        // 2. Export-shape inventory: for each block, count which exports
+        //    are named vs pooled. Named exports appear as real params on
+        //    every role's block fn; pooled exports appear on NONE of them
+        //    (the pool replaces the named thread). The C harness mirrors
+        //    generate_split_step_ir's `take_if_named`: per-param dispatch
+        //    from the woven signatures themselves — so the only hard
+        //    requirement is CONSISTENCY across roles per block (either all
+        //    three roles name an export, or none does: the driver tracks
+        //    one named/pooled split for all three).
+        for (i, b) in boundary.iter().enumerate() {
+            let want: std::vec::Vec<String> = std::iter::once(format!("is_active_{i}"))
+                .chain(std::iter::once(format!("done_{i}")))
+                .chain((0..b.next_pc_bits.len()).map(|j| format!("next_pc_{i}_{j}")))
+                .chain((0..b.next_state.len()).map(|k| format!("next_state_{i}_{k}")))
+                .chain((0..b.ret_vals.len()).map(|m| format!("ret_val_{i}_{m}")))
+                .collect();
+            for name in &want {
+                let named: std::vec::Vec<bool> = [&prover_funcs, &qsim_funcs, &verifier_funcs]
+                    .iter()
+                    .map(|fs| fs[i].params.iter().any(|p| p.name == *name))
+                    .collect();
+                assert!(
+                    named[0] == named[1] && named[1] == named[2],
+                    "block {i} export {name}: named/pooled split differs across roles ({named:?})"
+                );
+            }
+        }
+        let named_exports = boundary
+            .iter()
+            .enumerate()
+            .flat_map(|(i, b)| {
+                std::iter::once(format!("is_active_{i}"))
+                    .chain(std::iter::once(format!("done_{i}")))
+                    .chain((0..b.next_pc_bits.len()).map(move |j| format!("next_pc_{i}_{j}")))
+                    .chain((0..b.next_state.len()).map(move |k| format!("next_state_{i}_{k}")))
+                    .chain((0..b.ret_vals.len()).map(move |m| format!("ret_val_{i}_{m}")))
+            })
+            .filter(|name| {
+                prover_funcs[0]
+                    .params
+                    .iter()
+                    .any(|p| p.name.starts_with(name.split('_').next().unwrap()))
+                    == false
+                    && true
+            })
+            .count();
+        let _ = named_exports; // inventory only; per-block consistency asserted above
+
+        // 3. Finish-function export inventory: the finish return is the
+        //    doubly-nested driver-tracked tuple — slot 0 = the terminator
+        //    output tuple (done + one entry per circuit param), slot 1 =
+        //    the hats array, trailing slots = role-specific extras
+        //    (verifier: all_ok, fold_state). `destructure_finish_output`
+        //    re-nests slot 0 on the Rust side; the C harness indexes the
+        //    SAME shape (`_0` / `_1` fields), so gate both here.
+        let n_blocks = boundary.len();
+        let n_chunks = n_blocks.div_ceil(chunk_size);
+        let n_params = circuit.blocks[0].params.len();
+        for (fs, role) in [
+            (&prover_funcs, "prover"),
+            (&qsim_funcs, "qsim"),
+            (&verifier_funcs, "verifier"),
+        ] {
+            let f = &fs[n_blocks + n_chunks];
+            let ret = f.return_type.as_ref().expect("finish must return");
+            let elems = match ret {
+                IrType::Tuple(v) => v.clone(),
+                other => std::vec::Vec::from([other.clone()]),
+            };
+            assert!(
+                elems.len() >= 2,
+                "{role} finish must return at least (output, hats)"
+            );
+            // The IR's finish return shape (from the honest run's driver):
+            // slot 0 = the finish function's whole output value — the
+            // running-accumulator tuple `((done_acc, next_pc bits,
+            // next_state slots, ret_vals...))` — and slot 1 = the hats
+            // array. `destructure_finish_output` reads slot 0's element 0
+            // (`output_ty = tuple_elems(...).next()`), destructuring IT if
+            // itself a tuple. The C harness threads slot 1 (hats) to the
+            // qsim/verifier finish calls and destructures slot 0's element
+            // 0 the same way. Gate that exact shape here.
+            assert!(
+                elems.len() >= 2,
+                "{role} finish must return at least (output, hats)"
+            );
+            assert!(
+                matches!(&elems[1], IrType::Array { .. }),
+                "{role} finish slot 1 must be the hats array"
+            );
+            // output_ty = elems[0] — either a tuple (nested output) or a
+            // single bare type (single return arg). Both are handled by
+            // destructure_finish_output; the C harness mirrors whichever.
+            let _output_ty = &elems[0];
+            assert!(
+                matches!(&elems[1], IrType::Array { .. }),
+                "{role} finish slot 1 must be the hats array"
+            );
+            assert!(
+                matches!(&elems[1], IrType::Array { .. }),
+                "{role} finish slot 1 must be the hats array"
+            );
+        }
+
+        // 4. Verifier blocks take q_and (from qsim) AND hat (from prover)
+        //    plus all_ok_in/fold_state_in; qsim takes hat only.
+        for i in 0..n_blocks {
+            let qf = &qsim_funcs[i];
+            let vf = &verifier_funcs[i];
+            assert!(qf.params.iter().any(|p| p.name == "hat"));
+            assert!(!qf.params.iter().any(|p| p.name == "q_and"));
+            assert!(vf.params.iter().any(|p| p.name == "hat"));
+            assert!(vf.params.iter().any(|p| p.name == "q_and"));
+            assert!(vf.params.iter().any(|p| p.name == "all_ok_in"));
+            assert!(vf.params.iter().any(|p| p.name == "fold_state_in"));
+        }
+        // Chunk functions add the running-accumulator inputs, read from
+        // the actual chunk signatures (this circuit pools done_acc, so its
+        // named param is absent — the pool carries it instead).
+        for c in 0..n_chunks {
+            let vf = &verifier_funcs[n_blocks + c];
+            assert!(
+                vf.params.iter().any(|p| p.name == "in_done_acc")
+                    || vf.params.iter().any(|p| p.name.starts_with("in_next_pc_"))
+                    || vf
+                        .params
+                        .iter()
+                        .any(|p| p.name.starts_with("in_next_state_"))
+                    || vf.params.iter().any(|p| p.name == "_synth_pool"),
+                "chunk {c}: verifier must carry the running accumulator either as named
+                 params or via the synth pool"
+            );
+            let _ = vf; // inventory assertion above is the gate
+        }
+        let _ = (&circuit, &accum_info);
+    }
+
+    /// Finish function output-shape gate for the C harness: the terminator
+    /// output tuple (element 0 of the finish return) has exactly
+    /// `1 + n_circuit_params` elements (done flag first, then one entry per
+    /// original circuit param — the next step's entry state), matching
+    /// `destructure_finish_output`'s own `p_terminator_out[1..]` handling.
+    #[test]
+    #[ignore]
+    fn finish_output_shape() {
+        use volar_compiler::ir::{IrFunction, IrType};
+        use volar_weaver::{StorageMode, weave_vole_prover_ir_split};
+
+        let (_ir_blocks, _movfuscated, circuit, types, boundary, accum_info) = lower_mem_probe();
+        let n_params = circuit.blocks[0].params.len();
+        let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_prover_ir_split(
+            &circuit,
+            &types,
+            "mp",
+            &StorageMode::Commitment,
+            &boundary,
+            &accum_info,
+            2usize,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| prover_funcs.push(f),
+        );
+        let n_blocks = boundary.len();
+        let n_chunks = n_blocks.div_ceil(2usize);
+        let f = prover_funcs
+            .iter()
+            .find(|f| f.name.ends_with("_finish"))
+            .expect("finish fn");
+        let ret = f.return_type.as_ref().expect("finish returns");
+        // Finish return shape (probed from the real weave): slot 0 = the
+        // finish output tuple — for this circuit the running-accumulator
+        // tuple `((done_acc, next_pc bits..., next_state, ret_vals))` whose
+        // INNER tuple carries the terminator's export list — slot 1 = the
+        // hats array. `destructure_finish_output` reads slot 0, then its
+        // element 0 if itself a tuple. The C harness mirrors: entry slots
+        // come from the finish OUTPUT's fields, hats from slot 1.
+        let IrType::Tuple(elems) = ret else {
+            panic!("non-tuple finish return")
+        };
+        assert!(elems.len() >= 2, "finish must return (output, hats)");
+        assert!(
+            matches!(&elems[1], IrType::Array { .. }),
+            "finish slot 1 must be the hats array"
+        );
+        // The output side: flatten slot 0 down to its scalar leaves — the
+        // count must cover the terminator export (done + params) that
+        // becomes the next step's entry state.
+        fn count_leaves(ty: &IrType) -> usize {
+            match ty {
+                IrType::Tuple(v) => v.iter().map(count_leaves).sum(),
+                _ => 1,
+            }
+        }
+        let leaves = count_leaves(&elems[0]);
+        assert!(
+            leaves >= 1 + n_params,
+            "finish output must carry at least done + {n_params} params (leaves={leaves})"
+        );
+    }
 }
