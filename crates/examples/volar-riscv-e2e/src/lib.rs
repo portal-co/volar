@@ -14,6 +14,8 @@
 //! is silently skipped, with no error reported. Every function must be
 //! expanded via `expand_func` first.
 
+#[cfg(test)]
+pub(crate) mod c_interaction_test;
 pub mod commit_mem_e2e;
 #[cfg(test)]
 pub(crate) mod ir_builder;

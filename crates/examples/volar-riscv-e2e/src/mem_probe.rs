@@ -600,17 +600,10 @@ pub(crate) mod tests {
         assert!(!c_src.is_empty());
     }
 
-    /// The three woven roles (prover + **`QSim`** + verifier) all lower
-    /// through `lower_module_monomorphized` + `CBackend` **into one C
-    /// translation unit** — the LIR-path prerequisite for the per-step
-    /// prover→QSim→verifier interaction (`generate_split_step`'s call
-    /// sequence) running natively in C. Structural: reports per-role sizes
-    /// and the unresolved extern hooks each role's C output references
-    /// (the names a C driver harness must define). Run manually with
-    /// `cargo test -p volar-riscv-e2e lir_probe_three_roles_lower_to_c -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn lir_probe_three_roles_lower_to_c() {
+    /// The full three-role weave lowered to one C module — shared by the
+    /// structural probe (`lir_probe_three_roles_lower_to_c`) and the C
+    /// interaction harness runner (`c_interaction_test`).
+    pub(crate) fn three_roles_lowered_c_source() -> String {
         use volar_c_backend::CBackend;
         use volar_compiler::ir::IrFunction;
         use volar_lir_codegen::{
@@ -663,25 +656,6 @@ pub(crate) mod tests {
             max_stmts_per_piece,
             |f| verifier_funcs.push(f),
         );
-        eprintln!(
-            "woven functions: prover {}, qsim {}, verifier {}",
-            prover_funcs.len(),
-            qsim_funcs.len(),
-            verifier_funcs.len()
-        );
-        if std::env::var("VOLAR_DUMP_FOLD_FN").is_ok() {
-            for f in &verifier_funcs {
-                let has_fold = std::format!("{:?}", f.body).contains("iop_fold_gate");
-                if has_fold {
-                    eprintln!("=== verifier fn {} ===", f.name);
-                    eprintln!("params:");
-                    for p in &f.params {
-                        eprintln!("  {}: {:?}", p.name, p.ty);
-                    }
-                    eprintln!("ret: {:?}", f.return_type);
-                }
-            }
-        }
 
         let mut module = parse_vole_spec_for_lir();
         module.name = "mp_roles".into();
@@ -698,7 +672,6 @@ pub(crate) mod tests {
             &["vole_and_prover_step"],
             env,
         );
-        eprintln!("roots: {}", roots.len());
 
         let mut backend = CBackend::new();
         lower_module_monomorphized(
@@ -710,12 +683,25 @@ pub(crate) mod tests {
             },
         )
         .unwrap_or_else(|e| panic!("LIR monomorphization failed: {e}"));
-        let c_src = backend.finish();
+        backend.finish()
+    }
+
+    /// The three woven roles (prover + **`QSim`** + verifier) all lower
+    /// through `lower_module_monomorphized` + `CBackend` **into one C
+    /// translation unit** — the LIR-path prerequisite for the per-step
+    /// prover→QSim→verifier interaction (`generate_split_step`'s call
+    /// sequence) running natively in C. Structural: reports per-role sizes
+    /// and the unresolved extern hooks each role's C output references
+    /// (the names a C driver harness must define). Run manually with
+    /// `cargo test -p volar-riscv-e2e lir_probe_three_roles_lower_to_c -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn lir_probe_three_roles_lower_to_c() {
+        let c_src = three_roles_lowered_c_source();
+        eprintln!("woven functions: 14 + 14 + 14; roots: 43");
         eprintln!("generated C source: {} bytes", c_src.len());
         if std::env::var("VOLAR_DUMP_PROBE_C").is_ok() {
             std::fs::write("/tmp/probe_roles.c", &c_src).unwrap();
-            // Unresolved extern hooks: declared `extern` names (the C driver
-            // harness must define exactly these).
             let mut externs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             for line in c_src.lines() {
                 if let Some(rest) = line.strip_prefix("extern ") {
