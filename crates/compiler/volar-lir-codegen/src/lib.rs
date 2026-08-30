@@ -1056,6 +1056,22 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
             );
             structs::register_tuples_in_type(return_type, &mut registry, target, env);
         }
+        // Body let annotations too: the weave's chunk functions bind
+        // `let w_arr: [(Q, (Q,)); 64] = ...`-shaped locals whose nested
+        // tuples (inside struct type args) never appear in any signature,
+        // so the memory-backed binding of that annotation needs its tuple
+        // nominals registered up front.
+        for ty in body_let_annotations(&func.body) {
+            structs::ensure_type_nominals(
+                &ty,
+                &mut registry,
+                target,
+                env,
+                &module.structs,
+                &module.enums,
+            );
+            structs::register_tuples_in_type(&ty, &mut registry, target, env);
+        }
         // Register generic module structs under this instance env when every
         // declared generic is bound (covers Vope/Delta/Q for woven VOLE).
         for ir_struct in &module.structs {
@@ -1103,6 +1119,22 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     }
 
     let mut external_fns = BTreeMap::new();
+    // Aggregate-heavy env for external-fn signature resolution: bind every
+    // module-level generic name from the first planned instance env that
+    // binds it (all woven-role instances share the module's generic
+    // vocabulary, so the first one that binds a name defines it).
+    let mut ext_env = empty.clone();
+    for (_, instance_env) in &plan.instances {
+        for (name, value) in &instance_env.const_params {
+            ext_env.const_params.entry(name.clone()).or_insert(*value);
+        }
+        for (name, value) in &instance_env.type_params {
+            ext_env
+                .type_params
+                .entry(name.clone())
+                .or_insert_with(|| value.clone());
+        }
+    }
     for func in &module.functions {
         if !matches!(
             func.external_kind,
@@ -1110,7 +1142,14 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
         ) {
             continue;
         }
-        let env = MonoEnv::new("");
+        // Use the aggregate-heavy root env (not a fresh empty one) so
+        // declared param types resolve through it — a host-side hook's
+        // signature names the module's own generic params (`Q<N, T>`),
+        // which a fresh env leaves unsubstituted (panicking in the struct
+        // registry). `root_env` is a component env binding every generic
+        // name to its length-typenum placeholder; names that are
+        // type-level (like `T`) stay unsubstituted but resolve through the
+        // registry's lenient cross-module nominal path.
         external_fns.insert(
             func.name.clone(),
             ExternalFnInfo {
@@ -1118,12 +1157,12 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
                 param_tys: func
                     .params
                     .iter()
-                    .map(|param| registry.ir_type_to_lir(&param.ty, &env))
+                    .map(|param| registry.ir_type_to_lir(&param.ty, &ext_env))
                     .collect(),
                 return_type: func
                     .return_type
                     .as_ref()
-                    .map(|ty| registry.ir_type_to_lir(ty, &env)),
+                    .map(|ty| registry.ir_type_to_lir(ty, &ext_env)),
             },
         );
     }
@@ -1627,6 +1666,41 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
         }
         _ => panic!("lower_stmt: unhandled IrStmt variant — add lowering for this variant"),
     }
+}
+
+/// Collect every `let` type annotation in `block` (recursively through
+/// nested statements and block expressions), for the registry pre-pass:
+/// body annotations can carry tuple-in-struct-arg shapes that never appear
+/// in any function signature, so their nominals/tuples must be registered
+/// before lowering binds them.
+fn body_let_annotations<P: Clone>(block: &IrBlock<P>) -> Vec<IrType> {
+    let mut out = Vec::new();
+    fn walk_stmt<P: Clone>(stmt: &IrStmt<P>, out: &mut Vec<IrType>) {
+        match &stmt.kind {
+            IrStmtKind::Let { ty: Some(ty), .. } => out.push(ty.clone()),
+            IrStmtKind::Expr(e) | IrStmtKind::Semi(e) => walk_expr(e, out),
+            _ => {}
+        }
+    }
+    fn walk_expr<P: Clone>(e: &IrExpr<P>, out: &mut Vec<IrType>) {
+        // Only block-shaped expressions can contain statements; everything
+        // else is handled by the expression-level lowering paths.
+        if let IrExprKind::Block(b) = &e.kind {
+            for stmt in &b.stmts {
+                walk_stmt(stmt, out);
+            }
+            if let Some(tail) = &b.expr {
+                walk_expr(tail, out);
+            }
+        }
+    }
+    for stmt in &block.stmts {
+        walk_stmt(stmt, &mut out);
+    }
+    if let Some(tail) = &block.expr {
+        walk_expr(tail, &mut out);
+    }
+    out
 }
 
 /// Memory-backed aggregate local binding. When `ir_ty` is an aggregate
@@ -3781,7 +3855,9 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
                             | IrExprKind::Field { base: inner, .. } => cursor = inner.as_ref(),
                             IrExprKind::Cast { expr: inner, .. } => cursor = inner.as_ref(),
                             _ => {
-                                return Err("assignment to a non-variable aggregate base".to_owned());
+                                return Err(
+                                    "assignment to a non-variable aggregate base".to_owned()
+                                );
                             }
                         }
                     }
@@ -5520,6 +5596,23 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         .func_sigs
         .get(&func_name)
         .and_then(|sig| sig.return_type.clone());
+
+    // A declared module function (in `func_sigs`) with a real aggregate ABI
+    // (e.g. the host-side `iop_fold_gate` hook) gets its authoritative param
+    // types used instead of per-arg inference, which loses struct shape on
+    // Reference/Deref wrappers and mis-flattens aggregate args.
+    if let Some(sig) = ctx.func_sigs.get(&func_name) {
+        if sig.param_tys.iter().any(|t| !t.is_scalar()) {
+            let mut flat_args = Vec::new();
+            for (i, a) in args.iter().enumerate() {
+                let (_, values) = lower_call_arg_for_abi(a, sig.param_tys.get(i), ctx);
+                flat_args.extend(values);
+            }
+            return ctx
+                .target
+                .call_extern(&func_name, &sig.param_tys, &flat_args, ret_ty);
+        }
+    }
 
     let mut arg_tys: Vec<LirType> = Vec::new();
     let mut flat_args: Vec<T::Value> = Vec::new();

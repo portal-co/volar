@@ -18,6 +18,12 @@
 /// The probe program: increment a byte in memory `STEPS` times.
 pub const STEPS: i32 = 3;
 
+/// Serialized size of the IOP fold accumulator's C representation in the
+/// LIR interaction harness (7 W + 3 E + u over GF(2^128), 16 bytes each,
+/// zero-padded to the declared width — see the LIR env's `IopAccumulator`
+/// mapping and `C Interaction Harness` in the mem_probe test docs).
+pub const IOP_FOLD_STATE_BYTES: usize = 208;
+
 /// WAT source for the probe. `i32.load8_u`/`i32.store8` (not the full
 /// `i32.load`/`i32.store`) so each step touches **exactly one** committed
 /// byte -- one `StorageRead` + one `StorageWrite`, both width 8, per real
@@ -380,13 +386,128 @@ pub(crate) mod tests {
     /// (not the plain-`u8` `vole_env()` used by `vole_e2e.rs`'s toy
     /// circuits), since real non-zero-mask VOLE needs GF-aware arithmetic.
     fn mem_probe_lir_env() -> volar_lir_codegen::mono::MonoEnv {
-        use volar_compiler::ir::{IrType, PrimitiveType};
+        use volar_compiler::ir::{ArrayKind, ArrayLength, IrType, PrimitiveType};
         volar_lir_codegen::mono::MonoEnv::new("mem_probe")
             .with_len("N", 16)
             .with_len("U1", 1)
             .with_len("U0", 0)
             .with_len("K", 1)
             .with_type("T", IrType::Primitive(PrimitiveType::Galois))
+    }
+
+    /// Synthetic LIR struct defs for the IOP fold state, appended to the
+    /// parsed spec module. The woven verifier threads these by value
+    /// (params/state/return); the parser erases cross-crate types to bare
+    /// `TypeParam("IopAccumulator")` names, which the struct registry
+    /// resolves by name — so the C ABI gets a concrete (opaque) layout
+    /// instead of `unsubstituted TypeParam`. The real host-side
+    /// accumulator is `volar_iop::fold`'s fixed-size `(W: 7, E: 3, u)`
+    /// over GF(2^128); 11 lanes x 16 bytes = 176, padded to 208 (the
+    /// `Option` discriminant folded into lane 0's semantics by the C
+    /// harness — see `c_interaction_lowers_and_runs`'s harness notes).
+    fn iop_fold_state_structs() -> std::vec::Vec<volar_compiler::ir::IrStruct> {
+        use volar_compiler::ir::{
+            ArrayKind, ArrayLength, IrField, IrStruct, IrType, PrimitiveType, StructKind,
+        };
+        let opaque = |name: &str, bytes: usize| IrStruct {
+            kind: StructKind::Custom(name.to_owned()),
+            module_path: vec![],
+            generics: vec![],
+            fields: vec![IrField {
+                name: "bytes".to_owned(),
+                ty: IrType::Array {
+                    kind: ArrayKind::FixedArray,
+                    elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
+                    len: ArrayLength::Const(bytes),
+                },
+                public: true,
+            }],
+            is_tuple: false,
+            native_volar_type: None,
+            derives: vec![],
+        };
+        vec![
+            opaque("IopAccumulator", IOP_FOLD_STATE_BYTES),
+            opaque("IopChallenge", 16),
+        ]
+    }
+
+    /// Declared (host-side) extern stubs appended to the parsed spec module:
+    /// `func_sigs` needs their real aggregate ABI so call sites lower args
+    /// against the declared types instead of per-arg inference (which loses
+    /// struct shape and mis-flattens). The C driver harness defines them.
+    fn iop_fold_extern_fns() -> std::vec::Vec<volar_compiler::ir::IrFunction> {
+        use volar_compiler::ir::{
+            ArrayKind, ArrayLength, ExternalKind, IrFunction, IrParam, IrType, PrimitiveType,
+            StructKind,
+        };
+        let q_ty = || IrType::Struct {
+            kind: StructKind::Custom("Q".to_owned()),
+            type_args: vec![
+                IrType::TypeParam("N".to_owned()),
+                IrType::TypeParam("T".to_owned()),
+            ],
+        };
+        let delta_ty = || IrType::Struct {
+            kind: StructKind::Custom("Delta".to_owned()),
+            type_args: vec![
+                IrType::TypeParam("N".to_owned()),
+                IrType::TypeParam("T".to_owned()),
+            ],
+        };
+        // hat: one Array<T, N> per gate (the weave's `hat_{gate_idx}` var),
+        // NOT an array of hats — `iop_fold_gate` folds a single gate.
+        let hat_ty = || IrType::Struct {
+            kind: StructKind::Custom("Array".to_owned()),
+            type_args: vec![
+                IrType::TypeParam("T".to_owned()),
+                IrType::TypeParam("N".to_owned()),
+            ],
+        };
+        vec![IrFunction {
+            no_inline: false,
+            name: "iop_fold_gate".to_owned(),
+            module_path: vec![],
+            generics: vec![],
+            receiver: None,
+            params: vec![
+                IrParam {
+                    name: "state".to_owned(),
+                    ty: IrType::TypeParam("IopAccumulator".to_owned()),
+                },
+                IrParam {
+                    name: "k_a".to_owned(),
+                    ty: q_ty(),
+                },
+                IrParam {
+                    name: "k_b".to_owned(),
+                    ty: q_ty(),
+                },
+                IrParam {
+                    name: "k_c".to_owned(),
+                    ty: q_ty(),
+                },
+                IrParam {
+                    name: "delta".to_owned(),
+                    ty: delta_ty(),
+                },
+                IrParam {
+                    name: "hat".to_owned(),
+                    ty: hat_ty(),
+                },
+                IrParam {
+                    name: "r".to_owned(),
+                    ty: IrType::TypeParam("IopChallenge".to_owned()),
+                },
+            ],
+            return_type: Some(IrType::TypeParam("IopAccumulator".to_owned())),
+            where_clause: vec![],
+            body: volar_compiler::ir::IrBlock {
+                stmts: vec![],
+                expr: None,
+            },
+            external_kind: ExternalKind::Oracle,
+        }]
     }
 
     /// First real test of the user's own parallel LIR/C-backend work
@@ -462,8 +583,11 @@ pub(crate) mod tests {
             for part in c_src.split("\n}\n") {
                 let sig = part
                     .lines()
-                    .find(|l| (l.starts_with(char::is_alphabetic) || l.starts_with('_'))
-                        && l.contains('(') && l.ends_with('{'))
+                    .find(|l| {
+                        (l.starts_with(char::is_alphabetic) || l.starts_with('_'))
+                            && l.contains('(')
+                            && l.ends_with('{')
+                    })
                     .unwrap_or("?")
                     .to_string();
                 sizes.push((sig, part.len()));
@@ -471,6 +595,141 @@ pub(crate) mod tests {
             sizes.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
             for (sig, n) in sizes.iter().take(10) {
                 eprintln!("  {:>12} bytes  {}", n, &sig[..sig.len().min(100)]);
+            }
+        }
+        assert!(!c_src.is_empty());
+    }
+
+    /// The three woven roles (prover + **`QSim`** + verifier) all lower
+    /// through `lower_module_monomorphized` + `CBackend` **into one C
+    /// translation unit** — the LIR-path prerequisite for the per-step
+    /// prover→QSim→verifier interaction (`generate_split_step`'s call
+    /// sequence) running natively in C. Structural: reports per-role sizes
+    /// and the unresolved extern hooks each role's C output references
+    /// (the names a C driver harness must define). Run manually with
+    /// `cargo test -p volar-riscv-e2e lir_probe_three_roles_lower_to_c -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn lir_probe_three_roles_lower_to_c() {
+        use volar_c_backend::CBackend;
+        use volar_compiler::ir::IrFunction;
+        use volar_lir_codegen::{
+            MonoPlanOptions, lower_module_monomorphized, roots_by_name_prefix,
+        };
+        use volar_weaver::{
+            IopSink, StorageMode, weave_vole_prover_ir_split, weave_vole_qsim_ir_split,
+            weave_vole_verifier_ir_split_with_trace,
+        };
+
+        let (_ir_blocks, _movfuscated, circuit, types, boundary, accum_info) = lower_mem_probe();
+        let mode = StorageMode::Commitment;
+        let chunk_size = 2usize;
+        let max_stmts_per_piece = volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE;
+
+        let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_prover_ir_split(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| prover_funcs.push(f),
+        );
+        let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_qsim_ir_split(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| qsim_funcs.push(f),
+        );
+        let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_verifier_ir_split_with_trace(
+            &circuit,
+            &types,
+            "mp",
+            &mode,
+            &volar_weaver::IopSink,
+            &boundary,
+            &accum_info,
+            chunk_size,
+            max_stmts_per_piece,
+            |f| verifier_funcs.push(f),
+        );
+        eprintln!(
+            "woven functions: prover {}, qsim {}, verifier {}",
+            prover_funcs.len(),
+            qsim_funcs.len(),
+            verifier_funcs.len()
+        );
+        if std::env::var("VOLAR_DUMP_FOLD_FN").is_ok() {
+            for f in &verifier_funcs {
+                let has_fold = std::format!("{:?}", f.body).contains("iop_fold_gate");
+                if has_fold {
+                    eprintln!("=== verifier fn {} ===", f.name);
+                    eprintln!("params:");
+                    for p in &f.params {
+                        eprintln!("  {}: {:?}", p.name, p.ty);
+                    }
+                    eprintln!("ret: {:?}", f.return_type);
+                }
+            }
+        }
+
+        let mut module = parse_vole_spec_for_lir();
+        module.name = "mp_roles".into();
+        module.structs.extend(iop_fold_state_structs());
+        module.functions.extend(iop_fold_extern_fns());
+        module.functions.extend(prover_funcs);
+        module.functions.extend(qsim_funcs);
+        module.functions.extend(verifier_funcs);
+
+        let env = mem_probe_lir_env();
+        let roots = roots_by_name_prefix(
+            &module,
+            &["vole_prove_", "vole_qsim_", "vole_verify_"],
+            &["vole_and_prover_step"],
+            env,
+        );
+        eprintln!("roots: {}", roots.len());
+
+        let mut backend = CBackend::new();
+        lower_module_monomorphized(
+            &module,
+            &mut backend,
+            MonoPlanOptions {
+                roots,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("LIR monomorphization failed: {e}"));
+        let c_src = backend.finish();
+        eprintln!("generated C source: {} bytes", c_src.len());
+        if std::env::var("VOLAR_DUMP_PROBE_C").is_ok() {
+            std::fs::write("/tmp/probe_roles.c", &c_src).unwrap();
+            // Unresolved extern hooks: declared `extern` names (the C driver
+            // harness must define exactly these).
+            let mut externs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for line in c_src.lines() {
+                if let Some(rest) = line.strip_prefix("extern ") {
+                    if let Some(name_start) = rest.rfind('*').or_else(|| rest.rfind(' ')) {
+                        let decl = &rest[name_start + 1..];
+                        if let Some(paren) = decl.find('(') {
+                            externs.insert(decl[..paren].trim().to_string());
+                        }
+                    }
+                }
+            }
+            eprintln!("extern hooks ({}):", externs.len());
+            for e in &externs {
+                eprintln!("  {e}");
             }
         }
         assert!(!c_src.is_empty());
@@ -950,7 +1209,6 @@ pub(crate) mod tests {
 
         run_iop_verifier(&rust_source, &driver);
     }
-
 
     #[test]
     fn honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary() {

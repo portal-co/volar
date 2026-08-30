@@ -229,6 +229,14 @@ pub fn register_tuples_in_type<T: LirTarget<P>, P: Clone>(
         IrType::Array { elem, .. } | IrType::Reference { elem, .. } => {
             register_tuples_in_type(elem, registry, target, env);
         }
+        // Tuples can also hide inside a struct instance's generic args
+        // (e.g. a woven finish function returning `(Q, (Q,))` where the
+        // nested tuple sits in a `Vope`/`Q` type-arg position).
+        IrType::Struct { type_args, .. } => {
+            for arg in type_args {
+                register_tuples_in_type(arg, registry, target, env);
+            }
+        }
         _ => {}
     }
 }
