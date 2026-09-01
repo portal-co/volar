@@ -1,163 +1,172 @@
 // @reliability: experimental
 // @ai: assisted
 //! Builder-style pipeline for compiling from any IR level to object code or
-//! woven Rust.
+//! woven Rust. IR transforms live in `volar-ir-build`; this crate adds object
+//! emit, weaving, and cargo-directives.
 
 use std::path::{Path, PathBuf};
 
 use volar_ir::ir::{IRBlocks, IRTypes};
-use volar_lir_saved::{RecordingTarget, SavedLirModule};
+use volar_lir_saved::SavedLirModule;
 
 use crate::{CompileOptions, SavedCircuit};
 
-// ============================================================================
-// Internal source-stage discriminant (paths only — data loaded in execute())
-// ============================================================================
-
-enum SourceStage {
-    Lir(PathBuf),
-    VolarIr(PathBuf),
-    #[cfg(feature = "pipeline-vaffle")]
-    Vaffle(PathBuf),
-    #[cfg(feature = "pipeline-wasm")]
-    Wasm(PathBuf),
-}
-
-// ============================================================================
-// PipelinePass
-// ============================================================================
-
-/// A pass applied to the IR during [`Pipeline`] execution.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
-pub enum PipelinePass {
-    /// Lower a VAFFLE module to Volar IR.  Source must be Vaffle or Wasm.
-    #[cfg(feature = "pipeline-vaffle")]
-    LowerToVolarIr,
-    /// Constant-fold and dead-code-eliminate Volar IR until stable (a joint
-    /// fixpoint -- folding can expose newly-dead statements, and removing
-    /// dead statements can expose further folding opportunities). Source
-    /// must be VolarIr.
-    FoldIr,
-    /// Movfuscate Volar IR into a single self-looping block.  Source must be VolarIr.
-    Movfuscate,
-}
-
-// ============================================================================
-// Pipeline
-// ============================================================================
+pub use volar_ir_build::PipelinePass;
 
 /// A composable lowering pipeline for `build.rs` scripts.
 ///
-/// Start from a file on disk, layer optional IR passes, then terminate into
-/// an object file or woven Rust source.
-///
-/// # Example
-/// ```rust,ignore
-/// Pipeline::from_volar_ir("src/my.circuit")
-///     .fold_ir()
-///     .movfuscate()
-///     .compile_to_object(&out.join("my.o"), &CompileOptions::default())?;
-/// ```
+/// Wraps [`volar_ir_build::Pipeline`] and adds object-file / weave terminals.
 pub struct Pipeline {
-    source: SourceStage,
-    passes: Vec<PipelinePass>,
-    #[cfg(feature = "pipeline-wasm")]
-    import_config: volar_vaffle_target::WaffleImportConfig,
+    inner: volar_ir_build::Pipeline,
+    rerun: Option<PathBuf>,
 }
 
-// ---- Constructors -----------------------------------------------------------
-
 impl Pipeline {
+    fn wrap(inner: volar_ir_build::Pipeline, rerun: Option<PathBuf>) -> Self {
+        Pipeline { inner, rerun }
+    }
+
+    fn emit_rerun(&self) {
+        #[cfg(feature = "cargo-directives")]
+        if let Some(p) = &self.rerun {
+            println!("cargo:rerun-if-changed={}", p.display());
+        }
+        #[cfg(not(feature = "cargo-directives"))]
+        let _ = &self.rerun;
+    }
+
     /// Start from a pre-recorded `.lir` file.
     pub fn from_saved_lir(path: impl Into<PathBuf>) -> Self {
-        Pipeline {
-            source: SourceStage::Lir(path.into()),
-            passes: vec![],
-            #[cfg(feature = "pipeline-wasm")]
-            import_config: volar_vaffle_target::WaffleImportConfig::new(),
-        }
+        let path = path.into();
+        Self::wrap(volar_ir_build::Pipeline::from_saved_lir(&path), Some(path))
     }
 
-    /// Start from a `.circuit` file (rkyv-serialized `IRBlocks + IRTypes`).
+    /// Start from a `.circuit` file (rkyv-serialized `SavedCircuit`).
     pub fn from_volar_ir(path: impl Into<PathBuf>) -> Self {
-        Pipeline {
-            source: SourceStage::VolarIr(path.into()),
-            passes: vec![],
-            #[cfg(feature = "pipeline-wasm")]
-            import_config: volar_vaffle_target::WaffleImportConfig::new(),
+        let path = path.into();
+        match load_saved_circuit(&path) {
+            Ok((blocks, types)) => Self::wrap(
+                volar_ir_build::Pipeline::from_volar_ir_blocks(blocks, types),
+                Some(path),
+            ),
+            Err(_) => {
+                // Fall back to a bare `(IRBlocks, IRTypes)` blob.
+                Self::wrap(volar_ir_build::Pipeline::from_volar_ir(&path), Some(path))
+            }
         }
     }
 
-    /// Start from a `.vaffle` file (rkyv-serialized VAFFLE `Module`).
+    /// Start from a `.vaffle` file.
     #[cfg(feature = "pipeline-vaffle")]
     pub fn from_vaffle(path: impl Into<PathBuf>) -> Self {
-        Pipeline {
-            source: SourceStage::Vaffle(path.into()),
-            passes: vec![],
-            #[cfg(feature = "pipeline-wasm")]
-            import_config: volar_vaffle_target::WaffleImportConfig::new(),
-        }
+        let path = path.into();
+        Self::wrap(volar_ir_build::Pipeline::from_vaffle(&path), Some(path))
     }
 
-    /// Start from a `.wasm` file; WAFFLE parsing happens in-memory at execution time.
+    /// Start from a `.wasm` file.
     #[cfg(feature = "pipeline-wasm")]
     pub fn from_wasm(path: impl Into<PathBuf>) -> Self {
-        Pipeline {
-            source: SourceStage::Wasm(path.into()),
-            passes: vec![],
-            import_config: volar_vaffle_target::WaffleImportConfig::new(),
-        }
+        let path = path.into();
+        Self::wrap(volar_ir_build::Pipeline::from_wasm(&path), Some(path))
+    }
+
+    /// Fully-inlined WASM frontend (WAFFLE → VAFFLE → inline-everything).
+    #[cfg(feature = "pipeline-wasm")]
+    pub fn from_wasm_inlined(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        Self::wrap(
+            volar_ir_build::Pipeline::from_wasm_inlined(&path),
+            Some(path),
+        )
+    }
+
+    /// Structural LLVM import (calls preserved until a later pass).
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_llvm(path: impl Into<PathBuf>, entries: &[&str]) -> Self {
+        let path = path.into();
+        Self::wrap(
+            volar_ir_build::Pipeline::from_llvm(&path, entries),
+            Some(path),
+        )
+    }
+
+    /// Structural LLVM import plus VAFFLE inline-everything.
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_llvm_inlined(path: impl Into<PathBuf>, entries: &[&str]) -> Self {
+        let path = path.into();
+        Self::wrap(
+            volar_ir_build::Pipeline::from_llvm_inlined(&path, entries),
+            Some(path),
+        )
+    }
+
+    /// Execution-mode LLVM-direct import (already `is_circuit()` when it succeeds).
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_llvm_direct(path: impl Into<PathBuf>, entry: &str) -> Self {
+        let path = path.into();
+        Self::wrap(
+            volar_ir_build::Pipeline::from_llvm_direct(&path, entry),
+            Some(path),
+        )
     }
 
     /// Configure oracle/action import mappings for WASM pipelines.
-    ///
-    /// Has no effect when the source is not a `.wasm` file.
     #[cfg(feature = "pipeline-wasm")]
-    pub fn with_import_config(mut self, config: volar_vaffle_target::WaffleImportConfig) -> Self {
-        self.import_config = config;
+    pub fn with_import_config(mut self, config: volar_ir_build::WaffleImportConfig) -> Self {
+        self.inner = self.inner.with_import_config(config);
         self
     }
-}
 
-// ---- Pass builder methods ---------------------------------------------------
+    /// Names used as roots for VAFFLE inline-everything.
+    pub fn with_inline_entries(mut self, entries: &[&str]) -> Self {
+        self.inner = self.inner.with_inline_entries(entries);
+        self
+    }
 
-impl Pipeline {
+    /// Inline every non-recursive intra-module VAFFLE call.
+    #[cfg(feature = "pipeline-vaffle")]
+    pub fn inline_vaffle_everything(mut self) -> Self {
+        self.inner = self.inner.inline_vaffle_everything();
+        self
+    }
+
     /// Lower VAFFLE → Volar IR.
     #[cfg(feature = "pipeline-vaffle")]
     pub fn lower_to_volar_ir(mut self) -> Self {
-        self.passes.push(PipelinePass::LowerToVolarIr);
+        self.inner = self.inner.lower_to_volar_ir();
         self
     }
 
     /// Constant-fold Volar IR until stable.
     pub fn fold_ir(mut self) -> Self {
-        self.passes.push(PipelinePass::FoldIr);
+        self.inner = self.inner.fold_ir();
         self
     }
 
     /// Movfuscate Volar IR into a single self-looping block.
     pub fn movfuscate(mut self) -> Self {
-        self.passes.push(PipelinePass::Movfuscate);
+        self.inner = self.inner.movfuscate();
         self
     }
-}
 
-// ---- Terminal methods -------------------------------------------------------
+    /// Unroll Volar IR into a combinational circuit (concrete CF required).
+    pub fn unroll_ir(mut self) -> Self {
+        self.inner = self.inner.unroll_ir();
+        self
+    }
 
-impl Pipeline {
     /// Execute all passes and return the resulting Volar IR.
-    ///
-    /// The pipeline must reach the `VolarIr` stage — start from `.wasm`,
-    /// `.vaffle`, or `.circuit` and call `.lower_to_volar_ir()` if needed.
     #[cfg(feature = "pipeline")]
     pub fn to_volar_ir(self) -> Result<(IRBlocks, IRTypes), Box<dyn std::error::Error>> {
-        match self.execute()? {
-            ExecutedPipeline::VolarIr(blocks, types) => Ok((blocks, types)),
-            ExecutedPipeline::Lir(_) => Err(
-                "to_volar_ir requires VolarIr stage; got Lir — add .lower_to_volar_ir() or start from a non-Lir source".into()
-            ),
-        }
+        self.emit_rerun();
+        self.inner.to_volar_ir()
+    }
+
+    /// Execute all passes and return a saved LIR module.
+    #[cfg(feature = "pipeline")]
+    pub fn to_lir(self) -> Result<SavedLirModule, Box<dyn std::error::Error>> {
+        self.emit_rerun();
+        self.inner.to_lir()
     }
 
     /// Execute all passes and compile the result to a native object file.
@@ -166,14 +175,9 @@ impl Pipeline {
         out_path: &Path,
         options: &CompileOptions,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let executed = self.execute()?;
-        match executed {
-            ExecutedPipeline::Lir(saved) => lir_to_object(&saved, out_path, options),
-            ExecutedPipeline::VolarIr(blocks, types) => {
-                let saved = lower_volar_ir_to_lir(&blocks, &types);
-                lir_to_object(&saved, out_path, options)
-            }
-        }
+        self.emit_rerun();
+        let saved = self.inner.to_lir()?;
+        lir_to_object(&saved, out_path, options)
     }
 
     /// Execute all passes and emit woven Rust source.
@@ -183,21 +187,12 @@ impl Pipeline {
         out_path: &Path,
         weaver: &crate::Weaver,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let executed = self.execute()?;
-        match executed {
-            ExecutedPipeline::VolarIr(blocks, types) => {
-                weave_volar_ir_in_memory(&blocks, &types, out_path, weaver)
-            }
-            ExecutedPipeline::Lir(_) => Err(
-                "emit_woven_rust requires VolarIr stage; got Lir (add passes or start from volar IR)".into()
-            ),
-        }
+        self.emit_rerun();
+        let (blocks, types) = self.inner.to_volar_ir()?;
+        weave_volar_ir_in_memory(&blocks, &types, out_path, weaver)
     }
 
     /// Execute all passes and emit chunked Rust source files into `out_dir/`.
-    ///
-    /// Only supports VolarIr-stage weavers (`VoleProverIr`, `VoleVerifierIr`).
-    /// Returns a list of written file paths.
     #[cfg(feature = "weave-chunked")]
     pub fn emit_woven_rust_chunked(
         self,
@@ -205,22 +200,12 @@ impl Pipeline {
         weaver: &crate::Weaver,
         options: &volar_compiler::chunk_module::ChunkOptions,
     ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
-        let executed = self.execute()?;
-        match executed {
-            ExecutedPipeline::VolarIr(blocks, types) => {
-                weave_volar_ir_chunked(&blocks, &types, out_dir, weaver, options)
-            }
-            ExecutedPipeline::Lir(_) => {
-                Err("emit_woven_rust_chunked requires VolarIr stage; got Lir".into())
-            }
-        }
+        self.emit_rerun();
+        let (blocks, types) = self.inner.to_volar_ir()?;
+        weave_volar_ir_chunked(&blocks, &types, out_dir, weaver, options)
     }
 
     /// Execute all passes and emit chunked TypeScript source files into `out_dir/`.
-    ///
-    /// Produces `out_dir/index.ts` (wrapper) and `out_dir/chunk_0.ts`, etc.
-    /// Only supports VolarIr-stage weavers (`VoleProverIr`, `VoleVerifierIr`).
-    /// Returns a list of written file paths.
     #[cfg(feature = "weave-ts")]
     pub fn emit_woven_typescript_chunked(
         self,
@@ -228,175 +213,21 @@ impl Pipeline {
         weaver: &crate::Weaver,
         options: &volar_compiler::chunk_module::ChunkOptions,
     ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
-        let executed = self.execute()?;
-        match executed {
-            ExecutedPipeline::VolarIr(blocks, types) => {
-                let module = weave_volar_ir_to_ir_module(&blocks, &types, weaver)?;
-                volar_compiler_passes::emit_woven_ts_chunked(&module, out_dir, options)
-            }
-            ExecutedPipeline::Lir(_) => {
-                Err("emit_woven_typescript_chunked requires VolarIr stage; got Lir".into())
-            }
-        }
+        self.emit_rerun();
+        let (blocks, types) = self.inner.to_volar_ir()?;
+        let module = weave_volar_ir_to_ir_module(&blocks, &types, weaver)?;
+        volar_compiler_passes::emit_woven_ts_chunked(&module, out_dir, options)
     }
 }
 
-// ============================================================================
-// Executed pipeline result
-// ============================================================================
-
-enum ExecutedPipeline {
-    Lir(SavedLirModule),
-    VolarIr(IRBlocks, IRTypes),
-}
-
-// ============================================================================
-// execute() — load source + run passes
-// ============================================================================
-
-impl Pipeline {
-    fn execute(self) -> Result<ExecutedPipeline, Box<dyn std::error::Error>> {
-        let source_path: Option<&Path> = match &self.source {
-            SourceStage::Lir(p) => Some(p),
-            SourceStage::VolarIr(p) => Some(p),
-            #[cfg(feature = "pipeline-vaffle")]
-            SourceStage::Vaffle(p) => Some(p),
-            #[cfg(feature = "pipeline-wasm")]
-            SourceStage::Wasm(p) => Some(p),
-        };
-        #[cfg(feature = "cargo-directives")]
-        if let Some(p) = source_path {
-            println!("cargo:rerun-if-changed={}", p.display());
-        }
-
-        // Load into the internal runtime stage.
-        let mut stage = load_source(
-            self.source,
-            #[cfg(feature = "pipeline-wasm")]
-            self.import_config,
-        )?;
-
-        // Run passes.
-        for pass in self.passes {
-            stage = apply_pass(pass, stage)?;
-        }
-
-        // Convert to ExecutedPipeline.
-        match stage {
-            RuntimeStage::Lir(saved) => Ok(ExecutedPipeline::Lir(saved)),
-            RuntimeStage::VolarIr(blocks, types) => Ok(ExecutedPipeline::VolarIr(blocks, types)),
-            #[cfg(feature = "pipeline-vaffle")]
-            RuntimeStage::Vaffle(_) => Err(
-                "pipeline terminated at Vaffle stage — add .lower_to_volar_ir() before the terminal method".into()
-            ),
-        }
+fn load_saved_circuit(path: &Path) -> Result<(IRBlocks, IRTypes), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    let circuit = rkyv::from_bytes::<SavedCircuit, rkyv::rancor::Error>(&bytes)
+        .map_err(|e| format!("failed to deserialize .circuit file: {e}"))?;
+    match circuit {
+        SavedCircuit::Volar(blocks, types) => Ok((blocks, types)),
+        _ => Err("expected a Volar circuit file, got Boolar".into()),
     }
-}
-
-// ============================================================================
-// RuntimeStage — in-memory IR during pass execution
-// ============================================================================
-
-enum RuntimeStage {
-    Lir(SavedLirModule),
-    VolarIr(IRBlocks, IRTypes),
-    #[cfg(feature = "pipeline-vaffle")]
-    Vaffle(vaffle::Module),
-}
-
-// ============================================================================
-// load_source
-// ============================================================================
-
-fn load_source(
-    source: SourceStage,
-    #[cfg(feature = "pipeline-wasm")] import_config: volar_vaffle_target::WaffleImportConfig,
-) -> Result<RuntimeStage, Box<dyn std::error::Error>> {
-    match source {
-        SourceStage::Lir(path) => {
-            let bytes = std::fs::read(&path)?;
-            let saved = rkyv::from_bytes::<SavedLirModule, rkyv::rancor::Error>(&bytes)?;
-            Ok(RuntimeStage::Lir(saved))
-        }
-        SourceStage::VolarIr(path) => {
-            let bytes = std::fs::read(&path)?;
-            let circuit = rkyv::from_bytes::<SavedCircuit, rkyv::rancor::Error>(&bytes)
-                .map_err(|e| format!("failed to deserialize .circuit file: {e}"))?;
-            match circuit {
-                SavedCircuit::Volar(blocks, types) => Ok(RuntimeStage::VolarIr(blocks, types)),
-                _ => Err("expected a Volar circuit file, got Boolar".into()),
-            }
-        }
-        #[cfg(feature = "pipeline-vaffle")]
-        SourceStage::Vaffle(path) => {
-            let bytes = std::fs::read(&path)?;
-            let module = rkyv::from_bytes::<vaffle::Module, rkyv::rancor::Error>(&bytes)
-                .map_err(|e| format!("failed to deserialize .vaffle file: {e}"))?;
-            Ok(RuntimeStage::Vaffle(module))
-        }
-        #[cfg(feature = "pipeline-wasm")]
-        SourceStage::Wasm(path) => {
-            let bytes = std::fs::read(&path)?;
-            let waffle_module = portal_pc_waffle_frontend::from_wasm_bytes(
-                &bytes,
-                &portal_pc_waffle_frontend::FrontendOptions::default(),
-            )
-            .map_err(|e| format!("WAFFLE parse failed: {e}"))?;
-            let mut target = volar_vaffle_target::VaffleTarget::new();
-            volar_vaffle_target::lower_waffle_module(&waffle_module, &mut target, &import_config);
-            Ok(RuntimeStage::Vaffle(target.module))
-        }
-    }
-}
-
-// ============================================================================
-// apply_pass
-// ============================================================================
-
-fn apply_pass(
-    pass: PipelinePass,
-    stage: RuntimeStage,
-) -> Result<RuntimeStage, Box<dyn std::error::Error>> {
-    match pass {
-        #[cfg(feature = "pipeline-vaffle")]
-        PipelinePass::LowerToVolarIr => match stage {
-            RuntimeStage::Vaffle(module) => {
-                let (blocks, types) = volar_vaffle_target::lower_vaffle_to_ir(&module);
-                Ok(RuntimeStage::VolarIr(blocks, types))
-            }
-            _ => Err("LowerToVolarIr pass requires Vaffle stage".into()),
-        },
-        PipelinePass::FoldIr => match stage {
-            RuntimeStage::VolarIr(mut blocks, types) => {
-                loop {
-                    let folded = volar_ir_opt::ir::fold_ir_blocks(&mut blocks, &types);
-                    let deadcode = volar_ir_opt::ir::dce_ir_blocks(&mut blocks, &types);
-                    if !folded && !deadcode {
-                        break;
-                    }
-                }
-                Ok(RuntimeStage::VolarIr(blocks, types))
-            }
-            _ => Err("FoldIr pass requires VolarIr stage".into()),
-        },
-        PipelinePass::Movfuscate => match stage {
-            RuntimeStage::VolarIr(blocks, mut types) => {
-                let blocks = volar_ir_passes::movfuscate_ir(&blocks, &mut types);
-                Ok(RuntimeStage::VolarIr(blocks, types))
-            }
-            _ => Err("Movfuscate pass requires VolarIr stage".into()),
-        },
-    }
-}
-
-// ============================================================================
-// Private helpers
-// ============================================================================
-
-fn lower_volar_ir_to_lir(blocks: &IRBlocks, types: &IRTypes) -> SavedLirModule {
-    let mut rec = RecordingTarget::new();
-    volar_ir_passes::lower_lir::lower_ir(blocks, types, "volar_module", &mut rec);
-    rec.finish()
 }
 
 fn lir_to_object(
@@ -534,10 +365,6 @@ fn weave_volar_ir_in_memory(
     Ok(())
 }
 
-// ============================================================================
-// weave_volar_ir_chunked
-// ============================================================================
-
 #[cfg(feature = "weave-chunked")]
 fn weave_volar_ir_chunked(
     blocks: &IRBlocks,
@@ -546,7 +373,7 @@ fn weave_volar_ir_chunked(
     weaver: &crate::Weaver,
     options: &volar_compiler::chunk_module::ChunkOptions,
 ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
-    use volar_compiler::chunk_module::{ChunkConfig, chunk_module_rust};
+    use volar_compiler::chunk_module::{chunk_module_rust, ChunkConfig};
     use volar_compiler_passes::chunk_function_bodies;
 
     let module = match weaver {
@@ -587,10 +414,6 @@ fn weave_volar_ir_chunked(
     Ok(written)
 }
 
-// ============================================================================
-// weave_volar_ir_to_ir_module — shared helper for TS emit terminal
-// ============================================================================
-
 #[cfg(feature = "weave-ts")]
 fn weave_volar_ir_to_ir_module(
     blocks: &IRBlocks,
@@ -612,17 +435,4 @@ fn weave_volar_ir_to_ir_module(
         ).into()),
     };
     Ok(module)
-}
-
-// ============================================================================
-// serialize_vaffle_module
-// ============================================================================
-
-/// Serialize a VAFFLE [`Module`](vaffle::Module) to bytes for use as a `.vaffle`
-/// file with [`Pipeline::from_vaffle`].
-#[cfg(feature = "pipeline-vaffle")]
-pub fn serialize_vaffle_module(
-    module: &vaffle::Module,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    Ok(rkyv::to_bytes::<rkyv::rancor::Error>(module)?.into_vec())
 }

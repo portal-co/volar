@@ -66,11 +66,11 @@ pub use weave::{emit_woven_typescript, emit_woven_typescript_chunked};
 #[cfg(feature = "pipeline")]
 mod pipeline;
 #[cfg(feature = "pipeline-vaffle")]
-pub use pipeline::serialize_vaffle_module;
+pub use volar_ir_build::serialize_vaffle_module;
 #[cfg(feature = "pipeline")]
 pub use pipeline::{Pipeline, PipelinePass};
 #[cfg(feature = "pipeline-wasm")]
-pub use volar_vaffle_target::{WaffleImportConfig, WaffleImportKind};
+pub use volar_ir_build::{WaffleImportConfig, WaffleImportKind};
 
 use std::path::Path;
 

@@ -86,6 +86,7 @@ volar-provenance        = { version = "0.1.0", git = "https://github.com/portal-
 volar-side              = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 volar-ir-opt            = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 volar-ir-virt           = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
+volar-ir-build          = { path = "../volar-ir/crates/frontends/volar-ir-build", version = "0.1.0" }
 volar-fuzz              = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
@@ -108,3 +109,26 @@ inkwell = { version = "0.10.0", features = [
 ] } # matches volar-ir's pin and the Homebrew `llvm`/`llvm@22` formula
     # installed on dev machines (llvm-sys 221 auto-detects it via
     # `brew --prefix llvm@22` / `brew --prefix llvm`)
+
+# Local volar-ir overlay so `volar-ir-build` and the git-pinned IR crates
+# share one copy of `volar-ir` (required for Pipeline IR type identity).
+[patch."https://github.com/portal-co/volar-ir.git"]
+volar-ir               = { path = "../volar-ir/crates/ir/volar-ir" }
+volar-ir-passes        = { path = "../volar-ir/crates/ir/volar-ir-passes" }
+volar-ir-opt           = { path = "../volar-ir/crates/ir/volar-ir-opt" }
+volar-ir-common        = { path = "../volar-ir/crates/ir/volar-ir-common" }
+volar-ir-config        = { path = "../volar-ir/crates/ir/volar-ir-config" }
+volar-ir-text          = { path = "../volar-ir/crates/ir/volar-ir-text" }
+volar-ir-virt          = { path = "../volar-ir/crates/ir/volar-ir-virt" }
+vaffle                 = { path = "../volar-ir/crates/ir/vaffle" }
+volar-vaffle-target    = { path = "../volar-ir/crates/ir/volar-vaffle-target" }
+volar-provenance       = { path = "../volar-ir/crates/ir/volar-provenance" }
+volar-side             = { path = "../volar-ir/crates/ir/volar-side" }
+volar-lir              = { path = "../volar-ir/crates/ir/volar-lir" }
+volar-lir-text         = { path = "../volar-ir/crates/ir/volar-lir-text" }
+volar-lir-saved        = { path = "../volar-ir/crates/ir/volar-lir-saved" }
+volar-lir-test-corpus  = { path = "../volar-ir/crates/ir/volar-lir-test-corpus" }
+volar-llvm-backend     = { path = "../volar-ir/crates/backends/volar-llvm-backend" }
+volar-c-backend        = { path = "../volar-ir/crates/backends/volar-c-backend" }
+volar-wasm-backend     = { path = "../volar-ir/crates/backends/volar-wasm-backend" }
+volar-fuzz             = { path = "../volar-ir/crates/fuzz/volar-fuzz" }
