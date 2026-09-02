@@ -1,4 +1,5 @@
-// @reliability: experimental
+// @pinnedness: unpinned
+// @stability: very-unstable
 //! @ai: assisted
 //! IKNP-style correlated-OT extension (Ishai-Kilian-Nielsen-Petrank, 2003).
 //!
@@ -43,15 +44,13 @@
 //!   security one needs an additional consistency check (KOS / SoftSpoken).
 //! - `κ` is fixed to 128 (16 bytes). Adjust [`IKNP_KAPPA`] in concert with
 //!   the chosen security level.
-//! - This is a **single-shot in-process API** for testing — the sender and
-//!   receiver computations are interleaved in one function and use two
-//!   distinct RNG streams to model the role separation.
+//! - Role-separated steps live in [`iknp_cot_extend_base`]; the const-generic
+//!   [`iknp_cot_extend`] is an in-process driver over Chou-Orlandi.
 
+use alloc::vec::Vec;
 use digest::Digest;
 
-use super::base::{
-    ot_recv, ot_recv_finish, ot_recv_payload, ot_send_finish, ot_send_payload, ot_send_setup,
-};
+use super::base_ot::{BaseOt, ChouOrlandi};
 use super::group::Group;
 use crate::SpecRng;
 
@@ -101,7 +100,8 @@ fn prg_to_bools<D: Digest>(seed: &[u8], out: &mut [bool]) {
     }
 }
 
-fn pack_kappa(bits: &[bool; IKNP_KAPPA]) -> [u8; IKNP_KAPPA_BYTES] {
+/// Pack `κ` bits into `κ/8` bytes (LSB of each byte first).
+pub fn pack_kappa(bits: &[bool; IKNP_KAPPA]) -> [u8; IKNP_KAPPA_BYTES] {
     let mut out = [0u8; IKNP_KAPPA_BYTES];
     for i in 0..IKNP_KAPPA {
         if bits[i] {
@@ -113,11 +113,7 @@ fn pack_kappa(bits: &[bool; IKNP_KAPPA]) -> [u8; IKNP_KAPPA_BYTES] {
 
 /// Run an IKNP correlated-OT extension producing `M` C-OTs of `L` bytes each.
 ///
-/// `rng_s` and `rng_r` are independent RNG streams modelling the sender's
-/// and receiver's local randomness respectively.
-///
-/// Returns `(sender_r0, receiver_v)` of shape `[[u8; L]; M]` each, with
-/// `receiver_v[j] = sender_r0[j] ⊕ receiver_bits[j] · delta_msg`.
+/// In-process driver: Chou-Orlandi base OT, two RNG streams.
 pub fn iknp_cot_extend<G, D, R, const M: usize, const L: usize>(
     rng_s: &mut R,
     rng_r: &mut R,
@@ -129,14 +125,44 @@ where
     D: Digest,
     R: SpecRng,
 {
-    // ── Step 1: ext sender picks Δ_ot ──────────────────────────────────────
+    let (r0, v) = iknp_cot_extend_base::<ChouOrlandi<G, D>, D, R, L>(
+        rng_s,
+        rng_r,
+        receiver_bits.as_slice(),
+        delta_msg,
+    );
+    let mut sender_r0 = [[0u8; L]; M];
+    let mut receiver_v = [[0u8; L]; M];
+    for j in 0..M {
+        sender_r0[j] = r0[j];
+        receiver_v[j] = v[j];
+    }
+    (sender_r0, receiver_v)
+}
+
+/// IKNP extension with a pluggable [`BaseOt`] and a runtime output length.
+///
+/// Base OT transfers [`IKNP_KAPPA_BYTES`]-byte seeds. `delta_msg` is the
+/// C-OT correlation (length `L`).
+pub fn iknp_cot_extend_base<B, D, R, const L: usize>(
+    rng_s: &mut R,
+    rng_r: &mut R,
+    receiver_bits: &[bool],
+    delta_msg: &[u8; L],
+) -> (Vec<[u8; L]>, Vec<[u8; L]>)
+where
+    B: BaseOt<IKNP_KAPPA_BYTES>,
+    D: Digest,
+    R: SpecRng,
+{
+    let m = receiver_bits.len();
+
     let mut delta_ot = [false; IKNP_KAPPA];
     for i in 0..IKNP_KAPPA {
         delta_ot[i] = (rng_s.next_u32() & 1) == 1;
     }
     let delta_ot_bytes = pack_kappa(&delta_ot);
 
-    // ── Step 2: ext receiver picks κ pairs of seeds ────────────────────────
     let mut seeds_0 = [[0u8; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
     let mut seeds_1 = [[0u8; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
     for i in 0..IKNP_KAPPA {
@@ -146,76 +172,96 @@ where
         }
     }
 
-    // ── Step 3: κ base OTs (roles reversed) ────────────────────────────────
-    // Ext sender plays base receiver (uses rng_s). Ext receiver plays base
-    // sender (uses rng_r). After base OT, ext sender holds chosen_seeds[i]
-    // = seeds_{Δ_ot[i]}[i], ext receiver still knows both seeds.
+    // κ base OTs: ext receiver is base sender, ext sender is base receiver.
     let mut chosen_seeds = [[0u8; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
     for i in 0..IKNP_KAPPA {
-        let (s_state, s_msg) = ot_send_setup::<G, D, _>(rng_r);
-        let (r_state, r_msg) = ot_recv::<G, D, _>(rng_s, s_msg, delta_ot[i]);
-        let (key_0, key_1) = ot_send_finish::<G, D>(&s_state, &r_msg);
-        let kc = ot_recv_finish::<G, D>(&r_state);
-
-        let mut e0 = [0u8; IKNP_KAPPA_BYTES];
-        let mut e1 = [0u8; IKNP_KAPPA_BYTES];
-        ot_send_payload::<D>(&key_0, &key_1, &seeds_0[i], &seeds_1[i], &mut e0, &mut e1);
-        let chosen_e: &[u8] = if delta_ot[i] { &e1 } else { &e0 };
-        ot_recv_payload::<D>(&kc, chosen_e, &mut chosen_seeds[i]);
+        let (s_state, setup) = B::sender_setup(rng_r);
+        let (r_state, recv_msg) = B::recv_start(rng_s, &setup, delta_ot[i]);
+        let payload = B::sender_payload(rng_r, &s_state, &recv_msg, &seeds_0[i], &seeds_1[i]);
+        chosen_seeds[i] = B::recv_finish(&r_state, &payload);
     }
 
-    // ── Step 4-5: PRG-expand to columns; compute t^i, u^i, q^i ─────────────
-    let mut t_cols = [[false; M]; IKNP_KAPPA];
-    let mut q_cols = [[false; M]; IKNP_KAPPA];
-    {
-        // u^i is sent over the channel by ext receiver to ext sender; we
-        // compute it here, hold it in a per-column scratch buffer, then
-        // discard. (R never needs to retain u^i, S never needs to retain
-        // it after computing q^i.)
-        let mut prg1 = [false; M];
-        for i in 0..IKNP_KAPPA {
-            // Ext receiver: t^i = PRG(seeds_0[i])
-            prg_to_bools::<D>(&seeds_0[i], &mut t_cols[i]);
-            // Ext receiver: u^i = t^i ⊕ PRG(seeds_1[i]) ⊕ r
-            prg_to_bools::<D>(&seeds_1[i], &mut prg1);
-            let mut u_col = [false; M];
-            for j in 0..M {
-                u_col[j] = t_cols[i][j] ^ prg1[j] ^ receiver_bits[j];
-            }
-            // Ext sender: PRG(chosen_seeds[i])
-            let mut prg_chosen = [false; M];
-            prg_to_bools::<D>(&chosen_seeds[i], &mut prg_chosen);
-            for j in 0..M {
-                if delta_ot[i] {
-                    // q^i[j] = PRG(seeds_1[i])[j] ⊕ u^i[j] = t^i[j] ⊕ r[j]
-                    q_cols[i][j] = prg_chosen[j] ^ u_col[j];
-                } else {
-                    // q^i[j] = PRG(seeds_0[i])[j] = t^i[j]
-                    q_cols[i][j] = prg_chosen[j];
-                }
+    let (t_cols, u_msg) =
+        iknp_receiver_u_cols::<D>(m, receiver_bits, &seeds_0, &seeds_1);
+    let (sender_r0, corrections) = iknp_sender_from_u::<D, L>(
+        m,
+        delta_msg,
+        &delta_ot,
+        &delta_ot_bytes,
+        &chosen_seeds,
+        &u_msg,
+    );
+    let receiver_v = iknp_receiver_finish::<D, L>(receiver_bits, &t_cols, &corrections);
+    (sender_r0, receiver_v)
+}
+
+/// Receiver → sender: `u^i = PRG(k0^i) ⊕ PRG(k1^i) ⊕ r` (IKNP step 4).
+#[derive(Clone)]
+pub struct IknpUMsg {
+    pub u_cols: Vec<Vec<bool>>,
+}
+
+/// Receiver expands `t` columns and the `u` message from both seed pairs.
+pub fn iknp_receiver_u_cols<D: Digest>(
+    m: usize,
+    receiver_bits: &[bool],
+    seeds_0: &[[u8; IKNP_KAPPA_BYTES]; IKNP_KAPPA],
+    seeds_1: &[[u8; IKNP_KAPPA_BYTES]; IKNP_KAPPA],
+) -> (Vec<Vec<bool>>, IknpUMsg) {
+    debug_assert_eq!(receiver_bits.len(), m);
+    let mut t_cols = Vec::with_capacity(IKNP_KAPPA);
+    let mut u_cols = Vec::with_capacity(IKNP_KAPPA);
+    for i in 0..IKNP_KAPPA {
+        let mut t_col = alloc::vec![false; m];
+        prg_to_bools::<D>(&seeds_0[i], &mut t_col);
+        let mut prg1 = alloc::vec![false; m];
+        prg_to_bools::<D>(&seeds_1[i], &mut prg1);
+        let mut u_col = alloc::vec![false; m];
+        for j in 0..m {
+            u_col[j] = t_col[j] ^ prg1[j] ^ receiver_bits[j];
+        }
+        t_cols.push(t_col);
+        u_cols.push(u_col);
+    }
+    (t_cols, IknpUMsg { u_cols })
+}
+
+/// Sender consumes `u` and produces `r0` rows plus C-OT correction strings.
+pub fn iknp_sender_from_u<D: Digest, const L: usize>(
+    m: usize,
+    delta_msg: &[u8; L],
+    delta_ot: &[bool; IKNP_KAPPA],
+    delta_ot_bytes: &[u8; IKNP_KAPPA_BYTES],
+    chosen_seeds: &[[u8; IKNP_KAPPA_BYTES]; IKNP_KAPPA],
+    u_msg: &IknpUMsg,
+) -> (Vec<[u8; L]>, Vec<[u8; L]>) {
+    debug_assert_eq!(u_msg.u_cols.len(), IKNP_KAPPA);
+    let mut q_cols = Vec::with_capacity(IKNP_KAPPA);
+    for i in 0..IKNP_KAPPA {
+        let mut prg_chosen = alloc::vec![false; m];
+        prg_to_bools::<D>(&chosen_seeds[i], &mut prg_chosen);
+        let mut q_col = alloc::vec![false; m];
+        for j in 0..m {
+            if delta_ot[i] {
+                q_col[j] = prg_chosen[j] ^ u_msg.u_cols[i][j];
+            } else {
+                q_col[j] = prg_chosen[j];
             }
         }
+        q_cols.push(q_col);
     }
 
-    // ── Step 6-8: transpose, KDF, correction ──────────────────────────────
-    let mut sender_r0 = [[0u8; L]; M];
-    let mut receiver_v = [[0u8; L]; M];
+    let mut sender_r0 = Vec::with_capacity(m);
+    let mut corrections = Vec::with_capacity(m);
     let mut q_row = [false; IKNP_KAPPA];
-    let mut t_row = [false; IKNP_KAPPA];
-
-    for j in 0..M {
+    for j in 0..m {
         for i in 0..IKNP_KAPPA {
             q_row[i] = q_cols[i][j];
-            t_row[i] = t_cols[i][j];
         }
         let q_bytes = pack_kappa(&q_row);
-        let t_bytes = pack_kappa(&t_row);
-
-        // r0_j = H(j, Q[j])
         let mut r0 = [0u8; L];
         prg_with_index::<D>(&q_bytes, j as u32, &mut r0);
 
-        // r1_j = H(j, Q[j] ⊕ Δ_ot)
         let mut q_xor_delta = q_bytes;
         for b in 0..IKNP_KAPPA_BYTES {
             q_xor_delta[b] ^= delta_ot_bytes[b];
@@ -223,27 +269,45 @@ where
         let mut r1 = [0u8; L];
         prg_with_index::<D>(&q_xor_delta, j as u32, &mut r1);
 
-        // Receiver-side: v_pre = H(j, T[j])
-        let mut v_pre = [0u8; L];
-        prg_with_index::<D>(&t_bytes, j as u32, &mut v_pre);
-
-        // C-OT correction c_j = r0 ⊕ r1 ⊕ Δ_msg
         let mut correction = [0u8; L];
         for b in 0..L {
             correction[b] = r0[b] ^ r1[b] ^ delta_msg[b];
         }
+        sender_r0.push(r0);
+        corrections.push(correction);
+    }
+    (sender_r0, corrections)
+}
 
-        sender_r0[j] = r0;
+/// Receiver applies C-OT corrections to the `t` rows.
+pub fn iknp_receiver_finish<D: Digest, const L: usize>(
+    receiver_bits: &[bool],
+    t_cols: &[Vec<bool>],
+    corrections: &[[u8; L]],
+) -> Vec<[u8; L]> {
+    let m = receiver_bits.len();
+    debug_assert_eq!(t_cols.len(), IKNP_KAPPA);
+    debug_assert_eq!(corrections.len(), m);
+    let mut receiver_v = Vec::with_capacity(m);
+    let mut t_row = [false; IKNP_KAPPA];
+    for j in 0..m {
+        for i in 0..IKNP_KAPPA {
+            t_row[i] = t_cols[i][j];
+        }
+        let t_bytes = pack_kappa(&t_row);
+        let mut v_pre = [0u8; L];
+        prg_with_index::<D>(&t_bytes, j as u32, &mut v_pre);
+        let mut vj = [0u8; L];
         if receiver_bits[j] {
             for b in 0..L {
-                receiver_v[j][b] = v_pre[b] ^ correction[b];
+                vj[b] = v_pre[b] ^ corrections[j][b];
             }
         } else {
-            receiver_v[j] = v_pre;
+            vj = v_pre;
         }
+        receiver_v.push(vj);
     }
-
-    (sender_r0, receiver_v)
+    receiver_v
 }
 
 #[cfg(test)]

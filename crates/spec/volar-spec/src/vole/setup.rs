@@ -95,6 +95,71 @@ where
     (Vope { u, v }, Q { q })
 }
 
+/// Assemble VOLE shares from an already-produced C-OT pair `(r0, v)`.
+///
+/// Used when the C-OT came from Ferret / SoftSpoken rather than [`IdealCot`].
+pub fn vole_commit_bit_shares<N, T>(
+    r0: Array<T, N>,
+    v: Array<T, N>,
+    bit_to_t: impl Fn(bool) -> T,
+    bit: bool,
+) -> (Vope<N, T, U1>, Q<N, T>)
+where
+    N: VoleArray<T>,
+    T: Clone + Default,
+{
+    let u_t = bit_to_t(bit);
+    let u_row: Array<T, N> = lift_bit(u_t);
+    let u: Array<Array<T, N>, U1> =
+        Array::<Array<T, N>, U1>::from_fn(|_| Array::<T, N>::from_fn(|i| u_row[i].clone()));
+    let q = Array::<T, N>::from_fn(|i| r0[i].clone());
+    (Vope { u, v }, Q { q })
+}
+
+/// Source of C-OT pairs `(r0, v)` for [`vole_commit_bit_from`].
+pub trait CotSource<N: VoleArray<T>, T> {
+    /// One C-OT with choice bit `bit`.
+    fn cot<R: SpecRng>(
+        &mut self,
+        rng: &mut R,
+        sample_t: impl Fn(&mut R) -> T,
+        bit: bool,
+    ) -> (Array<T, N>, Array<T, N>);
+}
+
+impl<N, T> CotSource<N, T> for IdealCot<N, T>
+where
+    N: VoleArray<T>,
+    T: Clone + Add<Output = T> + Mul<Output = T> + Default,
+{
+    fn cot<R: SpecRng>(
+        &mut self,
+        rng: &mut R,
+        sample_t: impl Fn(&mut R) -> T,
+        bit: bool,
+    ) -> (Array<T, N>, Array<T, N>) {
+        IdealCot::cot(self, rng, sample_t, bit)
+    }
+}
+
+/// Commit a bit via any [`CotSource`] (IdealCot, Ferret pool, …).
+pub fn vole_commit_bit_from<N, T, R, C>(
+    cot: &mut C,
+    rng: &mut R,
+    sample_t: impl Fn(&mut R) -> T,
+    bit_to_t: impl Fn(bool) -> T,
+    bit: bool,
+) -> (Vope<N, T, U1>, Q<N, T>)
+where
+    N: VoleArray<T>,
+    T: Clone + Add<Output = T> + Mul<Output = T> + Default,
+    R: SpecRng,
+    C: CotSource<N, T>,
+{
+    let (r0, v) = cot.cot(rng, sample_t, bit);
+    vole_commit_bit_shares(r0, v, bit_to_t, bit)
+}
+
 /// Verifier-side derivation of the AND output share.
 ///
 /// Computes `q_and` such that the Quicksilver constraint

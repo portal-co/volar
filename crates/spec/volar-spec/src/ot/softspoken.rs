@@ -1,4 +1,5 @@
-// @reliability: experimental
+// @pinnedness: unpinned
+// @stability: very-unstable
 //! @ai: assisted
 //! SoftSpoken-style OT extension (Roy, EUROCRYPT 2022).
 //!
@@ -37,10 +38,12 @@
 //!   This matches Roy 2022's Theorem 1 reduction at `k=1` and is an
 //!   honest stand-in pending the full subfield-VOLE construction.
 
+use alloc::vec::Vec;
 use digest::Digest;
 
+use super::base_ot::{BaseOt, ChouOrlandi};
 use super::group::Group;
-use super::iknp::iknp_cot_extend;
+use super::iknp::{iknp_cot_extend, iknp_cot_extend_base};
 use crate::SpecRng;
 
 /// Output bundle of one SoftSpoken extension.
@@ -60,7 +63,7 @@ impl<const M: usize, const L: usize, D: Digest> SoftSpokenOut<M, L, D> {
     }
 }
 
-const TAG_DOMAIN: &[u8] = b"softspoken-cot-tag-v1";
+pub(crate) const TAG_DOMAIN: &[u8] = b"softspoken-cot-tag-v1";
 
 /// Run a SoftSpoken-style C-OT extension.
 ///
@@ -116,6 +119,87 @@ where
         sender_tag,
         receiver_tag,
     }
+}
+
+/// Runtime-length SoftSpoken output.
+pub struct SoftSpokenOutDyn<const L: usize, D: Digest> {
+    pub sender_r0: Vec<[u8; L]>,
+    pub receiver_v: Vec<[u8; L]>,
+    pub sender_tag: digest::Output<D>,
+    pub receiver_tag: digest::Output<D>,
+}
+
+impl<const L: usize, D: Digest> SoftSpokenOutDyn<L, D> {
+    pub fn check(&self) -> bool {
+        self.sender_tag == self.receiver_tag
+    }
+}
+
+/// SoftSpoken extension with a pluggable [`BaseOt`] and runtime `m`.
+pub fn softspoken_cot_extend_base<B, D, R, const L: usize>(
+    rng_s: &mut R,
+    rng_r: &mut R,
+    receiver_bits: &[bool],
+    delta_msg: &[u8; L],
+) -> SoftSpokenOutDyn<L, D>
+where
+    B: BaseOt<{ super::iknp::IKNP_KAPPA_BYTES }>,
+    D: Digest,
+    R: SpecRng,
+{
+    let (sender_r0, receiver_v) =
+        iknp_cot_extend_base::<B, D, R, L>(rng_s, rng_r, receiver_bits, delta_msg);
+
+    let mut hs = D::new();
+    hs.update(TAG_DOMAIN);
+    hs.update(delta_msg);
+    for row in sender_r0.iter() {
+        hs.update(row);
+    }
+    let sender_tag = hs.finalize();
+
+    let mut hr = D::new();
+    hr.update(TAG_DOMAIN);
+    hr.update(delta_msg);
+    for j in 0..receiver_bits.len() {
+        let mut r0_reconstructed = [0u8; L];
+        if receiver_bits[j] {
+            for b in 0..L {
+                r0_reconstructed[b] = receiver_v[j][b] ^ delta_msg[b];
+            }
+        } else {
+            r0_reconstructed = receiver_v[j];
+        }
+        hr.update(&r0_reconstructed);
+    }
+    let receiver_tag = hr.finalize();
+
+    SoftSpokenOutDyn {
+        sender_r0,
+        receiver_v,
+        sender_tag,
+        receiver_tag,
+    }
+}
+
+/// Chou-Orlandi in-process SoftSpoken (runtime `m`).
+pub fn softspoken_cot_extend_dyn<G, D, R, const L: usize>(
+    rng_s: &mut R,
+    rng_r: &mut R,
+    receiver_bits: &[bool],
+    delta_msg: &[u8; L],
+) -> SoftSpokenOutDyn<L, D>
+where
+    G: Group,
+    D: Digest,
+    R: SpecRng,
+{
+    softspoken_cot_extend_base::<ChouOrlandi<G, D>, D, R, L>(
+        rng_s,
+        rng_r,
+        receiver_bits,
+        delta_msg,
+    )
 }
 
 #[cfg(test)]

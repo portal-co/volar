@@ -1,4 +1,5 @@
-// @reliability: experimental
+// @pinnedness: unpinned
+// @stability: very-unstable
 //! @ai: assisted
 //! Post-quantum 1-out-of-2 OT from Learning With Errors.
 //!
@@ -47,8 +48,11 @@
 //! in `[-1, 1]`. **Insecure** sizing — for real PQ security use
 //! `n ≥ 640`, `q ≈ 2^15`, discrete-Gaussian noise (Frodo-640 parameters).
 
+use alloc::vec::Vec;
+use core::marker::PhantomData;
 use core::ops::Add;
 
+use super::base_ot::BaseOt;
 use crate::SpecRng;
 
 /// Lattice dimension for the test instantiation.
@@ -99,21 +103,22 @@ fn sample_zq<R: SpecRng>(rng: &mut R) -> Zq {
 }
 
 /// CRS — public matrix `A` and public reference vector `h`.
-pub struct LweOtCrs {
-    pub a: [[Zq; LWE_N]; LWE_N], // A[i][j] = (A)_{i,j}
-    pub h: [Zq; LWE_N],
+#[derive(Clone)]
+pub struct LweOtCrs<const N: usize = LWE_N> {
+    pub a: [[Zq; N]; N], // A[i][j] = (A)_{i,j}
+    pub h: [Zq; N],
 }
 
-impl LweOtCrs {
+impl<const N: usize> LweOtCrs<N> {
     pub fn sample<R: SpecRng>(rng: &mut R) -> Self {
-        let mut a = [[0u32; LWE_N]; LWE_N];
-        for i in 0..LWE_N {
-            for j in 0..LWE_N {
+        let mut a = [[0u32; N]; N];
+        for i in 0..N {
+            for j in 0..N {
                 a[i][j] = sample_zq(rng);
             }
         }
-        let mut h = [0u32; LWE_N];
-        for i in 0..LWE_N {
+        let mut h = [0u32; N];
+        for i in 0..N {
             h[i] = sample_zq(rng);
         }
         Self { a, h }
@@ -125,36 +130,37 @@ impl LweOtCrs {
 // ============================================================================
 
 /// Receiver state: knows secret `s` for `pk_c` only.
-pub struct LweOtReceiver {
-    pub s: [Zq; LWE_N],
+pub struct LweOtReceiver<const N: usize = LWE_N> {
+    pub s: [Zq; N],
     pub c: bool,
 }
 
 /// Receiver-to-sender message: the chosen `pk_0` (sender derives `pk_1 = h - pk_0`).
-pub struct LweOtRecvMsg {
-    pub pk0: [Zq; LWE_N],
+#[derive(Clone)]
+pub struct LweOtRecvMsg<const N: usize = LWE_N> {
+    pub pk0: [Zq; N],
 }
 
 /// Step 1: receiver samples `s, e`, computes `pk_c = A·s + e`, derives
 /// `pk_{1-c} = h − pk_c`, returns `pk_0` to the sender.
-pub fn lwe_ot_recv<R: SpecRng>(
+pub fn lwe_ot_recv<R: SpecRng, const N: usize>(
     rng: &mut R,
-    crs: &LweOtCrs,
+    crs: &LweOtCrs<N>,
     c: bool,
-) -> (LweOtReceiver, LweOtRecvMsg) {
+) -> (LweOtReceiver<N>, LweOtRecvMsg<N>) {
     // Small-secret LWE: sample `s` from the noise distribution rather than
     // uniformly. Required for decryption correctness — under uniform-`s`,
     // the cross term `s^T · e_u` dwarfs the `q/4` decoding margin.
-    let mut s = [0u32; LWE_N];
-    for i in 0..LWE_N {
+    let mut s = [0u32; N];
+    for i in 0..N {
         s[i] = sample_noise(rng);
     }
 
     // pk' = A·s + e
-    let mut pk_real = [0u32; LWE_N];
-    for i in 0..LWE_N {
+    let mut pk_real = [0u32; N];
+    for i in 0..N {
         let mut acc: Zq = 0;
-        for j in 0..LWE_N {
+        for j in 0..N {
             acc = zq_add(acc, zq_mul(crs.a[i][j], s[j]));
         }
         acc = zq_add(acc, sample_noise(rng));
@@ -163,8 +169,8 @@ pub fn lwe_ot_recv<R: SpecRng>(
 
     let pk0 = if c {
         // c = 1 ⇒ pk_1 = pk', pk_0 = h - pk'.
-        let mut pk0 = [0u32; LWE_N];
-        for i in 0..LWE_N {
+        let mut pk0 = [0u32; N];
+        for i in 0..N {
             pk0[i] = zq_sub(crs.h[i], pk_real[i]);
         }
         pk0
@@ -181,44 +187,48 @@ pub fn lwe_ot_recv<R: SpecRng>(
 // ============================================================================
 
 /// Sender's encrypted payload. `u_i ∈ Z_q^n`, `v_i ∈ Z_q^L`.
-pub struct LweOtSenderMsg<const L: usize> {
-    pub u0: [Zq; LWE_N],
+pub struct LweOtSenderMsg<const N: usize, const L: usize> {
+    pub u0: [Zq; N],
     pub v0: [Zq; L],
-    pub u1: [Zq; LWE_N],
+    pub u1: [Zq; N],
     pub v1: [Zq; L],
 }
 
-fn encrypt_branch<R: SpecRng, const L: usize>(
+/// Heap payload OT: bit-coordinates in `v_*` (one bit per `Zq`).
+#[derive(Clone)]
+pub struct LweOtSenderMsgDyn {
+    pub u0: Vec<Zq>,
+    pub v0: Vec<Zq>,
+    pub u1: Vec<Zq>,
+    pub v1: Vec<Zq>,
+}
+
+fn encrypt_branch<R: SpecRng, const N: usize, const L: usize>(
     rng: &mut R,
-    crs: &LweOtCrs,
-    pk: &[Zq; LWE_N],
+    crs: &LweOtCrs<N>,
+    pk: &[Zq; N],
     msg: &[u8; L],
-) -> ([Zq; LWE_N], [Zq; L]) {
-    // r ←$ χ^n
-    let mut r = [0u32; LWE_N];
-    for i in 0..LWE_N {
+) -> ([Zq; N], [Zq; L]) {
+    let mut r = [0u32; N];
+    for i in 0..N {
         r[i] = sample_noise(rng);
     }
 
-    // u = A^T · r + e
-    let mut u = [0u32; LWE_N];
-    for j in 0..LWE_N {
+    let mut u = [0u32; N];
+    for j in 0..N {
         let mut acc: Zq = 0;
-        for i in 0..LWE_N {
+        for i in 0..N {
             acc = zq_add(acc, zq_mul(crs.a[i][j], r[i]));
         }
         acc = zq_add(acc, sample_noise(rng));
         u[j] = acc;
     }
 
-    // base = pk^T · r ∈ Z_q
     let mut base: Zq = 0;
-    for i in 0..LWE_N {
+    for i in 0..N {
         base = zq_add(base, zq_mul(pk[i], r[i]));
     }
 
-    // v_k = base + e' + ⌊q/2⌋ · msg[k]
-    // API: msg[k] ∈ {0, 1} per coord (one bit per byte, not bit-packed).
     let half_q = LWE_Q / 2;
     let mut v = [0u32; L];
     for k in 0..L {
@@ -228,23 +238,104 @@ fn encrypt_branch<R: SpecRng, const L: usize>(
     (u, v)
 }
 
-/// Step 2: sender encrypts `(m_0, m_1)` under `(pk_0, pk_1 = h − pk_0)`.
-pub fn lwe_ot_send<R: SpecRng, const L: usize>(
+fn encrypt_branch_dyn<R: SpecRng, const N: usize>(
     rng: &mut R,
-    crs: &LweOtCrs,
-    recv_msg: &LweOtRecvMsg,
+    crs: &LweOtCrs<N>,
+    pk: &[Zq; N],
+    msg_bits: &[u8],
+) -> (Vec<Zq>, Vec<Zq>) {
+    let mut r = [0u32; N];
+    for i in 0..N {
+        r[i] = sample_noise(rng);
+    }
+
+    let mut u = alloc::vec![0u32; N];
+    for j in 0..N {
+        let mut acc: Zq = 0;
+        for i in 0..N {
+            acc = zq_add(acc, zq_mul(crs.a[i][j], r[i]));
+        }
+        acc = zq_add(acc, sample_noise(rng));
+        u[j] = acc;
+    }
+
+    let mut base: Zq = 0;
+    for i in 0..N {
+        base = zq_add(base, zq_mul(pk[i], r[i]));
+    }
+
+    let half_q = LWE_Q / 2;
+    let mut v = alloc::vec![0u32; msg_bits.len()];
+    for (k, bit) in msg_bits.iter().enumerate() {
+        let plain = if bit & 1 == 1 { half_q } else { 0 };
+        v[k] = zq_add(zq_add(base, sample_noise(rng)), plain);
+    }
+    (u, v)
+}
+
+/// Step 2: sender encrypts `(m_0, m_1)` under `(pk_0, pk_1 = h − pk_0)`.
+pub fn lwe_ot_send<R: SpecRng, const N: usize, const L: usize>(
+    rng: &mut R,
+    crs: &LweOtCrs<N>,
+    recv_msg: &LweOtRecvMsg<N>,
     m0: &[u8; L],
     m1: &[u8; L],
-) -> LweOtSenderMsg<L> {
+) -> LweOtSenderMsg<N, L> {
     let pk0 = recv_msg.pk0;
-    let mut pk1 = [0u32; LWE_N];
-    for i in 0..LWE_N {
+    let mut pk1 = [0u32; N];
+    for i in 0..N {
         pk1[i] = zq_sub(crs.h[i], pk0[i]);
     }
 
-    let (u0, v0) = encrypt_branch::<R, L>(rng, crs, &pk0, m0);
-    let (u1, v1) = encrypt_branch::<R, L>(rng, crs, &pk1, m1);
+    let (u0, v0) = encrypt_branch::<R, N, L>(rng, crs, &pk0, m0);
+    let (u1, v1) = encrypt_branch::<R, N, L>(rng, crs, &pk1, m1);
     LweOtSenderMsg { u0, v0, u1, v1 }
+}
+
+/// Byte-payload send: each payload byte is expanded to 8 bit-coordinates.
+pub fn lwe_ot_send_bytes<R: SpecRng, const N: usize>(
+    rng: &mut R,
+    crs: &LweOtCrs<N>,
+    recv_msg: &LweOtRecvMsg<N>,
+    m0: &[u8],
+    m1: &[u8],
+) -> LweOtSenderMsgDyn {
+    debug_assert_eq!(m0.len(), m1.len());
+    let bits0 = bytes_to_bits(m0);
+    let bits1 = bytes_to_bits(m1);
+    let pk0 = recv_msg.pk0;
+    let mut pk1 = [0u32; N];
+    for i in 0..N {
+        pk1[i] = zq_sub(crs.h[i], pk0[i]);
+    }
+    let (u0, v0) = encrypt_branch_dyn(rng, crs, &pk0, &bits0);
+    let (u1, v1) = encrypt_branch_dyn(rng, crs, &pk1, &bits1);
+    LweOtSenderMsgDyn { u0, v0, u1, v1 }
+}
+
+fn bytes_to_bits(bytes: &[u8]) -> Vec<u8> {
+    let mut bits = Vec::with_capacity(bytes.len() * 8);
+    for &b in bytes {
+        for bit in 0..8 {
+            bits.push((b >> bit) & 1);
+        }
+    }
+    bits
+}
+
+fn bits_to_bytes(bits: &[u8], nbytes: usize) -> Vec<u8> {
+    let mut out = alloc::vec![0u8; nbytes];
+    for i in 0..nbytes {
+        let mut acc = 0u8;
+        for bit in 0..8 {
+            let idx = i * 8 + bit;
+            if idx < bits.len() && bits[idx] != 0 {
+                acc |= 1 << bit;
+            }
+        }
+        out[i] = acc;
+    }
+    out
 }
 
 // ============================================================================
@@ -254,17 +345,25 @@ pub fn lwe_ot_send<R: SpecRng, const L: usize>(
 /// Step 3: receiver decrypts the chosen branch using `s`.
 ///
 /// Output: recovered `L`-coordinate message bits, packed into `L/8` bytes.
-pub fn lwe_ot_recv_decrypt<const L: usize>(
-    receiver: &LweOtReceiver,
-    sender_msg: &LweOtSenderMsg<L>,
+pub fn lwe_ot_recv_decrypt<const N: usize, const L: usize>(
+    receiver: &LweOtReceiver<N>,
+    sender_msg: &LweOtSenderMsg<N, L>,
 ) -> [u8; L] {
     let (u, v) = if receiver.c {
-        (&sender_msg.u1, &sender_msg.v1)
+        (&sender_msg.u1[..], &sender_msg.v1[..])
     } else {
-        (&sender_msg.u0, &sender_msg.v0)
+        (&sender_msg.u0[..], &sender_msg.v0[..])
     };
+    decrypt_coords::<N, L>(receiver, u, v)
+}
+
+fn decrypt_coords<const N: usize, const L: usize>(
+    receiver: &LweOtReceiver<N>,
+    u: &[Zq],
+    v: &[Zq],
+) -> [u8; L] {
     let mut s_dot_u: Zq = 0;
-    for i in 0..LWE_N {
+    for i in 0..N {
         s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[i], u[i]));
     }
 
@@ -273,7 +372,6 @@ pub fn lwe_ot_recv_decrypt<const L: usize>(
     let mut out = [0u8; L];
     for k in 0..L {
         let raw = zq_sub(v[k], s_dot_u);
-        // Round to bit.
         out[k] = if raw > quarter && raw <= three_quarter {
             1
         } else {
@@ -281,6 +379,76 @@ pub fn lwe_ot_recv_decrypt<const L: usize>(
         };
     }
     out
+}
+
+/// Decrypt a byte-payload ciphertext produced by [`lwe_ot_send_bytes`].
+pub fn lwe_ot_recv_decrypt_bytes<const N: usize>(
+    receiver: &LweOtReceiver<N>,
+    sender_msg: &LweOtSenderMsgDyn,
+    nbytes: usize,
+) -> Vec<u8> {
+    let (u, v) = if receiver.c {
+        (&sender_msg.u1[..], &sender_msg.v1[..])
+    } else {
+        (&sender_msg.u0[..], &sender_msg.v0[..])
+    };
+    let mut s_dot_u: Zq = 0;
+    for i in 0..N {
+        s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[i], u[i]));
+    }
+    let quarter = LWE_Q / 4;
+    let three_quarter = 3 * quarter;
+    let mut bits = alloc::vec![0u8; v.len()];
+    for k in 0..v.len() {
+        let raw = zq_sub(v[k], s_dot_u);
+        bits[k] = if raw > quarter && raw <= three_quarter {
+            1
+        } else {
+            0
+        };
+    }
+    bits_to_bytes(&bits, nbytes)
+}
+
+/// LWE OT as a [`BaseOt`] transferring `L` payload bytes (bit-unpacked).
+pub struct LweBaseOt<const N: usize = LWE_N>(PhantomData<[(); N]>);
+
+impl<const N: usize, const L: usize> BaseOt<L> for LweBaseOt<N> {
+    type SenderState = LweOtCrs<N>;
+    type ReceiverState = LweOtReceiver<N>;
+    type SetupMsg = LweOtCrs<N>;
+    type RecvMsg = LweOtRecvMsg<N>;
+    type PayloadMsg = LweOtSenderMsgDyn;
+
+    fn sender_setup<R: SpecRng>(rng: &mut R) -> (Self::SenderState, Self::SetupMsg) {
+        let crs = LweOtCrs::<N>::sample(rng);
+        (crs.clone(), crs)
+    }
+
+    fn recv_start<R: SpecRng>(
+        rng: &mut R,
+        setup: &Self::SetupMsg,
+        c: bool,
+    ) -> (Self::ReceiverState, Self::RecvMsg) {
+        lwe_ot_recv(rng, setup, c)
+    }
+
+    fn sender_payload<R: SpecRng>(
+        rng: &mut R,
+        state: &Self::SenderState,
+        recv_msg: &Self::RecvMsg,
+        m0: &[u8; L],
+        m1: &[u8; L],
+    ) -> Self::PayloadMsg {
+        lwe_ot_send_bytes(rng, state, recv_msg, m0, m1)
+    }
+
+    fn recv_finish(state: &Self::ReceiverState, payload: &Self::PayloadMsg) -> [u8; L] {
+        let bytes = lwe_ot_recv_decrypt_bytes(state, payload, L);
+        let mut out = [0u8; L];
+        out.copy_from_slice(&bytes);
+        out
+    }
 }
 
 #[cfg(test)]
@@ -300,7 +468,7 @@ mod tests {
 
     fn run_ot<const L: usize>(c: bool, m0: &[u8; L], m1: &[u8; L]) -> [u8; L] {
         let mut rng = TestRng(0xDEAD_BEEF_CAFE_F00D);
-        let crs = LweOtCrs::sample(&mut rng);
+        let crs = LweOtCrs::<LWE_N>::sample(&mut rng);
         let (recv, msg) = lwe_ot_recv(&mut rng, &crs, c);
         let send_msg = lwe_ot_send(&mut rng, &crs, &msg, m0, m1);
         lwe_ot_recv_decrypt(&recv, &send_msg)
@@ -348,7 +516,7 @@ mod tests {
         const L: usize = 16;
         for seed in 0u64..16 {
             let mut rng = TestRng(seed.wrapping_mul(0xDEAD_BEEF));
-            let crs = LweOtCrs::sample(&mut rng);
+            let crs = LweOtCrs::<LWE_N>::sample(&mut rng);
             let mut m0 = [0u8; L];
             let mut m1 = [0u8; L];
             for k in 0..L {
@@ -378,7 +546,7 @@ mod tests {
         let mut at_least_one_mismatch = false;
         for seed in 0u64..8 {
             let mut rng = TestRng(seed.wrapping_mul(0xABCD_EF01));
-            let crs = LweOtCrs::sample(&mut rng);
+            let crs = LweOtCrs::<LWE_N>::sample(&mut rng);
             let (mut recv, msg) = lwe_ot_recv(&mut rng, &crs, false);
             let send_msg = lwe_ot_send(&mut rng, &crs, &msg, &m0, &m1);
             // Honest c=0 must always recover m0.
@@ -395,6 +563,25 @@ mod tests {
             at_least_one_mismatch,
             "cheat decode matched m_1 across all 8 seeds — privacy bug?"
         );
+    }
+
+    #[test]
+    fn lwe_base_ot_transfers_sixteen_byte_seed() {
+        use super::super::base_ot::BaseOt;
+        let mut rng = TestRng(0x1111_2222_3333_4444);
+        let m0 = [0xAAu8; 16];
+        let m1 = [0x55u8; 16];
+        for c in [false, true] {
+            let (s_state, setup) = <LweBaseOt<LWE_N> as BaseOt<16>>::sender_setup(&mut rng);
+            let (r_state, recv_msg) =
+                <LweBaseOt<LWE_N> as BaseOt<16>>::recv_start(&mut rng, &setup, c);
+            let payload = <LweBaseOt<LWE_N> as BaseOt<16>>::sender_payload(
+                &mut rng, &s_state, &recv_msg, &m0, &m1,
+            );
+            let got = <LweBaseOt<LWE_N> as BaseOt<16>>::recv_finish(&r_state, &payload);
+            let expected = if c { m1 } else { m0 };
+            assert_eq!(got, expected, "c={c}");
+        }
     }
 
     // Allow `Add` import to be technically unused in this module.
