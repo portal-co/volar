@@ -18,17 +18,20 @@ pub use volar_ir_build::PipelinePass;
 /// Wraps [`volar_ir_build::Pipeline`] and adds object-file / weave terminals.
 pub struct Pipeline {
     inner: volar_ir_build::Pipeline,
-    rerun: Option<PathBuf>,
+    rerun: Vec<PathBuf>,
 }
 
 impl Pipeline {
-    fn wrap(inner: volar_ir_build::Pipeline, rerun: Option<PathBuf>) -> Self {
-        Pipeline { inner, rerun }
+    fn wrap(inner: volar_ir_build::Pipeline, rerun: impl IntoIterator<Item = PathBuf>) -> Self {
+        Pipeline {
+            inner,
+            rerun: rerun.into_iter().collect(),
+        }
     }
 
     fn emit_rerun(&self) {
         #[cfg(feature = "cargo-directives")]
-        if let Some(p) = &self.rerun {
+        for p in &self.rerun {
             println!("cargo:rerun-if-changed={}", p.display());
         }
         #[cfg(not(feature = "cargo-directives"))]
@@ -38,7 +41,7 @@ impl Pipeline {
     /// Start from a pre-recorded `.lir` file.
     pub fn from_saved_lir(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        Self::wrap(volar_ir_build::Pipeline::from_saved_lir(&path), Some(path))
+        Self::wrap(volar_ir_build::Pipeline::from_saved_lir(&path), [path])
     }
 
     /// Start from a `.circuit` file (rkyv-serialized `SavedCircuit`).
@@ -47,11 +50,11 @@ impl Pipeline {
         match load_saved_circuit(&path) {
             Ok((blocks, types)) => Self::wrap(
                 volar_ir_build::Pipeline::from_volar_ir_blocks(blocks, types),
-                Some(path),
+                [path],
             ),
             Err(_) => {
                 // Fall back to a bare `(IRBlocks, IRTypes)` blob.
-                Self::wrap(volar_ir_build::Pipeline::from_volar_ir(&path), Some(path))
+                Self::wrap(volar_ir_build::Pipeline::from_volar_ir(&path), [path])
             }
         }
     }
@@ -60,34 +63,29 @@ impl Pipeline {
     #[cfg(feature = "pipeline-vaffle")]
     pub fn from_vaffle(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        Self::wrap(volar_ir_build::Pipeline::from_vaffle(&path), Some(path))
+        Self::wrap(volar_ir_build::Pipeline::from_vaffle(&path), [path])
     }
 
     /// Start from a `.wasm` file.
     #[cfg(feature = "pipeline-wasm")]
     pub fn from_wasm(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        Self::wrap(volar_ir_build::Pipeline::from_wasm(&path), Some(path))
+        Self::wrap(volar_ir_build::Pipeline::from_wasm(&path), [path])
     }
 
     /// Fully-inlined WASM frontend (WAFFLE → VAFFLE → inline-everything).
     #[cfg(feature = "pipeline-wasm")]
     pub fn from_wasm_inlined(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        Self::wrap(
-            volar_ir_build::Pipeline::from_wasm_inlined(&path),
-            Some(path),
-        )
+        Self::wrap(volar_ir_build::Pipeline::from_wasm_inlined(&path), [path])
     }
 
-    /// Structural LLVM import (calls preserved until a later pass).
+    /// Structural LLVM import from `.ll`, `.bc`, or a clang full-LTO
+    /// static library (`.a` / `.lib`). Calls are preserved until a later pass.
     #[cfg(feature = "pipeline-llvm")]
     pub fn from_llvm(path: impl Into<PathBuf>, entries: &[&str]) -> Self {
         let path = path.into();
-        Self::wrap(
-            volar_ir_build::Pipeline::from_llvm(&path, entries),
-            Some(path),
-        )
+        Self::wrap(volar_ir_build::Pipeline::from_llvm(&path, entries), [path])
     }
 
     /// Structural LLVM import plus VAFFLE inline-everything.
@@ -96,17 +94,76 @@ impl Pipeline {
         let path = path.into();
         Self::wrap(
             volar_ir_build::Pipeline::from_llvm_inlined(&path, entries),
-            Some(path),
+            [path],
         )
     }
 
     /// Execution-mode LLVM-direct import (already `is_circuit()` when it succeeds).
+    /// Accepts `.ll`, `.bc`, or an LTO static library.
     #[cfg(feature = "pipeline-llvm")]
     pub fn from_llvm_direct(path: impl Into<PathBuf>, entry: &str) -> Self {
         let path = path.into();
         Self::wrap(
             volar_ir_build::Pipeline::from_llvm_direct(&path, entry),
-            Some(path),
+            [path],
+        )
+    }
+
+    /// Compile `build` to a clang full-LTO static library, then import
+    /// structurally. Emits `cargo:rerun-if-changed` for each source on
+    /// `build`. GCC LTO is rejected.
+    #[cfg(feature = "pipeline-cc")]
+    pub fn from_cc(build: cc::Build, lib_name: &str, entries: &[&str]) -> Self {
+        let rerun: Vec<PathBuf> = build.get_files().map(Path::to_path_buf).collect();
+        Self::wrap(
+            volar_ir_build::Pipeline::from_cc(build, lib_name, entries),
+            rerun,
+        )
+    }
+
+    /// [`Pipeline::from_cc`] plus VAFFLE inline-everything.
+    #[cfg(feature = "pipeline-cc")]
+    pub fn from_cc_inlined(build: cc::Build, lib_name: &str, entries: &[&str]) -> Self {
+        let rerun: Vec<PathBuf> = build.get_files().map(Path::to_path_buf).collect();
+        Self::wrap(
+            volar_ir_build::Pipeline::from_cc_inlined(build, lib_name, entries),
+            rerun,
+        )
+    }
+
+    /// [`Pipeline::from_cc`] then the execution-mode importer.
+    #[cfg(feature = "pipeline-cc")]
+    pub fn from_cc_direct(build: cc::Build, lib_name: &str, entry: &str) -> Self {
+        let rerun: Vec<PathBuf> = build.get_files().map(Path::to_path_buf).collect();
+        Self::wrap(
+            volar_ir_build::Pipeline::from_cc_direct(build, lib_name, entry),
+            rerun,
+        )
+    }
+
+    /// Run `cmd` (no shell) to produce an LTO static library, then import
+    /// structurally. The command's inputs are not known here — emit
+    /// `cargo:rerun-if-changed` in the calling `build.rs` if needed.
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_command(cmd: volar_ir_build::CommandBuild, entries: &[&str]) -> Self {
+        Self::wrap(volar_ir_build::Pipeline::from_command(cmd, entries), [])
+    }
+
+    /// [`Pipeline::from_command`] plus VAFFLE inline-everything.
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_command_inlined(cmd: volar_ir_build::CommandBuild, entries: &[&str]) -> Self {
+        Self::wrap(
+            volar_ir_build::Pipeline::from_command_inlined(cmd, entries),
+            [],
+        )
+    }
+
+    /// [`Pipeline::from_command`] then the execution-mode importer.
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_command_direct(cmd: volar_ir_build::CommandBuild, entry: &str) -> Self {
+        Self::wrap(
+            volar_ir_build::Pipeline::from_command_direct(cmd, entry),
+            [],
         )
     }
 

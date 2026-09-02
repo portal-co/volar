@@ -17,6 +17,7 @@ pipeline         = ["dep:volar-ir", "dep:volar-ir-build"]
 pipeline-vaffle  = ["pipeline", "volar-ir-build/vaffle"]
 pipeline-wasm    = ["pipeline-vaffle", "volar-ir-build/wasm"]
 pipeline-llvm    = ["pipeline-vaffle", "volar-ir-build/llvm"]
+pipeline-cc      = ["pipeline-llvm", "volar-ir-build/cc", "dep:cc"]
 
 [dependencies]
 volar-lir-saved = { workspace = true, features = ["rkyv"] }
@@ -26,6 +27,7 @@ inkwell = { workspace = true }
 rkyv = { workspace = true, features = ["bytecheck"] }
 volar-ir              = { workspace = true, features = ["rkyv"], optional = true }
 volar-ir-build        = { workspace = true, optional = true }
+cc                    = { version = "1.2", optional = true }
 volar-weaver          = { path = "../volar-weaver", optional = true }
 volar-compiler        = { path = "../volar-compiler", optional = true }
 volar-compiler-passes = { path = "../volar-compiler-passes", optional = true }
