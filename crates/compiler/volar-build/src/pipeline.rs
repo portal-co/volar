@@ -3,26 +3,40 @@
 //! Builder-style pipeline for compiling from any IR level to object code or
 //! woven Rust. IR transforms live in `volar-ir-build`; this crate adds object
 //! emit, weaving, and cargo-directives.
+//!
+//! Mirrors `volar_ir_build::Pipeline<S>`'s typestate shape: `Pipeline<S>`
+//! wraps a `volar_ir_build::Pipeline<S>` plus this crate's own
+//! `cargo:rerun-if-changed` bookkeeping, so a terminal like
+//! [`Pipeline::<VolarIrStage>::compile_to_object`] only exists for the stage
+//! it actually needs — the "weaver X requires Boolar IR"-style runtime
+//! checks this crate used to need are narrowed to real per-stage impl
+//! blocks wherever the stage alone determines applicability.
 
 use std::path::{Path, PathBuf};
 
 use volar_ir::ir::{IRBlocks, IRTypes};
+use volar_ir_build::{LirStage, PipelineStage, VolarIrStage};
 use volar_lir_saved::SavedLirModule;
 
 use crate::{CompileOptions, SavedCircuit};
 
-pub use volar_ir_build::PipelinePass;
+pub use volar_ir_build::{
+    BoolarCircuitStage, BoolarStage, FoldIr, FromReversible, FuseBoolar, LowerToBoolar,
+    LowerToLir, Movfuscate, PipelinePass, RCircuitStage, StorageToMuxBoolar, StorageToMuxIr,
+    ToReversible, UnrollIrEverything, VaffleStage,
+};
 
-/// A composable lowering pipeline for `build.rs` scripts.
-///
-/// Wraps [`volar_ir_build::Pipeline`] and adds object-file / weave terminals.
-pub struct Pipeline {
-    inner: volar_ir_build::Pipeline,
+type BoxError = Box<dyn std::error::Error>;
+
+/// A composable lowering pipeline for `build.rs` scripts, generic over its
+/// current [`PipelineStage`] — see the module docs.
+pub struct Pipeline<S: PipelineStage> {
+    inner: volar_ir_build::Pipeline<S>,
     rerun: Vec<PathBuf>,
 }
 
-impl Pipeline {
-    fn wrap(inner: volar_ir_build::Pipeline, rerun: impl IntoIterator<Item = PathBuf>) -> Self {
+impl<S: PipelineStage> Pipeline<S> {
+    fn wrap(inner: volar_ir_build::Pipeline<S>, rerun: impl IntoIterator<Item = PathBuf>) -> Self {
         Pipeline {
             inner,
             rerun: rerun.into_iter().collect(),
@@ -38,190 +52,42 @@ impl Pipeline {
         let _ = &self.rerun;
     }
 
+    /// Wrap already-in-hand stage data, carrying no rerun-if-changed paths.
+    pub fn from_data(data: S::Data) -> Self {
+        Self::wrap(volar_ir_build::Pipeline::from_data(data), [])
+    }
+
+    /// Apply any [`PipelinePass`] whose input stage is `S`.
+    pub fn apply<P: PipelinePass<S>>(self, pass: P) -> Result<Pipeline<P::Output>, BoxError> {
+        Ok(Pipeline {
+            inner: self.inner.apply(pass)?,
+            rerun: self.rerun,
+        })
+    }
+
+    fn map_inner<T: PipelineStage>(
+        self,
+        f: impl FnOnce(volar_ir_build::Pipeline<S>) -> Result<volar_ir_build::Pipeline<T>, BoxError>,
+    ) -> Result<Pipeline<T>, BoxError> {
+        Ok(Pipeline {
+            inner: f(self.inner)?,
+            rerun: self.rerun,
+        })
+    }
+}
+
+impl Pipeline<LirStage> {
     /// Start from a pre-recorded `.lir` file.
-    pub fn from_saved_lir(path: impl Into<PathBuf>) -> Self {
+    pub fn from_saved_lir(path: impl Into<PathBuf>) -> Result<Self, BoxError> {
         let path = path.into();
-        Self::wrap(volar_ir_build::Pipeline::from_saved_lir(&path), [path])
-    }
-
-    /// Start from a `.circuit` file (rkyv-serialized `SavedCircuit`).
-    pub fn from_volar_ir(path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        match load_saved_circuit(&path) {
-            Ok((blocks, types)) => Self::wrap(
-                volar_ir_build::Pipeline::from_volar_ir_blocks(blocks, types),
-                [path],
-            ),
-            Err(_) => {
-                // Fall back to a bare `(IRBlocks, IRTypes)` blob.
-                Self::wrap(volar_ir_build::Pipeline::from_volar_ir(&path), [path])
-            }
-        }
-    }
-
-    /// Start from a `.vaffle` file.
-    #[cfg(feature = "pipeline-vaffle")]
-    pub fn from_vaffle(path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        Self::wrap(volar_ir_build::Pipeline::from_vaffle(&path), [path])
-    }
-
-    /// Start from a `.wasm` file.
-    #[cfg(feature = "pipeline-wasm")]
-    pub fn from_wasm(path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        Self::wrap(volar_ir_build::Pipeline::from_wasm(&path), [path])
-    }
-
-    /// Fully-inlined WASM frontend (WAFFLE → VAFFLE → inline-everything).
-    #[cfg(feature = "pipeline-wasm")]
-    pub fn from_wasm_inlined(path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        Self::wrap(volar_ir_build::Pipeline::from_wasm_inlined(&path), [path])
-    }
-
-    /// Structural LLVM import from `.ll`, `.bc`, or a clang full-LTO
-    /// static library (`.a` / `.lib`). Calls are preserved until a later pass.
-    #[cfg(feature = "pipeline-llvm")]
-    pub fn from_llvm(path: impl Into<PathBuf>, entries: &[&str]) -> Self {
-        let path = path.into();
-        Self::wrap(volar_ir_build::Pipeline::from_llvm(&path, entries), [path])
-    }
-
-    /// Structural LLVM import plus VAFFLE inline-everything.
-    #[cfg(feature = "pipeline-llvm")]
-    pub fn from_llvm_inlined(path: impl Into<PathBuf>, entries: &[&str]) -> Self {
-        let path = path.into();
-        Self::wrap(
-            volar_ir_build::Pipeline::from_llvm_inlined(&path, entries),
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_saved_lir(&path)?,
             [path],
-        )
+        ))
     }
 
-    /// Execution-mode LLVM-direct import (already `is_circuit()` when it succeeds).
-    /// Accepts `.ll`, `.bc`, or an LTO static library.
-    #[cfg(feature = "pipeline-llvm")]
-    pub fn from_llvm_direct(path: impl Into<PathBuf>, entry: &str) -> Self {
-        let path = path.into();
-        Self::wrap(
-            volar_ir_build::Pipeline::from_llvm_direct(&path, entry),
-            [path],
-        )
-    }
-
-    /// Compile `build` to a clang full-LTO static library, then import
-    /// structurally. Emits `cargo:rerun-if-changed` for each source on
-    /// `build`. GCC LTO is rejected.
-    #[cfg(feature = "pipeline-cc")]
-    pub fn from_cc(build: cc::Build, lib_name: &str, entries: &[&str]) -> Self {
-        let rerun: Vec<PathBuf> = build.get_files().map(Path::to_path_buf).collect();
-        Self::wrap(
-            volar_ir_build::Pipeline::from_cc(build, lib_name, entries),
-            rerun,
-        )
-    }
-
-    /// [`Pipeline::from_cc`] plus VAFFLE inline-everything.
-    #[cfg(feature = "pipeline-cc")]
-    pub fn from_cc_inlined(build: cc::Build, lib_name: &str, entries: &[&str]) -> Self {
-        let rerun: Vec<PathBuf> = build.get_files().map(Path::to_path_buf).collect();
-        Self::wrap(
-            volar_ir_build::Pipeline::from_cc_inlined(build, lib_name, entries),
-            rerun,
-        )
-    }
-
-    /// [`Pipeline::from_cc`] then the execution-mode importer.
-    #[cfg(feature = "pipeline-cc")]
-    pub fn from_cc_direct(build: cc::Build, lib_name: &str, entry: &str) -> Self {
-        let rerun: Vec<PathBuf> = build.get_files().map(Path::to_path_buf).collect();
-        Self::wrap(
-            volar_ir_build::Pipeline::from_cc_direct(build, lib_name, entry),
-            rerun,
-        )
-    }
-
-    /// Run `cmd` (no shell) to produce an LTO static library, then import
-    /// structurally. The command's inputs are not known here — emit
-    /// `cargo:rerun-if-changed` in the calling `build.rs` if needed.
-    #[cfg(feature = "pipeline-llvm")]
-    pub fn from_command(cmd: volar_ir_build::CommandBuild, entries: &[&str]) -> Self {
-        Self::wrap(volar_ir_build::Pipeline::from_command(cmd, entries), [])
-    }
-
-    /// [`Pipeline::from_command`] plus VAFFLE inline-everything.
-    #[cfg(feature = "pipeline-llvm")]
-    pub fn from_command_inlined(cmd: volar_ir_build::CommandBuild, entries: &[&str]) -> Self {
-        Self::wrap(
-            volar_ir_build::Pipeline::from_command_inlined(cmd, entries),
-            [],
-        )
-    }
-
-    /// [`Pipeline::from_command`] then the execution-mode importer.
-    #[cfg(feature = "pipeline-llvm")]
-    pub fn from_command_direct(cmd: volar_ir_build::CommandBuild, entry: &str) -> Self {
-        Self::wrap(
-            volar_ir_build::Pipeline::from_command_direct(cmd, entry),
-            [],
-        )
-    }
-
-    /// Configure oracle/action import mappings for WASM pipelines.
-    #[cfg(feature = "pipeline-wasm")]
-    pub fn with_import_config(mut self, config: volar_ir_build::WaffleImportConfig) -> Self {
-        self.inner = self.inner.with_import_config(config);
-        self
-    }
-
-    /// Names used as roots for VAFFLE inline-everything.
-    pub fn with_inline_entries(mut self, entries: &[&str]) -> Self {
-        self.inner = self.inner.with_inline_entries(entries);
-        self
-    }
-
-    /// Inline every non-recursive intra-module VAFFLE call.
-    #[cfg(feature = "pipeline-vaffle")]
-    pub fn inline_vaffle_everything(mut self) -> Self {
-        self.inner = self.inner.inline_vaffle_everything();
-        self
-    }
-
-    /// Lower VAFFLE → Volar IR.
-    #[cfg(feature = "pipeline-vaffle")]
-    pub fn lower_to_volar_ir(mut self) -> Self {
-        self.inner = self.inner.lower_to_volar_ir();
-        self
-    }
-
-    /// Constant-fold Volar IR until stable.
-    pub fn fold_ir(mut self) -> Self {
-        self.inner = self.inner.fold_ir();
-        self
-    }
-
-    /// Movfuscate Volar IR into a single self-looping block.
-    pub fn movfuscate(mut self) -> Self {
-        self.inner = self.inner.movfuscate();
-        self
-    }
-
-    /// Unroll Volar IR into a combinational circuit (concrete CF required).
-    pub fn unroll_ir(mut self) -> Self {
-        self.inner = self.inner.unroll_ir();
-        self
-    }
-
-    /// Execute all passes and return the resulting Volar IR.
-    #[cfg(feature = "pipeline")]
-    pub fn to_volar_ir(self) -> Result<(IRBlocks, IRTypes), Box<dyn std::error::Error>> {
-        self.emit_rerun();
-        self.inner.to_volar_ir()
-    }
-
-    /// Execute all passes and return a saved LIR module.
-    #[cfg(feature = "pipeline")]
-    pub fn to_lir(self) -> Result<SavedLirModule, Box<dyn std::error::Error>> {
+    /// Terminal: the saved LIR module.
+    pub fn to_lir(self) -> SavedLirModule {
         self.emit_rerun();
         self.inner.to_lir()
     }
@@ -231,9 +97,78 @@ impl Pipeline {
         self,
         out_path: &Path,
         options: &CompileOptions,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), BoxError> {
         self.emit_rerun();
-        let saved = self.inner.to_lir()?;
+        lir_to_object(&self.inner.to_lir(), out_path, options)
+    }
+}
+
+impl Pipeline<VolarIrStage> {
+    /// Start from a `.circuit` file (rkyv-serialized `SavedCircuit`), falling
+    /// back to a bare `(IRBlocks, IRTypes)` blob.
+    pub fn from_volar_ir(path: impl Into<PathBuf>) -> Result<Self, BoxError> {
+        let path = path.into();
+        let inner = match load_saved_circuit(&path) {
+            Ok((blocks, types)) => volar_ir_build::Pipeline::from_volar_ir_blocks(blocks, types),
+            Err(_) => volar_ir_build::Pipeline::from_volar_ir_file(&path)?,
+        };
+        Ok(Self::wrap(inner, [path]))
+    }
+
+    /// Wrap in-memory Volar IR.
+    pub fn from_volar_ir_blocks(blocks: IRBlocks, types: IRTypes) -> Self {
+        Self::from_data((blocks, types))
+    }
+
+    /// Constant-fold Volar IR until stable.
+    pub fn fold_ir(self) -> Result<Self, BoxError> {
+        self.map_inner(|p| p.fold_ir())
+    }
+
+    /// Movfuscate Volar IR into a single self-looping block.
+    pub fn movfuscate(self) -> Result<Self, BoxError> {
+        self.map_inner(|p| p.movfuscate())
+    }
+
+    /// Unroll Volar IR into a combinational circuit (concrete CF required).
+    pub fn unroll_ir(self) -> Result<Self, BoxError> {
+        self.map_inner(|p| p.unroll_ir())
+    }
+
+    /// Eliminate `StorageRead`/`StorageWrite` for `cfg.storage` via an
+    /// explicit MUX/demux register file.
+    pub fn storage_to_mux(
+        self,
+        cfg: volar_ir_build::volar_ir_passes::StorageToMuxConfig,
+    ) -> Result<Self, BoxError> {
+        self.map_inner(|p| p.storage_to_mux(cfg))
+    }
+
+    /// Lower Volar IR → Boolar IR.
+    pub fn lower_to_boolar(self) -> Result<Pipeline<BoolarStage>, BoxError> {
+        self.map_inner(|p| p.lower_to_boolar())
+    }
+
+    /// Lower Volar IR → saved LIR.
+    pub fn lower_to_lir(self) -> Result<Pipeline<LirStage>, BoxError> {
+        self.map_inner(|p| p.lower_to_lir())
+    }
+
+    /// Terminal: the resulting Volar IR.
+    pub fn to_volar_ir(self) -> (IRBlocks, IRTypes) {
+        self.emit_rerun();
+        self.inner.to_volar_ir()
+    }
+
+    /// Execute all passes and compile the result to a native object file
+    /// (lowering to LIR first).
+    pub fn compile_to_object(
+        self,
+        out_path: &Path,
+        options: &CompileOptions,
+    ) -> Result<(), BoxError> {
+        self.emit_rerun();
+        let saved = self.inner.lower_to_lir()?.into_data();
         lir_to_object(&saved, out_path, options)
     }
 
@@ -243,9 +178,9 @@ impl Pipeline {
         self,
         out_path: &Path,
         weaver: &crate::Weaver,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), BoxError> {
         self.emit_rerun();
-        let (blocks, types) = self.inner.to_volar_ir()?;
+        let (blocks, types) = self.inner.to_volar_ir();
         weave_volar_ir_in_memory(&blocks, &types, out_path, weaver)
     }
 
@@ -256,9 +191,9 @@ impl Pipeline {
         out_dir: &Path,
         weaver: &crate::Weaver,
         options: &volar_compiler::chunk_module::ChunkOptions,
-    ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<std::path::PathBuf>, BoxError> {
         self.emit_rerun();
-        let (blocks, types) = self.inner.to_volar_ir()?;
+        let (blocks, types) = self.inner.to_volar_ir();
         weave_volar_ir_chunked(&blocks, &types, out_dir, weaver, options)
     }
 
@@ -269,15 +204,221 @@ impl Pipeline {
         out_dir: &Path,
         weaver: &crate::Weaver,
         options: &volar_compiler::chunk_module::ChunkOptions,
-    ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<std::path::PathBuf>, BoxError> {
         self.emit_rerun();
-        let (blocks, types) = self.inner.to_volar_ir()?;
+        let (blocks, types) = self.inner.to_volar_ir();
         let module = weave_volar_ir_to_ir_module(&blocks, &types, weaver)?;
         volar_compiler_passes::emit_woven_ts_chunked(&module, out_dir, options)
     }
 }
 
-fn load_saved_circuit(path: &Path) -> Result<(IRBlocks, IRTypes), Box<dyn std::error::Error>> {
+impl Pipeline<BoolarStage> {
+    /// Eliminate `StorageRead`/`StorageWrite` for `cfg.storage`/`cfg.lane`
+    /// via an explicit MUX/demux bit register file.
+    pub fn storage_to_mux(
+        self,
+        cfg: volar_ir_build::volar_ir_passes::StorageToMuxBoolarConfig,
+    ) -> Result<Self, BoxError> {
+        self.map_inner(|p| p.storage_to_mux(cfg))
+    }
+
+    /// Fuse to the single-block circuit form.
+    pub fn fuse(
+        self,
+        limit: u32,
+        mode: volar_ir_build::volar_ir_passes::LoweringMode,
+    ) -> Result<Pipeline<BoolarCircuitStage>, BoxError> {
+        self.map_inner(|p| p.fuse(limit, mode))
+    }
+}
+
+impl Pipeline<BoolarCircuitStage> {
+    /// Convert to a reversible gate circuit.
+    pub fn to_reversible(self) -> Result<Pipeline<RCircuitStage>, BoxError> {
+        self.map_inner(|p| p.to_reversible())
+    }
+}
+
+impl Pipeline<RCircuitStage> {
+    /// Lower back to circuit-fused Boolar IR.
+    pub fn from_reversible(self) -> Result<Pipeline<BoolarCircuitStage>, BoxError> {
+        self.map_inner(|p| p.from_reversible())
+    }
+}
+
+#[cfg(feature = "pipeline-vaffle")]
+impl Pipeline<VaffleStage> {
+    /// Start from a `.vaffle` file.
+    pub fn from_vaffle(path: impl Into<PathBuf>) -> Result<Self, BoxError> {
+        let path = path.into();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_vaffle(&path)?,
+            [path],
+        ))
+    }
+
+    /// Start from a `.wasm` file.
+    #[cfg(feature = "pipeline-wasm")]
+    pub fn from_wasm(path: impl Into<PathBuf>) -> Result<Self, BoxError> {
+        let path = path.into();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_wasm(&path)?,
+            [path],
+        ))
+    }
+
+    /// Start from a `.wasm` file with an explicit oracle/action import config.
+    #[cfg(feature = "pipeline-wasm")]
+    pub fn from_wasm_with_config(
+        path: impl Into<PathBuf>,
+        config: volar_ir_build::WaffleImportConfig,
+    ) -> Result<Self, BoxError> {
+        let path = path.into();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_wasm_with_config(&path, config)?,
+            [path],
+        ))
+    }
+
+    /// Fully-inlined WASM frontend (WAFFLE → VAFFLE → inline-everything).
+    #[cfg(feature = "pipeline-wasm")]
+    pub fn from_wasm_inlined(path: impl Into<PathBuf>) -> Result<Self, BoxError> {
+        let path = path.into();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_wasm_inlined(&path)?,
+            [path],
+        ))
+    }
+
+    /// Structural LLVM import from `.ll`, `.bc`, or a clang full-LTO
+    /// static library (`.a` / `.lib`). Calls are preserved until a later pass.
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_llvm(path: impl Into<PathBuf>, entries: &[&str]) -> Result<Self, BoxError> {
+        let path = path.into();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_llvm(&path, entries)?,
+            [path],
+        ))
+    }
+
+    /// Structural LLVM import plus VAFFLE inline-everything.
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_llvm_inlined(path: impl Into<PathBuf>, entries: &[&str]) -> Result<Self, BoxError> {
+        let path = path.into();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_llvm_inlined(&path, entries)?,
+            [path],
+        ))
+    }
+
+    /// Compile `build` to a clang full-LTO static library, then import
+    /// structurally. Emits `cargo:rerun-if-changed` for each source on
+    /// `build`. GCC LTO is rejected.
+    #[cfg(feature = "pipeline-cc")]
+    pub fn from_cc(build: cc::Build, lib_name: &str, entries: &[&str]) -> Result<Self, BoxError> {
+        let rerun: Vec<PathBuf> = build.get_files().map(Path::to_path_buf).collect();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_cc(build, lib_name, entries)?,
+            rerun,
+        ))
+    }
+
+    /// [`Pipeline::from_cc`] plus VAFFLE inline-everything.
+    #[cfg(feature = "pipeline-cc")]
+    pub fn from_cc_inlined(
+        build: cc::Build,
+        lib_name: &str,
+        entries: &[&str],
+    ) -> Result<Self, BoxError> {
+        let rerun: Vec<PathBuf> = build.get_files().map(Path::to_path_buf).collect();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_cc_inlined(build, lib_name, entries)?,
+            rerun,
+        ))
+    }
+
+    /// Run `cmd` (no shell) to produce an LTO static library, then import
+    /// structurally. The command's inputs are not known here — emit
+    /// `cargo:rerun-if-changed` in the calling `build.rs` if needed.
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_command(
+        cmd: volar_ir_build::CommandBuild,
+        entries: &[&str],
+    ) -> Result<Self, BoxError> {
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_command(cmd, entries)?,
+            [],
+        ))
+    }
+
+    /// [`Pipeline::from_command`] plus VAFFLE inline-everything.
+    #[cfg(feature = "pipeline-llvm")]
+    pub fn from_command_inlined(
+        cmd: volar_ir_build::CommandBuild,
+        entries: &[&str],
+    ) -> Result<Self, BoxError> {
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_command_inlined(cmd, entries)?,
+            [],
+        ))
+    }
+
+    /// Inline every non-recursive intra-module VAFFLE call, using every
+    /// export (or every function body) as the root set.
+    pub fn inline_vaffle_everything(self) -> Result<Self, BoxError> {
+        self.map_inner(|p| p.inline_vaffle_everything())
+    }
+
+    /// Inline every non-recursive intra-module VAFFLE call reachable from
+    /// `entries`.
+    pub fn inline_vaffle_everything_over(self, entries: &[&str]) -> Result<Self, BoxError> {
+        self.map_inner(|p| p.inline_vaffle_everything_over(entries))
+    }
+
+    /// Lower VAFFLE → Volar IR.
+    pub fn lower_to_volar_ir(self) -> Result<Pipeline<VolarIrStage>, BoxError> {
+        self.map_inner(|p| p.lower_to_volar_ir())
+    }
+}
+
+/// Execution-mode LLVM-direct import (already `is_circuit()` when it
+/// succeeds) lands on [`VolarIrStage`] directly rather than [`VaffleStage`].
+#[cfg(feature = "pipeline-llvm")]
+impl Pipeline<VolarIrStage> {
+    /// Execution-mode LLVM-direct import. Accepts `.ll`, `.bc`, or an LTO
+    /// static library.
+    pub fn from_llvm_direct(path: impl Into<PathBuf>, entry: &str) -> Result<Self, BoxError> {
+        let path = path.into();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_llvm_direct(&path, entry)?,
+            [path],
+        ))
+    }
+
+    /// [`Pipeline::<VaffleStage>::from_cc`] then the execution-mode importer.
+    #[cfg(feature = "pipeline-cc")]
+    pub fn from_cc_direct(build: cc::Build, lib_name: &str, entry: &str) -> Result<Self, BoxError> {
+        let rerun: Vec<PathBuf> = build.get_files().map(Path::to_path_buf).collect();
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_cc_direct(build, lib_name, entry)?,
+            rerun,
+        ))
+    }
+
+    /// [`Pipeline::<VaffleStage>::from_command`] then the execution-mode
+    /// importer.
+    pub fn from_command_direct(
+        cmd: volar_ir_build::CommandBuild,
+        entry: &str,
+    ) -> Result<Self, BoxError> {
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_command_direct(cmd, entry)?,
+            [],
+        ))
+    }
+}
+
+fn load_saved_circuit(path: &Path) -> Result<(IRBlocks, IRTypes), BoxError> {
     let bytes = std::fs::read(path)?;
     let circuit = rkyv::from_bytes::<SavedCircuit, rkyv::rancor::Error>(&bytes)
         .map_err(|e| format!("failed to deserialize .circuit file: {e}"))?;
@@ -291,7 +432,7 @@ fn lir_to_object(
     saved: &SavedLirModule,
     out_path: &Path,
     options: &CompileOptions,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), BoxError> {
     use inkwell::{
         context::Context,
         passes::PassBuilderOptions,
@@ -400,7 +541,7 @@ fn weave_volar_ir_in_memory(
     types: &IRTypes,
     out_path: &Path,
     weaver: &crate::Weaver,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), BoxError> {
     use crate::Weaver;
 
     let rust_source: String = match weaver {
@@ -429,7 +570,7 @@ fn weave_volar_ir_chunked(
     out_dir: &Path,
     weaver: &crate::Weaver,
     options: &volar_compiler::chunk_module::ChunkOptions,
-) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+) -> Result<Vec<std::path::PathBuf>, BoxError> {
     use volar_compiler::chunk_module::{chunk_module_rust, ChunkConfig};
     use volar_compiler_passes::chunk_function_bodies;
 
@@ -476,7 +617,7 @@ fn weave_volar_ir_to_ir_module(
     blocks: &IRBlocks,
     types: &IRTypes,
     weaver: &crate::Weaver,
-) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, Box<dyn std::error::Error>>
+) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, BoxError>
 {
     use crate::Weaver;
     let module = match weaver {

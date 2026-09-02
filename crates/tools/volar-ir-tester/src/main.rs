@@ -23,12 +23,12 @@ fn main() {
     let out_path: Option<&Path> = args.get(2).map(|s| Path::new(s.as_str()));
 
     let (blocks, types) = Pipeline::from_wasm(wasm_path)
-        .lower_to_volar_ir()
-        .to_volar_ir()
+        .and_then(|p| p.lower_to_volar_ir())
         .unwrap_or_else(|e| {
             eprintln!("error: {e}");
             process::exit(1);
-        });
+        })
+        .to_volar_ir();
 
     let saved = SavedIrBlocks { types, blocks };
     let text = saved.to_text_string();

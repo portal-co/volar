@@ -18,9 +18,9 @@ fn from_wasm_lower_to_volar_ir() {
     ));
     fs::write(&path, bytes).expect("write wasm");
     let (blocks, _types) = Pipeline::from_wasm(&path)
-        .lower_to_volar_ir()
-        .to_volar_ir()
-        .expect("wrapper from_wasm → Volar IR");
+        .and_then(|p| p.lower_to_volar_ir())
+        .expect("wrapper from_wasm → Volar IR")
+        .to_volar_ir();
     assert!(!blocks.blocks.is_empty());
     let _ = fs::remove_file(&path);
 }

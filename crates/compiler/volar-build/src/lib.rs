@@ -66,7 +66,15 @@ pub use weave::{emit_woven_typescript, emit_woven_typescript_chunked};
 #[cfg(feature = "pipeline")]
 mod pipeline;
 #[cfg(feature = "pipeline")]
-pub use pipeline::{Pipeline, PipelinePass};
+pub use pipeline::{
+    BoolarCircuitStage, BoolarStage, FoldIr, FromReversible, FuseBoolar, LowerToBoolar,
+    LowerToLir, Movfuscate, Pipeline, PipelinePass, RCircuitStage, StorageToMuxBoolar,
+    StorageToMuxIr, ToReversible, UnrollIrEverything, VaffleStage,
+};
+#[cfg(feature = "pipeline")]
+pub use volar_ir_build::{LirStage, PipelineStage, VolarIrStage, volar_ir_passes};
+#[cfg(feature = "pipeline-vaffle")]
+pub use volar_ir_build::{InlineVaffleEverything, LowerToVolarIr};
 #[cfg(feature = "pipeline-vaffle")]
 pub use volar_ir_build::serialize_vaffle_module;
 #[cfg(feature = "pipeline-llvm")]
