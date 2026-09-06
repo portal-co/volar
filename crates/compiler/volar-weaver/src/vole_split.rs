@@ -213,7 +213,7 @@ mod tests {
 
     use super::*;
     use volar_ir::ir::{IRBlockTargetId, IRBranchTarget, IRStmt, IRTerminator, IRTypeId};
-    use volar_ir_common::{Constant, Node, Stmt};
+    use volar_ir_common::{Constant, Node, PolyCoeffs, Stmt};
 
     /// Builds an `IRBlock<()>` with `num_params` dummy params and pushes
     /// a `Poly` statement referencing `refs` (as a degree-1 monomial per
@@ -231,7 +231,7 @@ mod tests {
             },
         };
         for refs in stmt_refs {
-            let coeffs = refs
+            let coeffs: PolyCoeffs<_> = refs
                 .iter()
                 .map(|&v| (alloc::vec![volar_ir::ir::IRVarId(v)], 1u8))
                 .collect();

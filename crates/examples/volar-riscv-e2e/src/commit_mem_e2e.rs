@@ -35,11 +35,10 @@
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use volar_ir::ir::{
         IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRTypes, IRVarId,
     };
-    use volar_ir_common::{Constant, IrType as IRType, Node, StorageId, Type};
+    use volar_ir_common::{Constant, IrType as IRType, Node, PolyCoeffs, StorageId, Type};
 
     /// The flip-bit circuit: `params = []` (all state lives in committed
     /// memory, not in any loop-carried param); one `StorageRead`, one
@@ -60,10 +59,10 @@ mod tests {
         // requires at least one folded gate ("accumulator has no folded
         // gates" otherwise), and this is the simplest way to supply one
         // without introducing a chained (non-parameter) operand.
-        let mut and_coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+        let mut and_coeffs: PolyCoeffs<IRVarId> = PolyCoeffs::new();
         and_coeffs.insert(vec![IRVarId(1), IRVarId(2)], 1u8);
 
-        let mut not_coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+        let mut not_coeffs: PolyCoeffs<IRVarId> = PolyCoeffs::new();
         not_coeffs.insert(vec![IRVarId(3)], 1u8);
 
         let stmts = vec![

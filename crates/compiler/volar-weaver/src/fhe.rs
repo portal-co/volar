@@ -3681,7 +3681,7 @@ pub fn print_fhe_cfg_module_c(module: &IrCfgModule, env: &volar_lir_codegen::mon
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use std::{vec, vec::Vec, string::String, collections::BTreeMap, format};
+    use std::{vec, vec::Vec, string::String, format};
 
     use super::*;
     use volar_ir::{
@@ -3693,6 +3693,7 @@ mod tests {
     };
     use crate::tests_common::run_compile_check;
     use crate::KeepProvenance;
+    use volar_ir_common::PolyCoeffs;
 
     // ---- CFG circuit builders -----------------------------------------------
 
@@ -3700,7 +3701,7 @@ mod tests {
     fn build_ir_and_cfg() -> (IRBlocks, IRTypes) {
         let mut types = IRTypes::new();
         let bit = types.intern(IRType::Primitive(PrimType::Bit));
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
         let block = IRBlock {
             params: vec![bit, bit],
@@ -3891,7 +3892,7 @@ mod tests {
         let bit = types.intern(IRType::Primitive(PrimType::Bit));
         let one = Constant { hi: 0, lo: 1 };
         let zero = Constant { hi: 0, lo: 0 };
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         // monomial: var_0 AND var_1 (coefficient 1)
         coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
         let block = IRBlock {
@@ -3932,7 +3933,7 @@ mod tests {
         let mut types = IRTypes::new();
         let bit = types.intern(IRType::Primitive(PrimType::Bit));
         let one = Constant { hi: 0, lo: 1 };
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         // monomial: var_0 (encrypted input) AND var_1 (public const)
         coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
         let block = IRBlock {
@@ -4593,7 +4594,7 @@ mod tests {
     fn build_ir_and_cfg_prov<P: Clone>(prov: P) -> (IRBlocks<P>, IRTypes) {
         let mut types = IRTypes::new();
         let bit = types.intern(IRType::Primitive(PrimType::Bit));
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
         let block: IRBlock<P> = IRBlock {
             params: vec![bit, bit],

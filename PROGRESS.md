@@ -2,6 +2,68 @@
 
 > Load at the start of a session to see what's done and what's next.
 
+## Local `volar-ir` upgrade — b436363 (2026-09-05)
+
+The local overlay now resolves the sibling `../volar-ir` checkout at
+`b4363635cd51b666d9fb0b3c3c5e30e37330ea46`, replacing the recorded
+`9c172e4` baseline. Root `Cargo.lock` was regenerated without dropping the
+existing `volar-ir-build` and circuit-source edges.
+
+- Migrated every local `Stmt::Poly` adapter and fixture from
+  `BTreeMap<Vec<Var>, u8>` to `volar_ir_common::PolyCoeffs<Var>`: the LIR
+  target's inherited `LirTarget::bc_poly` interface, ORAM var remapping,
+  and FHE/noop/VOLE/split-VOLE/RISC-V fixtures. ORAM collects remapped terms
+  into `PolyCoeffs`, retaining canonical monomial order and last-value-on-
+  collision semantics.
+- Fixed the upstream `volar-ir-opt` test fixtures that still constructed
+  `Stmt::Poly` coefficients as `BTreeMap`s. The sibling checkout's existing
+  `docs/llvm-fuse-unroll.md` edit and untracked Noir note were left intact.
+- Fixed a generated-code split-weaving failure found by the real memory
+  boundary test: once a scalar cross-piece value owns a `_piece_pool` slot,
+  pass-through producers reuse that slot instead of allocating an unreachable
+  second slot.
+- Kept `volar-ir-build::Pipeline::Movfuscate` on its existing owned pipeline;
+  no ownership/optimizer API was added. Direct movfuscation call sites still
+  require boundary metadata, and virtualization remains excluded because its
+  state layout conflicts with movfuscation's positional invariant.
+
+### Evidence
+
+- Root: `cargo test -p volar-ir-lir-target` — 28 passed;
+  `cargo test -p volar-weaver` — 138 unit tests plus generated-code checks
+  passed; `cargo test -p volar-riscv-e2e` — 21 passed, 36 ignored;
+  `cargo check --workspace --all-targets` — passed.
+- Generated-code coverage: the compiled-and-executed
+  `commit_mem_e2e::tests::honest_flip_bit_run_folds_and_finalizes_with_real_memory_boundary`
+  passed. The release `largest_chunk_function_compiles` probe compiled the
+  10-function local dependency bundle for
+  `vole_verify_ir_riscv_step_block_71` (607 parameters; 2,751,237 bytes of
+  emitted Rust).
+- Sibling checkout: `cargo test -p volar-ir-passes` — 159 passed;
+  `cargo test -p volar-ir-opt` — 38 passed;
+  `cargo test -p volar-vaffle-target` — 76 passed (67 unit, 1 lazy, 8 virt).
+
+### Post-movfuscation evidence gate
+
+The ignored real-interpreter probe was split into independently runnable
+baseline and `fold_ir_blocks` + `store_forward_ir_blocks` tests. The candidate
+preserves correctness of the experiment by remapping both
+`MovfuscBlockBoundary` and `MovfuscAccumInfo` through DCE before split
+weaving.
+
+Three `/usr/bin/time -l` release runs produced deterministic baseline AND
+count `192,683`; wall times `4.74`, `4.84`, `5.36` s and peak RSS
+`1,356,857,344`, `1,356,759,040`, `1,356,693,504` bytes (medians: `192,683`,
+`4.84` s, `1,356,759,040` bytes). All three candidate runs failed
+deterministically in the real split weaver at `volar-weaver/src/vole.rs:3742`
+with a missing wire entry, so produced no AND count; wall times were `5.72`,
+`5.58`, `5.61` s and peak RSS `1,356,775,424`, `1,356,742,656`,
+`1,356,808,192` bytes (medians: `5.61` s, `1,356,775,424` bytes).
+
+The candidate fails every required improvement gate. Post-movfuscation folding
+and store forwarding therefore remain disabled in `lower_interpreter`; the
+generic store-forwarder redesign remains out of scope.
+
 ## Direct-to-LIR fast path — Phase 1 green baseline (2026-08-28)
 
 Evidence: `docs/direct-to-lir-weaver-fast-path-plan.md`; commits `f196e94`

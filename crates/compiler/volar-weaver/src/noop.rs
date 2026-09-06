@@ -568,13 +568,13 @@ pub fn print_noop_module(module: &IrModule<IrFunction>) -> String {
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use alloc::collections::BTreeMap;
     use std::string::String;
 
     use super::*;
     use crate::tests_common::{
         build_and_circuit, build_xor_and_circuit, run_compile_check,
     };
+    use volar_ir_common::PolyCoeffs;
 
     #[test]
     fn test_weave_noop_compiles() {
@@ -626,7 +626,7 @@ mod tests {
         // Build a small Poly (AND) circuit: params = [Bit, Bit], stmt = Poly(w0 & w1), return w2.
         let mut types = CirTypes::new();
         let bit = types.intern(CircuitIrType::Primitive(PrimType::Bit));
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(alloc::vec![CirVar(0), CirVar(1)], 1u8);
 
         let block = CirBlock {
@@ -665,7 +665,7 @@ mod tests {
         // single statement's provenance set to 9 instead of `()`.
         let mut types = CirTypes::new();
         let bit = types.intern(CircuitIrType::Primitive(PrimType::Bit));
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(alloc::vec![CirVar(0), CirVar(1)], 1u8);
 
         let block: CirBlock<u32> = CirBlock {

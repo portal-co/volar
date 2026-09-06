@@ -404,18 +404,13 @@ mod tests {
     /// separate, genuine VAFFLE bug this investigation *did* fix
     /// (`plan_functions`'s continuation-type arity, `lower_to_ir.rs`).
     ///
-    /// Milestone 1.5 Step B: no longer runs post-movfuscation
-    /// `optimize_to_fixpoint` -- a direct A/B measurement found it
-    /// *increases* and_count ~24x (115,780 -> 2,771,980) on this circuit,
-    /// almost certainly `store_forward_ir_blocks` duplicating AND-gate-
-    /// containing expressions across multiple use sites (see the backlog
-    /// doc's "Step B: store_forward_ir_blocks" section -- deferred, not
-    /// fixed, since dropping the pass alone is a strict improvement here
-    /// with no known downside). This also sidesteps a separate, confirmed
-    /// incompatibility: `movfuscate_ir_with_boundary`'s boundary metadata
-    /// is invalidated by that same optimization pass (it renumbers/deletes
-    /// statements), so returning boundary metadata directly from this
-    /// shared helper (below) requires skipping it anyway.
+    /// Milestone 1.5 Step B keeps post-movfuscation optimization disabled.
+    /// The evidence-gated probe below must show a strictly lower real-weaver
+    /// AND count, median wall time, and peak RSS before this production path
+    /// can enable `fold_ir_blocks` plus `store_forward_ir_blocks`. The probe
+    /// remaps movfuscation metadata through DCE; this shared helper does not,
+    /// because its public boundary metadata is produced directly by
+    /// `movfuscate_ir_with_boundary`.
     pub(crate) fn lower_interpreter(
         limit: u32,
         mode: volar_ir_passes::LoweringMode,
@@ -856,23 +851,10 @@ mod tests {
         eprintln!("memory trace entries: {}", trace.entries.len());
     }
 
-    /// Direct A/B check of a surprising Step B measurement (now documented
-    /// in `docs/agent-context/circuit-size-optimization-backlog.md`): does
-    /// post-movfuscation `optimize_to_fixpoint` (`fold_ir_blocks`/
-    /// `store_forward_ir_blocks` -- `lower_interpreter` itself no longer
-    /// runs this post-movfuscation, precisely because of this finding)
-    /// actually *increase* and_count on the real interpreter circuit,
-    /// rather than decrease it as its name suggests? Computes and_count
-    /// both ways from the exact same movfuscated starting point, via the
-    /// real weaver (`weave_vole_verifier_ir_split_with_trace`'s own
-    /// q_and-param counting -- not a re-implemented diagnostic formula),
-    /// so this is directly trustworthy either way. Kept as a permanent
-    /// regression-guard for the finding, not just a one-off measurement.
-    /// `#[ignore]`d (real interpreter scale); run manually under RSS
-    /// monitoring.
-    #[test]
-    #[ignore]
-    fn compare_and_count_with_and_without_post_movfuscation_optimization() {
+    /// Weave the real interpreter and return its verifier AND count. The
+    /// candidate is intentionally an independently runnable probe so its
+    /// process-level wall time and RSS can be compared with the baseline.
+    fn real_interpreter_and_count(post_movfuscation_optimization: bool) -> usize {
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
@@ -896,81 +878,72 @@ mod tests {
             &mut store_forward_ir_blocks,
         );
 
-        let and_count_via_real_weaver = |movfuscated_types: &mut volar_ir::ir::IRTypes,
-                                         movfuscated: &volar_ir::ir::IRBlocks,
-                                         boundary: &[volar_ir_passes::MovfuscBlockBoundary],
-                                         accum_info: &volar_ir_passes::MovfuscAccumInfo|
-         -> usize {
-            let bit_ty = movfuscated_types.intern(IRType::Primitive(Type::Bit));
-            let circuit =
-                lower_to_circuit_ir(movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
-            let mut total = 0usize;
-            weave_vole_verifier_ir_split_with_trace(
-                &circuit,
-                movfuscated_types,
-                "cmp",
-                &StorageMode::Commitment,
-                &IopSink,
-                boundary,
-                accum_info,
-                1,
-                volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
-                |f| {
-                    total += f
-                        .params
-                        .iter()
-                        .filter(|p| p.name.starts_with("q_and_"))
-                        .count()
-                },
+        let (mut movfuscated, boundary, accum_info) =
+            movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let (boundary, accum_info) = if post_movfuscation_optimization {
+            let extra_live = movfusc_referenced_vars(&boundary, &accum_info);
+            let remap = optimize_to_fixpoint_with_remap(
+                &mut movfuscated,
+                &types,
+                &mut fold_ir_blocks,
+                &mut store_forward_ir_blocks,
+                &extra_live,
             );
-            total
+            (
+                volar_ir_passes::remap_movfusc_boundaries(&boundary, &remap),
+                volar_ir_passes::remap_movfusc_accum_info(&accum_info, &remap),
+            )
+        } else {
+            (boundary, accum_info)
         };
 
-        // WITHOUT post-movfuscation optimization.
-        let mut types_no_opt = types.clone();
-        let (movfuscated_no_opt, boundary_no_opt, accum_info_no_opt) =
-            movfuscate_ir_with_boundary(&ir_blocks, &mut types_no_opt);
-        let and_count_no_opt = and_count_via_real_weaver(
-            &mut types_no_opt,
-            &movfuscated_no_opt,
-            &boundary_no_opt,
-            &accum_info_no_opt,
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit =
+            lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let mut total = 0usize;
+        weave_vole_verifier_ir_split_with_trace(
+            &circuit,
+            &types,
+            "post_movfuscation_probe",
+            &StorageMode::Commitment,
+            &IopSink,
+            &boundary,
+            &accum_info,
+            1,
+            volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
+            |f| {
+                total += f
+                    .params
+                    .iter()
+                    .filter(|p| p.name == "q_and")
+                    .map(|p| match &p.ty {
+                        volar_compiler::ir::IrType::Array {
+                            len: volar_compiler::ir::ArrayLength::Const(n),
+                            ..
+                        } => *n,
+                        other => panic!("q_and must be an array param, got {other:?}"),
+                    })
+                    .sum::<usize>();
+            },
         );
+        total
+    }
 
-        // WITH post-movfuscation optimization. `optimize_to_fixpoint_with_remap`
-        // (unlike the plain `optimize_to_fixpoint` used for the WITHOUT case
-        // above) tracks DCE's own cumulative var-id remap across the whole
-        // fixpoint and hands it back -- `remap_movfusc_boundaries`/
-        // `remap_movfusc_accum_info` then translate the PRE-optimization
-        // boundary/accum-info to stay valid, instead of reusing them stale
-        // (fold_ir_blocks/store_forward_ir_blocks need no remap contribution;
-        // only DCE renumbers -- see `dce_ir_blocks_with_remap`'s doc comment).
-        let mut types_with_opt = types.clone();
-        let (mut movfuscated_with_opt, boundary_with_opt, accum_info_with_opt) =
-            movfuscate_ir_with_boundary(&ir_blocks, &mut types_with_opt);
-        let extra_live = movfusc_referenced_vars(&boundary_with_opt, &accum_info_with_opt);
-        let remap = optimize_to_fixpoint_with_remap(
-            &mut movfuscated_with_opt,
-            &types_with_opt,
-            &mut fold_ir_blocks,
-            &mut store_forward_ir_blocks,
-            &extra_live,
-        );
-        let boundary_with_opt =
-            volar_ir_passes::remap_movfusc_boundaries(&boundary_with_opt, &remap);
-        let accum_info_with_opt =
-            volar_ir_passes::remap_movfusc_accum_info(&accum_info_with_opt, &remap);
-        let and_count_with_opt = and_count_via_real_weaver(
-            &mut types_with_opt,
-            &movfuscated_with_opt,
-            &boundary_with_opt,
-            &accum_info_with_opt,
-        );
+    /// Release benchmark baseline. Run three separate processes under
+    /// `/usr/bin/time -l` and compare against the candidate's medians.
+    #[test]
+    #[ignore]
+    fn measure_post_movfuscation_baseline() {
+        eprintln!("woven verifier AND count: {}", real_interpreter_and_count(false));
+    }
 
-        eprintln!("and_count WITHOUT post-movfuscation optimization: {and_count_no_opt}");
-        eprintln!(
-            "and_count WITH post-movfuscation optimization (boundary remapped through DCE): {and_count_with_opt}"
-        );
+    /// Release benchmark candidate: fold plus store-forward after
+    /// movfuscation, with boundary and accumulator metadata remapped through
+    /// DCE before entering the real split weaver.
+    #[test]
+    #[ignore]
+    fn measure_post_movfuscation_fold_store_forward() {
+        eprintln!("woven verifier AND count: {}", real_interpreter_and_count(true));
     }
 
     /// Milestone 1.5 Step B measurement: does the split verifier/prover
@@ -2824,8 +2797,8 @@ mod tests {
 
     /// Feasibility check (not exercised by default) for Stage 2: does the
     /// *largest* generated split-verifier function (a chunk combiner)
-    /// actually print+compile, on its own, before investing in the full
-    /// interleaved driver?
+    /// actually print+compile, together with its required split pieces,
+    /// before investing in the full interleaved driver?
     ///
     /// **History**: `q_and`/`hat`/`r_and` are already array-batched in the
     /// split-weave path (`crates/compiler/volar-weaver/src/vole.rs`), so the
@@ -2874,7 +2847,7 @@ mod tests {
         // docs/interpreter-honest-e2e-zk-plan.md for the full comparison.
         let chunk_size = 1usize;
 
-        let mut biggest: Option<volar_compiler::ir::IrFunction> = None;
+        let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
         weave_vole_verifier_ir_split_with_trace(
             &circuit,
             &types,
@@ -2885,22 +2858,33 @@ mod tests {
             &accum_info,
             chunk_size,
             volar_weaver::vole::DEFAULT_MAX_STMTS_PER_PIECE,
-            |f| {
-                if biggest.as_ref().map(|b| b.params.len()).unwrap_or(0) < f.params.len() {
-                    biggest = Some(f);
-                }
-            },
+            |f| funcs.push(f),
         );
-        let f = biggest.expect("at least one function woven");
+        let f = funcs
+            .iter()
+            .max_by_key(|f| f.params.len())
+            .expect("at least one function woven");
+        let largest_name = f.name.clone();
+        let largest_params = f.params.len();
+        let prefix = largest_name
+            .split("_piece_")
+            .next()
+            .expect("woven function name has a prefix")
+            .to_owned();
+        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs
+            .into_iter()
+            .filter(|candidate| {
+                candidate.name == prefix || candidate.name.starts_with(&format!("{prefix}_piece_"))
+            })
+            .collect();
         eprintln!(
-            "largest function: {} with {} params",
-            f.name,
-            f.params.len()
+            "largest function: {largest_name} with {largest_params} params; local bundle has {} functions",
+            bundle.len()
         );
 
         let module = volar_compiler::ir::IrModule {
             name: "riscv_step".into(),
-            functions: vec![f],
+            functions: bundle,
             structs: vec![],
             enums: vec![],
             traits: vec![],

@@ -56,7 +56,7 @@ use volar_ir::ir::{
     ActionDecl, IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt,
     IRTerminator, IRType, IRTypeId, IRTypes, IRVarId, OracleDecl,
 };
-use volar_ir_common::{Constant, IrType, Type as NativeType};
+use volar_ir_common::{Constant, IrType, PolyCoeffs, Type as NativeType};
 use volar_lir::circuits::{
     StorageEmitter, bc_abs, bc_add, bc_and_vec, bc_ashr, bc_eq, bc_lshr, bc_mul, bc_ne, bc_neg,
     bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt, bc_sub, bc_udiv, bc_ule,
@@ -283,7 +283,7 @@ impl<P: Clone> VolarIrTarget<P> {
         if a == b {
             return self.bit_const(false);
         }
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(vec![a], 1u8);
         coeffs.insert(vec![b], 1u8);
         self.emit(IRStmt::Poly {
@@ -299,7 +299,7 @@ impl<P: Clone> VolarIrTarget<P> {
         }
         let mut key = vec![a, b];
         key.sort();
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(key, 1u8);
         self.emit(IRStmt::Poly {
             ty: self.bit_tid,
@@ -309,7 +309,7 @@ impl<P: Clone> VolarIrTarget<P> {
     }
 
     fn not_bit(&mut self, a: IRVarId) -> IRVarId {
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(vec![a], 1u8);
         self.emit(IRStmt::Poly {
             ty: self.bit_tid,
@@ -336,7 +336,7 @@ impl<P: Clone> VolarIrTarget<P> {
     /// Used as the carry output of a full adder and as the borrow output of a
     /// full subtractor (with one input negated).
     fn carry_bit(&mut self, a: IRVarId, b: IRVarId, c: IRVarId) -> IRVarId {
-        let mut coeffs = BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         let mut ab = vec![a, b];
         ab.sort();
         let mut ac = vec![a, c];
@@ -897,11 +897,7 @@ impl<P: Clone> BitCircuitBuilder for VolarIrTarget<P> {
         self.bit_const(val)
     }
 
-    fn bc_poly(
-        &mut self,
-        coeffs: std::collections::BTreeMap<Vec<IRVarId>, u8>,
-        constant: u128,
-    ) -> IRVarId {
+    fn bc_poly(&mut self, coeffs: PolyCoeffs<IRVarId>, constant: u128) -> IRVarId {
         self.emit(IRStmt::Poly {
             ty: self.bit_tid,
             coeffs,
@@ -2274,7 +2270,7 @@ mod tests {
                 // stmt 0: NOT(param_0)
                 volar_ir_common::Node::new(
                     {
-                        let mut coeffs = std::collections::BTreeMap::new();
+                        let mut coeffs = PolyCoeffs::new();
                         coeffs.insert(std::vec![IRVarId(0)], 1u8);
                         IRStmt::Poly {
                             ty: bit_tid,

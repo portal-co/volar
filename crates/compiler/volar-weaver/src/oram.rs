@@ -45,7 +45,7 @@ use volar_compiler::linkage::LinkedSpec;
 use volar_ir::ir::{
     ActionDecl, Constant, IRBlock, IRBlocks, IRBlockTargetId, IRStmt, IRTerminator,
     IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId, IRBranchTarget};
-use volar_ir_common::Node;
+use volar_ir_common::{Node, PolyCoeffs};
 use volar_side::SideId;
 
 use crate::fhe::FheActionConfig;
@@ -904,7 +904,7 @@ fn remap_stmt(stmt: &IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
             dst_ty: *dst_ty,
         },
         IRStmt::Poly { ty, coeffs, constant } => {
-            let new_coeffs = coeffs
+            let new_coeffs: PolyCoeffs<IRVarId> = coeffs
                 .iter()
                 .map(|(vars, coeff)| {
                     let new_vars: Vec<IRVarId> = vars.iter().map(|v| rv(v)).collect();

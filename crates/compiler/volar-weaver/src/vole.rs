@@ -55,6 +55,7 @@ use volar_ir::ir::{
     IRType as CircuitIrType, IRTypeId as CirTyId, IRTypes as CirTypes,
     IRVarId as CirVar, PrimType, PreInitSegment, Stmt, StorageId, IRBranchTarget};
 use volar_ir::public::PublicSet;
+use volar_ir_common::PolyCoeffs;
 use volar_ir_passes::lower_to_circuit::lower_to_circuit;
 pub use volar_ir_passes::lower_to_circuit::LoweringMode;
 use volar_discipline::{Tagged, Zk, Transparent};
@@ -3672,7 +3673,7 @@ impl<'a> VoleIrCtx<'a> {
     fn emit_poly_lane(
         &mut self,
         out_name: &str,
-        coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>,
+        coeffs: &PolyCoeffs<CirVar>,
         const_bit: bool,
         lane: usize,
     ) {
@@ -3758,7 +3759,7 @@ impl<'a> VoleIrCtx<'a> {
     fn emit_poly(
         &mut self,
         out_name: &str,
-        coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>,
+        coeffs: &PolyCoeffs<CirVar>,
         constant: &volar_ir::ir::Constant,
         width: usize,
     ) -> WireRepr {
@@ -3781,7 +3782,7 @@ impl<'a> VoleIrCtx<'a> {
     fn emit_poly_unrolled(
         &mut self,
         out_name: &str,
-        coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>,
+        coeffs: &PolyCoeffs<CirVar>,
         constant: &volar_ir::ir::Constant,
         width: usize,
     ) -> WireRepr {
@@ -3809,7 +3810,7 @@ impl<'a> VoleIrCtx<'a> {
     /// `docs/agent-context/boolar-ir-conflicts.md`, conflict #3, for the
     /// rationale for this deliberate, documented scope limit rather than a
     /// silent one).
-    fn poly_wide_supported(&self, coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>) -> bool {
+    fn poly_wide_supported(&self, coeffs: &PolyCoeffs<CirVar>) -> bool {
         coeffs.keys().all(|mono| mono.len() <= 2)
     }
 
@@ -3837,7 +3838,7 @@ impl<'a> VoleIrCtx<'a> {
     fn emit_poly_wide(
         &mut self,
         out_name: &str,
-        coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>,
+        coeffs: &PolyCoeffs<CirVar>,
         constant: &volar_ir::ir::Constant,
         width: usize,
     ) -> WireRepr {
@@ -5668,6 +5669,12 @@ pub fn weave_vole_prover_ir_split(
                     let ty = ctx.slot_type(&CirVar(v), &vope_type());
                     let is_scalar = !matches!(ty, IrType::Array { .. });
                     if is_scalar && all_extra_in_vars.contains(&v) {
+                        if pool_slot.contains_key(&v) {
+                            // The first producer owns the pool slot; later
+                            // pass-through pieces reuse its mapping.
+                            piece_out_types.insert(v, ty);
+                            continue;
+                        }
                         let slot = pool_slot.len();
                         pool_slot.insert(v, slot);
                         let slot_str = slot.to_string();
@@ -7121,6 +7128,12 @@ pub fn weave_vole_qsim_ir_split(
                     let ty = ctx.slot_type(&CirVar(v), &q_type());
                     let is_scalar = !matches!(ty, IrType::Array { .. });
                     if is_scalar && all_extra_in_vars.contains(&v) {
+                        if pool_slot.contains_key(&v) {
+                            // The first producer owns the pool slot; later
+                            // pass-through pieces reuse its mapping.
+                            piece_out_types.insert(v, ty);
+                            continue;
+                        }
                         let slot = pool_slot.len();
                         pool_slot.insert(v, slot);
                         let slot_str = slot.to_string();
@@ -8218,6 +8231,12 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                     let ty = ctx.slot_type(&CirVar(v), &q_type());
                     let is_scalar = !matches!(ty, IrType::Array { .. });
                     if is_scalar && all_extra_in_vars.contains(&v) {
+                        if pool_slot.contains_key(&v) {
+                            // The first producer owns the pool slot; later
+                            // pass-through pieces reuse its mapping.
+                            piece_out_types.insert(v, ty);
+                            continue;
+                        }
                         let slot = pool_slot.len();
                         pool_slot.insert(v, slot);
                         let slot_str = slot.to_string();
@@ -9853,7 +9872,7 @@ mod tests {
     fn build_ir_and_circuit() -> (IRBlocks, CirTypes) {
         let mut types = CirTypes::new();
         let bit = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
-        let mut coeffs = alloc::collections::BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(std::vec![CirVar(0), CirVar(1)], 1u8);
         let block = CirBlock {
             params: std::vec![bit, bit],
@@ -10064,7 +10083,7 @@ mod tests {
         // Poly-based AND gate below, not from storage.
         let mut types = CirTypes::new();
         let bit = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
-        let mut coeffs = alloc::collections::BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(std::vec![CirVar(0), CirVar(1)], 1u8);
         let block = CirBlock {
             params: std::vec![bit, bit, bit], // value, addr, and-operand
@@ -10119,7 +10138,7 @@ mod tests {
     fn build_ir_wide_and_circuit() -> (IRBlocks, CirTypes) {
         let mut types = CirTypes::new();
         let byte = types.intern(CircuitIrType::Primitive(PrimTy::_8));
-        let mut coeffs = alloc::collections::BTreeMap::new();
+        let mut coeffs = PolyCoeffs::new();
         coeffs.insert(std::vec![CirVar(0), CirVar(1)], 1u8);
         let block = CirBlock {
             params: std::vec![byte, byte],
@@ -10332,9 +10351,9 @@ mod tests {
     fn build_ir_two_block_and_storage() -> (IRBlocks, CirTypes) {
         let mut types = CirTypes::new();
         let bit = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
-        let mut coeffs0 = alloc::collections::BTreeMap::new();
+        let mut coeffs0 = PolyCoeffs::new();
         coeffs0.insert(std::vec![CirVar(0), CirVar(3)], 1u8); // a AND (storage read)
-        let mut coeffs1 = alloc::collections::BTreeMap::new();
+        let mut coeffs1 = PolyCoeffs::new();
         coeffs1.insert(std::vec![CirVar(0), CirVar(1)], 1u8); // x AND y
         let blocks = IRBlocks::new(std::vec![
             CirBlock {

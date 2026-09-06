@@ -286,7 +286,8 @@ pub(crate) mod tests {
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         assert_eq!(inputs.len(), num_params);
 
-        for step in 0..3 {
+        let mut terminated = false;
+        for step in 0..64 {
             let outputs = eval_ir_circuit_step(
                 &circuit.blocks[0],
                 &types,
@@ -304,7 +305,12 @@ pub(crate) mod tests {
                 "step {step}: output widths must match [done] ++ param_widths, not silently narrow"
             );
             inputs = outputs[1..].to_vec();
+            if outputs[0][0] {
+                terminated = true;
+                break;
+            }
         }
+        assert!(terminated, "probe must eventually return its termination flag");
 
         // The real committed byte (storage 33, address 0) must increment
         // 0 -> 1 -> 2 -> 3 exactly as `mem_probe_wat_matches_expected_via_wasmtime`
