@@ -12,10 +12,10 @@ use alloc::string::String;
 use std::string::String;
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
+use std::{boxed::Box, collections::{BTreeMap, BTreeSet}, format, string::ToString, vec, vec::Vec};
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
+use alloc::{boxed::Box, collections::{BTreeMap, BTreeSet}, format, string::ToString, vec, vec::Vec};
 
 /// Wrap a freshly-built expression kind with empty provenance/side — dyn
 /// lowering doesn't yet thread real per-value provenance through (see
@@ -87,6 +87,11 @@ pub struct LoweringContext {
     /// IrPath-keyed leading length params per function/static method after lowering.
     /// Key = module_path + fn_name. Used to inject forwarded length args at call sites.
     pub fn_length_params: BTreeMap<Vec<String>, Vec<String>>,
+    /// Source struct name to collision-free lowered struct name.
+    ///
+    /// A generic `Foo` normally becomes `FooDyn`; if the source already
+    /// declares a concrete `FooDyn`, use `FooLoweredDyn` instead.
+    pub lowered_struct_names: BTreeMap<String, String>,
 }
 
 impl LoweringContext {
@@ -117,6 +122,19 @@ impl LoweringContext {
             .iter()
             .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(bare_name))
             .map(|(_, v)| v)
+    }
+
+    fn lowered_struct_kind(&self, kind: &StructKind) -> StructKind {
+        let source = kind.to_string();
+        let lowered = self.lowered_struct_names.get(&source).unwrap_or(&source);
+        StructKind::from_str(lowered)
+    }
+
+    fn lowered_struct_name(&self, source: &str) -> String {
+        self.lowered_struct_names
+            .get(source)
+            .cloned()
+            .unwrap_or_else(|| source.to_string())
     }
 }
 
@@ -224,6 +242,34 @@ impl LoweringContext {
             struct_info.insert(item_irpath(&s.module_path, &s.kind.to_string()), info);
         }
 
+        // Pick collision-free names before lowering.  Static `Foo<N>` lowers
+        // to `FooDyn`, but some specs already use that name for a separate
+        // dynamic representation.
+        let mut used_names: BTreeSet<String> = module
+            .structs
+            .iter()
+            .map(|s| s.kind.to_string())
+            .collect();
+        let mut lowered_struct_names = BTreeMap::new();
+        for s in &module.structs {
+            let source = s.kind.to_string();
+            let info = struct_info.get(&item_irpath(&s.module_path, &source)).unwrap();
+            if info.length_witnesses.is_empty() && info.type_params.is_empty() {
+                continue;
+            }
+            let mut lowered = format!("{}Dyn", source);
+            if used_names.contains(&lowered) {
+                lowered = format!("{}LoweredDyn", source);
+            }
+            let mut suffix = 2usize;
+            while used_names.contains(&lowered) {
+                lowered = format!("{}LoweredDyn{}", source, suffix);
+                suffix += 1;
+            }
+            used_names.insert(lowered.clone());
+            lowered_struct_names.insert(source, lowered);
+        }
+
         // Pass 2: Determine which structs need phantom data
         for s in &module.structs {
             let kind_str = s.kind.to_string();
@@ -313,6 +359,7 @@ impl LoweringContext {
             struct_info,
             length_aliases,
             fn_length_params,
+            lowered_struct_names,
         }
     }
 }
@@ -642,7 +689,7 @@ fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {
     }
 
     IrStruct {
-        kind: StructKind::from_str(&format!("{}Dyn", s.kind)),
+        kind: ctx.lowered_struct_kind(&s.kind),
         module_path: s.module_path.clone(),
         generics,
         fields,
@@ -1009,7 +1056,7 @@ fn lower_type_dyn_inner(
                 if info.length_witnesses.is_empty() && info.type_params.is_empty() {
                     kind.clone()
                 } else {
-                    StructKind::from_str(&format!("{}Dyn", kind))
+                    ctx.lowered_struct_kind(kind)
                 }
             } else {
                 // Not in struct_info → external/primitive type, keep original name.
@@ -1435,7 +1482,7 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
                 .unwrap_or(false);
             let (new_kind, needs_rest) = if has_generics {
                 // For structs with generics, we add witness fields, so always use ..
-                (StructKind::from_str(&format!("{}Dyn", kind)), true)
+                (ctx.lowered_struct_kind(kind), true)
             } else if kind_str == "Self" {
                 (kind.clone(), true)
             } else {
@@ -1457,7 +1504,7 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
                 .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
                 .unwrap_or(false);
             let new_kind = if has_generics {
-                StructKind::from_str(&format!("{}Dyn", kind))
+                ctx.lowered_struct_kind(kind)
             } else {
                 kind.clone()
             };
@@ -1851,7 +1898,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     let has_generics =
                         !info.length_witnesses.is_empty() || !info.type_params.is_empty();
                     if has_generics {
-                        let dyn_name = format!("{}Dyn", name);
+                        let dyn_name = ctx.lowered_struct_name(name);
                         match &mut func.kind {
                             IrExprKind::Path { segments, .. } => {
                                 if let Some(last) = segments.last_mut() {
@@ -1894,7 +1941,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             ) {
                 kind.clone()
             } else if has_generics {
-                StructKind::from_str(&format!("{}Dyn", kind))
+                ctx.lowered_struct_kind(kind)
             } else {
                 kind.clone()
             };
@@ -2841,6 +2888,7 @@ mod tests {
             struct_info: BTreeMap::new(),
             length_aliases: Vec::new(),
             fn_length_params: BTreeMap::new(),
+            lowered_struct_names: BTreeMap::new(),
         }
     }
 

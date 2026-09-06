@@ -1,11 +1,26 @@
 {
     "name": "@portal-solutions/volar-runtime",
-    "zshy": "index.ts",
+    "version": "0.1.0",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.cts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "engines": {
+        "node": ">=20"
+    },
+    "zshy": "src/index.ts",
     "type": "module",
     "scripts": {
         "generate": "cd ../.. && cargo generate-ts",
-        "build": "npx zshy -c ../../tsconfig.json",
-        "typecheck": "./scripts/typecheck-strict.sh",
-        "typecheck:count": "./scripts/typecheck-strict.sh --count"
-    }
+        "build": "npx zshy --project ../../tsconfig.json"
+    },
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.cts"
 }
