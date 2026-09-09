@@ -60,6 +60,10 @@ use volar_spec::SpecRng as _;
 use volar_spec::vole::VoleArray;
 
 pub mod ot;
+#[cfg(feature = "mlkem")]
+pub mod ot_mlkem;
+#[cfg(feature = "std")]
+pub mod tcp;
 
 /// Which set a circuit input bit belongs to (the mutual-privacy partition).
 ///

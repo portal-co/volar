@@ -135,6 +135,18 @@ impl<N: VoleArray<u8>> CoSender<N> {
         )
     }
 
+    /// `setup` over a trait-object RNG (for the TCP transport, which erases the
+    /// concrete RNG type).
+    pub fn setup_dyn(rng: &mut dyn SpecRng) -> (Self, Vec<u8>) {
+        struct D<'a>(&'a mut dyn SpecRng);
+        impl SpecRng for D<'_> {
+            fn next_u32(&mut self) -> u32 {
+                self.0.next_u32()
+            }
+        }
+        Self::setup(&mut D(rng))
+    }
+
     /// Step 3: consume `R`, mask the two labels, emit `(e0||e1)`.
     pub fn finish(self, r_bytes: &[u8], labels: [&Array<u8, N>; 2]) -> Result<Vec<u8>, OtError> {
         let sender = self.state.ok_or(OtError)?;
@@ -171,6 +183,21 @@ impl<N: VoleArray<u8>> CoReceiver<N> {
             },
             encode_point(&msg.r),
         ))
+    }
+
+    /// `setup` over a trait-object RNG (for the TCP transport).
+    pub fn setup_dyn(
+        rng: &mut dyn SpecRng,
+        s_bytes: &[u8],
+        c: bool,
+    ) -> Result<(Self, Vec<u8>), OtError> {
+        struct D<'a>(&'a mut dyn SpecRng);
+        impl SpecRng for D<'_> {
+            fn next_u32(&mut self) -> u32 {
+                self.0.next_u32()
+            }
+        }
+        Self::setup(&mut D(rng), s_bytes, c)
     }
 
     /// Step 4: consume `(e0||e1)`, unmask and return the chosen label.
