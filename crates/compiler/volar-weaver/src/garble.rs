@@ -153,6 +153,44 @@ fn garble_struct<P: Clone>(base_expr: IrExpr<P>) -> IrExpr<P> {
 }
 
 // ============================================================================
+// Garbled-action configuration (GRAM sub-protocol gadgets)
+// ============================================================================
+
+/// How the garble weaver should lower a boolar `ActionCall` for a named
+/// action — the GRAM sub-protocol gadget boundary (see `MPC_PLAN.md`
+/// workstream A).
+///
+/// The boolar `ActionCall { name, guard, args, fallback, num_bits }` produces
+/// a call-handle var whose bits are projected with `ActionBit { call, bit }`.
+/// For an ORAM access these actions are `begin` / `process` / `evict`.
+///
+/// This is the garbled-circuit mirror of the FHE weaver's `FheActionConfig`,
+/// but with a GC-specific output mode: an action result bit is either
+/// **cleartext** (the evaluator decodes it and learns the value — used for
+/// data-independent values like a Path-ORAM leaf index) or **re-garbled**
+/// (the host re-encodes it to a fresh label so the evaluator gets back a
+/// label it cannot read).
+#[derive(Clone, Debug)]
+pub struct GramActionConfig {
+    /// Per-output-bit mode. `output_cleartext[i] = true` means result bit `i`
+    /// is returned to the evaluator as cleartext; `false` means it is
+    /// re-garbled to a fresh label. An empty vec means *all* cleartext — the
+    /// increment-1 cleartext-read gadget (begin / tree path read).
+    pub output_cleartext: Vec<bool>,
+}
+
+impl GramActionConfig {
+    /// `true` if every output bit is cleartext (the increment-1 gadget).
+    pub fn all_cleartext(&self) -> bool {
+        self.output_cleartext.iter().all(|&c| c)
+    }
+    /// `true` if output bit `i` is cleartext. Empty vec ⇒ all cleartext.
+    pub fn is_output_cleartext(&self, i: usize) -> bool {
+        self.output_cleartext.is_empty() || self.output_cleartext.get(i).copied().unwrap_or(false)
+    }
+}
+
+// ============================================================================
 // Evaluator weaving pass
 // ============================================================================
 
