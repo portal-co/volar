@@ -1,0 +1,27 @@
+[package]
+name = "volar-vc"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "vc-spec two-party verifiable-compute embedder over Volar's garbled-circuit MPC"
+repository.workspace = true
+
+[dependencies]
+volar-mpc.workspace = true
+volar-spec = { git = "https://github.com/portal-co/volar.git" }
+volar-ir.workspace = true
+volar-side.workspace = true
+digest.workspace = true
+hybrid-array.workspace = true
+
+[dev-dependencies]
+volar-ir-common.workspace = true
+volar-side.workspace = true
+sha2 = { version = "0.11.0-rc.0", default-features = false }
+typenum = { version = "1.17", default-features = false }
+volar-ir-passes.workspace = true
+
+[features]
+default = []
+# std-only helpers (e.g. cross-process embedding over framed TCP).
+std = ["volar-mpc/std"]

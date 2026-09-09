@@ -17,6 +17,7 @@ members = [
     "crates/compiler/volar-build",
     "crates/channel/volar-channel",
     "crates/mpc/volar-mpc",
+    "crates/vc/volar-vc",
     "crates/oram/volar-oram",
     "crates/oram/volar-oram-core",
     "crates/macros/volar-macros",
@@ -48,6 +49,7 @@ default-members = [
     "crates/compiler/volar-build",
     "crates/channel/volar-channel",
     "crates/mpc/volar-mpc",
+    "crates/vc/volar-vc",
     "crates/oram/volar-oram",
     "crates/oram/volar-oram-core",
     "crates/macros/volar-macros",
@@ -64,6 +66,7 @@ repository = "https://github.com/portal-co/volar.git"
 volar-discipline = {path="crates/ir/volar-discipline", version = "0.1.0"}
 volar-channel = {path="crates/channel/volar-channel", version = "0.1.0"}
 volar-mpc = {path="crates/mpc/volar-mpc", version = "0.1.0"}
+volar-vc = {path="crates/vc/volar-vc", version = "0.1.0"}
 volar-oram = {path="crates/oram/volar-oram", version = "0.1.0"}
 volar-oram-core = {path="crates/oram/volar-oram-core", version = "0.1.0"}
 volar-macros = {path="crates/macros/volar-macros", version = "0.1.0"}
