@@ -11,6 +11,7 @@ volar-mpc.workspace = true
 volar-spec = { git = "https://github.com/portal-co/volar.git" }
 volar-ir.workspace = true
 volar-side.workspace = true
+volar-oram.workspace = true
 digest.workspace = true
 hybrid-array.workspace = true
 

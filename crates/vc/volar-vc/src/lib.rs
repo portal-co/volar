@@ -70,9 +70,11 @@
 extern crate alloc;
 
 pub mod embedder;
+pub mod oram_host;
 pub mod partition;
 pub mod schedule;
 
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
+pub use oram_host::{OramHost, OramHostError, OramHostShim};
 pub use partition::partition_from_sides;
 pub use schedule::{ScheduleError, compile_schedule};
