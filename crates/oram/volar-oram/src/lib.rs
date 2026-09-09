@@ -37,6 +37,9 @@ use volar_channel::{Protocol, Yield};
 // Re-export core types so downstream doesn't need to depend on both crates.
 pub use volar_oram_core::{Bucket, OramEntry};
 
+pub mod bit_host;
+pub use bit_host::{OramHost, OramHostError};
+
 // Re-export core helper functions (used by both crates).
 pub use volar_oram_core::{bit_reverse, bits_needed, eviction_target};
 
