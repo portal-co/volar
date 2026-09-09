@@ -39,7 +39,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 
-use volar_side::SideId;
+use volar_side::{SideHandler, SideId};
 
 /// What an MPC-side value is, in the two-party garbled-circuit sense: public
 /// (known to both), garbler-private, or evaluator-private.
@@ -155,6 +155,68 @@ impl MpcSideAssignments {
     }
 }
 
+/// A circuit's input wires partitioned by owner: which wires are public,
+/// which are garbler-private, which are evaluator-private.
+///
+/// This is the weaver-side product that an MPC session layer consumes to
+/// build its per-wire [`InputOwner`](volar_mpc::InputOwner) vector: the three
+/// disjoint wire-index sets, in circuit-input order within each set. Wires
+/// not present in any set are treated as public (the safe default — a wire
+/// with no side assignment carries no private data).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InputPartition {
+    /// Public input wire indices (sorted, deduplicated).
+    pub public: alloc::vec::Vec<u32>,
+    /// Garbler-private input wire indices.
+    pub garbler: alloc::vec::Vec<u32>,
+    /// Evaluator-private input wire indices.
+    pub evaluator: alloc::vec::Vec<u32>,
+}
+
+impl InputPartition {
+    /// The owning set of wire `idx`, defaulting to public for unassigned wires.
+    pub fn owner(&self, idx: u32) -> MpcProtection {
+        if self.garbler.contains(&idx) {
+            MpcProtection::Garbler
+        } else if self.evaluator.contains(&idx) {
+            MpcProtection::Evaluator
+        } else {
+            MpcProtection::Public
+        }
+    }
+
+    /// Total number of partitioned (non-default-public) wires.
+    pub fn private_len(&self) -> usize {
+        self.garbler.len() + self.evaluator.len()
+    }
+}
+
+/// Derive an [`InputPartition`] from side assignments and a handler that
+/// resolves each side to its [`MpcProtection`].
+///
+/// `num_inputs` bounds the partition to the circuit's actual input wires.
+/// Each assigned input wire is bucketed by its resolved protection; wires
+/// with no assignment (or resolving to `Public`) fall into `public`. The
+/// handler is any [`SideHandler`] with `Protection = MpcProtection` —
+/// typically `TableProtection<MpcProtection>` mapping the interned
+/// `public`/`garbler`/`evaluator` side names.
+pub fn partition_inputs<H: SideHandler<Protection = MpcProtection>>(
+    assignments: &MpcSideAssignments,
+    handler: &H,
+    num_inputs: u32,
+) -> InputPartition {
+    let mut part = InputPartition::default();
+    for idx in 0..num_inputs {
+        let side = assignments.input_sides.get(&idx).copied();
+        match handler.protection(side) {
+            MpcProtection::Public => part.public.push(idx),
+            MpcProtection::Garbler => part.garbler.push(idx),
+            MpcProtection::Evaluator => part.evaluator.push(idx),
+        }
+    }
+    part
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +279,48 @@ mod tests {
         assert_eq!(a.input_sides.get(&1), Some(&alice));
         assert_eq!(a.input_sides.get(&2), Some(&bob));
         assert_eq!(a.action_sides.get("rand").and_then(|m| m.get(&0)), Some(&alice));
+    }
+
+    #[test]
+    fn partition_inputs_buckets_by_protection() {
+        use volar_side::TableProtection;
+        let mut table = SideTable::new();
+        let public = table.intern("public");
+        let alice = table.intern("alice"); // garbler
+        let bob = table.intern("bob"); // evaluator
+
+        let handler = TableProtection::new(MpcProtection::Public)
+            .with(alice, MpcProtection::Garbler)
+            .with(bob, MpcProtection::Evaluator);
+
+        // 5 inputs: 0 public(explicit), 1 alice, 2 bob, 3 unassigned, 4 bob.
+        let a = MpcSideAssignments::default()
+            .with_input(0, public)
+            .with_input(1, alice)
+            .with_input(2, bob)
+            .with_input(4, bob);
+
+        let part = partition_inputs(&a, &handler, 5);
+        assert_eq!(part.public, alloc::vec![0, 3]); // explicit public + unassigned
+        assert_eq!(part.garbler, alloc::vec![1]);
+        assert_eq!(part.evaluator, alloc::vec![2, 4]);
+
+        // owner() reflects the buckets; unassigned defaults to public.
+        assert_eq!(part.owner(0), MpcProtection::Public);
+        assert_eq!(part.owner(1), MpcProtection::Garbler);
+        assert_eq!(part.owner(2), MpcProtection::Evaluator);
+        assert_eq!(part.owner(3), MpcProtection::Public);
+        assert_eq!(part.private_len(), 3);
+    }
+
+    #[test]
+    fn partition_inputs_defaults_all_public_when_unassigned() {
+        use volar_side::UniformProtection;
+        let handler = UniformProtection(MpcProtection::Public);
+        let a = MpcSideAssignments::default();
+        let part = partition_inputs(&a, &handler, 3);
+        assert_eq!(part.public, alloc::vec![0, 1, 2]);
+        assert!(part.garbler.is_empty());
+        assert!(part.evaluator.is_empty());
     }
 }

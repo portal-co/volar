@@ -422,3 +422,75 @@ fn mpc_session_lockstep_all_partitions() {
         }
     }
 }
+
+/// InputOwner::from_index_sets builds a correct owner vector and rejects
+/// overlapping or out-of-range sets — the bridge from a compiler-side input
+/// partition to the session layer.
+#[test]
+fn mpc_input_owner_from_index_sets() {
+    // 5 wires: 0,3 public; 1 garbler; 2,4 evaluator.
+    let owners = InputOwner::from_index_sets(
+        5,
+        &[0, 3],
+        &[1],
+        &[2, 4],
+    )
+    .expect("valid partition");
+    assert_eq!(
+        owners,
+        alloc::vec![
+            InputOwner::Public,
+            InputOwner::Garbler,
+            InputOwner::Evaluator,
+            InputOwner::Public,
+            InputOwner::Evaluator,
+        ]
+    );
+
+    // Unassigned wires default to public.
+    let owners = InputOwner::from_index_sets(3, &[], &[1], &[]).expect("valid");
+    assert_eq!(
+        owners,
+        alloc::vec![InputOwner::Public, InputOwner::Garbler, InputOwner::Public]
+    );
+
+    // Overlap between garbler and evaluator is rejected.
+    assert_eq!(
+        InputOwner::from_index_sets(2, &[], &[0], &[0]),
+        Err(MpcError::BadPartition)
+    );
+    // Out-of-range index is rejected.
+    assert_eq!(
+        InputOwner::from_index_sets(2, &[], &[5], &[]),
+        Err(MpcError::BadPartition)
+    );
+}
+
+/// End-to-end: a compiler-side partition (three index sets) flows through
+/// `from_index_sets` into a correct two-party evaluation.
+#[test]
+fn mpc_partition_bridge_end_to_end() {
+    let exec = garble_four_input();
+    let schedule = four_input_schedule();
+    // Compiler-side partition: wire0 public, wire1 garbler, wires 2,3 evaluator.
+    let owners =
+        InputOwner::from_index_sets(4, &[0], &[1], &[2, 3]).expect("partition");
+    for bits in 0u32..16 {
+        let b = [
+            (bits >> 0) & 1 == 1,
+            (bits >> 1) & 1 == 1,
+            (bits >> 2) & 1 == 1,
+            (bits >> 3) & 1 == 1,
+        ];
+        let got = run_local::<N, D, 4, 2>(
+            &exec,
+            &schedule,
+            &owners,
+            &[b[0]],
+            &[b[1]],
+            &[b[2], b[3]],
+        )
+        .expect("honest run");
+        assert_eq!(got, eval_concrete(&schedule, &b), "inputs {b:?}");
+    }
+}

@@ -76,6 +76,47 @@ pub enum InputOwner {
     Evaluator,
 }
 
+impl InputOwner {
+    /// Build a per-wire owner vector from three disjoint wire-index sets
+    /// (public / garbler / evaluator), the shape a compiler-side input
+    /// partition (e.g. `volar_weaver::mpc::InputPartition`) produces.
+    ///
+    /// Wires not present in any set default to `Public`. Returns
+    /// [`MpcError::BadPartition`] if the sets overlap or index a wire
+    /// `>= num_inputs`.
+    pub fn from_index_sets(
+        num_inputs: usize,
+        public: &[u32],
+        garbler: &[u32],
+        evaluator: &[u32],
+    ) -> Result<Vec<InputOwner>, MpcError> {
+        let mut owners = alloc::vec![InputOwner::Public; num_inputs];
+        let in_range = |&i: &u32| (i as usize) < num_inputs;
+        if !public.iter().all(in_range)
+            || !garbler.iter().all(in_range)
+            || !evaluator.iter().all(in_range)
+        {
+            return Err(MpcError::BadPartition);
+        }
+        for &i in public {
+            owners[i as usize] = InputOwner::Public;
+        }
+        for &i in garbler {
+            if owners[i as usize] != InputOwner::Public {
+                return Err(MpcError::BadPartition);
+            }
+            owners[i as usize] = InputOwner::Garbler;
+        }
+        for &i in evaluator {
+            if owners[i as usize] != InputOwner::Public {
+                return Err(MpcError::BadPartition);
+            }
+            owners[i as usize] = InputOwner::Evaluator;
+        }
+        Ok(owners)
+    }
+}
+
 /// Error type for a failed evaluation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MpcError {
