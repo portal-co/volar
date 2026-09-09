@@ -1,0 +1,17 @@
+[package]
+name = "volar-mpc"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Two-party garbled-circuit MPC session layer for Volar (semi-honest)"
+repository.workspace = true
+
+[dependencies]
+volar-channel = { workspace = true }
+volar-spec = { git = "https://github.com/portal-co/volar.git" }
+hybrid-array.workspace = true
+digest.workspace = true
+
+[dev-dependencies]
+sha2 = { version = "0.11.0-rc.0", default-features = false }
+typenum = { version = "1.17", default-features = false }

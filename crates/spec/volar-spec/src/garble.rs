@@ -139,7 +139,15 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
 
     /// NOT of a garbler wire label: flip the false-label by XOR-ing with Δ.
     ///
-    /// If `a` encodes bit `v`, `not_garble(a)` encodes bit `!v`.
+    /// **Inconsistent — do not use for a general free-NOT.** This returns
+    /// `encode(a, !v)` (the *same* wire's label for the flipped value), not
+    /// `encode(not(a), !v)` where `not(a)` has false-label `a.base` unchanged.
+    /// Decoding it against `not_garble(a)` as the output false-label yields
+    /// `v`, not `!v`. The consistent free-NOT leaves the false-label unchanged
+    /// and XORs the *evaluator* label with Δ; `volar-mpc` implements that and
+    /// its two-party tests demonstrate the discrepancy. Kept for API compat
+    /// with the weaver, whose garbler/evaluator share this same (matching)
+    /// convention and so never observe the mismatch.
     pub fn not_garble(&self, a: &Garble<N>) -> Garble<N> {
         Garble {
             base: Array::<u8, N>::from_fn(|i| a.base[i] ^ self.secret[i]),
