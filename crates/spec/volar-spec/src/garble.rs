@@ -250,3 +250,92 @@ impl<N: VoleArray<u8>, const A: usize> EvalSetup<N, A> {
         result.open(&self.output_label)[0] & 1 != 0
     }
 }
+
+// ============================================================================
+// GRAM action gadgets (garbled RAM access sub-protocol)
+// ============================================================================
+//
+// Shared vocabulary for the ORAM `begin` / `process` / `evict` action
+// sub-protocol (see `MPC_PLAN.md` workstream A). Both the volar garble weaver
+// (which emits the host extern call) and the cirrus GRAM interpreter (which
+// executes it against the streaming `Context`) build on these types — keeping
+// them here, in the crate both already share, so there is exactly one
+// definition of the wire-level label operations.
+
+/// How one garbled-action result bit is delivered back to the evaluator.
+///
+/// Mirrors the `GramActionConfig` output mode in the volar weaver: an action
+/// result bit is either **cleartext** (the evaluator decodes it and learns the
+/// value — for data-independent values such as a Path-ORAM leaf index) or
+/// **re-garbled** (the host re-encodes it to a fresh label so the evaluator
+/// gets back a label it cannot read).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GramOutput {
+    /// Decode the result label via its color bit and return the plaintext bit
+    /// to the evaluator. Used for Path-ORAM's data-independent leaf indices.
+    Cleartext,
+    /// Re-encode the result to a fresh label pair so the evaluator receives a
+    /// label it cannot read. Used for bucket data that must stay secret.
+    Regarble,
+}
+
+/// Decode the wire value an evaluator-side label carries, given the wire's
+/// false-label (`base`). This is the color-bit rule `recover_output` uses,
+/// factored out for action args whose label the host must read.
+///
+/// `(label XOR base)[0] & 1` is the wire value because `GlobalSecret::new`
+/// forces `Δ[0] & 1 == 1`. This is the decode the cleartext gadget performs on
+/// each action argument label.
+pub fn gram_decode_label<N: VoleArray<u8>>(label: &Eval<N>, base: &Garble<N>) -> bool {
+    label.open(base)[0] & 1 != 0
+}
+
+/// Re-encode a host-known bit to a fresh evaluator label under `base` — the
+/// garbler's `GlobalSecret::encode`. This is the re-garble step: the host
+/// learns the bit, but the evaluator receives only the label.
+pub fn gram_regarble<N: VoleArray<u8>>(
+    secret: &GlobalSecret<N>,
+    base: &Garble<N>,
+    bit: bool,
+) -> Eval<N> {
+    secret.encode(base, bit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cipher::consts::U16;
+
+    fn det_secret() -> GlobalSecret<U16> {
+        GlobalSecret::new(Array::<u8, U16>::from_fn(|i| (i as u8).wrapping_mul(37) | 1))
+    }
+
+    fn det_garble(seed: u8) -> Garble<U16> {
+        Garble {
+            base: Array::<u8, U16>::from_fn(|i| seed.wrapping_add(i as u8)),
+        }
+    }
+
+    #[test]
+    fn gram_decode_regarble_roundtrip() {
+        let secret = det_secret();
+        for bit in [false, true] {
+            let base = det_garble(0x42);
+            // Garbler encodes the bit; the evaluator-side host decodes it.
+            let label = gram_regarble(&secret, &base, bit);
+            assert_eq!(gram_decode_label(&label, &base), bit, "bit {bit}");
+        }
+    }
+
+    #[test]
+    fn gram_decode_matches_recover_output_convention() {
+        // gram_decode_label must agree with the color-bit rule recover_output
+        // uses (LSB of label-open-with-base).
+        let secret = det_secret();
+        let base = det_garble(0x07);
+        for bit in [false, true] {
+            let label = secret.encode(&base, bit);
+            assert_eq!(gram_decode_label(&label, &base), bit);
+        }
+    }
+}
