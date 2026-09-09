@@ -929,6 +929,272 @@ where
 }
 
 // ============================================================================
+// GRAM garbler (config-carrying)
+// ============================================================================
+
+/// Weave a single-block boolean circuit into a function `{name}_garble` that
+/// computes the garbler's side of a circuit containing GRAM action calls.
+///
+/// Mirrors [`weave_garbler_with_handler`]: the function takes `secret` and
+/// per-input [`Garble`] false-labels, computes each wire's false-label base,
+/// generates the AND-gate tables, and returns `([GarbleTable<N>; A],
+/// Garble<N>)`. The GRAM extension handles `BIrStmt::ActionCall` /
+/// `ActionBit`:
+///
+/// - **`ActionCall { guard, args, .. }`** binds a placeholder handle and
+///   records the call's guard and argument base var names for its bits.
+/// - **`ActionBit { call, bit }`** derives that result wire's false-label
+///   base as `Garble::action_result_base::<D>(guard_base, arg_bases, bit)` —
+///   the *same* deterministic derivation the evaluator-side host shim uses
+///   for its `base_for` supply. Because both sides compute the base as a
+///   pure function of the (already-tracked) guard/arg bases, the host's
+///   re-garbled label and the garbler's downstream AND tables agree with no
+///   extra communication.
+///
+/// The garbler does *not* execute the action — the ORAM client runs
+/// evaluator-side (the `OramHost` / `GramOramHost`). The garbler only
+/// produces the result-wire base supply that pins the re-garble target.
+///
+/// `configs` maps action name → [`GramActionConfig`]; an action not present
+/// is a panic (mirrors the evaluator side).
+///
+/// # Panics
+/// Panics if `circuit` does not satisfy `is_circuit()`, or on an
+/// unconfigured action.
+pub fn weave_garbler_with_gram<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    handler: &H,
+    configs: &[(&str, GramActionConfig)],
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+    H::Output: Default,
+{
+    assert!(
+        circuit.is_circuit(),
+        "weave_garbler_with_gram: circuit must satisfy is_circuit() (single block with Return terminator)"
+    );
+
+    let block = &circuit.blocks[0];
+    let num_params = block.params as usize;
+    let expanded = expand_ors(block);
+
+    let mut var_names = alloc::collections::BTreeMap::<u32, String>::new();
+    for i in 0..num_params {
+        var_names.insert(i as u32, format!("input_{}", i));
+    }
+
+    let mut params: Vec<IrParam> = Vec::new();
+    params.push(IrParam {
+        name: "secret".into(),
+        ty: crate::ref_to(global_secret_type()),
+    });
+    for i in 0..num_params {
+        params.push(IrParam {
+            name: format!("input_{}", i),
+            ty: crate::ref_to(garble_type()),
+        });
+    }
+
+    let and_count = expanded
+        .iter()
+        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
+        .count();
+
+    let ret_type = IrType::Tuple(vec![
+        IrType::Array {
+            kind: volar_compiler::ir::ArrayKind::FixedArray,
+            elem: Box::new(garble_table_type()),
+            len: volar_compiler::ir::ArrayLength::Const(and_count),
+        },
+        garble_type(),
+    ]);
+
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut table_counter: usize = 0;
+    let mut table_names: Vec<String> = Vec::new();
+    // ActionCall handle var → (guard base var, arg base vars). The garbler
+    // binds no wire for the call itself; ActionBit derives each bit's base.
+    let mut action_bases: alloc::collections::BTreeMap<u32, (String, Vec<String>)> =
+        alloc::collections::BTreeMap::new();
+
+    for (result_id, stmt, prov) in &expanded {
+        let let_name = format!("wire_{}", result_id.0);
+        let q = handler.map(prov);
+
+        let garble_expr = match stmt {
+            BIrStmt::Zero | BIrStmt::One => garble_struct(array_default()),
+
+            BIrStmt::Xor(a, b) => {
+                let name_a = var_names[&a.0].clone();
+                let name_b = var_names[&b.0].clone();
+                garble_struct(array_from_fn(
+                    "j",
+                    ir_expr(IrExprKind::Binary {
+                        op: SpecBinOp::BitXor,
+                        left: Box::new(base_index(&name_a, "j")),
+                        right: Box::new(base_index(&name_b, "j")),
+                    }),
+                ))
+            }
+
+            BIrStmt::Not(a) => {
+                let name_a = var_names[&a.0].clone();
+                garble_struct(array_from_fn(
+                    "j",
+                    ir_expr(IrExprKind::Binary {
+                        op: SpecBinOp::BitXor,
+                        left: Box::new(base_index(&name_a, "j")),
+                        right: Box::new(ir_expr(IrExprKind::Index {
+                            base: Box::new(ir_expr(IrExprKind::MethodCall {
+                                receiver: Box::new(var("secret")),
+                                method: MethodKind::Other("secret".into()),
+                                type_args: vec![],
+                                args: vec![],
+                            })),
+                            index: Box::new(var("j")),
+                        })),
+                    }),
+                ))
+            }
+
+            BIrStmt::And(a, b) => {
+                let name_a = var_names[&a.0].clone();
+                let name_b = var_names[&b.0].clone();
+                let table_var = format!("table_{}", table_counter);
+                table_counter += 1;
+                table_names.push(table_var.clone());
+
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
+                    pattern: IrPattern::ident(&table_var),
+                    ty: None,
+                    init: Some(ir_expr(IrExprKind::MethodCall {
+                        receiver: Box::new(var("secret")),
+                        method: MethodKind::Other("gen_and_table".into()),
+                        type_args: vec![IrType::TypeParam("D".into())],
+                        args: vec![
+                            ref_expr(clone_expr(var(&name_a))),
+                            ref_expr(clone_expr(var(&name_b))),
+                        ],
+                    })),
+                }, q.clone()));
+
+                ir_expr(IrExprKind::MethodCall {
+                    receiver: Box::new(var(&name_a)),
+                    method: MethodKind::Other("and_result".into()),
+                    type_args: vec![IrType::TypeParam("D".into())],
+                    args: vec![ref_expr(var(&name_b))],
+                })
+            }
+
+            // GRAM action: record the guard + arg base var names for its
+            // result bits; bind a unit placeholder for the call handle.
+            BIrStmt::ActionCall {
+                name: action_name,
+                guard,
+                args,
+                fallback: _,
+                num_bits,
+            } => {
+                let _cfg = configs
+                    .iter()
+                    .find(|(n, _)| n == action_name)
+                    .map(|(_, c)| c)
+                    .unwrap_or_else(|| {
+                        panic!("weave_garbler_with_gram: unconfigured action '{action_name}'")
+                    });
+                let guard_name = var_names[&guard.0].clone();
+                let arg_names: Vec<String> =
+                    args.iter().map(|a| var_names[&a.0].clone()).collect();
+                action_bases.insert(result_id.0, (guard_name, arg_names));
+                // The call handle binds a unit value; its result bits are
+                // derived by ActionBit.
+                ir_expr(IrExprKind::Tuple(vec![]))
+            }
+
+            // GRAM action bit: derive this result wire's false-label base
+            // from the call's guard/arg bases (the same derivation the
+            // evaluator-side shim uses for base_for).
+            BIrStmt::ActionBit { call, bit } => {
+                let (guard_name, arg_names) = action_bases
+                    .get(&call.0)
+                    .unwrap_or_else(|| {
+                        panic!("weave_garbler_with_gram: ActionBit references non-action call")
+                    })
+                    .clone();
+                let args_array = ir_expr(IrExprKind::FixedArray(
+                    arg_names
+                        .iter()
+                        .map(|n| ref_expr(var(n)))
+                        .collect(),
+                ));
+                // guard.action_result_base::<D>(&[&arg...], bit) -> Garble<N>
+                ir_expr(IrExprKind::MethodCall {
+                    receiver: Box::new(var(&guard_name)),
+                    method: MethodKind::Other("action_result_base".into()),
+                    type_args: vec![IrType::TypeParam("D".into())],
+                    args: vec![
+                        ref_expr(args_array),
+                        ir_expr(IrExprKind::Lit(IrLit::Int(*bit as i128))),
+                    ],
+                })
+            }
+
+            BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+            BIrStmt::OracleCall { .. }
+            | BIrStmt::OracleBit { .. }
+            | BIrStmt::Rng { .. }
+            | BIrStmt::StorageRead { .. }
+            | BIrStmt::StorageWrite { .. } => {
+                unimplemented!("garble weaver: extended BIrStmt variants not supported")
+            }
+            _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
+        };
+
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
+            pattern: IrPattern::ident(&let_name),
+            ty: None,
+            init: Some(garble_expr),
+        }, q));
+        var_names.insert(result_id.0, let_name);
+    }
+
+    let (output_garble_expr, _) = build_return(block, &var_names, garble_type());
+    let tables_expr = ir_expr(IrExprKind::FixedArray(table_names.iter().map(|t| var(t)).collect()));
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![tables_expr, output_garble_expr]));
+
+    let func = IrFunction { no_inline: false,
+        name: format!("{}_garble", name),
+        module_path: vec![],
+        generics: generic_params(),
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let module = IrModule {
+        name: "weaved_garbler".into(),
+        functions: vec![func],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+
+        consts: vec![],
+    };
+    Tagged::seal(module)
+}
+
+// ============================================================================
 // GarbledCircuit weaving pass
 // ============================================================================
 
@@ -1570,6 +1836,24 @@ mod tests {
         let module = weave_evaluator_with_gram(&circuit, "gram_eval_mx", &crate::NoProvenance, &configs).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "gram_evaluator_mixed");
+    }
+
+    #[test]
+    fn test_weave_garbler_with_gram_compiles() {
+        let circuit = build_action_circuit();
+        let configs = [("begin", GramActionConfig { output_cleartext: vec![] })];
+        let module = weave_garbler_with_gram(&circuit, "gram_gb", &crate::NoProvenance, &configs).into_inner();
+        let code = print_weaved_module(&module, false);
+        // The garbler derives the action-result base via action_result_base.
+        assert!(code.contains("action_result_base"), "expected action_result_base:\n{}", code);
+        run_compile_check(&code, "gram_garbler");
+    }
+
+    #[test]
+    #[should_panic(expected = "unconfigured action")]
+    fn test_weave_garbler_with_gram_unconfigured_panics() {
+        let circuit = build_action_circuit();
+        let _ = weave_garbler_with_gram(&circuit, "gram_gb", &crate::NoProvenance, &[]).into_inner();
     }
 
     #[test]

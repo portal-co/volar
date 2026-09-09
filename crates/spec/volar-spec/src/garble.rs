@@ -44,6 +44,36 @@ impl<N: VoleArray<u8>> Garble<N> {
         }
     }
 
+    /// Derive the false-label base for one bit of a GRAM action call's result,
+    /// deterministically from the call's guard (`self`) and argument wire bases.
+    ///
+    /// Both the garbler (in the woven garbler) and the evaluator-side host
+    /// shim (via its `base_for` supply) must agree on each action-result
+    /// wire's false-label base, because the evaluator binds the host's
+    /// re-garbled label directly as the wire label and downstream half-gate
+    /// AND tables are built against that base. Deriving it as a pure function
+    /// of the wire bases already tracked on both sides —
+    /// `H(0xAC || guard.base || arg_0.base || ... || bit_index)` — gives both
+    /// parties the identical base with no extra communication, mirroring how
+    /// [`Garble::and_result`] derives an AND gate's output base from its
+    /// inputs. The `0xAC` domain separator keeps action-result bases distinct
+    /// from AND-gate bases. Call as `guard.action_result_base::<D>(&args, bit)`.
+    ///
+    /// `bit` is the result-bit index within the call's `num_bits` outputs.
+    pub fn action_result_base<D: Digest>(&self, args: &[&Garble<N>], bit: usize) -> Self {
+        let mut d = D::new();
+        d.update(&[0xACu8]);
+        d.update(&self.base);
+        for arg in args {
+            d.update(&arg.base);
+        }
+        d.update(&(bit as u64).to_le_bytes());
+        let hash = d.finalize();
+        Garble {
+            base: Array::<u8, N>::from_fn(|i| hash[i]),
+        }
+    }
+
     pub fn share(&self, target: &Array<u8, N>) -> Eval<N> {
         Eval {
             target: Array::<u8, N>::from_fn(|i| self.base[i] ^ target[i]),

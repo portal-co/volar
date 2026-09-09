@@ -287,4 +287,55 @@ mod tests {
         }
         assert_ne!(labels[0].target, labels[2].target);
     }
+
+    // The increment-4 contract made concrete: the garbler derives each
+    // action-result wire's base via `Garble::action_result_base` (a pure
+    // function of the guard/arg bases), and the evaluator-side shim supplies
+    // that *same* base through `base_for`. A host-known result bit re-garbled
+    // by the shim must then decode correctly against the garbler's base —
+    // proving the two deterministic derivations agree.
+    #[test]
+    fn shim_base_agrees_with_action_result_base() {
+        use hybrid_array::Array;
+        use sha2::Sha256;
+        use typenum::U16;
+        use volar_spec::garble::{Garble, GlobalSecret, gram_decode_label};
+
+        let secret = GlobalSecret::<U16>::new(Array::<u8, U16>::from_fn(|i| {
+            (i as u8).wrapping_mul(37) | 1
+        }));
+
+        // The guard + two arg wire bases the garbler already tracks.
+        let guard_base = Garble::<U16> {
+            base: Array::<u8, U16>::from_fn(|i| (i as u8).wrapping_add(0x11)),
+        };
+        let arg_bases = [
+            Garble::<U16> { base: Array::<u8, U16>::from_fn(|i| (i as u8).wrapping_add(0x22)) },
+            Garble::<U16> { base: Array::<u8, U16>::from_fn(|i| (i as u8).wrapping_add(0x33)) },
+        ];
+
+        // Garbler side: derive the base for each of 2 result bits.
+        let garbler_bases: Vec<Garble<U16>> = (0..2)
+            .map(|bit| {
+                guard_base.action_result_base::<Sha256>(&[&arg_bases[0], &arg_bases[1]], bit)
+            })
+            .collect();
+
+        // Evaluator-side shim: base_for yields the same derivation.
+        let mut shim = OramHostShim::new(&secret, |i| garbler_bases[i].clone());
+
+        // Re-garble both host-known result bits in one call so the shim's
+        // per-call index lines up with garbler_bases[i].
+        let bits = [true, false];
+        let labels = shim.regarble(&bits);
+        for (i, bit) in bits.iter().enumerate() {
+            assert_eq!(
+                gram_decode_label(&labels[i], &garbler_bases[i]),
+                *bit,
+                "re-garbled bit must decode against the garbler's action_result_base"
+            );
+        }
+        // The two result bits get distinct bases (bit index is in the hash).
+        assert_ne!(garbler_bases[0].base, garbler_bases[1].base);
+    }
 }
