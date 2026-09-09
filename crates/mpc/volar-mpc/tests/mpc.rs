@@ -494,3 +494,83 @@ fn mpc_partition_bridge_end_to_end() {
         assert_eq!(got, eval_concrete(&schedule, &b), "inputs {b:?}");
     }
 }
+
+// ============================================================================
+// Framed-TCP cross-process session test (std feature)
+// ============================================================================
+
+/// mpc_session_tcp: run the garbler and evaluator as two threads over a real
+/// loopback TCP socket, with the OT phase riding the same connection via
+/// `NetOtChannel`. This is the cross-process "test MPC over the network"
+/// path, the framed-TCP analogue of the in-process `run_local` lockstep.
+#[cfg(feature = "std")]
+#[test]
+fn mpc_session_tcp_loopback() {
+    use volar_mpc::ot::SeedRng;
+    use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
+    use volar_mpc::{run_evaluator, run_garbler};
+
+    let exec = garble_four_input();
+    let schedule = four_input_schedule();
+    let partition = [
+        InputOwner::Public,
+        InputOwner::Garbler,
+        InputOwner::Evaluator,
+        InputOwner::Evaluator,
+    ];
+
+    // Loopback listener on an ephemeral port.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = format!("{}", listener.local_addr().unwrap());
+
+    // Move a garbling for the garbler thread (the exec is cheap to rebuild).
+    let g_schedule = schedule.clone();
+    let garbler = std::thread::spawn(move || {
+        let transport = TcpTransport::accept(&listener).expect("accept");
+        // One handle drives session frames; a cloned handle lives in the OT
+        // channel, so the borrow checker sees two distinct objects sharing one
+        // socket.
+        let mut session = transport.try_clone().expect("clone");
+        let mut rng = SeedRng::new(0xA11CE);
+        let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
+        let public = [true];
+        let garbler_bits = [false];
+        run_garbler::<N, D, 4, 2, _>(
+            &exec,
+            &partition,
+            &public,
+            &garbler_bits,
+            &mut session,
+            &mut ot,
+        )
+    });
+
+    // Evaluator on this thread.
+    let e_partition = [
+        InputOwner::Public,
+        InputOwner::Garbler,
+        InputOwner::Evaluator,
+        InputOwner::Evaluator,
+    ];
+    let transport = TcpTransport::connect(&addr).expect("connect");
+    let mut session = transport.try_clone().expect("clone");
+    let mut rng = SeedRng::new(0xB0B);
+    let mut ot = NetOtChannel::new(transport, OtRole::Receiver, &mut rng);
+    let evaluator_bits = [true, false];
+    let eval_out = run_evaluator::<N, D, 4, 2, _>(
+        &g_schedule,
+        &e_partition,
+        &evaluator_bits,
+        &mut session,
+        &mut ot,
+    )
+    .expect("evaluator run");
+
+    let garb_out = garbler.join().expect("garbler join").expect("garbler run");
+
+    // Concrete expected output for inputs [true, false, true, false].
+    let inputs = [true, false, true, false];
+    let want = eval_concrete(&four_input_schedule(), &inputs);
+    assert_eq!(eval_out, want, "evaluator output");
+    assert_eq!(garb_out, want, "both parties agree on the output");
+}

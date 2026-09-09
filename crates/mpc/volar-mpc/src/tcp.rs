@@ -55,6 +55,17 @@ impl TcpTransport {
     pub fn stream(&mut self) -> &mut TcpStream {
         &mut self.stream
     }
+
+    /// Create a second, independent handle to the same connection.
+    ///
+    /// The two handles share the socket; because the session protocol is
+    /// strictly request/response (setup → owned inputs → OTs → verdict) and
+    /// both halves run on one logical role, the handles never race. This lets
+    /// a caller hold one handle as the session [`Transport`] and another
+    /// inside the OT channel, satisfying the borrow checker.
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(Self::new(self.stream.try_clone()?))
+    }
 }
 
 fn read_exact_n(stream: &mut TcpStream, n: usize) -> std::io::Result<Vec<u8>> {
@@ -83,58 +94,71 @@ impl Transport for TcpTransport {
     }
 }
 
-/// An OT byte channel over the same framed TCP stream.
+/// An [`crate::OtChannel`] that runs the Chou–Orlandi OT over a framed
+/// transport, for cross-process sessions.
 ///
-/// The Chou–Orlandi step machines exchange raw byte messages; this adapts a
-/// `&mut TcpTransport` to the send/recv shape they need by framing each OT
-/// message exactly like a session frame. Use one per role; within a single OT
-/// the sender only sends and the receiver sends once then receives, so one
-/// socket carries both directions without confusion (the session's strict
-/// ordering keeps the two roles' OT messages from interleaving mid-OT).
-pub struct OtTcp<'a> {
-    transport: &'a mut TcpTransport,
+/// One `NetOtChannel` is used per role: `Sender` for the garbler, `Receiver`
+/// for the evaluator. Each `send`/`receive` call performs one full 1-of-2 OT
+/// over the transport (setup → reply → masked labels), so the session's
+/// per-input-bit OT loop runs unchanged — only the wire is real.
+///
+/// The channel *owns* the transport and re-exposes it via
+/// [`NetOtChannel::transport`], so the caller drives both the session frames
+/// and the OT phase over the single owned connection without a double borrow.
+pub struct NetOtChannel<'a, T: Transport> {
+    transport: T,
+    role: OtRole,
+    rng: &'a mut dyn volar_spec::SpecRng,
 }
 
-impl<'a> OtTcp<'a> {
-    pub fn new(transport: &'a mut TcpTransport) -> Self {
-        Self { transport }
+/// Which side of the OT this channel plays.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OtRole {
+    /// Garbler: offers the two labels.
+    Sender,
+    /// Evaluator: chooses one label.
+    Receiver,
+}
+
+impl<'a, T: Transport> NetOtChannel<'a, T> {
+    /// Create a channel for `role` over `transport`, drawing OT scheme
+    /// randomness from `rng`.
+    pub fn new(transport: T, role: OtRole, rng: &'a mut dyn volar_spec::SpecRng) -> Self {
+        Self {
+            transport,
+            role,
+            rng,
+        }
+    }
+
+    /// Borrow the underlying transport for driving session frames.
+    pub fn transport(&mut self) -> &mut T {
+        &mut self.transport
+    }
+
+    /// Consume the channel and return the transport.
+    pub fn into_transport(self) -> T {
+        self.transport
     }
 }
 
-impl OtTcp<'_> {
-    /// Send one OT message.
-    pub fn send(&mut self, msg: &[u8]) {
-        self.transport.send(msg);
+impl<N: volar_spec::vole::VoleArray<u8>, T: Transport> crate::OtChannel<N> for NetOtChannel<'_, T> {
+    fn send(&mut self, labels: [&hybrid_array::Array<u8, N>; 2]) {
+        assert_eq!(self.role, OtRole::Sender, "only the garbler sends OTs");
+        let (sender, s_msg) = crate::ot::CoSender::<N>::setup_dyn(self.rng);
+        self.transport.send(&s_msg);
+        let r_msg = self.transport.recv();
+        let frame = sender.finish(&r_msg, labels).expect("OT sender finish");
+        self.transport.send(&frame);
     }
-    /// Receive one OT message.
-    pub fn recv(&mut self) -> Vec<u8> {
-        self.transport.recv()
+
+    fn receive(&mut self, bit: bool) -> hybrid_array::Array<u8, N> {
+        assert_eq!(self.role, OtRole::Receiver, "only the evaluator receives OTs");
+        let s_msg = self.transport.recv();
+        let (receiver, r_msg) =
+            crate::ot::CoReceiver::<N>::setup_dyn(self.rng, &s_msg, bit).expect("OT receiver setup");
+        self.transport.send(&r_msg);
+        let frame = self.transport.recv();
+        receiver.finish(&frame).expect("OT receiver finish")
     }
-}
-
-/// Run one 1-of-2 OT as the sender over TCP.
-pub fn ot_send_tcp<N: volar_spec::vole::VoleArray<u8>>(
-    io: &mut OtTcp,
-    labels: [&hybrid_array::Array<u8, N>; 2],
-    rng: &mut dyn volar_spec::SpecRng,
-) -> Result<(), crate::ot::OtError> {
-    let (sender, s_msg) = crate::ot::CoSender::<N>::setup_dyn(rng);
-    io.send(&s_msg);
-    let r_msg = io.recv();
-    let frame = sender.finish(&r_msg, labels)?;
-    io.send(&frame);
-    Ok(())
-}
-
-/// Run one 1-of-2 OT as the receiver over TCP for choice `bit`.
-pub fn ot_receive_tcp<N: volar_spec::vole::VoleArray<u8>>(
-    io: &mut OtTcp,
-    bit: bool,
-    rng: &mut dyn volar_spec::SpecRng,
-) -> Result<hybrid_array::Array<u8, N>, crate::ot::OtError> {
-    let s_msg = io.recv();
-    let (receiver, r_msg) = crate::ot::CoReceiver::<N>::setup_dyn(rng, &s_msg, bit)?;
-    io.send(&r_msg);
-    let frame = io.recv();
-    receiver.finish(&frame)
 }
