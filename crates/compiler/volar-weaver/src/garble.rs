@@ -224,6 +224,12 @@ impl GramActionConfig {
         self.output_cleartext.iter().all(|&c| c)
     }
     /// `true` if output bit `i` is cleartext. Empty vec ⇒ all cleartext.
+    ///
+    /// Maps to the shared volar-spec [`GramOutput`] vocabulary
+    /// (`volar_spec::garble::GramOutput`): cleartext ⇒ `Cleartext`, re-garbled
+    /// ⇒ `Regarble`. The weaver deliberately does not depend on volar-spec, so
+    /// the conversion lives in the ORAM glue driver (increment 3), which
+    /// consumes this config to drive the host.
     pub fn is_output_cleartext(&self, i: usize) -> bool {
         self.output_cleartext.is_empty() || self.output_cleartext.get(i).copied().unwrap_or(false)
     }
@@ -417,35 +423,33 @@ where
 /// Config-carrying evaluator weaver: like [`weave_evaluator_with_handler`],
 /// but additionally handles `BIrStmt::ActionCall` / `BIrStmt::ActionBit` for
 /// the actions named in `configs` (the GRAM access gadget — `MPC_PLAN.md`
-/// workstream A, increment 1).
+/// workstream A, increments 1–2).
 ///
-/// # Scope (increment 1: the all-cleartext gadget)
+/// # Output modes (increments 1 and 2)
 ///
-/// Only actions whose [`GramActionConfig`] `is_output_cleartext` is `true` for
-/// *every* bit (`all_cleartext()`, which an empty `output_cleartext` satisfies)
-/// are supported. For such an action the evaluator **decodes** each argument
-/// label to its plaintext bit via the color-bit rule (`gram_decode_label`),
-/// calls the host action as a plain `fn(bool, &[bool]) -> Vec<bool>`, and
-/// projects result bits with `ActionBit`. This matches the cirrus
-/// `GramActionHost` cleartext path — the ORAM `begin` leaf index and tree path
-/// read, whose values are data-independent and so safe for the evaluator to
-/// learn.
+/// [`GramActionConfig::output_cleartext`] records, per output bit, whether the
+/// bit is **cleartext** (data-independent — the host may learn it, e.g. a
+/// Path-ORAM leaf index) or **re-garbled** (secret — e.g. bucket data). This
+/// is the *host contract*: the host decodes only the cleartext bits and
+/// re-encodes every result bit to a fresh [`GramOutput::Regarble`] label.
 ///
-/// The host call is emitted as an [`ExternalKind::Action`] extern fn stub named
-/// after the action, resolved at link time against the ORAM host. Each argument
-/// is decoded by the *caller* (this evaluator) via `gram_decode_label`, so the
-/// extern fn takes the action's plaintext bits, not labels: `(guard: bool,
-/// args: &[bool]) -> Vec<bool>`. The `guard` selects real result vs `fallback`
+/// At the **evaluator**, every action result bit flows as an `Eval<N>` label —
+/// the host re-garbles all of them, so the evaluator cannot read any. The
+/// evaluator-side code path is therefore *identical* for cleartext and
+/// re-garbled outputs: decode each arg label via its color bit, call the host
+/// extern `fn(guard, &[bool]) -> Vec<Eval<N>>`, and project result labels with
+/// `ActionBit`. `output_cleartext` does not change the evaluator's dataflow —
+/// it constrains what the host is permitted to learn, and is checked by the
+/// ORAM glue driver / conformance test, not here.
+///
+/// The host call is emitted as an extern fn stub named after the action,
+/// resolved at link time against the ORAM host: `fn(guard: bool, args:
+/// &[bool]) -> Vec<Eval<N>>`. The `guard` selects real result vs `fallback`
 /// in the host; the evaluator passes the decoded guard.
-///
-/// Re-garbled outputs ([`GramOutput::Regarble`]) are **not** yet supported —
-/// they need the host to re-encode to fresh labels (increment 2), which
-/// requires the evaluator to hold the per-output-wire false-labels.
 ///
 /// # Panics
 /// - if the circuit is not `is_circuit()`;
-/// - if an `ActionCall`/`ActionBit` names an action not in `configs`;
-/// - if a configured action is not all-cleartext (increment-2 scope).
+/// - if an `ActionCall`/`ActionBit` names an action not in `configs`.
 pub fn weave_evaluator_with_gram<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
@@ -461,12 +465,6 @@ where
         circuit.is_circuit(),
         "weave_evaluator_with_gram: circuit must satisfy is_circuit()"
     );
-    for (_, cfg) in configs {
-        assert!(
-            cfg.all_cleartext(),
-            "weave_evaluator_with_gram: only all-cleartext actions supported (increment 1)"
-        );
-    }
 
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
@@ -556,9 +554,10 @@ where
                 })
             }
 
-            // Cleartext-read GRAM gadget: decode the guard + arg labels to
-            // plaintext bits, call the host action, bind the returned cleartext
-            // result bits for ActionBit to project.
+            // GRAM action gadget: decode the guard + arg labels to plaintext
+            // bits, call the host action, bind the returned result labels for
+            // ActionBit to project. Every result bit flows as `Eval<N>` — the
+            // host re-garbles all of them regardless of `output_cleartext`.
             BIrStmt::ActionCall {
                 name: action_name,
                 guard,
@@ -566,17 +565,13 @@ where
                 fallback: _,
                 num_bits,
             } => {
-                let cfg = configs
+                let _cfg = configs
                     .iter()
                     .find(|(n, _)| n == action_name)
                     .map(|(_, c)| c)
                     .unwrap_or_else(|| {
                         panic!("weave_evaluator_with_gram: unconfigured action '{action_name}'")
                     });
-                assert!(
-                    cfg.all_cleartext(),
-                    "weave_evaluator_with_gram: action '{action_name}' is not all-cleartext"
-                );
 
                 // Decode the guard label to its color bit (LSB of the label).
                 // For the cleartext-read gadget the guard is data-independent,
@@ -1555,12 +1550,26 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "all-cleartext")]
-    fn test_weave_evaluator_with_gram_rejects_regarble() {
+    fn test_weave_evaluator_with_gram_regarble_mode_compiles() {
         let circuit = build_action_circuit();
-        // Not all-cleartext (bit 0 re-garbled) → increment-2 scope, must panic.
+        // Re-garbled output (bit 0 secret): the evaluator dataflow is identical
+        // — every result bit still flows as an `Eval<N>` label — so this weaves
+        // and compiles. `output_cleartext` constrains the host, not the evaluator.
         let configs = [("begin", GramActionConfig { output_cleartext: vec![false] })];
-        let _ = weave_evaluator_with_gram(&circuit, "gram_eval", &crate::NoProvenance, &configs).into_inner();
+        let module = weave_evaluator_with_gram(&circuit, "gram_eval_rg", &crate::NoProvenance, &configs).into_inner();
+        let code = print_weaved_module(&module, false);
+        assert!(code.contains("begin"), "expected host action stub:\n{}", code);
+        run_compile_check(&code, "gram_evaluator_regarble");
+    }
+
+    #[test]
+    fn test_weave_evaluator_with_gram_mixed_mode_compiles() {
+        let circuit = build_action_circuit();
+        // Mixed mode: bit 0 cleartext, bit 1 re-garbled. Same evaluator path.
+        let configs = [("begin", GramActionConfig { output_cleartext: vec![true, false] })];
+        let module = weave_evaluator_with_gram(&circuit, "gram_eval_mx", &crate::NoProvenance, &configs).into_inner();
+        let code = print_weaved_module(&module, false);
+        run_compile_check(&code, "gram_evaluator_mixed");
     }
 
     #[test]
