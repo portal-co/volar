@@ -80,6 +80,11 @@ fn global_secret_type() -> IrType {
     }
 }
 
+/// Generic params `<N: ArraySize, D: Digest>` (crate-visible for the MPC weavers).
+pub(crate) fn generic_params_pub() -> Vec<IrGenericParam> {
+    generic_params()
+}
+
 /// `GarbledCircuit<N, I, A>` — const-generic params as literal `TypeParam` strings.
 fn garbled_circuit_type(num_inputs: usize, num_and: usize) -> IrType {
     IrType::Struct {
