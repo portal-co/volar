@@ -70,6 +70,7 @@ use volar_ir::{
 pub use volar_provenance::{ProvenanceHandler, NoProvenance, KeepProvenance, MapProvenance};
 
 pub mod garble;
+pub mod mpc;
 pub mod vole;
 pub(crate) mod vole_common;
 pub(crate) mod vole_split;
