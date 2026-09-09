@@ -220,3 +220,162 @@ fn vc_rejects_non_circuit() {
     );
     assert!(matches!(out, VcOutcome::Error(_)), "got {out:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Workstream A: Garbled RAM baseline — storage circuit via the MUX floor,
+// compiled to a schedule and run through the two-party MPC session.
+// ---------------------------------------------------------------------------
+
+use volar_ir::boolar::LaneId;
+use volar_ir_common::StorageId;
+use volar_ir_passes::{StorageToMuxBoolarConfig, storage_to_mux_boolar};
+
+/// Build a storage circuit with parametric (private) inputs, lower storage to
+/// a MUX/demux register file, and return the resulting pure-boolean circuit.
+///
+/// Layout (params = wires 0..1): `data_in` (bit 0) and `addr` (bit 1) are
+/// circuit inputs. The circuit writes `data_in` to cell `addr`, then reads
+/// cell 0 and cell 1, returning `read0 ^ read1`. With 2 cells this is the
+/// smallest memory that exercises both an oblivious write (demux) and an
+/// oblivious read (MUX) through the MPC session.
+fn storage_circuit_mux() -> BIrBlocks {
+    use volar_ir::boolar::BIrPreInitSegment;
+    let storage = StorageId(0);
+    let lane = LaneId(0);
+    let mut block: BIrBlock<()> = BIrBlock {
+        params: 2, // 0 = data_in, 1 = addr
+        stmts: vec![],
+        terminator: BIrTerminator::Jmp(BIrTarget {
+            block: IRBlockTargetId::Return,
+            args: vec![],
+        }),
+    };
+    let mut next = 2u32;
+    let mut push = |s: BIrStmt, b: &mut BIrBlock<()>| {
+        b.stmts.push(Node::new(s, (), None));
+        let id = IRVarId(next);
+        next += 1;
+        id
+    };
+    let data_in = IRVarId(0);
+    let addr = IRVarId(1);
+    // Write data_in to cell addr.
+    push(
+        BIrStmt::StorageWrite {
+            storage,
+            lane,
+            src: data_in,
+            addr: vec![addr],
+        },
+        &mut block,
+    );
+    // Read cell 0 (addr bit = Zero) and cell 1 (addr bit = One).
+    let zero = push(BIrStmt::Zero, &mut block);
+    let one = push(BIrStmt::One, &mut block);
+    let read0 = push(
+        BIrStmt::StorageRead {
+            storage,
+            lane,
+            addr: vec![zero],
+        },
+        &mut block,
+    );
+    let read1 = push(
+        BIrStmt::StorageRead {
+            storage,
+            lane,
+            addr: vec![one],
+        },
+        &mut block,
+    );
+    let out = push(BIrStmt::Xor(read0, read1), &mut block);
+    block.terminator = BIrTerminator::Jmp(BIrTarget {
+        block: IRBlockTargetId::Return,
+        args: vec![out],
+    });
+    let raw: BIrBlocks = BIrBlocks {
+        blocks: vec![block],
+        pre_init: vec![],
+    };
+    // Lower storage to a 2-cell MUX register file (the A3 linear-scan floor).
+    let cfg = StorageToMuxBoolarConfig {
+        storage,
+        lane,
+        num_cells: 2,
+    };
+    let lowered: BIrBlocks =
+        storage_to_mux_boolar(&raw, &cfg).expect("MUX lowering should succeed");
+    assert!(lowered.is_circuit());
+    lowered
+}
+
+/// Concrete reference: write `d` to cell `a` (cells start 0), then read both.
+/// cell0' = (a==0)? d : 0 ; cell1' = (a==1)? d : 0. Output = cell0' ^ cell1'.
+fn storage_concrete(d: bool, a: bool) -> bool {
+    let cell0 = if !a { d } else { false };
+    let cell1 = if a { d } else { false };
+    cell0 ^ cell1
+}
+
+/// Workstream A baseline: a storage circuit lowered through the MUX floor and
+/// run through the two-party MPC session recovers the concrete result for
+/// every input, with `data_in` held as the evaluator's (blind) private bit.
+#[test]
+fn gram_mux_baseline_through_mpc() {
+    let circuit = storage_circuit_mux();
+    // After MUX lowering the circuit is pure boolean gates; compile it.
+    let and_count = circuit
+        .blocks[0]
+        .stmts
+        .iter()
+        .filter(|n| matches!(n.kind, volar_ir::boolar::BIrStmt::And(..)))
+        .count();
+    let num_inputs = circuit.blocks[0].params as usize;
+    assert_eq!(num_inputs, 2);
+
+    // Both inputs private to the evaluator (blind): the whole memory access
+    // pattern is driven by the remote party's data.
+    let partition = [InputOwner::Evaluator, InputOwner::Evaluator];
+
+    for d in [false, true] {
+        for a in [false, true] {
+            let inputs = [d, a];
+            let mut ot = LoopbackOt::<N>::new();
+            let want = storage_concrete(d, a);
+            // Build the embedder with the right const-generic AND count.
+            let out = run_gram(&circuit, and_count, &partition, &inputs, &mut ot);
+            match out {
+                VcOutcome::Value(bits) => assert_eq!(bits[0], want, "d={d} a={a}"),
+                other => panic!("expected Value, got {other:?}"),
+            }
+        }
+    }
+}
+
+/// Helper: garble + evaluate the MUX-lowered storage circuit. AND count is
+/// circuit-dependent; this test's circuit has a fixed shape so we monomorphize
+/// on the observed count.
+fn run_gram(
+    circuit: &BIrBlocks,
+    and_count: usize,
+    partition: &[InputOwner],
+    inputs: &[bool; 2],
+    ot: &mut LoopbackOt<N>,
+) -> VcOutcome {
+    match and_count {
+        6 => run_gram_typed::<6>(circuit, partition, inputs, ot),
+        other => panic!("unexpected AND count {other} — update the test monomorphization"),
+    }
+}
+
+fn run_gram_typed<const A: usize>(
+    circuit: &BIrBlocks,
+    partition: &[InputOwner],
+    inputs: &[bool; 2],
+    ot: &mut LoopbackOt<N>,
+) -> VcOutcome {
+    let secret = GlobalSecret::<N>::new(det_bytes(29));
+    let labels = [det_label(11), det_label(53)];
+    let embedder: VcEmbedder<N, 2, A> = VcEmbedder::with_secret(secret, labels);
+    embedder.invoke::<D, _>(circuit, partition, &[], &[], inputs, ot)
+}
