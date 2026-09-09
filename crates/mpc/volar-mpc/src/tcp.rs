@@ -162,3 +162,61 @@ impl<N: volar_spec::vole::VoleArray<u8>, T: Transport> crate::OtChannel<N> for N
         receiver.finish(&frame).expect("OT receiver finish")
     }
 }
+
+// ============================================================================
+// ML-KEM OT channel (mlkem + std)
+// ============================================================================
+
+/// An [`crate::OtChannel`] that runs the ML-KEM-1024 1-of-2 OT over a framed
+/// transport, for cross-process sessions (the post-quantum OT option).
+///
+/// Same ownership model as [`NetOtChannel`]. ML-KEM OT is receiver-initiated
+/// and non-interactive (receiver sends its two encapsulation keys, sender
+/// replies with the masked frame — no round trip), so it needs fewer messages
+/// than Chou–Orlandi and avoids the blocking-receive-in-sender ordering
+/// constraint.
+#[cfg(feature = "mlkem")]
+pub struct NetOtChannelMk<'a, T: Transport> {
+    transport: T,
+    role: OtRole,
+    rng: &'a mut dyn volar_spec::SpecRng,
+}
+
+#[cfg(feature = "mlkem")]
+impl<'a, T: Transport> NetOtChannelMk<'a, T> {
+    /// Create an ML-KEM OT channel for `role` over `transport`.
+    pub fn new(transport: T, role: OtRole, rng: &'a mut dyn volar_spec::SpecRng) -> Self {
+        Self {
+            transport,
+            role,
+            rng,
+        }
+    }
+
+    /// Borrow the underlying transport for driving session frames.
+    pub fn transport(&mut self) -> &mut T {
+        &mut self.transport
+    }
+}
+
+#[cfg(feature = "mlkem")]
+impl<N: volar_spec::vole::VoleArray<u8>, T: Transport> crate::OtChannel<N>
+    for NetOtChannelMk<'_, T>
+{
+    fn send(&mut self, labels: [&hybrid_array::Array<u8, N>; 2]) {
+        assert_eq!(self.role, OtRole::Sender, "only the garbler sends OTs");
+        // Receiver-initiated: first read the two encapsulation keys.
+        let eks = self.transport.recv();
+        let frame =
+            crate::ot_mlkem::MkSender::finish::<N>(self.rng, &eks, labels).expect("ML-KEM sender");
+        self.transport.send(&frame);
+    }
+
+    fn receive(&mut self, bit: bool) -> hybrid_array::Array<u8, N> {
+        assert_eq!(self.role, OtRole::Receiver, "only the evaluator receives OTs");
+        let (receiver, eks) = crate::ot_mlkem::MkReceiver::setup(self.rng, bit);
+        self.transport.send(&eks);
+        let frame = self.transport.recv();
+        receiver.finish::<N>(&frame).expect("ML-KEM receiver")
+    }
+}

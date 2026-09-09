@@ -574,3 +574,70 @@ fn mpc_session_tcp_loopback() {
     assert_eq!(eval_out, want, "evaluator output");
     assert_eq!(garb_out, want, "both parties agree on the output");
 }
+
+/// mpc_session_tcp_mlkem: same cross-process TCP session, but the OT phase
+/// uses the ML-KEM-1024 channel (post-quantum) instead of Chou-Orlandi.
+#[cfg(all(feature = "std", feature = "mlkem"))]
+#[test]
+fn mpc_session_tcp_mlkem_loopback() {
+    use volar_mpc::ot::SeedRng;
+    use volar_mpc::tcp::{NetOtChannelMk, OtRole, TcpTransport};
+    use volar_mpc::{run_evaluator, run_garbler};
+
+    let exec = garble_four_input();
+    let schedule = four_input_schedule();
+    let partition = [
+        InputOwner::Public,
+        InputOwner::Garbler,
+        InputOwner::Evaluator,
+        InputOwner::Evaluator,
+    ];
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = format!("{}", listener.local_addr().unwrap());
+
+    let g_schedule = schedule.clone();
+    let garbler = std::thread::spawn(move || {
+        let transport = TcpTransport::accept(&listener).expect("accept");
+        let mut session = transport.try_clone().expect("clone");
+        let mut rng = SeedRng::new(0xCAFE);
+        let mut ot = NetOtChannelMk::new(transport, OtRole::Sender, &mut rng);
+        let public = [true];
+        let garbler_bits = [false];
+        run_garbler::<N, D, 4, 2, _>(
+            &exec,
+            &partition,
+            &public,
+            &garbler_bits,
+            &mut session,
+            &mut ot,
+        )
+    });
+
+    let e_partition = [
+        InputOwner::Public,
+        InputOwner::Garbler,
+        InputOwner::Evaluator,
+        InputOwner::Evaluator,
+    ];
+    let transport = TcpTransport::connect(&addr).expect("connect");
+    let mut session = transport.try_clone().expect("clone");
+    let mut rng = SeedRng::new(0xD00D);
+    let mut ot = NetOtChannelMk::new(transport, OtRole::Receiver, &mut rng);
+    let evaluator_bits = [true, false];
+    let eval_out = run_evaluator::<N, D, 4, 2, _>(
+        &g_schedule,
+        &e_partition,
+        &evaluator_bits,
+        &mut session,
+        &mut ot,
+    )
+    .expect("evaluator run");
+
+    let garb_out = garbler.join().expect("garbler join").expect("garbler run");
+
+    let inputs = [true, false, true, false];
+    let want = eval_concrete(&four_input_schedule(), &inputs);
+    assert_eq!(eval_out, want, "evaluator output");
+    assert_eq!(garb_out, want, "both parties agree");
+}
