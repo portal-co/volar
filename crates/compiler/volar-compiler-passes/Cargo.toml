@@ -17,9 +17,9 @@ path = "src/bin/volar_codegen.rs"
 required-features = ["parsing"]
 
 [dependencies]
-volar-compiler = { path = "../volar-compiler" }
+volar-compiler = { git = "https://github.com/portal-co/volar.git" }
 thiserror = "1.0"
 
 [dev-dependencies]
-volar-compiler = { path = "../volar-compiler", features = ["parsing"] }
-volar-compiler-passes = { path = ".", features = ["parsing"] }
+volar-compiler = { git = "https://github.com/portal-co/volar.git", features = ["parsing"] }
+volar-compiler-passes = { git = "https://github.com/portal-co/volar.git", features = ["parsing"] }

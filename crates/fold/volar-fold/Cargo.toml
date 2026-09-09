@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 hybrid-array.workspace = true
 cipher.workspace = true
-volar-spec = { path = "../../spec/volar-spec" }
+volar-spec = { git = "https://github.com/portal-co/volar.git" }
 volar-net = { path = "../../net/volar-net" }
 volar-discipline = { workspace = true }
 

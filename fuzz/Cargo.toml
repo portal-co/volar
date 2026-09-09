@@ -9,12 +9,12 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-volar-fuzz = { path = "../../volar-ir/crates/fuzz/volar-fuzz" }
-volar-ir-passes = { path = "../../volar-ir/crates/ir/volar-ir-passes" }
-volar-ir-opt = { path = "../../volar-ir/crates/ir/volar-ir-opt" }
-volar-ir-virt = { path = "../../volar-ir/crates/ir/volar-ir-virt" }
-volar-vaffle-target = { path = "../../volar-ir/crates/ir/volar-vaffle-target" }
-volar-spec = { path = "../crates/spec/volar-spec" }
+volar-fuzz = { git = "https://github.com/portal-co/volar-ir" }
+volar-ir-passes = { git = "https://github.com/portal-co/volar-ir" }
+volar-ir-opt = { git = "https://github.com/portal-co/volar-ir" }
+volar-ir-virt = { git = "https://github.com/portal-co/volar-ir" }
+volar-vaffle-target = { git = "https://github.com/portal-co/volar-ir" }
+volar-spec = { git = "https://github.com/portal-co/volar.git" }
 hybrid-array = { version = "0.4.8", default-features = false }
 cipher = { version = "0.5.1", default-features = false }
 
