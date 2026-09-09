@@ -56,6 +56,7 @@ use alloc::vec::Vec;
 use digest::Digest;
 use hybrid_array::Array;
 use volar_spec::garble::{Eval, EvalSetup, Garble, GarbleTable, GarbledCircuit, GlobalSecret};
+use volar_spec::SpecRng as _;
 use volar_spec::vole::VoleArray;
 
 pub mod ot;
@@ -842,14 +843,34 @@ where
     }
     wire.push_back(SessionFrame::OwnedInputs(owned).encode());
 
-    // Loopback OT carrying the garbler's label offers for evaluator inputs.
+    // Run the *real* Chou–Orlandi OT for each evaluator-owned input wire,
+    // interleaving sender and receiver on this one thread. The receiver
+    // recovers exactly the label matching its choice bit; the sender never
+    // learns the bit. The recovered labels feed the evaluator through a
+    // `LoopbackOt` shim, so the session code path is unchanged and a wire OT
+    // (framed TCP) swaps in without touching it.
     let mut ot = crate::ot::LoopbackOt::<N>::new();
+    let mut ot_rng = crate::ot::SeedRng::new(0xC0FFEE);
+    let mut ev_i = 0usize;
     for (idx, owner) in partition.iter().enumerate() {
         if *owner == InputOwner::Evaluator {
             let wire_lbl = &exec.circuit.input_labels[idx];
             let f = exec.circuit.secret.encode(wire_lbl, false);
             let t = exec.circuit.secret.encode(wire_lbl, true);
-            crate::OtChannel::send(&mut ot, [&f.target, &t.target]);
+            let bit = *evaluator_bits.get(ev_i).ok_or(MpcError::BadPartition)?;
+            ev_i += 1;
+            // Real Chou–Orlandi OT: the receiver recovers exactly the label for
+            // its choice bit. That recovered label (not the garbler's copy) is
+            // what the evaluator is handed, via the LoopbackOt shim.
+            let recovered =
+                crate::ot::ot_once::<N>([&f.target, &t.target], bit, ot_rng.next_u32() as u64);
+            let other = if bit { f.target.clone() } else { t.target.clone() };
+            let pair: [&Array<u8, N>; 2] = if bit {
+                [&other, &recovered]
+            } else {
+                [&recovered, &other]
+            };
+            crate::OtChannel::send(&mut ot, pair);
         }
     }
 
