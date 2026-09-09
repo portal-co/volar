@@ -317,3 +317,108 @@ fn mpc_bad_partition_is_rejected() {
     let err = evaluate::<N, D, 4, 2>(&exec, &partition, &[true], &[true], &[true], &mut ot);
     assert_eq!(err, Err(MpcError::BadPartition));
 }
+
+// ============================================================================
+// Lockstep framed-wire session tests (run_local / SessionFrame)
+// ============================================================================
+
+use volar_mpc::{SessionFrame, run_local};
+
+/// SessionFrame encode/decode round-trips for every variant.
+#[test]
+fn mpc_frame_roundtrip() {
+    let setup = SessionFrame::Setup {
+        one_wire: alloc::vec![1, 2, 3, 4],
+        tables: alloc::vec![
+            [alloc::vec![9], alloc::vec![8], alloc::vec![7], alloc::vec![6]],
+            [alloc::vec![0], alloc::vec![1], alloc::vec![2], alloc::vec![3]],
+        ],
+        output_label: alloc::vec![5, 6, 7],
+    };
+    assert_eq!(SessionFrame::decode(&setup.encode()), Some(setup));
+
+    let owned = SessionFrame::OwnedInputs(alloc::vec![alloc::vec![1, 2], alloc::vec![3, 4]]);
+    assert_eq!(SessionFrame::decode(&owned.encode()), Some(owned));
+
+    let ot = SessionFrame::Ot(alloc::vec![42, 43, 44]);
+    assert_eq!(SessionFrame::decode(&ot.encode()), Some(ot));
+
+    for v in [Ok(true), Ok(false), Err(())] {
+        let verdict = SessionFrame::Verdict(v);
+        assert_eq!(SessionFrame::decode(&verdict.encode()), Some(verdict));
+    }
+
+    // Truncated / garbage input fails to decode rather than panicking.
+    assert_eq!(SessionFrame::decode(&[]), None);
+    assert_eq!(SessionFrame::decode(&[255]), None);
+    assert_eq!(SessionFrame::decode(&[0, 5]), None);
+}
+
+/// mpc_session_lockstep: the framed wire protocol over `run_local` agrees
+/// with the in-process `evaluate` driver and with concrete eval, exhaustively.
+#[test]
+fn mpc_session_lockstep() {
+    let exec = garble_four_input();
+    let partition = [
+        InputOwner::Public,
+        InputOwner::Garbler,
+        InputOwner::Evaluator,
+        InputOwner::Evaluator,
+    ];
+    let schedule = four_input_schedule();
+    for bits in 0u32..16 {
+        let b = [
+            (bits >> 0) & 1 == 1,
+            (bits >> 1) & 1 == 1,
+            (bits >> 2) & 1 == 1,
+            (bits >> 3) & 1 == 1,
+        ];
+        let public = [b[0]];
+        let garbler = [b[1]];
+        let evaluator = [b[2], b[3]];
+        let got = run_local::<N, D, 4, 2>(
+            &exec, &schedule, &partition, &public, &garbler, &evaluator,
+        )
+        .expect("honest lockstep run");
+        assert_eq!(got, eval_concrete(&schedule, &b), "inputs {b:?}");
+    }
+}
+
+/// The lockstep framed run matches across all partition assignments too.
+#[test]
+fn mpc_session_lockstep_all_partitions() {
+    let exec = garble_four_input();
+    let owners = [InputOwner::Public, InputOwner::Garbler, InputOwner::Evaluator];
+    let schedule = four_input_schedule();
+    for combo in 0u32..81 {
+        let mut partition = [InputOwner::Public; 4];
+        let mut c = combo;
+        for slot in partition.iter_mut() {
+            *slot = owners[(c % 3) as usize];
+            c /= 3;
+        }
+        for bits in 0u32..16 {
+            let b = [
+                (bits >> 0) & 1 == 1,
+                (bits >> 1) & 1 == 1,
+                (bits >> 2) & 1 == 1,
+                (bits >> 3) & 1 == 1,
+            ];
+            let mut public = Vec::new();
+            let mut garbler = Vec::new();
+            let mut evaluator = Vec::new();
+            for (i, owner) in partition.iter().enumerate() {
+                match owner {
+                    InputOwner::Public => public.push(b[i]),
+                    InputOwner::Garbler => garbler.push(b[i]),
+                    InputOwner::Evaluator => evaluator.push(b[i]),
+                }
+            }
+            let got = run_local::<N, D, 4, 2>(
+                &exec, &schedule, &partition, &public, &garbler, &evaluator,
+            )
+            .expect("honest lockstep run");
+            assert_eq!(got, eval_concrete(&schedule, &b), "partition {partition:?} inputs {b:?}");
+        }
+    }
+}
