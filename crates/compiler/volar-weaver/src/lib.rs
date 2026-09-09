@@ -101,6 +101,7 @@ pub use garble::{
     weave_into_gc_with_handler, weave_into_gc_bounded_with_handler,
     weave_eval_from_setup_with_handler, weave_eval_from_setup_bounded_with_handler,
     GramActionConfig,
+    weave_evaluator_with_gram,
     LoweringMode,
 };
 #[cfg(feature = "linking")]

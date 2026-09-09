@@ -24,6 +24,7 @@ use volar_compiler::{
         ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrGenericParam,
         IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrStmtKind,
         IrTraitBound, IrType, MethodKind, SpecBinOp, StructKind, TraitKind,
+        PrimitiveType, ArrayKind, ArrayLength,
     },
     linkage::LinkageSystem,
 };
@@ -64,6 +65,28 @@ pub(crate) fn garble_type() -> IrType {
         kind: StructKind::Custom("Garble".into()),
         type_args: vec![IrType::TypeParam("N".into())],
     }
+}
+
+/// Build the color-bit extraction expr for an evaluator label: the LSB of the
+/// label's first byte, `label.target[0] & 1`. This is the decode the
+/// cleartext GRAM gadget applies to each action arg label (the same color-bit
+/// rule `EvalSetup::recover_output` / `gram_decode_label` use).
+fn gram_color_bit<Q: Clone + Default>(label_expr: IrExpr<Q>) -> IrExpr<Q> {
+    ir_expr(IrExprKind::Binary {
+        op: SpecBinOp::Ne,
+        left: Box::new(ir_expr(IrExprKind::Binary {
+            op: SpecBinOp::BitAnd,
+            left: Box::new(ir_expr(IrExprKind::Index {
+                base: Box::new(ir_expr(IrExprKind::Field {
+                    base: Box::new(label_expr),
+                    field: "target".into(),
+                })),
+                index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+            })),
+            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(1)))),
+        })),
+        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+    })
 }
 
 pub(crate) fn garble_table_type() -> IrType {
@@ -109,6 +132,22 @@ fn eval_setup_type(num_and: usize) -> IrType {
 }
 
 /// Generic params `<N: ArraySize, D: Digest>`.
+/// `N: ArraySize` only — for the GRAM action extern stubs, whose signature
+/// mentions `N` (via `Eval<N>`) but not `D`.
+fn generic_param_n() -> Vec<IrGenericParam> {
+    vec![IrGenericParam {
+        name: "N".into(),
+        kind: IrGenericParamKind::Type,
+        const_ty: None,
+        bounds: vec![IrTraitBound {
+            trait_kind: TraitKind::ArraySize,
+            type_args: vec![],
+            assoc_bindings: vec![],
+        }],
+        default: None,
+    }]
+}
+
 fn generic_params() -> Vec<IrGenericParam> {
     vec![
         IrGenericParam {
@@ -364,6 +403,325 @@ where
     let module = IrModule {
         name: "weaved".into(),
         functions: vec![func],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+
+        consts: vec![],
+    };
+    Tagged::seal(module)
+}
+
+/// Config-carrying evaluator weaver: like [`weave_evaluator_with_handler`],
+/// but additionally handles `BIrStmt::ActionCall` / `BIrStmt::ActionBit` for
+/// the actions named in `configs` (the GRAM access gadget — `MPC_PLAN.md`
+/// workstream A, increment 1).
+///
+/// # Scope (increment 1: the all-cleartext gadget)
+///
+/// Only actions whose [`GramActionConfig`] `is_output_cleartext` is `true` for
+/// *every* bit (`all_cleartext()`, which an empty `output_cleartext` satisfies)
+/// are supported. For such an action the evaluator **decodes** each argument
+/// label to its plaintext bit via the color-bit rule (`gram_decode_label`),
+/// calls the host action as a plain `fn(bool, &[bool]) -> Vec<bool>`, and
+/// projects result bits with `ActionBit`. This matches the cirrus
+/// `GramActionHost` cleartext path — the ORAM `begin` leaf index and tree path
+/// read, whose values are data-independent and so safe for the evaluator to
+/// learn.
+///
+/// The host call is emitted as an [`ExternalKind::Action`] extern fn stub named
+/// after the action, resolved at link time against the ORAM host. Each argument
+/// is decoded by the *caller* (this evaluator) via `gram_decode_label`, so the
+/// extern fn takes the action's plaintext bits, not labels: `(guard: bool,
+/// args: &[bool]) -> Vec<bool>`. The `guard` selects real result vs `fallback`
+/// in the host; the evaluator passes the decoded guard.
+///
+/// Re-garbled outputs ([`GramOutput::Regarble`]) are **not** yet supported —
+/// they need the host to re-encode to fresh labels (increment 2), which
+/// requires the evaluator to hold the per-output-wire false-labels.
+///
+/// # Panics
+/// - if the circuit is not `is_circuit()`;
+/// - if an `ActionCall`/`ActionBit` names an action not in `configs`;
+/// - if a configured action is not all-cleartext (increment-2 scope).
+pub fn weave_evaluator_with_gram<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    handler: &H,
+    configs: &[(&str, GramActionConfig)],
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+    H::Output: Default,
+{
+    assert!(
+        circuit.is_circuit(),
+        "weave_evaluator_with_gram: circuit must satisfy is_circuit()"
+    );
+    for (_, cfg) in configs {
+        assert!(
+            cfg.all_cleartext(),
+            "weave_evaluator_with_gram: only all-cleartext actions supported (increment 1)"
+        );
+    }
+
+    let block = &circuit.blocks[0];
+    let num_params = block.params as usize;
+    let expanded = expand_ors(block);
+
+    let and_count = expanded
+        .iter()
+        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
+        .count();
+
+    let mut var_names = alloc::collections::BTreeMap::<u32, String>::new();
+    for i in 0..num_params {
+        var_names.insert(i as u32, format!("input_{}", i));
+    }
+
+    let mut params: Vec<IrParam> = Vec::new();
+    params.push(IrParam {
+        name: "one_wire".into(),
+        ty: crate::ref_to(eval_type()),
+    });
+    for k in 0..and_count {
+        params.push(IrParam {
+            name: format!("and_table_{}", k),
+            ty: crate::ref_to(garble_table_type()),
+        });
+    }
+    for i in 0..num_params {
+        params.push(IrParam {
+            name: format!("input_{}", i),
+            ty: crate::ref_to(eval_type()),
+        });
+    }
+
+    let bool_ty = IrType::Primitive(PrimitiveType::Bool);
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut and_counter: usize = 0;
+    // ActionCall handle var → its cleartext result-bits binding name.
+    let mut action_results: alloc::collections::BTreeMap<u32, String> =
+        alloc::collections::BTreeMap::new();
+    // Extern action stubs to append (deduped by name).
+    let mut action_stubs: alloc::collections::BTreeMap<String, (usize, usize)> =
+        alloc::collections::BTreeMap::new();
+
+    for (result_id, stmt, prov) in &expanded {
+        let let_name = format!("wire_{}", result_id.0);
+        let q = handler.map(prov);
+
+        let init_expr = match stmt {
+            BIrStmt::Zero => ir_expr(IrExprKind::StructExpr {
+                kind: StructKind::Custom("Eval".into()),
+                type_args: vec![],
+                fields: vec![("target".into(), array_default())],
+                rest: None,
+            }),
+
+            BIrStmt::One => clone_expr(var("one_wire")),
+
+            BIrStmt::Xor(a, b) => {
+                let name_a = var_names[&a.0].clone();
+                let name_b = var_names[&b.0].clone();
+                ir_expr(IrExprKind::Binary {
+                    op: SpecBinOp::BitXor,
+                    left: Box::new(clone_expr(var(&name_a))),
+                    right: Box::new(clone_expr(var(&name_b))),
+                })
+            }
+
+            BIrStmt::And(a, b) => {
+                let name_a = var_names[&a.0].clone();
+                let name_b = var_names[&b.0].clone();
+                let table_name = format!("and_table_{}", and_counter);
+                and_counter += 1;
+                ir_expr(IrExprKind::MethodCall {
+                    receiver: Box::new(clone_expr(var(&name_a))),
+                    method: MethodKind::Other("and_via_table".into()),
+                    type_args: vec![IrType::TypeParam("D".into())],
+                    args: vec![ref_expr(clone_expr(var(&name_b))), var(&table_name)],
+                })
+            }
+
+            BIrStmt::Not(a) => {
+                let name_a = var_names[&a.0].clone();
+                ir_expr(IrExprKind::Binary {
+                    op: SpecBinOp::BitXor,
+                    left: Box::new(clone_expr(var(&name_a))),
+                    right: Box::new(clone_expr(var("one_wire"))),
+                })
+            }
+
+            // Cleartext-read GRAM gadget: decode the guard + arg labels to
+            // plaintext bits, call the host action, bind the returned cleartext
+            // result bits for ActionBit to project.
+            BIrStmt::ActionCall {
+                name: action_name,
+                guard,
+                args,
+                fallback: _,
+                num_bits,
+            } => {
+                let cfg = configs
+                    .iter()
+                    .find(|(n, _)| n == action_name)
+                    .map(|(_, c)| c)
+                    .unwrap_or_else(|| {
+                        panic!("weave_evaluator_with_gram: unconfigured action '{action_name}'")
+                    });
+                assert!(
+                    cfg.all_cleartext(),
+                    "weave_evaluator_with_gram: action '{action_name}' is not all-cleartext"
+                );
+
+                // Decode the guard label to its color bit (LSB of the label).
+                // For the cleartext-read gadget the guard is data-independent,
+                // so its value is the LSB of the label's first byte (the same
+                // color-bit rule `gram_decode_label` applies against a base).
+                let guard_name = var_names[&guard.0].clone();
+                let guard_bit = format!("{}_guard_bit", let_name);
+                stmts.push(ir_stmt_p(
+                    IrStmtKind::Let {
+                        pattern: IrPattern::ident(&guard_bit),
+                        ty: None,
+                        init: Some(gram_color_bit(clone_expr(var(&guard_name)))),
+                    },
+                    q.clone(),
+                ));
+
+                // Decode each arg label to its color bit.
+                let mut arg_bit_exprs: Vec<IrExpr<_>> = Vec::new();
+                for arg in args {
+                    let arg_name = var_names[&arg.0].clone();
+                    arg_bit_exprs.push(gram_color_bit(clone_expr(var(&arg_name))));
+                }
+
+                // Host call: action_name(guard_bit, &[arg_bits...]) -> Vec<Eval<N>>.
+                // The host decodes the plaintext args, runs the ORAM client, and
+                // returns each result bit re-garbled to a fresh `Eval<N>` label it
+                // shares with the evaluator (the evaluator cannot re-garble itself).
+                let call = ir_expr(IrExprKind::Call {
+                    func: Box::new(ir_expr(IrExprKind::Path {
+                        segments: vec![action_name.clone()],
+                        type_args: vec![IrType::TypeParam("N".into())],
+                    })),
+                    args: vec![var(&guard_bit), ref_expr(ir_expr(IrExprKind::Array(arg_bit_exprs)))],
+        });
+                action_results.insert(result_id.0, let_name.clone());
+                action_stubs
+                    .entry(action_name.clone())
+                    .or_insert((args.len(), *num_bits));
+                call
+            }
+
+            // Project one result label from the call's returned Vec<Eval<N>>.
+            BIrStmt::ActionBit { call, bit } => {
+                let result_binding = action_results.get(&call.0).unwrap_or_else(|| {
+                    panic!("weave_evaluator_with_gram: ActionBit on unknown call var")
+                });
+                // Index then clone: Vec<Eval<N>> indexing yields &Eval<N>, and the
+                // wire binding owns its Eval<N>.
+                ir_expr(IrExprKind::MethodCall {
+                    receiver: Box::new(ir_expr(IrExprKind::Index {
+                        base: Box::new(clone_expr(var(result_binding))),
+                        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(*bit as i128)))),
+                    })),
+                    method: MethodKind::from_str("clone"),
+                    type_args: vec![],
+                    args: vec![],
+                })
+            }
+
+            BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+            BIrStmt::OracleCall { .. }
+            | BIrStmt::OracleBit { .. }
+            | BIrStmt::Rng { .. }
+            | BIrStmt::StorageRead { .. }
+            | BIrStmt::StorageWrite { .. } => {
+                unimplemented!("garble weaver: extended BIrStmt variants not supported")
+            }
+            _ => unimplemented!(
+                "garble weaver: unhandled BIrStmt variant — add support for this variant"
+            ),
+        };
+
+        stmts.push(ir_stmt_p(
+            IrStmtKind::Let {
+                pattern: IrPattern::ident(&let_name),
+                ty: None,
+                init: Some(init_expr),
+            },
+            q,
+        ));
+        var_names.insert(result_id.0, let_name);
+    }
+
+    let (ret_expr, ret_type) = build_return(block, &var_names, eval_type());
+
+    let mut functions = vec![IrFunction {
+        no_inline: false,
+        name: name.into(),
+        module_path: vec![],
+        generics: generic_params(),
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    }];
+
+    // Emit one `ExternalKind::Action` extern stub per configured action,
+    // resolved at link time against the ORAM host.
+    for (action_name, (num_args, num_bits)) in action_stubs {
+        let stub = IrFunction {
+            no_inline: false,
+            name: action_name.clone(),
+            module_path: vec![],
+            generics: generic_param_n(),
+            receiver: None,
+            params: vec![
+                IrParam {
+                    name: "guard".into(),
+                    ty: bool_ty.clone(),
+                },
+                IrParam {
+                    name: "args".into(),
+                    ty: crate::ref_to(IrType::Array {
+                        kind: ArrayKind::Slice,
+                        elem: Box::new(bool_ty.clone()),
+                        len: ArrayLength::Const(num_args),
+                    }),
+                },
+            ],
+            return_type: Some(IrType::Struct {
+                kind: StructKind::Custom("Vec".into()),
+                type_args: vec![eval_type()],
+            }),
+            where_clause: vec![],
+            body: IrBlock {
+                stmts: vec![],
+                expr: Some(Box::new(ir_expr(IrExprKind::Unreachable))),
+            },
+            // Plain extern (resolved at link time against the ORAM host), not
+            // the FHE `#[volar_action]` proc-macro dispatch — the GRAM host ABI
+            // is a plain fn(guard, args) -> Vec<Eval<N>>.
+            external_kind: ExternalKind::Normal,
+        };
+        let _ = num_bits;
+        functions.push(stub);
+    }
+
+    let module = IrModule {
+        name: "weaved_gram_evaluator".into(),
+        functions,
         structs: vec![],
         enums: vec![],
         traits: vec![],
@@ -1148,6 +1506,62 @@ mod tests {
 
     use super::*;
     use crate::tests_common::{build_xor_and_circuit, build_simple_loop, run_compile_check, workspace_root};
+
+    /// Circuit with one all-cleartext action call: out = action_bit(begin(in0), 0) XOR in1.
+    /// begin is a 1-arg, 1-output-bit cleartext-read gadget (the ORAM leaf lookup shape).
+    fn build_action_circuit() -> BIrBlocks {
+        use volar_ir::boolar::BIrStmt;
+        use volar_ir::ir::IRVarId;
+        use volar_ir_common::Node;
+        BIrBlocks { blocks: vec![volar_ir::boolar::BIrBlock {
+            params: 2,
+            stmts: vec![
+                // wire_2 = ActionCall begin(guard=in0, args=[in0]) -> 1 result bit
+                Node::new(BIrStmt::ActionCall {
+                    name: "begin".into(),
+                    guard: IRVarId(0),
+                    args: vec![IRVarId(0)],
+                    fallback: vec![IRVarId(1)],
+                    num_bits: 1,
+                }, (), None),
+                // wire_3 = ActionBit(call=wire_2, bit=0)
+                Node::new(BIrStmt::ActionBit { call: IRVarId(2), bit: 0 }, (), None),
+                // wire_4 = Xor(wire_3, in1)
+                Node::new(BIrStmt::Xor(IRVarId(3), IRVarId(1)), (), None),
+            ],
+            terminator: volar_ir::boolar::BIrTerminator::Jmp(volar_ir::boolar::BIrTarget {
+                block: volar_ir::ir::IRBlockTargetId::Return,
+                args: vec![IRVarId(4)],
+            }),
+        }], pre_init: vec![] }
+    }
+
+    #[test]
+    fn test_weave_evaluator_with_gram_compiles() {
+        let circuit = build_action_circuit();
+        let configs = [("begin", GramActionConfig { output_cleartext: vec![] })];
+        let module = weave_evaluator_with_gram(&circuit, "gram_eval", &crate::NoProvenance, &configs).into_inner();
+        let code = print_weaved_module(&module, false);
+        // The action must be emitted as an extern Action stub named `begin`.
+        assert!(code.contains("begin"), "expected host action stub:\n{}", code);
+        run_compile_check(&code, "gram_evaluator");
+    }
+
+    #[test]
+    #[should_panic(expected = "unconfigured action")]
+    fn test_weave_evaluator_with_gram_unconfigured_panics() {
+        let circuit = build_action_circuit();
+        let _ = weave_evaluator_with_gram(&circuit, "gram_eval", &crate::NoProvenance, &[]).into_inner();
+    }
+
+    #[test]
+    #[should_panic(expected = "all-cleartext")]
+    fn test_weave_evaluator_with_gram_rejects_regarble() {
+        let circuit = build_action_circuit();
+        // Not all-cleartext (bit 0 re-garbled) → increment-2 scope, must panic.
+        let configs = [("begin", GramActionConfig { output_cleartext: vec![false] })];
+        let _ = weave_evaluator_with_gram(&circuit, "gram_eval", &crate::NoProvenance, &configs).into_inner();
+    }
 
     #[test]
     fn test_weave_evaluator_bounded_unconditional_compiles() {
