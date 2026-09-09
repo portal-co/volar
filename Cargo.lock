@@ -3177,31 +3177,15 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "portal-solutions-asm-aarch64"
+name = "portal-container-core"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-jvm"
+name = "portal-container-select"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-regalloc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-riscv64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-semantics"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-x86-64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-x86-64-shim"
+name = "portal-container-wasm"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -3269,40 +3253,16 @@ name = "volar-lir-text"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-lazy-transform"
+name = "pit-gen"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-progress"
+name = "pit-lang-generic"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-progress-core"
+name = "pit-rust-generic"
 version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-progress-lazy-transform"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-progress-protocol"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-progress-tui"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-progress-wasm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-progress-web"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-pc-asm-common"
-version = "0.1.1"
 
 [[patch.unused]]
 name = "ast-traits"
@@ -3373,48 +3333,72 @@ name = "type-onion"
 version = "0.2.3"
 
 [[patch.unused]]
+name = "portal-solutions-asm-aarch64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-jvm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-regalloc"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-riscv64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-semantics"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64-shim"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "pit-core"
 version = "0.5.0-alpha.1"
 
 [[patch.unused]]
-name = "portal-solutions-sdk"
-version = "0.0.2"
+name = "portal-pc-waffle"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "portal-jsc-common"
-version = "0.8.0-pre.11"
+name = "portal-pc-waffle-backend"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "portal-jsc-generator"
-version = "0.8.0-pre.10"
+name = "portal-pc-waffle-copying"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "portal-jsc-simpl-js"
-version = "0.8.0-pre.11"
+name = "portal-pc-waffle-copying-passes"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "portal-jsc-swc-cfg"
-version = "0.8.0-pre.11"
+name = "portal-pc-waffle-fuzzing"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "portal-jsc-swc-ll-common"
-version = "0.8.0-pre.11"
+name = "portal-pc-waffle-hooking"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "portal-jsc-swc-opt-ssa"
-version = "0.8.0-pre.11"
+name = "portal-pc-waffle-lowering"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "portal-jsc-swc-ssa"
-version = "0.8.0-pre.11"
+name = "portal-pc-waffle-passes"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
-name = "portal-jsc-swc-tac"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-util"
-version = "0.8.0-pre.11"
+name = "portal-pc-waffle-passes-shared"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
 name = "px-wsdom"
@@ -3443,22 +3427,6 @@ version = "0.0.6"
 [[patch.unused]]
 name = "px-wsdom-macros-decl"
 version = "0.0.6"
-
-[[patch.unused]]
-name = "wax-tags"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-container-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-container-select"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-container-wasm"
-version = "0.1.0"
 
 [[patch.unused]]
 name = "os-abi-codegen"
@@ -3557,53 +3525,85 @@ name = "os-unix-wasi"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-waffle"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-backend"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-copying"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-copying-passes"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-fuzzing"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-hooking"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-lowering"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-passes"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-waffle-passes-shared"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "pit-gen"
+name = "portal-lazy-transform"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "pit-lang-generic"
+name = "portal-progress"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "pit-rust-generic"
+name = "portal-progress-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-progress-lazy-transform"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-progress-protocol"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-progress-tui"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-progress-wasm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-progress-web"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "wax-tags"
 version = "0.1.0"
 
 [[patch.unused]]
 name = "portal-solutions-swibb"
 version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-asm-common"
+version = "0.1.1"
+
+[[patch.unused]]
+name = "portal-jsc-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-generator"
+version = "0.8.0-pre.10"
+
+[[patch.unused]]
+name = "portal-jsc-simpl-js"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-cfg"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ll-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-opt-ssa"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ssa"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-tac"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-util"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-solutions-sdk"
+version = "0.0.2"

@@ -910,3 +910,82 @@ where
     let _ = transport.verdict;
     Ok(out)
 }
+
+// ============================================================================
+// Traffic accounting
+// ============================================================================
+
+/// A [`Transport`] wrapper that counts bytes and frames in each direction.
+///
+/// Wrap any transport to measure the wire cost of a session — the C3
+/// traffic-accounting deliverable. Counts are cumulative across the session;
+/// read them after the run (or via [`CountingTransport::snapshot`]).
+pub struct CountingTransport<'a, T: Transport> {
+    inner: &'a mut T,
+    /// Total bytes sent (frame payloads, excluding length prefixes).
+    pub bytes_sent: usize,
+    /// Total bytes received.
+    pub bytes_recv: usize,
+    /// Frames sent.
+    pub frames_sent: usize,
+    /// Frames received.
+    pub frames_recv: usize,
+}
+
+impl<'a, T: Transport> CountingTransport<'a, T> {
+    /// Wrap `inner`, starting counts at zero.
+    pub fn new(inner: &'a mut T) -> Self {
+        Self {
+            inner,
+            bytes_sent: 0,
+            bytes_recv: 0,
+            frames_sent: 0,
+            frames_recv: 0,
+        }
+    }
+
+    /// A point-in-time copy of the counters.
+    pub fn snapshot(&self) -> Traffic {
+        Traffic {
+            bytes_sent: self.bytes_sent,
+            bytes_recv: self.bytes_recv,
+            frames_sent: self.frames_sent,
+            frames_recv: self.frames_recv,
+        }
+    }
+
+    /// Total payload bytes in both directions.
+    pub fn total_bytes(&self) -> usize {
+        self.bytes_sent + self.bytes_recv
+    }
+}
+
+/// An immutable traffic snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Traffic {
+    pub bytes_sent: usize,
+    pub bytes_recv: usize,
+    pub frames_sent: usize,
+    pub frames_recv: usize,
+}
+
+impl Traffic {
+    /// Total payload bytes in both directions.
+    pub fn total_bytes(&self) -> usize {
+        self.bytes_sent + self.bytes_recv
+    }
+}
+
+impl<T: Transport> Transport for CountingTransport<'_, T> {
+    fn send(&mut self, frame: &[u8]) {
+        self.bytes_sent += frame.len();
+        self.frames_sent += 1;
+        self.inner.send(frame);
+    }
+    fn recv(&mut self) -> Vec<u8> {
+        let f = self.inner.recv();
+        self.bytes_recv += f.len();
+        self.frames_recv += 1;
+        f
+    }
+}

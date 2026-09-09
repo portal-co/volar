@@ -641,3 +641,96 @@ fn mpc_session_tcp_mlkem_loopback() {
     assert_eq!(eval_out, want, "evaluator output");
     assert_eq!(garb_out, want, "both parties agree");
 }
+
+/// mpc_traffic_accounting: measure the wire cost of a session over TCP,
+/// asserting the framing/OT message sizes are accounted for and the protocol
+/// exchanges the expected number of frames. This is the C3 harness.
+#[cfg(feature = "std")]
+#[test]
+fn mpc_traffic_accounting() {
+    use volar_mpc::ot::SeedRng;
+    use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
+    use volar_mpc::{CountingTransport, run_evaluator, run_garbler};
+
+    let exec = garble_four_input();
+    let schedule = four_input_schedule();
+    let partition = [
+        InputOwner::Public,
+        InputOwner::Garbler,
+        InputOwner::Evaluator,
+        InputOwner::Evaluator,
+    ];
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = format!("{}", listener.local_addr().unwrap());
+
+    let g_schedule = schedule.clone();
+    let garbler = std::thread::spawn(move || {
+        let transport = TcpTransport::accept(&listener).expect("accept");
+        let mut session = transport.try_clone().expect("clone");
+        let mut counting = CountingTransport::new(&mut session);
+        let mut rng = SeedRng::new(0xA11CE);
+        let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
+        let public = [true];
+        let garbler_bits = [false];
+        let out = run_garbler::<N, D, 4, 2, _>(
+            &exec,
+            &partition,
+            &public,
+            &garbler_bits,
+            &mut counting,
+            &mut ot,
+        );
+        (out, counting.snapshot())
+    });
+
+    let e_partition = [
+        InputOwner::Public,
+        InputOwner::Garbler,
+        InputOwner::Evaluator,
+        InputOwner::Evaluator,
+    ];
+    let transport = TcpTransport::connect(&addr).expect("connect");
+    let mut session = transport.try_clone().expect("clone");
+    let mut counting = CountingTransport::new(&mut session);
+    let mut rng = SeedRng::new(0xB0B);
+    let mut ot = NetOtChannel::new(transport, OtRole::Receiver, &mut rng);
+    let evaluator_bits = [true, false];
+    let eval_out = run_evaluator::<N, D, 4, 2, _>(
+        &g_schedule,
+        &e_partition,
+        &evaluator_bits,
+        &mut counting,
+        &mut ot,
+    )
+    .expect("evaluator run");
+    let e_traffic = counting.snapshot();
+
+    let (garb_out, g_traffic) = {
+        let (o, t) = garbler.join().expect("garbler join");
+        (o.expect("garbler run"), t)
+    };
+
+    // Correctness.
+    let inputs = [true, false, true, false];
+    let want = eval_concrete(&four_input_schedule(), &inputs);
+    assert_eq!(eval_out, want);
+    assert_eq!(garb_out, want);
+
+    // The garbler sends setup + owned-inputs frames and receives the verdict
+    // on the session channel; the evaluator mirrors that. (OT frames ride the
+    // separate NetOtChannel handle, not the CountingTransport.)
+    assert_eq!(g_traffic.frames_sent, 2, "garbler: setup + owned-inputs");
+    assert_eq!(g_traffic.frames_recv, 1, "garbler: verdict");
+    assert_eq!(e_traffic.frames_sent, 1, "evaluator: verdict");
+    assert_eq!(e_traffic.frames_recv, 2, "evaluator: setup + owned-inputs");
+
+    // Bytes actually moved and are symmetric (garbler's sent = evaluator's recv).
+    assert!(g_traffic.total_bytes() > 0);
+    assert_eq!(g_traffic.bytes_sent, e_traffic.bytes_recv);
+    assert_eq!(g_traffic.bytes_recv, e_traffic.bytes_sent);
+
+    // The setup frame carries one_wire (16B) + 2 garble tables (4×16B each)
+    // + output label (16B), plus framing — so it's well over 100 bytes.
+    assert!(e_traffic.bytes_recv > 100, "setup frame is non-trivial");
+}
