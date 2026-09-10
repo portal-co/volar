@@ -18,10 +18,11 @@
 //! `volar_weaver`'s `expand_ors`.
 
 use alloc::vec::Vec;
+use alloc::vec;
 
 use volar_ir::boolar::{BIrBlocks, BIrStmt, BIrTerminator};
-use volar_ir::ir::IRBlockTargetId;
-use volar_mpc::{Gate, GateSchedule};
+use volar_ir::ir::{IRBlockTargetId, IRVarId, StorageId};
+use volar_mpc::{Gate, GateSchedule, GramStorageSpec};
 
 /// Why a [`BIrBlocks`] could not be compiled to a [`GateSchedule`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,9 +33,15 @@ pub enum ScheduleError {
     /// return at least one bit to reveal).
     NoOutput,
     /// A statement the schedule shape cannot express (oracle/action call,
-    /// RNG, storage read/write, or a projected-bit form). These are not pure
-    /// boolean gates and must be lowered away before scheduling.
+    /// RNG, or a projected-bit form). These are not pure boolean gates and
+    /// must be lowered away before scheduling. (`StorageRead`/`StorageWrite`
+    /// ARE expressible: they schedule to GRAM storage gates.)
     UnsupportedStmt,
+    /// A storage read/write had a symbolic (non-constant) address wire: the
+    /// GRAM driver runs a concrete ORAM access, so every address bit must be
+    /// a compile-time-known constant. Symbolic addressing needs the MUX/GRAM
+    /// symbolic-address layer instead.
+    SymbolicStorageAddress,
     /// A gate references a wire that has not been defined yet (dangling).
     DanglingWire,
 }
@@ -47,7 +54,10 @@ impl core::fmt::Display for ScheduleError {
                 write!(f, "circuit return carries no output wires")
             }
             ScheduleError::UnsupportedStmt => {
-                write!(f, "circuit contains a non-boolean statement (oracle/action/rng/storage)")
+                write!(f, "circuit contains a non-boolean statement (oracle/action/rng)")
+            }
+            ScheduleError::SymbolicStorageAddress => {
+                write!(f, "storage address is symbolic; GRAM storage needs concrete address bits")
             }
             ScheduleError::DanglingWire => write!(f, "gate references a not-yet-defined wire"),
         }
@@ -91,6 +101,53 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
     let mut gates: Vec<Gate> = Vec::new();
     // stmt ordinal -> wire index holding its result.
     let mut stmt_wire: Vec<usize> = Vec::with_capacity(block.stmts.len());
+    // Per-wire constant value, for wires that are a compile-time-known
+    // constant (`Zero`/`One`, and `Not` of a constant). Storage addresses are
+    // resolved against this: a storage op's address bits must be constant so
+    // the cell is concrete (the GRAM driver runs a concrete ORAM access).
+    let mut wire_const: Vec<Option<bool>> = vec![None; num_inputs];
+    // GRAM storage spaces, in first-use `StorageId` order (the gate's
+    // `storage` field indexes this).
+    let mut storage_ids: Vec<StorageId> = Vec::new();
+    let mut storage_max_cell: Vec<u64> = Vec::new();
+    let mut access_count: u64 = 0;
+    // Resolve (or register) a StorageId to its storage index.
+    let mut storage_index =
+        |sid: StorageId, ids: &mut Vec<StorageId>, max: &mut Vec<u64>| -> usize {
+            match ids.iter().position(|&s| s == sid) {
+                Some(i) => i,
+                None => {
+                    ids.push(sid);
+                    max.push(0);
+                    ids.len() - 1
+                }
+            }
+        };
+    // Resolve a source var (input or earlier stmt result) to a wire index,
+    // then fold an address-bit wire vector to a concrete cell index, failing
+    // if any bit is non-constant.
+    let concrete_cell = |addr: &[IRVarId],
+                         wire_const: &Vec<Option<bool>>,
+                         stmt_wire: &Vec<usize>| -> Result<u64, ScheduleError> {
+        let mut cell = 0u64;
+        for (bit, v) in addr.iter().enumerate() {
+            let raw = v.0 as usize;
+            let w = if raw < num_inputs {
+                raw
+            } else {
+                stmt_wire
+                    .get(raw - num_inputs)
+                    .copied()
+                    .ok_or(ScheduleError::DanglingWire)?
+            };
+            match wire_const.get(w).copied().flatten() {
+                Some(true) => cell |= 1u64 << bit,
+                Some(false) => {}
+                None => return Err(ScheduleError::SymbolicStorageAddress),
+            }
+        }
+        Ok(cell)
+    };
 
     // Resolve a source var (input or earlier stmt result) to a wire index.
     let wire_of = |v: volar_ir::ir::IRVarId, stmt_wire: &Vec<usize>| -> Result<usize, ScheduleError> {
@@ -105,37 +162,54 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
 
     for stmt in &block.stmts {
         let next_wire = num_inputs + gates.len();
+        // Default: the wire this statement defines is not a known constant.
+        let mut result_const: Option<bool> = None;
         match &stmt.kind {
             BIrStmt::Zero => {
                 gates.push(Gate::Zero);
                 stmt_wire.push(next_wire);
+                result_const = Some(false);
             }
             BIrStmt::One => {
                 gates.push(Gate::One);
                 stmt_wire.push(next_wire);
+                result_const = Some(true);
             }
             BIrStmt::Xor(a, b) => {
                 let wa = wire_of(*a, &stmt_wire)?;
                 let wb = wire_of(*b, &stmt_wire)?;
                 gates.push(Gate::Xor(wa, wb));
                 stmt_wire.push(next_wire);
+                result_const = match (wire_const[wa], wire_const[wb]) {
+                    (Some(x), Some(y)) => Some(x ^ y),
+                    _ => None,
+                };
             }
             BIrStmt::And(a, b) => {
                 let wa = wire_of(*a, &stmt_wire)?;
                 let wb = wire_of(*b, &stmt_wire)?;
                 gates.push(Gate::And(wa, wb));
                 stmt_wire.push(next_wire);
+                result_const = match (wire_const[wa], wire_const[wb]) {
+                    (Some(x), Some(y)) => Some(x & y),
+                    _ => None,
+                };
             }
             BIrStmt::Not(a) => {
                 let wa = wire_of(*a, &stmt_wire)?;
                 gates.push(Gate::Not(wa));
                 stmt_wire.push(next_wire);
+                result_const = wire_const[wa].map(|x| !x);
             }
             BIrStmt::Or(a, b) => {
                 // a | b  ==  !(!a & !b). Reserve the result wire for the final
                 // Not; intermediates are schedule-internal.
                 let wa = wire_of(*a, &stmt_wire)?;
                 let wb = wire_of(*b, &stmt_wire)?;
+                result_const = match (wire_const[wa], wire_const[wb]) {
+                    (Some(x), Some(y)) => Some(x | y),
+                    _ => None,
+                };
                 let base = num_inputs + gates.len();
                 gates.push(Gate::Not(wa)); // base + 0
                 gates.push(Gate::Not(wb)); // base + 1
@@ -143,15 +217,62 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
                 gates.push(Gate::Not(base + 2)); // base + 3 == result
                 stmt_wire.push(base + 3);
             }
+            BIrStmt::StorageRead { storage, addr, .. } => {
+                let cell = concrete_cell(addr, &wire_const, &stmt_wire)?;
+                let si = storage_index(*storage, &mut storage_ids, &mut storage_max_cell);
+                if cell > storage_max_cell[si] {
+                    storage_max_cell[si] = cell;
+                }
+                access_count += 1;
+                gates.push(Gate::StorageRead {
+                    storage: si,
+                    cell,
+                    access: access_count,
+                });
+                stmt_wire.push(next_wire);
+            }
+            BIrStmt::StorageWrite { storage, src, addr, .. } => {
+                let cell = concrete_cell(addr, &wire_const, &stmt_wire)?;
+                let si = storage_index(*storage, &mut storage_ids, &mut storage_max_cell);
+                if cell > storage_max_cell[si] {
+                    storage_max_cell[si] = cell;
+                }
+                let wsrc = wire_of(*src, &stmt_wire)?;
+                access_count += 1;
+                gates.push(Gate::StorageWrite {
+                    storage: si,
+                    cell,
+                    src: wsrc,
+                    access: access_count,
+                });
+                stmt_wire.push(next_wire);
+            }
             // Non-boolean statements cannot be scheduled into a pure GC.
             _ => return Err(ScheduleError::UnsupportedStmt),
         }
+        wire_const.push(result_const);
     }
+
+    // Size each storage space's ORAM to cover every cell the program touched,
+    // and derive the tree levels (a complete tree over the address space).
+    let storages: Vec<GramStorageSpec> = storage_max_cell
+        .iter()
+        .map(|&max_cell| {
+            let num_cells = (max_cell + 1).max(1);
+            // Smallest levels with 2^(levels-1) >= num_cells (levels >= 1).
+            let mut levels = 1usize;
+            while (1u64 << (levels - 1)) < num_cells {
+                levels += 1;
+            }
+            GramStorageSpec { num_cells, levels }
+        })
+        .collect();
 
     Ok(GateSchedule {
         num_inputs,
         gates,
         output,
         outputs: Some(outputs),
+        storages,
     })
 }

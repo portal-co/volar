@@ -45,6 +45,11 @@ fn eval_concrete(schedule: &GateSchedule, inputs: &[bool]) -> bool {
             Gate::Xor(a, b) => wires[a] ^ wires[b],
             Gate::And(a, b) => wires[a] & wires[b],
             Gate::Not(a) => !wires[a],
+            // The concrete cross-check is for pure boolean schedules; storage
+            // gates never appear in these hand-built fixtures.
+            Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
+                panic!("concrete cross-check is boolean-only")
+            }
         };
         wires.push(out);
     }
@@ -70,6 +75,7 @@ fn four_input_schedule() -> GateSchedule {
         ],
         output: 8,
         outputs: None,
+        storages: alloc::vec![],
     }
 }
 

@@ -31,7 +31,8 @@ use digest::Digest;
 use hybrid_array::Array;
 use volar_ir::boolar::BIrBlocks;
 use volar_mpc::{
-    GateSchedule, InputOwner, MpcError, OtChannel, evaluate_multi, garble_schedule,
+    GateSchedule, GramDrive, InputOwner, MpcError, OtChannel, evaluate_multi,
+    evaluate_multi_with_gram, garble_schedule,
 };
 use volar_spec::vole::VoleArray;
 use volar_spec::garble::{Garble, GlobalSecret};
@@ -166,6 +167,51 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> VcEmbedder<N, I, A> {
             private_bits,
             blind_bits,
             ot,
+        ) {
+            Ok(bits) => VcOutcome::Value(bits),
+            Err(e) => VcOutcome::Abort(e),
+        }
+    }
+
+    /// GRAM-aware `invoke`: run the two-party computation over a guest
+    /// circuit whose schedule carries Garbled-RAM storage ops. `gram` is one
+    /// ORAM driver per storage space, in `schedule.storages` order (build one
+    /// [`GramEvalDrive`](crate::GramEvalDrive) per space, sized from its
+    /// [`GramStorageSpec`](volar_mpc::GramStorageSpec)).
+    ///
+    /// The input-label assembly (public / garbler / OT-delivered blind bits)
+    /// is identical to [`Self::invoke_schedule`]; only the evaluator's
+    /// circuit walk routes storage ops through the ORAM host. Returns the
+    /// same [`VcOutcome`] contract.
+    pub fn invoke_schedule_with_gram<D: Digest>(
+        &self,
+        schedule: &GateSchedule,
+        partition: &[InputOwner],
+        public_bits: &[bool],
+        private_bits: &[bool],
+        blind_bits: &[bool],
+        ot: &mut dyn OtChannel<N>,
+        gram: &mut [&mut dyn GramDrive<N>],
+    ) -> VcOutcome {
+        if schedule.num_inputs != I || schedule.and_count() != A {
+            return VcOutcome::Error(ScheduleError::NotACircuit);
+        }
+        let exec = match garble_schedule::<N, D, I, A>(
+            schedule,
+            self.secret.clone(),
+            self.input_labels.clone(),
+        ) {
+            Ok(e) => e,
+            Err(e) => return VcOutcome::Abort(e),
+        };
+        match evaluate_multi_with_gram::<N, D, I, A>(
+            &exec,
+            partition,
+            public_bits,
+            private_bits,
+            blind_bits,
+            ot,
+            gram,
         ) {
             Ok(bits) => VcOutcome::Value(bits),
             Err(e) => VcOutcome::Abort(e),

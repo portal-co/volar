@@ -65,6 +65,22 @@ pub mod ot_mlkem;
 #[cfg(feature = "std")]
 pub mod tcp;
 
+/// The deterministic Garbled-RAM data-wire base: access `access`'s `bit`-th
+/// data-bit false-label is derived as `H(0xDA || access || bit)` — a pure
+/// function both the garbler and the evaluator-side ORAM host compute, so
+/// they agree with no extra communication. Mirrors
+/// `Garble::action_result_base` and cirrus's `gram_data_base` (0xDA domain).
+pub fn gram_data_base<D: Digest, N: VoleArray<u8>>(access: u64, bit: u64) -> Garble<N> {
+    let mut d = D::new();
+    d.update([0xDAu8]);
+    d.update(access.to_le_bytes());
+    d.update(bit.to_le_bytes());
+    let hash = d.finalize();
+    Garble {
+        base: Array::<u8, N>::from_fn(|i| hash[i]),
+    }
+}
+
 /// Which set a circuit input bit belongs to (the mutual-privacy partition).
 ///
 /// Session-level view of the per-value side metadata `volar-ir` threads
@@ -135,6 +151,32 @@ pub enum MpcError {
     BadPartition,
     /// The gate schedule referenced a wire that was never defined.
     MalformedSchedule,
+    /// The schedule contains Garbled-RAM storage ops
+    /// ([`Gate::StorageRead`]/[`Gate::StorageWrite`]) but the evaluator was
+    /// run without a GRAM storage driver. Run the `*_with_gram` evaluator
+    /// that drives an ORAM host instead.
+    UnsupportedStorage,
+}
+
+/// The evaluator-side Garbled-RAM storage driver: one ORAM host per storage
+/// space, fed by [`GarbledExec::eval_labels_multi_with_gram`]. The garbler
+/// has pinned every storage wire's false-label base; this driver runs the
+/// actual ORAM access (the ORAM client lives evaluator-side) and re-garbles
+/// the result bit to the base both parties agreed on.
+///
+/// `volar-vc` implements this over `volar-oram`'s `bit_host::OramHost` (the
+/// shared bit-level Path-ORAM driver); `volar-mpc` stays free of an ORAM
+/// dependency so it remains a pure execution-time crate.
+pub trait GramDrive<N: VoleArray<u8>> {
+    /// Read the bit at concrete cell `cell` on ORAM access `access`,
+    /// returning the read bit re-garbled to `base` (the deterministic
+    /// per-access base `gram_data_base(access, 0)`).
+    fn read(&mut self, cell: u64, access: u64, base: &Garble<N>) -> Eval<N>;
+    /// Write the bit carried by `value` to concrete cell `cell` on ORAM
+    /// access `access`. The driver decodes the write bit against the cell's
+    /// current base (tracked host-side, mirroring the garbler's cell
+    /// pinning) before running the ORAM write.
+    fn write(&mut self, cell: u64, access: u64, value: &Eval<N>) -> Result<(), MpcError>;
 }
 
 /// A channel over which the per-bit evaluator-input OTs run.
@@ -174,6 +216,52 @@ pub enum Gate {
     And(usize, usize),
     /// NOT of a wire (XOR with the one-wire; free).
     Not(usize),
+    /// Read the bit at a concrete storage cell, producing the next wire.
+    ///
+    /// This is the Garbled-RAM storage op: the cell index is a *concrete*
+    /// (compile-time-known) address, so no address gates are scheduled. The
+    /// garbler pins the read-result wire's false-label base deterministically
+    /// (`gram_data_base(access, 0)`) and emits no table; the evaluator runs
+    /// the ORAM access host-side and re-garbles the read bit to that base.
+    /// `access` is the ordinal of this storage op in evaluation order (the
+    /// ORAM access index, shared by both parties).
+    StorageRead {
+        /// Which storage space (indexes `GateSchedule::storages`).
+        storage: usize,
+        /// Concrete cell index within the space.
+        cell: u64,
+        /// ORAM access ordinal (1-based, matching the evaluator's counter).
+        access: u64,
+    },
+    /// Write the bit on wire `src` to a concrete storage cell, producing the
+    /// next wire (a dummy zero, matching `BIrStmt::StorageWrite`).
+    ///
+    /// The garbler pins the written cell's base to `src`'s false-label base
+    /// (so the evaluator can decode the write bit) and emits no table; the
+    /// evaluator decodes the write bit against that base and runs the ORAM
+    /// write access.
+    StorageWrite {
+        /// Which storage space (indexes `GateSchedule::storages`).
+        storage: usize,
+        /// Concrete cell index within the space.
+        cell: u64,
+        /// Wire carrying the bit to write.
+        src: usize,
+        /// ORAM access ordinal (1-based, matching the evaluator's counter).
+        access: u64,
+    },
+}
+
+/// The shape of one Garbled-RAM storage space carried by a schedule: enough
+/// for the evaluator to size its ORAM tree and host, and for both parties to
+/// agree on the deterministic per-cell base derivation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GramStorageSpec {
+    /// Number of addressable cells (one bit per cell, boolar convention).
+    pub num_cells: u64,
+    /// ORAM tree levels (path length). Must satisfy `2^(levels-1) >=
+    /// num_cells` for a complete tree over the address space.
+    pub levels: usize,
 }
 
 /// The gate schedule for a single-output boolean circuit: the gates in
@@ -192,6 +280,12 @@ pub struct GateSchedule {
     /// output-wire list; `output` is then its first element.
     #[doc(hidden)]
     pub outputs: Option<Vec<usize>>,
+    /// The Garbled-RAM storage spaces this schedule reads/writes, indexed by
+    /// the `storage` field of [`Gate::StorageRead`]/[`Gate::StorageWrite`].
+    /// Empty for a pure boolean circuit (the common case). When non-empty the
+    /// evaluator must run with a GRAM storage driver (`*_with_gram`).
+    #[doc(hidden)]
+    pub storages: Vec<GramStorageSpec>,
 }
 
 impl GateSchedule {
@@ -269,6 +363,10 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
                         _ => return Err(MpcError::MalformedSchedule),
                     }
                 }
+                // Storage ops need a GRAM driver; the pure evaluator has none.
+                Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
+                    return Err(MpcError::UnsupportedStorage);
+                }
             };
             wires.push(out);
         }
@@ -317,6 +415,10 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
                         _ => return Err(MpcError::MalformedSchedule),
                     }
                 }
+                // Storage ops need a GRAM driver; the pure evaluator has none.
+                Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
+                    return Err(MpcError::UnsupportedStorage);
+                }
             };
             wires.push(out);
         }
@@ -326,6 +428,82 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
             .map(|&w| wires.get(w).cloned().ok_or(MpcError::MalformedSchedule))
             .collect()
     }
+
+    /// GRAM-aware multi-output evaluator: like [`Self::eval_labels_multi`],
+    /// but storage ops are driven through `gram` (an ORAM host on the
+    /// evaluator side). The garbler has already pinned every storage wire's
+    /// base via [`garble_schedule`]; here the evaluator runs each ORAM access
+    /// and re-garbles the result to the deterministic per-access base
+    /// ([`gram_data_base`]), so downstream gates consume a correctly-based
+    /// label. The driver is supplied per space (indexed by the gate's
+    /// `storage` field).
+    pub fn eval_labels_multi_with_gram<D: Digest>(
+        setup: &EvalSetup<N, A>,
+        schedule: &GateSchedule,
+        inputs: &[Eval<N>],
+        gram: &mut [&mut dyn GramDrive<N>],
+    ) -> Result<Vec<Eval<N>>, MpcError> {
+        if inputs.len() != schedule.num_inputs {
+            return Err(MpcError::BadPartition);
+        }
+        if gram.len() != schedule.storages.len() {
+            return Err(MpcError::MalformedSchedule);
+        }
+        let mut wires: Vec<Eval<N>> = Vec::with_capacity(schedule.wire_count());
+        wires.extend_from_slice(inputs);
+        let mut table = 0usize;
+        for gate in &schedule.gates {
+            let out = match *gate {
+                Gate::Zero => Eval::zero(),
+                Gate::One => setup.one_wire.clone(),
+                Gate::Xor(a, b) => {
+                    let (x, y) = (wires.get(a), wires.get(b));
+                    match (x, y) {
+                        (Some(x), Some(y)) => x.clone() ^ y.clone(),
+                        _ => return Err(MpcError::MalformedSchedule),
+                    }
+                }
+                Gate::Not(a) => match wires.get(a) {
+                    Some(x) => x.clone() ^ setup.one_wire.clone(),
+                    None => return Err(MpcError::MalformedSchedule),
+                },
+                Gate::And(a, b) => {
+                    let t = setup.tables.get(table).ok_or(MpcError::MalformedSchedule)?;
+                    table += 1;
+                    match (wires.get(a), wires.get(b)) {
+                        (Some(x), Some(y)) => x.and_via_table::<D>(y, t),
+                        _ => return Err(MpcError::MalformedSchedule),
+                    }
+                }
+                Gate::StorageRead {
+                    storage, cell, access,
+                } => {
+                    let driver = gram.get_mut(storage).ok_or(MpcError::MalformedSchedule)?;
+                    let base = gram_data_base::<D, N>(access, 0);
+                    driver.read(cell, access, &base)
+                }
+                Gate::StorageWrite {
+                    storage,
+                    cell,
+                    src,
+                    access,
+                } => {
+                    let driver = gram.get_mut(storage).ok_or(MpcError::MalformedSchedule)?;
+                    let value = wires.get(src).cloned().ok_or(MpcError::MalformedSchedule)?;
+                    driver.write(cell, access, &value)?;
+                    // Dummy-zero wire (matches BIrStmt::StorageWrite).
+                    Eval::zero()
+                }
+            };
+            wires.push(out);
+        }
+        schedule
+            .output_wires()
+            .iter()
+            .map(|&w| wires.get(w).cloned().ok_or(MpcError::MalformedSchedule))
+            .collect()
+    }
+
 }
 
 /// Garble a gate schedule into a [`GarbledExec`], given the global secret and
@@ -355,6 +533,20 @@ where
     let mut wires: Vec<Garble<N>> = Vec::with_capacity(schedule.wire_count());
     wires.extend(input_labels.iter().cloned());
     let mut tables: Vec<GarbleTable<N>> = Vec::with_capacity(A);
+    // GRAM storage: per-space per-cell current false-label bases. A cell's
+    // base starts at `gram_data_base(0, cell)` (the deterministic initial
+    // supply) and is re-pinned to the written wire's base on each write, so
+    // the evaluator can decode the write bit against the same base the
+    // garbler tracked. Mirrors cirrus's `GramStorageSpace::cell_bases`.
+    let mut cell_bases: Vec<Vec<Garble<N>>> = schedule
+        .storages
+        .iter()
+        .map(|s| {
+            (0..s.num_cells)
+                .map(|cell| gram_data_base::<D, N>(0, cell))
+                .collect()
+        })
+        .collect();
     for gate in &schedule.gates {
         let out = match *gate {
             Gate::Zero | Gate::One => Garble::zero(),
@@ -385,6 +577,30 @@ where
                     }
                     _ => return Err(MpcError::MalformedSchedule),
                 }
+            }
+            Gate::StorageRead {
+                storage, access, ..
+            } => {
+                // The read-result wire's false-label base is the deterministic
+                // per-access base the evaluator's ORAM host re-garbles to.
+                let _ = storage;
+                gram_data_base::<D, N>(access, 0)
+            }
+            Gate::StorageWrite {
+                storage, cell, src, ..
+            } => {
+                // Pin the written cell's base to the written wire's base so
+                // the evaluator decodes the write bit against it; produce a
+                // dummy-zero wire.
+                let sb = wires.get(src).cloned().ok_or(MpcError::MalformedSchedule)?;
+                let space = cell_bases
+                    .get_mut(storage)
+                    .ok_or(MpcError::MalformedSchedule)?;
+                let slot = space
+                    .get_mut(cell as usize)
+                    .ok_or(MpcError::MalformedSchedule)?;
+                *slot = sb;
+                Garble::zero()
             }
         };
         wires.push(out);
@@ -546,6 +762,76 @@ where
     // Decode each output wire against its own false-label base, falling back
     // to the shared published `output_label` for hand-built single-output
     // `GarbledExec` values that left `output_labels` empty.
+    let decoded: Vec<bool> = results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let base = exec.output_labels.get(i).unwrap_or(&exec.circuit.output_label);
+            r.open(base)[0] & 1 != 0
+        })
+        .collect();
+    Ok(decoded)
+}
+
+/// GRAM-aware multi-output two-party evaluation: like [`evaluate_multi`], but
+/// the circuit's Garbled-RAM storage ops are driven through `gram` (one ORAM
+/// driver per storage space, in `schedule.storages` order). The input-label
+/// assembly (public / garbler / OT-delivered evaluator bits) is identical;
+/// only the evaluator's circuit walk routes storage ops through the ORAM
+/// host. Use this for any schedule with a non-empty `storages` list.
+pub fn evaluate_multi_with_gram<N, D, const I: usize, const A: usize>(
+    exec: &GarbledExec<N, I, A>,
+    partition: &[InputOwner],
+    public_bits: &[bool],
+    garbler_bits: &[bool],
+    evaluator_bits: &[bool],
+    ot: &mut dyn OtChannel<N>,
+    gram: &mut [&mut dyn GramDrive<N>],
+) -> Result<Vec<bool>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let schedule = &exec.schedule;
+    if partition.len() != schedule.num_inputs
+        || partition.iter().filter(|&&o| o == InputOwner::Public).count() != public_bits.len()
+        || partition.iter().filter(|&&o| o == InputOwner::Garbler).count() != garbler_bits.len()
+        || partition.iter().filter(|&&o| o == InputOwner::Evaluator).count() != evaluator_bits.len()
+    {
+        return Err(MpcError::BadPartition);
+    }
+
+    let setup = exec.circuit.eval_setup();
+
+    let mut labels: Vec<Eval<N>> = Vec::with_capacity(schedule.num_inputs);
+    let mut pub_i = 0usize;
+    let mut gb_i = 0usize;
+    let mut ev_i = 0usize;
+    for (idx, owner) in partition.iter().enumerate() {
+        let wire = &exec.circuit.input_labels[idx];
+        match owner {
+            InputOwner::Public => {
+                labels.push(exec.circuit.secret.encode(wire, public_bits[pub_i]));
+                pub_i += 1;
+            }
+            InputOwner::Garbler => {
+                labels.push(exec.circuit.secret.encode(wire, garbler_bits[gb_i]));
+                gb_i += 1;
+            }
+            InputOwner::Evaluator => {
+                let false_label = exec.circuit.secret.encode(wire, false);
+                let true_label = exec.circuit.secret.encode(wire, true);
+                ot.send([&false_label.target, &true_label.target]);
+                let chosen = ot.receive(evaluator_bits[ev_i]);
+                ev_i += 1;
+                labels.push(Eval { target: chosen });
+            }
+        }
+    }
+
+    let results = GarbledExec::<N, I, A>::eval_labels_multi_with_gram::<D>(
+        &setup, schedule, &labels, gram,
+    )?;
     let decoded: Vec<bool> = results
         .iter()
         .enumerate()

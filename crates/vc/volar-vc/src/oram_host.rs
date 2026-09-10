@@ -75,6 +75,227 @@ where
     }
 }
 
+// ---------------------------------------------------------------------------
+// GRAM storage driver for the two-party session (Workstream G1)
+// ---------------------------------------------------------------------------
+
+use volar_mpc::{GramDrive, MpcError, gram_data_base};
+use volar_oram::OramTree;
+use volar_spec::garble::gram_decode_label;
+use digest::Digest;
+
+/// The evaluator-side Garbled-RAM storage driver for a `volar-mpc` session:
+/// one ORAM space, run through the shared [`OramHost`] bit-level driver, with
+/// the read/write bits re-garbled / decoded against the deterministic
+/// per-access and per-cell bases the garbler pinned.
+///
+/// This is the volar-vc counterpart of cirrus's `GramStorage` evaluator impl:
+/// a `storage_read` runs a full ORAM read access and re-garbles the read bit
+/// to `gram_data_base(access, 0)`; a `storage_write` decodes the written
+/// label against the cell's current base and runs a full ORAM write access.
+/// The garbler (`volar-mpc`'s `garble_schedule`) pins the matching bases.
+pub struct GramEvalDrive<'t, D: Digest, N: VoleArray<u8>, const Z: usize, const B: usize> {
+    secret: &'t GlobalSecret<N>,
+    host: OramHost<Z, B>,
+    tree: &'t mut OramTree<Z, B>,
+    /// Per-cell current false-label bases, mirroring the garbler's
+    /// `cell_bases`: starts at `gram_data_base(0, cell)` and is re-pinned to
+    /// the written wire's base on each write. The evaluator needs it to
+    /// decode each write bit (it cannot derive a label's base from the label
+    /// alone).
+    cell_bases: Vec<Garble<N>>,
+    /// splitmix64 stream driving the ORAM position-map assignments. A real
+    /// (non-constant) stream is required: a constant leaf assignment breaks
+    /// Path-ORAM correctness across cells.
+    rng_state: u64,
+    _digest: core::marker::PhantomData<D>,
+}
+
+fn splitmix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
+impl<'t, D: Digest, N: VoleArray<u8>, const Z: usize, const B: usize>
+    GramEvalDrive<'t, D, N, Z, B>
+{
+    /// Create a driver over `tree` (an ORAM of `num_cells` one-bit cells at
+    /// `levels` levels), seeded by `secret`. `rng_seed` drives the
+    /// position-map assignments; any non-constant seed works.
+    pub fn new(
+        secret: &'t GlobalSecret<N>,
+        tree: &'t mut OramTree<Z, B>,
+        levels: usize,
+        num_cells: u64,
+        rng_seed: u64,
+    ) -> Self {
+        Self {
+            secret,
+            host: OramHost::new(levels, num_cells),
+            tree,
+            cell_bases: (0..num_cells)
+                .map(|cell| gram_data_base::<D, N>(0, cell))
+                .collect(),
+            rng_state: rng_seed,
+            _digest: core::marker::PhantomData,
+        }
+    }
+
+    fn next_rng(&mut self) -> u64 {
+        self.rng_state = splitmix64(self.rng_state);
+        self.rng_state
+    }
+
+    /// Encode a concrete 64-bit address into 64 re-garbled labels + matching
+    /// bases, keyed on the public `u64::MAX` base supply (the address is
+    /// concrete, so both parties know it).
+    fn encode_addr(&self, addr: u64) -> (Vec<Eval<N>>, Vec<Garble<N>>) {
+        let mut labels = Vec::with_capacity(64);
+        let mut bases = Vec::with_capacity(64);
+        for i in 0..64 {
+            let base = gram_data_base::<D, N>(u64::MAX, i as u64);
+            let bit = (addr >> i) & 1 == 1;
+            labels.push(self.secret.encode(&base, bit));
+            bases.push(base);
+        }
+        (labels, bases)
+    }
+
+    /// Run one full ORAM access (read or write) at concrete cell `cell`,
+    /// returning the re-garbled read-data bit (bit 0 of block byte 0).
+    fn access(
+        &mut self,
+        cell: u64,
+        access: u64,
+        write: Option<bool>,
+    ) -> Eval<N> {
+        let (addr_labels, addr_bases) = self.encode_addr(cell);
+        let base = gram_data_base::<D, N>(access, 0);
+        let write_bits = write.map(|b| {
+            let mut wb = alloc::vec![false; 8 * B];
+            wb[0] = b;
+            wb
+        });
+        // Drive the shared bit-level host through begin/read/process/write/evict,
+        // re-garbling the read-data bit to `base`.
+        let read = run_oram_access::<D, N, Z, B>(
+            &mut self.host,
+            &mut *self.tree,
+            &addr_labels,
+            &addr_bases,
+            write_bits.as_deref(),
+            self.secret,
+            &base,
+            &mut self.rng_state,
+        );
+        read
+    }
+}
+
+/// Drive one full ORAM access through the shared bit-level host, re-garbling
+/// the read-data bit (block byte 0 bit 0) to `base`. Returns the re-garbled
+/// read label.
+#[allow(clippy::too_many_arguments)]
+fn run_oram_access<D: Digest, N: VoleArray<u8>, const Z: usize, const B: usize>(
+    host: &mut OramHost<Z, B>,
+    tree: &mut OramTree<Z, B>,
+    addr_labels: &[Eval<N>],
+    addr_bases: &[Garble<N>],
+    write: Option<&[bool]>,
+    secret: &GlobalSecret<N>,
+    base: &Garble<N>,
+    rng_state: &mut u64,
+) -> Eval<N> {
+    // 1. Decode the 64 address labels to a plaintext u64 (concrete address).
+    let addr_bits_decoded = addr_labels
+        .iter()
+        .zip(addr_bases)
+        .map(|(l, b)| gram_decode_label(l, b))
+        .collect::<Vec<bool>>();
+    let mut addr = 0u64;
+    for (i, b) in addr_bits_decoded.iter().enumerate() {
+        if *b {
+            addr |= 1u64 << i;
+        }
+    }
+    let mut addr_bits = Vec::new();
+    OramHost::<Z, B>::push_u64(&mut addr_bits, addr, 64);
+
+    // begin: addr → old_leaf.
+    let leaf_bits = host
+        .begin(&addr_bits, &mut || {
+            *rng_state = splitmix64(*rng_state);
+            *rng_state
+        })
+        .expect("GRAM read: begin");
+    let mut off = 0usize;
+    let old_leaf = OramHost::<Z, B>::take_u64(&leaf_bits, &mut off, 64);
+
+    // Read the path at old_leaf, flatten to bits.
+    let path = tree.read_path(old_leaf);
+    let mut path_bits = Vec::new();
+    host.push_path(&mut path_bits, &path);
+
+    // process: path ‖ data ‖ is_write → wb_path ‖ read_data ‖ e1 ‖ e2.
+    let mut proc_args = path_bits.clone();
+    let wd: Vec<bool> = match write {
+        Some(w) => w.to_vec(),
+        None => alloc::vec![false; 8 * B],
+    };
+    proc_args.extend_from_slice(&wd);
+    proc_args.push(write.is_some());
+    let proc_out = host.process(&proc_args).expect("GRAM access: process");
+
+    let path_bits_len = path_bits.len();
+    let wb_bits = &proc_out[..path_bits_len];
+    let mut roff = path_bits_len;
+    let mut read_data_bits = Vec::with_capacity(8 * B);
+    for _ in 0..(8 * B) {
+        read_data_bits.push(proc_out[roff]);
+        roff += 1;
+    }
+    let evict1 = OramHost::<Z, B>::take_u64(&proc_out, &mut roff, 64);
+    let evict2 = OramHost::<Z, B>::take_u64(&proc_out, &mut roff, 64);
+
+    // Write back the updated path; then two eviction passes.
+    let wb_path = host.take_path(wb_bits, "wb").expect("GRAM access: wb path");
+    tree.write_path(old_leaf, &wb_path);
+    for evict_leaf in [evict1, evict2] {
+        let ep = tree.read_path(evict_leaf);
+        let mut ep_bits = Vec::new();
+        host.push_path(&mut ep_bits, &ep);
+        let new_ep_bits = host.evict(&ep_bits).expect("GRAM access: evict");
+        let new_ep = host.take_path(&new_ep_bits, "evict_out").expect("GRAM access: evict path");
+        tree.write_path(evict_leaf, &new_ep);
+    }
+
+    // Re-garble the read bit (byte 0 bit 0) to the deterministic base.
+    gram_regarble(secret, base, read_data_bits[0])
+}
+
+impl<'t, D: Digest, N: VoleArray<u8>, const Z: usize, const B: usize> GramDrive<N>
+    for GramEvalDrive<'t, D, N, Z, B>
+{
+    fn read(&mut self, cell: u64, access: u64, base: &Garble<N>) -> Eval<N> {
+        let _ = base; // the deterministic base is recomputed inside access().
+        self.access(cell, access, None)
+    }
+
+    fn write(&mut self, cell: u64, access: u64, value: &Eval<N>) -> Result<(), MpcError> {
+        // Decode the write bit against the cell's current base (mirroring the
+        // garbler's cell_bases pinning).
+        let value_base = self
+            .cell_bases
+            .get(cell as usize)
+            .cloned()
+            .ok_or(MpcError::MalformedSchedule)?;
+        let bit = gram_decode_label(value, &value_base);
+        self.access(cell, access, Some(bit));
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -487,3 +487,143 @@ fn vc_invoke_multi_output_all_visibilities() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Workstream G1: GRAM storage circuits through the two-party session.
+// A storage circuit (concrete cells) is scheduled to GRAM storage gates
+// (not the linear-scan MUX floor) and driven through an ORAM host on the
+// evaluator side, with the garbler pinning bases. Sub-linear in the memory.
+// ---------------------------------------------------------------------------
+
+use volar_oram::OramTree;
+use volar_vc::GramEvalDrive;
+
+/// A GRAM storage circuit: write `data_in` to cell `0` (concrete address),
+/// then read cells 0 and 1 and XOR them. Addresses are constant wires, so
+/// the schedule resolves concrete cells. This is `storage_circuit_mux`'s
+/// logic but left in storage form (no MUX lowering) so it schedules to GRAM.
+fn storage_circuit_gram() -> BIrBlocks {
+    let storage = StorageId(0);
+    let lane = LaneId(0);
+    let mut block: BIrBlock<()> = BIrBlock {
+        params: 1, // 0 = data_in
+        stmts: vec![],
+        terminator: BIrTerminator::Jmp(BIrTarget {
+            block: IRBlockTargetId::Return,
+            args: vec![],
+        }),
+    };
+    let mut next = 1u32;
+    let mut push = |s: BIrStmt, b: &mut BIrBlock<()>| {
+        b.stmts.push(Node::new(s, (), None));
+        let id = IRVarId(next);
+        next += 1;
+        id
+    };
+    let data_in = IRVarId(0);
+    // Write data_in to cell 0 (constant address bit Zero).
+    let zero = push(BIrStmt::Zero, &mut block);
+    let one = push(BIrStmt::One, &mut block);
+    push(
+        BIrStmt::StorageWrite {
+            storage,
+            lane,
+            src: data_in,
+            addr: vec![zero],
+        },
+        &mut block,
+    );
+    // Read cell 0 and cell 1 (constant addresses), XOR them.
+    let read0 = push(
+        BIrStmt::StorageRead {
+            storage,
+            lane,
+            addr: vec![zero],
+        },
+        &mut block,
+    );
+    let read1 = push(
+        BIrStmt::StorageRead {
+            storage,
+            lane,
+            addr: vec![one],
+        },
+        &mut block,
+    );
+    let out = push(BIrStmt::Xor(read0, read1), &mut block);
+    block.terminator = BIrTerminator::Jmp(BIrTarget {
+        block: IRBlockTargetId::Return,
+        args: vec![out],
+    });
+    BIrBlocks {
+        blocks: vec![block],
+        pre_init: vec![],
+    }
+}
+
+/// Concrete reference for `storage_circuit_gram`: cell 0 gets data_in, cell 1
+/// stays 0, so the result is `data_in ^ false = data_in`.
+fn gram_concrete(data_in: bool) -> bool {
+    data_in
+}
+
+/// The schedule compiler resolves concrete storage cells to GRAM gates.
+#[test]
+fn gram_storage_schedule_has_concrete_cells() {
+    let schedule = VcEmbedder::<N, 1, 0>::compile(&storage_circuit_gram()).expect("compiles");
+    assert_eq!(schedule.num_inputs, 1);
+    assert_eq!(schedule.and_count(), 0, "no AND gates (only XOR + storage)");
+    assert_eq!(schedule.storages.len(), 1, "one storage space");
+    // 2 cells touched (0 and 1); num_cells = 2, levels sized to cover it.
+    assert_eq!(schedule.storages[0].num_cells, 2);
+    let n_storage = schedule
+        .gates
+        .iter()
+        .filter(|g| matches!(g, volar_mpc::Gate::StorageRead { .. } | volar_mpc::Gate::StorageWrite { .. }))
+        .count();
+    assert_eq!(n_storage, 3, "one write + two reads");
+}
+
+/// The G1 capstone: a GRAM storage circuit runs two-party — the evaluator
+/// drives an ORAM host, the garbler pins bases — and the result matches
+/// concrete evaluation. Sub-linear (ORAM), unlike the MUX floor.
+#[test]
+fn gram_storage_circuit_two_party() {
+    const Z: usize = 4;
+    const B: usize = 8;
+    let circuit = storage_circuit_gram();
+    let schedule = VcEmbedder::<N, 1, 0>::compile(&circuit).expect("compiles");
+    let spec = schedule.storages[0];
+    let partition = [InputOwner::Evaluator]; // data_in is the remote party's
+
+    for d in [false, true] {
+        let inputs = [d];
+        let mut ot = LoopbackOt::<N>::new();
+        // Build the ORAM driver for the single storage space.
+        let mut tree = OramTree::<Z, B>::new(spec.levels);
+        let drive_secret = GlobalSecret::<N>::new(det_bytes(29));
+        let mut drive: GramEvalDrive<D, N, Z, B> = GramEvalDrive::new(
+            &drive_secret,
+            &mut tree,
+            spec.levels,
+            spec.num_cells,
+            0x5EED,
+        );
+        let labels = [det_label(11)];
+        let embedder: VcEmbedder<N, 1, 0> = VcEmbedder::with_secret(drive_secret.clone(), labels);
+        let mut gram: [&mut dyn volar_mpc::GramDrive<N>; 1] = [&mut drive];
+        let out = embedder.invoke_schedule_with_gram::<D>(
+            &schedule,
+            &partition,
+            &[],
+            &[],
+            &inputs,
+            &mut ot,
+            &mut gram,
+        );
+        match out {
+            VcOutcome::Value(bits) => assert_eq!(bits[0], gram_concrete(d), "d={d}"),
+            other => panic!("expected Value, got {other:?} for d={d}"),
+        }
+    }
+}
