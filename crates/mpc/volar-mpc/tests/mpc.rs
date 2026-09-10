@@ -69,6 +69,7 @@ fn four_input_schedule() -> GateSchedule {
             Gate::Xor(7, 2),
         ],
         output: 8,
+        outputs: None,
     }
 }
 

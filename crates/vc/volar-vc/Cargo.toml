@@ -21,6 +21,13 @@ volar-side.workspace = true
 sha2 = { version = "0.11.0-rc.0", default-features = false }
 typenum = { version = "1.17", default-features = false }
 volar-ir-passes.workspace = true
+# D2 WAT conformance test: drive a real guest through the vc pipeline.
+volar-vaffle-target.workspace = true
+vaffle.workspace = true
+portal-pc-waffle-ir.workspace = true
+portal-pc-waffle-frontend.workspace = true
+volar-ir-opt.workspace = true
+wat = "1.212.0"
 
 [features]
 default = []

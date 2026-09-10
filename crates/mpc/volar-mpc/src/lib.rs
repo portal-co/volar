@@ -186,6 +186,12 @@ pub struct GateSchedule {
     pub gates: Vec<Gate>,
     /// Index of the wire carrying the circuit's output.
     pub output: usize,
+    /// Indices of the wires carrying the circuit's revealed outputs, in
+    /// result order. When `None`, the circuit is single-output on `output`
+    /// (the legacy shape). A multi-output schedule sets this to the full
+    /// output-wire list; `output` is then its first element.
+    #[doc(hidden)]
+    pub outputs: Option<Vec<usize>>,
 }
 
 impl GateSchedule {
@@ -197,6 +203,11 @@ impl GateSchedule {
     /// Number of AND gates (== number of garbled tables required).
     pub fn and_count(&self) -> usize {
         self.gates.iter().filter(|g| matches!(g, Gate::And(..))).count()
+    }
+
+    /// The output-wire list, defaulting to the single `output` wire.
+    pub fn output_wires(&self) -> Vec<usize> {
+        self.outputs.clone().unwrap_or_else(|| alloc::vec![self.output])
     }
 }
 
@@ -211,6 +222,10 @@ pub struct GarbledExec<N: VoleArray<u8>, const I: usize, const A: usize> {
     pub circuit: GarbledCircuit<N, I, A>,
     /// The gate schedule (shared with the evaluator).
     pub schedule: GateSchedule,
+    /// Per-output-wire false-label bases (garbler-private), in
+    /// `output_wires()` order. Set by [`garble_schedule`]; `GarbledExec`
+    /// values built by hand for single-output tests leave this empty.
+    pub output_labels: Vec<Garble<N>>,
 }
 
 impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
@@ -258,6 +273,58 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
             wires.push(out);
         }
         wires.get(schedule.output).cloned().ok_or(MpcError::MalformedSchedule)
+    }
+
+    /// Multi-output variant of [`Self::eval_labels`]: returns the label on
+    /// every wire in `schedule.output_wires()`, in order. The evaluator runs
+    /// the circuit once; the per-output decode is the caller's concern (each
+    /// output wire opens against its own published output label).
+    pub fn eval_labels_multi<D: Digest>(
+        setup: &EvalSetup<N, A>,
+        schedule: &GateSchedule,
+        inputs: &[Eval<N>],
+    ) -> Result<Vec<Eval<N>>, MpcError> {
+        // Reuse the single-output walk by evaluating to the last wire, then
+        // selecting each requested output. `eval_labels` already validates
+        // and fills `wires`; we replicate its selection for every output.
+        // (Simplest correct path: evaluate the full wire vector once here.)
+        if inputs.len() != schedule.num_inputs {
+            return Err(MpcError::BadPartition);
+        }
+        let mut wires: Vec<Eval<N>> = Vec::with_capacity(schedule.wire_count());
+        wires.extend_from_slice(inputs);
+        let mut table = 0usize;
+        for gate in &schedule.gates {
+            let out = match *gate {
+                Gate::Zero => Eval::zero(),
+                Gate::One => setup.one_wire.clone(),
+                Gate::Xor(a, b) => {
+                    let (x, y) = (wires.get(a), wires.get(b));
+                    match (x, y) {
+                        (Some(x), Some(y)) => x.clone() ^ y.clone(),
+                        _ => return Err(MpcError::MalformedSchedule),
+                    }
+                }
+                Gate::Not(a) => match wires.get(a) {
+                    Some(x) => x.clone() ^ setup.one_wire.clone(),
+                    None => return Err(MpcError::MalformedSchedule),
+                },
+                Gate::And(a, b) => {
+                    let t = setup.tables.get(table).ok_or(MpcError::MalformedSchedule)?;
+                    table += 1;
+                    match (wires.get(a), wires.get(b)) {
+                        (Some(x), Some(y)) => x.and_via_table::<D>(y, t),
+                        _ => return Err(MpcError::MalformedSchedule),
+                    }
+                }
+            };
+            wires.push(out);
+        }
+        schedule
+            .output_wires()
+            .iter()
+            .map(|&w| wires.get(w).cloned().ok_or(MpcError::MalformedSchedule))
+            .collect()
     }
 }
 
@@ -329,6 +396,14 @@ where
     let tables: [GarbleTable<N>; A] = tables
         .try_into()
         .map_err(|_| MpcError::MalformedSchedule)?;
+    // Collect each output wire's own false-label base so multi-output
+    // evaluation can decode every wire against its true base (not the shared
+    // single `output_label`, which is only correct for `output` itself).
+    let output_labels: Vec<Garble<N>> = schedule
+        .output_wires()
+        .iter()
+        .map(|&w| wires.get(w).cloned().ok_or(MpcError::MalformedSchedule))
+        .collect::<Result<_, _>>()?;
     Ok(GarbledExec {
         circuit: GarbledCircuit {
             secret,
@@ -336,6 +411,7 @@ where
             tables,
             output_label,
         },
+        output_labels,
         schedule: schedule.clone(),
     })
 }
@@ -410,6 +486,75 @@ where
     //     detected structurally by the transport-driven session path (which
     //     re-checks the label against both published output labels).
     Ok(setup.recover_output(&result))
+}
+
+/// Multi-output variant of [`evaluate`]: returns one revealed bit per wire in
+/// `schedule.output_wires()`, in order. Each output wire's label opens against
+/// that wire's own false-label base (collected into `GarbledExec.output_labels`
+/// by [`garble_schedule`]), so every output bit decodes correctly. For a
+/// single-output schedule this matches [`evaluate`].
+pub fn evaluate_multi<N, D, const I: usize, const A: usize>(
+    exec: &GarbledExec<N, I, A>,
+    partition: &[InputOwner],
+    public_bits: &[bool],
+    garbler_bits: &[bool],
+    evaluator_bits: &[bool],
+    ot: &mut dyn OtChannel<N>,
+) -> Result<Vec<bool>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let schedule = &exec.schedule;
+    if partition.len() != schedule.num_inputs
+        || partition.iter().filter(|&&o| o == InputOwner::Public).count() != public_bits.len()
+        || partition.iter().filter(|&&o| o == InputOwner::Garbler).count() != garbler_bits.len()
+        || partition.iter().filter(|&&o| o == InputOwner::Evaluator).count() != evaluator_bits.len()
+    {
+        return Err(MpcError::BadPartition);
+    }
+
+    let setup = exec.circuit.eval_setup();
+
+    let mut labels: Vec<Eval<N>> = Vec::with_capacity(schedule.num_inputs);
+    let mut pub_i = 0usize;
+    let mut gb_i = 0usize;
+    let mut ev_i = 0usize;
+    for (idx, owner) in partition.iter().enumerate() {
+        let wire = &exec.circuit.input_labels[idx];
+        match owner {
+            InputOwner::Public => {
+                labels.push(exec.circuit.secret.encode(wire, public_bits[pub_i]));
+                pub_i += 1;
+            }
+            InputOwner::Garbler => {
+                labels.push(exec.circuit.secret.encode(wire, garbler_bits[gb_i]));
+                gb_i += 1;
+            }
+            InputOwner::Evaluator => {
+                let false_label = exec.circuit.secret.encode(wire, false);
+                let true_label = exec.circuit.secret.encode(wire, true);
+                ot.send([&false_label.target, &true_label.target]);
+                let chosen = ot.receive(evaluator_bits[ev_i]);
+                ev_i += 1;
+                labels.push(Eval { target: chosen });
+            }
+        }
+    }
+
+    let results = GarbledExec::<N, I, A>::eval_labels_multi::<D>(&setup, schedule, &labels)?;
+    // Decode each output wire against its own false-label base, falling back
+    // to the shared published `output_label` for hand-built single-output
+    // `GarbledExec` values that left `output_labels` empty.
+    let decoded: Vec<bool> = results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let base = exec.output_labels.get(i).unwrap_or(&exec.circuit.output_label);
+            r.open(base)[0] & 1 != 0
+        })
+        .collect();
+    Ok(decoded)
 }
 
 // Transport-driven sessions

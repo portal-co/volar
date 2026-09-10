@@ -31,7 +31,7 @@ use digest::Digest;
 use hybrid_array::Array;
 use volar_ir::boolar::BIrBlocks;
 use volar_mpc::{
-    GateSchedule, InputOwner, MpcError, OtChannel, evaluate, garble_schedule,
+    GateSchedule, InputOwner, MpcError, OtChannel, evaluate_multi, garble_schedule,
 };
 use volar_spec::vole::VoleArray;
 use volar_spec::garble::{Garble, GlobalSecret};
@@ -149,7 +149,7 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> VcEmbedder<N, I, A> {
     ) -> VcOutcome {
         if schedule.num_inputs != I || schedule.and_count() != A {
             // Circuit shape mismatch against this embedder's const generics.
-            return VcOutcome::Error(ScheduleError::NotSingleOutput);
+            return VcOutcome::Error(ScheduleError::NotACircuit);
         }
         let exec = match garble_schedule::<N, D, I, A>(
             schedule,
@@ -159,8 +159,15 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> VcEmbedder<N, I, A> {
             Ok(e) => e,
             Err(e) => return VcOutcome::Abort(e),
         };
-        match evaluate::<N, D, I, A>(&exec, partition, public_bits, private_bits, blind_bits, ot) {
-            Ok(bit) => VcOutcome::Value(alloc::vec![bit]),
+        match evaluate_multi::<N, D, I, A>(
+            &exec,
+            partition,
+            public_bits,
+            private_bits,
+            blind_bits,
+            ot,
+        ) {
+            Ok(bits) => VcOutcome::Value(bits),
             Err(e) => VcOutcome::Abort(e),
         }
     }

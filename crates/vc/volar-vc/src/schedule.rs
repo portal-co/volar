@@ -28,9 +28,9 @@ use volar_mpc::{Gate, GateSchedule};
 pub enum ScheduleError {
     /// The circuit is not in fused single-block form (`is_circuit()` false).
     NotACircuit,
-    /// The `Return` terminator carries zero or more than one output wire.
-    /// `volar-mpc`'s `GateSchedule` is single-output.
-    NotSingleOutput,
+    /// The `Return` terminator carries zero output wires (a circuit must
+    /// return at least one bit to reveal).
+    NoOutput,
     /// A statement the schedule shape cannot express (oracle/action call,
     /// RNG, storage read/write, or a projected-bit form). These are not pure
     /// boolean gates and must be lowered away before scheduling.
@@ -43,8 +43,8 @@ impl core::fmt::Display for ScheduleError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ScheduleError::NotACircuit => write!(f, "circuit is not fused single-block form"),
-            ScheduleError::NotSingleOutput => {
-                write!(f, "circuit return is not exactly one output wire")
+            ScheduleError::NoOutput => {
+                write!(f, "circuit return carries no output wires")
             }
             ScheduleError::UnsupportedStmt => {
                 write!(f, "circuit contains a non-boolean statement (oracle/action/rng/storage)")
@@ -58,11 +58,13 @@ impl core::fmt::Display for ScheduleError {
 ///
 /// `circuit` must satisfy `is_circuit()`: exactly one block whose terminator
 /// is `Jmp` to [`IRBlockTargetId::Return`]. The block's `params` become
-/// `num_inputs`; each boolean statement becomes one gate; the single `Return`
-/// argument becomes `output`. `Or` is expanded by De Morgan into three gates
-/// (two `Not` + one `And` + one `Not` — four gates total), so the resulting
-/// schedule's AND count is the number of `And` statements plus the number of
-/// `Or` statements.
+/// `num_inputs`; each boolean statement becomes one gate; the `Return`
+/// arguments become the output wires, in order (`output` is the first,
+/// `outputs` the full list). A multi-bit guest result (e.g. an `i32`)
+/// therefore schedules as one output wire per result bit. `Or` is expanded
+/// by De Morgan into four gates (two `Not` + one `And` + one `Not`), so the
+/// resulting schedule's AND count is the number of `And` statements plus the
+/// number of `Or` statements.
 pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule, ScheduleError> {
     if !circuit.is_circuit() || circuit.blocks.len() != 1 {
         return Err(ScheduleError::NotACircuit);
@@ -70,16 +72,17 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
     let block = &circuit.blocks[0];
     let num_inputs = block.params as usize;
 
-    // Output wire: the Return target's single argument.
-    let output = match &block.terminator {
+    // Output wires: the Return target's arguments, in order.
+    let outputs: Vec<usize> = match &block.terminator {
         BIrTerminator::Jmp(target) if target.block == IRBlockTargetId::Return => {
-            if target.args.len() != 1 {
-                return Err(ScheduleError::NotSingleOutput);
+            if target.args.is_empty() {
+                return Err(ScheduleError::NoOutput);
             }
-            target.args[0].0 as usize
+            target.args.iter().map(|a| a.0 as usize).collect()
         }
         _ => return Err(ScheduleError::NotACircuit),
     };
+    let output = outputs[0];
 
     // Each statement defines wire num_inputs + (schedule position). Because
     // Or expands to multiple gates, statement i does *not* map to gate i; we
@@ -149,5 +152,6 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
         num_inputs,
         gates,
         output,
+        outputs: Some(outputs),
     })
 }

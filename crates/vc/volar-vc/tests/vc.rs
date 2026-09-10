@@ -379,3 +379,111 @@ fn run_gram_typed<const A: usize>(
     let embedder: VcEmbedder<N, 2, A> = VcEmbedder::with_secret(secret, labels);
     embedder.invoke::<D, _>(circuit, partition, &[], &[], inputs, ot)
 }
+
+// ---------------------------------------------------------------------------
+// Multi-output schedules: a circuit returning several bits reveals each one
+// correctly, decoded against its own output false-label base.
+// ---------------------------------------------------------------------------
+
+/// `(x0 & x1, x0 ^ x1, !x2)` — a 3-input, 3-output circuit. Wires 0,1,2 are
+/// inputs; wire 3 = And(0,1); wire 4 = Xor(0,1); wire 5 = Not(2); the Return
+/// terminator carries all three result wires, in order.
+fn three_output_circuit() -> BIrBlocks {
+    BIrBlocks {
+        blocks: vec![BIrBlock {
+            params: 3,
+            stmts: vec![
+                Node::new(BIrStmt::And(IRVarId(0), IRVarId(1)), (), None),
+                Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None),
+                Node::new(BIrStmt::Not(IRVarId(2)), (), None),
+            ],
+            terminator: BIrTerminator::Jmp(BIrTarget {
+                block: IRBlockTargetId::Return,
+                args: vec![IRVarId(3), IRVarId(4), IRVarId(5)],
+            }),
+        }],
+        pre_init: vec![],
+    }
+}
+
+fn three_output_concrete(inputs: &[bool; 3]) -> [bool; 3] {
+    [
+        inputs[0] & inputs[1],
+        inputs[0] ^ inputs[1],
+        !inputs[2],
+    ]
+}
+
+/// The schedule compiler surfaces all three output wires.
+#[test]
+fn compile_multi_output_schedule() {
+    let schedule = VcEmbedder::<N, 3, 1>::compile(&three_output_circuit()).expect("compiles");
+    assert_eq!(schedule.num_inputs, 3);
+    assert_eq!(schedule.and_count(), 1);
+    assert_eq!(schedule.output_wires(), vec![3, 4, 5]);
+}
+
+/// A multi-output invoke reveals every output bit correctly across all inputs
+/// and visibility assignments — each decoded against its own output base.
+#[test]
+fn vc_invoke_multi_output_all_visibilities() {
+    let circuit = three_output_circuit();
+    let owners = [
+        volar_vc::VcVisibility::Public,
+        volar_vc::VcVisibility::Private,
+        volar_vc::VcVisibility::Blind,
+    ];
+    let (public, local, remote) = (SideId(0), SideId(1), SideId(2));
+
+    for combo in 0u32..27 {
+        let mut vis = [volar_vc::VcVisibility::Public; 3];
+        let mut c = combo;
+        for v in vis.iter_mut() {
+            *v = owners[(c % 3) as usize];
+            c /= 3;
+        }
+        let side_of = |i: usize| match vis[i] {
+            volar_vc::VcVisibility::Public => Some(public),
+            volar_vc::VcVisibility::Private => Some(local),
+            volar_vc::VcVisibility::Blind => Some(remote),
+        };
+        let partition = partition_from_sides(3, public, local, remote, side_of);
+
+        for inputs in 0u32..8 {
+            let b = [
+                (inputs >> 0) & 1 == 1,
+                (inputs >> 1) & 1 == 1,
+                (inputs >> 2) & 1 == 1,
+            ];
+            let mut public_b = Vec::new();
+            let mut private_b = Vec::new();
+            let mut blind_b = Vec::new();
+            for (i, &bit) in b.iter().enumerate() {
+                match vis[i] {
+                    volar_vc::VcVisibility::Public => public_b.push(bit),
+                    volar_vc::VcVisibility::Private => private_b.push(bit),
+                    volar_vc::VcVisibility::Blind => blind_b.push(bit),
+                }
+            }
+            let secret = GlobalSecret::<N>::new(det_bytes(13));
+            let labels = [det_label(7), det_label(91), det_label(33)];
+            let embedder: VcEmbedder<N, 3, 1> = VcEmbedder::with_secret(secret, labels);
+            let mut ot = LoopbackOt::<N>::new();
+            let out = embedder.invoke::<D, _>(
+                &circuit,
+                &partition,
+                &public_b,
+                &private_b,
+                &blind_b,
+                &mut ot,
+            );
+            match out {
+                VcOutcome::Value(bits) => {
+                    assert_eq!(bits.len(), 3);
+                    assert_eq!(bits.as_slice(), &three_output_concrete(&b), "vis {vis:?} inputs {b:?}");
+                }
+                other => panic!("expected Value, got {other:?} for vis {vis:?} inputs {b:?}"),
+            }
+        }
+    }
+}
