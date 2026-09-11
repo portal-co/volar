@@ -85,7 +85,6 @@ fn s3_symbolic_storage_matches_model() {
     let program = storage_to_oram(
         &guest(),
         &OramLowerConfig {
-            storage: StorageId(0),
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,
@@ -141,7 +140,6 @@ fn s3_secure_default_encrypted_tree() {
     let program = storage_to_oram(
         &guest(),
         &OramLowerConfig {
-            storage: StorageId(0),
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,
@@ -234,7 +232,6 @@ fn s3_write_cells_then_symbolic_read() {
     let program = storage_to_oram(
         &guest_two_cells(),
         &OramLowerConfig {
-            storage: StorageId(0),
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,
@@ -303,7 +300,6 @@ fn s3_narrowing_bounds_the_oram() {
     let full = storage_to_oram(
         &guest_wide_addr(),
         &OramLowerConfig {
-            storage: StorageId(0),
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,
@@ -317,7 +313,6 @@ fn s3_narrowing_bounds_the_oram() {
     let narrowed = storage_to_oram(
         &guest_wide_addr(),
         &OramLowerConfig {
-            storage: StorageId(0),
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,
@@ -382,7 +377,6 @@ fn s3_larger_oram_instance_concrete() {
     let program = storage_to_oram(
         &guest,
         &OramLowerConfig {
-            storage: StorageId(0),
             levels: 15,
             bucket_size: Z,
             max_stash: 2 * 15 + Z + 16,
@@ -400,6 +394,79 @@ fn s3_larger_oram_instance_concrete() {
             inputs.push(dv);
             let (out, _tree) = run_concrete::<Z>(&program, &inputs);
             assert_eq!(out, vec![dv], "larger-oram addr={addr} d={dv}");
+        }
+    }
+}
+
+// Guest over TWO storage spaces: write d to space0[a], write e to space1[b],
+// read space0[a] -> r0, read space1[b] -> r1; return [r0, r1]. Params:
+// [a0,a1,d,b0,b1,e] (2-bit addresses per space). Validates the multi-space
+// driver routes each access to its own ORAM.
+fn guest_two_spaces() -> BIrBlocks<()> {
+    let lane = LaneId(0);
+    let (a0, a1, d, b0, b1, e) = (
+        IRVarId(0),
+        IRVarId(1),
+        IRVarId(2),
+        IRVarId(3),
+        IRVarId(4),
+        IRVarId(5),
+    );
+    let mut block: BIrBlock<()> = BIrBlock {
+        params: 6,
+        stmts: vec![],
+        terminator: BIrTerminator::Jmp(BIrTarget {
+            block: IRBlockTargetId::Return,
+            args: vec![],
+        }),
+    };
+    let mut next = 6u32;
+    let mut push = |s: BIrStmt, b: &mut BIrBlock<()>| {
+        b.stmts.push(Node::new(s, (), None));
+        let id = IRVarId(next);
+        next += 1;
+        id
+    };
+    let sa = StorageId(0);
+    let sb = StorageId(1);
+    push(BIrStmt::StorageWrite { storage: sa, lane, src: d, addr: vec![a0, a1] }, &mut block);
+    push(BIrStmt::StorageWrite { storage: sb, lane, src: e, addr: vec![b0, b1] }, &mut block);
+    let r0 = push(BIrStmt::StorageRead { storage: sa, lane, addr: vec![a0, a1] }, &mut block);
+    let r1 = push(BIrStmt::StorageRead { storage: sb, lane, addr: vec![b0, b1] }, &mut block);
+    block.terminator = BIrTerminator::Jmp(BIrTarget {
+        block: IRBlockTargetId::Return,
+        args: vec![r0, r1],
+    });
+    BIrBlocks {
+        blocks: vec![block],
+        pre_init: vec![],
+    }
+}
+
+#[test]
+fn s3_multi_space_two_orams() {
+    let program = storage_to_oram(
+        &guest_two_spaces(),
+        &OramLowerConfig {
+            levels: LEVELS,
+            bucket_size: Z,
+            max_stash: MAX_STASH,
+            secure: false,
+            narrow_bits: None,
+        },
+    )
+    .expect("lowers");
+    // Two distinct spaces -> two ORAMs.
+    assert_eq!(program.spaces.len(), 2);
+    for a in 0..4u64 {
+        for b in 0..4u64 {
+            for d in [false, true] {
+                for e in [false, true] {
+                    let inputs = vec![a & 1 == 1, a & 2 == 2, d, b & 1 == 1, b & 2 == 2, e];
+                    let (out, _tree) = run_concrete::<Z>(&program, &inputs);
+                    assert_eq!(out, vec![d, e], "a={a} b={b} d={d} e={e}");
+                }
+            }
         }
     }
 }

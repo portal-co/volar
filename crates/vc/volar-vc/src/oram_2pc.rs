@@ -246,7 +246,19 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
         let n_path = cfg.levels * Z;
         let num_leaves = cfg.num_leaves() as u64;
         debug_assert_eq!(db, 1, "bit-level storage");
-        debug_assert_eq!(addr_slots.len(), ab);
+        debug_assert!(addr_slots.len() <= ab, "narrower addrs are zero-padded");
+        // Zero-pad a narrower address to the shared `ab` width.
+        let addr_feeds = |addr_slots: &[usize]| -> Vec<Feed> {
+            (0..ab)
+                .map(|i| {
+                    if i < addr_slots.len() {
+                        Feed::Tape(addr_slots[i])
+                    } else {
+                        Feed::Const(false)
+                    }
+                })
+                .collect()
+        };
 
         let new_leaf = splitmix_next(&mut self.leaf_rng) % num_leaves;
 
@@ -281,7 +293,7 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
 
         // --- begin: posmap.update(addr, new_leaf) -> old_leaf, new_posmap ---
         let mut feeds: Vec<Feed> = (0..cfg.num_addrs * lb).map(Feed::Posmap).collect();
-        feeds.extend(addr_slots.iter().map(|&s| Feed::Tape(s)));
+        feeds.extend(addr_feeds(addr_slots));
         feeds.extend(enc(new_leaf, lb).into_iter().map(Feed::Garbler));
         let (bl, bb) = run_circuit::<N, D>(
             &self.secret,
@@ -310,7 +322,7 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
         let path_bits = flatten_path::<Z>(&main_path, cfg);
         let mut feeds: Vec<Feed> = (0..cfg.max_stash * eb).map(Feed::Stash).collect();
         feeds.extend(path_bits.iter().copied().map(Feed::Eval));
-        feeds.extend(addr_slots.iter().map(|&s| Feed::Tape(s)));
+        feeds.extend(addr_feeds(addr_slots));
         feeds.push(Feed::Const(write));
         feeds.push(if write {
             Feed::Tape(wdata_slot)

@@ -39,7 +39,6 @@ const MAX_STASH: usize = 2 * LEVELS + Z + (1 << AB);
 
 fn config() -> OramLowerConfig {
     OramLowerConfig {
-        storage: StorageId(0),
         levels: LEVELS,
         bucket_size: Z,
         max_stash: MAX_STASH,

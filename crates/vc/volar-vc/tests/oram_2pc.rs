@@ -97,7 +97,6 @@ fn s4_oram_program_two_party_matches_concrete() {
     let program = storage_to_oram(
         &guest(),
         &OramLowerConfig {
-            storage: StorageId(0),
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,
@@ -152,7 +151,6 @@ fn s4_oram_program_two_party_secure_default() {
     let program = storage_to_oram(
         &guest(),
         &OramLowerConfig {
-            storage: StorageId(0),
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,

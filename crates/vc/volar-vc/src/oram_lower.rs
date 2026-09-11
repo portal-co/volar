@@ -52,8 +52,6 @@ use crate::oram_gadget::{OramGadgetConfig, TreeCrypto, build_access, build_begin
 /// Which storage space to lower, and the ORAM geometry to serve it with.
 #[derive(Clone, Copy, Debug)]
 pub struct OramLowerConfig {
-    /// The storage space whose ops become ORAM accesses.
-    pub storage: StorageId,
     /// Path-ORAM tree depth (`num_leaves = 2^(levels-1)`).
     pub levels: usize,
     /// Bucket size `Z`.
@@ -80,6 +78,9 @@ pub struct OramLowerConfig {
 pub struct AccessInfo {
     /// `true` for a write, `false` for a read.
     pub write: bool,
+    /// Which ORAM space this access targets (index into `OramProgram::spaces`).
+    /// Single-space guests always use `0`.
+    pub space: usize,
     /// Tape slots of the address bits (LSB-first, `addr_bits` of them).
     pub addr_slots: Vec<usize>,
     /// Tape slot of the write-data bit (only meaningful for writes).
@@ -99,8 +100,13 @@ pub enum Stage {
 
 /// A symbolic-storage guest lowered to per-access segments + the ORAM gadget.
 pub struct OramProgram {
-    /// The ORAM geometry (`data_bits == 1`).
+    /// The ORAM geometry (`data_bits == 1`), shared by every space (all spaces
+    /// are narrowed to the same address width).
     pub oram: OramGadgetConfig,
+    /// The ORAM spaces this program touches, in index order (the `space` field
+    /// of each `AccessInfo` indexes into this). One entry per distinct
+    /// `StorageId` the guest uses.
+    pub spaces: Vec<StorageId>,
     /// The ORAM begin circuit (posmap update), reused for every access.
     pub begin: BIrBlocks,
     /// The unified ORAM access circuit (absorb/select/rw/evict), reused.
@@ -186,23 +192,22 @@ pub fn storage_to_oram<P: Clone>(
     let num_params = block.params as usize;
     let n = block.stmts.len();
 
-    // Locate the storage ops on the target space; reject oracles and other
-    // spaces. Record each op's addr width (must be uniform).
-    let mut storage_idx: Vec<usize> = Vec::new();
-    let mut ab: Option<usize> = None;
+    // Locate the storage ops across *all* spaces (multi-space storage
+    // ownership): each distinct `StorageId` gets its own ORAM. Record each op's
+    // stmt index + space index. Spaces may have different address widths; the
+    // shared geometry uses the *widest* (narrowed), and narrower addresses are
+    // zero-padded by the driver.
+    let mut space_index: BTreeMap<StorageId, usize> = BTreeMap::new();
+    let mut storage_idx: Vec<(usize, usize)> = Vec::new(); // (stmt idx, space idx)
+    let mut ab = 0usize;
     for (i, node) in block.stmts.iter().enumerate() {
         match &node.kind {
             BIrStmt::StorageRead { storage, addr, .. }
             | BIrStmt::StorageWrite { storage, addr, .. } => {
-                if *storage != cfg.storage {
-                    return Err(OramLowerError::MixedStorage);
-                }
-                match ab {
-                    None => ab = Some(addr.len()),
-                    Some(w) if w != addr.len() => return Err(OramLowerError::NonUniformAddress),
-                    _ => {}
-                }
-                storage_idx.push(i);
+                let nsp = space_index.len();
+                let sidx = *space_index.entry(*storage).or_insert(nsp);
+                ab = ab.max(addr.len());
+                storage_idx.push((i, sidx));
             }
             BIrStmt::OracleCall { .. }
             | BIrStmt::OracleBit { .. }
@@ -212,7 +217,7 @@ pub fn storage_to_oram<P: Clone>(
             _ => {}
         }
     }
-    let ab = ab.unwrap_or(0);
+    let spaces: Vec<StorageId> = space_index.keys().copied().collect();
     // Address narrowing: truncate to the low `narrow_bits` bits if requested.
     let eff_ab = match cfg.narrow_bits {
         Some(n) => n.min(ab),
@@ -224,7 +229,7 @@ pub fn storage_to_oram<P: Clone>(
     // A var needs a tape slot iff it is live across a segment boundary. The
     // boundaries are: start (params live-in), around each access, and the end
     // (terminator args).
-    let is_storage: BTreeSet<usize> = storage_idx.iter().copied().collect();
+    let is_storage: BTreeSet<usize> = storage_idx.iter().map(|(i, _)| *i).collect();
     let mut slot_vars: BTreeSet<u32> = BTreeSet::new();
     let mut live: BTreeSet<u32> = term_args.iter().copied().collect();
     slot_vars.extend(live.iter().copied());
@@ -269,8 +274,10 @@ pub fn storage_to_oram<P: Clone>(
     // --- Lower each compute segment to a tape -> tape circuit. ---
     // Segments are the runs of non-storage stmts between storage ops.
     let mut boundaries: Vec<usize> = Vec::new(); // stmt index of each storage op
-    boundaries.extend(storage_idx.iter().copied());
+    boundaries.extend(storage_idx.iter().map(|(i, _)| *i));
     boundaries.push(n); // sentinel end
+    // stmt index -> ORAM space index.
+    let space_of_stmt: BTreeMap<usize, usize> = storage_idx.iter().copied().collect();
 
     // Build the ORAM gadget circuits once for this geometry. Encryption is the
     // default posture (`OramGadgetConfig::secure`); tests set `secure: false`
@@ -304,15 +311,18 @@ pub fn storage_to_oram<P: Clone>(
         stages.push(Stage::Compute(seg));
         // If b is a real storage op (not the sentinel), emit its access stage.
         if b < n {
+            let space = space_of_stmt[&b];
             let info = match &block.stmts[b].kind {
                 BIrStmt::StorageRead { addr, .. } => AccessInfo {
                     write: false,
+                    space,
                     addr_slots: addr.iter().take(eff_ab).map(|v| slot_of[&v.0]).collect(),
                     wdata_slot: 0,
                     result_slot: Some(slot_of[&stmt_var(num_params, b)]),
                 },
                 BIrStmt::StorageWrite { addr, src, .. } => AccessInfo {
                     write: true,
+                    space,
                     addr_slots: addr.iter().take(eff_ab).map(|v| slot_of[&v.0]).collect(),
                     wdata_slot: slot_of[&src.0],
                     result_slot: None,
@@ -326,6 +336,7 @@ pub fn storage_to_oram<P: Clone>(
 
     Ok(OramProgram {
         oram,
+        spaces,
         begin,
         access,
         tape_width,
@@ -529,47 +540,72 @@ impl Splitmix64 {
     }
 }
 
-/// A **persistent** concrete ORAM driver: holds the ORAM state (tree, posmap,
-/// stash, access counter, leaf RNG, tree crypto) so a *looping* guest can run
-/// many [`OramProgram`] steps against one shared ORAM. This is the concrete
-/// counterpart of the two-party [`crate::oram_2pc::Oram2pc`] loop driver.
-pub struct ConcreteOramDrive<const Z: usize> {
+/// Per-space ORAM state held by [`ConcreteOramDrive`].
+struct SpaceDrive<const Z: usize> {
     tree: OramTree<Z, 1>,
     posmap_bits: Vec<bool>,
     stash_bits: Vec<bool>,
     counter: u64,
-    leaf_rng: Splitmix64,
     crypto: TreeCrypto,
 }
 
-impl<const Z: usize> ConcreteOramDrive<Z> {
-    /// Fresh drive for a given geometry (`cfg`), pre-formatting the tree when
-    /// the config encrypts the valid bit.
-    pub fn new(cfg: &OramGadgetConfig) -> Self {
-        assert_eq!(cfg.bucket_size, Z, "bucket size must match the tree");
-        assert_eq!(cfg.data_bits, 1, "bit-level storage");
-        assert!(cfg.tree_block_bytes() <= 1, "run_concrete: B=1 tree needs entry_bits <= 8");
+impl<const Z: usize> SpaceDrive<Z> {
+    fn new(cfg: &OramGadgetConfig) -> Self {
         let mut tree: OramTree<Z, 1> = OramTree::new(cfg.levels);
         let mut crypto = TreeCrypto::new([0xA5; 16], tree.buckets.len(), cfg);
         if cfg.encrypted {
             crypto.format_tree(cfg, &mut tree);
         }
-        ConcreteOramDrive {
+        SpaceDrive {
             posmap_bits: alloc::vec![false; cfg.num_addrs * cfg.leaf_bits()],
             stash_bits: alloc::vec![false; cfg.max_stash * cfg.entry_bits()],
             tree,
             counter: 0,
-            leaf_rng: Splitmix64(0x5EED),
             crypto,
         }
     }
+}
 
-    /// The current tree (for inspection).
-    pub fn tree(&self) -> &OramTree<Z, 1> {
-        &self.tree
+/// A **persistent** concrete ORAM driver: holds the ORAM state (one tree,
+/// posmap, stash, access counter, and tree crypto **per storage space**) so a
+/// *looping* guest can run many [`OramProgram`] steps against shared ORAMs, and
+/// a *multi-space* guest uses one ORAM per storage space. This is the concrete
+/// counterpart of the two-party [`crate::oram_2pc::Oram2pc`] loop driver.
+pub struct ConcreteOramDrive<const Z: usize> {
+    spaces: Vec<SpaceDrive<Z>>,
+    leaf_rng: Splitmix64,
+}
+
+impl<const Z: usize> ConcreteOramDrive<Z> {
+    /// Fresh drive for a program: one ORAM per space the program touches,
+    /// pre-formatting each tree when the config encrypts the valid bit.
+    pub fn for_program(program: &OramProgram) -> Self {
+        let cfg = &program.oram;
+        assert_eq!(cfg.bucket_size, Z, "bucket size must match the tree");
+        assert_eq!(cfg.data_bits, 1, "bit-level storage");
+        assert!(cfg.tree_block_bytes() <= 1, "run_concrete: B=1 tree needs entry_bits <= 8");
+        ConcreteOramDrive {
+            spaces: (0..program.spaces.len().max(1)).map(|_| SpaceDrive::new(cfg)).collect(),
+            leaf_rng: Splitmix64(0x5EED),
+        }
     }
 
-    /// Run one [`OramProgram`] step against the shared ORAM, returning the guest
+    /// Fresh single-space drive for a given geometry (`cfg`).
+    pub fn new(cfg: &OramGadgetConfig) -> Self {
+        assert_eq!(cfg.bucket_size, Z, "bucket size must match the tree");
+        assert_eq!(cfg.data_bits, 1, "bit-level storage");
+        ConcreteOramDrive {
+            spaces: alloc::vec![SpaceDrive::new(cfg)],
+            leaf_rng: Splitmix64(0x5EED),
+        }
+    }
+
+    /// The first space's tree (for inspection; single-space guests).
+    pub fn tree(&self) -> &OramTree<Z, 1> {
+        &self.spaces[0].tree
+    }
+
+    /// Run one [`OramProgram`] step against the shared ORAMs, returning the guest
     /// outputs. Panics on ORAM stash overflow (a protocol abort).
     pub fn run_program(&mut self, program: &OramProgram, inputs: &[bool]) -> Vec<bool> {
         let cfg = &program.oram;
@@ -579,8 +615,8 @@ impl<const Z: usize> ConcreteOramDrive<Z> {
         let eb = cfg.entry_bits();
         let n_path = cfg.levels * Z;
         let num_leaves = cfg.num_leaves() as u64;
-        let tree_key_bits = self.crypto.key_bits();
 
+        let Self { spaces, leaf_rng } = self;
         let mut tape = alloc::vec![false; program.tape_width];
         for (i, &b) in inputs.iter().enumerate() {
             tape[program.input_slots[i]] = b;
@@ -592,20 +628,26 @@ impl<const Z: usize> ConcreteOramDrive<Z> {
                     tape = eval_circuit(circuit, &tape);
                 }
                 Stage::Access(info) => {
-                    let addr = dec(&info.addr_slots.iter().map(|&s| tape[s]).collect::<Vec<_>>());
-                    let new_leaf = self.leaf_rng.next() % num_leaves;
+                    let sp = &mut spaces[info.space];
+                    let tree_key_bits = sp.crypto.key_bits();
+                    // Pad a narrower address to the shared `ab` width with zeros.
+                    let mut addr_bits: Vec<bool> =
+                        info.addr_slots.iter().map(|&s| tape[s]).collect();
+                    addr_bits.resize(ab, false);
+                    let addr = dec(&addr_bits);
+                    let new_leaf = leaf_rng.next() % num_leaves;
 
                     // begin: posmap update -> old_leaf
-                    let mut begin_in = self.posmap_bits.clone();
+                    let mut begin_in = sp.posmap_bits.clone();
                     begin_in.extend(enc(addr, ab));
                     begin_in.extend(enc(new_leaf, lb));
                     let begin_out = eval_circuit(&program.begin, &begin_in);
                     let old_leaf = dec(&begin_out[..lb]);
-                    self.posmap_bits = begin_out[lb..].to_vec();
+                    sp.posmap_bits = begin_out[lb..].to_vec();
 
                     // extern: read the main path; access (main); write it back.
-                    let main_path = self.tree.read_path(old_leaf);
-                    let mut acc_in = self.stash_bits.clone();
+                    let main_path = sp.tree.read_path(old_leaf);
+                    let mut acc_in = sp.stash_bits.clone();
                     acc_in.extend(flatten_path(&main_path, cfg));
                     acc_in.extend(enc(addr, ab));
                     acc_in.push(info.write);
@@ -616,7 +658,7 @@ impl<const Z: usize> ConcreteOramDrive<Z> {
                     if cfg.encrypted {
                         acc_in.extend(tree_key_bits.iter().copied());
                         if cfg.versioned_pads {
-                            for v in self.crypto.path_versions(&self.tree, old_leaf) {
+                            for v in sp.crypto.path_versions(&sp.tree, old_leaf) {
                                 acc_in.extend(enc(v, cfg.version_bits));
                             }
                         }
@@ -625,17 +667,17 @@ impl<const Z: usize> ConcreteOramDrive<Z> {
                     assert!(!acc_out[0], "ORAM stash overflow");
                     let rdata = acc_out[1];
                     let new_path = &acc_out[1 + db..1 + db + n_path * eb];
-                    self.stash_bits = acc_out[1 + db + n_path * eb..].to_vec();
+                    sp.stash_bits = acc_out[1 + db + n_path * eb..].to_vec();
                     let np = unflatten_path(new_path, cfg);
-                    self.tree.write_path(old_leaf, &np);
-                    self.crypto.bump_path(&self.tree, old_leaf);
+                    sp.tree.write_path(old_leaf, &np);
+                    sp.crypto.bump_path(&sp.tree, old_leaf);
 
                     // deterministic eviction (one pass, skipped on collision)
-                    let evict_leaf = eviction_target(self.counter, num_leaves);
-                    self.counter += 1;
+                    let evict_leaf = eviction_target(sp.counter, num_leaves);
+                    sp.counter += 1;
                     if evict_leaf != old_leaf {
-                        let epath = self.tree.read_path(evict_leaf);
-                        let mut ev_in = self.stash_bits.clone();
+                        let epath = sp.tree.read_path(evict_leaf);
+                        let mut ev_in = sp.stash_bits.clone();
                         ev_in.extend(flatten_path(&epath, cfg));
                         ev_in.extend(enc(0, ab));
                         ev_in.push(false);
@@ -646,7 +688,7 @@ impl<const Z: usize> ConcreteOramDrive<Z> {
                         if cfg.encrypted {
                             ev_in.extend(tree_key_bits.iter().copied());
                             if cfg.versioned_pads {
-                                for v in self.crypto.path_versions(&self.tree, evict_leaf) {
+                                for v in sp.crypto.path_versions(&sp.tree, evict_leaf) {
                                     ev_in.extend(enc(v, cfg.version_bits));
                                 }
                             }
@@ -654,10 +696,10 @@ impl<const Z: usize> ConcreteOramDrive<Z> {
                         let ev_out = eval_circuit(&program.access, &ev_in);
                         assert!(!ev_out[0], "ORAM stash overflow (evict)");
                         let new_epath = &ev_out[1 + db..1 + db + n_path * eb];
-                        self.stash_bits = ev_out[1 + db + n_path * eb..].to_vec();
+                        sp.stash_bits = ev_out[1 + db + n_path * eb..].to_vec();
                         let nep = unflatten_path(new_epath, cfg);
-                        self.tree.write_path(evict_leaf, &nep);
-                        self.crypto.bump_path(&self.tree, evict_leaf);
+                        sp.tree.write_path(evict_leaf, &nep);
+                        sp.crypto.bump_path(&sp.tree, evict_leaf);
                     }
 
                     if let Some(slot) = info.result_slot {
@@ -671,20 +713,20 @@ impl<const Z: usize> ConcreteOramDrive<Z> {
     }
 }
 
-/// Drive an [`OramProgram`] concretely (via `eval_biir`) against an external
-/// [`OramTree`], returning the guest outputs. The tree starts empty and is
-/// returned for inspection. Panics on ORAM stash overflow (a protocol abort).
+/// Drive an [`OramProgram`] concretely (via `eval_biir`) against fresh ORAMs,
+/// returning the guest outputs and the first space's tree (for inspection).
+/// Panics on ORAM stash overflow (a protocol abort).
 ///
 /// This is the S3 correctness driver: concrete, deterministic leaf RNG. Loops
-/// use [`ConcreteOramDrive`] to share one ORAM across steps; two-party driving
-/// is S4 (`crate::oram_2pc`).
+/// use [`ConcreteOramDrive`] to share ORAMs across steps; two-party driving is
+/// S4 (`crate::oram_2pc`).
 pub fn run_concrete<const Z: usize>(
     program: &OramProgram,
     inputs: &[bool],
 ) -> (Vec<bool>, OramTree<Z, 1>) {
-    let mut drive = ConcreteOramDrive::<Z>::new(&program.oram);
+    let mut drive = ConcreteOramDrive::<Z>::for_program(program);
     let outputs = drive.run_program(program, inputs);
-    // Destructure to return the tree.
-    let ConcreteOramDrive { tree, .. } = drive;
-    (outputs, tree)
+    let first_tree = drive.spaces.into_iter().next().expect("at least one space").tree;
+    (outputs, first_tree)
 }
+
