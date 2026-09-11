@@ -83,6 +83,8 @@ fn s6_keyed_leaf_prf_matches_aes_and_oram_works() {
         tree_key_bits: 0,
         encrypt_valid: false,
         keyed_leaf: true,
+        versioned_pads: false,
+        version_bits: 0,
     };
     let lb = cfg.leaf_bits();
     let begin = build_begin(&cfg);

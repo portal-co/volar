@@ -57,6 +57,8 @@ fn cfg() -> OramGadgetConfig {
         tree_key_bits: 0,
         encrypt_valid: false,
         keyed_leaf: false,
+        versioned_pads: false,
+        version_bits: 0,
     }
 }
 

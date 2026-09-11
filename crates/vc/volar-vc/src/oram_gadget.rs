@@ -86,6 +86,19 @@ pub struct OramGadgetConfig {
     /// Width of the `tree_key` secret input (used only when `encrypted`).
     #[doc(hidden)]
     pub tree_key_bits: usize,
+    /// When set (requires `encrypted`), the per-node pad also depends on a
+    /// **per-node version** (bumped on every write to that node), supplied as a
+    /// public per-path-node input. A stale block replayed by a malicious host
+    /// was encrypted under an older version's pad, so it decrypts to garbage —
+    /// versioned pads are the replay-protection mechanism (full replay
+    /// *detection* needs an in-payload MAC, a malicious-security follow-up; the
+    /// base threat model is semi-honest). The circuit decrypts with the current
+    /// version and re-encrypts with `version + 1`.
+    #[doc(hidden)]
+    pub versioned_pads: bool,
+    /// Width of each per-node version counter (used only when `versioned_pads`).
+    #[doc(hidden)]
+    pub version_bits: usize,
     /// When set (requires `encrypted`), the **`valid` bit is encrypted too** —
     /// the per-node pad covers the whole `eb`-bit entry, so the tree-hosting
     /// evaluator cannot even see the occupancy pattern (which slots hold real
@@ -165,10 +178,15 @@ impl OramGadgetConfig {
             + self.leaf_bits()         // new_leaf
             + 1; // evict_only
         // Encrypted tree: the secret `tree_key` is an additional input.
-        if self.encrypted {
+        (if self.encrypted {
             base + self.tree_key_bits
         } else {
             base
+        }) + if self.versioned_pads {
+            // One public version word per path *node* (not per slot).
+            self.levels * self.version_bits
+        } else {
+            0
         }
     }
     /// Output width of the access circuit
@@ -312,6 +330,38 @@ impl Builder {
         }
         tw
     }
+
+    /// Like [`Builder::slot_tweak`], but mixes a per-node `version` word into
+    /// the tweak at bits `32..32+version.len()` (S6 versioned pads). The caller
+    /// supplies the version wires (public inputs); the circuit derives
+    /// `version` and `version + 1` pads for decrypt and re-encrypt.
+    fn slot_tweak_versioned(
+        &mut self,
+        path_leaf: &[u32],
+        depth: usize,
+        version: &[u32],
+        zc: u32,
+        oc: u32,
+    ) -> Vec<u32> {
+        let mut tw = self.slot_tweak(path_leaf, depth, 0, zc, oc);
+        for (j, &vb) in version.iter().enumerate() {
+            tw[32 + j] = vb;
+        }
+        tw
+    }
+
+    /// `version + 1` (LSB-first incrementer) for the re-encrypt pad.
+    fn incr(&mut self, version: &[u32]) -> Vec<u32> {
+        let mut carry = self.const1();
+        version
+            .iter()
+            .map(|&b| {
+                let s = self.xor(b, carry);
+                carry = self.and(b, carry);
+                s
+            })
+            .collect()
+    }
     /// Inline a single-block sub-circuit: append its gates with var ids
     /// remapped (`inputs[i]` is the parent wire for sub-param `i`), returning
     /// the sub-circuit's output wires in the parent. Used to instantiate the
@@ -380,6 +430,21 @@ pub fn slot_tweak_bytes(depth: usize, zslot: usize, prefix: u64) -> [u8; 16] {
         let bit = (prefix >> (depth - 1 - j)) & 1;
         if bit == 1 {
             let pos = 16 + j;
+            tw[pos / 8] |= 1 << (pos % 8);
+        }
+    }
+    tw
+}
+
+/// The versioned variant of [`slot_tweak_bytes`] (S6 versioned pads): the
+/// per-node `version` is mixed into the tweak at bits `32..32+version_bits`,
+/// matching the in-circuit `slot_tweak_versioned`. Used by the harness to
+/// pre-format and to track per-node versions.
+pub fn slot_tweak_versioned_bytes(depth: usize, prefix: u64, version: u64, version_bits: usize) -> [u8; 16] {
+    let mut tw = slot_tweak_bytes(depth, 0, prefix);
+    for j in 0..version_bits {
+        if (version >> j) & 1 == 1 {
+            let pos = 32 + j;
             tw[pos / 8] |= 1 << (pos % 8);
         }
     }
@@ -548,6 +613,15 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
     let tree_key: Vec<u32> = (0..cfg.tree_key_bits)
         .map(|j| (evonly_off + 1 + j) as u32)
         .collect();
+    // Versioned pads: one public version word per path node, after the tree_key.
+    let ver_off = evonly_off + 1 + cfg.tree_key_bits;
+    let versions: Vec<Vec<u32>> = (0..cfg.levels)
+        .map(|d| {
+            (0..cfg.version_bits)
+                .map(|j| (ver_off + d * cfg.version_bits + j) as u32)
+                .collect()
+        })
+        .collect();
 
     let zc = b.const0();
     let oc = b.const1();
@@ -568,6 +642,7 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
     // the tree *occupancy* pattern — a partial leak hardened in S6 — but not the
     // address tags, leaf assignments, or data.)
     let mut pads: Vec<Vec<u32>> = Vec::new();
+    let mut repads: Vec<Vec<u32>> = Vec::new();
     if cfg.encrypted {
         assert_eq!(cfg.tree_key_bits, 128, "encrypted tree uses an AES-128 key");
         // One AES per path *node* (levels of them, not levels*Z): the node's
@@ -584,14 +659,34 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
         let aes = crate::aes_gadget::build_aes128();
         for d in 0..cfg.levels {
             // zslot = 0: the tweak is node-unique; the slot index selects the
-            // output slice instead.
-            let tweak = b.slot_tweak(&path_leaf, d, 0, zc, oc);
-            let mut aes_in = tree_key.clone();
-            aes_in.extend_from_slice(&tweak);
-            let aes_out = b.inline_sub(&aes, &aes_in);
+            // output slice instead. With versioned_pads the per-node version is
+            // mixed into the tweak (decrypt with the current version).
+            let dt = if cfg.versioned_pads {
+                b.slot_tweak_versioned(&path_leaf, d, &versions[d], zc, oc)
+            } else {
+                b.slot_tweak(&path_leaf, d, 0, zc, oc)
+            };
+            let mut din = tree_key.clone();
+            din.extend_from_slice(&dt);
+            let dout = b.inline_sub(&aes, &din);
             for zs in 0..z {
-                pads.push(aes_out[zs * pw..(zs + 1) * pw].to_vec());
+                pads.push(dout[zs * pw..(zs + 1) * pw].to_vec());
             }
+            // Re-encrypt pad: version+1 when versioned (this write bumps the
+            // node's version); otherwise identical to the decrypt pad.
+            if cfg.versioned_pads {
+                let v1 = b.incr(&versions[d]);
+                let rt = b.slot_tweak_versioned(&path_leaf, d, &v1, zc, oc);
+                let mut rin = tree_key.clone();
+                rin.extend_from_slice(&rt);
+                let rout = b.inline_sub(&aes, &rin);
+                for zs in 0..z {
+                    repads.push(rout[zs * pw..(zs + 1) * pw].to_vec());
+                }
+            }
+        }
+        if !cfg.versioned_pads {
+            repads = pads.clone();
         }
         for k in 0..n_path {
             path[k] = if cfg.encrypt_valid {
@@ -705,14 +800,15 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
     }
 
     // Encrypted tree: re-encrypt the evicted path before the host writes it
-    // back (same per-slot pad as the decrypt above).
+    // back. With versioned_pads this uses the bumped-version pads (`repads`), so
+    // a stale ciphertext under the old version no longer decrypts correctly.
     if cfg.encrypted {
         for k in 0..n_path {
             new_path[k] = if cfg.encrypt_valid {
-                b.xor_word(&new_path[k][..eb], &pads[k])
+                b.xor_word(&new_path[k][..eb], &repads[k])
             } else {
                 let mut e = vec![new_path[k][0]];
-                e.extend(b.xor_word(&new_path[k][1..], &pads[k]));
+                e.extend(b.xor_word(&new_path[k][1..], &repads[k]));
                 e
             };
         }

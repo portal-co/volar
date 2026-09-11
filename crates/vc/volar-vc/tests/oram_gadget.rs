@@ -35,6 +35,8 @@ fn cfg() -> OramGadgetConfig {
         tree_key_bits: 0,
         encrypt_valid: false,
         keyed_leaf: false,
+        versioned_pads: false,
+        version_bits: 0,
     }
 }
 
@@ -283,6 +285,8 @@ fn s2_geometry_concrete() {
         tree_key_bits: 0,
         encrypt_valid: false,
         keyed_leaf: false,
+        versioned_pads: false,
+        version_bits: 0,
     };
     let ops: [(u64, Option<u8>); 5] = [
         (2, Some(0xAB)),

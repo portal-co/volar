@@ -283,6 +283,8 @@ impl Rec2pc {
             tree_key_bits: 0,
             encrypt_valid: false,
             keyed_leaf: false,
+            versioned_pads: false,
+            version_bits: 0,
         };
         let l1_cfg = OramGadgetConfig {
             num_addrs: n1,
@@ -294,6 +296,8 @@ impl Rec2pc {
             tree_key_bits: 0,
             encrypt_valid: false,
             keyed_leaf: false,
+            versioned_pads: false,
+            version_bits: 0,
         };
         let mut fresh = 0u64;
         let mk = |bits: usize, secret: &GlobalSecret<N>, fresh: &mut u64| {

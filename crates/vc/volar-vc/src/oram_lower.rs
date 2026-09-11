@@ -265,6 +265,8 @@ pub fn storage_to_oram<P: Clone>(
         tree_key_bits: 0,
         encrypt_valid: false,
         keyed_leaf: false,
+        versioned_pads: false,
+        version_bits: 0,
     };
     let begin = build_begin(&oram);
     let access = build_access(&oram);
