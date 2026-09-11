@@ -593,7 +593,7 @@ fn gram_storage_circuit_two_party() {
     const B: usize = 8;
     let circuit = storage_circuit_gram();
     let schedule = VcEmbedder::<N, 1, 0>::compile(&circuit).expect("compiles");
-    let spec = schedule.storages[0];
+    let spec = schedule.storages[0].clone();
     let partition = [InputOwner::Evaluator]; // data_in is the remote party's
 
     for d in [false, true] {

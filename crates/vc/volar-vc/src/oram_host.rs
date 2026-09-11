@@ -122,7 +122,11 @@ impl<'t, D: Digest, N: VoleArray<u8>, const Z: usize, const B: usize>
 {
     /// Create a driver over `tree` (an ORAM of `num_cells` one-bit cells at
     /// `levels` levels), seeded by `secret`. `rng_seed` drives the
-    /// position-map assignments; any non-constant seed works.
+    /// position-map assignments; any non-constant seed works. The ORAM is
+    /// addressed by the *compact block* the schedule assigned each distinct
+    /// memory address (address compression folded the sparse scaffold
+    /// addresses down to `0..num_cells`), so the driver uses the gate's cell
+    /// directly.
     pub fn new(
         secret: &'t GlobalSecret<N>,
         tree: &'t mut OramTree<Z, B>,
@@ -162,7 +166,7 @@ impl<'t, D: Digest, N: VoleArray<u8>, const Z: usize, const B: usize>
         (labels, bases)
     }
 
-    /// Run one full ORAM access (read or write) at concrete cell `cell`,
+    /// Run one full ORAM access (read or write) at compact block `cell`,
     /// returning the re-garbled read-data bit (bit 0 of block byte 0).
     fn access(
         &mut self,
@@ -170,6 +174,8 @@ impl<'t, D: Digest, N: VoleArray<u8>, const Z: usize, const B: usize>
         access: u64,
         write: Option<bool>,
     ) -> Eval<N> {
+        // The gate's `cell` is the compact block the schedule assigned this
+        // memory address; the ORAM is addressed directly by it.
         let (addr_labels, addr_bases) = self.encode_addr(cell);
         let base = gram_data_base::<D, N>(access, 0);
         let write_bits = write.map(|b| {

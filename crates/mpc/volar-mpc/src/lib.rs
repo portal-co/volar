@@ -255,9 +255,13 @@ pub enum Gate {
 /// The shape of one Garbled-RAM storage space carried by a schedule: enough
 /// for the evaluator to size its ORAM tree and host, and for both parties to
 /// agree on the deterministic per-cell base derivation.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GramStorageSpec {
     /// Number of addressable cells (one bit per cell, boolar convention).
+    /// This is the *compressed* cell count: the schedule folds the few
+    /// distinct (possibly huge, sparsely-touched) memory addresses down to
+    /// consecutive compact block indices `0..num_cells`, so the ORAM is sized
+    /// by the number of distinct cells, not the maximum address value.
     pub num_cells: u64,
     /// ORAM tree levels (path length). Must satisfy `2^(levels-1) >=
     /// num_cells` for a complete tree over the address space.

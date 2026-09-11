@@ -107,22 +107,32 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
     // the cell is concrete (the GRAM driver runs a concrete ORAM access).
     let mut wire_const: Vec<Option<bool>> = vec![None; num_inputs];
     // GRAM storage spaces, in first-use `StorageId` order (the gate's
-    // `storage` field indexes this).
+    // `storage` field indexes this). Per space, a `cell_map` folds each
+    // distinct (possibly huge, sparsely-touched) memory address to a compact
+    // consecutive ORAM block index.
     let mut storage_ids: Vec<StorageId> = Vec::new();
-    let mut storage_max_cell: Vec<u64> = Vec::new();
+    let mut storage_cell_maps: Vec<alloc::collections::BTreeMap<u64, u64>> = Vec::new();
     let mut access_count: u64 = 0;
     // Resolve (or register) a StorageId to its storage index.
     let mut storage_index =
-        |sid: StorageId, ids: &mut Vec<StorageId>, max: &mut Vec<u64>| -> usize {
+        |sid: StorageId,
+         ids: &mut Vec<StorageId>,
+         maps: &mut Vec<alloc::collections::BTreeMap<u64, u64>>| -> usize {
             match ids.iter().position(|&s| s == sid) {
                 Some(i) => i,
                 None => {
                     ids.push(sid);
-                    max.push(0);
+                    maps.push(alloc::collections::BTreeMap::new());
                     ids.len() - 1
                 }
             }
         };
+    // Compress a memory address to its compact ORAM block, assigning the next
+    // free block on first touch.
+    let compress = |mem_addr: u64, map: &mut alloc::collections::BTreeMap<u64, u64>| -> u64 {
+        let next = map.len() as u64;
+        *map.entry(mem_addr).or_insert(next)
+    };
     // Resolve a source var (input or earlier stmt result) to a wire index,
     // then fold an address-bit wire vector to a concrete cell index, failing
     // if any bit is non-constant.
@@ -218,11 +228,9 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
                 stmt_wire.push(base + 3);
             }
             BIrStmt::StorageRead { storage, addr, .. } => {
-                let cell = concrete_cell(addr, &wire_const, &stmt_wire)?;
-                let si = storage_index(*storage, &mut storage_ids, &mut storage_max_cell);
-                if cell > storage_max_cell[si] {
-                    storage_max_cell[si] = cell;
-                }
+                let mem_addr = concrete_cell(addr, &wire_const, &stmt_wire)?;
+                let si = storage_index(*storage, &mut storage_ids, &mut storage_cell_maps);
+                let cell = compress(mem_addr, &mut storage_cell_maps[si]);
                 access_count += 1;
                 gates.push(Gate::StorageRead {
                     storage: si,
@@ -232,11 +240,9 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
                 stmt_wire.push(next_wire);
             }
             BIrStmt::StorageWrite { storage, src, addr, .. } => {
-                let cell = concrete_cell(addr, &wire_const, &stmt_wire)?;
-                let si = storage_index(*storage, &mut storage_ids, &mut storage_max_cell);
-                if cell > storage_max_cell[si] {
-                    storage_max_cell[si] = cell;
-                }
+                let mem_addr = concrete_cell(addr, &wire_const, &stmt_wire)?;
+                let si = storage_index(*storage, &mut storage_ids, &mut storage_cell_maps);
+                let cell = compress(mem_addr, &mut storage_cell_maps[si]);
                 let wsrc = wire_of(*src, &stmt_wire)?;
                 access_count += 1;
                 gates.push(Gate::StorageWrite {
@@ -253,12 +259,12 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
         wire_const.push(result_const);
     }
 
-    // Size each storage space's ORAM to cover every cell the program touched,
-    // and derive the tree levels (a complete tree over the address space).
-    let storages: Vec<GramStorageSpec> = storage_max_cell
+    // Size each storage space's ORAM by the *number of distinct cells* (the
+    // compressed address space); the gates already carry the compact block.
+    let storages: Vec<GramStorageSpec> = storage_cell_maps
         .iter()
-        .map(|&max_cell| {
-            let num_cells = (max_cell + 1).max(1);
+        .map(|map| {
+            let num_cells = (map.len() as u64).max(1);
             // Smallest levels with 2^(levels-1) >= num_cells (levels >= 1).
             let mut levels = 1usize;
             while (1u64 << (levels - 1)) < num_cells {
