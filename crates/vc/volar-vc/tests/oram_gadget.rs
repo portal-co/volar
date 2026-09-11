@@ -33,6 +33,7 @@ fn cfg() -> OramGadgetConfig {
         max_stash: 2 * LEVELS + Z + NUM_ADDRS,
         encrypted: false,
         tree_key_bits: 0,
+        encrypt_valid: false,
         keyed_leaf: false,
     }
 }
@@ -280,6 +281,7 @@ fn s2_geometry_concrete() {
         max_stash: 8,
         encrypted: false,
         tree_key_bits: 0,
+        encrypt_valid: false,
         keyed_leaf: false,
     };
     let ops: [(u64, Option<u8>); 5] = [

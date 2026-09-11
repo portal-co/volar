@@ -86,6 +86,15 @@ pub struct OramGadgetConfig {
     /// Width of the `tree_key` secret input (used only when `encrypted`).
     #[doc(hidden)]
     pub tree_key_bits: usize,
+    /// When set (requires `encrypted`), the **`valid` bit is encrypted too** —
+    /// the per-node pad covers the whole `eb`-bit entry, so the tree-hosting
+    /// evaluator cannot even see the occupancy pattern (which slots hold real
+    /// blocks). This closes the partial leak the plain `encrypted` mode leaves
+    /// (valid plaintext so a zero tree reads as dummies). Because an all-zero
+    /// ciphertext now decrypts to `pad` (garbage valid bit), the initial tree
+    /// must be pre-formatted by the key holder — see [`slot_tweak_bytes`].
+    #[doc(hidden)]
+    pub encrypt_valid: bool,
     /// When set, the fresh leaf is computed **in-circuit** as
     /// `AES-128(leaf_key, counter)[0..leaf_bits]` (S6 keyed-leaf PRF), with
     /// `leaf_key` a secret input and `counter` a public per-access ordinal,
@@ -353,6 +362,30 @@ fn clog2(x: usize) -> usize {
     b
 }
 
+/// The 16-byte AES tweak naming a physical tree node — the scalar reference
+/// form of the in-circuit `slot_tweak`, for harness-side pre-formatting of the
+/// initial tree when `encrypt_valid` is set. `depth` is the node's level,
+/// `zslot` the per-node AES variant (0 for the shared per-node pad), and
+/// `prefix` the node's top-`depth` path bits (its index within the level).
+///
+/// With `encrypt_valid`, each initial (dummy) slot's ciphertext must equal its
+/// pad so it decrypts to a zero/dummy entry; the key holder computes
+/// `AES-128(tree_key, slot_tweak_bytes(d, 0, k))` and slices slot `zs`'s `eb`
+/// bits from the output.
+pub fn slot_tweak_bytes(depth: usize, zslot: usize, prefix: u64) -> [u8; 16] {
+    let mut tw = [0u8; 16];
+    tw[0] = depth as u8;
+    tw[1] = zslot as u8;
+    for j in 0..depth {
+        let bit = (prefix >> (depth - 1 - j)) & 1;
+        if bit == 1 {
+            let pos = 16 + j;
+            tw[pos / 8] |= 1 << (pos % 8);
+        }
+    }
+    tw
+}
+
 /// Build a **sub-block extraction** circuit (S5c recursion): select entry `off`
 /// from a block of `c` entries (each `eb` bits, LSB-first). Params:
 /// `block[0..c*eb] ++ off[0..off_bits]`. Output: the selected entry (`eb` bits).
@@ -538,14 +571,16 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
     if cfg.encrypted {
         assert_eq!(cfg.tree_key_bits, 128, "encrypted tree uses an AES-128 key");
         // One AES per path *node* (levels of them, not levels*Z): the node's
-        // 128-bit AES output is sliced across its Z slots (slot `zs` takes bits
-        // `[zs*(eb-1) .. (zs+1)*(eb-1))`). The tweak names the node (depth +
-        // path_leaf prefix), not the slot, so all Z slots share one evaluation.
-        // Cost: levels AES per access instead of levels*Z.
-        assert!(
-            z * (eb - 1) <= 128,
-            "one AES block covers a node's slots' pads"
-        );
+        // 128-bit AES output is sliced across its Z slots. The tweak names the
+        // node (depth + path_leaf prefix), not the slot, so all Z slots share
+        // one evaluation. Cost: levels AES per access instead of levels*Z.
+        //
+        // Pad width `pw`: normally `eb-1` (payload only, `valid` plaintext so a
+        // zero tree reads as dummies); with `encrypt_valid` it is `eb` (the whole
+        // entry, hiding occupancy — but then the initial tree must be
+        // pre-formatted by the key holder; see slot_tweak_bytes).
+        let pw = if cfg.encrypt_valid { eb } else { eb - 1 };
+        assert!(z * pw <= 128, "one AES block covers a node's slots' pads");
         let aes = crate::aes_gadget::build_aes128();
         for d in 0..cfg.levels {
             // zslot = 0: the tweak is node-unique; the slot index selects the
@@ -555,14 +590,18 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
             aes_in.extend_from_slice(&tweak);
             let aes_out = b.inline_sub(&aes, &aes_in);
             for zs in 0..z {
-                // eb-1 pad bits: cover the payload, leave `valid` plaintext.
-                pads.push(aes_out[zs * (eb - 1)..(zs + 1) * (eb - 1)].to_vec());
+                pads.push(aes_out[zs * pw..(zs + 1) * pw].to_vec());
             }
         }
         for k in 0..n_path {
-            let mut e = vec![path[k][0]]; // valid stays plaintext
-            e.extend(b.xor_word(&path[k][1..], &pads[k]));
-            path[k] = e;
+            path[k] = if cfg.encrypt_valid {
+                // Whole-entry decrypt (valid included).
+                b.xor_word(&path[k][..eb], &pads[k])
+            } else {
+                let mut e = vec![path[k][0]]; // valid stays plaintext
+                e.extend(b.xor_word(&path[k][1..], &pads[k]));
+                e
+            };
         }
     }
 
@@ -665,14 +704,17 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
         stash[i] = e2;
     }
 
-    // Encrypted tree: re-encrypt the evicted path's payload before the host
-    // writes it back (same per-slot pad as the decrypt above; `valid` stays
-    // plaintext).
+    // Encrypted tree: re-encrypt the evicted path before the host writes it
+    // back (same per-slot pad as the decrypt above).
     if cfg.encrypted {
         for k in 0..n_path {
-            let mut e = vec![new_path[k][0]];
-            e.extend(b.xor_word(&new_path[k][1..], &pads[k]));
-            new_path[k] = e;
+            new_path[k] = if cfg.encrypt_valid {
+                b.xor_word(&new_path[k][..eb], &pads[k])
+            } else {
+                let mut e = vec![new_path[k][0]];
+                e.extend(b.xor_word(&new_path[k][1..], &pads[k]));
+                e
+            };
         }
     }
 

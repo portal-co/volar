@@ -81,6 +81,7 @@ fn s6_keyed_leaf_prf_matches_aes_and_oram_works() {
         max_stash: 2 * 4 + Z + 8,
         encrypted: false,
         tree_key_bits: 0,
+        encrypt_valid: false,
         keyed_leaf: true,
     };
     let lb = cfg.leaf_bits();

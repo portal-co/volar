@@ -281,6 +281,7 @@ impl Rec2pc {
             max_stash: 2 * 4 + Z + n0,
             encrypted: false,
             tree_key_bits: 0,
+            encrypt_valid: false,
             keyed_leaf: false,
         };
         let l1_cfg = OramGadgetConfig {
@@ -291,6 +292,7 @@ impl Rec2pc {
             max_stash: 2 * 3 + Z + n1,
             encrypted: false,
             tree_key_bits: 0,
+            encrypt_valid: false,
             keyed_leaf: false,
         };
         let mut fresh = 0u64;

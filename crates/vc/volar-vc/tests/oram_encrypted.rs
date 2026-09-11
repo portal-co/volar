@@ -32,6 +32,7 @@ fn cfg() -> OramGadgetConfig {
         max_stash: MAX_STASH,
         encrypted: true,
         tree_key_bits: 128,
+        encrypt_valid: false,
         keyed_leaf: false,
     }
 }
