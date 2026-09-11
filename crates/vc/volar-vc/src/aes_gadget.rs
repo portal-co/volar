@@ -42,6 +42,92 @@ fn gf_mul_scalar(mut a: u8, mut b: u8) -> u8 {
     p
 }
 
+/// Reference GF(2^4) multiply under `x^4 + x + 1` (the composite-field base).
+fn gf4_mul_scalar(a: u8, b: u8) -> u8 {
+    let mut p = 0u8;
+    let mut a = a & 0xF;
+    let mut b = b & 0xF;
+    for _ in 0..4 {
+        if b & 1 != 0 {
+            p ^= a;
+        }
+        let hi = a & 0x8 != 0;
+        a = (a << 1) & 0xF;
+        if hi {
+            a ^= 0x3;
+        }
+        b >>= 1;
+    }
+    p & 0xF
+}
+
+/// The composite-field S-box isomorphism constants, derived by search at build
+/// time (validated against the reference SBOX). Returns `(lambda, phi_terms,
+/// phi_inv_terms)` where `phi` maps a composite-field byte `[a1:a0]` (high
+/// nibble a1) to GF(2^8) and `phi_inv` is its inverse, each as the set of input
+/// bits feeding each output bit (a linear, XOR-only map).
+///
+/// GF(2^8) is represented via the AES polynomial; GF((2^4)^2) via
+/// `y^2 + y + lambda` over GF(2^4). The isomorphism is `phi((a1,a0)) =
+/// emb(a1)*beta ^ emb(a0)`, where `emb` embeds GF(2^4) into GF(2^8) at a root
+/// `omega` of `x^4+x+1` and `beta` is a root of `y^2 + y + emb(lambda)`.
+fn derive_iso() -> (u8, [Vec<usize>; 8], [Vec<usize>; 8]) {
+    let omega = (2u16..256)
+        .map(|w| w as u8)
+        .find(|&w| {
+            let w2 = gf_mul_scalar(w, w);
+            let w4 = gf_mul_scalar(w2, w2);
+            (w4 ^ w ^ 1) == 0
+        })
+        .expect("omega");
+    let w2 = gf_mul_scalar(omega, omega);
+    let w3 = gf_mul_scalar(w2, omega);
+    let emb = |a: u8| -> u8 {
+        let mut r = 0u8;
+        if a & 1 != 0 {
+            r ^= 1;
+        }
+        if a & 2 != 0 {
+            r ^= omega;
+        }
+        if a & 4 != 0 {
+            r ^= w2;
+        }
+        if a & 8 != 0 {
+            r ^= w3;
+        }
+        r
+    };
+    let lambda = (0u8..16)
+        .find(|&l| (0u8..16).all(|y| (gf4_mul_scalar(y, y) ^ y) != l))
+        .expect("lambda");
+    let el = emb(lambda);
+    let beta = (0u16..256)
+        .map(|b| b as u8)
+        .find(|&b| (gf_mul_scalar(b, b) ^ b ^ el) == 0)
+        .expect("beta");
+    let phi = |comp: u8| -> u8 { gf_mul_scalar(emb(comp >> 4), beta) ^ emb(comp & 0xF) };
+    let mut phi_inv = [0u8; 256];
+    for c in 0..256u16 {
+        phi_inv[phi(c as u8) as usize] = c as u8;
+    }
+    let terms_of = |f: &dyn Fn(u8) -> u8| -> [Vec<usize>; 8] {
+        let mut t: [Vec<usize>; 8] = Default::default();
+        for i in 0..8 {
+            let v = f(1 << i);
+            for k in 0..8 {
+                if (v >> k) & 1 == 1 {
+                    t[k].push(i);
+                }
+            }
+        }
+        t
+    };
+    let phi_terms = terms_of(&phi);
+    let phi_inv_terms = terms_of(&|x| phi_inv[x as usize]);
+    (lambda, phi_terms, phi_inv_terms)
+}
+
 /// A boolar circuit under construction.
 struct B {
     params: u32,
@@ -111,24 +197,6 @@ impl B {
     }
 }
 
-/// The set of `(i, j)` AND terms feeding each output bit of GF(2^8) multiply,
-/// read off the bilinear reference: term `(i, j)` contributes to output `k`
-/// iff `gf_mul(1<<i, 1<<j)` has bit `k` set.
-fn gf_mul_terms() -> [Vec<(usize, usize)>; 8] {
-    let mut t: [Vec<(usize, usize)>; 8] = Default::default();
-    for i in 0..8 {
-        for j in 0..8 {
-            let v = gf_mul_scalar(1 << i, 1 << j);
-            for k in 0..8 {
-                if (v >> k) & 1 == 1 {
-                    t[k].push((i, j));
-                }
-            }
-        }
-    }
-    t
-}
-
 /// The set of input bits feeding each output bit of a *linear* GF(2^8) map
 /// `x -> gf_mul(x, c)` for a constant `c`.
 fn gf_mul_const_terms(c: u8) -> [Vec<usize>; 8] {
@@ -144,41 +212,6 @@ fn gf_mul_const_terms(c: u8) -> [Vec<usize>; 8] {
     t
 }
 
-/// Squaring in GF(2^8) is linear: `x -> gf_mul(x, x)` restricted to the
-/// diagonal, i.e. the linear map derived from the reference.
-fn gf_square_terms() -> [Vec<usize>; 8] {
-    let mut t: [Vec<usize>; 8] = Default::default();
-    for i in 0..8 {
-        let v = gf_mul_scalar(1 << i, 1 << i);
-        for k in 0..8 {
-            if (v >> k) & 1 == 1 {
-                t[k].push(i);
-            }
-        }
-    }
-    t
-}
-
-/// GF(2^8) multiply of two bytes as a boolar circuit. Exactly 64 ANDs: the
-/// 8x8 partial products are computed once and shared across the output bits
-/// (each output is an XOR-only combination of them, derived from the reference
-/// so the network is correct by construction).
-fn gf_mul_c(b: &mut B, a: &[u32; 8], y: &[u32; 8]) -> [u32; 8] {
-    let terms = gf_mul_terms();
-    let mut prod = [[0u32; 8]; 8];
-    for i in 0..8 {
-        for j in 0..8 {
-            prod[i][j] = b.and(a[i], y[j]);
-        }
-    }
-    let mut out = [0u32; 8];
-    for k in 0..8 {
-        let prods: Vec<u32> = terms[k].iter().map(|&(i, j)| prod[i][j]).collect();
-        out[k] = b.xor_fold(&prods);
-    }
-    out
-}
-
 /// `x -> gf_mul(x, c)` for constant `c`, XOR-only.
 fn gf_mul_const_c(b: &mut B, a: &[u32; 8], c: u8) -> [u32; 8] {
     let terms = gf_mul_const_terms(c);
@@ -190,9 +223,9 @@ fn gf_mul_const_c(b: &mut B, a: &[u32; 8], c: u8) -> [u32; 8] {
     out
 }
 
-/// GF(2^8) squaring, XOR-only.
-fn gf_square_c(b: &mut B, a: &[u32; 8]) -> [u32; 8] {
-    let terms = gf_square_terms();
+
+/// Apply an 8-bit linear map given as per-output-bit input-bit sets (XOR-only).
+fn linear_byte_c(b: &mut B, terms: &[Vec<usize>; 8], a: &[u32; 8]) -> [u32; 8] {
     let mut out = [0u32; 8];
     for k in 0..8 {
         let bits: Vec<u32> = terms[k].iter().map(|&i| a[i]).collect();
@@ -201,32 +234,124 @@ fn gf_square_c(b: &mut B, a: &[u32; 8]) -> [u32; 8] {
     out
 }
 
-/// Square `x` `k` times (Frobenius iterates — each a free linear map).
-fn pow2k(b: &mut B, x: &[u32; 8], k: usize) -> [u32; 8] {
-    let mut r = *x;
-    for _ in 0..k {
-        r = gf_square_c(b, &r);
+/// Apply a 4-bit linear map given as per-output-bit input-bit sets (XOR-only).
+fn linear_nibble_c(b: &mut B, terms: &[Vec<usize>; 4], a: &[u32; 4]) -> [u32; 4] {
+    let mut out = [0u32; 4];
+    for k in 0..4 {
+        let bits: Vec<u32> = terms[k].iter().map(|&i| a[i]).collect();
+        out[k] = b.xor_fold(&bits);
     }
-    r
+    out
 }
 
-/// The AES S-box: `affine(x^254)` in GF(2^8). `0^254 = 0`, and `affine(0) =
-/// 0x63`, so the zero input needs no special-casing. Uses the Itoh-Tsujii
-/// inversion chain — 4 GF multiplies (squarings free):
-///   x^3 = x^2 * x,  x^7 = (x^3)^2 * x,  x^15 = (x^3)^4 * x^3,
-///   x^127 = (x^15)^8 * x^7,  x^254 = (x^127)^2.
+fn gf4_mul_terms() -> [Vec<(usize, usize)>; 4] {
+    let mut t: [Vec<(usize, usize)>; 4] = Default::default();
+    for i in 0..4 {
+        for j in 0..4 {
+            let v = gf4_mul_scalar(1 << i, 1 << j);
+            for k in 0..4 {
+                if (v >> k) & 1 == 1 {
+                    t[k].push((i, j));
+                }
+            }
+        }
+    }
+    t
+}
+fn gf4_square_terms() -> [Vec<usize>; 4] {
+    let mut t: [Vec<usize>; 4] = Default::default();
+    for i in 0..4 {
+        let v = gf4_mul_scalar(1 << i, 1 << i);
+        for k in 0..4 {
+            if (v >> k) & 1 == 1 {
+                t[k].push(i);
+            }
+        }
+    }
+    t
+}
+fn gf4_mul_const_terms(c: u8) -> [Vec<usize>; 4] {
+    let mut t: [Vec<usize>; 4] = Default::default();
+    for i in 0..4 {
+        let v = gf4_mul_scalar(1 << i, c);
+        for k in 0..4 {
+            if (v >> k) & 1 == 1 {
+                t[k].push(i);
+            }
+        }
+    }
+    t
+}
+
+/// GF(2^4) multiply, 16 ANDs (shared partial products).
+fn gf4_mul_c(b: &mut B, a: &[u32; 4], y: &[u32; 4]) -> [u32; 4] {
+    let terms = gf4_mul_terms();
+    let mut prod = [[0u32; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            prod[i][j] = b.and(a[i], y[j]);
+        }
+    }
+    let mut out = [0u32; 4];
+    for k in 0..4 {
+        let prods: Vec<u32> = terms[k].iter().map(|&(i, j)| prod[i][j]).collect();
+        out[k] = b.xor_fold(&prods);
+    }
+    out
+}
+fn gf4_square_c(b: &mut B, a: &[u32; 4]) -> [u32; 4] {
+    linear_nibble_c(b, &gf4_square_terms(), a)
+}
+fn gf4_mul_const_c(b: &mut B, a: &[u32; 4], c: u8) -> [u32; 4] {
+    linear_nibble_c(b, &gf4_mul_const_terms(c), a)
+}
+fn xor_nibble(b: &mut B, a: &[u32; 4], c: &[u32; 4]) -> [u32; 4] {
+    let mut out = [0u32; 4];
+    for i in 0..4 {
+        out[i] = b.xor(a[i], c[i]);
+    }
+    out
+}
+
+/// GF(2^4) inversion `x^14` via Itoh-Tsujii: `x^3 = x^2*x`, `x^7 = (x^3)^2*x`,
+/// `x^14 = (x^7)^2` — 2 GF(2^4) multiplies (squarings free). `0 -> 0`.
+fn gf4_inv_c(b: &mut B, a: &[u32; 4]) -> [u32; 4] {
+    let a2 = gf4_square_c(b, a);
+    let a3 = gf4_mul_c(b, &a2, a);
+    let a6 = gf4_square_c(b, &a3);
+    let a7 = gf4_mul_c(b, &a6, a);
+    gf4_square_c(b, &a7)
+}
+
+/// The AES S-box via the composite field GF((2^4)^2): map to the composite
+/// field, invert there (3 GF(2^4) multiplies + 1 GF(2^4) inversion = 80 ANDs),
+/// map back, then the affine transform. The isomorphisms are XOR-only linear
+/// maps, so the whole S-box is ~80 ANDs versus ~256 for the direct Itoh-Tsujii
+/// inversion in GF(2^8).
 fn sbox_c(b: &mut B, x: &[u32; 8]) -> [u32; 8] {
-    let x2 = gf_square_c(b, x); // x^2
-    let x3 = gf_mul_c(b, &x2, x); // x^3
-    let x3sq = gf_square_c(b, &x3); // (x^3)^2
-    let x7 = gf_mul_c(b, &x3sq, x); // x^7 = (x^3)^2 * x
-    let x3_4 = pow2k(b, &x3, 2); // (x^3)^4
-    let x15 = gf_mul_c(b, &x3_4, &x3); // x^15 = (x^3)^4 * x^3
-    let x15_8 = pow2k(b, &x15, 3); // (x^15)^8
-    let x127 = gf_mul_c(b, &x15_8, &x7); // x^127 = (x^15)^8 * x^7
-    let inv = gf_square_c(b, &x127); // x^254 = (x^127)^2
-    // Affine: s_i = b_i ^ b_{i+4} ^ b_{i+5} ^ b_{i+6} ^ b_{i+7} ^ c_i (indices
-    // mod 8), c = 0x63 — the FIPS-197 affine transform.
+    let (lambda, phi_terms, phi_inv_terms) = derive_iso();
+    // Map GF(2^8) -> composite: comp = phi_inv(x); a1 = high nibble, a0 = low.
+    let comp = linear_byte_c(b, &phi_inv_terms, x);
+    let a1: [u32; 4] = [comp[4], comp[5], comp[6], comp[7]];
+    let a0: [u32; 4] = [comp[0], comp[1], comp[2], comp[3]];
+    // Invert in the composite field: d = a1^2*lambda ^ a1*a0 ^ a0^2.
+    let sq1 = gf4_square_c(b, &a1);
+    let t = gf4_mul_const_c(b, &sq1, lambda);
+    let p1 = gf4_mul_c(b, &a1, &a0);
+    let sq0 = gf4_square_c(b, &a0);
+    let tp = xor_nibble(b, &t, &p1);
+    let d = xor_nibble(b, &tp, &sq0);
+    let d_inv = gf4_inv_c(b, &d);
+    let a1p = gf4_mul_c(b, &a1, &d_inv);
+    let a1xa0 = xor_nibble(b, &a1, &a0);
+    let a0p = gf4_mul_c(b, &a1xa0, &d_inv);
+    let comp_inv: [u32; 8] = [
+        a0p[0], a0p[1], a0p[2], a0p[3], a1p[0], a1p[1], a1p[2], a1p[3],
+    ];
+    // Map composite -> GF(2^8).
+    let inv = linear_byte_c(b, &phi_terms, &comp_inv);
+    // Affine: s_i = b_i ^ b_{i+4} ^ b_{i+5} ^ b_{i+6} ^ b_{i+7} ^ c_i (mod 8),
+    // c = 0x63.
     let c = 0x63u8;
     let mut out = [0u32; 8];
     for i in 0..8 {
