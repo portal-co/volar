@@ -34,7 +34,14 @@ volar-compiler-passes = { path = "../volar-compiler-passes", optional = true }
 
 [dev-dependencies]
 wat = "1.212.0"
+vaffle = { workspace = true }
+volar-ir-common = { workspace = true }
+tempfile = "3"
 
 [[test]]
 name = "pipeline_smoke"
 required-features = ["pipeline-wasm"]
+
+[[test]]
+name = "pipeline_chunked_smoke"
+required-features = ["pipeline-vaffle"]

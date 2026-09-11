@@ -253,6 +253,59 @@ pub fn compile_lir_to_object(
     #[cfg(feature = "cargo-directives")]
     println!("cargo:rerun-if-changed={}", saved_path.display());
 
+    let bytes = std::fs::read(saved_path)?;
+    let saved: SavedLirModule = rkyv::from_bytes::<SavedLirModule, rkyv::rancor::Error>(&bytes)?;
+    compile_saved_module_to_object(&saved, out_path, options)
+}
+
+/// Compile several independent [`SavedLirModule`] chunks (e.g. from
+/// `volar_ir_build::Pipeline::<VaffleStage>::lower_to_lir_chunks` or
+/// `volar_ssa_lir_replay::lower_vaffle_module_to_lir_chunks`) to separate
+/// object files under `out_dir`, one per chunk (`chunk_0.o`, `chunk_1.o`, …).
+///
+/// Each chunk is compiled independently (its own `inkwell::Context`, its own
+/// `TargetMachine::write_to_file` call). A call from one chunk's function to
+/// a function defined in a different chunk needs no special handling here:
+/// every chunk's `LlvmBackend` already emits a plain external-linkage
+/// declaration for a callee it doesn't locally define, which ordinary
+/// object-level symbol resolution (the same linker step that would combine
+/// any other set of separately-compiled `.o` files) resolves at link time.
+///
+/// Returns the list of written object file paths, in chunk order.
+///
+/// # Errors
+///
+/// Returns a `Box<dyn std::error::Error>` on I/O or LLVM errors for any
+/// chunk; earlier chunks' object files remain on disk.
+pub fn compile_lir_chunks_to_objects(
+    chunks: &[SavedLirModule],
+    options: &CompileOptions,
+    out_dir: &Path,
+) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(out_dir)?;
+
+    let base_name = options.module_name.as_deref().unwrap_or("volar_module");
+
+    let mut paths = Vec::with_capacity(chunks.len());
+    for (i, chunk) in chunks.iter().enumerate() {
+        let out_path = out_dir.join(format!("chunk_{i}.o"));
+        let mut chunk_options = options.clone();
+        chunk_options.module_name = Some(format!("{base_name}_{i}"));
+        compile_saved_module_to_object(chunk, &out_path, &chunk_options)?;
+        paths.push(out_path);
+    }
+    Ok(paths)
+}
+
+/// Shared implementation behind [`compile_lir_to_object`],
+/// [`compile_lir_chunks_to_objects`], and `pipeline::lir_to_object`: replay
+/// an in-memory [`SavedLirModule`] into a fresh `LlvmBackend`/`Context` and
+/// write it to `out_path` as a native object file.
+pub(crate) fn compile_saved_module_to_object(
+    saved: &SavedLirModule,
+    out_path: &Path,
+    options: &CompileOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
     let opt_level = options.opt_level.unwrap_or_else(opt_level_from_env);
 
     let module_name = options
@@ -260,10 +313,6 @@ pub fn compile_lir_to_object(
         .as_deref()
         .or_else(|| out_path.file_stem().and_then(|s| s.to_str()))
         .unwrap_or("volar_module");
-
-    // ---- Deserialize --------------------------------------------------------
-    let bytes = std::fs::read(saved_path)?;
-    let saved: SavedLirModule = rkyv::from_bytes::<SavedLirModule, rkyv::rancor::Error>(&bytes)?;
 
     // ---- Replay into LlvmBackend --------------------------------------------
     let context = Context::create();
