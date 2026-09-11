@@ -31,6 +31,8 @@ fn cfg() -> OramGadgetConfig {
         // Generous stash so the S1 test never overflows; total real blocks
         // <= NUM_ADDRS, so this is ample margin.
         max_stash: 2 * LEVELS + Z + NUM_ADDRS,
+        encrypted: false,
+        tree_key_bits: 0,
     }
 }
 
@@ -275,6 +277,8 @@ fn s2_geometry_concrete() {
         bucket_size: 2,
         data_bits: 8,
         max_stash: 8,
+        encrypted: false,
+        tree_key_bits: 0,
     };
     let ops: [(u64, Option<u8>); 5] = [
         (2, Some(0xAB)),

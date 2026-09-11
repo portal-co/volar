@@ -261,6 +261,8 @@ pub fn storage_to_oram<P: Clone>(
         bucket_size: cfg.bucket_size,
         data_bits: 1,
         max_stash: cfg.max_stash,
+        encrypted: false,
+        tree_key_bits: 0,
     };
     let begin = build_begin(&oram);
     let access = build_access(&oram);

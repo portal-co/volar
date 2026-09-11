@@ -53,6 +53,8 @@ fn cfg() -> OramGadgetConfig {
         bucket_size: Z,
         data_bits: B * 8,
         max_stash: MAX_STASH,
+        encrypted: false,
+        tree_key_bits: 0,
     }
 }
 

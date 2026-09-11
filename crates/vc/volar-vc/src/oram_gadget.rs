@@ -75,6 +75,17 @@ pub struct OramGadgetConfig {
     pub data_bits: usize,
     /// Stash capacity in entries. `>= num_addrs` is always safe.
     pub max_stash: usize,
+    /// When set, the physical tree is **encrypted**: `read_path` returns
+    /// ciphertext and the access circuit decrypts on absorb / re-encrypts on
+    /// evict under a secret `tree_key` input, so the tree-hosting evaluator
+    /// cannot read block tags (the S5 obliviousness upgrade). The whole entry
+    /// (`valid ++ addr ++ leaf ++ data`) is XORed with a per-node pad, so the
+    /// evaluator cannot even distinguish real blocks from dummies.
+    #[doc(hidden)]
+    pub encrypted: bool,
+    /// Width of the `tree_key` secret input (used only when `encrypted`).
+    #[doc(hidden)]
+    pub tree_key_bits: usize,
 }
 
 impl OramGadgetConfig {
@@ -119,14 +130,20 @@ impl OramGadgetConfig {
     /// Input width of the access circuit.
     pub fn access_params(&self) -> usize {
         let eb = self.entry_bits();
-        self.max_stash * eb            // stash
+        let base = self.max_stash * eb            // stash
             + self.path_entries() * eb // path
             + self.addr_bits()         // addr
             + 1                        // op_write
             + self.data_bits           // wdata
             + self.leaf_bits()         // path_leaf
             + self.leaf_bits()         // new_leaf
-            + 1 // evict_only
+            + 1; // evict_only
+        // Encrypted tree: the secret `tree_key` is an additional input.
+        if self.encrypted {
+            base + self.tree_key_bits
+        } else {
+            base
+        }
     }
     /// Output width of the access circuit
     /// (`overflow ++ rdata ++ new_path ++ stash'`).
@@ -243,6 +260,58 @@ impl Builder {
         }
         acc.unwrap_or_else(|| self.const1())
     }
+    /// 128-bit AES plaintext tweak naming one path slot: `(depth, zslot)` as
+    /// constant bytes plus the top-`depth` bits of `path_leaf` (the node
+    /// prefix). Only the prefix is included — not the full leaf — so every
+    /// leaf whose path reaches a given physical node produces the *same* tweak
+    /// for that node's slot, keeping the pad consistent across accesses.
+    /// `zc`/`oc` are shared constant wires. AES keyed on the secret `tree_key`
+    /// turns this public tweak into a pad the evaluator cannot reproduce.
+    fn slot_tweak(&mut self, path_leaf: &[u32], depth: usize, zslot: usize, zc: u32, oc: u32) -> Vec<u32> {
+        let lb = path_leaf.len();
+        let mut tw = Vec::with_capacity(128);
+        for i in 0..16 {
+            let val = if i < 8 {
+                (depth >> i) & 1 == 1
+            } else {
+                (zslot >> (i - 8)) & 1 == 1
+            };
+            tw.push(if val { oc } else { zc });
+        }
+        for j in 0..depth {
+            tw.push(path_leaf[lb - 1 - j]);
+        }
+        while tw.len() < 128 {
+            tw.push(zc);
+        }
+        tw
+    }
+    /// Inline a single-block sub-circuit: append its gates with var ids
+    /// remapped (`inputs[i]` is the parent wire for sub-param `i`), returning
+    /// the sub-circuit's output wires in the parent. Used to instantiate the
+    /// AES PRF per path slot.
+    fn inline_sub(&mut self, sub: &BIrBlocks, inputs: &[u32]) -> Vec<u32> {
+        let block = &sub.blocks[0];
+        assert_eq!(sub.blocks.len(), 1, "inline_sub: single-block circuit");
+        assert_eq!(block.params as usize, inputs.len(), "inline_sub: input arity");
+        let mut remap: Vec<u32> = Vec::with_capacity(block.params as usize + block.stmts.len());
+        remap.extend_from_slice(inputs);
+        for stmt in &block.stmts {
+            let s = remap_bir_stmt(&stmt.kind, &remap);
+            let id = self.gate(s);
+            remap.push(id);
+        }
+        match &block.terminator {
+            BIrTerminator::Jmp(t) if t.block == IRBlockTargetId::Return => {
+                t.args.iter().map(|a| remap[a.0 as usize]).collect()
+            }
+            _ => panic!("inline_sub: sub-circuit must end in a Return"),
+        }
+    }
+    /// Bitwise-XOR a word with a pad (used for both decrypt and encrypt).
+    fn xor_word(&mut self, a: &[u32], pad: &[u32]) -> Vec<u32> {
+        a.iter().zip(pad).map(|(&ai, &pi)| self.xor(ai, pi)).collect()
+    }
     fn finish(self, outputs: Vec<u32>) -> BIrBlocks {
         BIrBlocks {
             blocks: vec![BIrBlock {
@@ -255,6 +324,22 @@ impl Builder {
             }],
             pre_init: vec![],
         }
+    }
+}
+
+/// Remap a boolean gate's operand var ids through `remap` (used by
+/// [`Builder::inline_sub`]; only the pure-boolean variants an inlined gadget
+/// uses are supported).
+fn remap_bir_stmt(s: &BIrStmt, remap: &[u32]) -> BIrStmt {
+    let r = |v: &IRVarId| IRVarId(remap[v.0 as usize]);
+    match s {
+        BIrStmt::Zero => BIrStmt::Zero,
+        BIrStmt::One => BIrStmt::One,
+        BIrStmt::And(a, b) => BIrStmt::And(r(a), r(b)),
+        BIrStmt::Or(a, b) => BIrStmt::Or(r(a), r(b)),
+        BIrStmt::Xor(a, b) => BIrStmt::Xor(r(a), r(b)),
+        BIrStmt::Not(a) => BIrStmt::Not(r(a)),
+        other => panic!("inline_sub: unsupported stmt {other:?}"),
     }
 }
 
@@ -322,7 +407,7 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
     let mut stash: Vec<Vec<u32>> = (0..ms)
         .map(|i| (0..eb).map(|j| (stash_off + i * eb + j) as u32).collect())
         .collect();
-    let path: Vec<Vec<u32>> = (0..n_path)
+    let mut path: Vec<Vec<u32>> = (0..n_path)
         .map(|k| (0..eb).map(|j| (path_off + k * eb + j) as u32).collect())
         .collect();
     let addr: Vec<u32> = (0..ab).map(|j| (addr_off + j) as u32).collect();
@@ -331,11 +416,46 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
     let path_leaf: Vec<u32> = (0..lb).map(|j| (pleaf_off + j) as u32).collect();
     let new_leaf: Vec<u32> = (0..lb).map(|j| (nleaf_off + j) as u32).collect();
     let evict_only = evonly_off as u32;
+    let tree_key: Vec<u32> = (0..cfg.tree_key_bits)
+        .map(|j| (evonly_off + 1 + j) as u32)
+        .collect();
 
     let zc = b.const0();
     let oc = b.const1();
     let not_evict_only = b.not(evict_only);
     let mut overflow = zc;
+
+    // Encrypted tree: precompute each path slot's pad, then decrypt the path the
+    // host just read (the tree stores ciphertext). The same pad re-encrypts the
+    // slot on write-back below, so a physical node has one consistent pad.
+    //
+    // The pad is `AES-128(tree_key, slot_tweak)` — a real PRF keyed on the
+    // garbler-held `tree_key`, so the tree-hosting evaluator cannot recover
+    // block tags from the ciphertext. One AES instance is inlined per path slot.
+    //
+    // Only the payload `[addr, leaf, data]` is encrypted; the `valid` bit stays
+    // plaintext so an untouched (all-zero) tree slot reads back as a dummy
+    // without any garbler-side formatting pass. (The evaluator therefore sees
+    // the tree *occupancy* pattern — a partial leak hardened in S6 — but not the
+    // address tags, leaf assignments, or data.)
+    let mut pads: Vec<Vec<u32>> = Vec::new();
+    if cfg.encrypted {
+        assert_eq!(cfg.tree_key_bits, 128, "encrypted tree uses an AES-128 key");
+        let aes = crate::aes_gadget::build_aes128();
+        for k in 0..n_path {
+            let tweak = b.slot_tweak(&path_leaf, k / z, k % z, zc, oc);
+            let mut aes_in = tree_key.clone();
+            aes_in.extend_from_slice(&tweak);
+            let aes_out = b.inline_sub(&aes, &aes_in);
+            // eb-1 pad bits: cover the payload, leave `valid` (bit 0) plaintext.
+            pads.push(aes_out[0..eb - 1].to_vec());
+        }
+        for k in 0..n_path {
+            let mut e = vec![path[k][0]]; // valid stays plaintext
+            e.extend(b.xor_word(&path[k][1..], &pads[k]));
+            path[k] = e;
+        }
+    }
 
     // 1. Absorb every real path entry into the first free stash slot.
     for pe in &path {
@@ -434,6 +554,17 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
         let mut e2 = e;
         e2[off_valid()] = new_valid;
         stash[i] = e2;
+    }
+
+    // Encrypted tree: re-encrypt the evicted path's payload before the host
+    // writes it back (same per-slot pad as the decrypt above; `valid` stays
+    // plaintext).
+    if cfg.encrypted {
+        for k in 0..n_path {
+            let mut e = vec![new_path[k][0]];
+            e.extend(b.xor_word(&new_path[k][1..], &pads[k]));
+            new_path[k] = e;
+        }
     }
 
     // Outputs: overflow, rdata, new_path, stash'.
