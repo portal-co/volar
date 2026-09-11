@@ -61,6 +61,8 @@ use alloc::vec::Vec;
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlockTargetId, IRVarId};
 use volar_ir_common::Node;
+use volar_oram::{OramEntry, OramTree};
+use volar_spec::faest::aes::encrypt_block;
 
 /// Compile-time geometry for the in-circuit ORAM gadget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -449,6 +451,142 @@ pub fn slot_tweak_versioned_bytes(depth: usize, prefix: u64, version: u64, versi
         }
     }
     tw
+}
+
+impl OramGadgetConfig {
+    /// The **secure-by-default** posture: the physical tree is encrypted
+    /// (AES-128 per-node pads) with the `valid` bit encrypted too (occupancy
+    /// hidden) and per-node versioned pads for replay protection. This is the
+    /// recommended configuration; the plaintext scaffold (`encrypted: false`)
+    /// remains for testing and for the S1–S4 correctness harnesses.
+    ///
+    /// The fresh leaf stays driver-provided (`keyed_leaf: false`); a deployment
+    /// must feed it from a *secret* RNG (or enable `keyed_leaf` to derive it
+    /// in-circuit). The tree must be pre-formatted by the key holder — see
+    /// [`TreeCrypto::format_tree`] — and the driver tracks per-node versions.
+    pub fn secure(num_addrs: usize, levels: usize, bucket_size: usize, data_bits: usize) -> Self {
+        OramGadgetConfig {
+            num_addrs,
+            levels,
+            bucket_size,
+            data_bits,
+            max_stash: 2 * levels + bucket_size + 16,
+            encrypted: true,
+            tree_key_bits: 128,
+            encrypt_valid: true,
+            keyed_leaf: false,
+            versioned_pads: true,
+            version_bits: 16,
+        }
+    }
+
+    /// The tree byte width `B` needed so one `OramEntry`'s `data` holds the
+    /// (encrypted) `entry_bits`-wide entry. For plaintext this is the data
+    /// width; for encrypted it is `ceil(entry_bits / 8)`.
+    pub fn tree_block_bytes(&self) -> usize {
+        if self.encrypted {
+            self.entry_bits().div_ceil(8)
+        } else {
+            self.data_bits.div_ceil(8).max(1)
+        }
+    }
+}
+
+/// Driver-side encryption state for an `encrypted` ORAM tree: the secret AES
+/// tree key plus the per-node version counters (S6 versioned pads). Shared by
+/// the concrete and two-party drivers so both format and version the tree
+/// identically. The tree holds only ciphertext; the key holder pre-formats it.
+#[derive(Clone)]
+pub struct TreeCrypto {
+    /// The AES-128 tree key (secret; the tree-hosting evaluator never learns it).
+    pub key: [u8; 16],
+    /// Per-node version counters, heap-indexed; bumped on every write.
+    pub versions: Vec<u64>,
+    /// Version width in bits (matches `OramGadgetConfig::version_bits`).
+    pub version_bits: usize,
+    /// Whether per-node versioning is active (`OramGadgetConfig::versioned_pads`).
+    pub versioned: bool,
+}
+
+impl TreeCrypto {
+    /// Fresh crypto state for a `num_nodes`-bucket tree under `key`.
+    pub fn new(key: [u8; 16], num_nodes: usize, cfg: &OramGadgetConfig) -> Self {
+        TreeCrypto {
+            key,
+            versions: alloc::vec![0; num_nodes],
+            version_bits: cfg.version_bits,
+            versioned: cfg.versioned_pads,
+        }
+    }
+
+    /// The current AES pad for the tree node at (depth `d`, position `k`).
+    pub fn node_pad(&self, d: usize, k: usize) -> [u8; 16] {
+        let version = if self.versioned {
+            self.versions[(1usize << d) - 1 + k]
+        } else {
+            0
+        };
+        let tw = if self.versioned {
+            slot_tweak_versioned_bytes(d, k as u64, version, self.version_bits)
+        } else {
+            slot_tweak_bytes(d, 0, k as u64)
+        };
+        encrypt_block(&self.key, &tw)
+    }
+
+    /// Pre-format the tree for `encrypt_valid`: every slot is a dummy whose
+    /// ciphertext equals its pad, so the circuit decrypts it to a zero entry.
+    /// No-op when `encrypt_valid` is off (the all-zero tree reads as dummies).
+    pub fn format_tree<const Z: usize, const B: usize>(
+        &self,
+        cfg: &OramGadgetConfig,
+        tree: &mut OramTree<Z, B>,
+    ) {
+        if !cfg.encrypt_valid {
+            return;
+        }
+        let eb = cfg.entry_bits();
+        for d in 0..cfg.levels {
+            for k in 0..(1usize << d) {
+                let idx = (1usize << d) - 1 + k;
+                let pad = self.node_pad(d, k);
+                for zs in 0..Z {
+                    let mut data = [0u8; B];
+                    for i in 0..eb {
+                        let gpos = zs * eb + i;
+                        if (pad[gpos / 8] >> (gpos % 8)) & 1 == 1 {
+                            data[i / 8] |= 1 << (i % 8);
+                        }
+                    }
+                    tree.buckets[idx].entries[zs] = OramEntry { addr: 0, leaf: 0, data };
+                }
+            }
+        }
+    }
+
+    /// The current versions of the path-to-`leaf` nodes (root-to-leaf level
+    /// order), laid out as the access circuit's version input expects.
+    pub fn path_versions<const Z: usize, const B: usize>(
+        &self,
+        tree: &OramTree<Z, B>,
+        leaf: u64,
+    ) -> Vec<u64> {
+        tree.path_indices(leaf).iter().map(|&i| self.versions[i]).collect()
+    }
+
+    /// Bump the versions of the path-to-`leaf` nodes after a write to that path.
+    pub fn bump_path<const Z: usize, const B: usize>(&mut self, tree: &OramTree<Z, B>, leaf: u64) {
+        if self.versioned {
+            for &i in &tree.path_indices(leaf) {
+                self.versions[i] += 1;
+            }
+        }
+    }
+
+    /// The tree key as circuit input bits (LSB-first per byte).
+    pub fn key_bits(&self) -> Vec<bool> {
+        self.key.iter().flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1)).collect()
+    }
 }
 
 /// Build a **sub-block extraction** circuit (S5c recursion): select entry `off`

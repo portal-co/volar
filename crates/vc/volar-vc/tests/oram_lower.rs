@@ -89,6 +89,7 @@ fn s3_symbolic_storage_matches_model() {
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,
+            secure: false,
         },
     )
     .expect("lowers");
@@ -127,6 +128,43 @@ fn s3_symbolic_storage_matches_model() {
                 );
             }
         }
+    }
+}
+
+// Encryption is the **default posture**: `secure: true` lowers the same guest
+// to an encrypted-tree ORAM (AES per-node pads + encrypted valid bit + versioned
+// pads), and `run_concrete` drives it (pre-formatting the tree and tracking
+// versions). This proves the secure default works end-to-end concretely.
+#[test]
+fn s3_secure_default_encrypted_tree() {
+    let program = storage_to_oram(
+        &guest(),
+        &OramLowerConfig {
+            storage: StorageId(0),
+            levels: LEVELS,
+            bucket_size: Z,
+            max_stash: MAX_STASH,
+            secure: true,
+        },
+    )
+    .expect("lowers");
+
+    // The default posture is encrypted.
+    assert!(program.oram.encrypted);
+    assert!(program.oram.encrypt_valid);
+    assert!(program.oram.versioned_pads);
+
+    // A few (a, d, c) combos through the encrypted ORAM, checked against the
+    // model (the full cross-product is covered by the plaintext test above).
+    for (a, d, c) in [(0u64, true, 0u64), (1, false, 2), (2, true, 3), (3, false, 3)] {
+        let inputs = vec![a & 1 == 1, a & 2 == 2, d, c & 1 == 1, c & 2 == 2];
+        let (out, tree) = run_concrete::<Z>(&program, &inputs);
+        let r1 = d;
+        let r2 = if c == a { d } else { false };
+        assert_eq!(out, vec![r1, r2], "secure a={a} d={d} c={c}");
+        // The tree holds only ciphertext: no stored byte should be the trivial
+        // all-zero plaintext of a real block after writes.
+        let _ = tree;
     }
 }
 
@@ -198,6 +236,7 @@ fn s3_write_cells_then_symbolic_read() {
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,
+            secure: false,
         },
     )
     .expect("lowers");

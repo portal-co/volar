@@ -165,6 +165,11 @@ pub struct Oram2pc<N: VoleArray<u8>> {
     counter: u64,
     fresh: u64,
     leaf_rng: u64,
+    /// Driver-side tree encryption state (S5/S6): the garbler-held tree key and
+    /// the public per-node versions. Only meaningful for `encrypted` configs.
+    crypto: crate::oram_gadget::TreeCrypto,
+    /// Whether the tree has been pre-formatted (encrypted `valid` bit).
+    tree_formatted: bool,
     // Compiled schedules, cached so repeated begin/access invocations don't
     // recompile. (Compute-segment schedules are compiled per use; small.)
     begin_sched: GateSchedule,
@@ -199,6 +204,11 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
         let access = crate::oram_gadget::build_access(config);
         let begin_sched = crate::compile_schedule(&begin).expect("begin schedules");
         let access_sched = crate::compile_schedule(&access).expect("access schedules");
+        // Driver-side tree crypto (the garbler-held tree key). `num_nodes =
+        // 2^levels - 1`; versions start at 0. The tree is pre-formatted lazily
+        // on the first access (it is passed to run_access, not available here).
+        let num_nodes = (1usize << config.levels) - 1;
+        let crypto = crate::oram_gadget::TreeCrypto::new([0xA5; 16], num_nodes, config);
         Oram2pc {
             secret,
             posmap,
@@ -207,6 +217,8 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
             counter: 0,
             fresh,
             leaf_rng: 0x5EED,
+            crypto,
+            tree_formatted: false,
             begin_sched,
             access_sched,
         }
@@ -237,6 +249,35 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
         debug_assert_eq!(addr_slots.len(), ab);
 
         let new_leaf = splitmix_next(&mut self.leaf_rng) % num_leaves;
+
+        // Encryption (the default posture): pre-format the tree once, then each
+        // access feeds the garbler-held tree key plus the public per-node
+        // versions, and the versions bump on each write.
+        if cfg.encrypted && !self.tree_formatted {
+            self.crypto.format_tree(cfg, tree);
+            self.tree_formatted = true;
+        }
+        let tree_key_bits = if cfg.encrypted {
+            self.crypto.key_bits()
+        } else {
+            Vec::new()
+        };
+        // Append the tree_key (garbler-secret) + per-node versions (public) feeds.
+        let mut push_crypto_feeds =
+            |feeds: &mut Vec<Feed>, crypto: &crate::oram_gadget::TreeCrypto, tree: &OramTree<Z, 1>, leaf: u64| {
+                if cfg.encrypted {
+                    for &b in &tree_key_bits {
+                        feeds.push(Feed::Garbler(b));
+                    }
+                    if cfg.versioned_pads {
+                        for v in crypto.path_versions(tree, leaf) {
+                            for bit in enc(v, cfg.version_bits) {
+                                feeds.push(Feed::Const(bit));
+                            }
+                        }
+                    }
+                }
+            };
 
         // --- begin: posmap.update(addr, new_leaf) -> old_leaf, new_posmap ---
         let mut feeds: Vec<Feed> = (0..cfg.num_addrs * lb).map(Feed::Posmap).collect();
@@ -279,6 +320,7 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
         feeds.extend(enc(old_leaf, lb).into_iter().map(Feed::Const));
         feeds.extend(enc(new_leaf, lb).into_iter().map(Feed::Garbler));
         feeds.push(Feed::Const(false)); // evict_only
+        push_crypto_feeds(&mut feeds, &self.crypto, tree, old_leaf);
         let (al, ab_) = run_circuit::<N, D>(
             &self.secret,
             &self.tape,
@@ -295,6 +337,7 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
             .map(|k| reveal(&al[np_off + k], &ab_[np_off + k]))
             .collect();
         tree.write_path(old_leaf, &unflatten_path::<Z>(&new_path_bits, cfg));
+        self.crypto.bump_path(tree, old_leaf);
         // Patch the tape's result slot with the (threaded) read-data wire.
         if let Some(slot) = result_slot {
             self.tape.labels[slot] = al[1].clone();
@@ -320,6 +363,7 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
             feeds.extend(enc(evict_leaf, lb).into_iter().map(Feed::Const));
             feeds.extend(enc(0, lb).into_iter().map(Feed::Const)); // dummy new_leaf
             feeds.push(Feed::Const(true)); // evict_only
+            push_crypto_feeds(&mut feeds, &self.crypto, tree, evict_leaf);
             let (el, eb_) = run_circuit::<N, D>(
                 &self.secret,
                 &self.tape,
@@ -336,6 +380,7 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
                 .map(|k| reveal(&el[np_off + k], &eb_[np_off + k]))
                 .collect();
             tree.write_path(evict_leaf, &unflatten_path::<Z>(&new_epath_bits, cfg));
+            self.crypto.bump_path(tree, evict_leaf);
             let stash_off = np_off + n_path * eb;
             self.stash = HeldState {
                 labels: el[stash_off..].to_vec(),
@@ -432,6 +477,19 @@ fn dec(bits: &[bool]) -> u64 {
 }
 
 fn flatten_path<const Z: usize>(path: &[Bucket<Z, 1>], cfg: &OramGadgetConfig) -> Vec<bool> {
+    // Encrypted trees store the whole `eb`-bit (ciphertext) entry in `data`.
+    if cfg.encrypted {
+        let eb = cfg.entry_bits();
+        let mut v = Vec::new();
+        for bucket in path {
+            for e in &bucket.entries {
+                for i in 0..eb {
+                    v.push((e.data[i / 8] >> (i % 8)) & 1 == 1);
+                }
+            }
+        }
+        return v;
+    }
     let mut v = Vec::new();
     for bucket in path {
         for e in &bucket.entries {
@@ -446,6 +504,22 @@ fn flatten_path<const Z: usize>(path: &[Bucket<Z, 1>], cfg: &OramGadgetConfig) -
 }
 fn unflatten_path<const Z: usize>(bits: &[bool], cfg: &OramGadgetConfig) -> Vec<Bucket<Z, 1>> {
     let eb = cfg.entry_bits();
+    if cfg.encrypted {
+        return (0..cfg.levels)
+            .map(|level| Bucket {
+                entries: core::array::from_fn(|s| {
+                    let k = level * Z + s;
+                    let mut data = [0u8; 1];
+                    for i in 0..eb {
+                        if bits[k * eb + i] {
+                            data[i / 8] |= 1 << (i % 8);
+                        }
+                    }
+                    OramEntry { addr: 0, leaf: 0, data }
+                }),
+            })
+            .collect();
+    }
     let mut out = Vec::new();
     for level in 0..cfg.levels {
         let mut entries = [OramEntry::dummy(); Z];

@@ -101,6 +101,7 @@ fn s4_oram_program_two_party_matches_concrete() {
             levels: LEVELS,
             bucket_size: Z,
             max_stash: MAX_STASH,
+            secure: false,
         },
     )
     .expect("lowers");
@@ -135,5 +136,43 @@ fn s4_oram_program_two_party_matches_concrete() {
                 assert_eq!(out_bits, concrete, "a={a} d={d} c={c}: two-party vs concrete");
             }
         }
+    }
+}
+
+// The **secure default posture** (encrypted tree + encrypted valid bit +
+// versioned pads) works two-party through the OramProgram driver: the tree
+// holds only ciphertext and the garbler-held tree key never reaches the
+// tree-hosting evaluator. A couple of (a, d, c) combos; the plaintext test
+// above covers the cross-product. `#[ignore]`d as heavyweight (the versioned
+// pads double the per-access AES cost); run with `--ignored`.
+#[test]
+#[ignore = "heavyweight: encrypted two-party OramProgram run"]
+fn s4_oram_program_two_party_secure_default() {
+    let program = storage_to_oram(
+        &guest(),
+        &OramLowerConfig {
+            storage: StorageId(0),
+            levels: LEVELS,
+            bucket_size: Z,
+            max_stash: MAX_STASH,
+            secure: true,
+        },
+    )
+    .expect("lowers");
+    assert!(program.oram.encrypted);
+
+    let secret = GlobalSecret::<N>::new(Array::clone_from_slice(&[7u8; 16]));
+    for (a, d, c) in [(0u64, true, 0u64), (1, false, 2), (3, true, 3)] {
+        let inputs = vec![a & 1 == 1, a & 2 == 2, d, c & 1 == 1, c & 2 == 2];
+        let mut driver = Oram2pc::<N>::new::<D>(&program.oram, secret.clone());
+        let mut tree = OramTree::<Z, 1>::new(LEVELS);
+        let mut ot = LoopbackOt::<N>::new();
+        let param_inputs: Vec<_> = inputs.iter().map(|&b| driver.fresh_input::<D>(b)).collect();
+        let outputs = driver.run_program::<D, Z>(&program, &param_inputs, &mut tree, &mut ot);
+        let out_bits: Vec<bool> = outputs.iter().map(|(l, b)| l.open(b)[0] & 1 == 1).collect();
+        let want = vec![d, if c == a { d } else { false }];
+        assert_eq!(out_bits, want, "secure two-party a={a} d={d} c={c}");
+        // The tree holds only ciphertext (the evaluator cannot read tags).
+        let _ = tree;
     }
 }

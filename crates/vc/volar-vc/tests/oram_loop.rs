@@ -43,6 +43,7 @@ fn config() -> OramLowerConfig {
         levels: LEVELS,
         bucket_size: Z,
         max_stash: MAX_STASH,
+            secure: false,
     }
 }
 

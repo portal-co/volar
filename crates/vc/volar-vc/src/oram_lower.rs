@@ -47,7 +47,7 @@ use volar_ir::ir::{IRBlockTargetId, IRVarId, StorageId};
 use volar_ir_common::Node;
 use volar_oram::{Bucket, OramEntry, OramTree, eviction_target};
 
-use crate::oram_gadget::{OramGadgetConfig, build_access, build_begin};
+use crate::oram_gadget::{OramGadgetConfig, TreeCrypto, build_access, build_begin};
 
 /// Which storage space to lower, and the ORAM geometry to serve it with.
 #[derive(Clone, Copy, Debug)]
@@ -60,6 +60,11 @@ pub struct OramLowerConfig {
     pub bucket_size: usize,
     /// Stash capacity (entries). `>= num_addrs` is always safe.
     pub max_stash: usize,
+    /// When set (the default posture), the physical ORAM tree is **encrypted**
+    /// (AES-128 per-node pads, encrypted valid bit, versioned pads) — the
+    /// secure-by-default configuration. Tests set this to `false` for the fast
+    /// plaintext scaffold.
+    pub secure: bool,
 }
 
 /// An access's wiring into the guest tape.
@@ -254,20 +259,27 @@ pub fn storage_to_oram<P: Clone>(
     boundaries.extend(storage_idx.iter().copied());
     boundaries.push(n); // sentinel end
 
-    // Build the ORAM gadget circuits once for this geometry.
-    let oram = OramGadgetConfig {
-        num_addrs,
-        levels: cfg.levels,
-        bucket_size: cfg.bucket_size,
-        data_bits: 1,
-        max_stash: cfg.max_stash,
-        encrypted: false,
-        tree_key_bits: 0,
-        encrypt_valid: false,
-        keyed_leaf: false,
-        versioned_pads: false,
-        version_bits: 0,
+    // Build the ORAM gadget circuits once for this geometry. Encryption is the
+    // default posture (`OramGadgetConfig::secure`); tests set `secure: false`
+    // for the fast plaintext scaffold.
+    let mut oram = if cfg.secure {
+        OramGadgetConfig::secure(num_addrs, cfg.levels, cfg.bucket_size, 1)
+    } else {
+        OramGadgetConfig {
+            num_addrs,
+            levels: cfg.levels,
+            bucket_size: cfg.bucket_size,
+            data_bits: 1,
+            max_stash: cfg.max_stash,
+            encrypted: false,
+            tree_key_bits: 0,
+            encrypt_valid: false,
+            keyed_leaf: false,
+            versioned_pads: false,
+            version_bits: 0,
+        }
     };
+    oram.max_stash = cfg.max_stash;
     let begin = build_begin(&oram);
     let access = build_access(&oram);
 
@@ -425,6 +437,20 @@ fn dec(bits: &[bool]) -> u64 {
 }
 
 fn flatten_path<const Z: usize>(path: &[Bucket<Z, 1>], cfg: &OramGadgetConfig) -> Vec<bool> {
+    // Encrypted trees store the whole `eb`-bit (ciphertext) entry in `data`;
+    // plaintext trees store {valid, addr, leaf, data} fields.
+    if cfg.encrypted {
+        let eb = cfg.entry_bits();
+        let mut v = Vec::new();
+        for bucket in path {
+            for e in &bucket.entries {
+                for i in 0..eb {
+                    v.push((e.data[i / 8] >> (i % 8)) & 1 == 1);
+                }
+            }
+        }
+        return v;
+    }
     let mut v = Vec::new();
     for bucket in path {
         for e in &bucket.entries {
@@ -440,6 +466,22 @@ fn flatten_path<const Z: usize>(path: &[Bucket<Z, 1>], cfg: &OramGadgetConfig) -
 
 fn unflatten_path<const Z: usize>(bits: &[bool], cfg: &OramGadgetConfig) -> Vec<Bucket<Z, 1>> {
     let eb = cfg.entry_bits();
+    if cfg.encrypted {
+        return (0..cfg.levels)
+            .map(|level| Bucket {
+                entries: core::array::from_fn(|s| {
+                    let k = level * Z + s;
+                    let mut data = [0u8; 1];
+                    for i in 0..eb {
+                        if bits[k * eb + i] {
+                            data[i / 8] |= 1 << (i % 8);
+                        }
+                    }
+                    OramEntry { addr: 0, leaf: 0, data }
+                }),
+            })
+            .collect();
+    }
     let mut out = Vec::new();
     for level in 0..cfg.levels {
         let mut entries = [OramEntry::dummy(); Z];
@@ -504,6 +546,16 @@ pub fn run_concrete<const Z: usize>(
     let mut counter: u64 = 0;
     let mut leaf_rng = Splitmix64(0x5EED);
 
+    // Encryption (the default posture): the tree stores ciphertext, the driver
+    // holds the secret tree key (a fixed test key here) and tracks per-node
+    // versions, pre-formatting the tree when the valid bit is encrypted.
+    assert!(cfg.tree_block_bytes() <= 1, "run_concrete: B=1 tree needs entry_bits <= 8");
+    let mut crypto = TreeCrypto::new([0xA5; 16], tree.buckets.len(), cfg);
+    if cfg.encrypted {
+        crypto.format_tree(cfg, &mut tree);
+    }
+    let tree_key_bits = crypto.key_bits();
+
     for stage in &program.stages {
         match stage {
             Stage::Compute(circuit) => {
@@ -531,12 +583,21 @@ pub fn run_concrete<const Z: usize>(
                 acc_in.extend(enc(old_leaf, lb));
                 acc_in.extend(enc(new_leaf, lb));
                 acc_in.push(false);
+                if cfg.encrypted {
+                    acc_in.extend(tree_key_bits.iter().copied());
+                    if cfg.versioned_pads {
+                        for v in crypto.path_versions(&tree, old_leaf) {
+                            acc_in.extend(enc(v, cfg.version_bits));
+                        }
+                    }
+                }
                 let acc_out = eval_circuit(&program.access, &acc_in);
                 assert!(!acc_out[0], "ORAM stash overflow");
                 let rdata = acc_out[1];
                 let new_path = &acc_out[1 + db..1 + db + n_path * eb];
                 stash_bits = acc_out[1 + db + n_path * eb..].to_vec();
                 tree.write_path(old_leaf, &unflatten_path(new_path, cfg));
+                crypto.bump_path(&tree, old_leaf);
 
                 // deterministic eviction (one pass, skipped on collision)
                 let evict_leaf = eviction_target(counter, num_leaves);
@@ -551,11 +612,20 @@ pub fn run_concrete<const Z: usize>(
                     ev_in.extend(enc(evict_leaf, lb));
                     ev_in.extend(enc(0, lb));
                     ev_in.push(true);
+                    if cfg.encrypted {
+                        ev_in.extend(tree_key_bits.iter().copied());
+                        if cfg.versioned_pads {
+                            for v in crypto.path_versions(&tree, evict_leaf) {
+                                ev_in.extend(enc(v, cfg.version_bits));
+                            }
+                        }
+                    }
                     let ev_out = eval_circuit(&program.access, &ev_in);
                     assert!(!ev_out[0], "ORAM stash overflow (evict)");
                     let new_epath = &ev_out[1 + db..1 + db + n_path * eb];
                     stash_bits = ev_out[1 + db + n_path * eb..].to_vec();
                     tree.write_path(evict_leaf, &unflatten_path(new_epath, cfg));
+                    crypto.bump_path(&tree, evict_leaf);
                 }
 
                 if let Some(slot) = info.result_slot {
