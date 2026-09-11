@@ -529,125 +529,162 @@ impl Splitmix64 {
     }
 }
 
+/// A **persistent** concrete ORAM driver: holds the ORAM state (tree, posmap,
+/// stash, access counter, leaf RNG, tree crypto) so a *looping* guest can run
+/// many [`OramProgram`] steps against one shared ORAM. This is the concrete
+/// counterpart of the two-party [`crate::oram_2pc::Oram2pc`] loop driver.
+pub struct ConcreteOramDrive<const Z: usize> {
+    tree: OramTree<Z, 1>,
+    posmap_bits: Vec<bool>,
+    stash_bits: Vec<bool>,
+    counter: u64,
+    leaf_rng: Splitmix64,
+    crypto: TreeCrypto,
+}
+
+impl<const Z: usize> ConcreteOramDrive<Z> {
+    /// Fresh drive for a given geometry (`cfg`), pre-formatting the tree when
+    /// the config encrypts the valid bit.
+    pub fn new(cfg: &OramGadgetConfig) -> Self {
+        assert_eq!(cfg.bucket_size, Z, "bucket size must match the tree");
+        assert_eq!(cfg.data_bits, 1, "bit-level storage");
+        assert!(cfg.tree_block_bytes() <= 1, "run_concrete: B=1 tree needs entry_bits <= 8");
+        let mut tree: OramTree<Z, 1> = OramTree::new(cfg.levels);
+        let mut crypto = TreeCrypto::new([0xA5; 16], tree.buckets.len(), cfg);
+        if cfg.encrypted {
+            crypto.format_tree(cfg, &mut tree);
+        }
+        ConcreteOramDrive {
+            posmap_bits: alloc::vec![false; cfg.num_addrs * cfg.leaf_bits()],
+            stash_bits: alloc::vec![false; cfg.max_stash * cfg.entry_bits()],
+            tree,
+            counter: 0,
+            leaf_rng: Splitmix64(0x5EED),
+            crypto,
+        }
+    }
+
+    /// The current tree (for inspection).
+    pub fn tree(&self) -> &OramTree<Z, 1> {
+        &self.tree
+    }
+
+    /// Run one [`OramProgram`] step against the shared ORAM, returning the guest
+    /// outputs. Panics on ORAM stash overflow (a protocol abort).
+    pub fn run_program(&mut self, program: &OramProgram, inputs: &[bool]) -> Vec<bool> {
+        let cfg = &program.oram;
+        let lb = cfg.leaf_bits();
+        let ab = cfg.addr_bits();
+        let db = cfg.data_bits;
+        let eb = cfg.entry_bits();
+        let n_path = cfg.levels * Z;
+        let num_leaves = cfg.num_leaves() as u64;
+        let tree_key_bits = self.crypto.key_bits();
+
+        let mut tape = alloc::vec![false; program.tape_width];
+        for (i, &b) in inputs.iter().enumerate() {
+            tape[program.input_slots[i]] = b;
+        }
+
+        for stage in &program.stages {
+            match stage {
+                Stage::Compute(circuit) => {
+                    tape = eval_circuit(circuit, &tape);
+                }
+                Stage::Access(info) => {
+                    let addr = dec(&info.addr_slots.iter().map(|&s| tape[s]).collect::<Vec<_>>());
+                    let new_leaf = self.leaf_rng.next() % num_leaves;
+
+                    // begin: posmap update -> old_leaf
+                    let mut begin_in = self.posmap_bits.clone();
+                    begin_in.extend(enc(addr, ab));
+                    begin_in.extend(enc(new_leaf, lb));
+                    let begin_out = eval_circuit(&program.begin, &begin_in);
+                    let old_leaf = dec(&begin_out[..lb]);
+                    self.posmap_bits = begin_out[lb..].to_vec();
+
+                    // extern: read the main path; access (main); write it back.
+                    let main_path = self.tree.read_path(old_leaf);
+                    let mut acc_in = self.stash_bits.clone();
+                    acc_in.extend(flatten_path(&main_path, cfg));
+                    acc_in.extend(enc(addr, ab));
+                    acc_in.push(info.write);
+                    acc_in.extend(enc(if info.write { tape[info.wdata_slot] as u64 } else { 0 }, db));
+                    acc_in.extend(enc(old_leaf, lb));
+                    acc_in.extend(enc(new_leaf, lb));
+                    acc_in.push(false);
+                    if cfg.encrypted {
+                        acc_in.extend(tree_key_bits.iter().copied());
+                        if cfg.versioned_pads {
+                            for v in self.crypto.path_versions(&self.tree, old_leaf) {
+                                acc_in.extend(enc(v, cfg.version_bits));
+                            }
+                        }
+                    }
+                    let acc_out = eval_circuit(&program.access, &acc_in);
+                    assert!(!acc_out[0], "ORAM stash overflow");
+                    let rdata = acc_out[1];
+                    let new_path = &acc_out[1 + db..1 + db + n_path * eb];
+                    self.stash_bits = acc_out[1 + db + n_path * eb..].to_vec();
+                    let np = unflatten_path(new_path, cfg);
+                    self.tree.write_path(old_leaf, &np);
+                    self.crypto.bump_path(&self.tree, old_leaf);
+
+                    // deterministic eviction (one pass, skipped on collision)
+                    let evict_leaf = eviction_target(self.counter, num_leaves);
+                    self.counter += 1;
+                    if evict_leaf != old_leaf {
+                        let epath = self.tree.read_path(evict_leaf);
+                        let mut ev_in = self.stash_bits.clone();
+                        ev_in.extend(flatten_path(&epath, cfg));
+                        ev_in.extend(enc(0, ab));
+                        ev_in.push(false);
+                        ev_in.extend(enc(0, db));
+                        ev_in.extend(enc(evict_leaf, lb));
+                        ev_in.extend(enc(0, lb));
+                        ev_in.push(true);
+                        if cfg.encrypted {
+                            ev_in.extend(tree_key_bits.iter().copied());
+                            if cfg.versioned_pads {
+                                for v in self.crypto.path_versions(&self.tree, evict_leaf) {
+                                    ev_in.extend(enc(v, cfg.version_bits));
+                                }
+                            }
+                        }
+                        let ev_out = eval_circuit(&program.access, &ev_in);
+                        assert!(!ev_out[0], "ORAM stash overflow (evict)");
+                        let new_epath = &ev_out[1 + db..1 + db + n_path * eb];
+                        self.stash_bits = ev_out[1 + db + n_path * eb..].to_vec();
+                        let nep = unflatten_path(new_epath, cfg);
+                        self.tree.write_path(evict_leaf, &nep);
+                        self.crypto.bump_path(&self.tree, evict_leaf);
+                    }
+
+                    if let Some(slot) = info.result_slot {
+                        tape[slot] = rdata;
+                    }
+                }
+            }
+        }
+
+        program.output_slots.iter().map(|&s| tape[s]).collect()
+    }
+}
+
 /// Drive an [`OramProgram`] concretely (via `eval_biir`) against an external
 /// [`OramTree`], returning the guest outputs. The tree starts empty and is
 /// returned for inspection. Panics on ORAM stash overflow (a protocol abort).
 ///
-/// This is the S3 correctness driver: concrete, plaintext tree, deterministic
-/// leaf RNG. Two-party driving and secret cross-step state are S4.
+/// This is the S3 correctness driver: concrete, deterministic leaf RNG. Loops
+/// use [`ConcreteOramDrive`] to share one ORAM across steps; two-party driving
+/// is S4 (`crate::oram_2pc`).
 pub fn run_concrete<const Z: usize>(
     program: &OramProgram,
     inputs: &[bool],
 ) -> (Vec<bool>, OramTree<Z, 1>) {
-    let cfg = &program.oram;
-    assert_eq!(cfg.bucket_size, Z, "bucket size must match the tree");
-    assert_eq!(cfg.data_bits, 1, "bit-level storage");
-    let lb = cfg.leaf_bits();
-    let ab = cfg.addr_bits();
-    let db = cfg.data_bits;
-    let eb = cfg.entry_bits();
-    let n_path = cfg.levels * Z;
-    let num_leaves = cfg.num_leaves() as u64;
-
-    let mut tape = alloc::vec![false; program.tape_width];
-    for (i, &b) in inputs.iter().enumerate() {
-        tape[program.input_slots[i]] = b;
-    }
-    let mut posmap_bits = alloc::vec![false; cfg.num_addrs * lb];
-    let mut stash_bits = alloc::vec![false; cfg.max_stash * eb];
-    let mut tree: OramTree<Z, 1> = OramTree::new(cfg.levels);
-    let mut counter: u64 = 0;
-    let mut leaf_rng = Splitmix64(0x5EED);
-
-    // Encryption (the default posture): the tree stores ciphertext, the driver
-    // holds the secret tree key (a fixed test key here) and tracks per-node
-    // versions, pre-formatting the tree when the valid bit is encrypted.
-    assert!(cfg.tree_block_bytes() <= 1, "run_concrete: B=1 tree needs entry_bits <= 8");
-    let mut crypto = TreeCrypto::new([0xA5; 16], tree.buckets.len(), cfg);
-    if cfg.encrypted {
-        crypto.format_tree(cfg, &mut tree);
-    }
-    let tree_key_bits = crypto.key_bits();
-
-    for stage in &program.stages {
-        match stage {
-            Stage::Compute(circuit) => {
-                tape = eval_circuit(circuit, &tape);
-            }
-            Stage::Access(info) => {
-                let addr = dec(&info.addr_slots.iter().map(|&s| tape[s]).collect::<Vec<_>>());
-                let new_leaf = leaf_rng.next() % num_leaves;
-
-                // begin: posmap update -> old_leaf
-                let mut begin_in = posmap_bits.clone();
-                begin_in.extend(enc(addr, ab));
-                begin_in.extend(enc(new_leaf, lb));
-                let begin_out = eval_circuit(&program.begin, &begin_in);
-                let old_leaf = dec(&begin_out[..lb]);
-                posmap_bits = begin_out[lb..].to_vec();
-
-                // extern: read the main path; access (main); write it back.
-                let main_path = tree.read_path(old_leaf);
-                let mut acc_in = stash_bits.clone();
-                acc_in.extend(flatten_path(&main_path, cfg));
-                acc_in.extend(enc(addr, ab));
-                acc_in.push(info.write);
-                acc_in.extend(enc(if info.write { tape[info.wdata_slot] as u64 } else { 0 }, db));
-                acc_in.extend(enc(old_leaf, lb));
-                acc_in.extend(enc(new_leaf, lb));
-                acc_in.push(false);
-                if cfg.encrypted {
-                    acc_in.extend(tree_key_bits.iter().copied());
-                    if cfg.versioned_pads {
-                        for v in crypto.path_versions(&tree, old_leaf) {
-                            acc_in.extend(enc(v, cfg.version_bits));
-                        }
-                    }
-                }
-                let acc_out = eval_circuit(&program.access, &acc_in);
-                assert!(!acc_out[0], "ORAM stash overflow");
-                let rdata = acc_out[1];
-                let new_path = &acc_out[1 + db..1 + db + n_path * eb];
-                stash_bits = acc_out[1 + db + n_path * eb..].to_vec();
-                tree.write_path(old_leaf, &unflatten_path(new_path, cfg));
-                crypto.bump_path(&tree, old_leaf);
-
-                // deterministic eviction (one pass, skipped on collision)
-                let evict_leaf = eviction_target(counter, num_leaves);
-                counter += 1;
-                if evict_leaf != old_leaf {
-                    let epath = tree.read_path(evict_leaf);
-                    let mut ev_in = stash_bits.clone();
-                    ev_in.extend(flatten_path(&epath, cfg));
-                    ev_in.extend(enc(0, ab));
-                    ev_in.push(false);
-                    ev_in.extend(enc(0, db));
-                    ev_in.extend(enc(evict_leaf, lb));
-                    ev_in.extend(enc(0, lb));
-                    ev_in.push(true);
-                    if cfg.encrypted {
-                        ev_in.extend(tree_key_bits.iter().copied());
-                        if cfg.versioned_pads {
-                            for v in crypto.path_versions(&tree, evict_leaf) {
-                                ev_in.extend(enc(v, cfg.version_bits));
-                            }
-                        }
-                    }
-                    let ev_out = eval_circuit(&program.access, &ev_in);
-                    assert!(!ev_out[0], "ORAM stash overflow (evict)");
-                    let new_epath = &ev_out[1 + db..1 + db + n_path * eb];
-                    stash_bits = ev_out[1 + db + n_path * eb..].to_vec();
-                    tree.write_path(evict_leaf, &unflatten_path(new_epath, cfg));
-                    crypto.bump_path(&tree, evict_leaf);
-                }
-
-                if let Some(slot) = info.result_slot {
-                    tape[slot] = rdata;
-                }
-            }
-        }
-    }
-
-    let outputs = program.output_slots.iter().map(|&s| tape[s]).collect();
+    let mut drive = ConcreteOramDrive::<Z>::new(&program.oram);
+    let outputs = drive.run_program(program, inputs);
+    // Destructure to return the tree.
+    let ConcreteOramDrive { tree, .. } = drive;
     (outputs, tree)
 }
