@@ -2039,4 +2039,156 @@ mod tests {
             );
         }
     }
+
+    /// M4: cut-and-choose over the *woven* (compiled) garbled-circuit path.
+    ///
+    /// This is the weaver-side counterpart of cirrus's cut-and-choose harness:
+    /// the circuit is woven into a `GarbledCircuit` producer + evaluator once,
+    /// then the generated Rust runs the protocol — garble N copies (independent
+    /// secrets + label bases), commit to each (tables + bases + the garbler's
+    /// input label), challenge, open the even copies (re-garble from the revealed
+    /// inputs and check the commitment), and evaluate the odd copies requiring
+    /// agreement. An honest garbler is accepted; a corrupted copy is caught.
+    #[test]
+    fn test_cut_and_choose_and_circuit() {
+        let root = workspace_root();
+        let and_circuit = crate::tests_common::build_and_circuit();
+        let gc_module = weave_into_gc(&and_circuit, "and2", None).into_inner();
+        let eval_module = weave_eval_from_setup(&and_circuit, "and2", None).into_inner();
+        let combined_module = IrModule {
+            name: "combined".into(),
+            functions: gc_module.functions.into_iter().chain(eval_module.functions).collect(),
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            consts: vec![],
+        };
+        let fns_code = print_weaved_module(&combined_module, false);
+
+        let test_code = std::format!(
+            "{fns}\n\
+             #[cfg(test)]\n\
+             mod cc_tests {{\n\
+                 use super::*;\n\
+                 use volar_spec::garble::{{Garble, GarbledCircuit, Eval, GlobalSecret}};\n\
+                 use hybrid_array::{{Array, typenum::U16}};\n\
+                 use sha2::{{Sha256, Digest}};\n\
+                 type N = U16;\n\
+                 type D = Sha256;\n\
+                 fn det_bytes(seed: u8) -> Array<u8, N> {{\n\
+                     let mut a = Array::<u8, N>::default();\n\
+                     for (i, b) in a.iter_mut().enumerate() {{\n\
+                         *b = (i as u8).wrapping_mul(37).wrapping_add(seed);\n\
+                     }}\n\
+                     a[0] |= 1;\n\
+                     a\n\
+                 }}\n\
+                 fn commit(gc: &GarbledCircuit<N, 2, 1>, gl: &Eval<N>) -> [u8; 32] {{\n\
+                     let mut h = Sha256::new();\n\
+                     for t in &gc.tables {{ for row in &t.table {{ h.update(&row[..]); }} }}\n\
+                     for l in &gc.input_labels {{ h.update(&l.base[..]); }}\n\
+                     h.update(&gc.output_label.base[..]);\n\
+                     h.update(&gl.target[..]);\n\
+                     let d = h.finalize();\n\
+                     let mut out = [0u8; 32];\n\
+                     out.copy_from_slice(&d[..]);\n\
+                     out\n\
+                 }}\n\
+                 fn garble(i: u8, gbit: bool) -> (GarbledCircuit<N, 2, 1>, Eval<N>) {{\n\
+                     let secret = GlobalSecret::<N>::new(det_bytes(i));\n\
+                     let in0 = Garble::<N> {{ base: det_bytes(i.wrapping_mul(10)) }};\n\
+                     let in1 = Garble::<N> {{ base: det_bytes(i.wrapping_mul(10).wrapping_add(1)) }};\n\
+                     let gc = and2_into_gc::<N, D>(secret, in0, in1);\n\
+                     let gl = gc.secret.encode(&gc.input_labels[0], gbit);\n\
+                     (gc, gl)\n\
+                 }}\n\
+                 fn run(gbit: bool, ebit: bool, corrupt: Option<usize>) -> Result<bool, &'static str> {{\n\
+                     let n = 4u8;\n\
+                     let mut gcs: Vec<_> = (0..n).map(|i| garble(i, gbit)).collect();\n\
+                     if let Some(i) = corrupt {{ gcs[i].0.output_label.base[0] ^= 1; }}\n\
+                     let commits: Vec<[u8; 32]> = gcs.iter().map(|(gc, gl)| commit(gc, gl)).collect();\n\
+                     for i in (0..n).filter(|i| i % 2 == 0) {{\n\
+                         let (gc, gl) = garble(i, gbit);\n\
+                         if commit(&gc, &gl) != commits[i as usize] {{ return Err(\"open mismatch\"); }}\n\
+                     }}\n\
+                     let mut agreed: Option<bool> = None;\n\
+                     for i in (0..n).filter(|i| i % 2 == 1) {{\n\
+                         let (gc, gl) = &gcs[i as usize];\n\
+                         if commit(gc, gl) != commits[i as usize] {{ return Err(\"use commitment mismatch\"); }}\n\
+                         let setup = gc.eval_setup();\n\
+                         let enc1 = gc.secret.encode(&gc.input_labels[1], ebit);\n\
+                         let result = and2_eval_from_setup::<N, D>(&setup, gl, &enc1);\n\
+                         let out = setup.recover_output(&result);\n\
+                         if let Some(a) = agreed {{ if a != out {{ return Err(\"disagree\"); }} }} else {{ agreed = Some(out); }}\n\
+                     }}\n\
+                     agreed.ok_or(\"empty use set\")\n\
+                 }}\n\
+                 #[test]\n\
+                 fn honest() {{\n\
+                     for g in [false, true] {{\n\
+                         for e in [false, true] {{\n\
+                             assert_eq!(run(g, e, None), Ok(g && e));\n\
+                         }}\n\
+                     }}\n\
+                 }}\n\
+                 #[test]\n\
+                 fn malicious() {{\n\
+                     assert!(run(false, true, Some(0)).is_err());\n\
+                     assert!(run(false, true, Some(1)).is_err());\n\
+                 }}\n\
+             }}\n",
+            fns = fns_code,
+        );
+
+        let tmpdir = std::env::temp_dir().join("volar_weaver_cut_and_choose_and");
+        let srcdir = tmpdir.join("src");
+        std::fs::create_dir_all(&srcdir).unwrap();
+
+        let cargo_toml = std::format!(
+            "[package]\n\
+             name = \"weave-check-cut-and-choose-and\"\n\
+             version = \"0.1.0\"\n\
+             edition = \"2024\"\n\
+             \n\
+             [[test]]\n\
+             name = \"cc\"\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [dependencies]\n\
+             volar-spec = {{ path = \"{root}/crates/spec/volar-spec\" }}\n\
+             volar-primitives = {{ path = \"{root}/crates/spec/volar-primitives\" }}\n\
+             volar-common = {{ path = \"{root}/crates/spec/volar-common\" }}\n\
+             hybrid-array = {{ version = \"0.4.8\" }}\n\
+             digest = {{ version = \"0.11.2\", default-features = false }}\n\
+             cipher = {{ version = \"0.5.1\", default-features = false }}\n\
+             rand = {{ version = \"0.9.2\", default-features = false }}\n\
+             typenum = {{ version = \"1.17\", default-features = false }}\n\
+             elliptic-curve = {{ version = \"0.13.8\", features = [\"arithmetic\"], default-features = false }}\n\
+             sha2 = {{ version = \"0.11\", default-features = false }}\n",
+            root = root,
+        );
+
+        std::fs::write(tmpdir.join("Cargo.toml"), &cargo_toml).unwrap();
+        std::fs::write(srcdir.join("lib.rs"), &test_code).unwrap();
+
+        let output = std::process::Command::new("cargo")
+            .args(["test", "--quiet", "--test", "cc"])
+            .current_dir(&tmpdir)
+            .env("CARGO_TARGET_DIR", String::from(tmpdir.join("target").to_str().unwrap()))
+            .output()
+            .expect("failed to run cargo test");
+
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let _ = std::fs::remove_dir_all(&tmpdir);
+
+        if !output.status.success() {
+            panic!(
+                "Cut-and-choose test failed\n--- code ---\n{}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                test_code, stdout, stderr
+            );
+        }
+    }
 }
