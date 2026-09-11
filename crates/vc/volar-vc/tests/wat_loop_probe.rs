@@ -121,71 +121,60 @@ fn wat_loop_guest_lowers_multi_space() {
     );
 }
 
-// The concrete multi-space ORAM run of the real WAT loop guest. Heavyweight
-// (492 accesses x 3 spaces per step); run with `--ignored`.
+// The concrete multi-space ORAM run of the real WAT loop guest, validated
+// end-to-end against the concrete IR interpreter: same per-step `done` flag,
+// same threaded next-state, same final result. This is the looping-guest
+// payoff: a waffle-lowered loop with genuinely-symbolic (SP-relative) spill
+// addresses runs through the symbolic multi-space ORAM.
 #[test]
 #[ignore = "heavyweight: multi-space ORAM run of the WAT loop guest"]
 fn wat_loop_guest_runs_multi_space_oram() {
     use volar_fuzz::interpreter::ir::{StorageMap, bit_width, eval_ir_circuit_step};
     let (step, types, boolar) = lower_loop_step();
-
-    // Reference: the IR interpreter (plain storage) terminates the loop.
     let widths: Vec<usize> = step.blocks[0].params.iter().map(|&t| bit_width(t, &types)).collect();
     let nparams = widths.len();
-    let mut ref_done = None;
-    {
-        let mut storage = StorageMap::new();
-        let mut inputs: Vec<Vec<bool>> = widths.iter().map(|&w| vec![false; w]).collect();
-        for i in 0..8 {
-            let out = eval_ir_circuit_step(&step.blocks[0], &types, &step.oracles, &inputs, &mut storage);
-            if out[0][0] {
-                ref_done = Some(i);
-                break;
-            }
-            inputs = out[1..1 + nparams].to_vec();
-        }
-    }
-    assert!(ref_done.is_some(), "IR reference terminates the loop");
 
-    // The multi-space ORAM run: drives the step circuit concretely, threading the
-    // state. Compare per-step against the IR reference to find any divergence.
+    // The guest's working set is tiny (~68 cells), so a small XOR-folded window
+    // suffices; the XOR-fold mixes the flat-cell bit-index (bits 32+) and the
+    // stack-offset bits into the window so nothing collides.
+    const NARROW: usize = 10;
     let program = storage_to_oram(
         &boolar,
         &OramLowerConfig {
-            levels: 13,
+            levels: NARROW + 1,
             bucket_size: 2,
-            max_stash: 2 * 13 + 2 + 16,
+            max_stash: 2 * (NARROW + 1) + 2 + 16,
             secure: false,
-            narrow_bits: Some(12),
+            narrow_bits: Some(NARROW),
         },
     )
-    .expect("lowers");
+    .expect("multi-space lowering succeeds");
     let n_state = program.input_slots.len();
+    assert_eq!(n_state, widths.iter().sum::<usize>(), "state width matches");
+
     let mut drive = ConcreteOramDrive::<2>::for_program(&program);
     let mut inputs = vec![false; n_state];
-    // IR reference state, run in lockstep for comparison.
     let mut ref_storage = StorageMap::new();
     let mut ref_inputs: Vec<Vec<bool>> = widths.iter().map(|&w| vec![false; w]).collect();
-    for step_i in 0..6 {
-        let out = drive.run_program(&program, &inputs); // panics on stash overflow
-        let ref_out = eval_ir_circuit_step(&step.blocks[0], &types, &step.oracles, &ref_inputs, &mut ref_storage);
-        // Flatten the IR reference's next-state (7 values) to bits.
+    let mut result = None;
+    for _step_i in 0..16 {
+        let out = drive.run_program(&program, &inputs);
+        let ref_out =
+            eval_ir_circuit_step(&step.blocks[0], &types, &step.oracles, &ref_inputs, &mut ref_storage);
+        assert_eq!(out[0], ref_out[0][0], "done flag matches");
         let ref_state: Vec<bool> = ref_out[1..1 + nparams].iter().flatten().copied().collect();
-        let oram_state = &out[1..1 + n_state];
-        let agree = ref_state.len() == oram_state.len()
-            && ref_state.iter().zip(oram_state).all(|(a, b)| a == b);
-        println!(
-            "step {step_i}: ref_done={} oram_done={} state_agree={agree}",
-            ref_out[0][0], out[0]
-        );
-        if !agree {
-            let first_diff = ref_state.iter().zip(oram_state).position(|(a, b)| a != b);
-            println!("  first state divergence at bit {first_diff:?} / {}", ref_state.len());
-        }
+        assert_eq!(&out[1..1 + n_state], ref_state.as_slice(), "next-state matches");
         if out[0] {
+            let ref_res: Vec<bool> = ref_out[1 + nparams..].iter().flatten().copied().collect();
+            assert_eq!(&out[1 + n_state..], ref_res.as_slice(), "result matches");
+            result = Some(out[1 + n_state..].to_vec());
             break;
         }
-        inputs = oram_state.to_vec();
+        inputs = out[1..1 + n_state].to_vec();
         ref_inputs = ref_out[1..1 + nparams].to_vec();
     }
+    let result = result.expect("the ORAM loop terminates");
+    // f(0) = sum over an empty range = 0.
+    let word = result.iter().take(32).enumerate().fold(0u32, |a, (i, b)| if *b { a | (1 << i) } else { a });
+    assert_eq!(word, 0, "f(0) = 0");
 }

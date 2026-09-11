@@ -173,6 +173,108 @@ fn used_vars(stmt: &BIrStmt<IRVarId, StorageId>) -> Vec<u32> {
     }
 }
 
+/// XOR-fold one address down to `eff_ab` bits: `narrow[i] = XOR_j addr[i +
+/// j*eff_ab]`. A general, layout-oblivious hash that mixes the high address bits
+/// into the narrow window — unlike a plain low-bit truncation, this survives a
+/// flat-cell layout (`offset + bit_index * 2^32`) where the distinguishing bits
+/// live *above* the low window. Pushes the XOR gates onto `new_stmts` (vars are
+/// `num_params + new_stmts.len()` at push time) and returns the narrow wires.
+fn fold_addr<P: Clone>(
+    raddr: &[IRVarId],
+    eff_ab: usize,
+    num_params: usize,
+    prov: &P,
+    side: Option<volar_side::SideId>,
+    new_stmts: &mut Vec<Node<BIrStmt, P>>,
+) -> Vec<IRVarId> {
+    (0..eff_ab)
+        .map(|i| {
+            let mut acc: Option<IRVarId> = None;
+            let mut b = i;
+            while b < raddr.len() {
+                let w = raddr[b];
+                acc = Some(match acc {
+                    None => w,
+                    Some(a) => {
+                        let v = IRVarId((num_params + new_stmts.len()) as u32);
+                        new_stmts.push(Node::new(BIrStmt::Xor(a, w), prov.clone(), side));
+                        v
+                    }
+                });
+                b += eff_ab;
+            }
+            acc.expect("eff_ab < addr width so bit i always contributes")
+        })
+        .collect()
+}
+
+/// Remap a non-folding stmt's operand var ids through `remap`.
+fn remap_biir_stmt(stmt: &BIrStmt, remap: &[u32]) -> BIrStmt {
+    let r = |v: &IRVarId| IRVarId(remap[v.0 as usize]);
+    match stmt {
+        BIrStmt::Zero => BIrStmt::Zero,
+        BIrStmt::One => BIrStmt::One,
+        BIrStmt::Not(a) => BIrStmt::Not(r(a)),
+        BIrStmt::And(a, b) => BIrStmt::And(r(a), r(b)),
+        BIrStmt::Or(a, b) => BIrStmt::Or(r(a), r(b)),
+        BIrStmt::Xor(a, b) => BIrStmt::Xor(r(a), r(b)),
+        BIrStmt::StorageRead { storage, lane, addr } => BIrStmt::StorageRead {
+            storage: *storage,
+            lane: *lane,
+            addr: addr.iter().map(r).collect(),
+        },
+        BIrStmt::StorageWrite { storage, lane, src, addr } => BIrStmt::StorageWrite {
+            storage: *storage,
+            lane: *lane,
+            src: r(src),
+            addr: addr.iter().map(r).collect(),
+        },
+        other => panic!("fold_storage_addrs: unsupported stmt {:?}", core::mem::discriminant(other)),
+    }
+}
+
+/// Rewrite a block's symbolic storage addresses to a narrowed width by
+/// XOR-folding each wide address down to `eff_ab` bits (adding XOR gates).
+/// Storage ops already at or under `eff_ab` pass through unchanged.
+pub fn fold_block_storage_addrs<P: Clone>(block: &BIrBlock<P>, eff_ab: usize) -> BIrBlock<P> {
+    let num_params = block.params as usize;
+    let mut new_stmts: Vec<Node<BIrStmt, P>> = Vec::with_capacity(block.stmts.len());
+    // remap[old_var] = new wire; params map to themselves.
+    let mut remap: Vec<u32> = (0..num_params as u32).collect();
+    for node in block.stmts.iter() {
+        let prov = node.prov.clone();
+        let side = node.side;
+        let new_kind: BIrStmt = match &node.kind {
+            BIrStmt::StorageRead { storage, lane, addr } if addr.len() > eff_ab => {
+                let raddr: Vec<IRVarId> = addr.iter().map(|v| IRVarId(remap[v.0 as usize])).collect();
+                let folded = fold_addr(&raddr, eff_ab, num_params, &prov, side, &mut new_stmts);
+                BIrStmt::StorageRead { storage: *storage, lane: *lane, addr: folded }
+            }
+            BIrStmt::StorageWrite { storage, lane, src, addr } if addr.len() > eff_ab => {
+                let raddr: Vec<IRVarId> = addr.iter().map(|v| IRVarId(remap[v.0 as usize])).collect();
+                let folded = fold_addr(&raddr, eff_ab, num_params, &prov, side, &mut new_stmts);
+                BIrStmt::StorageWrite {
+                    storage: *storage,
+                    lane: *lane,
+                    src: IRVarId(remap[src.0 as usize]),
+                    addr: folded,
+                }
+            }
+            other => remap_biir_stmt(other, &remap),
+        };
+        new_stmts.push(Node::new(new_kind, prov, side));
+        remap.push((num_params + new_stmts.len() - 1) as u32);
+    }
+    let terminator = match &block.terminator {
+        BIrTerminator::Jmp(t) => BIrTerminator::Jmp(BIrTarget {
+            block: t.block.clone(),
+            args: t.args.iter().map(|a| IRVarId(remap[a.0 as usize])).collect(),
+        }),
+        other => panic!("fold_storage_addrs: unsupported terminator {:?}", core::mem::discriminant(other)),
+    };
+    BIrBlock { params: block.params, stmts: new_stmts, terminator }
+}
+
 /// Lower a single-block circuit's symbolic storage ops into an [`OramProgram`].
 pub fn storage_to_oram<P: Clone>(
     circuit: &BIrBlocks<P>,
@@ -181,7 +283,32 @@ pub fn storage_to_oram<P: Clone>(
     if circuit.blocks.len() != 1 {
         return Err(OramLowerError::NotSingleBlockCircuit);
     }
-    let block = &circuit.blocks[0];
+
+    // Address narrowing by XOR-fold: rewrite wide storage addresses down to the
+    // narrow window *before* lowering, so a flat-cell layout (whose
+    // distinguishing bits sit above the low window) doesn't collide. The folded
+    // block's addresses are exactly `narrow_bits` wide.
+    let folded_block;
+    let block: &BIrBlock<P> = if let Some(nb) = cfg.narrow_bits {
+        let raw_ab = circuit.blocks[0]
+            .stmts
+            .iter()
+            .filter_map(|n| match &n.kind {
+                BIrStmt::StorageRead { addr, .. } | BIrStmt::StorageWrite { addr, .. } => Some(addr.len()),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let eff = nb.min(raw_ab);
+        if eff < raw_ab {
+            folded_block = fold_block_storage_addrs(&circuit.blocks[0], eff);
+            &folded_block
+        } else {
+            &circuit.blocks[0]
+        }
+    } else {
+        &circuit.blocks[0]
+    };
     // The terminator must be a Jmp-to-Return (circuit-shaped).
     let term_args: Vec<u32> = match &block.terminator {
         BIrTerminator::Jmp(t) if t.block == IRBlockTargetId::Return => {
