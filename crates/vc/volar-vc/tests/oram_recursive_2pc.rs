@@ -281,6 +281,7 @@ impl Rec2pc {
             max_stash: 2 * 4 + Z + n0,
             encrypted: false,
             tree_key_bits: 0,
+            keyed_leaf: false,
         };
         let l1_cfg = OramGadgetConfig {
             num_addrs: n1,
@@ -290,6 +291,7 @@ impl Rec2pc {
             max_stash: 2 * 3 + Z + n1,
             encrypted: false,
             tree_key_bits: 0,
+            keyed_leaf: false,
         };
         let mut fresh = 0u64;
         let mk = |bits: usize, secret: &GlobalSecret<N>, fresh: &mut u64| {

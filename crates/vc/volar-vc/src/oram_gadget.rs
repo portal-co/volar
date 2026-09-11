@@ -86,6 +86,15 @@ pub struct OramGadgetConfig {
     /// Width of the `tree_key` secret input (used only when `encrypted`).
     #[doc(hidden)]
     pub tree_key_bits: usize,
+    /// When set, the fresh leaf is computed **in-circuit** as
+    /// `AES-128(leaf_key, counter)[0..leaf_bits]` (S6 keyed-leaf PRF), with
+    /// `leaf_key` a secret input and `counter` a public per-access ordinal,
+    /// instead of arriving as a `new_leaf` input. A publicly predictable leaf
+    /// sequence would let the evaluator link an address to its previous access
+    /// time; deriving the leaf from a garbled key keeps it unpredictable until
+    /// it is revealed as the (oblivious) physical path.
+    #[doc(hidden)]
+    pub keyed_leaf: bool,
 }
 
 impl OramGadgetConfig {
@@ -117,13 +126,21 @@ impl OramGadgetConfig {
     }
 
     // --- begin-circuit layout -------------------------------------------
-    /// Input width of the begin circuit.
+    /// Input width of the begin circuit. With `keyed_leaf` the `new_leaf`
+    /// input is replaced by a 128-bit `leaf_key` plus a 64-bit public `counter`.
     pub fn begin_params(&self) -> usize {
-        self.num_addrs * self.leaf_bits() + self.addr_bits() + self.leaf_bits()
+        let tail = if self.keyed_leaf {
+            128 + 64
+        } else {
+            self.leaf_bits()
+        };
+        self.num_addrs * self.leaf_bits() + self.addr_bits() + tail
     }
-    /// Output width of the begin circuit (`old_leaf ++ posmap'`).
+    /// Output width of the begin circuit. `old_leaf ++ posmap'`, plus the
+    /// in-circuit-derived `new_leaf` (threaded to the access) when `keyed_leaf`.
     pub fn begin_outputs(&self) -> usize {
-        self.leaf_bits() + self.num_addrs * self.leaf_bits()
+        let extra = if self.keyed_leaf { self.leaf_bits() } else { 0 };
+        self.leaf_bits() + extra + self.num_addrs * self.leaf_bits()
     }
 
     // --- access-circuit layout ------------------------------------------
@@ -413,9 +430,25 @@ pub fn build_begin(cfg: &OramGadgetConfig) -> BIrBlocks {
         .map(|i| (0..lb).map(|j| (i * lb + j) as u32).collect())
         .collect();
     let addr: Vec<u32> = (0..ab).map(|j| (num_addrs * lb + j) as u32).collect();
-    let new_leaf: Vec<u32> = (0..lb).map(|j| (num_addrs * lb + ab + j) as u32).collect();
-
+    let tail_off = num_addrs * lb + ab;
     let zc = b.const0();
+
+    // The fresh leaf: either a `new_leaf` input, or computed in-circuit as
+    // `AES-128(leaf_key, counter)[0..lb]` (S6 keyed-leaf PRF).
+    let new_leaf: Vec<u32> = if cfg.keyed_leaf {
+        let leaf_key: Vec<u32> = (0..128).map(|j| (tail_off + j) as u32).collect();
+        let counter: Vec<u32> = (0..64).map(|j| (tail_off + 128 + j) as u32).collect();
+        let mut tweak = counter;
+        tweak.extend(vec![zc; 64]); // zero-pad the 64-bit counter to a 128-bit block
+        let aes = crate::aes_gadget::build_aes128();
+        let mut aes_in = leaf_key;
+        aes_in.extend(tweak);
+        let aes_out = b.inline_sub(&aes, &aes_in);
+        aes_out[..lb].to_vec()
+    } else {
+        (0..lb).map(|j| (tail_off + j) as u32).collect()
+    };
+
     let mut old_leaf: Vec<u32> = vec![zc; lb];
     for (i, cell) in posmap.iter_mut().enumerate() {
         let eq = b.eq_const(&addr, i as u64);
@@ -426,6 +459,11 @@ pub fn build_begin(cfg: &OramGadgetConfig) -> BIrBlocks {
     }
 
     let mut out = old_leaf;
+    if cfg.keyed_leaf {
+        // Also output the in-circuit-derived new_leaf so the driver threads it
+        // (garbled) to the access circuit rather than recomputing the PRF.
+        out.extend_from_slice(&new_leaf);
+    }
     for cell in &posmap {
         out.extend_from_slice(cell);
     }

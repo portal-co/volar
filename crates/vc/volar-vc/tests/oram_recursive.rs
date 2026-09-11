@@ -222,6 +222,7 @@ impl<const Z: usize, const B: usize> RecursiveOram<Z, B> {
                 max_stash: 2 * lvl_count + Z + 16,
                 encrypted: false,
                 tree_key_bits: 0,
+                keyed_leaf: false,
             };
             // The NEXT level (if any) stores this level's posmap: c leaf values
             // of this level's leaf_bits, packed.
