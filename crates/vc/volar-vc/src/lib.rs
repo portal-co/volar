@@ -71,6 +71,7 @@ extern crate alloc;
 
 pub mod embedder;
 pub mod oram_gadget;
+pub mod oram_lower;
 pub mod oram_host;
 pub mod partition;
 pub mod schedule;
