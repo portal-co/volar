@@ -10,6 +10,7 @@ repository.workspace = true
 volar-mpc.workspace = true
 volar-spec = { git = "https://github.com/portal-co/volar.git" }
 volar-ir.workspace = true
+volar-ir-common.workspace = true
 volar-side.workspace = true
 volar-oram.workspace = true
 digest.workspace = true
