@@ -441,14 +441,27 @@ pub fn build_access(cfg: &OramGadgetConfig) -> BIrBlocks {
     let mut pads: Vec<Vec<u32>> = Vec::new();
     if cfg.encrypted {
         assert_eq!(cfg.tree_key_bits, 128, "encrypted tree uses an AES-128 key");
+        // One AES per path *node* (levels of them, not levels*Z): the node's
+        // 128-bit AES output is sliced across its Z slots (slot `zs` takes bits
+        // `[zs*(eb-1) .. (zs+1)*(eb-1))`). The tweak names the node (depth +
+        // path_leaf prefix), not the slot, so all Z slots share one evaluation.
+        // Cost: levels AES per access instead of levels*Z.
+        assert!(
+            z * (eb - 1) <= 128,
+            "one AES block covers a node's slots' pads"
+        );
         let aes = crate::aes_gadget::build_aes128();
-        for k in 0..n_path {
-            let tweak = b.slot_tweak(&path_leaf, k / z, k % z, zc, oc);
+        for d in 0..cfg.levels {
+            // zslot = 0: the tweak is node-unique; the slot index selects the
+            // output slice instead.
+            let tweak = b.slot_tweak(&path_leaf, d, 0, zc, oc);
             let mut aes_in = tree_key.clone();
             aes_in.extend_from_slice(&tweak);
             let aes_out = b.inline_sub(&aes, &aes_in);
-            // eb-1 pad bits: cover the payload, leave `valid` (bit 0) plaintext.
-            pads.push(aes_out[0..eb - 1].to_vec());
+            for zs in 0..z {
+                // eb-1 pad bits: cover the payload, leave `valid` plaintext.
+                pads.push(aes_out[zs * (eb - 1)..(zs + 1) * (eb - 1)].to_vec());
+            }
         }
         for k in 0..n_path {
             let mut e = vec![path[k][0]]; // valid stays plaintext

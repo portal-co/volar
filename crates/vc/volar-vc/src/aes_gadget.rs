@@ -159,13 +159,22 @@ fn gf_square_terms() -> [Vec<usize>; 8] {
     t
 }
 
-/// GF(2^8) multiply of two bytes as a boolar circuit (≤ 64 ANDs).
+/// GF(2^8) multiply of two bytes as a boolar circuit. Exactly 64 ANDs: the
+/// 8x8 partial products are computed once and shared across the output bits
+/// (each output is an XOR-only combination of them, derived from the reference
+/// so the network is correct by construction).
 fn gf_mul_c(b: &mut B, a: &[u32; 8], y: &[u32; 8]) -> [u32; 8] {
     let terms = gf_mul_terms();
+    let mut prod = [[0u32; 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            prod[i][j] = b.and(a[i], y[j]);
+        }
+    }
     let mut out = [0u32; 8];
     for k in 0..8 {
-        let ands: Vec<u32> = terms[k].iter().map(|&(i, j)| b.and(a[i], y[j])).collect();
-        out[k] = b.xor_fold(&ands);
+        let prods: Vec<u32> = terms[k].iter().map(|&(i, j)| prod[i][j]).collect();
+        out[k] = b.xor_fold(&prods);
     }
     out
 }
@@ -192,23 +201,30 @@ fn gf_square_c(b: &mut B, a: &[u32; 8]) -> [u32; 8] {
     out
 }
 
-/// The AES S-box: `affine(x^254)` in GF(2^8). `0^254 = 0`, and `affine(0) =
-/// 0x63`, so the zero input needs no special-casing. Square-and-multiply for
-/// the exponent `254 = 0b1111_1110`: 6 GF multiplies + 7 (free) squarings.
-fn sbox_c(b: &mut B, x: &[u32; 8]) -> [u32; 8] {
-    let mut r: Option<[u32; 8]> = None;
-    for bit in (0..8).rev() {
-        if let Some(prev) = r {
-            r = Some(gf_square_c(b, &prev));
-        }
-        if (254u16 >> bit) & 1 == 1 {
-            r = Some(match r {
-                None => *x,
-                Some(prev) => gf_mul_c(b, &prev, x),
-            });
-        }
+/// Square `x` `k` times (Frobenius iterates — each a free linear map).
+fn pow2k(b: &mut B, x: &[u32; 8], k: usize) -> [u32; 8] {
+    let mut r = *x;
+    for _ in 0..k {
+        r = gf_square_c(b, &r);
     }
-    let inv = r.expect("254 has a set bit");
+    r
+}
+
+/// The AES S-box: `affine(x^254)` in GF(2^8). `0^254 = 0`, and `affine(0) =
+/// 0x63`, so the zero input needs no special-casing. Uses the Itoh-Tsujii
+/// inversion chain — 4 GF multiplies (squarings free):
+///   x^3 = x^2 * x,  x^7 = (x^3)^2 * x,  x^15 = (x^3)^4 * x^3,
+///   x^127 = (x^15)^8 * x^7,  x^254 = (x^127)^2.
+fn sbox_c(b: &mut B, x: &[u32; 8]) -> [u32; 8] {
+    let x2 = gf_square_c(b, x); // x^2
+    let x3 = gf_mul_c(b, &x2, x); // x^3
+    let x3sq = gf_square_c(b, &x3); // (x^3)^2
+    let x7 = gf_mul_c(b, &x3sq, x); // x^7 = (x^3)^2 * x
+    let x3_4 = pow2k(b, &x3, 2); // (x^3)^4
+    let x15 = gf_mul_c(b, &x3_4, &x3); // x^15 = (x^3)^4 * x^3
+    let x15_8 = pow2k(b, &x15, 3); // (x^15)^8
+    let x127 = gf_mul_c(b, &x15_8, &x7); // x^127 = (x^15)^8 * x^7
+    let inv = gf_square_c(b, &x127); // x^254 = (x^127)^2
     // Affine: s_i = b_i ^ b_{i+4} ^ b_{i+5} ^ b_{i+6} ^ b_{i+7} ^ c_i (indices
     // mod 8), c = 0x63 — the FIPS-197 affine transform.
     let c = 0x63u8;
