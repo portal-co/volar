@@ -419,6 +419,11 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
             program.input_slots.len(),
             "param count"
         );
+        // Oram2pc is currently single-space (one ORAM of posmap/stash).
+        assert!(
+            program.spaces.len() <= 1,
+            "Oram2pc: multi-space programs need per-space ORAM state (follow-up)"
+        );
         // Init the tape: params into their slots, everything else fresh-zero.
         let mut tape =
             HeldState::constant::<D>(program.tape_width, false, &self.secret, &mut self.fresh);
