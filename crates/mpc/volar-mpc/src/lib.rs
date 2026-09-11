@@ -309,6 +309,56 @@ impl GateSchedule {
     }
 }
 
+/// The evaluator's pure-boolean gate walk: compute every wire's label from the
+/// input labels and the AND tables. Shared by the const-generic
+/// [`GarbledExec::eval_labels`] / [`GarbledExec::eval_labels_multi`] and the
+/// runtime-sized [`DynGarbledExec::eval_labels_multi`]. Storage gates need a
+/// GRAM driver, which the pure walk has none of.
+fn eval_gate_wires<N: VoleArray<u8>, D: Digest>(
+    one_wire: &Eval<N>,
+    tables: &[GarbleTable<N>],
+    schedule: &GateSchedule,
+    inputs: &[Eval<N>],
+) -> Result<Vec<Eval<N>>, MpcError> {
+    if inputs.len() != schedule.num_inputs {
+        return Err(MpcError::BadPartition);
+    }
+    let mut wires: Vec<Eval<N>> = Vec::with_capacity(schedule.wire_count());
+    wires.extend_from_slice(inputs);
+    let mut table = 0usize;
+    for gate in &schedule.gates {
+        let out = match *gate {
+            Gate::Zero => Eval::zero(),
+            Gate::One => one_wire.clone(),
+            Gate::Xor(a, b) => {
+                let (x, y) = (wires.get(a), wires.get(b));
+                match (x, y) {
+                    (Some(x), Some(y)) => x.clone() ^ y.clone(),
+                    _ => return Err(MpcError::MalformedSchedule),
+                }
+            }
+            Gate::Not(a) => match wires.get(a) {
+                Some(x) => x.clone() ^ one_wire.clone(),
+                None => return Err(MpcError::MalformedSchedule),
+            },
+            Gate::And(a, b) => {
+                let t = tables.get(table).ok_or(MpcError::MalformedSchedule)?;
+                table += 1;
+                match (wires.get(a), wires.get(b)) {
+                    (Some(x), Some(y)) => x.and_via_table::<D>(y, t),
+                    _ => return Err(MpcError::MalformedSchedule),
+                }
+            }
+            // Storage ops need a GRAM driver; the pure evaluator has none.
+            Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
+                return Err(MpcError::UnsupportedStorage);
+            }
+        };
+        wires.push(out);
+    }
+    Ok(wires)
+}
+
 /// A garbled circuit together with its gate schedule — everything both
 /// parties need to run an evaluation.
 ///
@@ -338,42 +388,7 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
         schedule: &GateSchedule,
         inputs: &[Eval<N>],
     ) -> Result<Eval<N>, MpcError> {
-        if inputs.len() != schedule.num_inputs {
-            return Err(MpcError::BadPartition);
-        }
-        let mut wires: Vec<Eval<N>> = Vec::with_capacity(schedule.wire_count());
-        wires.extend_from_slice(inputs);
-        let mut table = 0usize;
-        for gate in &schedule.gates {
-            let out = match *gate {
-                Gate::Zero => Eval::zero(),
-                Gate::One => setup.one_wire.clone(),
-                Gate::Xor(a, b) => {
-                    let (x, y) = (wires.get(a), wires.get(b));
-                    match (x, y) {
-                        (Some(x), Some(y)) => x.clone() ^ y.clone(),
-                        _ => return Err(MpcError::MalformedSchedule),
-                    }
-                }
-                Gate::Not(a) => match wires.get(a) {
-                    Some(x) => x.clone() ^ setup.one_wire.clone(),
-                    None => return Err(MpcError::MalformedSchedule),
-                },
-                Gate::And(a, b) => {
-                    let t = setup.tables.get(table).ok_or(MpcError::MalformedSchedule)?;
-                    table += 1;
-                    match (wires.get(a), wires.get(b)) {
-                        (Some(x), Some(y)) => x.and_via_table::<D>(y, t),
-                        _ => return Err(MpcError::MalformedSchedule),
-                    }
-                }
-                // Storage ops need a GRAM driver; the pure evaluator has none.
-                Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
-                    return Err(MpcError::UnsupportedStorage);
-                }
-            };
-            wires.push(out);
-        }
+        let wires = eval_gate_wires::<N, D>(&setup.one_wire, &setup.tables, schedule, inputs)?;
         wires.get(schedule.output).cloned().ok_or(MpcError::MalformedSchedule)
     }
 
@@ -386,46 +401,7 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
         schedule: &GateSchedule,
         inputs: &[Eval<N>],
     ) -> Result<Vec<Eval<N>>, MpcError> {
-        // Reuse the single-output walk by evaluating to the last wire, then
-        // selecting each requested output. `eval_labels` already validates
-        // and fills `wires`; we replicate its selection for every output.
-        // (Simplest correct path: evaluate the full wire vector once here.)
-        if inputs.len() != schedule.num_inputs {
-            return Err(MpcError::BadPartition);
-        }
-        let mut wires: Vec<Eval<N>> = Vec::with_capacity(schedule.wire_count());
-        wires.extend_from_slice(inputs);
-        let mut table = 0usize;
-        for gate in &schedule.gates {
-            let out = match *gate {
-                Gate::Zero => Eval::zero(),
-                Gate::One => setup.one_wire.clone(),
-                Gate::Xor(a, b) => {
-                    let (x, y) = (wires.get(a), wires.get(b));
-                    match (x, y) {
-                        (Some(x), Some(y)) => x.clone() ^ y.clone(),
-                        _ => return Err(MpcError::MalformedSchedule),
-                    }
-                }
-                Gate::Not(a) => match wires.get(a) {
-                    Some(x) => x.clone() ^ setup.one_wire.clone(),
-                    None => return Err(MpcError::MalformedSchedule),
-                },
-                Gate::And(a, b) => {
-                    let t = setup.tables.get(table).ok_or(MpcError::MalformedSchedule)?;
-                    table += 1;
-                    match (wires.get(a), wires.get(b)) {
-                        (Some(x), Some(y)) => x.and_via_table::<D>(y, t),
-                        _ => return Err(MpcError::MalformedSchedule),
-                    }
-                }
-                // Storage ops need a GRAM driver; the pure evaluator has none.
-                Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
-                    return Err(MpcError::UnsupportedStorage);
-                }
-            };
-            wires.push(out);
-        }
+        let wires = eval_gate_wires::<N, D>(&setup.one_wire, &setup.tables, schedule, inputs)?;
         schedule
             .output_wires()
             .iter()
@@ -510,33 +486,23 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
 
 }
 
-/// Garble a gate schedule into a [`GarbledExec`], given the global secret and
-/// per-input false-labels.
+/// The garbler's gate walk: compute every wire's false-label base and the AND
+/// tables. Shared by the const-generic [`garble_schedule`] and the
+/// runtime-sized [`garble_schedule_dyn`].
 ///
-/// This is the execution-time mirror of `volar_weaver::garble`'s woven
-/// garbler: it walks the schedule producing each wire's false-label
-/// (`Garble`) and emitting one [`GarbleTable`] per AND gate, then packages the
-/// secret, input labels, tables, and output false-label into a
-/// [`GarbledCircuit`]. `Or` must already be expanded by De Morgan, exactly as
-/// the weaver requires.
-///
-/// The caller supplies `secret` and `input_labels` (both garbler-private); the
-/// number of AND gates in `schedule` must equal `A`.
-pub fn garble_schedule<N, D, const I: usize, const A: usize>(
+/// `input_labels` must have exactly `schedule.num_inputs` entries. Returns the
+/// full wire-base vector plus the AND tables (in gate order).
+fn garble_wire_bases<N: VoleArray<u8>, D: Digest>(
     schedule: &GateSchedule,
-    secret: GlobalSecret<N>,
-    input_labels: [Garble<N>; I],
-) -> Result<GarbledExec<N, I, A>, MpcError>
-where
-    N: VoleArray<u8>,
-    D: Digest,
-{
-    if schedule.num_inputs != I || schedule.and_count() != A {
+    secret: &GlobalSecret<N>,
+    input_labels: &[Garble<N>],
+) -> Result<(Vec<Garble<N>>, Vec<GarbleTable<N>>), MpcError> {
+    if schedule.num_inputs != input_labels.len() {
         return Err(MpcError::MalformedSchedule);
     }
     let mut wires: Vec<Garble<N>> = Vec::with_capacity(schedule.wire_count());
     wires.extend(input_labels.iter().cloned());
-    let mut tables: Vec<GarbleTable<N>> = Vec::with_capacity(A);
+    let mut tables: Vec<GarbleTable<N>> = Vec::with_capacity(schedule.and_count());
     // GRAM storage: per-space per-cell current false-label bases. A cell's
     // base starts at `gram_data_base(0, cell)` (the deterministic initial
     // supply) and is re-pinned to the written wire's base on each write, so
@@ -609,6 +575,34 @@ where
         };
         wires.push(out);
     }
+    Ok((wires, tables))
+}
+
+/// Garble a gate schedule into a [`GarbledExec`], given the global secret and
+/// per-input false-labels.
+///
+/// This is the execution-time mirror of `volar_weaver::garble`'s woven
+/// garbler: it walks the schedule producing each wire's false-label
+/// (`Garble`) and emitting one [`GarbleTable`] per AND gate, then packages the
+/// secret, input labels, tables, and output false-label into a
+/// [`GarbledCircuit`]. `Or` must already be expanded by De Morgan, exactly as
+/// the weaver requires.
+///
+/// The caller supplies `secret` and `input_labels` (both garbler-private); the
+/// number of AND gates in `schedule` must equal `A`.
+pub fn garble_schedule<N, D, const I: usize, const A: usize>(
+    schedule: &GateSchedule,
+    secret: GlobalSecret<N>,
+    input_labels: [Garble<N>; I],
+) -> Result<GarbledExec<N, I, A>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    if schedule.num_inputs != I || schedule.and_count() != A {
+        return Err(MpcError::MalformedSchedule);
+    }
+    let (wires, tables) = garble_wire_bases::<N, D>(schedule, &secret, &input_labels)?;
     let output_label = wires
         .get(schedule.output)
         .cloned()
@@ -626,6 +620,121 @@ where
         .collect::<Result<_, _>>()?;
     Ok(GarbledExec {
         circuit: GarbledCircuit {
+            secret,
+            input_labels,
+            tables,
+            output_label,
+        },
+        output_labels,
+        schedule: schedule.clone(),
+    })
+}
+
+// ============================================================================
+// Runtime-sized two-party path (Vec-backed)
+// ============================================================================
+//
+// The const-generic path (`garble_schedule` / `GarbledExec<N, I, A>` /
+// `evaluate_multi`) fixes the input-bit count `I` and AND-count `A` at compile
+// time. A general `oram_lower::OramProgram` has per-stage circuits whose AND
+// counts *vary* between stages, so a fully general driver can't be
+// const-generic. These Vec-backed variants take runtime `I`/`A`, enabling such
+// drivers (the symbolic-ORAM S4 two-party `OramProgram` driver). The garble and
+// eval walks are shared with the const path via `garble_wire_bases` /
+// `eval_gate_wires`, so behavior is identical; only the container differs.
+
+/// Runtime-sized counterpart of [`GarbledCircuit`]: Vec-backed tables and input
+/// labels. The garbler constructs it (it owns the secret); the evaluator
+/// receives only the [`DynEvalSetup`] view.
+pub struct DynGarbledCircuit<N: VoleArray<u8>> {
+    /// The garbler's global secret (garbler-private).
+    pub secret: GlobalSecret<N>,
+    /// Per-input false-label bases (garbler-private).
+    pub input_labels: Vec<Garble<N>>,
+    /// The AND-gate tables, in schedule order.
+    pub tables: Vec<GarbleTable<N>>,
+    /// The single `output` wire's false-label base.
+    pub output_label: Garble<N>,
+}
+
+impl<N: VoleArray<u8>> DynGarbledCircuit<N> {
+    /// The evaluator-visible view (everything needed to evaluate, nothing that
+    /// reveals the secret).
+    pub fn eval_setup(&self) -> DynEvalSetup<N> {
+        DynEvalSetup {
+            one_wire: self.secret.one_wire_eval(),
+            tables: self.tables.clone(),
+            output_label: self.output_label.clone(),
+        }
+    }
+}
+
+/// Runtime-sized counterpart of [`EvalSetup`].
+pub struct DynEvalSetup<N: VoleArray<u8>> {
+    /// The label for a constant-true wire.
+    pub one_wire: Eval<N>,
+    /// The AND-gate tables, in schedule order.
+    pub tables: Vec<GarbleTable<N>>,
+    /// The single `output` wire's false-label base.
+    pub output_label: Garble<N>,
+}
+
+/// Runtime-sized counterpart of [`GarbledExec`].
+pub struct DynGarbledExec<N: VoleArray<u8>> {
+    /// The garbling (garbler-private).
+    pub circuit: DynGarbledCircuit<N>,
+    /// The gate schedule (shared with the evaluator).
+    pub schedule: GateSchedule,
+    /// Per-output-wire false-label bases (garbler-private), in
+    /// `output_wires()` order.
+    pub output_labels: Vec<Garble<N>>,
+}
+
+impl<N: VoleArray<u8>> DynGarbledExec<N> {
+    /// Runtime-sized multi-output evaluator (pure boolean; no storage gates).
+    /// Returns the label on every wire in `schedule.output_wires()`, in order.
+    pub fn eval_labels_multi<D: Digest>(
+        setup: &DynEvalSetup<N>,
+        schedule: &GateSchedule,
+        inputs: &[Eval<N>],
+    ) -> Result<Vec<Eval<N>>, MpcError> {
+        let wires = eval_gate_wires::<N, D>(&setup.one_wire, &setup.tables, schedule, inputs)?;
+        schedule
+            .output_wires()
+            .iter()
+            .map(|&w| wires.get(w).cloned().ok_or(MpcError::MalformedSchedule))
+            .collect()
+    }
+}
+
+/// Runtime-sized counterpart of [`garble_schedule`]: takes `input_labels` as a
+/// Vec (length must equal `schedule.num_inputs`) and keeps the AND tables as a
+/// Vec (length equals `schedule.and_count()`). Otherwise identical — the gate
+/// walk is shared via [`garble_wire_bases`].
+pub fn garble_schedule_dyn<N, D>(
+    schedule: &GateSchedule,
+    secret: GlobalSecret<N>,
+    input_labels: Vec<Garble<N>>,
+) -> Result<DynGarbledExec<N>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let (wires, tables) = garble_wire_bases::<N, D>(schedule, &secret, &input_labels)?;
+    if tables.len() != schedule.and_count() {
+        return Err(MpcError::MalformedSchedule);
+    }
+    let output_label = wires
+        .get(schedule.output)
+        .cloned()
+        .ok_or(MpcError::MalformedSchedule)?;
+    let output_labels: Vec<Garble<N>> = schedule
+        .output_wires()
+        .iter()
+        .map(|&w| wires.get(w).cloned().ok_or(MpcError::MalformedSchedule))
+        .collect::<Result<_, _>>()?;
+    Ok(DynGarbledExec {
+        circuit: DynGarbledCircuit {
             secret,
             input_labels,
             tables,
