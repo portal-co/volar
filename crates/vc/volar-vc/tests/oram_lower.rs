@@ -90,6 +90,7 @@ fn s3_symbolic_storage_matches_model() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: false,
+            narrow_bits: None,
         },
     )
     .expect("lowers");
@@ -145,6 +146,7 @@ fn s3_secure_default_encrypted_tree() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: true,
+            narrow_bits: None,
         },
     )
     .expect("lowers");
@@ -237,6 +239,7 @@ fn s3_write_cells_then_symbolic_read() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: false,
+            narrow_bits: None,
         },
     )
     .expect("lowers");
@@ -252,6 +255,86 @@ fn s3_write_cells_then_symbolic_read() {
                 };
                 assert_eq!(out, vec![want], "d={d} e={e} a={a}: got {out:?}, want [{want}]");
             }
+        }
+    }
+}
+
+// Guest with an 8-bit symbolic address: write d to cell[a]; read cell[a] -> r.
+// Params: [a0..a7, d] (LSB-first 8-bit address).
+fn guest_wide_addr() -> BIrBlocks<()> {
+    let storage = StorageId(0);
+    let lane = LaneId(0);
+    let a: Vec<IRVarId> = (0..8).map(IRVarId).collect();
+    let d = IRVarId(8);
+    let mut block: BIrBlock<()> = BIrBlock {
+        params: 9,
+        stmts: vec![],
+        terminator: BIrTerminator::Jmp(BIrTarget {
+            block: IRBlockTargetId::Return,
+            args: vec![],
+        }),
+    };
+    let mut next = 9u32;
+    let mut push = |s: BIrStmt, b: &mut BIrBlock<()>| {
+        b.stmts.push(Node::new(s, (), None));
+        let id = IRVarId(next);
+        next += 1;
+        id
+    };
+    push(BIrStmt::StorageWrite { storage, lane, src: d, addr: a.clone() }, &mut block);
+    let r = push(BIrStmt::StorageRead { storage, lane, addr: a.clone() }, &mut block);
+    block.terminator = BIrTerminator::Jmp(BIrTarget {
+        block: IRBlockTargetId::Return,
+        args: vec![r],
+    });
+    BIrBlocks {
+        blocks: vec![block],
+        pre_init: vec![],
+    }
+}
+
+// **Address narrowing**: an 8-bit-address guest narrowed to 4 bits spans a
+// 16-cell ORAM (vs 256 cells unnarrowed). This is how a wide-address guest runs
+// on a feasible instance — minimal narrowing (24 or 28 bits for a real guest)
+// bounds the ORAM while keeping the spill/stack window. Verified concretely for
+// the low addresses (a < 16), which fit in the narrowed window.
+#[test]
+fn s3_narrowing_bounds_the_oram() {
+    let full = storage_to_oram(
+        &guest_wide_addr(),
+        &OramLowerConfig {
+            storage: StorageId(0),
+            levels: LEVELS,
+            bucket_size: Z,
+            max_stash: MAX_STASH,
+            secure: false,
+            narrow_bits: None,
+        },
+    )
+    .expect("lowers");
+    assert_eq!(full.oram.num_addrs, 256, "unnarrowed 8-bit space");
+
+    let narrowed = storage_to_oram(
+        &guest_wide_addr(),
+        &OramLowerConfig {
+            storage: StorageId(0),
+            levels: LEVELS,
+            bucket_size: Z,
+            max_stash: MAX_STASH,
+            secure: false,
+            narrow_bits: Some(4),
+        },
+    )
+    .expect("lowers");
+    assert_eq!(narrowed.oram.num_addrs, 16, "narrowed to 4 bits");
+
+    // The narrowed ORAM serves the low addresses (a < 16) correctly.
+    for a in 0..16u64 {
+        for d in [false, true] {
+            let mut inputs: Vec<bool> = (0..8).map(|j| (a >> j) & 1 == 1).collect();
+            inputs.push(d);
+            let (out, _tree) = run_concrete::<Z>(&narrowed, &inputs);
+            assert_eq!(out, vec![d], "narrowed a={a} d={d}");
         }
     }
 }

@@ -65,6 +65,14 @@ pub struct OramLowerConfig {
     /// secure-by-default configuration. Tests set this to `false` for the fast
     /// plaintext scaffold.
     pub secure: bool,
+    /// **Address narrowing**: when set, each storage address is truncated to its
+    /// low `narrow_bits` bits and the ORAM spans `2^narrow_bits` cells. This is
+    /// how a guest with a wide (e.g. 32-bit) symbolic address space runs on a
+    /// feasible ORAM — minimal narrowing to 24 or 28 bits bounds the instance
+    /// while keeping the spill/stack window intact. `None` uses the guest's
+    /// full address width. The guest must keep its live addresses within the
+    /// low `narrow_bits` window (a deployment/address-mapping concern).
+    pub narrow_bits: Option<usize>,
 }
 
 /// An access's wiring into the guest tape.
@@ -205,7 +213,12 @@ pub fn storage_to_oram<P: Clone>(
         }
     }
     let ab = ab.unwrap_or(0);
-    let num_addrs = 1usize << ab;
+    // Address narrowing: truncate to the low `narrow_bits` bits if requested.
+    let eff_ab = match cfg.narrow_bits {
+        Some(n) => n.min(ab),
+        None => ab,
+    };
+    let num_addrs = 1usize << eff_ab;
 
     // --- Liveness: backward sweep, recording the live set at each boundary. ---
     // A var needs a tape slot iff it is live across a segment boundary. The
@@ -294,13 +307,13 @@ pub fn storage_to_oram<P: Clone>(
             let info = match &block.stmts[b].kind {
                 BIrStmt::StorageRead { addr, .. } => AccessInfo {
                     write: false,
-                    addr_slots: addr.iter().map(|v| slot_of[&v.0]).collect(),
+                    addr_slots: addr.iter().take(eff_ab).map(|v| slot_of[&v.0]).collect(),
                     wdata_slot: 0,
                     result_slot: Some(slot_of[&stmt_var(num_params, b)]),
                 },
                 BIrStmt::StorageWrite { addr, src, .. } => AccessInfo {
                     write: true,
-                    addr_slots: addr.iter().map(|v| slot_of[&v.0]).collect(),
+                    addr_slots: addr.iter().take(eff_ab).map(|v| slot_of[&v.0]).collect(),
                     wdata_slot: slot_of[&src.0],
                     result_slot: None,
                 },

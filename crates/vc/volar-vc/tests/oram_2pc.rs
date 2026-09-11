@@ -102,6 +102,7 @@ fn s4_oram_program_two_party_matches_concrete() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: false,
+            narrow_bits: None,
         },
     )
     .expect("lowers");
@@ -156,6 +157,7 @@ fn s4_oram_program_two_party_secure_default() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: true,
+            narrow_bits: None,
         },
     )
     .expect("lowers");
