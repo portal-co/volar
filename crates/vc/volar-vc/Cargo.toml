@@ -27,6 +27,7 @@ vaffle.workspace = true
 portal-pc-waffle-ir.workspace = true
 portal-pc-waffle-frontend.workspace = true
 volar-ir-opt.workspace = true
+volar-fuzz.workspace = true
 wat = "1.212.0"
 
 [features]
