@@ -379,6 +379,34 @@ impl Pipeline<VaffleStage> {
     pub fn lower_to_volar_ir(self) -> Result<Pipeline<VolarIrStage>, BoxError> {
         self.map_inner(|p| p.lower_to_volar_ir())
     }
+
+    /// Lower this VAFFLE module directly to `n_chunks` independent
+    /// [`SavedLirModule`]s (multi-translation-unit LIR compilation),
+    /// bypassing Volar IR — Volar IR has no cross-function call construct,
+    /// so a module's genuine sibling calls (`vaffle::Value::Call`) can only
+    /// survive chunking if lowered from VAFFLE directly. See
+    /// `volar_ssa_lir_replay::lower_vaffle_module_to_lir_chunks` for the
+    /// underlying implementation and its documented limitations (notably:
+    /// `LirType::Struct` values must not cross a chunk boundary — VAFFLE
+    /// never produces them, so this is not a concern here).
+    pub fn lower_to_lir_chunks(self, n_chunks: usize) -> Vec<SavedLirModule> {
+        self.emit_rerun();
+        self.inner.lower_to_lir_chunks(n_chunks)
+    }
+
+    /// [`Self::lower_to_lir_chunks`] followed by
+    /// [`crate::compile_lir_chunks_to_objects`]: lower this VAFFLE module and
+    /// compile the resulting chunks straight to `n_chunks` independent
+    /// object files under `out_dir`.
+    pub fn compile_chunks_to_objects(
+        self,
+        n_chunks: usize,
+        out_dir: &Path,
+        options: &CompileOptions,
+    ) -> Result<Vec<PathBuf>, BoxError> {
+        let chunks = self.lower_to_lir_chunks(n_chunks);
+        crate::compile_lir_chunks_to_objects(&chunks, options, out_dir)
+    }
 }
 
 /// Execution-mode LLVM-direct import (already `is_circuit()` when it
@@ -433,106 +461,7 @@ fn lir_to_object(
     out_path: &Path,
     options: &CompileOptions,
 ) -> Result<(), BoxError> {
-    use inkwell::{
-        context::Context,
-        passes::PassBuilderOptions,
-        targets::{
-            CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
-            TargetTriple,
-        },
-    };
-    use volar_llvm_backend::LlvmBackend;
-
-    let opt_level = options.opt_level.unwrap_or_else(crate::opt_level_from_env);
-    let module_name = options
-        .module_name
-        .as_deref()
-        .or_else(|| out_path.file_stem().and_then(|s| s.to_str()))
-        .unwrap_or("volar_module");
-
-    let context = Context::create();
-    let mut backend =
-        LlvmBackend::new(&context, module_name).with_name_config(options.name_config.clone());
-    saved.replay(&mut backend);
-    let module = backend.finish();
-
-    let cargo_target = std::env::var("TARGET").ok();
-    let cargo_host = std::env::var("HOST").ok();
-    let explicit_triple = options.target_triple.as_deref();
-
-    let resolved_triple_str: Option<String> =
-        explicit_triple
-            .map(str::to_owned)
-            .or_else(|| match (&cargo_target, &cargo_host) {
-                (Some(t), Some(h)) if t != h => Some(t.clone()),
-                (Some(_), Some(_)) => None,
-                (Some(t), None) => Some(t.clone()),
-                _ => None,
-            });
-
-    let (triple, cpu_str, features_str) = match resolved_triple_str {
-        None => {
-            Target::initialize_native(&InitializationConfig::default())
-                .map_err(|e| format!("LLVM native target init failed: {e}"))?;
-            let triple = TargetMachine::get_default_triple();
-            let cpu = options
-                .cpu
-                .as_deref()
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    TargetMachine::get_host_cpu_name()
-                        .to_string_lossy()
-                        .into_owned()
-                });
-            let features = options
-                .features
-                .as_deref()
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    TargetMachine::get_host_cpu_features()
-                        .to_string_lossy()
-                        .into_owned()
-                });
-            (triple, cpu, features)
-        }
-        Some(triple_str) => {
-            Target::initialize_all(&InitializationConfig::default());
-            let triple = TargetTriple::create(&triple_str);
-            let cpu = options.cpu.as_deref().unwrap_or("generic").to_owned();
-            let features = options.features.as_deref().unwrap_or("").to_owned();
-            (triple, cpu, features)
-        }
-    };
-
-    let target =
-        Target::from_triple(&triple).map_err(|e| format!("LLVM target from triple: {e}"))?;
-    let target_machine = target
-        .create_target_machine(
-            &triple,
-            &cpu_str,
-            &features_str,
-            opt_level,
-            RelocMode::Default,
-            CodeModel::Default,
-        )
-        .ok_or("failed to create LLVM TargetMachine")?;
-
-    let pass_pipeline = match opt_level {
-        inkwell::OptimizationLevel::None => None,
-        inkwell::OptimizationLevel::Less => Some("default<O1>"),
-        inkwell::OptimizationLevel::Default => Some("default<O2>"),
-        inkwell::OptimizationLevel::Aggressive => Some("default<O3>"),
-    };
-    if let Some(pipeline) = pass_pipeline {
-        module
-            .run_passes(pipeline, &target_machine, PassBuilderOptions::create())
-            .map_err(|e| format!("LLVM run_passes failed: {e}"))?;
-    }
-
-    target_machine
-        .write_to_file(&module, FileType::Object, out_path)
-        .map_err(|e| format!("LLVM write_to_file failed: {e}"))?;
-    Ok(())
+    crate::compile_saved_module_to_object(saved, out_path, options)
 }
 
 #[cfg(feature = "weave-rust")]
