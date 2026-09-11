@@ -94,6 +94,13 @@ fn wat_loop_guest_lowers_multi_space() {
     spaces.sort();
     spaces.dedup();
     assert!(spaces.len() > 1, "loop guest uses multiple storage spaces: {spaces:?}");
+    // Does the step circuit carry pre-initialized storage (e.g. the bytecode)?
+    // The ORAM starts empty; if the interpreter pre-loads storage, the ORAM must
+    // too, or reads of those cells diverge.
+    println!("boolar pre_init segments: {}", boolar.pre_init.len());
+    for seg in boolar.pre_init.iter().take(5) {
+        println!("  pre_init: storage {} ({} addr bits, {} data bits)", seg.storage.0, seg.addr.len(), seg.data.len());
+    }
 
     // Multi-space lowering succeeds, one ORAM per space.
     let program = storage_to_oram(
@@ -141,7 +148,7 @@ fn wat_loop_guest_runs_multi_space_oram() {
     assert!(ref_done.is_some(), "IR reference terminates the loop");
 
     // The multi-space ORAM run: drives the step circuit concretely, threading the
-    // state. (Termination currently diverges from the reference — follow-up.)
+    // state. Compare per-step against the IR reference to find any divergence.
     let program = storage_to_oram(
         &boolar,
         &OramLowerConfig {
@@ -156,9 +163,29 @@ fn wat_loop_guest_runs_multi_space_oram() {
     let n_state = program.input_slots.len();
     let mut drive = ConcreteOramDrive::<2>::for_program(&program);
     let mut inputs = vec![false; n_state];
-    for _step in 0..6 {
+    // IR reference state, run in lockstep for comparison.
+    let mut ref_storage = StorageMap::new();
+    let mut ref_inputs: Vec<Vec<bool>> = widths.iter().map(|&w| vec![false; w]).collect();
+    for step_i in 0..6 {
         let out = drive.run_program(&program, &inputs); // panics on stash overflow
-        inputs = out[1..1 + n_state].to_vec();
+        let ref_out = eval_ir_circuit_step(&step.blocks[0], &types, &step.oracles, &ref_inputs, &mut ref_storage);
+        // Flatten the IR reference's next-state (7 values) to bits.
+        let ref_state: Vec<bool> = ref_out[1..1 + nparams].iter().flatten().copied().collect();
+        let oram_state = &out[1..1 + n_state];
+        let agree = ref_state.len() == oram_state.len()
+            && ref_state.iter().zip(oram_state).all(|(a, b)| a == b);
+        println!(
+            "step {step_i}: ref_done={} oram_done={} state_agree={agree}",
+            ref_out[0][0], out[0]
+        );
+        if !agree {
+            let first_diff = ref_state.iter().zip(oram_state).position(|(a, b)| a != b);
+            println!("  first state divergence at bit {first_diff:?} / {}", ref_state.len());
+        }
+        if out[0] {
+            break;
+        }
+        inputs = oram_state.to_vec();
+        ref_inputs = ref_out[1..1 + nparams].to_vec();
     }
-    println!("multi-space ORAM ran 6 steps without overflow (IR done at {ref_done:?})");
 }
