@@ -82,17 +82,19 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
     let block = &circuit.blocks[0];
     let num_inputs = block.params as usize;
 
-    // Output wires: the Return target's arguments, in order.
-    let outputs: Vec<usize> = match &block.terminator {
+    // Output wires: the Return target's arguments, in order. Keep the raw
+    // var ids here; they are resolved to *wires* (through `stmt_wire`) only
+    // after the statement loop, because multi-gate statements (e.g. `Or`)
+    // make a statement's result wire differ from its raw var id.
+    let output_args: Vec<volar_ir::ir::IRVarId> = match &block.terminator {
         BIrTerminator::Jmp(target) if target.block == IRBlockTargetId::Return => {
             if target.args.is_empty() {
                 return Err(ScheduleError::NoOutput);
             }
-            target.args.iter().map(|a| a.0 as usize).collect()
+            target.args.clone()
         }
         _ => return Err(ScheduleError::NotACircuit),
     };
-    let output = outputs[0];
 
     // Each statement defines wire num_inputs + (schedule position). Because
     // Or expands to multiple gates, statement i does *not* map to gate i; we
@@ -256,8 +258,24 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
             // Non-boolean statements cannot be scheduled into a pure GC.
             _ => return Err(ScheduleError::UnsupportedStmt),
         }
-        wire_const.push(result_const);
+        // `wire_const` is indexed by *wire index*, but multi-gate statements
+        // (e.g. `Or`, which expands to four gates) create several wires per
+        // statement. Grow the table to cover every wire created so far, then
+        // record this statement's result wire's const-ness — otherwise a later
+        // gate referencing a multi-gate statement's output indexes out of
+        // bounds. Intermediate expansion wires are left `None` (they are
+        // schedule-internal and never looked up).
+        wire_const.resize(num_inputs + gates.len(), None);
+        let result_wire = *stmt_wire.last().expect("each stmt defines a wire");
+        wire_const[result_wire] = result_const;
     }
+
+    // Resolve the Return arguments to wires now that `stmt_wire` is complete.
+    let outputs: Vec<usize> = output_args
+        .iter()
+        .map(|a| wire_of(*a, &stmt_wire))
+        .collect::<Result<_, _>>()?;
+    let output = outputs[0];
 
     // Size each storage space's ORAM by the *number of distinct cells* (the
     // compressed address space); the gates already carry the compact block.
