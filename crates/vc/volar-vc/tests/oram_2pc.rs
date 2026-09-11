@@ -115,7 +115,7 @@ fn s4_oram_program_two_party_matches_concrete() {
             for c in 0..4u64 {
                 let inputs = vec![a & 1 == 1, a & 2 == 2, d, c & 1 == 1, c & 2 == 2];
 
-                let mut driver = Oram2pc::<N>::new::<D>(&program, secret.clone());
+                let mut driver = Oram2pc::<N>::new::<D>(&program.oram, secret.clone());
                 let mut tree = OramTree::<Z, 1>::new(LEVELS);
                 let mut ot = LoopbackOt::<N>::new();
                 let param_inputs: Vec<_> =

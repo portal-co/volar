@@ -180,18 +180,25 @@ fn splitmix_next(state: &mut u64) -> u64 {
 }
 
 impl<N: VoleArray<u8>> Oram2pc<N> {
-    /// Bootstrap a driver for `program` with an all-zero ORAM state and an
-    /// all-zero tape (slots are filled per step by [`Self::run_program`]).
-    pub fn new<D: Digest>(program: &OramProgram, secret: GlobalSecret<N>) -> Self {
-        let cfg = &program.oram;
-        let lb = cfg.leaf_bits();
-        let eb = cfg.entry_bits();
+    /// Bootstrap a driver for a given ORAM `config` (geometry). The begin/
+    /// access gadget circuits and the posmap/stash sizes are geometry-determined,
+    /// so one driver serves *any* `OramProgram` of this geometry — e.g. a setup
+    /// program and a loop step program sharing one ORAM. The tape is created
+    /// per [`Self::run_program`] call.
+    pub fn new<D: Digest>(config: &OramGadgetConfig, secret: GlobalSecret<N>) -> Self {
+        let lb = config.leaf_bits();
+        let eb = config.entry_bits();
         let mut fresh = 0u64;
-        let posmap = HeldState::constant::<D>(cfg.num_addrs * lb, false, &secret, &mut fresh);
-        let stash = HeldState::constant::<D>(cfg.max_stash * eb, false, &secret, &mut fresh);
-        let tape = HeldState::constant::<D>(program.tape_width, false, &secret, &mut fresh);
-        let begin_sched = crate::compile_schedule(&program.begin).expect("begin schedules");
-        let access_sched = crate::compile_schedule(&program.access).expect("access schedules");
+        let posmap = HeldState::constant::<D>(config.num_addrs * lb, false, &secret, &mut fresh);
+        let stash = HeldState::constant::<D>(config.max_stash * eb, false, &secret, &mut fresh);
+        let tape = HeldState {
+            labels: Vec::new(),
+            bases: Vec::new(),
+        };
+        let begin = crate::oram_gadget::build_begin(config);
+        let access = crate::oram_gadget::build_access(config);
+        let begin_sched = crate::compile_schedule(&begin).expect("begin schedules");
+        let access_sched = crate::compile_schedule(&access).expect("access schedules");
         Oram2pc {
             secret,
             posmap,
