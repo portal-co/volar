@@ -338,3 +338,68 @@ fn s3_narrowing_bounds_the_oram() {
         }
     }
 }
+
+// A **larger ORAM instance**: a 14-bit symbolic-address guest runs over a
+// 16384-cell ORAM (levels=15). This demonstrates the scaling path — with
+// minimal narrowing (24 or 28 bits for a real guest) plus the recursive
+// position map (S5c) the same mechanism serves a much larger address space.
+// Here the flat posmap is still feasible at 16k cells. Concrete, plaintext.
+#[test]
+fn s3_larger_oram_instance_concrete() {
+    const W: usize = 14; // 14-bit addresses -> 16k cells
+    let storage = StorageId(0);
+    let lane = LaneId(0);
+    let a: Vec<IRVarId> = (0..W as u32).map(IRVarId).collect();
+    let d = IRVarId(W as u32);
+    let mut block: BIrBlock<()> = BIrBlock {
+        params: (W + 1) as u32,
+        stmts: vec![],
+        terminator: BIrTerminator::Jmp(BIrTarget {
+            block: IRBlockTargetId::Return,
+            args: vec![],
+        }),
+    };
+    let mut next = (W + 1) as u32;
+    {
+        let mut push = |s: BIrStmt, b: &mut BIrBlock<()>| {
+            b.stmts.push(Node::new(s, (), None));
+            let id = IRVarId(next);
+            next += 1;
+            id
+        };
+        push(BIrStmt::StorageWrite { storage, lane, src: d, addr: a.clone() }, &mut block);
+        let r = push(BIrStmt::StorageRead { storage, lane, addr: a.clone() }, &mut block);
+        block.terminator = BIrTerminator::Jmp(BIrTarget {
+            block: IRBlockTargetId::Return,
+            args: vec![r],
+        });
+    }
+    let guest = BIrBlocks {
+        blocks: vec![block],
+        pre_init: vec![],
+    };
+
+    let program = storage_to_oram(
+        &guest,
+        &OramLowerConfig {
+            storage: StorageId(0),
+            levels: 15,
+            bucket_size: Z,
+            max_stash: 2 * 15 + Z + 16,
+            secure: false,
+            narrow_bits: None,
+        },
+    )
+    .expect("lowers");
+    assert_eq!(program.oram.num_addrs, 1 << W);
+
+    // A few addresses across the 16k-cell space, concrete.
+    for addr in [0u64, 1, 100, 4095, 16383] {
+        for dv in [false, true] {
+            let mut inputs: Vec<bool> = (0..W).map(|j| (addr >> j) & 1 == 1).collect();
+            inputs.push(dv);
+            let (out, _tree) = run_concrete::<Z>(&program, &inputs);
+            assert_eq!(out, vec![dv], "larger-oram addr={addr} d={dv}");
+        }
+    }
+}
