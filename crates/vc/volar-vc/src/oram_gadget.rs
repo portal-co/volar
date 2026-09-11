@@ -327,6 +327,64 @@ impl Builder {
     }
 }
 
+/// `ceil(log2(x))`, integer-only (`f64::log2` is unavailable under `no_std`).
+fn clog2(x: usize) -> usize {
+    let mut b = 0;
+    while (1usize << b) < x.max(1) {
+        b += 1;
+    }
+    b
+}
+
+/// Build a **sub-block extraction** circuit (S5c recursion): select entry `off`
+/// from a block of `c` entries (each `eb` bits, LSB-first). Params:
+/// `block[0..c*eb] ++ off[0..off_bits]`. Output: the selected entry (`eb` bits).
+///
+/// This is the recursive position map's entry extractor. A posmap block packs `c`
+/// addresses' leaves, so it cannot be revealed wholesale; extraction runs
+/// **in-circuit on the garbled block** and only the selected entry — a physical
+/// leaf, safe to reveal — is output, while the other entries stay garbled.
+pub fn build_extract(c: usize, eb: usize) -> BIrBlocks {
+    let off_bits = clog2(c);
+    let mut b = Builder::new((c * eb + off_bits) as u32);
+    let block: Vec<u32> = (0..c * eb).map(|i| i as u32).collect();
+    let off: Vec<u32> = (0..off_bits).map(|i| (c * eb + i) as u32).collect();
+    let mut entry = Vec::new();
+    for j in 0..eb {
+        let mut sel = b.const0();
+        for i in 0..c {
+            let eq = b.eq_const(&off, i as u64);
+            let t = b.and(eq, block[i * eb + j]);
+            sel = b.xor(sel, t); // exactly one eq is 1, so XOR-folds to OR
+        }
+        entry.push(sel);
+    }
+    b.finish(entry)
+}
+
+/// Build a **sub-block update** circuit (S5c recursion): replace entry `off` in a
+/// block of `c` entries with `new_entry`. Params: `block[0..c*eb] ++
+/// off[0..off_bits] ++ new_entry[0..eb]`. Output: the new block (`c*eb` bits).
+///
+/// With [`build_extract`] this is the recursive posmap's read-modify-write: read
+/// the block (extract), replace the accessed entry's leaf (update), write back —
+/// all on garbled data so only the accessed leaf is ever revealed.
+pub fn build_update(c: usize, eb: usize) -> BIrBlocks {
+    let off_bits = clog2(c);
+    let mut b = Builder::new((c * eb + off_bits + eb) as u32);
+    let block: Vec<u32> = (0..c * eb).map(|i| i as u32).collect();
+    let off: Vec<u32> = (0..off_bits).map(|i| (c * eb + i) as u32).collect();
+    let new_entry: Vec<u32> = (0..eb).map(|i| (c * eb + off_bits + i) as u32).collect();
+    let mut new_block = Vec::new();
+    for i in 0..c {
+        let eq = b.eq_const(&off, i as u64);
+        for j in 0..eb {
+            new_block.push(b.mux(eq, new_entry[j], block[i * eb + j]));
+        }
+    }
+    b.finish(new_block)
+}
+
 /// Remap a boolean gate's operand var ids through `remap` (used by
 /// [`Builder::inline_sub`]; only the pure-boolean variants an inlined gadget
 /// uses are supported).
