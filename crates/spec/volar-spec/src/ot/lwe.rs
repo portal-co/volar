@@ -575,6 +575,139 @@ impl<const N: usize, const L: usize> BaseOt<L> for LweBaseOt<N> {
     }
 }
 
+/// Secure sender payload (per-coordinate randomness, dyn length). `u0[k]` is
+/// the n-dim LWE sample for coordinate `k` of branch 0.
+pub struct LweOtSenderMsgSecureDyn {
+    pub u0: Vec<Vec<Zq>>,
+    pub v0: Vec<Zq>,
+    pub u1: Vec<Vec<Zq>>,
+    pub v1: Vec<Zq>,
+}
+
+/// Per-coordinate byte-message sender (malicious-secure). Bit-unpacks the
+/// payloads and encrypts each coordinate with an independent LWE sample.
+pub fn lwe_ot_send_bytes_secure<R: SpecRng, const N: usize>(
+    rng: &mut R,
+    crs: &LweOtCrs<N>,
+    recv_msg: &LweOtRecvMsg<N>,
+    m0: &[u8],
+    m1: &[u8],
+) -> LweOtSenderMsgSecureDyn {
+    debug_assert_eq!(m0.len(), m1.len());
+    let bits0 = bytes_to_bits(m0);
+    let bits1 = bytes_to_bits(m1);
+    let pk0 = recv_msg.pk0;
+    let mut pk1 = [0u32; N];
+    for i in 0..N {
+        pk1[i] = zq_sub(crs.h[i], pk0[i]);
+    }
+    let half_q = LWE_Q / 2;
+    let enc = |rng: &mut R, pk: &[Zq; N], bits: &[u8]| -> (Vec<Vec<Zq>>, Vec<Zq>) {
+        let mut u = Vec::with_capacity(bits.len());
+        let mut v = Vec::with_capacity(bits.len());
+        for &bit in bits {
+            let mut r = [0u32; N];
+            for i in 0..N {
+                r[i] = sample_noise(rng);
+            }
+            let mut uk = alloc::vec![0u32; N];
+            for j in 0..N {
+                let mut acc: Zq = 0;
+                for i in 0..N {
+                    acc = zq_add(acc, zq_mul(crs.a[i][j], r[i]));
+                }
+                acc = zq_add(acc, sample_noise(rng));
+                uk[j] = acc;
+            }
+            let mut base: Zq = 0;
+            for i in 0..N {
+                base = zq_add(base, zq_mul(pk[i], r[i]));
+            }
+            let plain = if bit & 1 == 1 { half_q } else { 0 };
+            v.push(zq_add(zq_add(base, sample_noise(rng)), plain));
+            u.push(uk);
+        }
+        (u, v)
+    };
+    let (u0, v0) = enc(rng, &pk0, &bits0);
+    let (u1, v1) = enc(rng, &pk1, &bits1);
+    LweOtSenderMsgSecureDyn { u0, v0, u1, v1 }
+}
+
+/// Decrypt a secure (per-coordinate) byte payload.
+pub fn lwe_ot_recv_decrypt_bytes_secure<const N: usize>(
+    receiver: &LweOtReceiver<N>,
+    sender_msg: &LweOtSenderMsgSecureDyn,
+    nbytes: usize,
+) -> Vec<u8> {
+    let (us, vs) = if receiver.c {
+        (&sender_msg.u1[..], &sender_msg.v1[..])
+    } else {
+        (&sender_msg.u0[..], &sender_msg.v0[..])
+    };
+    let quarter = LWE_Q / 4;
+    let three_quarter = 3 * quarter;
+    let mut bits = alloc::vec![0u8; vs.len()];
+    for k in 0..vs.len() {
+        let mut s_dot_u: Zq = 0;
+        for i in 0..N {
+            s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[i], us[k][i]));
+        }
+        let raw = zq_sub(vs[k], s_dot_u);
+        bits[k] = if raw > quarter && raw <= three_quarter {
+            1
+        } else {
+            0
+        };
+    }
+    bits_to_bytes(&bits, nbytes)
+}
+
+/// Malicious-secure LWE OT as a [`BaseOt`]: identical to [`LweBaseOt`] but the
+/// sender uses the per-coordinate [`lwe_ot_send_bytes_secure`], so a malicious
+/// receiver (garbage `pk_0`) learns nothing. Slower (L× the ciphertext), so
+/// use it where malicious-receiver security is required (e.g. the malicious
+/// Ferret bootstrap); the shared-`r` [`LweBaseOt`] is the semi-honest path.
+pub struct LweBaseOtSecure<const N: usize = LWE_N>(PhantomData<[(); N]>);
+
+impl<const N: usize, const L: usize> BaseOt<L> for LweBaseOtSecure<N> {
+    type SenderState = LweOtCrs<N>;
+    type ReceiverState = LweOtReceiver<N>;
+    type SetupMsg = LweOtCrs<N>;
+    type RecvMsg = LweOtRecvMsg<N>;
+    type PayloadMsg = LweOtSenderMsgSecureDyn;
+
+    fn sender_setup<R: SpecRng>(rng: &mut R) -> (Self::SenderState, Self::SetupMsg) {
+        let crs = LweOtCrs::<N>::sample(rng);
+        (crs.clone(), crs)
+    }
+
+    fn recv_start<R: SpecRng>(
+        rng: &mut R,
+        setup: &Self::SetupMsg,
+        c: bool,
+    ) -> (Self::ReceiverState, Self::RecvMsg) {
+        lwe_ot_recv(rng, setup, c)
+    }
+
+    fn sender_payload<R: SpecRng>(
+        rng: &mut R,
+        state: &Self::SenderState,
+        recv_msg: &Self::RecvMsg,
+        m0: &[u8; L],
+        m1: &[u8; L],
+    ) -> Self::PayloadMsg {
+        lwe_ot_send_bytes_secure(rng, state, recv_msg, m0, m1)
+    }
+
+    fn recv_finish(state: &Self::ReceiverState, payload: &Self::PayloadMsg) -> [u8; L] {
+        let bytes = lwe_ot_recv_decrypt_bytes_secure(state, payload, L);
+        let mut out = [0u8; L];
+        out.copy_from_slice(&bytes);
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,6 +944,27 @@ mod tests {
             let got = <LweBaseOt<LWE_N> as BaseOt<16>>::recv_finish(&r_state, &payload);
             let expected = if c { m1 } else { m0 };
             assert_eq!(got, expected, "c={c}");
+        }
+    }
+
+    /// The malicious-secure `LweBaseOtSecure` (per-coordinate send) is a working
+    /// `BaseOt`: an honest receiver recovers its choice exactly.
+    #[test]
+    fn lwe_base_ot_secure_transfers_sixteen_byte_seed() {
+        use super::super::base_ot::BaseOt;
+        let mut rng = TestRng(0x5555_6666_7777_8888);
+        let m0 = [0xA5u8; 16];
+        let m1 = [0x3Cu8; 16];
+        for c in [false, true] {
+            let (s_state, setup) = <LweBaseOtSecure<LWE_N> as BaseOt<16>>::sender_setup(&mut rng);
+            let (r_state, recv_msg) =
+                <LweBaseOtSecure<LWE_N> as BaseOt<16>>::recv_start(&mut rng, &setup, c);
+            let payload = <LweBaseOtSecure<LWE_N> as BaseOt<16>>::sender_payload(
+                &mut rng, &s_state, &recv_msg, &m0, &m1,
+            );
+            let got = <LweBaseOtSecure<LWE_N> as BaseOt<16>>::recv_finish(&r_state, &payload);
+            let expected = if c { m1 } else { m0 };
+            assert_eq!(got, expected, "secure c={c}");
         }
     }
 
