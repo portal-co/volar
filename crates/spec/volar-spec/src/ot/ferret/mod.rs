@@ -19,7 +19,8 @@ pub mod pool;
 pub mod spcot;
 
 pub use cot::{
-    ferret_extend, ferret_extend_malicious, ferret_extend_uni, ferret_finish, ferret_prepare_receiver,
+    ferret_extend, ferret_extend_malicious, ferret_extend_uni, ferret_extend_uni_malicious, ferret_finish,
+    ferret_prepare_receiver,
     ferret_receiver_mpcot, ferret_sender_mpcot, sample_seed_cots, FerretExtendOut, FerretIterMsg,
     FerretPrep, FerretReceiverSeed, FerretSenderSeed,
 };

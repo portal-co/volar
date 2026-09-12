@@ -333,7 +333,7 @@ pub fn ferret_extend_uni<R: SpecRng>(
     let cot_r = split_cot_chunks(&receiver_seed.u[k..], &heights);
     let choices = mpcot_uni_choice_bits(params, &hash_seed, &table, &cot_r);
     let cot_q = split_cot_chunks(&sender_seed.q[k..], &heights);
-    let (s, mpcot) = mpcot_uni_sender(
+    let (s, _s_bins, mpcot) = mpcot_uni_sender(
         rng,
         &sender_seed.delta,
         params,
@@ -342,7 +342,7 @@ pub fn ferret_extend_uni<R: SpecRng>(
         &choices,
     );
     let cot_t = split_cot_chunks(&receiver_seed.w[k..], &heights);
-    let r = mpcot_uni_receiver(params, &table, &cot_t, &mpcot);
+    let (r, _r_bins) = mpcot_uni_receiver(params, &table, &cot_t, &mpcot);
 
     let prep = FerretPrep {
         alphas: points,
@@ -378,6 +378,116 @@ pub fn ferret_extend_uni<R: SpecRng>(
             w: z[..m_seed].to_vec(),
         },
     }
+}
+
+/// Fig. 9 ΠCOT using Fig. 7 Cuckoo MPCOT (Ferret-Uni), **malicious-secure**:
+/// runs the batched SPCOT consistency check over the Cuckoo buckets using the
+/// κ extra COTs (the seed must be `uni_seed_cot_count_malicious`-sized).
+/// `hash_seed` is public and reused across iterations so `M` is stable.
+pub fn ferret_extend_uni_malicious<R: SpecRng>(
+    rng: &mut R,
+    params: FerretParams,
+    hash_seed: [u8; 16],
+    sender_seed: &FerretSenderSeed,
+    receiver_seed: &FerretReceiverSeed,
+    transcript: &[u8],
+) -> (FerretExtendOut, bool) {
+    use super::mpcot_uni::{
+        mpcot_uni_bucket_params, mpcot_uni_choice_bits, mpcot_uni_consistency_check,
+        mpcot_uni_receiver, mpcot_uni_sender, sample_uniform_points,
+        uni_seed_cot_count_malicious, uni_spcot_heights,
+    };
+    use super::spcot::KAPPA_BITS;
+
+    let m_seed = uni_seed_cot_count_malicious(&hash_seed, params);
+    debug_assert_eq!(sender_seed.q.len(), m_seed);
+    debug_assert_eq!(receiver_seed.u.len(), m_seed);
+    debug_assert_eq!(receiver_seed.w.len(), m_seed);
+
+    let k = params.k;
+    let heights = uni_spcot_heights(&hash_seed, params.n, params.t);
+    let spcot_cots: usize = heights.iter().sum();
+    let extra_off = k + spcot_cots;
+
+    let points = sample_uniform_points(rng, params.n, params.t);
+    let table = super::mpcot_uni::cuckoo_insert(&hash_seed, params.n, params.t, &points);
+    let mut e = alloc::vec![false; params.n];
+    for slot in &table {
+        if let Some(x) = slot {
+            e[*x] = true;
+        }
+    }
+
+    // MPCOT over the SPCOT COT range only; the κ extra COTs are reserved for
+    // the consistency check.
+    let cot_r = split_cot_chunks(&receiver_seed.u[k..extra_off], &heights);
+    let choices = mpcot_uni_choice_bits(params, &hash_seed, &table, &cot_r);
+    let cot_q = split_cot_chunks(&sender_seed.q[k..extra_off], &heights);
+    let (s, s_bins, mpcot) = mpcot_uni_sender(
+        rng,
+        &sender_seed.delta,
+        params,
+        hash_seed,
+        &cot_q,
+        &choices,
+    );
+    let cot_t = split_cot_chunks(&receiver_seed.w[k..extra_off], &heights);
+    let (r, r_bins) = mpcot_uni_receiver(params, &table, &cot_t, &mpcot);
+
+    // Batched consistency check over the Cuckoo buckets.
+    let (alphas, lens) = mpcot_uni_bucket_params(params, &hash_seed, &table);
+    let extra_q = &sender_seed.q[extra_off..extra_off + KAPPA_BITS];
+    let extra_r = &receiver_seed.u[extra_off..extra_off + KAPPA_BITS];
+    let extra_t = &receiver_seed.w[extra_off..extra_off + KAPPA_BITS];
+    let check = mpcot_uni_consistency_check(
+        &sender_seed.delta,
+        &s_bins,
+        &r_bins,
+        &alphas,
+        &lens,
+        extra_q,
+        extra_r,
+        extra_t,
+        transcript,
+    );
+
+    // LPN finish; keep M = uni_seed_cot_count_malicious so the next iteration
+    // has its extra check COTs.
+    let prep = FerretPrep {
+        alphas: points,
+        e,
+        lpn_seed: sample_seed(rng),
+        choices: Vec::new(),
+    };
+    let n = params.n;
+    let v_lpn = &sender_seed.q[..k];
+    let u_lpn = &receiver_seed.u[..k];
+    let w_lpn = &receiver_seed.w[..k];
+    let y_lpn = encode_blocks(&prep.lpn_seed, k, n, v_lpn);
+    let x_bits = encode_bits(&prep.lpn_seed, k, n, u_lpn);
+    let z_lpn = encode_blocks(&prep.lpn_seed, k, n, w_lpn);
+    let mut y = Vec::with_capacity(n);
+    let mut x = Vec::with_capacity(n);
+    let mut z = Vec::with_capacity(n);
+    for j in 0..n {
+        y.push(xor_block(&y_lpn[j], &s[j]));
+        x.push(x_bits[j] ^ prep.e[j]);
+        z.push(xor_block(&z_lpn[j], &r[j]));
+    }
+    let out = FerretExtendOut {
+        sender_out: y[m_seed..].to_vec(),
+        recv_x: x[m_seed..].to_vec(),
+        recv_z: z[m_seed..].to_vec(),
+        sender_seed: FerretSenderSeed {
+            delta: sender_seed.delta,
+            q: y[..m_seed].to_vec(),
+        },
+        receiver_seed: FerretReceiverSeed {
+            u: x[..m_seed].to_vec(),
+            w: z[..m_seed].to_vec(),
+        },
+    };
+    (out, check)
 }
 
 /// Sample `m` random COT shares with a fresh `Δ` (one-time setup stand-in).
@@ -482,6 +592,32 @@ mod tests {
                 out.sender_seed.q[j]
             };
             assert_eq!(out.receiver_seed.w[j], expected, "seed row {j}");
+        }
+    }
+
+    #[test]
+    fn ferret_uni_malicious_extend_check_passes_honest() {
+        use crate::ot::ferret::mpcot_uni::uni_seed_cot_count_malicious;
+        let mut rng = TestRng(0x554E_4946);
+        let p = crate::ot::ferret::params::FERRET_UNI_TOY;
+        let mut hash_seed = [0u8; 16];
+        for chunk in hash_seed.chunks_mut(4) {
+            chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
+        }
+        let m = uni_seed_cot_count_malicious(&hash_seed, p);
+        let (ss, rs) = sample_seed_cots(&mut rng, m);
+        let delta = ss.delta;
+        let (out, check) =
+            ferret_extend_uni_malicious(&mut rng, p, hash_seed, &ss, &rs, b"uni-check");
+        assert!(check, "honest uni extend passes the batched check");
+        assert!(!out.sender_out.is_empty());
+        for j in 0..out.sender_out.len() {
+            let expected = if out.recv_x[j] {
+                xor_block(&out.sender_out[j], &delta)
+            } else {
+                out.sender_out[j]
+            };
+            assert_eq!(out.recv_z[j], expected, "uni row {j}");
         }
     }
 
