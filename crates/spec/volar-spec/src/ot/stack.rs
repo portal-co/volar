@@ -69,16 +69,19 @@ impl OtStack {
                 },
                 out: alloc::collections::VecDeque::new(),
                 raise_n: None,
+                malicious: false,
+                refill_count: 0,
             },
             receiver: CotPoolReceiver {
                 params,
                 seed: crate::ot::ferret::cot::FerretReceiverSeed { u: bits, w },
                 out_x: alloc::collections::VecDeque::new(),
                 out_z: alloc::collections::VecDeque::new(),
+                malicious: false,
             },
         };
         // First refill so callers can take immediately.
-        crate::ot::ferret::pool::refill(rng_s, &mut stack.sender, &mut stack.receiver);
+        let _ = crate::ot::ferret::pool::refill(rng_s, &mut stack.sender, &mut stack.receiver);
         let _ = rng_r;
         stack
     }
@@ -95,7 +98,8 @@ impl OtStack {
         rng: &mut R,
         bits: &[bool],
     ) -> Vec<(Vope<U1, Galois128, U1>, Q<U1, Galois128>)> {
-        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, bits.len());
+        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, bits.len())
+            .expect("semi-honest pool refill");
         let delta = self.sender.seed.delta;
         let mut out = Vec::with_capacity(bits.len());
         for j in 0..bits.len() {
@@ -115,7 +119,8 @@ impl CotSource<U1, Galois128> for OtStack {
         _sample_t: impl Fn(&mut R) -> Galois128,
         bit: bool,
     ) -> (Array<Galois128, U1>, Array<Galois128, U1>) {
-        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, 1);
+        let (r0s, xs, zs) =
+            take_random(rng, &mut self.sender, &mut self.receiver, 1).expect("semi-honest pool refill");
         let (r0, z, _d) = bea95_chosen_bit(&self.sender.seed.delta, r0s[0], xs[0], zs[0], bit);
         let r0_t = Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(r0)));
         let v_t = Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(z)));

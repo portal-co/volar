@@ -137,6 +137,8 @@ pub fn stack_setup_sender<R: SpecRng, Io: StackIo>(
         },
         out: alloc::collections::VecDeque::new(),
         raise_n: None,
+        malicious: false,
+        refill_count: 0,
     };
     stack_refill_sender(rng, &mut sender, io);
     sender
@@ -197,6 +199,7 @@ pub fn stack_setup_receiver<R: SpecRng, Io: StackIo>(
         seed: FerretReceiverSeed { u: bits, w },
         out_x: alloc::collections::VecDeque::new(),
         out_z: alloc::collections::VecDeque::new(),
+        malicious: false,
     };
     stack_refill_receiver(rng, &mut receiver, io);
     receiver
