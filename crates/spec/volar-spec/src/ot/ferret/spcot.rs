@@ -270,11 +270,92 @@ pub fn spcot_in_process<R: SpecRng>(
     (v, w)
 }
 
-/// Optional Fig. 6 steps 6–9 (Fiat–Shamir χ, one extra `κ` COTs).
-///
-/// Returns `true` if the receiver accepts. Both parties must pass the same
-/// `extra_q` / `extra_r` / `extra_t` (`κ` COT triples) and the sender's
-/// `v` / receiver's `w`.
+/// Fiat–Shamir consistency coefficients: `χ_i = χ^{i+1}` in GF(2^128), with χ
+/// derived from the execution transcript (Fig. 6 §4.2 Fiat–Shamir form).
+pub fn spcot_fs_chis(n: usize, transcript: &[u8]) -> Vec<Block> {
+    let mut h = Sha3_256::new();
+    h.update(b"ferret-spcot-fs-v1");
+    h.update(transcript);
+    let seed = h.finalize();
+    let mut chi = [0u8; KAPPA_BYTES];
+    chi.copy_from_slice(&seed[..KAPPA_BYTES]);
+    let mut chi_pow = field_from_block(&chi);
+    let mut chis = Vec::with_capacity(n);
+    for _ in 0..n {
+        chis.push(block_from_field(&chi_pow));
+        chi_pow = field_mul(&chi_pow, &field_from_block(&chi));
+    }
+    chis
+}
+
+/// Evaluate the polynomial `∑_i blocks[i]·X^i` in GF(2^128) (X = the
+/// indeterminate). This is the consistency-check mask compression.
+fn poly_eval_at_x(blocks: &[Block]) -> crate::field::Galois128 {
+    let x_elem = crate::field::Galois128(2); // X
+    let mut acc = crate::field::Galois128(0);
+    let mut x_pow = crate::field::Galois128(1); // X^0
+    for b in blocks {
+        acc = acc + field_mul(&field_from_block(b), &x_pow);
+        x_pow = field_mul(&x_pow, &x_elem);
+    }
+    acc
+}
+
+/// Receiver Fig. 6 step 7: the masked extra-COT choice bits `x*' = x* ⊕ x_ϕ`,
+/// where `x_ϕ` is the polynomial-basis bit-decomposition of `ϕ = χ_α` (the
+/// receiver's puncture index α stays private). Send `x*'` to the sender.
+pub fn spcot_masked_choice(alpha: usize, extra_r: &[bool], chis: &[Block]) -> Vec<bool> {
+    debug_assert_eq!(extra_r.len(), KAPPA_BITS);
+    let phi_bits = u128::from_le_bytes(chis[alpha]);
+    (0..KAPPA_BITS)
+        .map(|i| extra_r[i] ^ ((phi_bits >> i) & 1 == 1))
+        .collect()
+}
+
+/// Sender Fig. 6 step 8: `V = ∑_i χ_i·v[i] + Y` with `Y = ∑_i (q_i ⊕ x*'[i]·Δ)·X^i`.
+/// Returns `H'(V)` to send to the receiver.
+pub fn spcot_sender_hash_v(
+    delta: &Block,
+    v: &[Block],
+    extra_q: &[Block],
+    x_star_prime: &[bool],
+    chis: &[Block],
+) -> [u8; 32] {
+    debug_assert_eq!(extra_q.len(), KAPPA_BITS);
+    debug_assert_eq!(x_star_prime.len(), KAPPA_BITS);
+    let yp: Vec<Block> = (0..KAPPA_BITS)
+        .map(|i| {
+            if x_star_prime[i] {
+                xor_block(&extra_q[i], delta)
+            } else {
+                extra_q[i]
+            }
+        })
+        .collect();
+    let y = poly_eval_at_x(&yp);
+    let mut ip = crate::field::Galois128(0);
+    for i in 0..v.len() {
+        ip = ip + field_mul(&field_from_block(&chis[i]), &field_from_block(&v[i]));
+    }
+    hash_prime(&block_from_field(&(ip + y)))
+}
+
+/// Receiver Fig. 6 step 9: `W = ∑_i χ_i·w[i] + Z` with `Z = ∑_i t_i·X^i`.
+/// The receiver accepts iff `spcot_sender_hash_v(...) == H'(W)`.
+pub fn spcot_receiver_hash_w(w: &[Block], extra_t: &[Block], chis: &[Block]) -> [u8; 32] {
+    debug_assert_eq!(extra_t.len(), KAPPA_BITS);
+    let z = poly_eval_at_x(extra_t);
+    let mut ip = crate::field::Galois128(0);
+    for i in 0..w.len() {
+        ip = ip + field_mul(&field_from_block(&chis[i]), &field_from_block(&w[i]));
+    }
+    hash_prime(&block_from_field(&(ip + z)))
+}
+
+/// In-process Fig. 6 steps 6–9 consistency check (for tests). Both parties'
+/// masked hashes must match; the receiver recovers the unique puncture α from
+/// `v ≠ w` (there is exactly one for an honest execution). `extra_q`/`extra_r`/
+/// `extra_t` are κ consistent extra COTs (`t_i = q_i ⊕ r_i·Δ`).
 pub fn spcot_consistency_check(
     delta: &Block,
     v: &[Block],
@@ -288,29 +369,8 @@ pub fn spcot_consistency_check(
     debug_assert_eq!(extra_q.len(), KAPPA_BITS);
     debug_assert_eq!(extra_r.len(), KAPPA_BITS);
     debug_assert_eq!(extra_t.len(), KAPPA_BITS);
-    let _ = (extra_q, extra_r, extra_t);
-
     let n = v.len();
-    // FS seed from transcript.
-    let mut h = Sha3_256::new();
-    h.update(b"ferret-spcot-fs-v1");
-    h.update(transcript);
-    let seed = h.finalize();
-    let mut chi = [0u8; KAPPA_BYTES];
-    chi.copy_from_slice(&seed[..KAPPA_BYTES]);
-
-    // χ_i = χ^{i+1} in GF(2^128).
-    let mut chi_pow = field_from_block(&chi);
-    let mut chis = Vec::with_capacity(n);
-    for _ in 0..n {
-        chis.push(block_from_field(&chi_pow));
-        chi_pow = field_mul(&chi_pow, &field_from_block(&chi));
-    }
-
-    // The monomial embedding of χ_α into extra COTs (Fig. 6 steps 6–9) is
-    // not yet wired; extra_* are accepted for API completeness. Honest
-    // parties satisfy ∑ χ_i (v[i]⊕w[i]) = χ_α Δ, recovered from the unique
-    // puncture, so H'(∑χ v) equals H'(∑χ w ⊕ χ_α Δ).
+    let chis = spcot_fs_chis(n, transcript);
     let mut alpha = None;
     for i in 0..n {
         if v[i] != w[i] {
@@ -320,23 +380,13 @@ pub fn spcot_consistency_check(
             alpha = Some(i);
         }
     }
-    let Some(a) = alpha else {
-        return false;
-    };
+    let Some(a) = alpha else { return false };
     if xor_block(&v[a], &w[a]) != *delta {
         return false;
     }
-    let mut ip_v = [0u8; KAPPA_BYTES];
-    let mut ip_w = [0u8; KAPPA_BYTES];
-    for i in 0..n {
-        ip_v = xor_block(&ip_v, &field_mul_block(&chis[i], &v[i]));
-        ip_w = xor_block(&ip_w, &field_mul_block(&chis[i], &w[i]));
-    }
-    let hv = hash_prime(&ip_v);
-    let hw = hash_prime(&xor_block(
-        &ip_w,
-        &field_mul_block(&chis[a], delta),
-    ));
+    let x_star_prime = spcot_masked_choice(a, extra_r, &chis);
+    let hv = spcot_sender_hash_v(delta, v, extra_q, &x_star_prime, &chis);
+    let hw = spcot_receiver_hash_w(w, extra_t, &chis);
     hv == hw
 }
 
@@ -389,20 +439,93 @@ mod tests {
         }
     }
 
+    /// Sample κ consistent extra COTs: `t_i = q_i ⊕ r_i·Δ`.
+    fn sample_extra_cots<R: SpecRng>(rng: &mut R, delta: &Block) -> (Vec<Block>, Vec<bool>, Vec<Block>) {
+        let mut q = Vec::with_capacity(KAPPA_BITS);
+        let mut r = Vec::with_capacity(KAPPA_BITS);
+        let mut t = Vec::with_capacity(KAPPA_BITS);
+        for _ in 0..KAPPA_BITS {
+            let qi = sample_block(rng);
+            let ri = (rng.next_u32() & 1) == 1;
+            let ti = if ri { xor_block(&qi, delta) } else { qi };
+            q.push(qi);
+            r.push(ri);
+            t.push(ti);
+        }
+        (q, r, t)
+    }
+
     #[test]
     fn spcot_consistency_check_accepts_honest() {
         const N: usize = 8;
         let mut rng = TestRng(0x1111_2222);
         let delta = sample_block(&mut rng);
-        let extra_q = alloc::vec![[0u8; KAPPA_BYTES]; KAPPA_BITS];
-        let extra_r = alloc::vec![false; KAPPA_BITS];
-        let extra_t = extra_q.clone();
+        // Real (nonzero) extra COTs, so the masked algebra is exercised.
+        let (extra_q, extra_r, extra_t) = sample_extra_cots(&mut rng, &delta);
         for alpha in 0..N {
             let (v, w) = spcot_in_process(&mut rng, &delta, N, alpha);
             assert!(
                 spcot_consistency_check(&delta, &v, &w, &extra_q, &extra_r, &extra_t, b"toy"),
                 "alpha={alpha}"
             );
+        }
+    }
+
+    #[test]
+    fn spcot_consistency_check_masked_catches_cheating() {
+        const N: usize = 8;
+        let mut rng = TestRng(0x2222_3333);
+        let delta = sample_block(&mut rng);
+        let (extra_q, extra_r, extra_t) = sample_extra_cots(&mut rng, &delta);
+        let alpha = 3usize;
+        let (v, w) = spcot_in_process(&mut rng, &delta, N, alpha);
+        // Honest baseline passes.
+        assert!(spcot_consistency_check(
+            &delta, &v, &w, &extra_q, &extra_r, &extra_t, b"toy"
+        ));
+
+        // (1) A receiver whose w deviates at the puncture (w[α] ≠ v[α] ⊕ Δ).
+        let mut bad_w = w.clone();
+        bad_w[alpha][0] ^= 1;
+        assert!(!spcot_consistency_check(
+            &delta, &v, &bad_w, &extra_q, &extra_r, &extra_t, b"toy"
+        ));
+
+        // (2) A receiver whose w deviates at an off-puncture index (not the
+        // single-point relation).
+        let mut bad_w2 = w.clone();
+        bad_w2[(alpha + 1) % N][0] ^= 1;
+        assert!(!spcot_consistency_check(
+            &delta, &v, &bad_w2, &extra_q, &extra_r, &extra_t, b"toy"
+        ));
+
+        // (3) Tampered extra COT breaks the masking identity (Y ≠ Z ⊕ Δ·ϕ).
+        let mut bad_t = extra_t.clone();
+        bad_t[0][0] ^= 1;
+        assert!(!spcot_consistency_check(
+            &delta, &v, &w, &extra_q, &extra_r, &bad_t, b"toy"
+        ));
+    }
+
+    #[test]
+    fn spcot_two_party_consistency_check_split() {
+        const N: usize = 16;
+        let mut rng = TestRng(0x3333_4444);
+        let delta = sample_block(&mut rng);
+        let (extra_q, extra_r, extra_t) = sample_extra_cots(&mut rng, &delta);
+        for alpha in 0..N {
+            let (v, w) = spcot_in_process(&mut rng, &delta, N, alpha);
+            let chis = spcot_fs_chis(N, b"two-party");
+            // Receiver (private α): masked choice bits → sender.
+            let x_star_prime = spcot_masked_choice(alpha, &extra_r, &chis);
+            // Sender: H'(V); receiver: H'(W); must match.
+            let hv = spcot_sender_hash_v(&delta, &v, &extra_q, &x_star_prime, &chis);
+            let hw = spcot_receiver_hash_w(&w, &extra_t, &chis);
+            assert_eq!(hv, hw, "alpha={alpha}");
+            // A receiver cheating on α picks the wrong x*' ⇒ hashes diverge.
+            let wrong = spcot_masked_choice((alpha + 1) % N, &extra_r, &chis);
+            let hv_bad = spcot_sender_hash_v(&delta, &v, &extra_q, &wrong, &chis);
+            assert_ne!(hv_bad, hw, "wrong alpha should fail (alpha={alpha})");
         }
     }
 
