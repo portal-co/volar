@@ -524,3 +524,186 @@ pub fn build_aes128() -> BIrBlocks {
     }
     b.finish(out)
 }
+
+// ---------------------------------------------------------------------------
+// AES-128-GCM (NIST SP 800-38D) boolar gadget (P4c-i) — the TLS 1.3 record-layer
+// AEAD, built from the composite-field AES block gadget plus a GF(2^128)
+// GHASH multiply. Fixed geometry: the AAD and plaintext block counts are
+// compile-time parameters, so the CTR counters and the length block are
+// constants baked at build time.
+// ---------------------------------------------------------------------------
+
+/// Inline a single-block boolean sub-circuit into `b`, remapping var ids
+/// (`inputs[i]` is the parent wire for sub-param `i`); returns the sub's
+/// output wires in the parent.
+fn inline_sub(b: &mut B, sub: &BIrBlocks, inputs: &[u32]) -> Vec<u32> {
+    assert_eq!(sub.blocks.len(), 1, "inline_sub: single-block circuit");
+    let block = &sub.blocks[0];
+    assert_eq!(block.params as usize, inputs.len(), "inline_sub: input arity");
+    let mut remap: Vec<u32> = Vec::with_capacity(block.params as usize + block.stmts.len());
+    remap.extend_from_slice(inputs);
+    for stmt in &block.stmts {
+        use volar_ir::boolar::BIrStmt::*;
+        let s = match &stmt.kind {
+            Zero => Zero,
+            One => One,
+            And(x, y) => And(IRVarId(remap[x.0 as usize]), IRVarId(remap[y.0 as usize])),
+            Or(x, y) => Or(IRVarId(remap[x.0 as usize]), IRVarId(remap[y.0 as usize])),
+            Xor(x, y) => Xor(IRVarId(remap[x.0 as usize]), IRVarId(remap[y.0 as usize])),
+            Not(x) => Not(IRVarId(remap[x.0 as usize])),
+            other => panic!("inline_sub: unsupported stmt {other:?}"),
+        };
+        let id = b.g(s);
+        remap.push(id);
+    }
+    match &block.terminator {
+        BIrTerminator::Jmp(t) if t.block == IRBlockTargetId::Return => {
+            t.args.iter().map(|a| remap[a.0 as usize]).collect()
+        }
+        _ => panic!("inline_sub: sub-circuit must end in a Return"),
+    }
+}
+
+/// Reorder a 128-bit block from the AES gadget's byte layout (byte `i`, bit
+/// `j` = LSB-first wire `i*8+j`) into GCM field order (wire `k` = the `k`-th
+/// bit transmitted = MSB-first within each byte).
+fn gcm_order(bits: &[u32]) -> [u32; 128] {
+    assert_eq!(bits.len(), 128);
+    let mut out = [0u32; 128];
+    for k in 0..128 {
+        out[k] = bits[(k / 8) * 8 + (7 - (k % 8))];
+    }
+    out
+}
+
+/// The inverse of [`gcm_order`].
+fn gcm_unorder(bits: &[u32; 128]) -> Vec<u32> {
+    let mut out = vec![0u32; 128];
+    for k in 0..128 {
+        out[(k / 8) * 8 + (7 - (k % 8))] = bits[k];
+    }
+    out
+}
+
+/// GF(2^128) multiply in the GCM (reflected) convention, SP 800-38D
+/// Algorithm 1: `z ^= v` selected by each bit of `y` (128 ANDs per step),
+/// `v` shifted right with the R = 0xE1||0^120 reduction on carry.
+/// 128 × 128 = 16 384 ANDs.
+fn gf128_mul_c(b: &mut B, x: &[u32; 128], y: &[u32; 128]) -> [u32; 128] {
+    let zero = b.c0();
+    let mut z = [zero; 128];
+    let mut v = *x;
+    for i in 0..128 {
+        let yi = y[i];
+        for k in 0..128 {
+            let m = b.and(yi, v[k]);
+            z[k] = b.xor(z[k], m);
+        }
+        let carry = v[127];
+        let mut nv = [zero; 128];
+        for k in 1..128 {
+            nv[k] = v[k - 1];
+        }
+        // R = 0xE1 at the left end: bits 0,1,2,7 of the string.
+        for &k in &[0usize, 1, 2, 7] {
+            nv[k] = b.xor(nv[k], carry);
+        }
+        v = nv;
+    }
+    z
+}
+
+/// Constant 128-bit block (LSB-first byte layout) from 16 bytes.
+fn const_block_c(b: &mut B, bytes: [u8; 16]) -> Vec<u32> {
+    let mut out = Vec::with_capacity(128);
+    for byte in bytes {
+        for j in 0..8 {
+            out.push(if (byte >> j) & 1 == 1 { b.c1() } else { b.c0() });
+        }
+    }
+    out
+}
+
+/// Build an AES-128-GCM encrypt+tag circuit of fixed geometry.
+///
+/// Params (LSB-first per byte):
+/// `[key: 128, iv: 96 (12 bytes), aad: num_aad_blocks*128, pt: num_pt_blocks*128]`.
+/// Outputs: `[ct: num_pt_blocks*128, tag: 128]`.
+///
+/// The 96-bit-IV form (SP 800-38D §7.1): J0 = iv || 0x00000001, CTR counters
+/// are the compile-time block indices, and the GHASH length block encodes the
+/// fixed AAD/ciphertext bit lengths — so no in-circuit incrementer or length
+/// arithmetic is needed.
+pub fn build_aes128_gcm(num_aad_blocks: usize, num_pt_blocks: usize) -> BIrBlocks {
+    let (a, p) = (num_aad_blocks, num_pt_blocks);
+    let params = 128 + 96 + a * 128 + p * 128;
+    let mut b = B::new(params as u32);
+    let key: Vec<u32> = (0..128).collect();
+    let iv: Vec<u32> = (128..224).collect();
+    let aad_start = 224usize;
+    let pt_start = aad_start + a * 128;
+    let aes = build_aes128();
+
+    // H = AES_K(0^128).
+    let zero_block = const_block_c(&mut b, [0u8; 16]);
+    let h = inline_sub(&mut b, &aes, &[key.clone(), zero_block].concat());
+    let h_gcm = gcm_order(&h);
+
+    // J0 = iv || 00000001 in AES byte layout.
+    let mut j0 = iv.clone();
+    j0.extend_from_slice(&const_block_c(&mut b, {
+        let mut x = [0u8; 16];
+        x[15] = 1;
+        x
+    })[96..128]);
+    debug_assert_eq!(j0.len(), 128);
+    let tag_mask = inline_sub(&mut b, &aes, &[key.clone(), j0.clone()].concat());
+
+    // CTR mode: block i uses counter value i+1 in the last 4 bytes (BE).
+    let mut ct: Vec<u32> = Vec::with_capacity(p * 128);
+    for i in 0..p {
+        let mut ctr_bytes = [0u8; 16];
+        // J0 already carries counter value 1; the first CTR block uses 2.
+        ctr_bytes[12..16].copy_from_slice(&((i as u32 + 2).to_be_bytes()));
+        let mut ctr = iv.clone();
+        ctr.extend_from_slice(&const_block_c(&mut b, ctr_bytes)[96..128]);
+        let ks = inline_sub(&mut b, &aes, &[key.clone(), ctr].concat());
+        for j in 0..128 {
+            ct.push(b.xor((pt_start + i * 128 + j) as u32, ks[j]));
+        }
+    }
+
+    // GHASH over aad || ct || lenblock.
+    fn absorb(b: &mut B, x: &mut [u32; 128], block_lsb: Vec<u32>, h_gcm: &[u32; 128]) {
+        let bg = gcm_order(&block_lsb);
+        let mut xb = [0u32; 128];
+        for k in 0..128 {
+            xb[k] = b.xor(x[k], bg[k]);
+        }
+        *x = gf128_mul_c(b, &xb, h_gcm);
+    }
+    let zero = b.c0();
+    let mut x = [zero; 128];
+    for i in 0..a {
+        let block: Vec<u32> = (0..128).map(|j| (aad_start + i * 128 + j) as u32).collect();
+        absorb(&mut b, &mut x, block, &h_gcm);
+    }
+    for i in 0..p {
+        absorb(&mut b, &mut x, ct[i * 128..(i + 1) * 128].to_vec(), &h_gcm);
+    }
+    let mut len_bytes = [0u8; 16];
+    len_bytes[0..8].copy_from_slice(&((a * 128) as u64).to_be_bytes());
+    len_bytes[8..16].copy_from_slice(&((p * 128) as u64).to_be_bytes());
+    let len_block = const_block_c(&mut b, len_bytes);
+    absorb(&mut b, &mut x, len_block, &h_gcm);
+
+    // tag = GHASH ^ AES_K(J0), reported in the uniform LSB-first byte layout.
+    let tm = gcm_order(&tag_mask);
+    let mut tag_gcm = [0u32; 128];
+    for k in 0..128 {
+        tag_gcm[k] = b.xor(x[k], tm[k]);
+    }
+    let mut out = ct;
+    out.extend_from_slice(&gcm_unorder(&tag_gcm));
+    b.finish(out)
+}
