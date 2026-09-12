@@ -20,7 +20,7 @@ seams it consumes.
 | §5 regular-indices MPCOT | `ot/ferret/mpcot_reg.rs` | `t` SPCOT calls on intervals of length `n/t` (power of two). Batched consistency check wired: `mpcot_reg_consistency_check`. |
 | Fig. 7 ΠMPCOT Cuckoo | `ot/ferret/mpcot_uni.rs` | `m = ⌈1.5 t⌉`, `τ = 3`, extra dummy cell, SHA3 stand-in for AES-128 `h_i`. |
 | §6.2 10-local primal LPN / RO matrix `A` | `ot/ferret/lpn.rs` | Columns have weight 10 from a public seed; `A` is never sent. |
-| Fig. 9 ΠCOT + §6.2 keep-`M` bootstrap | `ot/ferret/cot.rs`, `pool.rs` | Consume `M = k + t log(n/t)` seed COTs, emit `n − M`, keep first `M`. |
+| Fig. 9 ΠCOT + §6.2 keep-`M` bootstrap | `ot/ferret/cot.rs`, `pool.rs` | Consume `M = k + t log(n/t)` seed COTs, emit `n − M`, keep first `M`. `ferret_extend_malicious` adds the Appendix C batched consistency check (extra κ COTs, keep-`M = seed_cot_count(true)`). |
 | Table 2 Ferret-Reg `(n,k,t)` / `(n0,k0,t0)` | `ot/ferret/params.rs` `FERRET_REG_SETUP` / `FERRET_REG_MAIN` | Documented constants. **Not used in unit tests.** Setup `n/t` is not a power of two; do not call `splen()` on it. |
 | Table 2 Ferret-Uni | `FERRET_UNI_SETUP` / `FERRET_UNI_MAIN` | Same: documented only. |
 | Insecure toy sizes | `FERRET_REG_TOY` / `FERRET_UNI_TOY` | `n=256, k=32, t=4` for correctness tests. |
@@ -32,11 +32,12 @@ seams it consumes.
 This landing does not claim 128-bit attack cost, production LWE/LPN
 parameters, SoftSpoken subfield-VOLE, or a replacement of Chou-Orlandi for
 existing callers. The SPCOT consistency check (Fig. 6 steps 6–9 + Appendix C
-batched) is **wired** (M5) and unit-tested, but it is **not yet integrated into
-the MPCOT → ΠCOT extension** (`cot.rs`/`mpcot_*.rs` still run the semi-honest
-path), so the Ferret *extension* as a whole is not yet malicious-secure. Ferret
-is not woven into generated ZK prover IR. Passing the toy tests establishes only
-the stated algebraic COT / VOLE relations on those sizes.
+batched) is **wired** (M5) and unit-tested, and `ferret_extend_malicious` runs
+the malicious-secure ΠCOT extend over the **regular** MPCOT. Not yet done:
+the malicious path is not wired into the `CotPool` / `pool.rs` refill loop, the
+Ferret-**Uni** (Cuckoo) MPCOT has no consistency-check wrapper, and the *base* OT
+seeding the first iteration is still semi-honest (Chou-Orlandi). Ferret is not
+woven into generated ZK prover IR.
 
 ## Reproduction
 

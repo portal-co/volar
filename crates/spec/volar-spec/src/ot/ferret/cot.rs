@@ -11,11 +11,11 @@ use alloc::vec::Vec;
 
 use super::lpn::{encode_bits, encode_blocks};
 use super::mpcot_reg::{
-    mpcot_reg_choice_bits, mpcot_reg_receiver, mpcot_reg_sender, sample_regular_noise,
-    MpcotRegSenderMsg,
+    mpcot_reg_choice_bits, mpcot_reg_consistency_check, mpcot_reg_receiver, mpcot_reg_sender,
+    sample_regular_noise, MpcotRegSenderMsg,
 };
 use super::params::FerretParams;
-use super::spcot::Block;
+use super::spcot::{Block, KAPPA_BITS};
 use crate::SpecRng;
 
 /// One ΠCOT iteration's public transcript (receiver → sender: LPN seed +
@@ -139,9 +139,30 @@ pub fn ferret_finish(
     s: &[Block],
     r: &[Block],
 ) -> FerretExtendOut {
+    ferret_finish_m(
+        params,
+        sender_seed,
+        receiver_seed,
+        prep,
+        s,
+        r,
+        params.seed_cot_count(false),
+    )
+}
+
+/// `ferret_finish` with an explicit keep-`M` (the malicious extension keeps
+/// `seed_cot_count(true)` so the next iteration has its extra check COTs).
+fn ferret_finish_m(
+    params: FerretParams,
+    sender_seed: &FerretSenderSeed,
+    receiver_seed: &FerretReceiverSeed,
+    prep: &FerretPrep,
+    s: &[Block],
+    r: &[Block],
+    m: usize,
+) -> FerretExtendOut {
     let n = params.n;
     let k = params.k;
-    let m = params.seed_cot_count(false);
     let v_lpn = &sender_seed.q[..k];
     let u_lpn = &receiver_seed.u[..k];
     let w_lpn = &receiver_seed.w[..k];
@@ -195,6 +216,78 @@ pub fn ferret_extend<R: SpecRng>(
     let (s, mpcot) = ferret_sender_mpcot(rng, params, sender_seed, &prep.choices);
     let r = ferret_receiver_mpcot(params, &prep, receiver_seed, &mpcot);
     ferret_finish(params, sender_seed, receiver_seed, &prep, &s, &r)
+}
+
+/// Malicious-secure Fig. 9 ΠCOT extend (Ferret-Reg): like [`ferret_extend`], but
+/// consumes `seed_cot_count(true)` COTs (the extra κ consistency-check COTs) and
+/// runs the batched SPCOT consistency check (Appendix C) over the MPCOT. Returns
+/// the extension output plus the check result; the caller must abort on `false`.
+///
+/// Seed layout: `[k LPN | t·h SPCOT | κ extra]`. `transcript` binds the FS
+/// coefficients to this execution (include the MPCOT transcript).
+pub fn ferret_extend_malicious<R: SpecRng>(
+    rng: &mut R,
+    params: FerretParams,
+    sender_seed: &FerretSenderSeed,
+    receiver_seed: &FerretReceiverSeed,
+    transcript: &[u8],
+) -> (FerretExtendOut, bool) {
+    let m = params.seed_cot_count(true);
+    debug_assert_eq!(sender_seed.q.len(), m);
+    debug_assert_eq!(receiver_seed.u.len(), m);
+    debug_assert_eq!(receiver_seed.w.len(), m);
+
+    let k = params.k;
+    let n = params.n;
+    let t = params.t;
+    let spcot_cots = t * params.log_splen();
+    let extra_off = k + spcot_cots;
+
+    // Receiver prep over the SPCOT COT range only.
+    let alphas = sample_regular_noise(rng, n, t);
+    let mut e = alloc::vec![false; n];
+    for (i, &a) in alphas.iter().enumerate() {
+        e[i * params.splen() + a] = true;
+    }
+    let lpn_seed = sample_seed(rng);
+    let choices = mpcot_reg_choice_bits(n, t, &alphas, &receiver_seed.u[k..extra_off]);
+
+    // Sender + receiver MPCOT (SPCOT COT range only).
+    let (s, mpcot) = mpcot_reg_sender(
+        rng,
+        &sender_seed.delta,
+        n,
+        t,
+        &sender_seed.q[k..extra_off],
+        &choices,
+    );
+    let r = mpcot_reg_receiver(n, t, &alphas, &receiver_seed.w[k..extra_off], &mpcot);
+
+    // Batched consistency check using the κ extra COTs.
+    let extra_q = &sender_seed.q[extra_off..extra_off + KAPPA_BITS];
+    let extra_r = &receiver_seed.u[extra_off..extra_off + KAPPA_BITS];
+    let extra_t = &receiver_seed.w[extra_off..extra_off + KAPPA_BITS];
+    let check = mpcot_reg_consistency_check(
+        &sender_seed.delta,
+        &s,
+        &r,
+        &alphas,
+        extra_q,
+        extra_r,
+        extra_t,
+        transcript,
+    );
+
+    // LPN finish; keep M = seed_cot_count(true) so the next iteration has its
+    // extra check COTs.
+    let prep = FerretPrep {
+        alphas,
+        e,
+        lpn_seed,
+        choices: Vec::new(),
+    };
+    let out = ferret_finish_m(params, sender_seed, receiver_seed, &prep, &s, &r, m);
+    (out, check)
 }
 
 fn split_cot_chunks<T: Clone>(flat: &[T], heights: &[usize]) -> Vec<Vec<T>> {
@@ -350,6 +443,38 @@ mod tests {
             assert_eq!(out.recv_z[j], expected, "row {j}");
         }
         // Kept seed also satisfies the relation.
+        for j in 0..m {
+            let expected = if out.receiver_seed.u[j] {
+                xor_block(&out.sender_seed.q[j], &delta)
+            } else {
+                out.sender_seed.q[j]
+            };
+            assert_eq!(out.receiver_seed.w[j], expected, "seed row {j}");
+        }
+    }
+
+    #[test]
+    fn ferret_reg_malicious_iteration_consistency_check_passes() {
+        let mut rng = TestRng(0xDEAD_0001_5555);
+        let p = FERRET_REG_TOY;
+        // Malicious seeds carry the extra κ consistency-check COTs.
+        let m = p.seed_cot_count(true);
+        let (ss, rs) = sample_seed_cots(&mut rng, m);
+        let delta = ss.delta;
+        let (out, check) = ferret_extend_malicious(&mut rng, p, &ss, &rs, b"toy-transcript");
+        assert!(check, "honest malicious-secure iteration passes the check");
+        assert_eq!(out.sender_out.len(), p.output_cot_count(true));
+        // The emitted COTs still satisfy the correlation.
+        for j in 0..out.sender_out.len() {
+            let expected = if out.recv_x[j] {
+                xor_block(&out.sender_out[j], &delta)
+            } else {
+                out.sender_out[j]
+            };
+            assert_eq!(out.recv_z[j], expected, "row {j}");
+        }
+        // The kept seed (with the extra check COTs) still satisfies the relation,
+        // so the next malicious iteration can consume it.
         for j in 0..m {
             let expected = if out.receiver_seed.u[j] {
                 xor_block(&out.sender_seed.q[j], &delta)
