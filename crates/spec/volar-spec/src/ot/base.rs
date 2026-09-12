@@ -196,9 +196,9 @@ pub fn ot_recv_prove<G: ScalarOps, D: Digest, R: SpecRng>(
     let r1_stmt = G::add(r, &G::neg(s));
     // Real branch gets a genuine Schnorr commitment; the simulated branch is
     // computed from a random challenge/response.
-    let rr = G::random_scalar(rng);
-    let e_sim = G::random_scalar(rng);
-    let z_sim = G::random_scalar(rng);
+    let rr = G::random_mod_order(rng);
+    let e_sim = G::random_mod_order(rng);
+    let z_sim = G::random_mod_order(rng);
     let a_real = G::scalar_mul(&g, &rr);
     let r_sim_stmt = if c { r } else { &r1_stmt };
     let a_sim = G::add(
@@ -427,5 +427,45 @@ mod tests {
             "a malformed R cannot produce a valid consistency proof"
         );
         assert!(ot_send_finish_malicious::<ToyGroup, Sha256>(&sender, &msg, &bad_proof).is_none());
+    }
+
+    #[test]
+    fn malicious_base_ot_ed25519() {
+        use crate::curve::Ed25519;
+        for c in [false, true] {
+            let mut rng = TestRng(0x9999_AAAA_BBBB_CCCC);
+            let (sender, s) = ot_send_setup::<Ed25519, Sha256, _>(&mut rng);
+            let (receiver, msg, proof) =
+                ot_recv_malicious::<Ed25519, Sha256, _>(&mut rng, s, c);
+            let keys = ot_send_finish_malicious::<Ed25519, Sha256>(&sender, &msg, &proof);
+            let (k0, k1) = keys.expect("honest Ed25519 receiver's proof verifies");
+            let kc = ot_recv_finish::<Ed25519, Sha256>(&receiver);
+            assert_eq!(kc, if c { k1 } else { k0 }, "choice {c}");
+        }
+    }
+
+    #[test]
+    fn ed25519_scalar_arithmetic_mod_l() {
+        use crate::curve::Ed25519;
+        use crate::ot::group::ScalarOps;
+        // a=3, b=5: add, sub, mul mod ℓ.
+        let mut a = [0u8; 32];
+        a[0] = 3;
+        let mut b = [0u8; 32];
+        b[0] = 5;
+        let sum = Ed25519::scalar_add(&a, &b);
+        assert_eq!(sum[0], 8);
+        let diff = Ed25519::scalar_sub(&b, &a);
+        assert_eq!(diff[0], 2);
+        let prod = Ed25519::scalar_mul_scalar(&a, &b);
+        assert_eq!(prod[0], 15);
+        // Consistency with the group law: g^{a+b} = g^a · g^b.
+        let g = Ed25519::generator();
+        let lhs = Ed25519::scalar_mul(&g, &sum);
+        let rhs = Ed25519::add(
+            &Ed25519::scalar_mul(&g, &a),
+            &Ed25519::scalar_mul(&g, &b),
+        );
+        assert_eq!(lhs.to_affine(), rhs.to_affine(), "g^(a+b) == g^a·g^b");
     }
 }

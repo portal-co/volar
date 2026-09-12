@@ -55,6 +55,8 @@ pub trait ScalarOps: Group {
     /// Fiat–Shamir challenge: hash a finalized digest to a scalar (mod the
     /// group order). Random-oracle model.
     fn scalar_from_hash<D: Digest>(h: D) -> Self::Scalar;
+    /// Sample a uniform scalar mod the group order (for proof randomness).
+    fn random_mod_order<R: SpecRng>(rng: &mut R) -> Self::Scalar;
 }
 
 impl ScalarOps for ToyGroup {
@@ -81,6 +83,10 @@ impl ScalarOps for ToyGroup {
         let mut le = [0u8; 8];
         le.copy_from_slice(&out[..8]);
         u64::from_le_bytes(le) % (TOY_P - 1)
+    }
+    fn random_mod_order<R: SpecRng>(rng: &mut R) -> u64 {
+        let v = ((rng.next_u32() as u64) << 32) | (rng.next_u32() as u64);
+        v % (TOY_P - 1)
     }
 }
 
