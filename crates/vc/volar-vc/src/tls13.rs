@@ -66,3 +66,38 @@ pub fn extract_circuit(salt_bytes: usize, ikm_bytes: usize) -> BIrBlocks<()> {
 pub fn transcript_circuit(msg_bytes: usize) -> BIrBlocks<()> {
     build_sha256(msg_bytes)
 }
+
+// -------------------------------------------------------------- records
+
+/// TLS 1.3 §5.2 per-record nonce: the 12-byte static iv XORed with the
+/// (big-endian, right-aligned) sequence number. Free-XOR in-circuit (the
+/// iv is a threaded secret, the sequence number public) — this helper is
+/// the driver-side byte form.
+pub fn nonce_xor(iv: &[u8; 12], seq: u64) -> [u8; 12] {
+    let mut n = *iv;
+    let s = seq.to_be_bytes();
+    for i in 0..8 {
+        n[4 + i] ^= s[i];
+    }
+    n
+}
+
+/// The record-SEAL circuit for a TLS 1.3 record of `pt_bytes` inner
+/// plaintext bytes with the fixed 5-byte record-header AAD:
+/// [`crate::aes_gadget::build_aes128_gcm_var(5, pt_bytes)`], params
+/// `[key: 128, nonce: 96, aad: 40, pt: 8*pt_bytes]`, outputs
+/// `[ct: 8*pt_bytes, tag: 128]`.
+pub fn record_seal_circuit(pt_bytes: usize) -> BIrBlocks<()> {
+    crate::aes_gadget::build_aes128_gcm_var(5, pt_bytes)
+}
+
+/// The record-OPEN circuit for a TLS 1.3 record of `ct_bytes` ciphertext
+/// bytes: [`crate::aes_gadget::build_aes128_gcm_decrypt_var(5, ct_bytes)`]
+/// (GHASH covers the received ciphertext, not the recovered plaintext),
+/// params `[key: 128, nonce: 96, aad: 40, ct: 8*ct_bytes]`, outputs
+/// `[pt: 8*ct_bytes, recomputed_tag: 128]` — the tag check compares the
+/// recomputed tag against the received tag (native in the concrete
+/// driver; an in-circuit compare with a verdict reveal in the MPC).
+pub fn record_open_circuit(ct_bytes: usize) -> BIrBlocks<()> {
+    crate::aes_gadget::build_aes128_gcm_decrypt_var(5, ct_bytes)
+}

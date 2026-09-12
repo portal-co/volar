@@ -635,14 +635,50 @@ fn const_block_c(b: &mut B, bytes: [u8; 16]) -> Vec<u32> {
 /// fixed AAD/ciphertext bit lengths — so no in-circuit incrementer or length
 /// arithmetic is needed.
 pub fn build_aes128_gcm(num_aad_blocks: usize, num_pt_blocks: usize) -> BIrBlocks {
-    let (a, p) = (num_aad_blocks, num_pt_blocks);
-    let params = 128 + 96 + a * 128 + p * 128;
+    build_aes128_gcm_var(num_aad_blocks * 16, num_pt_blocks * 16)
+}
+
+/// The byte-exact form of [`build_aes128_gcm`]: AAD and plaintext are any
+/// byte counts (TLS 1.3 records are not block-multiples). Per SP 800-38D
+/// the tails of the last AAD/ciphertext GHASH blocks are zero-padded, which
+/// here means the in-circuit absorb uses constant-zero wires beyond the
+/// real bits (the lengths are build-time constants, so the masking is
+/// wiring, not gates); the CTR keystream tail beyond the plaintext is
+/// simply not output.
+///
+/// Params (LSB-first per byte):
+/// `[key: 128, iv: 96, aad: 8*aad_bytes, pt: 8*pt_bytes]`.
+/// Outputs: `[ct: 8*pt_bytes, tag: 128]`.
+///
+/// This is the ENCRYPT shape: GHASH covers the ciphertext the circuit
+/// produces (the CTR output). Feeding a ciphertext as the `pt` input does
+/// NOT yield a correct decryption tag — the GHASH would cover the
+/// recovered plaintext. Use [`build_aes128_gcm_decrypt_var`] for AEAD-open.
+pub fn build_aes128_gcm_var(aad_bytes: usize, pt_bytes: usize) -> BIrBlocks {
+    build_aes128_gcm_shaped(aad_bytes, pt_bytes, false)
+}
+
+/// The DECRYPT shape of [`build_aes128_gcm_var`]: the text input is the
+/// received ciphertext, GHASH covers those input wires (the actual
+/// ciphertext per SP 800-38D), and the outputs are
+/// `[pt: 8*ct_bytes, recomputed_tag: 128]` — compare the tag against the
+/// received tag for the AEAD-open verdict.
+pub fn build_aes128_gcm_decrypt_var(aad_bytes: usize, ct_bytes: usize) -> BIrBlocks {
+    build_aes128_gcm_shaped(aad_bytes, ct_bytes, true)
+}
+
+fn build_aes128_gcm_shaped(aad_bytes: usize, pt_bytes: usize, decrypt: bool) -> BIrBlocks {
+    let a = aad_bytes.div_ceil(16);
+    let p = pt_bytes.div_ceil(16);
+    let params = 128 + 96 + aad_bytes * 8 + pt_bytes * 8;
     let mut b = B::new(params as u32);
     let key: Vec<u32> = (0..128).collect();
     let iv: Vec<u32> = (128..224).collect();
     let aad_start = 224usize;
-    let pt_start = aad_start + a * 128;
+    let pt_start = aad_start + aad_bytes * 8;
     let aes = build_aes128();
+    let aad_bits = aad_bytes * 8;
+    let pt_bits = pt_bytes * 8;
 
     // H = AES_K(0^128).
     let zero_block = const_block_c(&mut b, [0u8; 16]);
@@ -660,7 +696,7 @@ pub fn build_aes128_gcm(num_aad_blocks: usize, num_pt_blocks: usize) -> BIrBlock
     let tag_mask = inline_sub(&mut b, &aes, &[key.clone(), j0.clone()].concat());
 
     // CTR mode: block i uses counter value i+1 in the last 4 bytes (BE).
-    let mut ct: Vec<u32> = Vec::with_capacity(p * 128);
+    let mut ct: Vec<u32> = Vec::with_capacity(pt_bits);
     for i in 0..p {
         let mut ctr_bytes = [0u8; 16];
         // J0 already carries counter value 1; the first CTR block uses 2.
@@ -669,7 +705,9 @@ pub fn build_aes128_gcm(num_aad_blocks: usize, num_pt_blocks: usize) -> BIrBlock
         ctr.extend_from_slice(&const_block_c(&mut b, ctr_bytes)[96..128]);
         let ks = inline_sub(&mut b, &aes, &[key.clone(), ctr].concat());
         for j in 0..128 {
-            ct.push(b.xor((pt_start + i * 128 + j) as u32, ks[j]));
+            if i * 128 + j < pt_bits {
+                ct.push(b.xor((pt_start + i * 128 + j) as u32, ks[j]));
+            }
         }
     }
 
@@ -685,15 +723,38 @@ pub fn build_aes128_gcm(num_aad_blocks: usize, num_pt_blocks: usize) -> BIrBlock
     let zero = b.c0();
     let mut x = [zero; 128];
     for i in 0..a {
-        let block: Vec<u32> = (0..128).map(|j| (aad_start + i * 128 + j) as u32).collect();
+        let block: Vec<u32> = (0..128)
+            .map(|j| {
+                if i * 128 + j < aad_bits {
+                    (aad_start + i * 128 + j) as u32
+                } else {
+                    zero
+                }
+            })
+            .collect();
         absorb(&mut b, &mut x, block, &h_gcm);
     }
     for i in 0..p {
-        absorb(&mut b, &mut x, ct[i * 128..(i + 1) * 128].to_vec(), &h_gcm);
+        let block: Vec<u32> = (0..128)
+            .map(|j| {
+                if i * 128 + j < pt_bits {
+                    if decrypt {
+                        // GHASH covers the received ciphertext (the text
+                        // input wires), not the recovered plaintext.
+                        (pt_start + i * 128 + j) as u32
+                    } else {
+                        ct[i * 128 + j]
+                    }
+                } else {
+                    zero
+                }
+            })
+            .collect();
+        absorb(&mut b, &mut x, block, &h_gcm);
     }
     let mut len_bytes = [0u8; 16];
-    len_bytes[0..8].copy_from_slice(&((a * 128) as u64).to_be_bytes());
-    len_bytes[8..16].copy_from_slice(&((p * 128) as u64).to_be_bytes());
+    len_bytes[0..8].copy_from_slice(&(aad_bits as u64).to_be_bytes());
+    len_bytes[8..16].copy_from_slice(&(pt_bits as u64).to_be_bytes());
     let len_block = const_block_c(&mut b, len_bytes);
     absorb(&mut b, &mut x, len_block, &h_gcm);
 
