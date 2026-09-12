@@ -390,6 +390,79 @@ pub fn spcot_consistency_check(
     hv == hw
 }
 
+// --- Batched consistency check (Appendix C): one masking over m SPCOTs. ---
+
+/// Batched FS coefficients: per-execution `χ_i^l`, derived from
+/// `transcript ‖ l` so each execution's coefficients are independent.
+pub fn spcot_batched_fs_chis(lens: &[usize], transcript: &[u8]) -> Vec<Vec<Block>> {
+    lens.iter()
+        .enumerate()
+        .map(|(l, &n)| {
+            let mut t = transcript.to_vec();
+            t.extend_from_slice(&(l as u64).to_le_bytes());
+            spcot_fs_chis(n, &t)
+        })
+        .collect()
+}
+
+/// Batched masked choice (receiver): `ϕ = ∑_l χ_{α_l}^l`, `x*' = x* ⊕ x_ϕ`.
+pub fn spcot_batched_masked_choice(
+    alphas: &[usize],
+    extra_r: &[bool],
+    chis: &[Vec<Block>],
+) -> Vec<bool> {
+    debug_assert_eq!(extra_r.len(), KAPPA_BITS);
+    let mut phi = crate::field::Galois128(0);
+    for (l, &a) in alphas.iter().enumerate() {
+        phi = phi + field_from_block(&chis[l][a]);
+    }
+    let phi_bits = phi.0;
+    (0..KAPPA_BITS)
+        .map(|i| extra_r[i] ^ ((phi_bits >> i) & 1 == 1))
+        .collect()
+}
+
+/// Batched sender hash: `V = (∑_l∑_i χ_i^l·v^l[i]) + Y`.
+pub fn spcot_batched_sender_hash_v(
+    delta: &Block,
+    vs: &[&[Block]],
+    extra_q: &[Block],
+    x_star_prime: &[bool],
+    chis: &[Vec<Block>],
+) -> [u8; 32] {
+    let yp: Vec<Block> = (0..KAPPA_BITS)
+        .map(|i| {
+            if x_star_prime[i] {
+                xor_block(&extra_q[i], delta)
+            } else {
+                extra_q[i]
+            }
+        })
+        .collect();
+    let mut acc = poly_eval_at_x(&yp);
+    for (l, v) in vs.iter().enumerate() {
+        for i in 0..v.len() {
+            acc = acc + field_mul(&field_from_block(&chis[l][i]), &field_from_block(&v[i]));
+        }
+    }
+    hash_prime(&block_from_field(&acc))
+}
+
+/// Batched receiver hash: `W = (∑_l∑_i χ_i^l·w^l[i]) + Z`.
+pub fn spcot_batched_receiver_hash_w(
+    ws: &[&[Block]],
+    extra_t: &[Block],
+    chis: &[Vec<Block>],
+) -> [u8; 32] {
+    let mut acc = poly_eval_at_x(extra_t);
+    for (l, w) in ws.iter().enumerate() {
+        for i in 0..w.len() {
+            acc = acc + field_mul(&field_from_block(&chis[l][i]), &field_from_block(&w[i]));
+        }
+    }
+    hash_prime(&block_from_field(&acc))
+}
+
 fn field_from_block(b: &Block) -> crate::field::Galois128 {
     crate::field::Galois128(u128::from_le_bytes(*b))
 }
@@ -527,6 +600,38 @@ mod tests {
             let hv_bad = spcot_sender_hash_v(&delta, &v, &extra_q, &wrong, &chis);
             assert_ne!(hv_bad, hw, "wrong alpha should fail (alpha={alpha})");
         }
+    }
+
+    #[test]
+    fn spcot_batched_consistency_check() {
+        const N: usize = 8;
+        const M: usize = 4;
+        let mut rng = TestRng(0x4444_5555);
+        let delta = sample_block(&mut rng);
+        let (extra_q, extra_r, extra_t) = sample_extra_cots(&mut rng, &delta);
+        // m SPCOT executions, each with its own puncture.
+        let alphas: Vec<usize> = (0..M).map(|_| (rng.next_u32() as usize) % N).collect();
+        let mut vs = Vec::with_capacity(M);
+        let mut ws = Vec::with_capacity(M);
+        for &a in &alphas {
+            let (v, w) = spcot_in_process(&mut rng, &delta, N, a);
+            vs.push(v);
+            ws.push(w);
+        }
+        let lens = [N; M];
+        let chis = spcot_batched_fs_chis(&lens, b"batched");
+        let x_star_prime = spcot_batched_masked_choice(&alphas, &extra_r, &chis);
+        let v_refs: Vec<&[Block]> = vs.iter().map(|v| &v[..]).collect();
+        let w_refs: Vec<&[Block]> = ws.iter().map(|w| &w[..]).collect();
+        let hv = spcot_batched_sender_hash_v(&delta, &v_refs, &extra_q, &x_star_prime, &chis);
+        let hw = spcot_batched_receiver_hash_w(&w_refs, &extra_t, &chis);
+        assert_eq!(hv, hw, "honest batched check passes");
+        // A receiver cheating on one execution's w breaks the batched check.
+        let mut bad_ws = ws.clone();
+        bad_ws[1][alphas[1]][0] ^= 1;
+        let bad_refs: Vec<&[Block]> = bad_ws.iter().map(|w| &w[..]).collect();
+        let hw_bad = spcot_batched_receiver_hash_w(&bad_refs, &extra_t, &chis);
+        assert_ne!(hv, hw_bad, "cheating receiver caught by batched check");
     }
 
     #[test]

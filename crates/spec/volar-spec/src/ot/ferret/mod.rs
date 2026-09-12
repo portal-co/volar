@@ -28,4 +28,9 @@ pub use params::{
     FERRET_UNI_SETUP, FERRET_UNI_TOY,
 };
 pub use pool::{bea95_chosen_bit, refill, take_random, CotPoolReceiver, CotPoolSender};
-pub use spcot::{spcot_receiver_extend, spcot_sender_extend, Block, KAPPA_BITS, KAPPA_BYTES};
+pub use spcot::{
+    spcot_batched_fs_chis, spcot_batched_masked_choice, spcot_batched_receiver_hash_w,
+    spcot_batched_sender_hash_v, spcot_consistency_check, spcot_fs_chis, spcot_masked_choice,
+    spcot_receiver_extend, spcot_receiver_hash_w, spcot_sender_extend, spcot_sender_hash_v, Block,
+    KAPPA_BITS, KAPPA_BYTES,
+};
