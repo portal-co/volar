@@ -73,6 +73,7 @@ pub mod embedder;
 pub mod aes_extern;
 pub mod aes_gadget;
 pub mod sha_gadget;
+pub mod x25519_gadget;
 pub mod faest_owf;
 pub mod oram_2pc;
 pub mod oram_gadget;
