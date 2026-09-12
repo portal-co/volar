@@ -17,7 +17,7 @@ seams it consumes.
 | Fig. 6 ΠSPCOT steps 2–5 (GGM + puncture) | `ot/ferret/spcot.rs` (`spcot_sender_extend`, `spcot_receiver_extend`, `spcot_choice_bits`) | Semi-honest single-point COT: `w[i]⊕v[i] = 0` off `α`, `= Δ` at `α`. `G` is `AesCtrLengthDoubler`. |
 | Fig. 6 steps 6–9 / §4.2 Fiat–Shamir check | `spcot_consistency_check`, `spcot_fs_chis`, `spcot_masked_choice`, `spcot_sender_hash_v`, `spcot_receiver_hash_w` | **Wired (M5).** Extra-COT masked consistency check: `V = ∑χ_i·v[i] + Y`, `W = ∑χ_i·w[i] + Z`, `Y = Z ⊕ Δ·ϕ` for honest. Two-party split (`sender_hash_v`/`receiver_hash_w`/`masked_choice`). |
 | Appendix C batched consistency check | `spcot_batched_fs_chis`, `spcot_batched_masked_choice`, `spcot_batched_sender_hash_v`, `spcot_batched_receiver_hash_w` | One masking over m SPCOTs (`ϕ = ∑_l χ_{α_l}^l`). For the malicious-secure MPCOT (§5). |
-| §5 regular-indices MPCOT | `ot/ferret/mpcot_reg.rs` | `t` SPCOT calls on intervals of length `n/t` (power of two). |
+| §5 regular-indices MPCOT | `ot/ferret/mpcot_reg.rs` | `t` SPCOT calls on intervals of length `n/t` (power of two). Batched consistency check wired: `mpcot_reg_consistency_check`. |
 | Fig. 7 ΠMPCOT Cuckoo | `ot/ferret/mpcot_uni.rs` | `m = ⌈1.5 t⌉`, `τ = 3`, extra dummy cell, SHA3 stand-in for AES-128 `h_i`. |
 | §6.2 10-local primal LPN / RO matrix `A` | `ot/ferret/lpn.rs` | Columns have weight 10 from a public seed; `A` is never sent. |
 | Fig. 9 ΠCOT + §6.2 keep-`M` bootstrap | `ot/ferret/cot.rs`, `pool.rs` | Consume `M = k + t log(n/t)` seed COTs, emit `n − M`, keep first `M`. |

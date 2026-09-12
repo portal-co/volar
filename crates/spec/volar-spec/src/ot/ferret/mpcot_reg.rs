@@ -10,7 +10,9 @@
 use alloc::vec::Vec;
 
 use super::spcot::{
-    spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend, Block, SpcotSenderMsg,
+    spcot_batched_fs_chis, spcot_batched_masked_choice, spcot_batched_receiver_hash_w,
+    spcot_batched_sender_hash_v, spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend,
+    Block, SpcotSenderMsg, KAPPA_BITS,
 };
 use crate::SpecRng;
 
@@ -86,6 +88,38 @@ pub fn sample_regular_noise<R: SpecRng>(rng: &mut R, n: usize, t: usize) -> Vec<
     (0..t)
         .map(|_| (rng.next_u32() as usize) % splen)
         .collect()
+}
+
+/// Malicious-security batched consistency check over the `t` SPCOT executions
+/// that make up one regular MPCOT (Ferret Appendix C). `s` is the sender's
+/// concatenated MPCOT output, `r` the receiver's, `alphas` the receiver's
+/// punctures, and `extra_q`/`extra_r`/`extra_t` are κ consistent extra COTs
+/// (`t_i = q_i ⊕ r_i·Δ`). Returns `true` iff the receiver accepts.
+pub fn mpcot_reg_consistency_check(
+    delta: &Block,
+    s: &[Block],
+    r: &[Block],
+    alphas: &[usize],
+    extra_q: &[Block],
+    extra_r: &[bool],
+    extra_t: &[Block],
+    transcript: &[u8],
+) -> bool {
+    let t = alphas.len();
+    debug_assert_eq!(s.len(), r.len());
+    debug_assert_eq!(s.len() % t, 0);
+    debug_assert_eq!(extra_q.len(), KAPPA_BITS);
+    debug_assert_eq!(extra_r.len(), KAPPA_BITS);
+    debug_assert_eq!(extra_t.len(), KAPPA_BITS);
+    let splen = s.len() / t;
+    let lens = alloc::vec![splen; t];
+    let chis = spcot_batched_fs_chis(&lens, transcript);
+    let x_star_prime = spcot_batched_masked_choice(alphas, extra_r, &chis);
+    let vs: Vec<&[Block]> = (0..t).map(|l| &s[l * splen..(l + 1) * splen]).collect();
+    let ws: Vec<&[Block]> = (0..t).map(|l| &r[l * splen..(l + 1) * splen]).collect();
+    let hv = spcot_batched_sender_hash_v(delta, &vs, extra_q, &x_star_prime, &chis);
+    let hw = spcot_batched_receiver_hash_w(&ws, extra_t, &chis);
+    hv == hw
 }
 
 #[cfg(test)]
@@ -169,5 +203,60 @@ mod tests {
                 assert_eq!(xor_block(&s[idx], &r[idx]), expect, "i={i} j={j}");
             }
         }
+    }
+
+    #[test]
+    fn mpcot_reg_batched_consistency_check() {
+        let mut rng = TestRng(0x3333);
+        let n = 32;
+        let t = 4;
+        let splen: usize = n / t;
+        let h = splen.trailing_zeros() as usize;
+        let mut delta = [0u8; 16];
+        for b in &mut delta {
+            *b = rng.next_u32() as u8;
+        }
+        delta[0] |= 1;
+        // COTs for the SPCOT GGM + the κ extra COTs for the consistency check.
+        let mut cot_q = Vec::new();
+        let mut cot_r = Vec::new();
+        let mut cot_t = Vec::new();
+        for _ in 0..(t * h) {
+            let mut row = [0u8; 16];
+            for chunk in row.chunks_mut(4) {
+                chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
+            }
+            let bit = (rng.next_u32() & 1) == 1;
+            cot_q.push(row);
+            cot_r.push(bit);
+            cot_t.push(if bit { xor_block(&row, &delta) } else { row });
+        }
+        let mut eq = Vec::new();
+        let mut er = Vec::new();
+        let mut et = Vec::new();
+        for _ in 0..128 {
+            let mut row = [0u8; 16];
+            for chunk in row.chunks_mut(4) {
+                chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
+            }
+            let bit = (rng.next_u32() & 1) == 1;
+            eq.push(row);
+            er.push(bit);
+            et.push(if bit { xor_block(&row, &delta) } else { row });
+        }
+        let alphas = sample_regular_noise(&mut rng, n, t);
+        let choices = mpcot_reg_choice_bits(n, t, &alphas, &cot_r);
+        let (s, msg) = mpcot_reg_sender(&mut rng, &delta, n, t, &cot_q, &choices);
+        let r = mpcot_reg_receiver(n, t, &alphas, &cot_t, &msg);
+        // Honest MPCOT passes the batched consistency check.
+        assert!(mpcot_reg_consistency_check(
+            &delta, &s, &r, &alphas, &eq, &er, &et, b"mpcot"
+        ));
+        // A receiver whose w deviates in one SPCOT fails the batched check.
+        let mut bad_r = r.clone();
+        bad_r[splen + alphas[1]][0] ^= 1;
+        assert!(!mpcot_reg_consistency_check(
+            &delta, &s, &bad_r, &alphas, &eq, &er, &et, b"mpcot"
+        ));
     }
 }
