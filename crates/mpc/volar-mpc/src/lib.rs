@@ -63,6 +63,7 @@ pub mod cut_and_choose;
 pub mod ot;
 #[cfg(feature = "mlkem")]
 pub mod ot_mlkem;
+pub mod strict;
 #[cfg(feature = "std")]
 pub mod tcp;
 
@@ -498,6 +499,21 @@ fn garble_wire_bases<N: VoleArray<u8>, D: Digest>(
     secret: &GlobalSecret<N>,
     input_labels: &[Garble<N>],
 ) -> Result<(Vec<Garble<N>>, Vec<GarbleTable<N>>), MpcError> {
+    garble_wire_bases_pol::<N, D>(schedule, secret, input_labels, None)
+}
+
+/// The shared garble walk, optionally polarity-aware: `and_input_polarity`
+/// (one `(pa, pb)` per AND gate, in gate order, as produced by
+/// [`crate::strict::eliminate_nots`]) folds the logical input flip of each AND
+/// gate into its garbled table, so a Not-free schedule evaluates identically
+/// without the evaluator ever holding the free-XOR delta. `None` is the plain
+/// walk used by the legacy session path.
+fn garble_wire_bases_pol<N: VoleArray<u8>, D: Digest>(
+    schedule: &GateSchedule,
+    secret: &GlobalSecret<N>,
+    input_labels: &[Garble<N>],
+    and_input_polarity: Option<&[(bool, bool)]>,
+) -> Result<(Vec<Garble<N>>, Vec<GarbleTable<N>>), MpcError> {
     if schedule.num_inputs != input_labels.len() {
         return Err(MpcError::MalformedSchedule);
     }
@@ -543,7 +559,13 @@ fn garble_wire_bases<N: VoleArray<u8>, D: Digest>(
                 let (x, y) = (wires.get(a), wires.get(b));
                 match (x, y) {
                     (Some(x), Some(y)) => {
-                        tables.push(secret.gen_and_table::<D>(x, y));
+                        let (pa, pb) = match and_input_polarity {
+                            Some(pols) => *pols
+                                .get(tables.len())
+                                .ok_or(MpcError::MalformedSchedule)?,
+                            None => (false, false),
+                        };
+                        tables.push(secret.gen_and_table_pol::<D>(x, y, pa, pb));
                         x.and_result::<D>(y)
                     }
                     _ => return Err(MpcError::MalformedSchedule),
@@ -998,6 +1020,21 @@ pub enum SessionFrame {
     /// Evaluator → garbler: the recovered output bit, or an abort flag.
     /// (`true` = output bit 1 / abort for `Aborted`.)
     Verdict(Result<bool, ()>),
+    /// Garbler → evaluator: the evaluator-visible setup for the *strict*
+    /// session (`crate::strict`) — tables only. The free-XOR delta
+    /// (`one_wire`) and the output wire's false-label base are NOT sent: the
+    /// schedule is Not-free (see [`crate::strict::eliminate_nots`]), and the
+    /// output base stays garbler-private so the evaluator cannot forge the
+    /// true output label.
+    SetupStrict { tables: Vec<[Vec<u8>; 4]> },
+    /// Evaluator → garbler: the evaluator's output-wire labels, one per
+    /// schedule output (in `output_wires()` order). The garbler decodes them
+    /// against its private output bases — the verdict is server-authenticated,
+    /// not evaluator-claimed.
+    OutputLabels(Vec<Vec<u8>>),
+    /// Garbler → evaluator: the decoded output bits (the verdict the garbler
+    /// authenticated). Informational; the evaluator cannot forge it.
+    VerdictBits(Vec<bool>),
 }
 
 impl SessionFrame {
@@ -1038,6 +1075,27 @@ impl SessionFrame {
                     Ok(false) => 0,
                     Err(()) => 2,
                 });
+            }
+            SessionFrame::SetupStrict { tables } => {
+                out.push(4);
+                push_u32(&mut out, tables.len() as u32);
+                for t in tables {
+                    for row in t {
+                        push_bytes(&mut out, row);
+                    }
+                }
+            }
+            SessionFrame::OutputLabels(labels) => {
+                out.push(5);
+                push_u32(&mut out, labels.len() as u32);
+                for l in labels {
+                    push_bytes(&mut out, l);
+                }
+            }
+            SessionFrame::VerdictBits(bits) => {
+                out.push(6);
+                push_u32(&mut out, bits.len() as u32);
+                out.extend(bits.iter().map(|&b| b as u8));
             }
         }
         out
@@ -1081,6 +1139,34 @@ impl SessionFrame {
                     _ => Err(()),
                 };
                 Some(SessionFrame::Verdict(v))
+            }
+            4 => {
+                let nt = r.u32()? as usize;
+                let mut tables = Vec::with_capacity(nt);
+                for _ in 0..nt {
+                    let mut rows: [Vec<u8>; 4] = Default::default();
+                    for row in rows.iter_mut() {
+                        *row = r.bytes()?;
+                    }
+                    tables.push(rows);
+                }
+                Some(SessionFrame::SetupStrict { tables })
+            }
+            5 => {
+                let n = r.u32()? as usize;
+                let mut labels = Vec::with_capacity(n);
+                for _ in 0..n {
+                    labels.push(r.bytes()?);
+                }
+                Some(SessionFrame::OutputLabels(labels))
+            }
+            6 => {
+                let n = r.u32()? as usize;
+                let mut bits = Vec::with_capacity(n);
+                for _ in 0..n {
+                    bits.push(r.u8()? != 0);
+                }
+                Some(SessionFrame::VerdictBits(bits))
             }
             _ => None,
         }

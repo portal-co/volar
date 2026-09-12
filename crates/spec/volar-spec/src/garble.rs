@@ -185,6 +185,22 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
     }
 
     pub fn gen_and_table<D: Digest>(&self, a: &Garble<N>, b: &Garble<N>) -> GarbleTable<N> {
+        self.gen_and_table_pol::<D>(a, b, false, false)
+    }
+
+    /// Polarity-aware AND table: the gate's logical inputs are `raw_a XOR pa`
+    /// and `raw_b XOR pb`. Used by the Not-eliminating session path
+    /// (`volar_mpc::eliminate_nots`): the evaluator evaluates on the raw
+    /// labels it holds, and the table decrypts to the logical result —
+    /// polarity is a compile-time flip folded into the garbling, so the
+    /// evaluator never needs the free-XOR delta to evaluate NOT gates.
+    pub fn gen_and_table_pol<D: Digest>(
+        &self,
+        a: &Garble<N>,
+        b: &Garble<N>,
+        pa: bool,
+        pb: bool,
+    ) -> GarbleTable<N> {
         // False-label of the result wire: H(a.base || b.base).
         // This is consistent with what the evaluator computes from the (0,0) label pair.
         let result_base = a.and_result::<D>(b);
@@ -197,8 +213,8 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
             // Row index = color bits of the evaluator's labels for this input combination.
             // The evaluator selects the same row during eval, so the entry cancels correctly.
             let row = ((ea.target[0] & 1) as usize) | (((eb.target[0] & 1) as usize) << 1);
-            // Result label for this combination: encode(result_wire, av AND bv).
-            let result_label = self.encode(&result_base, av & bv);
+            // Result label for this combination: encode(result_wire, logical AND).
+            let result_label = self.encode(&result_base, (av ^ pa) & (bv ^ pb));
             let mut d = D::new();
             d.update(&ea.target);
             d.update(&eb.target);
