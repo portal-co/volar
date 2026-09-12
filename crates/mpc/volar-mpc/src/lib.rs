@@ -64,6 +64,8 @@ pub mod cut_and_choose;
 pub mod ot;
 #[cfg(feature = "mlkem")]
 pub mod ot_mlkem;
+#[cfg(feature = "std")]
+pub mod net;
 pub mod strict;
 #[cfg(feature = "std")]
 pub mod tcp;
