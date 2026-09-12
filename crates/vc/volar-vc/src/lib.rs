@@ -74,6 +74,7 @@ pub mod aes_extern;
 pub mod aes_gadget;
 pub mod sha_gadget;
 pub mod tls13;
+pub mod tls13_2pc;
 pub mod x25519_gadget;
 pub mod faest_owf;
 pub mod oram_2pc;

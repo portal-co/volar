@@ -67,6 +67,7 @@ pub mod ot_mlkem;
 #[cfg(feature = "std")]
 pub mod net;
 pub mod strict;
+pub mod strict_chain;
 #[cfg(feature = "std")]
 pub mod tcp;
 

@@ -17,6 +17,7 @@ digest.workspace = true
 hybrid-array.workspace = true
 
 [dev-dependencies]
+volar-mpc = { workspace = true, features = ["std"] }
 volar-ir-common.workspace = true
 volar-side.workspace = true
 sha2 = { version = "0.11.0-rc.0", default-features = false }
