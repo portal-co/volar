@@ -743,6 +743,7 @@ pub fn run_evaluator_strict_actions<N, D, T: Transport>(
     transport: &mut T,
     ot: &mut dyn OtChannel<N>,
     host: &mut dyn StrictActionHost,
+    gram: &mut [&mut dyn crate::GramDrive<N>],
 ) -> Result<Vec<bool>, MpcError>
 where
     N: VoleArray<u8>,
@@ -750,6 +751,9 @@ where
 {
     if partition.len() != schedule.num_inputs {
         return Err(MpcError::BadPartition);
+    }
+    if gram.len() != schedule.storages.len() {
+        return Err(MpcError::MalformedSchedule);
     }
 
     let setup_frame = SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
@@ -826,8 +830,24 @@ where
                     _ => return Err(MpcError::MalformedSchedule),
                 }
             }
-            Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
-                return Err(MpcError::UnsupportedStorage);
+            Gate::StorageRead {
+                storage, cell, access,
+            } => {
+                let driver = gram.get_mut(storage).ok_or(MpcError::MalformedSchedule)?;
+                let base = crate::gram_data_base::<D, N>(access, 0);
+                driver.read(cell, access, &base)
+            }
+            Gate::StorageWrite {
+                storage,
+                cell,
+                src,
+                access,
+            } => {
+                let driver = gram.get_mut(storage).ok_or(MpcError::MalformedSchedule)?;
+                let value = wires.get(src).cloned().ok_or(MpcError::MalformedSchedule)?;
+                driver.write(cell, access, &value)?;
+                // Dummy-zero wire (matches BIrStmt::StorageWrite).
+                Eval::zero()
             }
             Gate::ActionBit { call, bit } => {
                 let call = call as usize;

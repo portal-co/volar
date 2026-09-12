@@ -156,6 +156,7 @@ fn run_case(inputs: [bool; 4]) -> ([bool; 2], Vec<String>) {
         &mut session,
         &mut ot,
         &mut host,
+        &mut [],
     )
     .expect("evaluator run");
 
