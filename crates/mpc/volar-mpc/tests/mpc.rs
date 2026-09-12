@@ -50,6 +50,9 @@ fn eval_concrete(schedule: &GateSchedule, inputs: &[bool]) -> bool {
             Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
                 panic!("concrete cross-check is boolean-only")
             }
+            Gate::ActionBit { .. } => {
+                panic!("concrete cross-check is boolean-only")
+            }
         };
         wires.push(out);
     }
@@ -75,6 +78,7 @@ fn four_input_schedule() -> GateSchedule {
         ],
         output: 8,
         outputs: None,
+            actions: Vec::new(),
         storages: alloc::vec![],
     }
 }

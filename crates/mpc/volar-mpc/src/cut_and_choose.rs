@@ -350,6 +350,7 @@ mod tests {
             ],
             output: 8,
             outputs: None,
+            actions: Vec::new(),
             storages: alloc::vec![],
         }
     }

@@ -172,7 +172,10 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
         }
     };
 
-    for stmt in &block.stmts {
+    let mut actions: Vec<volar_mpc::ActionSpec> = Vec::new();
+    // ActionCall handle var (raw id) -> index into `actions`.
+    let mut action_calls: alloc::collections::BTreeMap<u32, u32> = Default::default();
+    for (stmt_ord, stmt) in block.stmts.iter().enumerate() {
         let next_wire = num_inputs + gates.len();
         // Default: the wire this statement defines is not a known constant.
         let mut result_const: Option<bool> = None;
@@ -255,6 +258,46 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
                 });
                 stmt_wire.push(next_wire);
             }
+            BIrStmt::ActionCall {
+                name,
+                guard,
+                args,
+                fallback,
+                num_bits,
+            } => {
+                // The call handle is not a wire value (only `ActionBit`
+                // projects it); record the spec and poison the stmt's wire.
+                let wg = wire_of(*guard, &stmt_wire)?;
+                let wargs: Result<Vec<usize>, ScheduleError> =
+                    args.iter().map(|a| wire_of(*a, &stmt_wire)).collect();
+                let wfb: Result<Vec<usize>, ScheduleError> =
+                    fallback.iter().map(|f| wire_of(*f, &stmt_wire)).collect();
+                let wargs = wargs?;
+                let wfb = wfb?;
+                let idx = actions.len() as u32;
+                action_calls.insert((num_inputs + stmt_ord) as u32, idx);
+                actions.push(volar_mpc::ActionSpec {
+                    name: name.clone(),
+                    guard: wg,
+                    arg_wires: wargs,
+                    fallback_wires: wfb,
+                    num_bits: *num_bits,
+                    guard_polarity: false,
+                    arg_polarity: Vec::new(),
+                    fallback_polarity: Vec::new(),
+                });
+                stmt_wire.push(usize::MAX);
+            }
+            BIrStmt::ActionBit { call, bit } => {
+                let &idx = action_calls
+                    .get(&call.0)
+                    .ok_or(ScheduleError::DanglingWire)?;
+                gates.push(Gate::ActionBit {
+                    call: idx,
+                    bit: *bit as u32,
+                });
+                stmt_wire.push(next_wire);
+            }
             // Non-boolean statements cannot be scheduled into a pure GC.
             _ => return Err(ScheduleError::UnsupportedStmt),
         }
@@ -267,7 +310,9 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
         // schedule-internal and never looked up).
         wire_const.resize(num_inputs + gates.len(), None);
         let result_wire = *stmt_wire.last().expect("each stmt defines a wire");
-        wire_const[result_wire] = result_const;
+        if result_wire != usize::MAX {
+            wire_const[result_wire] = result_const;
+        }
     }
 
     // Resolve the Return arguments to wires now that `stmt_wire` is complete.
@@ -298,5 +343,6 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
         output,
         outputs: Some(outputs),
         storages,
+        actions,
     })
 }

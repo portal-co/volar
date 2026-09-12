@@ -51,6 +51,7 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use digest::Digest;
@@ -158,6 +159,12 @@ pub enum MpcError {
     /// run without a GRAM storage driver. Run the `*_with_gram` evaluator
     /// that drives an ORAM host instead.
     UnsupportedStorage,
+    /// The schedule contains action calls ([`Gate::ActionBit`]) but the
+    /// evaluator was run without an action host. Run
+    /// [`crate::strict::run_evaluator_strict_actions`] instead.
+    ActionRequiresHost,
+    /// An action host returned an error or a wrong-width result.
+    ActionHost,
 }
 
 /// The evaluator-side Garbled-RAM storage driver: one ORAM host per storage
@@ -252,6 +259,53 @@ pub enum Gate {
         /// ORAM access ordinal (1-based, matching the evaluator's counter).
         access: u64,
     },
+    /// Bit `bit` of the result of action call `call` (an index into
+    /// [`GateSchedule::actions`]).
+    ///
+    /// This is the schedule-level mirror of `BIrStmt::ActionBit`: the action
+    /// is an evaluator-hosted extern (e.g. a network socket op). The garbler
+    /// pins the result wire's false-label base deterministically
+    /// (`Garble::action_result_base` over the guard + arg bases) and emits no
+    /// table; the strict session
+    /// ([`crate::strict::run_evaluator_strict_actions`]) decodes the args via
+    /// a garbler round-trip, runs the host, and delivers each result bit by
+    /// 1-of-2 OT so the evaluator never holds the free-XOR delta.
+    ActionBit {
+        /// Which action call (indexes `GateSchedule::actions`).
+        call: u32,
+        /// Which result bit of the call.
+        bit: u32,
+    },
+}
+
+/// One action call carried by a schedule: the extern's name plus the wires
+/// holding its guard, arguments, and fallback bits (the value used for each
+/// output bit when `guard = 0` and the action is not invoked).
+///
+/// The schedule stores *wire indices*; the polarity flips
+/// (`strict::eliminate_nots` fills them) recover the logical values the
+/// garbler reports to the evaluator's host.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ActionSpec {
+    /// The extern's name (matched against the host's registry).
+    pub name: String,
+    /// Wire carrying the guard (1 = invoke, 0 = use the fallback bits).
+    pub guard: usize,
+    /// Argument wires, in order.
+    pub arg_wires: Vec<usize>,
+    /// Fallback wires (one per output bit).
+    pub fallback_wires: Vec<usize>,
+    /// Number of output bits.
+    pub num_bits: usize,
+    /// Polarity flip for the guard wire (set by `strict::eliminate_nots`).
+    #[doc(hidden)]
+    pub guard_polarity: bool,
+    /// Per-argument polarity flips (set by `strict::eliminate_nots`).
+    #[doc(hidden)]
+    pub arg_polarity: Vec<bool>,
+    /// Per-fallback polarity flips (set by `strict::eliminate_nots`).
+    #[doc(hidden)]
+    pub fallback_polarity: Vec<bool>,
 }
 
 /// The shape of one Garbled-RAM storage space carried by a schedule: enough
@@ -292,6 +346,12 @@ pub struct GateSchedule {
     /// evaluator must run with a GRAM storage driver (`*_with_gram`).
     #[doc(hidden)]
     pub storages: Vec<GramStorageSpec>,
+    /// The action (evaluator-hosted extern) calls this schedule makes,
+    /// indexed by the `call` field of [`Gate::ActionBit`]. Empty for a pure
+    /// boolean circuit (the common case); when non-empty the strict session
+    /// must run with an action host (`*_strict_actions`).
+    #[doc(hidden)]
+    pub actions: Vec<ActionSpec>,
 }
 
 impl GateSchedule {
@@ -355,6 +415,9 @@ fn eval_gate_wires<N: VoleArray<u8>, D: Digest>(
             Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
                 return Err(MpcError::UnsupportedStorage);
             }
+            // Actions need an evaluator-side host; the pure evaluator has
+            // none.
+            Gate::ActionBit { .. } => return Err(MpcError::ActionRequiresHost),
         };
         wires.push(out);
     }
@@ -476,6 +539,7 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
                     // Dummy-zero wire (matches BIrStmt::StorageWrite).
                     Eval::zero()
                 }
+                Gate::ActionBit { .. } => return Err(MpcError::ActionRequiresHost),
             };
             wires.push(out);
         }
@@ -594,6 +658,26 @@ fn garble_wire_bases_pol<N: VoleArray<u8>, D: Digest>(
                     .ok_or(MpcError::MalformedSchedule)?;
                 *slot = sb;
                 Garble::zero()
+            }
+            Gate::ActionBit { call, bit } => {
+                // Pin the result wire's false-label base deterministically
+                // (`Garble::action_result_base` over the guard + arg bases);
+                // the strict-actions session delivers the result bit by OT.
+                let spec = schedule
+                    .actions
+                    .get(call as usize)
+                    .ok_or(MpcError::MalformedSchedule)?;
+                let guard = wires
+                    .get(spec.guard)
+                    .cloned()
+                    .ok_or(MpcError::MalformedSchedule)?;
+                let arg_refs: Vec<&Garble<N>> = spec
+                    .arg_wires
+                    .iter()
+                    .map(|&a| wires.get(a))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or(MpcError::MalformedSchedule)?;
+                guard.action_result_base::<D>(&arg_refs, bit as usize)
             }
         };
         wires.push(out);
@@ -1035,6 +1119,27 @@ pub enum SessionFrame {
     /// Garbler → evaluator: the decoded output bits (the verdict the garbler
     /// authenticated). Informational; the evaluator cannot forge it.
     VerdictBits(Vec<bool>),
+    /// Evaluator → garbler (strict-actions session): the labels on one
+    /// action call's wires — `[guard, args..., fallback...]` — which the
+    /// garbler decodes by exact match against its private bases. The decoded
+    /// values are *public* by design (an action's arguments are e.g. TLS
+    /// ciphertext records, safe for both parties to see).
+    ActionArgs {
+        /// Which action call (indexes `GateSchedule::actions`).
+        call: u32,
+        /// The wire labels.
+        labels: Vec<Vec<u8>>,
+    },
+    /// Garbler → evaluator (strict-actions session): the decoded logical
+    /// bits for the action call's wires (guard, args, fallback — polarities
+    /// applied). The evaluator's host runs the action on the args when the
+    /// guard is 1.
+    ActionArgsClear {
+        /// Which action call.
+        call: u32,
+        /// The decoded logical bits.
+        bits: Vec<bool>,
+    },
 }
 
 impl SessionFrame {
@@ -1094,6 +1199,20 @@ impl SessionFrame {
             }
             SessionFrame::VerdictBits(bits) => {
                 out.push(6);
+                push_u32(&mut out, bits.len() as u32);
+                out.extend(bits.iter().map(|&b| b as u8));
+            }
+            SessionFrame::ActionArgs { call, labels } => {
+                out.push(7);
+                push_u32(&mut out, *call);
+                push_u32(&mut out, labels.len() as u32);
+                for l in labels {
+                    push_bytes(&mut out, l);
+                }
+            }
+            SessionFrame::ActionArgsClear { call, bits } => {
+                out.push(8);
+                push_u32(&mut out, *call);
                 push_u32(&mut out, bits.len() as u32);
                 out.extend(bits.iter().map(|&b| b as u8));
             }
@@ -1167,6 +1286,24 @@ impl SessionFrame {
                     bits.push(r.u8()? != 0);
                 }
                 Some(SessionFrame::VerdictBits(bits))
+            }
+            7 => {
+                let call = r.u32()?;
+                let n = r.u32()? as usize;
+                let mut labels = Vec::with_capacity(n);
+                for _ in 0..n {
+                    labels.push(r.bytes()?);
+                }
+                Some(SessionFrame::ActionArgs { call, labels })
+            }
+            8 => {
+                let call = r.u32()?;
+                let n = r.u32()? as usize;
+                let mut bits = Vec::with_capacity(n);
+                for _ in 0..n {
+                    bits.push(r.u8()? != 0);
+                }
+                Some(SessionFrame::ActionArgsClear { call, bits })
             }
             _ => None,
         }
