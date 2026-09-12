@@ -72,6 +72,7 @@ extern crate alloc;
 pub mod embedder;
 pub mod aes_extern;
 pub mod aes_gadget;
+pub mod faest_owf;
 pub mod oram_2pc;
 pub mod oram_gadget;
 pub mod oram_lower;
