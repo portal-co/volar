@@ -59,6 +59,7 @@ use volar_spec::garble::{Eval, EvalSetup, Garble, GarbleTable, GarbledCircuit, G
 use volar_spec::SpecRng as _;
 use volar_spec::vole::VoleArray;
 
+pub mod cut_and_choose;
 pub mod ot;
 #[cfg(feature = "mlkem")]
 pub mod ot_mlkem;
