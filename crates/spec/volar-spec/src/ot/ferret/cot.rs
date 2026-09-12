@@ -59,7 +59,7 @@ fn xor_block(a: &Block, b: &Block) -> Block {
     o
 }
 
-fn sample_seed<R: SpecRng>(rng: &mut R) -> [u8; 16] {
+pub fn sample_seed<R: SpecRng>(rng: &mut R) -> [u8; 16] {
     let mut s = [0u8; 16];
     for chunk in s.chunks_mut(4) {
         chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
