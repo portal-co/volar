@@ -505,3 +505,227 @@ pub fn build_fe_sub() -> BIrBlocks {
     let r = canonical(&mut b, &r);
     finish(b, params, r.to_vec())
 }
+
+// ------------------------------------------------------- scalar reference (test drivers)
+
+/// Scalar GF(2^255-19) reference, independent of the circuit, exposed
+/// doc-hidden for test drivers (the X25519 and TLS-composition tests).
+#[doc(hidden)]
+pub mod scalar_ref {
+    use alloc::vec;
+    use alloc::vec::Vec;
+    /// 256-bit little-endian limb value, kept < 2^256 between ops.
+    pub type Fp = [u64; 4];
+
+    pub const P: Fp = [
+        0xffffffffffffffed,
+        0xffffffffffffffff,
+        0xffffffffffffffff,
+        0x7fffffffffffffff,
+    ];
+
+    pub fn fp_from_bytes(b: &[u8; 32]) -> Fp {
+        let mut out = [0u64; 4];
+        for i in 0..4 {
+            out[i] = u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap());
+        }
+        // Mask bit 255 (the RFC 7748 u mask); the circuit does the same.
+        out[3] &= 0x7fffffffffffffff;
+        out
+    }
+
+    pub fn fp_to_bytes(a: &Fp) -> [u8; 32] {
+        let a = canon(*a);
+        let mut out = [0u8; 32];
+        for i in 0..4 {
+            out[i * 8..i * 8 + 8].copy_from_slice(&a[i].to_le_bytes());
+        }
+        out
+    }
+
+    pub fn ge(a: &Fp, b: &Fp) -> bool {
+        for i in (0..4).rev() {
+            if a[i] != b[i] {
+                return a[i] > b[i];
+            }
+        }
+        true
+    }
+
+    pub fn sub_raw(a: &Fp, b: &Fp) -> Fp {
+        let mut out = [0u64; 4];
+        let mut borrow = 0i128;
+        for i in 0..4 {
+            let t = a[i] as i128 - b[i] as i128 - borrow;
+            if t < 0 {
+                out[i] = (t + (1i128 << 64)) as u64;
+                borrow = 1;
+            } else {
+                out[i] = t as u64;
+                borrow = 0;
+            }
+        }
+        out
+    }
+
+    pub fn canon(mut a: Fp) -> Fp {
+        while ge(&a, &P) {
+            a = sub_raw(&a, &P);
+        }
+        a
+    }
+
+    /// Reduce a wider little-endian limb vector into the field.
+    pub fn reduce(mut v: Vec<u64>) -> Fp {
+        while v.len() > 4 {
+            let hi = v.split_off(4);
+            let mut carry = 0u128;
+            for i in 0..4 {
+                let h = if i < hi.len() { hi[i] } else { 0 };
+                // 2^256 = 38 (mod p)
+                let t = v[i] as u128 + h as u128 * 38 + carry;
+                v[i] = t as u64;
+                carry = t >> 64;
+            }
+            if carry > 0 {
+                v.push(carry as u64);
+            }
+        }
+        let mut out = [0u64; 4];
+        out.copy_from_slice(&v[..4]);
+        // Fold bit 255 (2^255 = 19) until clear; the +19 ripple can re-set it,
+        // so loop.
+        while out[3] >> 63 == 1 {
+            out[3] &= 0x7fffffffffffffff;
+            let mut carry = 19u128;
+            for limb in out.iter_mut() {
+                let t = *limb as u128 + carry;
+                *limb = t as u64;
+                carry = t >> 64;
+                if carry == 0 {
+                    break;
+                }
+            }
+        }
+        canon(out)
+    }
+
+    pub fn fp_add(a: &Fp, b: &Fp) -> Fp {
+        let mut v = vec![0u64; 5];
+        let mut c = 0u128;
+        for i in 0..4 {
+            let t = a[i] as u128 + b[i] as u128 + c;
+            v[i] = t as u64;
+            c = t >> 64;
+        }
+        v[4] = c as u64;
+        reduce(v)
+    }
+
+    pub fn fp_sub(a: &Fp, b: &Fp) -> Fp {
+        // Canonicalize first so a, b < p; then a - b (or a + p - b when a < b)
+        // fits 256 bits with no carry gymnastics.
+        let a = &canon(*a);
+        let b = &canon(*b);
+        if ge(a, b) {
+            reduce(sub_raw(a, b).to_vec())
+        } else {
+            // a + p - b; the raw add must NOT canonicalize (fp_add would
+            // reduce mod p and destroy the +p guard). a + p < 2^256, so no
+            // carry escapes.
+            let mut ap = [0u64; 4];
+            let mut c = 0u128;
+            for i in 0..4 {
+                let t = a[i] as u128 + P[i] as u128 + c;
+                ap[i] = t as u64;
+                c = t >> 64;
+            }
+            debug_assert_eq!(c, 0);
+            reduce(sub_raw(&ap, b).to_vec())
+        }
+    }
+
+    pub fn fp_mul(a: &Fp, b: &Fp) -> Fp {
+        let mut v = [0u64; 9];
+        for i in 0..4 {
+            let mut c = 0u128;
+            for j in 0..4 {
+                let t = a[i] as u128 * b[j] as u128 + v[i + j] as u128 + c;
+                v[i + j] = t as u64;
+                c = t >> 64;
+            }
+            let mut k = i + 4;
+            while c > 0 {
+                let t = v[k] as u128 + c;
+                v[k] = t as u64;
+                c = t >> 64;
+                k += 1;
+            }
+        }
+        reduce(v.to_vec())
+    }
+
+    pub fn fp_square(a: &Fp) -> Fp {
+        fp_mul(a, a)
+    }
+
+    pub fn fp_invert(z: &Fp) -> Fp {
+        // p - 2 = 2^255 - 21; MSB-first square-and-multiply (scalar side is
+        // fast; the circuit uses the short addition chain).
+        let mut e = [0u64; 4];
+        e.copy_from_slice(&P);
+        e = sub_raw(&e, &[2, 0, 0, 0]);
+        let mut r: Fp = [1, 0, 0, 0];
+        for i in (0..255).rev() {
+            r = fp_square(&r);
+            if (e[i / 64] >> (i % 64)) & 1 == 1 {
+                r = fp_mul(&r, z);
+            }
+        }
+        r
+    }
+
+    pub fn x25519_scalar(k_bytes: &[u8; 32], u_bytes: &[u8; 32]) -> [u8; 32] {
+        // Clamp the scalar.
+        let mut k = *k_bytes;
+        k[0] &= 248;
+        k[31] &= 127;
+        k[31] |= 64;
+        let x1 = fp_from_bytes(u_bytes);
+        let mut x2: Fp = [1, 0, 0, 0];
+        let mut z2: Fp = [0; 4];
+        let mut x3 = x1;
+        let mut z3: Fp = [1, 0, 0, 0];
+        let mut swap = 0u64;
+        let a24: Fp = [121665, 0, 0, 0];
+        for t in (0..255).rev() {
+            let kt = (k[t / 8] >> (t % 8)) & 1;
+            swap ^= kt as u64;
+            if swap == 1 {
+                core::mem::swap(&mut x2, &mut x3);
+                core::mem::swap(&mut z2, &mut z3);
+            }
+            swap = kt as u64;
+            let a = fp_add(&x2, &z2);
+            let aa = fp_square(&a);
+            let bb = fp_sub(&x2, &z2);
+            let bbb = fp_square(&bb);
+            let e = fp_sub(&aa, &bbb);
+            let c = fp_add(&x3, &z3);
+            let d = fp_sub(&x3, &z3);
+            let da = fp_mul(&d, &a);
+            let cb = fp_mul(&c, &bb);
+            x3 = fp_square(&fp_add(&da, &cb));
+            z3 = fp_mul(&x1, &fp_square(&fp_sub(&da, &cb)));
+            x2 = fp_mul(&aa, &bbb);
+            z2 = fp_mul(&e, &fp_add(&aa, &fp_mul(&a24, &e)));
+        }
+        if swap == 1 {
+            core::mem::swap(&mut x2, &mut x3);
+            core::mem::swap(&mut z2, &mut z3);
+        }
+        fp_to_bytes(&fp_mul(&x2, &fp_invert(&z2)))
+    }
+
+    // --- bit helpers ----------------------------------------------------------
+}
