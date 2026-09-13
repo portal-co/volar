@@ -23,7 +23,6 @@
 //! LOGICAL value under that base (free-XOR: L = raw_base XOR raw*delta =
 //! base' XOR (raw XOR pol)*delta).
 
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use digest::Digest;
@@ -172,7 +171,7 @@ pub trait ChainParty<N: VoleArray<u8>> {
 /// slots' false-label bases, and a fresh-base counter.
 pub struct ChainGarbler<N: VoleArray<u8>> {
     secret: GlobalSecret<N>,
-    held: BTreeMap<usize, Garble<N>>,
+    held: Vec<Option<Garble<N>>>,
     fresh: u64,
 }
 
@@ -181,7 +180,7 @@ impl<N: VoleArray<u8>> ChainGarbler<N> {
     pub fn new(secret: GlobalSecret<N>) -> Self {
         Self {
             secret,
-            held: BTreeMap::new(),
+            held: Vec::new(),
             fresh: 0,
         }
     }
@@ -189,7 +188,28 @@ impl<N: VoleArray<u8>> ChainGarbler<N> {
     /// Count of currently held labels. This exposes storage shape for
     /// instrumentation without exposing labels or their logical values.
     pub fn held_len(&self) -> usize {
+        self.held.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// Allocated slots, including unwritten holes; this is the peak-state
+    /// shape relevant to large jointly-secret ORAM/key material.
+    pub fn held_capacity(&self) -> usize {
         self.held.len()
+    }
+
+    fn held_get(&self, slot: usize) -> Result<Garble<N>, MpcError> {
+        self.held
+            .get(slot)
+            .and_then(Option::as_ref)
+            .cloned()
+            .ok_or(MpcError::MalformedSchedule)
+    }
+
+    fn held_set(&mut self, slot: usize, value: Garble<N>) {
+        if self.held.len() <= slot {
+            self.held.resize(slot + 1, None);
+        }
+        self.held[slot] = Some(value);
     }
 
     fn fresh_base<D: Digest>(&mut self) -> Garble<N> {
@@ -236,12 +256,7 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
                     bases.push(self.fresh_base::<D>());
                 }
                 ChainFeed::Eval => bases.push(self.fresh_base::<D>()),
-                ChainFeed::Held(slot) => bases.push(
-                    self.held
-                        .get(slot)
-                        .cloned()
-                        .ok_or(MpcError::MalformedSchedule)?,
-                ),
+                ChainFeed::Held(slot) => bases.push(self.held_get(*slot)?),
             }
         }
         if const_bits.len() != n_const || secret_bits.len() != n_garbler {
@@ -340,7 +355,7 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
                     } else {
                         raw.clone()
                     };
-                    self.held.insert(*slot, base);
+                    self.held_set(*slot, base);
                 }
             }
         }
@@ -352,21 +367,38 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
 /// The evaluator's chain driver: holds only the held slots' labels (never
 /// the delta).
 pub struct ChainEvaluator<N: VoleArray<u8>> {
-    held: BTreeMap<usize, Eval<N>>,
+    held: Vec<Option<Eval<N>>>,
 }
 
 impl<N: VoleArray<u8>> ChainEvaluator<N> {
     /// A new driver with an empty held registry.
     pub fn new() -> Self {
-        Self {
-            held: BTreeMap::new(),
-        }
+        Self { held: Vec::new() }
     }
 
-    /// Count of currently held labels. This exposes storage shape for
-    /// instrumentation without exposing labels or their logical values.
+    /// Number of initialized jointly-secret labels.
     pub fn held_len(&self) -> usize {
+        self.held.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// Allocated evaluator-label slots, including unwritten holes.
+    pub fn held_capacity(&self) -> usize {
         self.held.len()
+    }
+
+    fn held_get(&self, slot: usize) -> Result<Eval<N>, MpcError> {
+        self.held
+            .get(slot)
+            .and_then(Option::as_ref)
+            .cloned()
+            .ok_or(MpcError::MalformedSchedule)
+    }
+
+    fn held_set(&mut self, slot: usize, value: Eval<N>) {
+        if self.held.len() <= slot {
+            self.held.resize(slot + 1, None);
+        }
+        self.held[slot] = Some(value);
     }
 }
 
@@ -474,12 +506,7 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainEvaluator<N> {
                         target: ot.receive(b),
                     });
                 }
-                ChainFeed::Held(slot) => labels.push(
-                    self.held
-                        .get(slot)
-                        .cloned()
-                        .ok_or(MpcError::MalformedSchedule)?,
-                ),
+                ChainFeed::Held(slot) => labels.push(self.held_get(*slot)?),
             }
         }
 
@@ -496,7 +523,7 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainEvaluator<N> {
             match out {
                 ChainOut::Reveal => send_labels.push(arr_to_vec(&out_labels[o].target)),
                 ChainOut::Hold(slot) => {
-                    self.held.insert(*slot, out_labels[o].clone());
+                    self.held_set(*slot, out_labels[o].clone());
                 }
             }
         }
