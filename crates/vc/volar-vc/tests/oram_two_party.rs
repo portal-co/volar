@@ -145,8 +145,8 @@ fn run_2pc<const I: usize, const A: usize>(
     match embedder.invoke_schedule::<D>(&schedule, partition, &public, &garbler, &evaluator, ot) {
         VcOutcome::Value(bits) => {
             // Cross-check: the two-party result must equal concrete eval.
-            let concrete = volar_fuzz::interpreter::biir::eval_biir(circuit, inputs)
-                .expect("concrete eval");
+            let concrete =
+                volar_fuzz::interpreter::biir::eval_biir(circuit, inputs).expect("concrete eval");
             if bits != concrete {
                 let first = bits
                     .iter()
@@ -182,7 +182,12 @@ impl Splitmix {
 #[test]
 fn s2_two_party_symbolic_access() {
     let cfg = cfg();
-    let (ab, lb, db, eb) = (cfg.addr_bits(), cfg.leaf_bits(), cfg.data_bits, cfg.entry_bits());
+    let (ab, lb, db, eb) = (
+        cfg.addr_bits(),
+        cfg.leaf_bits(),
+        cfg.data_bits,
+        cfg.entry_bits(),
+    );
     let n_path = cfg.path_entries();
     let num_leaves = cfg.num_leaves() as u64;
     let begin = build_begin(&cfg);

@@ -10,9 +10,9 @@
 use alloc::vec::Vec;
 
 use super::spcot::{
-    spcot_batched_fs_chis, spcot_batched_masked_choice, spcot_batched_receiver_hash_w,
-    spcot_batched_sender_hash_v, spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend,
-    Block, SpcotSenderMsg, KAPPA_BITS,
+    Block, KAPPA_BITS, SpcotSenderMsg, spcot_batched_fs_chis, spcot_batched_masked_choice,
+    spcot_batched_receiver_hash_w, spcot_batched_sender_hash_v, spcot_choice_bits,
+    spcot_receiver_extend, spcot_sender_extend,
 };
 use crate::SpecRng;
 
@@ -85,9 +85,7 @@ pub fn mpcot_reg_choice_bits(n: usize, t: usize, alphas: &[usize], cot_r: &[bool
 /// Sample a regular weight-`t` noise vector: one uniform index per interval.
 pub fn sample_regular_noise<R: SpecRng>(rng: &mut R, n: usize, t: usize) -> Vec<usize> {
     let splen = n / t;
-    (0..t)
-        .map(|_| (rng.next_u32() as usize) % splen)
-        .collect()
+    (0..t).map(|_| (rng.next_u32() as usize) % splen).collect()
 }
 
 /// Malicious-security batched consistency check over the `t` SPCOT executions
@@ -125,8 +123,8 @@ pub fn mpcot_reg_consistency_check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ot::ferret::spcot::spcot_in_process;
     use crate::SpecRng;
+    use crate::ot::ferret::spcot::spcot_in_process;
 
     struct TestRng(u64);
     impl SpecRng for TestRng {

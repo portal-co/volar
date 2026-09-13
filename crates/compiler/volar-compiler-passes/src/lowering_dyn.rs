@@ -12,10 +12,24 @@ use alloc::string::String;
 use std::string::String;
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, collections::{BTreeMap, BTreeSet}, format, string::ToString, vec, vec::Vec};
+use std::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    format,
+    string::ToString,
+    vec,
+    vec::Vec,
+};
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, collections::{BTreeMap, BTreeSet}, format, string::ToString, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    format,
+    string::ToString,
+    vec,
+    vec::Vec,
+};
 
 /// Wrap a freshly-built expression kind with empty provenance/side — dyn
 /// lowering doesn't yet thread real per-value provenance through (see
@@ -245,15 +259,14 @@ impl LoweringContext {
         // Pick collision-free names before lowering.  Static `Foo<N>` lowers
         // to `FooDyn`, but some specs already use that name for a separate
         // dynamic representation.
-        let mut used_names: BTreeSet<String> = module
-            .structs
-            .iter()
-            .map(|s| s.kind.to_string())
-            .collect();
+        let mut used_names: BTreeSet<String> =
+            module.structs.iter().map(|s| s.kind.to_string()).collect();
         let mut lowered_struct_names = BTreeMap::new();
         for s in &module.structs {
             let source = s.kind.to_string();
-            let info = struct_info.get(&item_irpath(&s.module_path, &source)).unwrap();
+            let info = struct_info
+                .get(&item_irpath(&s.module_path, &source))
+                .unwrap();
             if info.length_witnesses.is_empty() && info.type_params.is_empty() {
                 continue;
             }

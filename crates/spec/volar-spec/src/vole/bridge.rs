@@ -202,10 +202,7 @@ where
 }
 
 /// Verifier mirror of [`vope_bitpack`]: `Σ bits[i] · pow2[i]` over `Q` shares.
-pub fn q_bitpack<const BITS: usize, N, T>(
-    bit_values: &[Q<N, T>; BITS],
-    pow2: &[T; BITS],
-) -> Q<N, T>
+pub fn q_bitpack<const BITS: usize, N, T>(bit_values: &[Q<N, T>; BITS], pow2: &[T; BITS]) -> Q<N, T>
 where
     N: ArraySize,
     T: Clone + Add<Output = T> + Mul<Output = T> + Default,

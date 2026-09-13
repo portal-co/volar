@@ -262,7 +262,10 @@ impl Builder {
     }
     /// Bitwise [`Builder::mux`] over equal-length words.
     fn mux_word(&mut self, c: u32, a: &[u32], b: &[u32]) -> Vec<u32> {
-        a.iter().zip(b).map(|(&ai, &bi)| self.mux(c, ai, bi)).collect()
+        a.iter()
+            .zip(b)
+            .map(|(&ai, &bi)| self.mux(c, ai, bi))
+            .collect()
     }
     /// `1` iff the LSB-first `bits` equal the constant `value`.
     fn eq_const(&mut self, bits: &[u32], value: u64) -> u32 {
@@ -313,7 +316,14 @@ impl Builder {
     /// for that node's slot, keeping the pad consistent across accesses.
     /// `zc`/`oc` are shared constant wires. AES keyed on the secret `tree_key`
     /// turns this public tweak into a pad the evaluator cannot reproduce.
-    fn slot_tweak(&mut self, path_leaf: &[u32], depth: usize, zslot: usize, zc: u32, oc: u32) -> Vec<u32> {
+    fn slot_tweak(
+        &mut self,
+        path_leaf: &[u32],
+        depth: usize,
+        zslot: usize,
+        zc: u32,
+        oc: u32,
+    ) -> Vec<u32> {
         let lb = path_leaf.len();
         let mut tw = Vec::with_capacity(128);
         for i in 0..16 {
@@ -371,7 +381,11 @@ impl Builder {
     fn inline_sub(&mut self, sub: &BIrBlocks, inputs: &[u32]) -> Vec<u32> {
         let block = &sub.blocks[0];
         assert_eq!(sub.blocks.len(), 1, "inline_sub: single-block circuit");
-        assert_eq!(block.params as usize, inputs.len(), "inline_sub: input arity");
+        assert_eq!(
+            block.params as usize,
+            inputs.len(),
+            "inline_sub: input arity"
+        );
         let mut remap: Vec<u32> = Vec::with_capacity(block.params as usize + block.stmts.len());
         remap.extend_from_slice(inputs);
         for stmt in &block.stmts {
@@ -388,7 +402,10 @@ impl Builder {
     }
     /// Bitwise-XOR a word with a pad (used for both decrypt and encrypt).
     fn xor_word(&mut self, a: &[u32], pad: &[u32]) -> Vec<u32> {
-        a.iter().zip(pad).map(|(&ai, &pi)| self.xor(ai, pi)).collect()
+        a.iter()
+            .zip(pad)
+            .map(|(&ai, &pi)| self.xor(ai, pi))
+            .collect()
     }
     fn finish(self, outputs: Vec<u32>) -> BIrBlocks {
         BIrBlocks {
@@ -442,7 +459,12 @@ pub fn slot_tweak_bytes(depth: usize, zslot: usize, prefix: u64) -> [u8; 16] {
 /// per-node `version` is mixed into the tweak at bits `32..32+version_bits`,
 /// matching the in-circuit `slot_tweak_versioned`. Used by the harness to
 /// pre-format and to track per-node versions.
-pub fn slot_tweak_versioned_bytes(depth: usize, prefix: u64, version: u64, version_bits: usize) -> [u8; 16] {
+pub fn slot_tweak_versioned_bytes(
+    depth: usize,
+    prefix: u64,
+    version: u64,
+    version_bits: usize,
+) -> [u8; 16] {
     let mut tw = slot_tweak_bytes(depth, 0, prefix);
     for j in 0..version_bits {
         if (version >> j) & 1 == 1 {
@@ -558,7 +580,11 @@ impl TreeCrypto {
                             data[i / 8] |= 1 << (i % 8);
                         }
                     }
-                    tree.buckets[idx].entries[zs] = OramEntry { addr: 0, leaf: 0, data };
+                    tree.buckets[idx].entries[zs] = OramEntry {
+                        addr: 0,
+                        leaf: 0,
+                        data,
+                    };
                 }
             }
         }
@@ -571,7 +597,10 @@ impl TreeCrypto {
         tree: &OramTree<Z, B>,
         leaf: u64,
     ) -> Vec<u64> {
-        tree.path_indices(leaf).iter().map(|&i| self.versions[i]).collect()
+        tree.path_indices(leaf)
+            .iter()
+            .map(|&i| self.versions[i])
+            .collect()
     }
 
     /// Bump the versions of the path-to-`leaf` nodes after a write to that path.
@@ -585,7 +614,10 @@ impl TreeCrypto {
 
     /// The tree key as circuit input bits (LSB-first per byte).
     pub fn key_bits(&self) -> Vec<bool> {
-        self.key.iter().flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1)).collect()
+        self.key
+            .iter()
+            .flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1))
+            .collect()
     }
 }
 

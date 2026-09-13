@@ -6,8 +6,8 @@
 //! test; a monolithic single-circuit ladder would be ~30GB of gates.
 
 use volar_vc::x25519_gadget::scalar_ref::{
-    canon, fp_add, fp_from_bytes, fp_invert, fp_mul, fp_square, fp_sub, fp_to_bytes, ge, x25519_scalar,
-    Fp, P,
+    Fp, P, canon, fp_add, fp_from_bytes, fp_invert, fp_mul, fp_square, fp_sub, fp_to_bytes, ge,
+    x25519_scalar,
 };
 use volar_vc::x25519_gadget::{
     build_fe_invert, build_fe_mul, build_fe_square, build_fe_sub, build_x25519_step,
@@ -16,12 +16,19 @@ use volar_vc::x25519_gadget::{
 // --- scalar GF(2^255-19) reference (independent of the circuit) ----------
 
 fn bits_of(bytes: &[u8]) -> Vec<bool> {
-    bytes.iter().flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1)).collect()
+    bytes
+        .iter()
+        .flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1))
+        .collect()
 }
 
 fn bytes_of(bits: &[bool]) -> Vec<u8> {
     bits.chunks(8)
-        .map(|c| c.iter().enumerate().fold(0u8, |a, (j, &b)| a|((b as u8) << j)))
+        .map(|c| {
+            c.iter()
+                .enumerate()
+                .fold(0u8, |a, (j, &b)| a | ((b as u8) << j))
+        })
         .collect()
 }
 
@@ -58,8 +65,18 @@ fn fe_mul_matches_scalar() {
         ([1, 0, 0, 0], [1, 0, 0, 0]),
         (P, [2, 0, 0, 0]), // p ≡ 0
         (
-            [0x0123456789abcdef, 0xfedcba9876543210, 0x0badf00d12345678, 0x5a5a5a5a5a5a5a5a],
-            [0xdeadbeefcafebabe, 0x123456789abcdef0, 0x0f0f0f0f0f0f0f0f, 0x3333333333333333],
+            [
+                0x0123456789abcdef,
+                0xfedcba9876543210,
+                0x0badf00d12345678,
+                0x5a5a5a5a5a5a5a5a,
+            ],
+            [
+                0xdeadbeefcafebabe,
+                0x123456789abcdef0,
+                0x0f0f0f0f0f0f0f0f,
+                0x3333333333333333,
+            ],
         ),
     ];
     for (a, b) in cases {
@@ -90,7 +107,12 @@ fn fe_sub_matches_scalar() {
 #[ignore = "heavyweight: ~60M-gate inversion circuit"]
 fn fe_invert_matches_scalar() {
     let c = build_fe_invert();
-    let z: Fp = [0x0123456789abcdef, 0xfedcba9876543210, 0x0badf00d12345678, 0x5a5a5a5a5a5a5a5a];
+    let z: Fp = [
+        0x0123456789abcdef,
+        0xfedcba9876543210,
+        0x0badf00d12345678,
+        0x5a5a5a5a5a5a5a5a,
+    ];
     let mut inputs = bits_of(&fp_to_bytes(&z));
     inputs.truncate(255);
     let out = eval(&c, &inputs);
@@ -218,12 +240,13 @@ fn x25519_step_matches_scalar_midstate() {
     let (cx2, cz2, cx3, cz3, cswap) = ladder_steps(&step, &u, &k, 3);
     let (sx2, sz2, sx3, sz3, sswap) = scalar_ladder_steps(&u, &k, 3);
     assert_eq!(cswap, sswap, "swap");
-    for (c, s, name) in [(cx2, sx2, "x2"), (cz2, sz2, "z2"), (cx3, sx3, "x3"), (cz3, sz3, "z3")] {
-        assert_eq!(
-            canon(c),
-            canon(s),
-            "{name} mismatch after 3 steps"
-        );
+    for (c, s, name) in [
+        (cx2, sx2, "x2"),
+        (cz2, sz2, "z2"),
+        (cx3, sx3, "x3"),
+        (cz3, sz3, "z3"),
+    ] {
+        assert_eq!(canon(c), canon(s), "{name} mismatch after 3 steps");
     }
 }
 

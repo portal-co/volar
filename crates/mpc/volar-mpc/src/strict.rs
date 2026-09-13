@@ -227,8 +227,7 @@ where
     N: VoleArray<u8>,
     D: Digest,
 {
-    garble_schedule_strict_dyn_full::<N, D>(elim, secret, input_labels)
-        .map(|full| full.exec)
+    garble_schedule_strict_dyn_full::<N, D>(elim, secret, input_labels).map(|full| full.exec)
 }
 
 /// [`garble_schedule_strict_dyn`] plus the full per-wire false-label bases —
@@ -414,8 +413,7 @@ where
                 return Err(MpcError::UnexpectedMessage);
             }
             let mut decode_one = |i: usize, wire: usize, pol: bool| -> Result<bool, MpcError> {
-                let label =
-                    vec_to_arr::<N>(&labels[i]).ok_or(MpcError::MalformedSchedule)?;
+                let label = vec_to_arr::<N>(&labels[i]).ok_or(MpcError::MalformedSchedule)?;
                 let base = full
                     .wire_bases
                     .get(wire)
@@ -716,10 +714,8 @@ where
     };
     let out_labels = DynGarbledExec::<N>::eval_labels_multi::<D>(&setup, schedule, &labels)?;
     transport.send(
-        &SessionFrame::OutputLabels(
-            out_labels.iter().map(|l| arr_to_vec(&l.target)).collect(),
-        )
-        .encode(),
+        &SessionFrame::OutputLabels(out_labels.iter().map(|l| arr_to_vec(&l.target)).collect())
+            .encode(),
     );
 
     // Await the garbler-authenticated verdict.
@@ -831,7 +827,9 @@ where
                 }
             }
             Gate::StorageRead {
-                storage, cell, access,
+                storage,
+                cell,
+                access,
             } => {
                 let driver = gram.get_mut(storage).ok_or(MpcError::MalformedSchedule)?;
                 let base = crate::gram_data_base::<D, N>(access, 0);
@@ -913,7 +911,9 @@ where
                     }
                     call_results[call] = Some(outs);
                 }
-                let outs = call_results[call].as_ref().ok_or(MpcError::MalformedSchedule)?;
+                let outs = call_results[call]
+                    .as_ref()
+                    .ok_or(MpcError::MalformedSchedule)?;
                 outs.get(bit as usize)
                     .cloned()
                     .ok_or(MpcError::MalformedSchedule)?
@@ -928,10 +928,8 @@ where
         .map(|&w| wires.get(w).cloned().ok_or(MpcError::MalformedSchedule))
         .collect::<Result<_, MpcError>>()?;
     transport.send(
-        &SessionFrame::OutputLabels(
-            out_labels.iter().map(|l| arr_to_vec(&l.target)).collect(),
-        )
-        .encode(),
+        &SessionFrame::OutputLabels(out_labels.iter().map(|l| arr_to_vec(&l.target)).collect())
+            .encode(),
     );
 
     // Await the garbler-authenticated verdict.

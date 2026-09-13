@@ -10,10 +10,10 @@ fn opt_preserves_semantics() {
         blocks: vec![BIrBlock {
             params: 2,
             stmts: vec![
-                node(BIrStmt::Xor(IRVarId(0), IRVarId(1))),   // rv2
-                node(BIrStmt::And(IRVarId(0), IRVarId(1))),   // rv3
-                node(BIrStmt::And(IRVarId(1), IRVarId(0))),   // rv4 (dup)
-                node(BIrStmt::Or(IRVarId(3), IRVarId(4))),    // rv5
+                node(BIrStmt::Xor(IRVarId(0), IRVarId(1))), // rv2
+                node(BIrStmt::And(IRVarId(0), IRVarId(1))), // rv3
+                node(BIrStmt::And(IRVarId(1), IRVarId(0))), // rv4 (dup)
+                node(BIrStmt::Or(IRVarId(3), IRVarId(4))),  // rv5
             ],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
@@ -22,7 +22,7 @@ fn opt_preserves_semantics() {
         }],
         pre_init: vec![],
     };
-    for inp in [[false,false],[false,true],[true,false],[true,true]] {
+    for inp in [[false, false], [false, true], [true, false], [true, true]] {
         let want = eval_biir(&c, &inp).unwrap();
         let mut cc = c.clone();
         volar_ir_opt::biir::fold_biir_blocks(&mut cc);
@@ -48,11 +48,18 @@ fn opt_preserves_fe_square_semantics() {
     inp.truncate(255);
     let want = eval_biir(&c, &inp).unwrap();
     let got_fc = eval_biir(&cc, &inp).unwrap();
-    assert_eq!(got_fc.len(), want.len(), "fold+cse changed output arity ({stmts_after_fold} stmts after fold, {stmts_after_cse} after cse)");
+    assert_eq!(
+        got_fc.len(),
+        want.len(),
+        "fold+cse changed output arity ({stmts_after_fold} stmts after fold, {stmts_after_cse} after cse)"
+    );
     assert_eq!(got_fc, want, "fold+cse changed fe_square semantics");
     let n_before_dce = cc.blocks[0].stmts.len();
     volar_ir_opt::biir::dce_biir_blocks(&mut cc);
     let n_after_dce = cc.blocks[0].stmts.len();
     let got_dce = eval_biir(&cc, &inp).unwrap();
-    assert_eq!(got_dce, want, "dce changed fe_square semantics ({n_before_dce} -> {n_after_dce} stmts)");
+    assert_eq!(
+        got_dce, want,
+        "dce changed fe_square semantics ({n_before_dce} -> {n_after_dce} stmts)"
+    );
 }

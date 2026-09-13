@@ -82,12 +82,19 @@ fn hex(s: &str) -> Vec<u8> {
 
 /// LSB-first-per-byte bit packing, matching the gadget's param layout.
 fn bits_of(bytes: &[u8]) -> Vec<bool> {
-    bytes.iter().flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1)).collect()
+    bytes
+        .iter()
+        .flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1))
+        .collect()
 }
 
 fn bytes_of(bits: &[bool]) -> Vec<u8> {
     bits.chunks(8)
-        .map(|c| c.iter().enumerate().fold(0u8, |a, (j, &b)| a | ((b as u8) << j)))
+        .map(|c| {
+            c.iter()
+                .enumerate()
+                .fold(0u8, |a, (j, &b)| a | ((b as u8) << j))
+        })
         .collect()
 }
 
@@ -128,13 +135,25 @@ fn gcm_gadget_matches_nist_and_scalar() {
     let c10 = build_aes128_gcm(0, 0);
     let (ct, tag) = circuit_gcm(&c10, &[0; 16], &[0; 12], &[], &[]);
     assert!(ct.is_empty());
-    assert_eq!(tag.to_vec(), hex("58e2fccefa7e3061367f1d57a4e7455a"), "circuit case 1");
+    assert_eq!(
+        tag.to_vec(),
+        hex("58e2fccefa7e3061367f1d57a4e7455a"),
+        "circuit case 1"
+    );
 
     // Geometry (0, 1): NIST case 2.
     let c01 = build_aes128_gcm(0, 1);
     let (ct, tag) = circuit_gcm(&c01, &[0; 16], &[0; 12], &[], &[0; 16]);
-    assert_eq!(ct, hex("0388dace60b6a392f328c2b971b2fe78"), "circuit case 2 ct");
-    assert_eq!(tag.to_vec(), hex("ab6e47d42cec13bdf53a67b21257bddf"), "circuit case 2 tag");
+    assert_eq!(
+        ct,
+        hex("0388dace60b6a392f328c2b971b2fe78"),
+        "circuit case 2 ct"
+    );
+    assert_eq!(
+        tag.to_vec(),
+        hex("ab6e47d42cec13bdf53a67b21257bddf"),
+        "circuit case 2 tag"
+    );
 
     // Multi-block + AAD: cross-check the circuit against the anchored scalar
     // reference on non-trivial inputs (including the classic feffe992 key).

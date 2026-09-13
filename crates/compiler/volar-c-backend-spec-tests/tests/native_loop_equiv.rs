@@ -174,11 +174,7 @@ fn equiv_vole_verifier() {
 #[test]
 fn equiv_tfhe() {
     check_component(
-        &[
-            "tfhe_not",
-            "tfhe_gate_bootstrapping_and",
-            "tfhe_cmux",
-        ],
+        &["tfhe_not", "tfhe_gate_bootstrapping_and", "tfhe_cmux"],
         "tfhe",
     );
 }

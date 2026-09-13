@@ -34,8 +34,8 @@ use volar_mpc::{
     GateSchedule, GramDrive, InputOwner, MpcError, OtChannel, evaluate_multi,
     evaluate_multi_with_gram, garble_schedule,
 };
-use volar_spec::vole::VoleArray;
 use volar_spec::garble::{Garble, GlobalSecret};
+use volar_spec::vole::VoleArray;
 
 use crate::schedule::ScheduleError;
 
@@ -134,7 +134,14 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> VcEmbedder<N, I, A> {
             Ok(s) => s,
             Err(e) => return e,
         };
-        self.invoke_schedule::<D>(&schedule, partition, public_bits, private_bits, blind_bits, ot)
+        self.invoke_schedule::<D>(
+            &schedule,
+            partition,
+            public_bits,
+            private_bits,
+            blind_bits,
+            ot,
+        )
     }
 
     /// `invoke` on a pre-compiled schedule (skips recompilation when the same

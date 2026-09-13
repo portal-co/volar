@@ -12,7 +12,7 @@ use hybrid_array::{Array, typenum::U16};
 use sha2::Sha256;
 use volar_mpc::ot::{LoopbackOt, RecordingOt};
 use volar_mpc::{
-    Gate, GateSchedule, GarbledExec, InputOwner, MpcError, OtChannel, evaluate, garble_schedule,
+    GarbledExec, Gate, GateSchedule, InputOwner, MpcError, OtChannel, evaluate, garble_schedule,
 };
 use volar_spec::garble::{Garble, GlobalSecret};
 
@@ -78,7 +78,7 @@ fn four_input_schedule() -> GateSchedule {
         ],
         output: 8,
         outputs: None,
-            actions: Vec::new(),
+        actions: Vec::new(),
         storages: alloc::vec![],
     }
 }
@@ -88,12 +88,7 @@ extern crate alloc;
 fn garble_four_input() -> GarbledExec<N, 4, 2> {
     let schedule = four_input_schedule();
     let secret = GlobalSecret::<N>::new(det_bytes(13));
-    let labels = [
-        det_label(7),
-        det_label(91),
-        det_label(33),
-        det_label(57),
-    ];
+    let labels = [det_label(7), det_label(91), det_label(33), det_label(57)];
     garble_schedule::<N, D, 4, 2>(&schedule, secret, labels).expect("garble")
 }
 
@@ -134,7 +129,11 @@ fn mpc_unit_half_gate_two_party() {
 #[test]
 fn mpc_all_partitions_match_concrete() {
     let exec = garble_four_input();
-    let owners = [InputOwner::Public, InputOwner::Garbler, InputOwner::Evaluator];
+    let owners = [
+        InputOwner::Public,
+        InputOwner::Garbler,
+        InputOwner::Evaluator,
+    ];
     let schedule = four_input_schedule();
     for combo in 0u32..81 {
         let mut partition = [InputOwner::Public; 4];
@@ -164,7 +163,11 @@ fn mpc_all_partitions_match_concrete() {
             let got =
                 evaluate::<N, D, 4, 2>(&exec, &partition, &public, &garbler, &evaluator, &mut ot)
                     .expect("honest evaluation should succeed");
-            assert_eq!(got, eval_concrete(&schedule, &b), "partition {partition:?} inputs {b:?}");
+            assert_eq!(
+                got,
+                eval_concrete(&schedule, &b),
+                "partition {partition:?} inputs {b:?}"
+            );
         }
     }
 }
@@ -196,10 +199,7 @@ fn mpc_mutual_privacy() {
         .expect("honest evaluation should succeed");
 
     // (a) Correct output.
-    let want = eval_concrete(
-        &four_input_schedule(),
-        &[true, true, true, false],
-    );
+    let want = eval_concrete(&four_input_schedule(), &[true, true, true, false]);
     assert_eq!(got, want);
 
     // (b) Structural privacy:
@@ -284,7 +284,10 @@ fn mpc_tamper_rejected() {
 
     // The corrupted table corrupts the output for this input (the first AND
     // feeds the output path), so the recovered bit differs from honest.
-    assert_ne!(tampered, honest, "tampered table must change the recovered output");
+    assert_ne!(
+        tampered, honest,
+        "tampered table must change the recovered output"
+    );
 }
 
 /// Decode failure surfaces as an error, not a wrong output: an output label
@@ -304,8 +307,8 @@ fn mpc_decode_failure_is_an_error() {
     let partition = [InputOwner::Evaluator; 4];
     let evaluator = [false, false, false, false];
     let mut ot = LoopbackOt::<N>::new();
-    let got = evaluate::<N, D, 4, 2>(&exec, &partition, &[], &[], &evaluator, &mut ot)
-        .expect("honest");
+    let got =
+        evaluate::<N, D, 4, 2>(&exec, &partition, &[], &[], &evaluator, &mut ot).expect("honest");
     assert_eq!(got, eval_concrete(schedule, &[false; 4]));
 
     // Sanity: the recovered output label opens to a valid color bit under the
@@ -341,8 +344,18 @@ fn mpc_frame_roundtrip() {
     let setup = SessionFrame::Setup {
         one_wire: alloc::vec![1, 2, 3, 4],
         tables: alloc::vec![
-            [alloc::vec![9], alloc::vec![8], alloc::vec![7], alloc::vec![6]],
-            [alloc::vec![0], alloc::vec![1], alloc::vec![2], alloc::vec![3]],
+            [
+                alloc::vec![9],
+                alloc::vec![8],
+                alloc::vec![7],
+                alloc::vec![6]
+            ],
+            [
+                alloc::vec![0],
+                alloc::vec![1],
+                alloc::vec![2],
+                alloc::vec![3]
+            ],
         ],
         output_label: alloc::vec![5, 6, 7],
     };
@@ -387,10 +400,9 @@ fn mpc_session_lockstep() {
         let public = [b[0]];
         let garbler = [b[1]];
         let evaluator = [b[2], b[3]];
-        let got = run_local::<N, D, 4, 2>(
-            &exec, &schedule, &partition, &public, &garbler, &evaluator,
-        )
-        .expect("honest lockstep run");
+        let got =
+            run_local::<N, D, 4, 2>(&exec, &schedule, &partition, &public, &garbler, &evaluator)
+                .expect("honest lockstep run");
         assert_eq!(got, eval_concrete(&schedule, &b), "inputs {b:?}");
     }
 }
@@ -399,7 +411,11 @@ fn mpc_session_lockstep() {
 #[test]
 fn mpc_session_lockstep_all_partitions() {
     let exec = garble_four_input();
-    let owners = [InputOwner::Public, InputOwner::Garbler, InputOwner::Evaluator];
+    let owners = [
+        InputOwner::Public,
+        InputOwner::Garbler,
+        InputOwner::Evaluator,
+    ];
     let schedule = four_input_schedule();
     for combo in 0u32..81 {
         let mut partition = [InputOwner::Public; 4];
@@ -429,7 +445,11 @@ fn mpc_session_lockstep_all_partitions() {
                 &exec, &schedule, &partition, &public, &garbler, &evaluator,
             )
             .expect("honest lockstep run");
-            assert_eq!(got, eval_concrete(&schedule, &b), "partition {partition:?} inputs {b:?}");
+            assert_eq!(
+                got,
+                eval_concrete(&schedule, &b),
+                "partition {partition:?} inputs {b:?}"
+            );
         }
     }
 }
@@ -440,13 +460,7 @@ fn mpc_session_lockstep_all_partitions() {
 #[test]
 fn mpc_input_owner_from_index_sets() {
     // 5 wires: 0,3 public; 1 garbler; 2,4 evaluator.
-    let owners = InputOwner::from_index_sets(
-        5,
-        &[0, 3],
-        &[1],
-        &[2, 4],
-    )
-    .expect("valid partition");
+    let owners = InputOwner::from_index_sets(5, &[0, 3], &[1], &[2, 4]).expect("valid partition");
     assert_eq!(
         owners,
         alloc::vec![
@@ -484,8 +498,7 @@ fn mpc_partition_bridge_end_to_end() {
     let exec = garble_four_input();
     let schedule = four_input_schedule();
     // Compiler-side partition: wire0 public, wire1 garbler, wires 2,3 evaluator.
-    let owners =
-        InputOwner::from_index_sets(4, &[0], &[1], &[2, 3]).expect("partition");
+    let owners = InputOwner::from_index_sets(4, &[0], &[1], &[2, 3]).expect("partition");
     for bits in 0u32..16 {
         let b = [
             (bits >> 0) & 1 == 1,
@@ -493,15 +506,9 @@ fn mpc_partition_bridge_end_to_end() {
             (bits >> 2) & 1 == 1,
             (bits >> 3) & 1 == 1,
         ];
-        let got = run_local::<N, D, 4, 2>(
-            &exec,
-            &schedule,
-            &owners,
-            &[b[0]],
-            &[b[1]],
-            &[b[2], b[3]],
-        )
-        .expect("honest run");
+        let got =
+            run_local::<N, D, 4, 2>(&exec, &schedule, &owners, &[b[0]], &[b[1]], &[b[2], b[3]])
+                .expect("honest run");
         assert_eq!(got, eval_concrete(&schedule, &b), "inputs {b:?}");
     }
 }

@@ -127,7 +127,9 @@ fn run_two_party(flight_tamper: bool, response_success: bool) -> SessionOut {
         let mut session = transport.try_clone().expect("clone");
         let mut rng = SeedRng::new(0xA11CE);
         let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
-        let mut chain = ChainGarbler::<N>::new(GlobalSecret::<N>::new(hybrid_array::Array::<u8, N>::from([0x77u8; 16])));
+        let mut chain = ChainGarbler::<N>::new(GlobalSecret::<N>::new(
+            hybrid_array::Array::<u8, N>::from([0x77u8; 16]),
+        ));
         let out = run_turnstile_tls_session::<N, D, _, _>(
             &mut chain,
             &g_script,
@@ -283,11 +285,17 @@ fn tls13_turnstile_two_party_correlated_honest() {
 #[test]
 fn tls13_turnstile_two_party_tampered_flight_rejected() {
     let out = run_two_party(true, true);
-    assert!(!out.verdict, "a tampered flight record must fail the verdict");
+    assert!(
+        !out.verdict,
+        "a tampered flight record must fail the verdict"
+    );
 }
 
 #[test]
 fn tls13_turnstile_two_party_failed_turnstile_rejected() {
     let out = run_two_party(false, false);
-    assert!(!out.verdict, "a success:false response must fail the verdict");
+    assert!(
+        !out.verdict,
+        "a success:false response must fail the verdict"
+    );
 }

@@ -11,8 +11,8 @@ use alloc::vec::Vec;
 
 use super::lpn::{encode_bits, encode_blocks};
 use super::mpcot_reg::{
-    mpcot_reg_choice_bits, mpcot_reg_consistency_check, mpcot_reg_receiver, mpcot_reg_sender,
-    sample_regular_noise, MpcotRegSenderMsg,
+    MpcotRegSenderMsg, mpcot_reg_choice_bits, mpcot_reg_consistency_check, mpcot_reg_receiver,
+    mpcot_reg_sender, sample_regular_noise,
 };
 use super::params::FerretParams;
 use super::spcot::{Block, KAPPA_BITS};
@@ -109,14 +109,7 @@ pub fn ferret_sender_mpcot<R: SpecRng>(
     choices: &[bool],
 ) -> (Vec<Block>, MpcotRegSenderMsg) {
     let cot_q = &sender_seed.q[params.k..];
-    mpcot_reg_sender(
-        rng,
-        &sender_seed.delta,
-        params.n,
-        params.t,
-        cot_q,
-        choices,
-    )
+    mpcot_reg_sender(rng, &sender_seed.delta, params.n, params.t, cot_q, choices)
 }
 
 /// Receiver MPCOT given the stored puncture indices.
@@ -333,14 +326,8 @@ pub fn ferret_extend_uni<R: SpecRng>(
     let cot_r = split_cot_chunks(&receiver_seed.u[k..], &heights);
     let choices = mpcot_uni_choice_bits(params, &hash_seed, &table, &cot_r);
     let cot_q = split_cot_chunks(&sender_seed.q[k..], &heights);
-    let (s, _s_bins, mpcot) = mpcot_uni_sender(
-        rng,
-        &sender_seed.delta,
-        params,
-        hash_seed,
-        &cot_q,
-        &choices,
-    );
+    let (s, _s_bins, mpcot) =
+        mpcot_uni_sender(rng, &sender_seed.delta, params, hash_seed, &cot_q, &choices);
     let cot_t = split_cot_chunks(&receiver_seed.w[k..], &heights);
     let (r, _r_bins) = mpcot_uni_receiver(params, &table, &cot_t, &mpcot);
 
@@ -394,8 +381,8 @@ pub fn ferret_extend_uni_malicious<R: SpecRng>(
 ) -> (FerretExtendOut, bool) {
     use super::mpcot_uni::{
         mpcot_uni_bucket_params, mpcot_uni_choice_bits, mpcot_uni_consistency_check,
-        mpcot_uni_receiver, mpcot_uni_sender, sample_uniform_points,
-        uni_seed_cot_count_malicious, uni_spcot_heights,
+        mpcot_uni_receiver, mpcot_uni_sender, sample_uniform_points, uni_seed_cot_count_malicious,
+        uni_spcot_heights,
     };
     use super::spcot::KAPPA_BITS;
 
@@ -423,14 +410,8 @@ pub fn ferret_extend_uni_malicious<R: SpecRng>(
     let cot_r = split_cot_chunks(&receiver_seed.u[k..extra_off], &heights);
     let choices = mpcot_uni_choice_bits(params, &hash_seed, &table, &cot_r);
     let cot_q = split_cot_chunks(&sender_seed.q[k..extra_off], &heights);
-    let (s, s_bins, mpcot) = mpcot_uni_sender(
-        rng,
-        &sender_seed.delta,
-        params,
-        hash_seed,
-        &cot_q,
-        &choices,
-    );
+    let (s, s_bins, mpcot) =
+        mpcot_uni_sender(rng, &sender_seed.delta, params, hash_seed, &cot_q, &choices);
     let cot_t = split_cot_chunks(&receiver_seed.w[k..extra_off], &heights);
     let (r, r_bins) = mpcot_uni_receiver(params, &table, &cot_t, &mpcot);
 
@@ -513,10 +494,7 @@ pub fn sample_seed_cots<R: SpecRng>(
         u.push(bit);
         w.push(t);
     }
-    (
-        FerretSenderSeed { delta, q },
-        FerretReceiverSeed { u, w },
-    )
+    (FerretSenderSeed { delta, q }, FerretReceiverSeed { u, w })
 }
 
 #[cfg(test)]

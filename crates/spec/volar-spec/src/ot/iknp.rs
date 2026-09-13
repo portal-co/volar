@@ -181,8 +181,7 @@ where
         chosen_seeds[i] = B::recv_finish(&r_state, &payload);
     }
 
-    let (t_cols, u_msg) =
-        iknp_receiver_u_cols::<D>(m, receiver_bits, &seeds_0, &seeds_1);
+    let (t_cols, u_msg) = iknp_receiver_u_cols::<D>(m, receiver_bits, &seeds_0, &seeds_1);
     let (sender_r0, corrections) = iknp_sender_from_u::<D, L>(
         m,
         delta_msg,

@@ -7,7 +7,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use super::cot::{
-    ferret_extend, ferret_extend_malicious, sample_seed_cots, FerretReceiverSeed, FerretSenderSeed,
+    FerretReceiverSeed, FerretSenderSeed, ferret_extend, ferret_extend_malicious, sample_seed_cots,
 };
 use super::params::FerretParams;
 use super::spcot::Block;
@@ -58,10 +58,7 @@ impl CotPoolReceiver {
 
 /// Allocate a pool from `m` ideal seed COTs (tests / one-time setup stand-in),
 /// semi-honest mode. See [`new_pool_malicious`] for the malicious-secure pool.
-pub fn new_pool<R: SpecRng>(
-    rng: &mut R,
-    params: FerretParams,
-) -> (CotPoolSender, CotPoolReceiver) {
+pub fn new_pool<R: SpecRng>(rng: &mut R, params: FerretParams) -> (CotPoolSender, CotPoolReceiver) {
     new_pool_mode(rng, params, false)
 }
 
@@ -156,17 +153,12 @@ fn ensure<R: SpecRng>(
     need: usize,
 ) -> bool {
     let watermark = sender.params.seed_cot_count(sender.malicious);
-    while sender.remaining() < need
-        || sender.remaining().saturating_sub(need) < watermark
-    {
+    while sender.remaining() < need || sender.remaining().saturating_sub(need) < watermark {
         let before = sender.remaining();
         if !refill(rng, sender, receiver) {
             return false;
         }
-        debug_assert!(
-            sender.remaining() > before,
-            "ΠCOT emitted no output COTs"
-        );
+        debug_assert!(sender.remaining() > before, "ΠCOT emitted no output COTs");
     }
     true
 }

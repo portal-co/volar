@@ -21,8 +21,8 @@ use volar_ir::boolar::BIrBlocks;
 use volar_mpc::strict_chain::{ChainFeed, ChainOut, ChainParty};
 use volar_mpc::tcp::{NetOtChannel, OtRole};
 use volar_mpc::{MpcError, Transport};
-use volar_spec::garble::GlobalSecret;
 use volar_spec::SpecRng;
+use volar_spec::garble::GlobalSecret;
 
 use crate::tls13_2pc::{
     TurnstileTlsOutcome, TurnstileTlsScript, TurnstileTlsSecrets, correlation_circuit,

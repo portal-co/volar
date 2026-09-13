@@ -16,7 +16,9 @@
 
 use volar_oram::{Bucket, OramEntry, OramTree, eviction_target};
 use volar_spec::faest::aes::encrypt_block;
-use volar_vc::oram_gadget::{OramGadgetConfig, build_access, build_begin, slot_tweak_versioned_bytes};
+use volar_vc::oram_gadget::{
+    OramGadgetConfig, build_access, build_begin, slot_tweak_versioned_bytes,
+};
 
 const Z: usize = 2;
 const B: usize = 1;
@@ -26,7 +28,9 @@ fn enc(value: u64, bits: usize) -> Vec<bool> {
     (0..bits).map(|j| (value >> j) & 1 == 1).collect()
 }
 fn dec(bits: &[bool]) -> u64 {
-    bits.iter().enumerate().fold(0u64, |a, (j, &b)| a | if b { 1u64 << j } else { 0 })
+    bits.iter()
+        .enumerate()
+        .fold(0u64, |a, (j, &b)| a | if b { 1u64 << j } else { 0 })
 }
 fn pack(bits: &[bool]) -> OramEntry<B> {
     let mut data = [0u8; B];
@@ -35,7 +39,11 @@ fn pack(bits: &[bool]) -> OramEntry<B> {
             data[i / 8] |= 1 << (i % 8);
         }
     }
-    OramEntry { addr: 0, leaf: 0, data }
+    OramEntry {
+        addr: 0,
+        leaf: 0,
+        data,
+    }
 }
 fn flatten_cipher_path(path: &[Bucket<Z, B>], eb: usize) -> Vec<bool> {
     let mut v = Vec::new();
@@ -86,13 +94,22 @@ fn s6_versioned_pads_replay_protection() {
         versioned_pads: true,
         version_bits: VB,
     };
-    let (eb, lb, ab, db) = (cfg.entry_bits(), cfg.leaf_bits(), cfg.addr_bits(), cfg.data_bits);
+    let (eb, lb, ab, db) = (
+        cfg.entry_bits(),
+        cfg.leaf_bits(),
+        cfg.addr_bits(),
+        cfg.data_bits,
+    );
     let n_path = cfg.path_entries();
     let num_leaves = cfg.num_leaves() as u64;
     let tree_key: [u8; 16] = [
-        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f,
+        0x3c,
     ];
-    let tk_bits: Vec<bool> = tree_key.iter().flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1)).collect();
+    let tk_bits: Vec<bool> = tree_key
+        .iter()
+        .flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1))
+        .collect();
 
     // Version-dependence sanity: a node's pad differs across versions.
     let p0 = encrypt_block(&tree_key, &slot_tweak_versioned_bytes(1, 0, 0, VB));
@@ -130,7 +147,8 @@ fn s6_versioned_pads_replay_protection() {
         let mut begin_in = posmap_bits.clone();
         begin_in.extend(enc(addr, ab));
         begin_in.extend(enc(new_leaf, lb));
-        let bout = volar_fuzz::interpreter::biir::eval_biir(&begin, &begin_in).expect("begin evals");
+        let bout =
+            volar_fuzz::interpreter::biir::eval_biir(&begin, &begin_in).expect("begin evals");
         let old_leaf = dec(&bout[..lb]);
         posmap_bits = bout[lb..].to_vec();
 
@@ -160,13 +178,23 @@ fn s6_versioned_pads_replay_protection() {
                 acc_in.extend(enc(versions[idxs[d]], VB));
             }
             assert_eq!(acc_in.len(), cfg.access_params());
-            let out = volar_fuzz::interpreter::biir::eval_biir(&access, &acc_in).expect("access evals");
+            let out =
+                volar_fuzz::interpreter::biir::eval_biir(&access, &acc_in).expect("access evals");
             assert!(!out[0], "step {step}: stash overflow");
             out
         };
 
         // Main access.
-        let out = run_access(&tree, &versions, old_leaf, w.is_some(), w.unwrap_or(0) as u64, new_leaf, false, &stash_bits);
+        let out = run_access(
+            &tree,
+            &versions,
+            old_leaf,
+            w.is_some(),
+            w.unwrap_or(0) as u64,
+            new_leaf,
+            false,
+            &stash_bits,
+        );
         let rdata = dec(&out[1..1 + db]) as u8;
         let new_path = unflatten_cipher_path(&out[1 + db..1 + db + n_path * eb], &cfg);
         stash_bits = out[1 + db + n_path * eb..].to_vec();

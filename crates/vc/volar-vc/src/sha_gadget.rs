@@ -253,11 +253,7 @@ fn pad_blocks<F: FnMut(&mut Builder, usize, usize) -> u32>(
                 let wire = if byte_idx < msg_bytes {
                     msg_wire(b, byte_idx, bit)
                 } else if byte_idx == msg_bytes {
-                    if bit == 7 {
-                        b.const1()
-                    } else {
-                        b.const0()
-                    }
+                    if bit == 7 { b.const1() } else { b.const0() }
                 } else if byte_idx >= blk * 64 + 56 && blk == n_blocks - 1 {
                     // 64-bit big-endian length at the final block's tail.
                     let len_byte = byte_idx - (blk * 64 + 56);
@@ -352,7 +348,12 @@ pub fn build_hmac_sha256(key_bytes: usize, msg_bytes: usize) -> BIrBlocks {
 /// Inputs: `salt_bytes*8 ++ ikm_bytes*8 ++ info_bytes*8` bits, in that
 /// order. Outputs: `out_bytes*8` bits (the OKM). The intermediate PRK stays
 /// internal (garbled) — it is never an output.
-pub fn build_hkdf_sha256(salt_bytes: usize, ikm_bytes: usize, info_bytes: usize, out_bytes: usize) -> BIrBlocks {
+pub fn build_hkdf_sha256(
+    salt_bytes: usize,
+    ikm_bytes: usize,
+    info_bytes: usize,
+    out_bytes: usize,
+) -> BIrBlocks {
     assert!(out_bytes <= 255 * 32 && out_bytes > 0);
     let n_t = out_bytes.div_ceil(32);
     let params = ((salt_bytes + ikm_bytes + info_bytes) * 8) as u32;

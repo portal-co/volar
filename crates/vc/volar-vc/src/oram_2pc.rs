@@ -26,11 +26,11 @@
 
 use alloc::vec::Vec;
 
+use digest::Digest;
 use hybrid_array::Array;
 use volar_mpc::ot::LoopbackOt;
 use volar_mpc::{DynGarbledExec, GateSchedule, OtChannel, garble_schedule_dyn};
 use volar_oram::{Bucket, OramEntry, OramTree, eviction_target};
-use digest::Digest;
 use volar_spec::garble::{Eval, Garble, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
@@ -126,8 +126,7 @@ fn run_circuit<N: VoleArray<u8>, D: Digest>(
             }
         })
         .collect();
-    let exec =
-        garble_schedule_dyn::<N, D>(schedule, secret.clone(), input_bases).expect("garbles");
+    let exec = garble_schedule_dyn::<N, D>(schedule, secret.clone(), input_bases).expect("garbles");
     let setup = exec.circuit.eval_setup();
     // Evaluator: threaded wires reuse the held label; fresh wires are encoded
     // (public/garbler) or OT-delivered (evaluator).
@@ -149,8 +148,8 @@ fn run_circuit<N: VoleArray<u8>, D: Digest>(
             Feed::Stash(o) => stash.labels[*o].clone(),
         })
         .collect();
-    let out_labels = DynGarbledExec::<N>::eval_labels_multi::<D>(&setup, schedule, &labels)
-        .expect("evals");
+    let out_labels =
+        DynGarbledExec::<N>::eval_labels_multi::<D>(&setup, schedule, &labels).expect("evals");
     (out_labels, exec.output_labels)
 }
 
@@ -275,21 +274,23 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
             Vec::new()
         };
         // Append the tree_key (garbler-secret) + per-node versions (public) feeds.
-        let mut push_crypto_feeds =
-            |feeds: &mut Vec<Feed>, crypto: &crate::oram_gadget::TreeCrypto, tree: &OramTree<Z, 1>, leaf: u64| {
-                if cfg.encrypted {
-                    for &b in &tree_key_bits {
-                        feeds.push(Feed::Garbler(b));
-                    }
-                    if cfg.versioned_pads {
-                        for v in crypto.path_versions(tree, leaf) {
-                            for bit in enc(v, cfg.version_bits) {
-                                feeds.push(Feed::Const(bit));
-                            }
+        let mut push_crypto_feeds = |feeds: &mut Vec<Feed>,
+                                     crypto: &crate::oram_gadget::TreeCrypto,
+                                     tree: &OramTree<Z, 1>,
+                                     leaf: u64| {
+            if cfg.encrypted {
+                for &b in &tree_key_bits {
+                    feeds.push(Feed::Garbler(b));
+                }
+                if cfg.versioned_pads {
+                    for v in crypto.path_versions(tree, leaf) {
+                        for bit in enc(v, cfg.version_bits) {
+                            feeds.push(Feed::Const(bit));
                         }
                     }
                 }
-            };
+            }
+        };
 
         // --- begin: posmap.update(addr, new_leaf) -> old_leaf, new_posmap ---
         let mut feeds: Vec<Feed> = (0..cfg.num_addrs * lb).map(Feed::Posmap).collect();
@@ -305,13 +306,11 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
             &feeds,
             ot,
         );
-        let old_leaf = dec(
-            &bl[..lb]
-                .iter()
-                .zip(&bb[..lb])
-                .map(|(l, b)| reveal(l, b))
-                .collect::<Vec<_>>(),
-        );
+        let old_leaf = dec(&bl[..lb]
+            .iter()
+            .zip(&bb[..lb])
+            .map(|(l, b)| reveal(l, b))
+            .collect::<Vec<_>>());
         self.posmap = HeldState {
             labels: bl[lb..].to_vec(),
             bases: bb[lb..].to_vec(),
@@ -414,11 +413,7 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
         tree: &mut OramTree<Z, 1>,
         ot: &mut LoopbackOt<N>,
     ) -> Vec<(Eval<N>, Garble<N>)> {
-        assert_eq!(
-            param_inputs.len(),
-            program.input_slots.len(),
-            "param count"
-        );
+        assert_eq!(param_inputs.len(), program.input_slots.len(), "param count");
         // Oram2pc is currently single-space (one ORAM of posmap/stash).
         assert!(
             program.spaces.len() <= 1,
@@ -532,7 +527,11 @@ fn unflatten_path<const Z: usize>(bits: &[bool], cfg: &OramGadgetConfig) -> Vec<
                             data[i / 8] |= 1 << (i % 8);
                         }
                     }
-                    OramEntry { addr: 0, leaf: 0, data }
+                    OramEntry {
+                        addr: 0,
+                        leaf: 0,
+                        data,
+                    }
                 }),
             })
             .collect();

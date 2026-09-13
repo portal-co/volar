@@ -79,12 +79,18 @@ fn lower_guest(vis: volar_vaffle_target::VcArg) -> Lowered {
     let param_sides = volar_vaffle_target::entry_param_sides(&target.module).expect("entry body");
     let (blocks, types) = volar_vaffle_target::lower_vaffle_to_ir_owned(target.module);
     let ir_circuit = volar_ir_passes::unroll_ir_everything(&blocks, &types).expect("unroll");
-    assert!(ir_circuit.is_circuit(), "straight-line guest unrolls to a circuit");
+    assert!(
+        ir_circuit.is_circuit(),
+        "straight-line guest unrolls to a circuit"
+    );
 
     let mut side_inputs = volar_ir_passes::lower_ir_to_boolar::SideInputs::default();
     side_inputs.param_sides.insert(0, param_sides.clone());
-    let boolar =
-        volar_ir_passes::lower_ir_to_boolar::lower_ir_to_boolar_with_sides(&ir_circuit, &types, &side_inputs);
+    let boolar = volar_ir_passes::lower_ir_to_boolar::lower_ir_to_boolar_with_sides(
+        &ir_circuit,
+        &types,
+        &side_inputs,
+    );
     Lowered {
         boolar,
         param_sides,
@@ -123,17 +129,10 @@ fn concrete_eval(l: &Lowered, x: u32) -> u32 {
 
 /// Build the input partition + per-owner bit strings for a 64-bit input whose
 /// low 32 bits are `x` (side-tagged) and high 32 bits are scaffold (public 0).
-fn build_inputs(
-    l: &Lowered,
-    x: u32,
-) -> (Vec<InputOwner>, Vec<bool>, Vec<bool>, Vec<bool>) {
-    let partition = volar_vc::partition_from_sides(
-        64,
-        l.public,
-        l.local,
-        l.remote,
-        |i| l.param_sides.get(i).copied().flatten(),
-    );
+fn build_inputs(l: &Lowered, x: u32) -> (Vec<InputOwner>, Vec<bool>, Vec<bool>, Vec<bool>) {
+    let partition = volar_vc::partition_from_sides(64, l.public, l.local, l.remote, |i| {
+        l.param_sides.get(i).copied().flatten()
+    });
     let mut inbits = [false; 64];
     for i in 0..32 {
         inbits[i] = (x >> i) & 1 == 1;
@@ -157,20 +156,33 @@ fn build_inputs(
 fn run_gram<const A: usize>(l: &Lowered, x: u32) -> u32 {
     let schedule = VcEmbedder::<N, 64, A>::compile(&l.boolar).expect("guest schedules");
     assert_eq!(schedule.num_inputs, 64);
-    assert_eq!(schedule.storages.len(), 1, "one GRAM storage space (the spill scaffold)");
+    assert_eq!(
+        schedule.storages.len(),
+        1,
+        "one GRAM storage space (the spill scaffold)"
+    );
     // Non-vacuous: the spill scaffold's storage ops really became GRAM gates
     // (the ORAM driver below is exercised, not bypassed).
     let n_storage = schedule
         .gates
         .iter()
-        .filter(|g| matches!(g, volar_mpc::Gate::StorageRead { .. } | volar_mpc::Gate::StorageWrite { .. }))
+        .filter(|g| {
+            matches!(
+                g,
+                volar_mpc::Gate::StorageRead { .. } | volar_mpc::Gate::StorageWrite { .. }
+            )
+        })
         .count();
-    assert!(n_storage > 0, "spill scaffold must produce GRAM storage gates");
+    assert!(
+        n_storage > 0,
+        "spill scaffold must produce GRAM storage gates"
+    );
     let spec = schedule.storages[0].clone();
 
     let secret = GlobalSecret::<N>::new(det_bytes(41));
-    let labels: [Garble<N>; 64] =
-        core::array::from_fn(|i| Garble { base: det_bytes((i as u8).wrapping_mul(7).wrapping_add(1)) });
+    let labels: [Garble<N>; 64] = core::array::from_fn(|i| Garble {
+        base: det_bytes((i as u8).wrapping_mul(7).wrapping_add(1)),
+    });
     let embedder: VcEmbedder<N, 64, A> = VcEmbedder::with_secret(secret.clone(), labels);
 
     let (partition, public, garbler, evaluator) = build_inputs(l, x);
@@ -183,13 +195,7 @@ fn run_gram<const A: usize>(l: &Lowered, x: u32) -> u32 {
     let mut ot = LoopbackOt::<N>::new();
 
     match embedder.invoke_schedule_with_gram::<D>(
-        &schedule,
-        &partition,
-        &public,
-        &garbler,
-        &evaluator,
-        &mut ot,
-        &mut gram,
+        &schedule, &partition, &public, &garbler, &evaluator, &mut ot, &mut gram,
     ) {
         VcOutcome::Value(bits) => {
             let mut word = 0u32;

@@ -58,7 +58,11 @@ fn oram_tree_memory_scaling() {
         println!(
             "128M blocks (OramTree): Z={z} B={b} -> {:.2} GiB (budget 8 GiB: {})",
             bytes as f64 / (1u64 << 30) as f64,
-            if bytes <= (8u64 << 30) as usize { "OK" } else { "OVER" }
+            if bytes <= (8u64 << 30) as usize {
+                "OK"
+            } else {
+                "OVER"
+            }
         );
     }
 
@@ -70,12 +74,19 @@ fn oram_tree_memory_scaling() {
         println!(
             "128M blocks (CompactOramTree): Z={z} B={b} -> {:.2} GiB (budget 8 GiB: {})",
             bytes as f64 / (1u64 << 30) as f64,
-            if bytes <= (8u64 << 30) as usize { "OK" } else { "OVER" }
+            if bytes <= (8u64 << 30) as usize {
+                "OK"
+            } else {
+                "OVER"
+            }
         );
     }
     // The compact tree meets the budget at Z=4, B=8: (2^28 - 1) * 4 * 8 = 8 GiB.
     let compact_bytes = ((1usize << 28) - 1) * 4 * 8;
-    assert!(compact_bytes <= (8u64 << 30) as usize, "compact tree must fit 8 GiB");
+    assert!(
+        compact_bytes <= (8u64 << 30) as usize,
+        "compact tree must fit 8 GiB"
+    );
 
     // Spot-check a real compact allocation at levels=20.
     let ct = CompactOramTree::<4, 8>::new(20);

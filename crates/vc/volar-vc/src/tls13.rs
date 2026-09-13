@@ -49,7 +49,11 @@ pub fn hkdf_label_prefix(out_len: u16, label: &[u8], ctx_len: usize) -> Vec<u8> 
 /// `[secret: 256 bits][msg: (prefix.len() + ctx_len + 1) bytes]`, where the
 /// driver feeds `prefix || context || [0x01]` as the msg segment. The
 /// output is the full 32-byte HMAC; the caller truncates to `out_len`.
-pub fn expand_label_circuit(out_len: u16, label: &[u8], ctx_len: usize) -> (BIrBlocks<()>, Vec<u8>) {
+pub fn expand_label_circuit(
+    out_len: u16,
+    label: &[u8],
+    ctx_len: usize,
+) -> (BIrBlocks<()>, Vec<u8>) {
     assert!(out_len as usize <= 32, "single-block HKDF-Expand only");
     let prefix = hkdf_label_prefix(out_len, label, ctx_len);
     let c = build_hmac_sha256(32, prefix.len() + ctx_len + 1);

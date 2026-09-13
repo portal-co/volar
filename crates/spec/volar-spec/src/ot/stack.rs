@@ -11,17 +11,17 @@ use alloc::vec::Vec;
 use digest::Digest;
 
 use super::base_ot::BaseOt;
-use super::ferret::pool::{
-    bea95_chosen_bit, new_pool, take_random, CotPoolReceiver, CotPoolSender,
-};
 use super::ferret::FerretParams;
+use super::ferret::pool::{
+    CotPoolReceiver, CotPoolSender, bea95_chosen_bit, new_pool, take_random,
+};
 use super::iknp::IKNP_KAPPA_BYTES;
-use super::lwe::{LweBaseOt, LweBaseOtSecure, LWE_N};
+use super::lwe::{LWE_N, LweBaseOt, LweBaseOtSecure};
 use super::softspoken::softspoken_cot_extend_base;
-use crate::field::Galois128;
-use crate::vole::setup::{vole_commit_bit_shares, CotSource};
-use crate::vole::{Q, Vope};
 use crate::SpecRng;
+use crate::field::Galois128;
+use crate::vole::setup::{CotSource, vole_commit_bit_shares};
+use crate::vole::{Q, Vope};
 use cipher::consts::U1;
 use hybrid_array::Array;
 
@@ -56,7 +56,12 @@ impl OtStack {
         Self::setup_impl::<D, R, LweBaseOtSecure<LWE_N>>(rng_s, rng_r, params, true)
     }
 
-    fn setup_impl<D, R, B>(rng_s: &mut R, rng_r: &mut R, params: FerretParams, malicious: bool) -> Self
+    fn setup_impl<D, R, B>(
+        rng_s: &mut R,
+        rng_r: &mut R,
+        params: FerretParams,
+        malicious: bool,
+    ) -> Self
     where
         D: Digest,
         R: SpecRng,
@@ -71,9 +76,7 @@ impl OtStack {
         for chunk in delta_msg.chunks_mut(4) {
             chunk.copy_from_slice(&rng_s.next_u32().to_le_bytes()[..chunk.len()]);
         }
-        let out = softspoken_cot_extend_base::<B, D, R, 16>(
-            rng_s, rng_r, &bits, &delta_msg,
-        );
+        let out = softspoken_cot_extend_base::<B, D, R, 16>(rng_s, rng_r, &bits, &delta_msg);
         debug_assert!(out.check());
 
         // Map SoftSpoken C-OT rows into Ferret seed format.
@@ -142,8 +145,8 @@ impl CotSource<U1, Galois128> for OtStack {
         _sample_t: impl Fn(&mut R) -> Galois128,
         bit: bool,
     ) -> (Array<Galois128, U1>, Array<Galois128, U1>) {
-        let (r0s, xs, zs) =
-            take_random(rng, &mut self.sender, &mut self.receiver, 1).expect("semi-honest pool refill");
+        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, 1)
+            .expect("semi-honest pool refill");
         let (r0, z, _d) = bea95_chosen_bit(&self.sender.seed.delta, r0s[0], xs[0], zs[0], bit);
         let r0_t = Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(r0)));
         let v_t = Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(z)));
@@ -186,8 +189,11 @@ mod tests {
     fn malicious_seed_stack_commit_bits_match_delta() {
         let mut rng = TestRng(0xFEED);
         let mut rng_r = TestRng(0xBEEF);
-        let mut stack =
-            OtStack::setup_malicious::<sha3::Sha3_256, TestRng>(&mut rng, &mut rng_r, FERRET_REG_TOY);
+        let mut stack = OtStack::setup_malicious::<sha3::Sha3_256, TestRng>(
+            &mut rng,
+            &mut rng_r,
+            FERRET_REG_TOY,
+        );
         let bits = [true, false, true, true];
         let committed = stack.commit_bits(&mut rng, &bits);
         let delta = crate::vole::Delta {
@@ -214,13 +220,8 @@ mod tests {
         for (j, (vope, q)) in committed.iter().enumerate() {
             assert!(vope.clone() * delta.clone() == *q, "bit {j}");
         }
-        let (vope, q) = vole_commit_bit_from(
-            &mut stack,
-            &mut rng,
-            |_| Galois128(1),
-            bit_to_g128,
-            false,
-        );
+        let (vope, q) =
+            vole_commit_bit_from(&mut stack, &mut rng, |_| Galois128(1), bit_to_g128, false);
         assert!(vope * delta == q);
     }
 }

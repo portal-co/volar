@@ -5,8 +5,8 @@
 //! the core MPC-TLS record-layer mechanism (key shares + 2PC AEAD) that the
 //! rustls `CryptoProvider` seam (P4c-ii) will delegate to.
 
-use volar_ir::boolar::BIrBlocks;
 use hybrid_array::Array;
+use volar_ir::boolar::BIrBlocks;
 use volar_mpc::InputOwner;
 use volar_mpc::ot::LoopbackOt;
 use volar_spec::garble::{Garble, GlobalSecret};
@@ -30,12 +30,19 @@ fn det_label(seed: u8) -> Garble<N> {
 }
 
 fn bits_of(bytes: &[u8]) -> Vec<bool> {
-    bytes.iter().flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1)).collect()
+    bytes
+        .iter()
+        .flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1))
+        .collect()
 }
 
 fn bytes_of(bits: &[bool]) -> Vec<u8> {
     bits.chunks(8)
-        .map(|c| c.iter().enumerate().fold(0u8, |a, (j, &b)| a | ((b as u8) << j)))
+        .map(|c| {
+            c.iter()
+                .enumerate()
+                .fold(0u8, |a, (j, &b)| a | ((b as u8) << j))
+        })
         .collect()
 }
 
@@ -63,7 +70,9 @@ fn two_party_gcm(key: &[u8; 16], iv: &[u8; 12], pt: &[u8; 16]) -> ([u8; 16], [u8
         }
     }
     let mut ot = LoopbackOt::<N>::new();
-    let out = match embedder.invoke_schedule::<D>(&schedule, &partition, &public, &garbler, &evaluator, &mut ot) {
+    let out = match embedder.invoke_schedule::<D>(
+        &schedule, &partition, &public, &garbler, &evaluator, &mut ot,
+    ) {
         VcOutcome::Value(bits) => bits,
         other => panic!("two-party gcm aborted: {other:?}"),
     };
@@ -127,16 +136,38 @@ fn scalar_gcm_1block(key: &[u8; 16], iv: &[u8; 12], pt: &[u8; 16]) -> ([u8; 16],
 fn body() {
     // NIST case 2 through the two-party session.
     let (ct, tag) = two_party_gcm(&[0; 16], &[0; 12], &[0; 16]);
-    assert_eq!(ct.to_vec(), (0..16).map(|i| [3u8, 136, 218, 206, 96, 182, 163, 146, 243, 40, 194, 185, 113, 178, 254, 120][i]).collect::<Vec<_>>(), "2pc NIST case 2 ct");
-    assert_eq!(tag.to_vec(), vec![171, 110, 71, 212, 44, 236, 19, 189, 245, 58, 103, 178, 18, 87, 189, 223], "2pc NIST case 2 tag");
+    assert_eq!(
+        ct.to_vec(),
+        (0..16)
+            .map(|i| [
+                3u8, 136, 218, 206, 96, 182, 163, 146, 243, 40, 194, 185, 113, 178, 254, 120
+            ][i])
+            .collect::<Vec<_>>(),
+        "2pc NIST case 2 ct"
+    );
+    assert_eq!(
+        tag.to_vec(),
+        vec![
+            171, 110, 71, 212, 44, 236, 19, 189, 245, 58, 103, 178, 18, 87, 189, 223
+        ],
+        "2pc NIST case 2 tag"
+    );
 
     // Non-trivial key/plaintext: cross-check against the scalar reference.
     let mut key = [0u8; 16];
-    key.copy_from_slice(&[0xfe, 0xff, 0xe9, 0x92, 0x86, 0x65, 0x73, 0x1c, 0x6d, 0x6a, 0x8f, 0x94, 0x67, 0x30, 0x83, 0x08]);
+    key.copy_from_slice(&[
+        0xfe, 0xff, 0xe9, 0x92, 0x86, 0x65, 0x73, 0x1c, 0x6d, 0x6a, 0x8f, 0x94, 0x67, 0x30, 0x83,
+        0x08,
+    ]);
     let mut iv = [0u8; 12];
-    iv.copy_from_slice(&[0xca, 0xfe, 0xba, 0xbe, 0xfa, 0xce, 0xdb, 0xad, 0xde, 0xca, 0xf8, 0x88]);
+    iv.copy_from_slice(&[
+        0xca, 0xfe, 0xba, 0xbe, 0xfa, 0xce, 0xdb, 0xad, 0xde, 0xca, 0xf8, 0x88,
+    ]);
     let mut pt = [0u8; 16];
-    pt.copy_from_slice(&[0xd9, 0x31, 0x32, 0x25, 0xf8, 0x84, 0x06, 0xe5, 0xa5, 0x59, 0x09, 0xc5, 0xaf, 0xf5, 0x26, 0x9a]);
+    pt.copy_from_slice(&[
+        0xd9, 0x31, 0x32, 0x25, 0xf8, 0x84, 0x06, 0xe5, 0xa5, 0x59, 0x09, 0xc5, 0xaf, 0xf5, 0x26,
+        0x9a,
+    ]);
     let (ct2, tag2) = two_party_gcm(&key, &iv, &pt);
     let (ect2, etag2) = scalar_gcm_1block(&key, &iv, &pt);
     assert_eq!(ct2, ect2, "2pc vs scalar ct");

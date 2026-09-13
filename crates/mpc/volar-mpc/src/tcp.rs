@@ -153,10 +153,14 @@ impl<N: volar_spec::vole::VoleArray<u8>, T: Transport> crate::OtChannel<N> for N
     }
 
     fn receive(&mut self, bit: bool) -> hybrid_array::Array<u8, N> {
-        assert_eq!(self.role, OtRole::Receiver, "only the evaluator receives OTs");
+        assert_eq!(
+            self.role,
+            OtRole::Receiver,
+            "only the evaluator receives OTs"
+        );
         let s_msg = self.transport.recv();
-        let (receiver, r_msg) =
-            crate::ot::CoReceiver::<N>::setup_dyn(self.rng, &s_msg, bit).expect("OT receiver setup");
+        let (receiver, r_msg) = crate::ot::CoReceiver::<N>::setup_dyn(self.rng, &s_msg, bit)
+            .expect("OT receiver setup");
         self.transport.send(&r_msg);
         let frame = self.transport.recv();
         receiver.finish(&frame).expect("OT receiver finish")
@@ -213,7 +217,11 @@ impl<N: volar_spec::vole::VoleArray<u8>, T: Transport> crate::OtChannel<N>
     }
 
     fn receive(&mut self, bit: bool) -> hybrid_array::Array<u8, N> {
-        assert_eq!(self.role, OtRole::Receiver, "only the evaluator receives OTs");
+        assert_eq!(
+            self.role,
+            OtRole::Receiver,
+            "only the evaluator receives OTs"
+        );
         let (receiver, eks) = crate::ot_mlkem::MkReceiver::setup(self.rng, bit);
         self.transport.send(&eks);
         let frame = self.transport.recv();

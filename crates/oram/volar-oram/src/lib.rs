@@ -196,7 +196,9 @@ impl<const Z: usize, const B: usize> CompactOramTree<Z, B> {
             .map(|&idx| {
                 let base = idx * Z * B;
                 core::array::from_fn(|zs| {
-                    self.data[base + zs * B..base + (zs + 1) * B].try_into().unwrap()
+                    self.data[base + zs * B..base + (zs + 1) * B]
+                        .try_into()
+                        .unwrap()
                 })
             })
             .collect()
@@ -206,7 +208,11 @@ impl<const Z: usize, const B: usize> CompactOramTree<Z, B> {
     /// per level (root-to-leaf), so `path.len() == levels`.
     pub fn write_path(&mut self, leaf: u64, path: &[[[u8; B]; Z]]) {
         let indices = self.path_indices(leaf);
-        assert_eq!(path.len(), indices.len(), "bucket count must match path length");
+        assert_eq!(
+            path.len(),
+            indices.len(),
+            "bucket count must match path length"
+        );
         for (i, &idx) in indices.iter().enumerate() {
             let base = idx * Z * B;
             for zs in 0..Z {

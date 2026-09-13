@@ -13,9 +13,9 @@ use digest::Digest;
 use hybrid_array::{Array, sizes::U16};
 use sha3::Sha3_256;
 
+use crate::SpecRng;
 use crate::byte_gen::LengthDoubler;
 use crate::faest::prg::AesCtrLengthDoubler;
-use crate::SpecRng;
 
 /// `κ = 128` bits.
 pub const KAPPA_BITS: usize = 128;
@@ -513,7 +513,10 @@ mod tests {
     }
 
     /// Sample κ consistent extra COTs: `t_i = q_i ⊕ r_i·Δ`.
-    fn sample_extra_cots<R: SpecRng>(rng: &mut R, delta: &Block) -> (Vec<Block>, Vec<bool>, Vec<Block>) {
+    fn sample_extra_cots<R: SpecRng>(
+        rng: &mut R,
+        delta: &Block,
+    ) -> (Vec<Block>, Vec<bool>, Vec<Block>) {
         let mut q = Vec::with_capacity(KAPPA_BITS);
         let mut r = Vec::with_capacity(KAPPA_BITS);
         let mut t = Vec::with_capacity(KAPPA_BITS);

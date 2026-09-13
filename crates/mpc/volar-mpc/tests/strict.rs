@@ -55,11 +55,7 @@ fn eval_concrete_multi(schedule: &GateSchedule, inputs: &[bool]) -> Vec<bool> {
         };
         wires.push(out);
     }
-    schedule
-        .output_wires()
-        .iter()
-        .map(|&w| wires[w])
-        .collect()
+    schedule.output_wires().iter().map(|&w| wires[w]).collect()
 }
 
 /// A Not/One-heavy multi-output circuit:
@@ -88,7 +84,7 @@ fn notty_schedule() -> GateSchedule {
         ],
         output: 9,
         outputs: Some(alloc::vec![9, 10, 11, 4]),
-            actions: Vec::new(),
+        actions: Vec::new(),
         storages: alloc::vec![],
     }
 }
@@ -208,9 +204,14 @@ fn strict_session_tcp_honest() {
     let mut rng = SeedRng::new(0xB0B);
     let mut ot = NetOtChannel::new(transport, OtRole::Receiver, &mut rng);
     let evaluator_bits = [true, true]; // c, d
-    let eval_out =
-        run_evaluator_strict::<N, D, _>(&g_elim, &partition, &evaluator_bits, &mut session, &mut ot)
-            .expect("evaluator run");
+    let eval_out = run_evaluator_strict::<N, D, _>(
+        &g_elim,
+        &partition,
+        &evaluator_bits,
+        &mut session,
+        &mut ot,
+    )
+    .expect("evaluator run");
 
     let garb_out = garbler.join().expect("garbler join").expect("garbler run");
     assert_eq!(eval_out, want, "evaluator sees the authenticated verdict");

@@ -38,7 +38,11 @@ const LOOP_WAT: &str = r#"(module
         (br $l)))
     (local.get $acc)))"#;
 
-fn lower_loop_step() -> (volar_ir::ir::IRBlocks, volar_ir::ir::IRTypes, volar_ir::boolar::BIrBlocks) {
+fn lower_loop_step() -> (
+    volar_ir::ir::IRBlocks,
+    volar_ir::ir::IRTypes,
+    volar_ir::boolar::BIrBlocks,
+) {
     let bytes: &'static [u8] = Box::leak(wat::parse_str(LOOP_WAT).unwrap().into_boxed_slice());
     let module = portal_pc_waffle_frontend::from_wasm_bytes(
         bytes,
@@ -93,13 +97,21 @@ fn wat_loop_guest_lowers_multi_space() {
         .collect();
     spaces.sort();
     spaces.dedup();
-    assert!(spaces.len() > 1, "loop guest uses multiple storage spaces: {spaces:?}");
+    assert!(
+        spaces.len() > 1,
+        "loop guest uses multiple storage spaces: {spaces:?}"
+    );
     // Does the step circuit carry pre-initialized storage (e.g. the bytecode)?
     // The ORAM starts empty; if the interpreter pre-loads storage, the ORAM must
     // too, or reads of those cells diverge.
     println!("boolar pre_init segments: {}", boolar.pre_init.len());
     for seg in boolar.pre_init.iter().take(5) {
-        println!("  pre_init: storage {} ({} addr bits, {} data bits)", seg.storage.0, seg.addr.len(), seg.data.len());
+        println!(
+            "  pre_init: storage {} ({} addr bits, {} data bits)",
+            seg.storage.0,
+            seg.addr.len(),
+            seg.data.len()
+        );
     }
 
     // Multi-space lowering succeeds, one ORAM per space.
@@ -131,7 +143,11 @@ fn wat_loop_guest_lowers_multi_space() {
 fn wat_loop_guest_runs_multi_space_oram() {
     use volar_fuzz::interpreter::ir::{StorageMap, bit_width, eval_ir_circuit_step};
     let (step, types, boolar) = lower_loop_step();
-    let widths: Vec<usize> = step.blocks[0].params.iter().map(|&t| bit_width(t, &types)).collect();
+    let widths: Vec<usize> = step.blocks[0]
+        .params
+        .iter()
+        .map(|&t| bit_width(t, &types))
+        .collect();
     let nparams = widths.len();
 
     // The guest's working set is tiny (~68 cells), so a small XOR-folded window
@@ -159,11 +175,20 @@ fn wat_loop_guest_runs_multi_space_oram() {
     let mut result = None;
     for _step_i in 0..16 {
         let out = drive.run_program(&program, &inputs);
-        let ref_out =
-            eval_ir_circuit_step(&step.blocks[0], &types, &step.oracles, &ref_inputs, &mut ref_storage);
+        let ref_out = eval_ir_circuit_step(
+            &step.blocks[0],
+            &types,
+            &step.oracles,
+            &ref_inputs,
+            &mut ref_storage,
+        );
         assert_eq!(out[0], ref_out[0][0], "done flag matches");
         let ref_state: Vec<bool> = ref_out[1..1 + nparams].iter().flatten().copied().collect();
-        assert_eq!(&out[1..1 + n_state], ref_state.as_slice(), "next-state matches");
+        assert_eq!(
+            &out[1..1 + n_state],
+            ref_state.as_slice(),
+            "next-state matches"
+        );
         if out[0] {
             let ref_res: Vec<bool> = ref_out[1 + nparams..].iter().flatten().copied().collect();
             assert_eq!(&out[1 + n_state..], ref_res.as_slice(), "result matches");
@@ -175,6 +200,10 @@ fn wat_loop_guest_runs_multi_space_oram() {
     }
     let result = result.expect("the ORAM loop terminates");
     // f(0) = sum over an empty range = 0.
-    let word = result.iter().take(32).enumerate().fold(0u32, |a, (i, b)| if *b { a | (1 << i) } else { a });
+    let word = result
+        .iter()
+        .take(32)
+        .enumerate()
+        .fold(0u32, |a, (i, b)| if *b { a | (1 << i) } else { a });
     assert_eq!(word, 0, "f(0) = 0");
 }

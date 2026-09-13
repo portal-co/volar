@@ -57,7 +57,10 @@ fn expand_block<P: Clone>(block: &BIrBlock<P>, gadget_block: &BIrBlock) -> BIrBl
     let mut open: BTreeMap<Vec<u32>, (Vec<u32>, usize)> = BTreeMap::new();
 
     for node in &block.stmts {
-        if let BIrStmt::OracleBit { name, args, bit, .. } = &node.kind {
+        if let BIrStmt::OracleBit {
+            name, args, bit, ..
+        } = &node.kind
+        {
             if name == aes_extern::ORACLE_NAME {
                 let args: Vec<u32> = args.iter().map(|a| remap[a.0 as usize]).collect();
                 assert_eq!(
@@ -80,8 +83,13 @@ fn expand_block<P: Clone>(block: &BIrBlock<P>, gadget_block: &BIrBlock) -> BIrBl
                             *bit, 0,
                             "aes128_encrypt_block: first output bit of a call must be bit 0"
                         );
-                        let outputs =
-                            inline_gadget(&mut stmts, params, gadget_block, &args, node.prov.clone());
+                        let outputs = inline_gadget(
+                            &mut stmts,
+                            params,
+                            gadget_block,
+                            &args,
+                            node.prov.clone(),
+                        );
                         let out0 = outputs[0];
                         open.insert(args, (outputs, 1));
                         out0
@@ -202,7 +210,11 @@ fn remap_host_stmt(s: &BIrStmt, remap: &[u32]) -> BIrStmt {
         BIrStmt::Or(a, b) => BIrStmt::Or(r(a), r(b)),
         BIrStmt::Xor(a, b) => BIrStmt::Xor(r(a), r(b)),
         BIrStmt::Not(a) => BIrStmt::Not(r(a)),
-        BIrStmt::OracleCall { name, args, num_bits } => BIrStmt::OracleCall {
+        BIrStmt::OracleCall {
+            name,
+            args,
+            num_bits,
+        } => BIrStmt::OracleCall {
             name: name.clone(),
             args: args.iter().map(r).collect(),
             num_bits: *num_bits,
@@ -270,7 +282,11 @@ fn remap_host_stmt(s: &BIrStmt, remap: &[u32]) -> BIrStmt {
             bit: *bit,
             occurrence: *occurrence,
         },
-        BIrStmt::StorageRead { storage, lane, addr } => BIrStmt::StorageRead {
+        BIrStmt::StorageRead {
+            storage,
+            lane,
+            addr,
+        } => BIrStmt::StorageRead {
             storage: *storage,
             lane: *lane,
             addr: addr.iter().map(r).collect(),

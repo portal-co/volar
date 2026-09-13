@@ -162,7 +162,6 @@ fn finish(params: usize, stmts: Vec<Node<BIrStmt, ()>>, args: Vec<IRVarId>) -> B
     }
 }
 
-
 /// A tiny circuit: bitwise XOR of two n-bit inputs (with a constant
 /// second operand this folds to polarity flips under Not-elimination).
 pub(crate) fn xor_const_circuit(n: usize) -> BIrBlocks {
@@ -486,9 +485,9 @@ where
     let inner = script.inner_len();
     let resp_inner = script.resp_inner_len();
     let empty_hash: [u8; 32] = [
-        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
-        0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
-        0x78, 0x52, 0xb8, 0x55,
+        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9,
+        0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52,
+        0xb8, 0x55,
     ];
 
     let (ch, sh, flight, shared_secret, token, response, gsecret): (
@@ -556,7 +555,8 @@ where
         /// slice-driven — the non-owner has no value).
         fn eval(&mut self, count: usize, bits: &[bool]) {
             assert!(bits.len() == count || bits.is_empty());
-            self.feeds.extend(core::iter::repeat_n(ChainFeed::Eval, count));
+            self.feeds
+                .extend(core::iter::repeat_n(ChainFeed::Eval, count));
             self.secrets.extend_from_slice(bits);
         }
         /// `count` Garbler feeds; the garbler passes its `count` bits, the
@@ -613,11 +613,7 @@ where
     // 3. derived = Expand-Label(early, "derived", empty_hash).
     let mut a = Asm::new();
     a.expand(&circuits.derived, slots::EARLY, Ctx::Const(&empty_hash));
-    let _ = round!(
-        &circuits.derived.sched,
-        a,
-        hold_range(slots::DERIVED, 256)
-    );
+    let _ = round!(&circuits.derived.sched, a, hold_range(slots::DERIVED, 256));
 
     // 4. handshake secret = Extract(derived, shared secret).
     let mut a = Asm::new();
@@ -662,11 +658,7 @@ where
     let mut a = Asm::new();
     a.held(slots::S_TAG, 128);
     a.eval(128, take(&flight_bits, 40 + inner * 8, 128));
-    let _ = round!(
-        &circuits.eq_tag,
-        a,
-        vec![ChainOut::Hold(slots::VT_FLIGHT)]
-    );
+    let _ = round!(&circuits.eq_tag, a, vec![ChainOut::Hold(slots::VT_FLIGHT)]);
 
     // 13. Transcript through CertVerify (drop the 36-byte Finished message
     // and the inner content type).
@@ -684,19 +676,11 @@ where
     let mut a = Asm::new();
     a.held(slots::FK_S, 256);
     a.held(slots::T2, 256);
-    let _ = round!(
-        &circuits.server_fin,
-        a,
-        hold_range(slots::SCRATCH, 256)
-    );
+    let _ = round!(&circuits.server_fin, a, hold_range(slots::SCRATCH, 256));
     let mut a = Asm::new();
     a.held(slots::SCRATCH, 256);
     a.held(slots::INNER + (inner - 33) * 8, 256);
-    let _ = round!(
-        &circuits.eq_fin,
-        a,
-        vec![ChainOut::Hold(slots::VF_SERVER)]
-    );
+    let _ = round!(&circuits.eq_fin, a, vec![ChainOut::Hold(slots::VF_SERVER)]);
 
     // 17. Transcript through the server Finished (drop the content type).
     let mut a = Asm::new();
@@ -730,11 +714,7 @@ where
     );
     let mut a = Asm::new();
     a.expand(&circuits.c_ap_iv, slots::C_AP, Ctx::Const(&[]));
-    let _ = round!(
-        &circuits.c_ap_iv.sched,
-        a,
-        hold_range(slots::C_AP_IV, 256)
-    );
+    let _ = round!(&circuits.c_ap_iv.sched, a, hold_range(slots::C_AP_IV, 256));
     let mut a = Asm::new();
     a.expand(&circuits.s_ap_key, slots::S_AP, Ctx::Const(&[]));
     let _ = round!(
@@ -744,11 +724,7 @@ where
     );
     let mut a = Asm::new();
     a.expand(&circuits.s_ap_iv, slots::S_AP, Ctx::Const(&[]));
-    let _ = round!(
-        &circuits.s_ap_iv.sched,
-        a,
-        hold_range(slots::S_AP_IV, 256)
-    );
+    let _ = round!(&circuits.s_ap_iv.sched, a, hold_range(slots::S_AP_IV, 256));
 
     // 26-28. Seal the client Finished: the Finished handshake message
     // (0x14 00 00 20 || verify_data) plus the inner content type.
@@ -812,11 +788,7 @@ where
     let mut a = Asm::new();
     a.held(slots::R_TAG, 128);
     a.eval(128, take(&resp_bits, 40 + resp_inner * 8, 128));
-    let _ = round!(
-        &circuits.eq_rtag,
-        a,
-        vec![ChainOut::Hold(slots::VT_RESP)]
-    );
+    let _ = round!(&circuits.eq_rtag, a, vec![ChainOut::Hold(slots::VT_RESP)]);
 
     // 32. Success extraction over the decrypted body.
     let mut a = Asm::new();

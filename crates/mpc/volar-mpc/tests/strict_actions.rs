@@ -41,15 +41,15 @@ fn action_schedule() -> GateSchedule {
     GateSchedule {
         num_inputs: 4,
         gates: vec![
-            Gate::One,                              // wire 4
-            Gate::ActionBit { call: 0, bit: 0 },    // wire 5
-            Gate::ActionBit { call: 0, bit: 1 },    // wire 6
-            Gate::ActionBit { call: 0, bit: 2 },    // wire 7
-            Gate::ActionBit { call: 0, bit: 3 },    // wire 8
-            Gate::ActionBit { call: 1, bit: 0 },    // wire 9
-            Gate::ActionBit { call: 1, bit: 1 },    // wire 10
-            Gate::Xor(5, 9),                        // wire 11 = out0
-            Gate::Xor(8, 10),                       // wire 12 = out1
+            Gate::One,                           // wire 4
+            Gate::ActionBit { call: 0, bit: 0 }, // wire 5
+            Gate::ActionBit { call: 0, bit: 1 }, // wire 6
+            Gate::ActionBit { call: 0, bit: 2 }, // wire 7
+            Gate::ActionBit { call: 0, bit: 3 }, // wire 8
+            Gate::ActionBit { call: 1, bit: 0 }, // wire 9
+            Gate::ActionBit { call: 1, bit: 1 }, // wire 10
+            Gate::Xor(5, 9),                     // wire 11 = out0
+            Gate::Xor(8, 10),                    // wire 12 = out1
         ],
         output: 11,
         outputs: Some(vec![11, 12]),

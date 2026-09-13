@@ -728,14 +728,32 @@ impl ScalarOps for Ed25519 {
     }
     fn scalar_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
         // Reduce both (callers may pass non-canonical scalars) and compare.
-        let ra = reduce512(&[{
-            let l = bytes_to_limbs(a);
-            l[0]
-        }, bytes_to_limbs(a)[1], bytes_to_limbs(a)[2], bytes_to_limbs(a)[3], 0, 0, 0, 0]);
-        let rb = reduce512(&[{
-            let l = bytes_to_limbs(b);
-            l[0]
-        }, bytes_to_limbs(b)[1], bytes_to_limbs(b)[2], bytes_to_limbs(b)[3], 0, 0, 0, 0]);
+        let ra = reduce512(&[
+            {
+                let l = bytes_to_limbs(a);
+                l[0]
+            },
+            bytes_to_limbs(a)[1],
+            bytes_to_limbs(a)[2],
+            bytes_to_limbs(a)[3],
+            0,
+            0,
+            0,
+            0,
+        ]);
+        let rb = reduce512(&[
+            {
+                let l = bytes_to_limbs(b);
+                l[0]
+            },
+            bytes_to_limbs(b)[1],
+            bytes_to_limbs(b)[2],
+            bytes_to_limbs(b)[3],
+            0,
+            0,
+            0,
+            0,
+        ]);
         cmp4(&ra, &rb) == core::cmp::Ordering::Equal
     }
     fn scalar_from_hash<D: Digest>(h: D) -> [u8; 32] {

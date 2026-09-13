@@ -37,8 +37,8 @@ use volar_mpc::ot::LoopbackOt;
 use volar_mpc::{GarbledExec, OtChannel, garble_schedule};
 use volar_oram::{Bucket, OramEntry, OramTree, eviction_target};
 use volar_spec::garble::{Eval, Garble, GlobalSecret};
-use volar_vc::oram_gadget::{OramGadgetConfig, build_access, build_begin};
 use volar_vc::compile_schedule;
+use volar_vc::oram_gadget::{OramGadgetConfig, build_access, build_begin};
 
 type N = U16;
 type D = Sha256;
@@ -281,13 +281,11 @@ fn s4_oram_state_threaded_two_party() {
             &begin, &feeds, &posmap_st, &stash_st, &secret, &mut fresh, &mut ot,
         );
         // Reveal only old_leaf; thread the new posmap.
-        let old_leaf = dec(
-            &bl[..lb]
-                .iter()
-                .zip(&bb[..lb])
-                .map(|(l, b)| reveal(l, b))
-                .collect::<Vec<_>>(),
-        );
+        let old_leaf = dec(&bl[..lb]
+            .iter()
+            .zip(&bb[..lb])
+            .map(|(l, b)| reveal(l, b))
+            .collect::<Vec<_>>());
         posmap_st = HeldState {
             labels: bl[lb..].to_vec(),
             bases: bb[lb..].to_vec(),
@@ -312,11 +310,9 @@ fn s4_oram_state_threaded_two_party() {
             &access, &feeds, &posmap_st, &stash_st, &secret, &mut fresh, &mut ot,
         );
         assert!(!reveal(&al[0], &ab_[0]), "ORAM stash overflow");
-        let rdata = dec(
-            &(1..1 + db)
-                .map(|k| reveal(&al[k], &ab_[k]))
-                .collect::<Vec<_>>(),
-        ) as u8;
+        let rdata = dec(&(1..1 + db)
+            .map(|k| reveal(&al[k], &ab_[k]))
+            .collect::<Vec<_>>()) as u8;
         let np_off = 1 + db;
         let new_path_bits: Vec<bool> = (0..n_path * eb)
             .map(|k| reveal(&al[np_off + k], &ab_[np_off + k]))
@@ -365,7 +361,10 @@ fn s4_oram_state_threaded_two_party() {
             }
             None => {
                 let want = model[addr as usize];
-                assert_eq!(rdata, want, "read addr {addr}: got {rdata:#x}, want {want:#x}");
+                assert_eq!(
+                    rdata, want,
+                    "read addr {addr}: got {rdata:#x}, want {want:#x}"
+                );
             }
         }
     }

@@ -27,8 +27,6 @@
 //! schedule directly — neither party ever holds the session keys, so
 //! neither can decrypt the request record alone.
 
-
-
 extern crate std;
 
 use alloc::vec::Vec;
@@ -40,12 +38,8 @@ use volar_mpc::{MpcError, OtChannel, Transport};
 use volar_spec::vole::VoleArray;
 
 use crate::sha_gadget::build_hmac_sha256;
-use crate::tls13::{
-    extract_circuit, record_open_circuit, record_seal_circuit, transcript_circuit,
-};
-use crate::tls13_2pc::{
-    Expand, bits_of, bytes_of, expand, hold_range, sched, slots, take,
-};
+use crate::tls13::{extract_circuit, record_open_circuit, record_seal_circuit, transcript_circuit};
+use crate::tls13_2pc::{Expand, bits_of, bytes_of, expand, hold_range, sched, slots, take};
 
 /// Byte-stream socket seam. Implemented by a native blocking-stream
 /// adapter and by the browser relay adapter (site side).
@@ -64,7 +58,9 @@ pub struct NativeStream<S> {
 
 impl<S: Read + Write> TlsRecordIo for NativeStream<S> {
     fn write_all(&mut self, bytes: &[u8]) -> Result<(), MpcError> {
-        self.stream.write_all(bytes).map_err(|_| MpcError::UnexpectedMessage)
+        self.stream
+            .write_all(bytes)
+            .map_err(|_| MpcError::UnexpectedMessage)
     }
     fn read_exact(&mut self, n: usize) -> Result<Vec<u8>, MpcError> {
         let mut buf = alloc::vec![0u8; n];
@@ -267,7 +263,12 @@ pub struct LiveRequestTemplate {
 impl LiveRequestTemplate {
     /// The sealed inner plaintext length (body + content-type byte).
     pub fn inner_len(&self) -> usize {
-        self.prefix.len() + self.secret_len + self.mid.len() + self.token_len + self.suffix.len() + 1
+        self.prefix.len()
+            + self.secret_len
+            + self.mid.len()
+            + self.token_len
+            + self.suffix.len()
+            + 1
     }
 }
 
@@ -352,8 +353,7 @@ impl Asm {
         }
     }
     fn held(&mut self, base: usize, n: usize) {
-        self.feeds
-            .extend((0..n).map(|i| ChainFeed::Held(base + i)));
+        self.feeds.extend((0..n).map(|i| ChainFeed::Held(base + i)));
     }
     fn konst(&mut self, bits: &[bool]) {
         self.feeds
@@ -362,7 +362,8 @@ impl Asm {
     }
     fn eval(&mut self, count: usize, bits: &[bool]) {
         debug_assert!(bits.len() == count || bits.is_empty());
-        self.feeds.extend(core::iter::repeat_n(ChainFeed::Eval, count));
+        self.feeds
+            .extend(core::iter::repeat_n(ChainFeed::Eval, count));
         self.secrets.extend_from_slice(bits);
     }
     fn garb(&mut self, count: usize, bits: &[bool]) {
@@ -634,9 +635,9 @@ where
     Io: TlsRecordIo + ?Sized,
 {
     let empty_hash: [u8; 32] = [
-        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
-        0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
-        0x78, 0x52, 0xb8, 0x55,
+        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9,
+        0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52,
+        0xb8, 0x55,
     ];
     let is_eval = kx.is_some();
 
@@ -828,11 +829,7 @@ where
             })
             .collect();
         a.konst(&seq_bits);
-        let _ = round!(
-            &nonce_sched,
-            a,
-            hold_range(LIVE_NONCE + rec_idx * 256, 96)
-        );
+        let _ = round!(&nonce_sched, a, hold_range(LIVE_NONCE + rec_idx * 256, 96));
 
         let open = sched(&record_open_circuit(inner));
         let rec_bits = bits_of(&rec);
@@ -849,19 +846,14 @@ where
         let mut a = Asm::new();
         a.held(LIVE_TAG + rec_idx * 256, 128);
         a.eval(128, take(&rec_bits, 40 + inner * 8, 128));
-        let _ = round!(
-            &eq_tag,
-            a,
-            alloc::vec![ChainOut::Hold(LIVE_VT + rec_idx)]
-        );
+        let _ = round!(&eq_tag, a, alloc::vec![ChainOut::Hold(LIVE_VT + rec_idx)]);
 
         // Reveal the inner (public data; both parties parse it, and the
         // garbler's native cert check consumes it).
         let reveal = sched(&crate::tls13_2pc::identity_circuit(inner * 8));
         let mut a = Asm::new();
         a.held(inner_slot(rec_idx), inner * 8);
-        let inner_revealed =
-            round!(&reveal, a, alloc::vec![ChainOut::Reveal; inner * 8]);
+        let inner_revealed = round!(&reveal, a, alloc::vec![ChainOut::Reveal; inner * 8]);
         let inner_bytes = bytes_of(&inner_revealed);
         // Alerts arrive as type-23 records whose inner content type is 21.
         let ct = inner_bytes
@@ -876,7 +868,9 @@ where
         vt_records.push(LIVE_VT + rec_idx);
         saw_finished = walk_handshake(&stream).iter().any(|m| m.hs_type == 20);
         if std::env::var("TLS13_LIVE_DEBUG").is_ok() {
-            std::eprintln!("[tls13_live] flight rec {rec_idx} inner {inner} ct {ct:?} finished {saw_finished} (eval={is_eval})");
+            std::eprintln!(
+                "[tls13_live] flight rec {rec_idx} inner {inner} ct {ct:?} finished {saw_finished} (eval={is_eval})"
+            );
         }
         if rec_idx >= 16 && !saw_finished {
             return Err(MpcError::UnexpectedMessage);
@@ -999,9 +993,7 @@ where
         // (which is exactly the AAD).
         let mut wire = alloc::vec![0x17u8, 0x03, 0x03, 0x00, 0x35];
         wire.extend_from_slice(&bytes_of(&cf_record));
-        io.as_deref_mut()
-            .expect("evaluator io")
-            .write_all(&wire)?;
+        io.as_deref_mut().expect("evaluator io").write_all(&wire)?;
     }
 
     // ---- The siteverify request (application keys, seq 0) ----
@@ -1038,9 +1030,7 @@ where
     if is_eval {
         let mut wire = aad.to_vec();
         wire.extend_from_slice(&bytes_of(&req_record));
-        io.as_deref_mut()
-            .expect("evaluator io")
-            .write_all(&wire)?;
+        io.as_deref_mut().expect("evaluator io").write_all(&wire)?;
     }
 
     // ---- The response (server app data, seq 0) ----
@@ -1062,11 +1052,7 @@ where
     } else {
         Vec::new()
     };
-    let resp_inner = if is_eval {
-        resp_rec.len() - 5 - 16
-    } else {
-        0
-    };
+    let resp_inner = if is_eval { resp_rec.len() - 5 - 16 } else { 0 };
     if is_eval {
         send_lens(transport, &[resp_inner]);
     }

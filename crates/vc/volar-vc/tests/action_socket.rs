@@ -32,7 +32,9 @@ fn guest_wat(k: usize) -> String {
     for i in 0..k {
         let b = (i * 37 + 11) & 0xFF;
         // send(1, b, 0); drop status.
-        body.push_str(&format!("(call $send (i64.const 1) (i64.const {b}) (i64.const 0)) drop\n"));
+        body.push_str(&format!(
+            "(call $send (i64.const 1) (i64.const {b}) (i64.const 0)) drop\n"
+        ));
         // (status, byte) = recv(1, 0, 0); acc += byte.
         body.push_str("(call $recv (i64.const 1) (i64.const 0) (i64.const 0))\n");
         body.push_str("(local.set $byte) (local.set $st)\n");
@@ -90,7 +92,11 @@ fn serve(listener: std::net::TcpListener, k: usize) {
 
 fn run(k: usize) {
     let sched = lower(k);
-    assert_eq!(sched.actions.len(), 2 * k + 1, "connect + k sends + k recvs");
+    assert_eq!(
+        sched.actions.len(),
+        2 * k + 1,
+        "connect + k sends + k recvs"
+    );
     let elim = eliminate_nots(&sched).expect("eliminate");
     let n_in = sched.num_inputs;
     let partition = vec![InputOwner::Evaluator; n_in];
@@ -110,7 +116,8 @@ fn run(k: usize) {
             base: Array::clone_from_slice(&[((i * 7 + 3) % 251) as u8; 16]),
         })
         .collect();
-    let full = garble_schedule_strict_dyn_full::<N, D>(&elim, secret, input_labels).expect("garble");
+    let full =
+        garble_schedule_strict_dyn_full::<N, D>(&elim, secret, input_labels).expect("garble");
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = format!("{}", listener.local_addr().unwrap());
@@ -141,8 +148,13 @@ fn run(k: usize) {
     let spec = g_sched.storages[0].clone();
     let mut tree = volar_oram::OramTree::<4, 8>::new(spec.levels);
     let drive_secret = GlobalSecret::<N>::new(Array::clone_from_slice(&[0x29u8; 16]));
-    let mut drive: volar_vc::GramEvalDrive<D, N, 4, 8> =
-        volar_vc::GramEvalDrive::new(&drive_secret, &mut tree, spec.levels, spec.num_cells, 0x5EED);
+    let mut drive: volar_vc::GramEvalDrive<D, N, 4, 8> = volar_vc::GramEvalDrive::new(
+        &drive_secret,
+        &mut tree,
+        spec.levels,
+        spec.num_cells,
+        0x5EED,
+    );
     let mut gram: [&mut dyn volar_mpc::GramDrive<N>; 1] = [&mut drive];
     let eval_out = run_evaluator_strict_actions::<N, D, _>(
         &g_sched,

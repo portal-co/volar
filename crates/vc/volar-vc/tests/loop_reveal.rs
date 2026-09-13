@@ -34,7 +34,9 @@ fn det_bytes(seed: u8) -> Array<u8, N> {
     Array::clone_from_slice(&[seed; 16])
 }
 fn det_label(seed: u8) -> Garble<N> {
-    Garble { base: det_bytes(seed) }
+    Garble {
+        base: det_bytes(seed),
+    }
 }
 
 /// The one-bit countdown self-loop: `params = [counter]`; `done = !counter`;
@@ -168,10 +170,18 @@ fn loop_reveals_terminated_flag_and_label_mappings() {
     for seed in [true, false] {
         let (terminated, steps) = drive_loop(seed, 8);
         assert!(terminated, "loop must terminate (seed={seed})");
-        assert_eq!(steps, reference(seed), "garbled loop step count must match concrete");
+        assert_eq!(
+            steps,
+            reference(seed),
+            "garbled loop step count must match concrete"
+        );
         // Cross-check against the actual concrete evaluator: the self-loop
         // terminates and returns `1` (the done flag) for either seed.
         let concrete = volar_fuzz::interpreter::biir::eval_biir(&countdown_self_loop(), &[seed]);
-        assert_eq!(concrete.as_deref(), Some(&[true][..]), "concrete self-loop returns done=1 (seed={seed})");
+        assert_eq!(
+            concrete.as_deref(),
+            Some(&[true][..]),
+            "concrete self-loop returns done=1 (seed={seed})"
+        );
     }
 }

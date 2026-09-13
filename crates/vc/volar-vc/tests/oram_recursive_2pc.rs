@@ -23,8 +23,10 @@ use volar_mpc::ot::LoopbackOt;
 use volar_mpc::{DynGarbledExec, GateSchedule, OtChannel, garble_schedule_dyn};
 use volar_oram::{Bucket, OramEntry, OramTree, eviction_target};
 use volar_spec::garble::{Eval, Garble, GlobalSecret};
-use volar_vc::oram_gadget::{OramGadgetConfig, build_access, build_begin, build_extract, build_update};
 use volar_vc::compile_schedule;
+use volar_vc::oram_gadget::{
+    OramGadgetConfig, build_access, build_begin, build_extract, build_update,
+};
 
 type N = U16;
 type D = Sha256;
@@ -36,14 +38,20 @@ fn enc(value: u64, bits: usize) -> Vec<bool> {
     (0..bits).map(|j| (value >> j) & 1 == 1).collect()
 }
 fn dec(bits: &[bool]) -> u64 {
-    bits.iter().enumerate().fold(0u64, |a, (j, &b)| a | if b { 1u64 << j } else { 0 })
+    bits.iter()
+        .enumerate()
+        .fold(0u64, |a, (j, &b)| a | if b { 1u64 << j } else { 0 })
 }
 fn enc_entry<const B: usize>(e: &OramEntry<B>, cfg: &OramGadgetConfig) -> Vec<bool> {
     let real = e.is_real();
     let mut v = vec![real];
     v.extend(enc(if real { e.addr } else { 0 }, cfg.addr_bits()));
     v.extend(enc(if real { e.leaf } else { 0 }, cfg.leaf_bits()));
-    let data = e.data.iter().take(B).fold(0u64, |a, &b| (a << 8) | b as u64);
+    let data = e
+        .data
+        .iter()
+        .take(B)
+        .fold(0u64, |a, &b| (a << 8) | b as u64);
     v.extend(enc(if real { data } else { 0 }, cfg.data_bits));
     v
 }
@@ -59,7 +67,11 @@ fn dec_entry<const B: usize>(bits: &[bool], cfg: &OramGadgetConfig) -> OramEntry
     for (i, byte) in bytes.iter_mut().enumerate() {
         *byte = (data >> (8 * (B - 1 - i))) as u8;
     }
-    OramEntry { addr, leaf, data: bytes }
+    OramEntry {
+        addr,
+        leaf,
+        data: bytes,
+    }
 }
 fn flatten_path<const B: usize>(path: &[Bucket<Z, B>], cfg: &OramGadgetConfig) -> Vec<bool> {
     let mut v = Vec::new();
@@ -74,20 +86,28 @@ fn unflatten_path<const B: usize>(bits: &[bool], cfg: &OramGadgetConfig) -> Vec<
     let eb = cfg.entry_bits();
     (0..cfg.levels)
         .map(|level| Bucket {
-            entries: core::array::from_fn(|s| dec_entry(&bits[(level * Z + s) * eb..(level * Z + s + 1) * eb], cfg)),
+            entries: core::array::from_fn(|s| {
+                dec_entry(&bits[(level * Z + s) * eb..(level * Z + s + 1) * eb], cfg)
+            }),
         })
         .collect()
 }
 
 fn fresh_base(counter: u64) -> Garble<N> {
     let h = Sha256::digest([b"s5c-2pc".as_slice(), &counter.to_le_bytes()].concat());
-    Garble { base: Array::clone_from_slice(&h[..16]) }
+    Garble {
+        base: Array::clone_from_slice(&h[..16]),
+    }
 }
 fn reveal(label: &Eval<N>, base: &Garble<N>) -> bool {
     label.open(base)[0] & 1 != 0
 }
 fn reveal_word(labels: &[Eval<N>], bases: &[Garble<N>]) -> u64 {
-    dec(&labels.iter().zip(bases).map(|(l, b)| reveal(l, b)).collect::<Vec<_>>())
+    dec(&labels
+        .iter()
+        .zip(bases)
+        .map(|(l, b)| reveal(l, b))
+        .collect::<Vec<_>>())
 }
 
 struct Splitmix(u64);
@@ -120,7 +140,11 @@ enum In {
 }
 
 fn held(h: &HeldState) -> Vec<In> {
-    h.labels.iter().zip(&h.bases).map(|(l, b)| In::Held(l.clone(), b.clone())).collect()
+    h.labels
+        .iter()
+        .zip(&h.bases)
+        .map(|(l, b)| In::Held(l.clone(), b.clone()))
+        .collect()
 }
 fn consts(bits: &[bool]) -> Vec<In> {
     bits.iter().map(|&b| In::Const(b)).collect()
@@ -164,11 +188,14 @@ fn run_2pc(
                 let f = secret.encode(&exec.circuit.input_labels[i], false);
                 let t = secret.encode(&exec.circuit.input_labels[i], true);
                 ot.send([&f.target, &t.target]);
-                Eval { target: ot.receive(*b) }
+                Eval {
+                    target: ot.receive(*b),
+                }
             }
         })
         .collect();
-    let out = DynGarbledExec::<N>::eval_labels_multi::<D>(&setup, schedule, &labels).expect("evals");
+    let out =
+        DynGarbledExec::<N>::eval_labels_multi::<D>(&setup, schedule, &labels).expect("evals");
     (out, exec.output_labels)
 }
 
@@ -216,7 +243,12 @@ fn access_level(
     new_leaf: u64,
     ot: &mut LoopbackOt<N>,
 ) -> HeldState {
-    let (ab, lb, db, eb) = (cfg.addr_bits(), cfg.leaf_bits(), cfg.data_bits, cfg.entry_bits());
+    let (ab, lb, db, eb) = (
+        cfg.addr_bits(),
+        cfg.leaf_bits(),
+        cfg.data_bits,
+        cfg.entry_bits(),
+    );
     let n_path = cfg.path_entries();
 
     let path = tree.read_path(old_leaf);
@@ -336,7 +368,13 @@ impl Rec2pc {
     }
 
     /// A base-level (L1) access: linear-scan begin + access. Returns rdata.
-    fn l1_access(&mut self, addr1: u64, op_write: bool, wdata: Vec<In>, ot: &mut LoopbackOt<N>) -> HeldState {
+    fn l1_access(
+        &mut self,
+        addr1: u64,
+        op_write: bool,
+        wdata: Vec<In>,
+        ot: &mut LoopbackOt<N>,
+    ) -> HeldState {
         let lb1 = self.l1_cfg.leaf_bits();
         let ab1 = self.l1_cfg.addr_bits();
         let new_leaf_1 = self.rng_1.next() % self.l1_cfg.num_leaves() as u64;
@@ -372,7 +410,13 @@ impl Rec2pc {
     }
 
     /// A recursive level-0 access. Returns the read bit (if a read).
-    fn access0(&mut self, addr0: u64, op_write: bool, wdata_bit: bool, ot: &mut LoopbackOt<N>) -> u64 {
+    fn access0(
+        &mut self,
+        addr0: u64,
+        op_write: bool,
+        wdata_bit: bool,
+        ot: &mut LoopbackOt<N>,
+    ) -> u64 {
         let lb0 = self.l0_cfg.leaf_bits();
         let new_leaf_0 = self.rng_0.next() % self.l0_cfg.num_leaves() as u64;
         let c = C as u64;

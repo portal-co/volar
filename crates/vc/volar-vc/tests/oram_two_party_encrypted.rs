@@ -249,12 +249,7 @@ fn s5b_body() {
         .collect();
 
     // Ops: write, re-read, overwrite, re-read (per address, plus eviction).
-    let ops: [(u64, Option<u8>); 4] = [
-        (0, Some(0xA5)),
-        (0, None),
-        (1, Some(0x3C)),
-        (0, None),
-    ];
+    let ops: [(u64, Option<u8>); 4] = [(0, Some(0xA5)), (0, None), (1, Some(0x3C)), (0, None)];
 
     for (addr, wdata) in ops {
         let new_leaf = leaf_rng.next() % num_leaves;

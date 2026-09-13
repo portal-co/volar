@@ -57,7 +57,11 @@ fn enc_entry<const B: usize>(e: &OramEntry<B>, cfg: &OramGadgetConfig) -> Vec<bo
     v.extend(enc(if real { e.addr } else { 0 }, cfg.addr_bits()));
     v.extend(enc(if real { e.leaf } else { 0 }, cfg.leaf_bits()));
     // Pack all B payload bytes LSB-first (little-endian byte order).
-    let data = e.data.iter().take(B).fold(0u64, |a, &b| (a << 8) | b as u64);
+    let data = e
+        .data
+        .iter()
+        .take(B)
+        .fold(0u64, |a, &b| (a << 8) | b as u64);
     v.extend(enc(if real { data } else { 0 }, cfg.data_bits));
     v
 }
@@ -127,14 +131,15 @@ impl Splitmix {
 /// Run an op sequence through both the circuit-ORAM and the reference
 /// concretely, comparing every read against both the reference and an
 /// independent addr->data model. Generic over bucket size `ZC` (B = 1 byte).
-fn check_concrete<const ZC: usize>(
-    cfg: &OramGadgetConfig,
-    ops: &[(u64, Option<u8>)],
-    seed: u64,
-) {
+fn check_concrete<const ZC: usize>(cfg: &OramGadgetConfig, ops: &[(u64, Option<u8>)], seed: u64) {
     let begin = build_begin(cfg);
     let access = build_access(cfg);
-    let (eb, lb, ab, db) = (cfg.entry_bits(), cfg.leaf_bits(), cfg.addr_bits(), cfg.data_bits);
+    let (eb, lb, ab, db) = (
+        cfg.entry_bits(),
+        cfg.leaf_bits(),
+        cfg.addr_bits(),
+        cfg.data_bits,
+    );
     let n_path = cfg.path_entries();
     let num_leaves = cfg.num_leaves() as u64;
     let levels = cfg.levels;
@@ -160,8 +165,14 @@ fn check_concrete<const ZC: usize>(
             None => AccessOp::Read,
             Some(b) => AccessOp::Write([b]),
         };
-        let mut ref_rng_fn = | | ref_rng.next();
-        let ref_result = oram_access_local(&mut ref_client, &mut ref_tree, addr, ref_op, &mut ref_rng_fn);
+        let mut ref_rng_fn = || ref_rng.next();
+        let ref_result = oram_access_local(
+            &mut ref_client,
+            &mut ref_tree,
+            addr,
+            ref_op,
+            &mut ref_rng_fn,
+        );
 
         // Circuit.
         let new_leaf = rng.next() % num_leaves;
@@ -212,7 +223,10 @@ fn check_concrete<const ZC: usize>(
             ev_in.push(true); // evict_only
             let ev_out = volar_fuzz::interpreter::biir::eval_biir(&access, &ev_in)
                 .expect("eviction evaluates");
-            assert!(!ev_out[0], "step {step}: ORAM stash overflow during eviction");
+            assert!(
+                !ev_out[0],
+                "step {step}: ORAM stash overflow during eviction"
+            );
             let new_epath_bits = &ev_out[1 + db..1 + db + n_path * eb];
             stash_bits = ev_out[1 + db + n_path * eb..].to_vec();
             tree.write_path(evict_leaf, &unflatten_path::<ZC, 1>(new_epath_bits, cfg));

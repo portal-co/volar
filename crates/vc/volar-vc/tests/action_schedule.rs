@@ -57,8 +57,14 @@ fn action_call_lowers_to_action_bit_gates() {
     // Gates: And, ActionBit0, ActionBit1, Xor — the ActionCall produced none.
     assert_eq!(sched.gates.len(), 4);
     assert!(matches!(sched.gates[0], Gate::And(0, 1)));
-    assert!(matches!(sched.gates[1], Gate::ActionBit { call: 0, bit: 0 }));
-    assert!(matches!(sched.gates[2], Gate::ActionBit { call: 0, bit: 1 }));
+    assert!(matches!(
+        sched.gates[1],
+        Gate::ActionBit { call: 0, bit: 0 }
+    ));
+    assert!(matches!(
+        sched.gates[2],
+        Gate::ActionBit { call: 0, bit: 1 }
+    ));
     assert!(matches!(sched.gates[3], Gate::Xor(3, 4)));
     assert_eq!(sched.output_wires(), &[5]);
     // The action-bearing schedule must run through the strict-actions session.

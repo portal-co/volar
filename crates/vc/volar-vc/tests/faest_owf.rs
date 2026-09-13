@@ -60,7 +60,11 @@ fn owf_check_circuit_matches_native() {
     bad_ct[0] ^= 1;
     assert!(!faest_owf_check_native(&KEY, &PT, &bad_ct));
     let out = eval_biir(&circuit, &owf_inputs(&KEY, &PT, &bad_ct)).expect("eval");
-    assert_eq!(out, vec![false], "tampered OWF statement rejected in-circuit");
+    assert_eq!(
+        out,
+        vec![false],
+        "tampered OWF statement rejected in-circuit"
+    );
 
     // A wrong key equally fails (binding to the statement).
     let mut bad_key = KEY;

@@ -14,8 +14,8 @@ use sha3::Sha3_256;
 
 use super::params::FerretParams;
 use super::spcot::{
-    spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend, Block, SpcotSenderMsg,
-    KAPPA_BITS,
+    Block, KAPPA_BITS, SpcotSenderMsg, spcot_choice_bits, spcot_receiver_extend,
+    spcot_sender_extend,
 };
 use crate::SpecRng;
 
@@ -145,14 +145,7 @@ pub fn mpcot_uni_sender<R: SpecRng>(
         }
         s[x] = acc;
     }
-    (
-        s,
-        s_bins,
-        MpcotUniSenderMsg {
-            hash_seed,
-            blocks,
-        },
-    )
+    (s, s_bins, MpcotUniSenderMsg { hash_seed, blocks })
 }
 
 /// Uniform MPCOT receiver. Returns the final (XOR-combined) `r` and the

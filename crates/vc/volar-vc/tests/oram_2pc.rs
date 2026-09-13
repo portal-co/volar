@@ -35,13 +35,7 @@ const MAX_STASH: usize = 2 * LEVELS + Z + (1 << AB);
 fn guest() -> BIrBlocks<()> {
     let storage = StorageId(0);
     let lane = LaneId(0);
-    let (a0, a1, d, c0, c1) = (
-        IRVarId(0),
-        IRVarId(1),
-        IRVarId(2),
-        IRVarId(3),
-        IRVarId(4),
-    );
+    let (a0, a1, d, c0, c1) = (IRVarId(0), IRVarId(1), IRVarId(2), IRVarId(3), IRVarId(4));
     let mut block: BIrBlock<()> = BIrBlock {
         params: 5,
         stmts: vec![],
@@ -123,17 +117,18 @@ fn s4_oram_program_two_party_matches_concrete() {
                     inputs.iter().map(|&b| driver.fresh_input::<D>(b)).collect();
                 let outputs =
                     driver.run_program::<D, Z>(&program, &param_inputs, &mut tree, &mut ot);
-                let out_bits: Vec<bool> = outputs
-                    .iter()
-                    .map(|(l, b)| l.open(b)[0] & 1 == 1)
-                    .collect();
+                let out_bits: Vec<bool> =
+                    outputs.iter().map(|(l, b)| l.open(b)[0] & 1 == 1).collect();
 
                 // Model: write d to cell a; r1 = cell a = d; r2 = cell c.
                 let want = vec![d, if c == a { d } else { false }];
                 // Concrete cross-check.
                 let (concrete, _t) = run_concrete::<Z>(&program, &inputs);
                 assert_eq!(out_bits, want, "a={a} d={d} c={c}: two-party vs model");
-                assert_eq!(out_bits, concrete, "a={a} d={d} c={c}: two-party vs concrete");
+                assert_eq!(
+                    out_bits, concrete,
+                    "a={a} d={d} c={c}: two-party vs concrete"
+                );
             }
         }
     }

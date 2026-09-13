@@ -23,7 +23,9 @@ fn enc(value: u64, bits: usize) -> Vec<bool> {
     (0..bits).map(|j| (value >> j) & 1 == 1).collect()
 }
 fn dec(bits: &[bool]) -> u64 {
-    bits.iter().enumerate().fold(0u64, |a, (j, &b)| a | if b { 1u64 << j } else { 0 })
+    bits.iter()
+        .enumerate()
+        .fold(0u64, |a, (j, &b)| a | if b { 1u64 << j } else { 0 })
 }
 fn enc_entry(e: &OramEntry<B>, cfg: &OramGadgetConfig) -> Vec<bool> {
     let real = e.is_real();
@@ -41,7 +43,11 @@ fn dec_entry(bits: &[bool], cfg: &OramGadgetConfig) -> OramEntry<B> {
     let addr = dec(&bits[1..1 + ab]);
     let leaf = dec(&bits[1 + ab..1 + ab + lb]);
     let data = dec(&bits[1 + ab + lb..1 + ab + lb + db]);
-    OramEntry { addr, leaf, data: [data as u8] }
+    OramEntry {
+        addr,
+        leaf,
+        data: [data as u8],
+    }
 }
 fn flatten_path(path: &[Bucket<Z, B>], cfg: &OramGadgetConfig) -> Vec<bool> {
     let mut v = Vec::new();
@@ -56,7 +62,9 @@ fn unflatten_path(bits: &[bool], cfg: &OramGadgetConfig) -> Vec<Bucket<Z, B>> {
     let eb = cfg.entry_bits();
     (0..cfg.levels)
         .map(|level| Bucket {
-            entries: core::array::from_fn(|s| dec_entry(&bits[(level * Z + s) * eb..(level * Z + s + 1) * eb], cfg)),
+            entries: core::array::from_fn(|s| {
+                dec_entry(&bits[(level * Z + s) * eb..(level * Z + s + 1) * eb], cfg)
+            }),
         })
         .collect()
 }
@@ -90,7 +98,8 @@ fn s6_keyed_leaf_prf_matches_aes_and_oram_works() {
     let begin = build_begin(&cfg);
     let access = build_access(&cfg);
     let leaf_key: [u8; 16] = [
-        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f,
+        0x3c,
     ];
 
     let mut posmap_bits: Vec<bool> = (0..cfg.num_addrs).flat_map(|_| enc(0, lb)).collect();
@@ -143,7 +152,8 @@ fn s6_keyed_leaf_prf_matches_aes_and_oram_works() {
         acc_in.extend(enc(old_leaf, lb));
         acc_in.extend(enc(new_leaf, lb));
         acc_in.push(false);
-        let acc_out = volar_fuzz::interpreter::biir::eval_biir(&access, &acc_in).expect("access evals");
+        let acc_out =
+            volar_fuzz::interpreter::biir::eval_biir(&access, &acc_in).expect("access evals");
         assert!(!acc_out[0], "step {step}: stash overflow");
         let rdata = dec(&acc_out[1..1 + db]) as u8;
         let new_path = unflatten_path(&acc_out[1 + db..1 + db + n_path * eb], &cfg);
@@ -162,7 +172,8 @@ fn s6_keyed_leaf_prf_matches_aes_and_oram_works() {
             ev_in.extend(enc(evict_leaf, lb));
             ev_in.extend(enc(0, lb));
             ev_in.push(true);
-            let ev_out = volar_fuzz::interpreter::biir::eval_biir(&access, &ev_in).expect("evict evals");
+            let ev_out =
+                volar_fuzz::interpreter::biir::eval_biir(&access, &ev_in).expect("evict evals");
             assert!(!ev_out[0], "step {step}: stash overflow (evict)");
             let nepath = unflatten_path(&ev_out[1 + db..1 + db + n_path * eb], &cfg);
             stash_bits = ev_out[1 + db + n_path * eb..].to_vec();

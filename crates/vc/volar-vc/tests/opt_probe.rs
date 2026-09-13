@@ -25,7 +25,9 @@ fn counts(c: &BIrBlocks<()>) -> (usize, usize, usize, usize, usize, usize) {
 
 fn report(name: &str, mut c: BIrBlocks<()>) {
     let before = counts(&c);
-    let sched_before = volar_vc::compile_schedule(&c).expect("schedules before").and_count();
+    let sched_before = volar_vc::compile_schedule(&c)
+        .expect("schedules before")
+        .and_count();
     volar_ir_opt::biir::fold_biir_blocks(&mut c);
     let after_fold = counts(&c);
     volar_ir_opt::biir::cse_biir_blocks(&mut c);
@@ -35,8 +37,14 @@ fn report(name: &str, mut c: BIrBlocks<()>) {
     let sched = volar_vc::compile_schedule(&c).expect("schedules after opt");
     eprintln!(
         "{name}: total {} -> {} -> {} -> {} | and {} -> {} -> {} -> {} | schedule_and {} -> {}",
-        before.0, after_fold.0, after_cse.0, after_dce.0,
-        before.1, after_fold.1, after_cse.1, after_dce.1,
+        before.0,
+        after_fold.0,
+        after_cse.0,
+        after_dce.0,
+        before.1,
+        after_fold.1,
+        after_cse.1,
+        after_dce.1,
         sched_before,
         sched.and_count(),
     );

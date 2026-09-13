@@ -30,7 +30,7 @@ use hybrid_array::Array;
 use volar_spec::garble::{Eval, Garble, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
-use crate::{garble_schedule_dyn, DynGarbledExec, GateSchedule, InputOwner, MpcError};
+use crate::{DynGarbledExec, GateSchedule, InputOwner, MpcError, garble_schedule_dyn};
 
 // ============================================================================
 // Batched OT — evaluator input consistency
@@ -234,7 +234,11 @@ where
 {
     let total = seeds.len();
     if partition.len() != schedule.num_inputs
-        || partition.iter().filter(|&&o| o == InputOwner::Public).count() != public_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Public)
+            .count()
+            != public_bits.len()
         || partition
             .iter()
             .filter(|&&o| o == InputOwner::Garbler)
@@ -311,8 +315,7 @@ where
             }
         }
         let setup = copies[i].circuit.eval_setup();
-        let out_labels =
-            DynGarbledExec::<N>::eval_labels_multi::<D>(&setup, schedule, &labels)?;
+        let out_labels = DynGarbledExec::<N>::eval_labels_multi::<D>(&setup, schedule, &labels)?;
         let decoded = verify_output_labels(&copies[i], &out_labels).ok_or(
             CutAndChooseError::InvalidOutputLabel {
                 copy: i,
@@ -400,7 +403,11 @@ mod tests {
                 &schedule, &partition, &public, &garbler, &evaluator, &seeds, &eval_set, &mut ot,
             )
             .expect("honest cut-and-choose");
-            assert_eq!(out, alloc::vec![eval_concrete(&schedule, &b)], "inputs {b:?}");
+            assert_eq!(
+                out,
+                alloc::vec![eval_concrete(&schedule, &b)],
+                "inputs {b:?}"
+            );
         }
     }
 
@@ -452,7 +459,10 @@ mod tests {
         // The genuine true label is accepted and decodes to true.
         let base = &exec.output_labels[0];
         let true_l = exec.circuit.secret.encode(base, true);
-        assert_eq!(verify_output_labels(&exec, &[true_l]), Some(alloc::vec![true]));
+        assert_eq!(
+            verify_output_labels(&exec, &[true_l]),
+            Some(alloc::vec![true])
+        );
     }
 
     /// A corrupted check copy (commitment mismatch) is caught.
@@ -462,9 +472,17 @@ mod tests {
         let exec = garble_copy::<N, D>(&schedule, &[0x55; 16]).unwrap();
         let mut bad_commit = commit_copy::<N, D>(&exec);
         bad_commit[0] ^= 1;
-        assert!(!verify_check_copy::<N, D>(&schedule, &[0x55; 16], &bad_commit));
+        assert!(!verify_check_copy::<N, D>(
+            &schedule,
+            &[0x55; 16],
+            &bad_commit
+        ));
         // The honest commitment verifies.
         let good_commit = commit_copy::<N, D>(&exec);
-        assert!(verify_check_copy::<N, D>(&schedule, &[0x55; 16], &good_commit));
+        assert!(verify_check_copy::<N, D>(
+            &schedule,
+            &[0x55; 16],
+            &good_commit
+        ));
     }
 }

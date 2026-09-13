@@ -56,16 +56,16 @@ use alloc::vec::Vec;
 
 use digest::Digest;
 use hybrid_array::Array;
-use volar_spec::garble::{Eval, EvalSetup, Garble, GarbleTable, GarbledCircuit, GlobalSecret};
 use volar_spec::SpecRng as _;
+use volar_spec::garble::{Eval, EvalSetup, Garble, GarbleTable, GarbledCircuit, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
 pub mod cut_and_choose;
+#[cfg(feature = "std")]
+pub mod net;
 pub mod ot;
 #[cfg(feature = "mlkem")]
 pub mod ot_mlkem;
-#[cfg(feature = "std")]
-pub mod net;
 pub mod strict;
 pub mod strict_chain;
 #[cfg(feature = "std")]
@@ -365,12 +365,17 @@ impl GateSchedule {
 
     /// Number of AND gates (== number of garbled tables required).
     pub fn and_count(&self) -> usize {
-        self.gates.iter().filter(|g| matches!(g, Gate::And(..))).count()
+        self.gates
+            .iter()
+            .filter(|g| matches!(g, Gate::And(..)))
+            .count()
     }
 
     /// The output-wire list, defaulting to the single `output` wire.
     pub fn output_wires(&self) -> Vec<usize> {
-        self.outputs.clone().unwrap_or_else(|| alloc::vec![self.output])
+        self.outputs
+            .clone()
+            .unwrap_or_else(|| alloc::vec![self.output])
     }
 }
 
@@ -457,7 +462,10 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
         inputs: &[Eval<N>],
     ) -> Result<Eval<N>, MpcError> {
         let wires = eval_gate_wires::<N, D>(&setup.one_wire, &setup.tables, schedule, inputs)?;
-        wires.get(schedule.output).cloned().ok_or(MpcError::MalformedSchedule)
+        wires
+            .get(schedule.output)
+            .cloned()
+            .ok_or(MpcError::MalformedSchedule)
     }
 
     /// Multi-output variant of [`Self::eval_labels`]: returns the label on
@@ -524,7 +532,9 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
                     }
                 }
                 Gate::StorageRead {
-                    storage, cell, access,
+                    storage,
+                    cell,
+                    access,
                 } => {
                     let driver = gram.get_mut(storage).ok_or(MpcError::MalformedSchedule)?;
                     let base = gram_data_base::<D, N>(access, 0);
@@ -552,7 +562,6 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> GarbledExec<N, I, A> {
             .map(|&w| wires.get(w).cloned().ok_or(MpcError::MalformedSchedule))
             .collect()
     }
-
 }
 
 /// The garbler's gate walk: compute every wire's false-label base and the AND
@@ -627,9 +636,9 @@ fn garble_wire_bases_pol<N: VoleArray<u8>, D: Digest>(
                 match (x, y) {
                     (Some(x), Some(y)) => {
                         let (pa, pb) = match and_input_polarity {
-                            Some(pols) => *pols
-                                .get(tables.len())
-                                .ok_or(MpcError::MalformedSchedule)?,
+                            Some(pols) => {
+                                *pols.get(tables.len()).ok_or(MpcError::MalformedSchedule)?
+                            }
                             None => (false, false),
                         };
                         tables.push(secret.gen_and_table_pol::<D>(x, y, pa, pb));
@@ -717,9 +726,7 @@ where
         .get(schedule.output)
         .cloned()
         .ok_or(MpcError::MalformedSchedule)?;
-    let tables: [GarbleTable<N>; A] = tables
-        .try_into()
-        .map_err(|_| MpcError::MalformedSchedule)?;
+    let tables: [GarbleTable<N>; A] = tables.try_into().map_err(|_| MpcError::MalformedSchedule)?;
     // Collect each output wire's own false-label base so multi-output
     // evaluation can decode every wire against its true base (not the shared
     // single `output_label`, which is only correct for `output` itself).
@@ -879,9 +886,21 @@ where
 {
     let schedule = &exec.schedule;
     if partition.len() != schedule.num_inputs
-        || partition.iter().filter(|&&o| o == InputOwner::Public).count() != public_bits.len()
-        || partition.iter().filter(|&&o| o == InputOwner::Garbler).count() != garbler_bits.len()
-        || partition.iter().filter(|&&o| o == InputOwner::Evaluator).count() != evaluator_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Public)
+            .count()
+            != public_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Garbler)
+            .count()
+            != garbler_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Evaluator)
+            .count()
+            != evaluator_bits.len()
     {
         return Err(MpcError::BadPartition);
     }
@@ -946,9 +965,21 @@ where
 {
     let schedule = &exec.schedule;
     if partition.len() != schedule.num_inputs
-        || partition.iter().filter(|&&o| o == InputOwner::Public).count() != public_bits.len()
-        || partition.iter().filter(|&&o| o == InputOwner::Garbler).count() != garbler_bits.len()
-        || partition.iter().filter(|&&o| o == InputOwner::Evaluator).count() != evaluator_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Public)
+            .count()
+            != public_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Garbler)
+            .count()
+            != garbler_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Evaluator)
+            .count()
+            != evaluator_bits.len()
     {
         return Err(MpcError::BadPartition);
     }
@@ -989,7 +1020,10 @@ where
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let base = exec.output_labels.get(i).unwrap_or(&exec.circuit.output_label);
+            let base = exec
+                .output_labels
+                .get(i)
+                .unwrap_or(&exec.circuit.output_label);
             r.open(base)[0] & 1 != 0
         })
         .collect();
@@ -1017,9 +1051,21 @@ where
 {
     let schedule = &exec.schedule;
     if partition.len() != schedule.num_inputs
-        || partition.iter().filter(|&&o| o == InputOwner::Public).count() != public_bits.len()
-        || partition.iter().filter(|&&o| o == InputOwner::Garbler).count() != garbler_bits.len()
-        || partition.iter().filter(|&&o| o == InputOwner::Evaluator).count() != evaluator_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Public)
+            .count()
+            != public_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Garbler)
+            .count()
+            != garbler_bits.len()
+        || partition
+            .iter()
+            .filter(|&&o| o == InputOwner::Evaluator)
+            .count()
+            != evaluator_bits.len()
     {
         return Err(MpcError::BadPartition);
     }
@@ -1052,14 +1098,16 @@ where
         }
     }
 
-    let results = GarbledExec::<N, I, A>::eval_labels_multi_with_gram::<D>(
-        &setup, schedule, &labels, gram,
-    )?;
+    let results =
+        GarbledExec::<N, I, A>::eval_labels_multi_with_gram::<D>(&setup, schedule, &labels, gram)?;
     let decoded: Vec<bool> = results
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let base = exec.output_labels.get(i).unwrap_or(&exec.circuit.output_label);
+            let base = exec
+                .output_labels
+                .get(i)
+                .unwrap_or(&exec.circuit.output_label);
             r.open(base)[0] & 1 != 0
         })
         .collect();
@@ -1639,7 +1687,11 @@ where
             // what the evaluator is handed, via the LoopbackOt shim.
             let recovered =
                 crate::ot::ot_once::<N>([&f.target, &t.target], bit, ot_rng.next_u32() as u64);
-            let other = if bit { f.target.clone() } else { t.target.clone() };
+            let other = if bit {
+                f.target.clone()
+            } else {
+                t.target.clone()
+            };
             let pair: [&Array<u8, N>; 2] = if bit {
                 [&other, &recovered]
             } else {

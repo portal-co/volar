@@ -218,18 +218,30 @@ fn remap_biir_stmt(stmt: &BIrStmt, remap: &[u32]) -> BIrStmt {
         BIrStmt::And(a, b) => BIrStmt::And(r(a), r(b)),
         BIrStmt::Or(a, b) => BIrStmt::Or(r(a), r(b)),
         BIrStmt::Xor(a, b) => BIrStmt::Xor(r(a), r(b)),
-        BIrStmt::StorageRead { storage, lane, addr } => BIrStmt::StorageRead {
+        BIrStmt::StorageRead {
+            storage,
+            lane,
+            addr,
+        } => BIrStmt::StorageRead {
             storage: *storage,
             lane: *lane,
             addr: addr.iter().map(r).collect(),
         },
-        BIrStmt::StorageWrite { storage, lane, src, addr } => BIrStmt::StorageWrite {
+        BIrStmt::StorageWrite {
+            storage,
+            lane,
+            src,
+            addr,
+        } => BIrStmt::StorageWrite {
             storage: *storage,
             lane: *lane,
             src: r(src),
             addr: addr.iter().map(r).collect(),
         },
-        other => panic!("fold_storage_addrs: unsupported stmt {:?}", core::mem::discriminant(other)),
+        other => panic!(
+            "fold_storage_addrs: unsupported stmt {:?}",
+            core::mem::discriminant(other)
+        ),
     }
 }
 
@@ -245,13 +257,28 @@ pub fn fold_block_storage_addrs<P: Clone>(block: &BIrBlock<P>, eff_ab: usize) ->
         let prov = node.prov.clone();
         let side = node.side;
         let new_kind: BIrStmt = match &node.kind {
-            BIrStmt::StorageRead { storage, lane, addr } if addr.len() > eff_ab => {
-                let raddr: Vec<IRVarId> = addr.iter().map(|v| IRVarId(remap[v.0 as usize])).collect();
+            BIrStmt::StorageRead {
+                storage,
+                lane,
+                addr,
+            } if addr.len() > eff_ab => {
+                let raddr: Vec<IRVarId> =
+                    addr.iter().map(|v| IRVarId(remap[v.0 as usize])).collect();
                 let folded = fold_addr(&raddr, eff_ab, num_params, &prov, side, &mut new_stmts);
-                BIrStmt::StorageRead { storage: *storage, lane: *lane, addr: folded }
+                BIrStmt::StorageRead {
+                    storage: *storage,
+                    lane: *lane,
+                    addr: folded,
+                }
             }
-            BIrStmt::StorageWrite { storage, lane, src, addr } if addr.len() > eff_ab => {
-                let raddr: Vec<IRVarId> = addr.iter().map(|v| IRVarId(remap[v.0 as usize])).collect();
+            BIrStmt::StorageWrite {
+                storage,
+                lane,
+                src,
+                addr,
+            } if addr.len() > eff_ab => {
+                let raddr: Vec<IRVarId> =
+                    addr.iter().map(|v| IRVarId(remap[v.0 as usize])).collect();
                 let folded = fold_addr(&raddr, eff_ab, num_params, &prov, side, &mut new_stmts);
                 BIrStmt::StorageWrite {
                     storage: *storage,
@@ -268,11 +295,22 @@ pub fn fold_block_storage_addrs<P: Clone>(block: &BIrBlock<P>, eff_ab: usize) ->
     let terminator = match &block.terminator {
         BIrTerminator::Jmp(t) => BIrTerminator::Jmp(BIrTarget {
             block: t.block.clone(),
-            args: t.args.iter().map(|a| IRVarId(remap[a.0 as usize])).collect(),
+            args: t
+                .args
+                .iter()
+                .map(|a| IRVarId(remap[a.0 as usize]))
+                .collect(),
         }),
-        other => panic!("fold_storage_addrs: unsupported terminator {:?}", core::mem::discriminant(other)),
+        other => panic!(
+            "fold_storage_addrs: unsupported terminator {:?}",
+            core::mem::discriminant(other)
+        ),
     };
-    BIrBlock { params: block.params, stmts: new_stmts, terminator }
+    BIrBlock {
+        params: block.params,
+        stmts: new_stmts,
+        terminator,
+    }
 }
 
 /// Lower a single-block circuit's symbolic storage ops into an [`OramProgram`].
@@ -294,7 +332,9 @@ pub fn storage_to_oram<P: Clone>(
             .stmts
             .iter()
             .filter_map(|n| match &n.kind {
-                BIrStmt::StorageRead { addr, .. } | BIrStmt::StorageWrite { addr, .. } => Some(addr.len()),
+                BIrStmt::StorageRead { addr, .. } | BIrStmt::StorageWrite { addr, .. } => {
+                    Some(addr.len())
+                }
                 _ => None,
             })
             .max()
@@ -338,9 +378,7 @@ pub fn storage_to_oram<P: Clone>(
             }
             BIrStmt::OracleCall { .. }
             | BIrStmt::OracleBit { .. }
-            | BIrStmt::OracleProjectedBit { .. } => {
-                return Err(OramLowerError::OracleUnsupported)
-            }
+            | BIrStmt::OracleProjectedBit { .. } => return Err(OramLowerError::OracleUnsupported),
             _ => {}
         }
     }
@@ -504,18 +542,15 @@ fn lower_segment<P: Clone>(
             BIrStmt::Zero => BIrStmt::Zero,
             BIrStmt::One => BIrStmt::One,
             BIrStmt::Not(a) => BIrStmt::Not(IRVarId(map_var(a.0, &local))),
-            BIrStmt::And(a, b) => BIrStmt::And(
-                IRVarId(map_var(a.0, &local)),
-                IRVarId(map_var(b.0, &local)),
-            ),
-            BIrStmt::Or(a, b) => BIrStmt::Or(
-                IRVarId(map_var(a.0, &local)),
-                IRVarId(map_var(b.0, &local)),
-            ),
-            BIrStmt::Xor(a, b) => BIrStmt::Xor(
-                IRVarId(map_var(a.0, &local)),
-                IRVarId(map_var(b.0, &local)),
-            ),
+            BIrStmt::And(a, b) => {
+                BIrStmt::And(IRVarId(map_var(a.0, &local)), IRVarId(map_var(b.0, &local)))
+            }
+            BIrStmt::Or(a, b) => {
+                BIrStmt::Or(IRVarId(map_var(a.0, &local)), IRVarId(map_var(b.0, &local)))
+            }
+            BIrStmt::Xor(a, b) => {
+                BIrStmt::Xor(IRVarId(map_var(a.0, &local)), IRVarId(map_var(b.0, &local)))
+            }
             // Storage ops and oracles never appear inside a compute segment.
             _ => unreachable!("non-compute stmt in segment"),
         };
@@ -628,7 +663,11 @@ fn unflatten_path<const Z: usize>(bits: &[bool], cfg: &OramGadgetConfig) -> Vec<
                             data[i / 8] |= 1 << (i % 8);
                         }
                     }
-                    OramEntry { addr: 0, leaf: 0, data }
+                    OramEntry {
+                        addr: 0,
+                        leaf: 0,
+                        data,
+                    }
                 }),
             })
             .collect();
@@ -710,9 +749,14 @@ impl<const Z: usize> ConcreteOramDrive<Z> {
         let cfg = &program.oram;
         assert_eq!(cfg.bucket_size, Z, "bucket size must match the tree");
         assert_eq!(cfg.data_bits, 1, "bit-level storage");
-        assert!(cfg.tree_block_bytes() <= 1, "run_concrete: B=1 tree needs entry_bits <= 8");
+        assert!(
+            cfg.tree_block_bytes() <= 1,
+            "run_concrete: B=1 tree needs entry_bits <= 8"
+        );
         ConcreteOramDrive {
-            spaces: (0..program.spaces.len().max(1)).map(|_| SpaceDrive::new(cfg)).collect(),
+            spaces: (0..program.spaces.len().max(1))
+                .map(|_| SpaceDrive::new(cfg))
+                .collect(),
             leaf_rng: Splitmix64(0x5EED),
         }
     }
@@ -778,7 +822,14 @@ impl<const Z: usize> ConcreteOramDrive<Z> {
                     acc_in.extend(flatten_path(&main_path, cfg));
                     acc_in.extend(enc(addr, ab));
                     acc_in.push(info.write);
-                    acc_in.extend(enc(if info.write { tape[info.wdata_slot] as u64 } else { 0 }, db));
+                    acc_in.extend(enc(
+                        if info.write {
+                            tape[info.wdata_slot] as u64
+                        } else {
+                            0
+                        },
+                        db,
+                    ));
                     acc_in.extend(enc(old_leaf, lb));
                     acc_in.extend(enc(new_leaf, lb));
                     acc_in.push(false);
@@ -853,7 +904,11 @@ pub fn run_concrete<const Z: usize>(
 ) -> (Vec<bool>, OramTree<Z, 1>) {
     let mut drive = ConcreteOramDrive::<Z>::for_program(program);
     let outputs = drive.run_program(program, inputs);
-    let first_tree = drive.spaces.into_iter().next().expect("at least one space").tree;
+    let first_tree = drive
+        .spaces
+        .into_iter()
+        .next()
+        .expect("at least one space")
+        .tree;
     (outputs, first_tree)
 }
-

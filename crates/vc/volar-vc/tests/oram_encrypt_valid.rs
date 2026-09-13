@@ -25,7 +25,9 @@ fn enc(value: u64, bits: usize) -> Vec<bool> {
     (0..bits).map(|j| (value >> j) & 1 == 1).collect()
 }
 fn dec(bits: &[bool]) -> u64 {
-    bits.iter().enumerate().fold(0u64, |a, (j, &b)| a | if b { 1u64 << j } else { 0 })
+    bits.iter()
+        .enumerate()
+        .fold(0u64, |a, (j, &b)| a | if b { 1u64 << j } else { 0 })
 }
 
 /// Pack an `eb`-bit value (LSB-first) into an entry's `data` field.
@@ -36,7 +38,11 @@ fn pack(bits: &[bool]) -> OramEntry<B> {
             data[i / 8] |= 1 << (i % 8);
         }
     }
-    OramEntry { addr: 0, leaf: 0, data }
+    OramEntry {
+        addr: 0,
+        leaf: 0,
+        data,
+    }
 }
 fn flatten_cipher_path(path: &[Bucket<Z, B>], eb: usize) -> Vec<bool> {
     let mut v = Vec::new();
@@ -78,7 +84,11 @@ fn format_tree(cfg: &OramGadgetConfig, tree_key: &[u8; 16]) -> OramTree<Z, B> {
                         data[i / 8] |= 1 << (i % 8);
                     }
                 }
-                tree.buckets[idx].entries[zs] = OramEntry { addr: 0, leaf: 0, data };
+                tree.buckets[idx].entries[zs] = OramEntry {
+                    addr: 0,
+                    leaf: 0,
+                    data,
+                };
             }
         }
     }
@@ -111,14 +121,23 @@ fn s6_encrypt_valid_hides_occupancy() {
         versioned_pads: false,
         version_bits: 0,
     };
-    let (eb, lb, ab, db) = (cfg.entry_bits(), cfg.leaf_bits(), cfg.addr_bits(), cfg.data_bits);
+    let (eb, lb, ab, db) = (
+        cfg.entry_bits(),
+        cfg.leaf_bits(),
+        cfg.addr_bits(),
+        cfg.data_bits,
+    );
     let n_path = cfg.path_entries();
     let num_leaves = cfg.num_leaves() as u64;
     assert!(Z * eb <= 128, "one AES block covers a node's slots");
     let tree_key: [u8; 16] = [
-        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f,
+        0x3c,
     ];
-    let tk_bits: Vec<bool> = tree_key.iter().flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1)).collect();
+    let tk_bits: Vec<bool> = tree_key
+        .iter()
+        .flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1))
+        .collect();
 
     let begin = build_begin(&cfg);
     let access = build_access(&cfg);
@@ -129,7 +148,11 @@ fn s6_encrypt_valid_hides_occupancy() {
 
     // The pre-formatted dummy slots are genuine ciphertext (non-trivial),
     // unlike the all-zero plaintext tree.
-    let initial_bytes: Vec<u8> = tree.buckets.iter().flat_map(|b| b.entries.iter().map(|e| e.data[0])).collect();
+    let initial_bytes: Vec<u8> = tree
+        .buckets
+        .iter()
+        .flat_map(|b| b.entries.iter().map(|e| e.data[0]))
+        .collect();
     assert!(
         initial_bytes.iter().any(|&b| b != 0),
         "encrypt_valid: pre-formatted dummy tree must be non-trivial ciphertext"
@@ -156,11 +179,19 @@ fn s6_encrypt_valid_hides_occupancy() {
         let mut begin_in = posmap_bits.clone();
         begin_in.extend(enc(addr, ab));
         begin_in.extend(enc(new_leaf, lb));
-        let bout = volar_fuzz::interpreter::biir::eval_biir(&begin, &begin_in).expect("begin evals");
+        let bout =
+            volar_fuzz::interpreter::biir::eval_biir(&begin, &begin_in).expect("begin evals");
         let old_leaf = dec(&bout[..lb]);
         posmap_bits = bout[lb..].to_vec();
 
-        let mut run_access = |path_bits: Vec<bool>, op_write: bool, wd: u64, pleaf: u64, nleaf: u64, ev: bool, stash: &[bool]| -> Vec<bool> {
+        let mut run_access = |path_bits: Vec<bool>,
+                              op_write: bool,
+                              wd: u64,
+                              pleaf: u64,
+                              nleaf: u64,
+                              ev: bool,
+                              stash: &[bool]|
+         -> Vec<bool> {
             let mut acc_in = stash.to_vec();
             acc_in.extend(path_bits);
             acc_in.extend(enc(addr, ab));
@@ -171,14 +202,23 @@ fn s6_encrypt_valid_hides_occupancy() {
             acc_in.push(ev);
             acc_in.extend(tk_bits.iter().copied());
             assert_eq!(acc_in.len(), cfg.access_params());
-            let out = volar_fuzz::interpreter::biir::eval_biir(&access, &acc_in).expect("access evals");
+            let out =
+                volar_fuzz::interpreter::biir::eval_biir(&access, &acc_in).expect("access evals");
             assert!(!out[0], "step {step}: stash overflow");
             out
         };
 
         // main.
         let mp = tree.read_path(old_leaf);
-        let out = run_access(flatten_cipher_path(&mp, eb), w.is_some(), w.unwrap_or(0) as u64, old_leaf, new_leaf, false, &stash_bits);
+        let out = run_access(
+            flatten_cipher_path(&mp, eb),
+            w.is_some(),
+            w.unwrap_or(0) as u64,
+            old_leaf,
+            new_leaf,
+            false,
+            &stash_bits,
+        );
         let rdata = dec(&out[1..1 + db]) as u8;
         let new_path = unflatten_cipher_path(&out[1 + db..1 + db + n_path * eb], &cfg);
         stash_bits = out[1 + db + n_path * eb..].to_vec();
@@ -189,7 +229,15 @@ fn s6_encrypt_valid_hides_occupancy() {
         counter += 1;
         if evict_leaf != old_leaf {
             let ep = tree.read_path(evict_leaf);
-            let eout = run_access(flatten_cipher_path(&ep, eb), false, 0, evict_leaf, 0, true, &stash_bits);
+            let eout = run_access(
+                flatten_cipher_path(&ep, eb),
+                false,
+                0,
+                evict_leaf,
+                0,
+                true,
+                &stash_bits,
+            );
             let nepath = unflatten_cipher_path(&eout[1 + db..1 + db + n_path * eb], &cfg);
             stash_bits = eout[1 + db + n_path * eb..].to_vec();
             tree.write_path(evict_leaf, &nepath);

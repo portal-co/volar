@@ -27,8 +27,7 @@ use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
 use volar_spec::garble::GlobalSecret;
 use volar_vc::tls13_2pc::{bits_of, correlation_circuit};
 use volar_vc::tls13_live::{
-    ClientKx, LiveRequestTemplate, LiveSecrets, NativeStream, run_live_tls_session,
-    walk_handshake,
+    ClientKx, LiveRequestTemplate, LiveSecrets, NativeStream, run_live_tls_session, walk_handshake,
 };
 
 type N = U16;
@@ -73,7 +72,10 @@ fn expected_request() -> Vec<u8> {
     r
 }
 
-fn make_cert() -> (Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>) {
+fn make_cert() -> (
+    Vec<rustls::pki_types::CertificateDer<'static>>,
+    rustls::pki_types::PrivateKeyDer<'static>,
+) {
     let key = rcgen::KeyPair::generate().expect("keygen");
     let params = rcgen::CertificateParams::new(vec![
         "localhost".to_string(),
@@ -140,9 +142,9 @@ fn live_two_party_tls_against_real_rustls_server() {
         let mut session = transport.try_clone().expect("clone");
         let mut rng = SeedRng::new(0xA11CE);
         let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
-        let mut chain = volar_mpc::strict_chain::ChainGarbler::<N>::new(
-            GlobalSecret::<N>::new(Array::<u8, N>::from([0x77u8; 16])),
-        );
+        let mut chain = volar_mpc::strict_chain::ChainGarbler::<N>::new(GlobalSecret::<N>::new(
+            Array::<u8, N>::from([0x77u8; 16]),
+        ));
         let tmpl = template();
         let out = run_live_tls_session::<N, D, _, _, NativeStream<TcpStream>>(
             &mut chain,
@@ -163,11 +165,8 @@ fn live_two_party_tls_against_real_rustls_server() {
         let n = out.vt_records.len() + 3;
         let fin = correlation_circuit(n);
         let fin_sched = volar_vc::compile_schedule(&fin).expect("correlation schedules");
-        let mut feeds: Vec<ChainFeed> = out
-            .vt_records
-            .iter()
-            .map(|&s| ChainFeed::Held(s))
-            .collect();
+        let mut feeds: Vec<ChainFeed> =
+            out.vt_records.iter().map(|&s| ChainFeed::Held(s)).collect();
         feeds.push(ChainFeed::Held(out.vf_server));
         feeds.push(ChainFeed::Held(out.vt_response));
         feeds.push(ChainFeed::Held(out.vs_success));
@@ -213,11 +212,7 @@ fn live_two_party_tls_against_real_rustls_server() {
     let n = out.vt_records.len() + 3;
     let fin = correlation_circuit(n);
     let fin_sched = volar_vc::compile_schedule(&fin).expect("correlation schedules");
-    let mut feeds: Vec<ChainFeed> = out
-        .vt_records
-        .iter()
-        .map(|&s| ChainFeed::Held(s))
-        .collect();
+    let mut feeds: Vec<ChainFeed> = out.vt_records.iter().map(|&s| ChainFeed::Held(s)).collect();
     feeds.push(ChainFeed::Held(out.vf_server));
     feeds.push(ChainFeed::Held(out.vt_response));
     feeds.push(ChainFeed::Held(out.vs_success));
@@ -248,10 +243,11 @@ fn live_two_party_tls_against_real_rustls_server() {
     );
     // The response plaintext matches.
     assert_eq!(out.response_inner, garb_out.response_inner);
-    assert!(out
-        .response_inner
-        .windows(b"\"success\":true".len())
-        .any(|w| w == b"\"success\":true"));
+    assert!(
+        out.response_inner
+            .windows(b"\"success\":true".len())
+            .any(|w| w == b"\"success\":true")
+    );
     // The server received exactly the request (asserted in-serve too).
     assert_eq!(
         *received.lock().unwrap(),

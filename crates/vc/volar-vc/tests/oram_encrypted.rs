@@ -100,7 +100,11 @@ impl Splitmix {
 /// Run the op sequence on an encrypted-tree ORAM with the given key, returning
 /// the final tree (so the test can compare ciphertext across keys). Every read
 /// is checked against the model.
-fn run_encrypted(cfg: &OramGadgetConfig, tree_key: [u8; 16], ops: &[(u64, Option<u8>)]) -> OramTree<Z, B> {
+fn run_encrypted(
+    cfg: &OramGadgetConfig,
+    tree_key: [u8; 16],
+    ops: &[(u64, Option<u8>)],
+) -> OramTree<Z, B> {
     let begin = build_begin(cfg);
     let access = build_access(cfg);
     let (eb, lb, ab, db) = (

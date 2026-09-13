@@ -244,7 +244,11 @@ pub fn ot_recv_malicious<G: ScalarOps, D: Digest, R: SpecRng>(
     rng: &mut R,
     s: G::Element,
     c: bool,
-) -> (BaseOtReceiver<G, D>, OtReceiverMsg<G>, OtConsistencyProof<G::Scalar>) {
+) -> (
+    BaseOtReceiver<G, D>,
+    OtReceiverMsg<G>,
+    OtConsistencyProof<G::Scalar>,
+) {
     let (state, msg) = ot_recv::<G, D, R>(rng, s, c);
     let proof = ot_recv_prove::<G, D, R>(rng, &state.s, &msg.r, &state.x, state.c);
     (state, msg, proof)
@@ -397,8 +401,7 @@ mod tests {
         for c in [false, true] {
             let mut rng = TestRng(0x1111_2222_3333_4444);
             let (sender, s) = ot_send_setup::<ToyGroup, Sha256, _>(&mut rng);
-            let (receiver, msg, proof) =
-                ot_recv_malicious::<ToyGroup, Sha256, _>(&mut rng, s, c);
+            let (receiver, msg, proof) = ot_recv_malicious::<ToyGroup, Sha256, _>(&mut rng, s, c);
             let keys = ot_send_finish_malicious::<ToyGroup, Sha256>(&sender, &msg, &proof);
             let (k0, k1) = keys.expect("honest receiver's proof verifies");
             let kc = ot_recv_finish::<ToyGroup, Sha256>(&receiver);
@@ -435,8 +438,7 @@ mod tests {
         for c in [false, true] {
             let mut rng = TestRng(0x9999_AAAA_BBBB_CCCC);
             let (sender, s) = ot_send_setup::<Ed25519, Sha256, _>(&mut rng);
-            let (receiver, msg, proof) =
-                ot_recv_malicious::<Ed25519, Sha256, _>(&mut rng, s, c);
+            let (receiver, msg, proof) = ot_recv_malicious::<Ed25519, Sha256, _>(&mut rng, s, c);
             let keys = ot_send_finish_malicious::<Ed25519, Sha256>(&sender, &msg, &proof);
             let (k0, k1) = keys.expect("honest Ed25519 receiver's proof verifies");
             let kc = ot_recv_finish::<Ed25519, Sha256>(&receiver);
@@ -462,10 +464,7 @@ mod tests {
         // Consistency with the group law: g^{a+b} = g^a · g^b.
         let g = Ed25519::generator();
         let lhs = Ed25519::scalar_mul(&g, &sum);
-        let rhs = Ed25519::add(
-            &Ed25519::scalar_mul(&g, &a),
-            &Ed25519::scalar_mul(&g, &b),
-        );
+        let rhs = Ed25519::add(&Ed25519::scalar_mul(&g, &a), &Ed25519::scalar_mul(&g, &b));
         assert_eq!(lhs.to_affine(), rhs.to_affine(), "g^(a+b) == g^a·g^b");
     }
 }

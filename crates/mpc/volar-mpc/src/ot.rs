@@ -173,7 +173,11 @@ pub struct CoReceiver<N: VoleArray<u8>> {
 
 impl<N: VoleArray<u8>> CoReceiver<N> {
     /// Step 2: consume `S`, commit to choice bit `c`, emit `R`.
-    pub fn setup<R: SpecRng>(rng: &mut R, s_bytes: &[u8], c: bool) -> Result<(Self, Vec<u8>), OtError> {
+    pub fn setup<R: SpecRng>(
+        rng: &mut R,
+        s_bytes: &[u8],
+        c: bool,
+    ) -> Result<(Self, Vec<u8>), OtError> {
         let s = decode_point(s_bytes).ok_or(OtError)?;
         let (receiver, msg) = ot_recv::<Ed25519, Sha256, _>(rng, s, c);
         Ok((
@@ -209,7 +213,11 @@ impl<N: VoleArray<u8>> CoReceiver<N> {
         let kc = ot_recv_finish::<Ed25519, Sha256>(&receiver);
         let keystream = kdf_expand(&kc, N::USIZE);
         let c = ot_recv_choice::<Ed25519, Sha256>(&receiver);
-        let ec = if c { &frame[N::USIZE..] } else { &frame[..N::USIZE] };
+        let ec = if c {
+            &frame[N::USIZE..]
+        } else {
+            &frame[..N::USIZE]
+        };
         Ok(Array::<u8, N>::from_fn(|i| ec[i] ^ keystream[i]))
     }
 }
@@ -259,8 +267,7 @@ impl<N: VoleArray<u8>> LoopbackOt<N> {
 
 impl<N: VoleArray<u8>> OtChannel<N> for LoopbackOt<N> {
     fn send(&mut self, labels: [&Array<u8, N>; 2]) {
-        self.queue
-            .push_back([labels[0].clone(), labels[1].clone()]);
+        self.queue.push_back([labels[0].clone(), labels[1].clone()]);
     }
 
     fn receive(&mut self, bit: bool) -> Array<u8, N> {

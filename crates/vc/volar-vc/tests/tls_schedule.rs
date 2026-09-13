@@ -13,7 +13,7 @@ use volar_fuzz::interpreter::biir::eval_biir;
 use volar_ir::boolar::BIrBlocks;
 use volar_vc::sha_gadget::build_sha256;
 use volar_vc::tls13::{expand_label_circuit, extract_circuit, transcript_circuit};
-use volar_vc::x25519_gadget::scalar_ref::{fp_from_bytes, fp_to_bytes, Fp};
+use volar_vc::x25519_gadget::scalar_ref::{Fp, fp_from_bytes, fp_to_bytes};
 use volar_vc::x25519_gadget::{build_fe_invert, build_fe_mul, build_x25519_step};
 
 fn hex(s: &str) -> Vec<u8> {

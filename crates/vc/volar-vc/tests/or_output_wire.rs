@@ -82,8 +82,14 @@ fn or_output_wire_two_party_matches_concrete() {
                 let concrete =
                     volar_fuzz::interpreter::biir::eval_biir(&circuit, &[a, b]).expect("concrete");
                 let partition = [InputOwner::Public, InputOwner::Public];
-                match embedder.invoke_schedule::<D>(&schedule, &partition, &[a, b], &[], &[], &mut ot)
-                {
+                match embedder.invoke_schedule::<D>(
+                    &schedule,
+                    &partition,
+                    &[a, b],
+                    &[],
+                    &[],
+                    &mut ot,
+                ) {
                     VcOutcome::Value(bits) => {
                         assert_eq!(bits, concrete, "which={which} a={a} b={b}")
                     }

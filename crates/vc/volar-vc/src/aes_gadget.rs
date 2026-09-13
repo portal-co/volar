@@ -223,7 +223,6 @@ fn gf_mul_const_c(b: &mut B, a: &[u32; 8], c: u8) -> [u32; 8] {
     out
 }
 
-
 /// Apply an 8-bit linear map given as per-output-bit input-bit sets (XOR-only).
 fn linear_byte_c(b: &mut B, terms: &[Vec<usize>; 8], a: &[u32; 8]) -> [u32; 8] {
     let mut out = [0u32; 8];
@@ -489,7 +488,8 @@ fn key_expansion_c(b: &mut B, key: &State) -> [State; 11] {
         }
         rks.push(st);
     }
-    rks.try_into().unwrap_or_else(|_| unreachable!("11 round keys"))
+    rks.try_into()
+        .unwrap_or_else(|_| unreachable!("11 round keys"))
 }
 
 /// Build the AES-128 block-encryption circuit.
@@ -539,7 +539,11 @@ pub fn build_aes128() -> BIrBlocks {
 fn inline_sub(b: &mut B, sub: &BIrBlocks, inputs: &[u32]) -> Vec<u32> {
     assert_eq!(sub.blocks.len(), 1, "inline_sub: single-block circuit");
     let block = &sub.blocks[0];
-    assert_eq!(block.params as usize, inputs.len(), "inline_sub: input arity");
+    assert_eq!(
+        block.params as usize,
+        inputs.len(),
+        "inline_sub: input arity"
+    );
     let mut remap: Vec<u32> = Vec::with_capacity(block.params as usize + block.stmts.len());
     remap.extend_from_slice(inputs);
     for stmt in &block.stmts {
@@ -687,11 +691,13 @@ fn build_aes128_gcm_shaped(aad_bytes: usize, pt_bytes: usize, decrypt: bool) -> 
 
     // J0 = iv || 00000001 in AES byte layout.
     let mut j0 = iv.clone();
-    j0.extend_from_slice(&const_block_c(&mut b, {
-        let mut x = [0u8; 16];
-        x[15] = 1;
-        x
-    })[96..128]);
+    j0.extend_from_slice(
+        &const_block_c(&mut b, {
+            let mut x = [0u8; 16];
+            x[15] = 1;
+            x
+        })[96..128],
+    );
     debug_assert_eq!(j0.len(), 128);
     let tag_mask = inline_sub(&mut b, &aes, &[key.clone(), j0.clone()].concat());
 

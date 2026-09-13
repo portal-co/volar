@@ -17,7 +17,10 @@
 //! accesses with S4-style label threading. Checked against `oram_access_local`.
 
 use volar_ir::boolar::BIrBlocks;
-use volar_oram::{AccessOp, AccessResult, Bucket, OramClient, OramEntry, OramTree, eviction_target, oram_access_local};
+use volar_oram::{
+    AccessOp, AccessResult, Bucket, OramClient, OramEntry, OramTree, eviction_target,
+    oram_access_local,
+};
 use volar_vc::oram_gadget::{OramGadgetConfig, build_access, build_begin};
 
 fn enc(value: u64, bits: usize) -> Vec<bool> {
@@ -34,7 +37,11 @@ fn enc_entry<const B: usize>(e: &OramEntry<B>, cfg: &OramGadgetConfig) -> Vec<bo
     let mut v = vec![real];
     v.extend(enc(if real { e.addr } else { 0 }, cfg.addr_bits()));
     v.extend(enc(if real { e.leaf } else { 0 }, cfg.leaf_bits()));
-    let data = e.data.iter().take(B).fold(0u64, |a, &b| (a << 8) | b as u64);
+    let data = e
+        .data
+        .iter()
+        .take(B)
+        .fold(0u64, |a, &b| (a << 8) | b as u64);
     v.extend(enc(if real { data } else { 0 }, cfg.data_bits));
     v
 }
@@ -50,9 +57,16 @@ fn dec_entry<const B: usize>(bits: &[bool], cfg: &OramGadgetConfig) -> OramEntry
     for (i, byte) in bytes.iter_mut().enumerate() {
         *byte = (data >> (8 * (B - 1 - i))) as u8;
     }
-    OramEntry { addr, leaf, data: bytes }
+    OramEntry {
+        addr,
+        leaf,
+        data: bytes,
+    }
 }
-fn flatten_path<const Z: usize, const B: usize>(path: &[Bucket<Z, B>], cfg: &OramGadgetConfig) -> Vec<bool> {
+fn flatten_path<const Z: usize, const B: usize>(
+    path: &[Bucket<Z, B>],
+    cfg: &OramGadgetConfig,
+) -> Vec<bool> {
     let mut v = Vec::new();
     for bucket in path {
         for e in &bucket.entries {
@@ -61,11 +75,16 @@ fn flatten_path<const Z: usize, const B: usize>(path: &[Bucket<Z, B>], cfg: &Ora
     }
     v
 }
-fn unflatten_path<const Z: usize, const B: usize>(bits: &[bool], cfg: &OramGadgetConfig) -> Vec<Bucket<Z, B>> {
+fn unflatten_path<const Z: usize, const B: usize>(
+    bits: &[bool],
+    cfg: &OramGadgetConfig,
+) -> Vec<Bucket<Z, B>> {
     let eb = cfg.entry_bits();
     (0..cfg.levels)
         .map(|level| Bucket {
-            entries: core::array::from_fn(|s| dec_entry(&bits[(level * Z + s) * eb..(level * Z + s + 1) * eb], cfg)),
+            entries: core::array::from_fn(|s| {
+                dec_entry(&bits[(level * Z + s) * eb..(level * Z + s + 1) * eb], cfg)
+            }),
         })
         .collect()
 }
@@ -106,7 +125,11 @@ impl<const Z: usize, const B: usize> RecLevel<Z, B> {
     fn new(cfg: OramGadgetConfig, is_base: bool, seed: u64) -> Self {
         let eb = cfg.entry_bits();
         let lb = cfg.leaf_bits();
-        let begin = if is_base { Some(build_begin(&cfg)) } else { None };
+        let begin = if is_base {
+            Some(build_begin(&cfg))
+        } else {
+            None
+        };
         let posmap_bits = if is_base {
             (0..cfg.num_addrs).flat_map(|_| enc(0, lb)).collect()
         } else {
@@ -141,7 +164,14 @@ impl<const Z: usize, const B: usize> RecLevel<Z, B> {
         dec(&out[..lb])
     }
     /// Run the access circuit (no posmap update) + deterministic eviction.
-    fn run_access(&mut self, addr: u64, op_write: bool, wdata: u64, old_leaf: u64, new_leaf: u64) -> u64 {
+    fn run_access(
+        &mut self,
+        addr: u64,
+        op_write: bool,
+        wdata: u64,
+        old_leaf: u64,
+        new_leaf: u64,
+    ) -> u64 {
         let (ab, lb, db, eb) = (
             self.cfg.addr_bits(),
             self.cfg.leaf_bits(),
@@ -160,12 +190,14 @@ impl<const Z: usize, const B: usize> RecLevel<Z, B> {
         acc_in.extend(enc(old_leaf, lb));
         acc_in.extend(enc(new_leaf, lb));
         acc_in.push(false);
-        let acc_out = volar_fuzz::interpreter::biir::eval_biir(&self.access, &acc_in).expect("access evals");
+        let acc_out =
+            volar_fuzz::interpreter::biir::eval_biir(&self.access, &acc_in).expect("access evals");
         assert!(!acc_out[0], "ORAM stash overflow");
         let rdata = dec(&acc_out[1..1 + db]);
         let npb = &acc_out[1 + db..1 + db + n_path * eb];
         self.stash_bits = acc_out[1 + db + n_path * eb..].to_vec();
-        self.tree.write_path(old_leaf, &unflatten_path::<Z, B>(npb, &self.cfg));
+        self.tree
+            .write_path(old_leaf, &unflatten_path::<Z, B>(npb, &self.cfg));
 
         let evict_leaf = eviction_target(self.counter, num_leaves);
         self.counter += 1;
@@ -179,11 +211,13 @@ impl<const Z: usize, const B: usize> RecLevel<Z, B> {
             ev_in.extend(enc(evict_leaf, lb));
             ev_in.extend(enc(0, lb));
             ev_in.push(true);
-            let ev_out = volar_fuzz::interpreter::biir::eval_biir(&self.access, &ev_in).expect("evict evals");
+            let ev_out = volar_fuzz::interpreter::biir::eval_biir(&self.access, &ev_in)
+                .expect("evict evals");
             assert!(!ev_out[0], "ORAM stash overflow (evict)");
             let nepb = &ev_out[1 + db..1 + db + n_path * eb];
             self.stash_bits = ev_out[1 + db + n_path * eb..].to_vec();
-            self.tree.write_path(evict_leaf, &unflatten_path::<Z, B>(nepb, &self.cfg));
+            self.tree
+                .write_path(evict_leaf, &unflatten_path::<Z, B>(nepb, &self.cfg));
         }
         rdata
     }
@@ -294,16 +328,31 @@ fn check_recursive<const Z: usize, const B: usize>(
             None => AccessOp::Read,
             Some(_) => AccessOp::Write(bytes8),
         };
-        let ref_result = oram_access_local(&mut ref_client, &mut ref_tree, addr, ref_op, &mut || ref_rng.next());
+        let ref_result =
+            oram_access_local(&mut ref_client, &mut ref_tree, addr, ref_op, &mut || {
+                ref_rng.next()
+            });
 
         let got = roram.access(0, addr, wdata.is_some(), wdata.unwrap_or(0));
 
         match (wdata, ref_result) {
             (None, AccessResult::ReadValue(bytes)) => {
                 let want = u64::from_le_bytes(bytes);
-                let mask = if data_bits_0 >= 64 { u64::MAX } else { (1u64 << data_bits_0) - 1 };
-                assert_eq!(got & mask, want & mask, "step {step}: recursive read({addr}) != reference");
-                assert_eq!(got & mask, model[addr as usize] & mask, "step {step}: read({addr}) != model");
+                let mask = if data_bits_0 >= 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << data_bits_0) - 1
+                };
+                assert_eq!(
+                    got & mask,
+                    want & mask,
+                    "step {step}: recursive read({addr}) != reference"
+                );
+                assert_eq!(
+                    got & mask,
+                    model[addr as usize] & mask,
+                    "step {step}: read({addr}) != model"
+                );
             }
             (Some(d), AccessResult::WriteAck) => {
                 model[addr as usize] = d;
@@ -317,7 +366,10 @@ fn mixed_ops(n: usize, touched: usize, seed: u64, data_bits: usize) -> Vec<(u64,
     let mut ops = Vec::new();
     let touched = touched.min(n);
     for a in 0..touched as u64 {
-        ops.push((a, Some((a.wrapping_mul(7).wrapping_add(1)) & ((1u64 << data_bits.min(64)) - 1))));
+        ops.push((
+            a,
+            Some((a.wrapping_mul(7).wrapping_add(1)) & ((1u64 << data_bits.min(64)) - 1)),
+        ));
     }
     for a in 0..touched as u64 {
         ops.push((a, None));

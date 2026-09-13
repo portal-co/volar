@@ -6,12 +6,19 @@
 use volar_vc::sha_gadget::{build_hkdf_sha256, build_hmac_sha256, build_sha256};
 
 fn bits_of(bytes: &[u8]) -> Vec<bool> {
-    bytes.iter().flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1)).collect()
+    bytes
+        .iter()
+        .flat_map(|b| (0..8).map(move |j| (b >> j) & 1 == 1))
+        .collect()
 }
 
 fn bytes_of(bits: &[bool]) -> Vec<u8> {
     bits.chunks(8)
-        .map(|c| c.iter().enumerate().fold(0u8, |a, (j, &b)| a | ((b as u8) << j)))
+        .map(|c| {
+            c.iter()
+                .enumerate()
+                .fold(0u8, |a, (j, &b)| a | ((b as u8) << j))
+        })
         .collect()
 }
 
@@ -95,9 +102,7 @@ fn hkdf_sha256_rfc5869_case1() {
     let okm = eval(&c, &inputs);
     assert_eq!(
         okm,
-        hex(
-            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
-        ),
+        hex("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"),
         "RFC5869 A.1 OKM"
     );
 }

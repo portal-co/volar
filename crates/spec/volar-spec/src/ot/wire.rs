@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use super::ferret::mpcot_reg::MpcotRegSenderMsg;
 use super::ferret::spcot::{Block, SpcotSenderMsg};
-use super::iknp::{IknpUMsg, IKNP_KAPPA, IKNP_KAPPA_BYTES};
+use super::iknp::{IKNP_KAPPA, IKNP_KAPPA_BYTES, IknpUMsg};
 use super::lwe::{LweOtCrs, LweOtRecvMsg, LweOtSenderMsgDyn, Zq};
 
 /// Sender → receiver: VOLE/Ferret `Δ` (16 bytes).
@@ -217,7 +217,9 @@ fn decode_zq_vec(bytes: &[u8], off: &mut usize) -> Vec<Zq> {
     let n = take_u32(bytes, off) as usize;
     let mut v = Vec::with_capacity(n);
     for _ in 0..n {
-        v.push(u32::from_le_bytes(bytes[*off..*off + 4].try_into().unwrap()));
+        v.push(u32::from_le_bytes(
+            bytes[*off..*off + 4].try_into().unwrap(),
+        ));
         *off += 4;
     }
     v

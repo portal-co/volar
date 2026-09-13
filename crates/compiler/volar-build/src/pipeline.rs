@@ -21,9 +21,9 @@ use volar_lir_saved::SavedLirModule;
 use crate::{CompileOptions, SavedCircuit};
 
 pub use volar_ir_build::{
-    BoolarCircuitStage, BoolarStage, FoldIr, FromReversible, FuseBoolar, LowerToBoolar,
-    LowerToLir, Movfuscate, PipelinePass, RCircuitStage, StorageToMuxBoolar, StorageToMuxIr,
-    ToReversible, UnrollIrEverything, VaffleStage,
+    BoolarCircuitStage, BoolarStage, FoldIr, FromReversible, FuseBoolar, LowerToBoolar, LowerToLir,
+    Movfuscate, PipelinePass, RCircuitStage, StorageToMuxBoolar, StorageToMuxIr, ToReversible,
+    UnrollIrEverything, VaffleStage,
 };
 
 type BoxError = Box<dyn std::error::Error>;
@@ -174,11 +174,7 @@ impl Pipeline<VolarIrStage> {
 
     /// Execute all passes and emit woven Rust source.
     #[cfg(feature = "weave-rust")]
-    pub fn emit_woven_rust(
-        self,
-        out_path: &Path,
-        weaver: &crate::Weaver,
-    ) -> Result<(), BoxError> {
+    pub fn emit_woven_rust(self, out_path: &Path, weaver: &crate::Weaver) -> Result<(), BoxError> {
         self.emit_rerun();
         let (blocks, types) = self.inner.to_volar_ir();
         weave_volar_ir_in_memory(&blocks, &types, out_path, weaver)
@@ -571,7 +567,7 @@ fn weave_volar_ir_chunked(
     weaver: &crate::Weaver,
     options: &volar_compiler::chunk_module::ChunkOptions,
 ) -> Result<Vec<std::path::PathBuf>, BoxError> {
-    use volar_compiler::chunk_module::{chunk_module_rust, ChunkConfig};
+    use volar_compiler::chunk_module::{ChunkConfig, chunk_module_rust};
     use volar_compiler_passes::chunk_function_bodies;
 
     let module = match weaver {
@@ -617,8 +613,7 @@ fn weave_volar_ir_to_ir_module(
     blocks: &IRBlocks,
     types: &IRTypes,
     weaver: &crate::Weaver,
-) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, BoxError>
-{
+) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, BoxError> {
     use crate::Weaver;
     let module = match weaver {
         Weaver::VoleProverIr { name, storage_sizes } => {

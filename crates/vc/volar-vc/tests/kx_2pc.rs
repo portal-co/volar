@@ -16,7 +16,9 @@ use volar_mpc::strict_chain::{ChainOut, ChainParty};
 use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
 use volar_spec::garble::GlobalSecret;
 use volar_vc::tls13_2pc::bits_of;
-use volar_vc::x25519_gadget::{build_fe_mul, build_fe_square, build_final_cswap, build_x25519_step};
+use volar_vc::x25519_gadget::{
+    build_fe_mul, build_fe_square, build_final_cswap, build_x25519_step,
+};
 
 type N = U16;
 type D = Sha256;
@@ -103,9 +105,9 @@ fn kx_2pc_shared_secret_matches_dalek() {
         let mut session = transport.try_clone().expect("clone");
         let mut rng = SeedRng::new(0xA11CE);
         let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
-        let mut chain = volar_mpc::strict_chain::ChainGarbler::<N>::new(
-            GlobalSecret::<N>::new(Array::<u8, N>::from([0x77u8; 16])),
-        );
+        let mut chain = volar_mpc::strict_chain::ChainGarbler::<N>::new(GlobalSecret::<N>::new(
+            Array::<u8, N>::from([0x77u8; 16]),
+        ));
         let (step, cswap, sq, mul) = kx_scheds();
         run_kx(
             &mut chain,
@@ -253,30 +255,31 @@ fn kx_step_round_2pc_matches_concrete() {
         let addr = format!("{}", listener.local_addr().unwrap());
         let sched_g = sched.clone();
         let inp_g = inp.clone();
-        let garbler = std::thread::spawn(move || {
-            let transport = TcpTransport::accept(&listener).unwrap();
-            let mut session = transport.try_clone().unwrap();
-            let mut rng = SeedRng::new(0xA11CE);
-            let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
-            let mut chain = volar_mpc::strict_chain::ChainGarbler::<N>::new(
-                GlobalSecret::<N>::new(Array::<u8, N>::from([0x77u8; 16])),
-            );
-            let feeds: Vec<ChainFeed> = (0..1276)
-                .map(|_| ChainFeed::Const)
-                .chain([ChainFeed::Eval])
-                .collect();
-            chain
-                .run_round::<D, _>(
-                    &sched_g,
-                    &feeds,
-                    &inp_g[..1276],
-                    &[],
-                    &vec![ChainOut::Reveal; 1021],
-                    &mut session,
-                    &mut ot,
-                )
-                .expect("round")
-        });
+        let garbler =
+            std::thread::spawn(move || {
+                let transport = TcpTransport::accept(&listener).unwrap();
+                let mut session = transport.try_clone().unwrap();
+                let mut rng = SeedRng::new(0xA11CE);
+                let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
+                let mut chain = volar_mpc::strict_chain::ChainGarbler::<N>::new(
+                    GlobalSecret::<N>::new(Array::<u8, N>::from([0x77u8; 16])),
+                );
+                let feeds: Vec<ChainFeed> = (0..1276)
+                    .map(|_| ChainFeed::Const)
+                    .chain([ChainFeed::Eval])
+                    .collect();
+                chain
+                    .run_round::<D, _>(
+                        &sched_g,
+                        &feeds,
+                        &inp_g[..1276],
+                        &[],
+                        &vec![ChainOut::Reveal; 1021],
+                        &mut session,
+                        &mut ot,
+                    )
+                    .expect("round")
+            });
         let transport = TcpTransport::connect(&addr).unwrap();
         let mut session = transport.try_clone().unwrap();
         let mut rng = SeedRng::new(0xB0B);
@@ -326,7 +329,7 @@ fn init_step_inputs(swap: bool, kt: bool) -> Vec<bool> {
 /// transcription bug without a two-party run.
 #[test]
 fn kx_inversion_slot_ops_match_reference() {
-    use volar_vc::x25519_gadget::scalar_ref::{fp_from_bytes, fp_invert, fp_mul, fp_to_bytes, Fp};
+    use volar_vc::x25519_gadget::scalar_ref::{Fp, fp_from_bytes, fp_invert, fp_mul, fp_to_bytes};
     let sq = build_fe_square();
     let mul = build_fe_mul();
     let fe_in = |w: &Fp| bits_of(&fp_to_bytes(w))[..255].to_vec();

@@ -79,10 +79,10 @@ where
 // GRAM storage driver for the two-party session (Workstream G1)
 // ---------------------------------------------------------------------------
 
+use digest::Digest;
 use volar_mpc::{GramDrive, MpcError, gram_data_base};
 use volar_oram::OramTree;
 use volar_spec::garble::gram_decode_label;
-use digest::Digest;
 
 /// The evaluator-side Garbled-RAM storage driver for a `volar-mpc` session:
 /// one ORAM space, run through the shared [`OramHost`] bit-level driver, with
@@ -168,12 +168,7 @@ impl<'t, D: Digest, N: VoleArray<u8>, const Z: usize, const B: usize>
 
     /// Run one full ORAM access (read or write) at compact block `cell`,
     /// returning the re-garbled read-data bit (bit 0 of block byte 0).
-    fn access(
-        &mut self,
-        cell: u64,
-        access: u64,
-        write: Option<bool>,
-    ) -> Eval<N> {
+    fn access(&mut self, cell: u64, access: u64, write: Option<bool>) -> Eval<N> {
         // The gate's `cell` is the compact block the schedule assigned this
         // memory address; the ORAM is addressed directly by it.
         let (addr_labels, addr_bases) = self.encode_addr(cell);
@@ -272,7 +267,9 @@ fn run_oram_access<D: Digest, N: VoleArray<u8>, const Z: usize, const B: usize>(
         let mut ep_bits = Vec::new();
         host.push_path(&mut ep_bits, &ep);
         let new_ep_bits = host.evict(&ep_bits).expect("GRAM access: evict");
-        let new_ep = host.take_path(&new_ep_bits, "evict_out").expect("GRAM access: evict path");
+        let new_ep = host
+            .take_path(&new_ep_bits, "evict_out")
+            .expect("GRAM access: evict path");
         tree.write_path(evict_leaf, &new_ep);
     }
 
@@ -374,7 +371,9 @@ mod tests {
             let mut ep_bits = Vec::new();
             host.push_path(&mut ep_bits, &ep);
             let new_ep_bits = host.evict(&ep_bits).expect("evict");
-            let new_ep = host.take_path(&new_ep_bits, "evict_out").expect("evict path");
+            let new_ep = host
+                .take_path(&new_ep_bits, "evict_out")
+                .expect("evict path");
             tree.write_path(evict_leaf, &new_ep);
         }
 
@@ -475,10 +474,7 @@ mod tests {
         let path_bits = 4 * 4 * (64 + 64 + 64);
         let mut args = vec![false; path_bits + 64 + 1];
         args[path_bits + 64] = false;
-        assert_eq!(
-            host.process(&args),
-            Err(OramHostError::ProcessWithoutBegin)
-        );
+        assert_eq!(host.process(&args), Err(OramHostError::ProcessWithoutBegin));
     }
 
     #[test]
@@ -537,8 +533,12 @@ mod tests {
             base: Array::<u8, U16>::from_fn(|i| (i as u8).wrapping_add(0x11)),
         };
         let arg_bases = [
-            Garble::<U16> { base: Array::<u8, U16>::from_fn(|i| (i as u8).wrapping_add(0x22)) },
-            Garble::<U16> { base: Array::<u8, U16>::from_fn(|i| (i as u8).wrapping_add(0x33)) },
+            Garble::<U16> {
+                base: Array::<u8, U16>::from_fn(|i| (i as u8).wrapping_add(0x22)),
+            },
+            Garble::<U16> {
+                base: Array::<u8, U16>::from_fn(|i| (i as u8).wrapping_add(0x33)),
+            },
         ];
 
         // Garbler side: derive the base for each of 2 result bits.

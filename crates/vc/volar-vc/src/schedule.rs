@@ -17,8 +17,8 @@
 //! are expanded to `Not`/`And` by De Morgan (`a | b = !(!a & !b)`), matching
 //! `volar_weaver`'s `expand_ors`.
 
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 use volar_ir::boolar::{BIrBlocks, BIrStmt, BIrTerminator};
 use volar_ir::ir::{IRBlockTargetId, IRVarId, StorageId};
@@ -54,10 +54,16 @@ impl core::fmt::Display for ScheduleError {
                 write!(f, "circuit return carries no output wires")
             }
             ScheduleError::UnsupportedStmt => {
-                write!(f, "circuit contains a non-boolean statement (oracle/action/rng)")
+                write!(
+                    f,
+                    "circuit contains a non-boolean statement (oracle/action/rng)"
+                )
             }
             ScheduleError::SymbolicStorageAddress => {
-                write!(f, "storage address is symbolic; GRAM storage needs concrete address bits")
+                write!(
+                    f,
+                    "storage address is symbolic; GRAM storage needs concrete address bits"
+                )
             }
             ScheduleError::DanglingWire => write!(f, "gate references a not-yet-defined wire"),
         }
@@ -132,19 +138,19 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
     let mut storage_cell_maps: Vec<alloc::collections::BTreeMap<u64, u64>> = Vec::new();
     let mut access_count: u64 = 0;
     // Resolve (or register) a StorageId to its storage index.
-    let mut storage_index =
-        |sid: StorageId,
-         ids: &mut Vec<StorageId>,
-         maps: &mut Vec<alloc::collections::BTreeMap<u64, u64>>| -> usize {
-            match ids.iter().position(|&s| s == sid) {
-                Some(i) => i,
-                None => {
-                    ids.push(sid);
-                    maps.push(alloc::collections::BTreeMap::new());
-                    ids.len() - 1
-                }
+    let mut storage_index = |sid: StorageId,
+                             ids: &mut Vec<StorageId>,
+                             maps: &mut Vec<alloc::collections::BTreeMap<u64, u64>>|
+     -> usize {
+        match ids.iter().position(|&s| s == sid) {
+            Some(i) => i,
+            None => {
+                ids.push(sid);
+                maps.push(alloc::collections::BTreeMap::new());
+                ids.len() - 1
             }
-        };
+        }
+    };
     // Compress a memory address to its compact ORAM block, assigning the next
     // free block on first touch.
     let compress = |mem_addr: u64, map: &mut alloc::collections::BTreeMap<u64, u64>| -> u64 {
@@ -156,7 +162,8 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
     // if any bit is non-constant.
     let concrete_cell = |addr: &[IRVarId],
                          wire_const: &Vec<Option<bool>>,
-                         stmt_wire: &Vec<usize>| -> Result<u64, ScheduleError> {
+                         stmt_wire: &Vec<usize>|
+     -> Result<u64, ScheduleError> {
         let mut cell = 0u64;
         for (bit, v) in addr.iter().enumerate() {
             let raw = v.0 as usize;
@@ -178,15 +185,19 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
     };
 
     // Resolve a source var (input or earlier stmt result) to a wire index.
-    let wire_of = |v: volar_ir::ir::IRVarId, stmt_wire: &Vec<usize>| -> Result<usize, ScheduleError> {
-        let raw = v.0 as usize;
-        if raw < num_inputs {
-            Ok(raw)
-        } else {
-            let ord = raw - num_inputs;
-            stmt_wire.get(ord).copied().ok_or(ScheduleError::DanglingWire)
-        }
-    };
+    let wire_of =
+        |v: volar_ir::ir::IRVarId, stmt_wire: &Vec<usize>| -> Result<usize, ScheduleError> {
+            let raw = v.0 as usize;
+            if raw < num_inputs {
+                Ok(raw)
+            } else {
+                let ord = raw - num_inputs;
+                stmt_wire
+                    .get(ord)
+                    .copied()
+                    .ok_or(ScheduleError::DanglingWire)
+            }
+        };
 
     let mut actions: Vec<volar_mpc::ActionSpec> = Vec::new();
     // ActionCall handle var (raw id) -> index into `actions`.
@@ -260,7 +271,9 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
                 });
                 stmt_wire.push(next_wire);
             }
-            BIrStmt::StorageWrite { storage, src, addr, .. } => {
+            BIrStmt::StorageWrite {
+                storage, src, addr, ..
+            } => {
                 let mem_addr = concrete_cell(addr, &wire_const, &stmt_wire)?;
                 let si = storage_index(*storage, &mut storage_ids, &mut storage_cell_maps);
                 let cell = compress(mem_addr, &mut storage_cell_maps[si]);

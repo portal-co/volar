@@ -194,12 +194,7 @@ where
     D: Digest,
     R: SpecRng,
 {
-    softspoken_cot_extend_base::<ChouOrlandi<G, D>, D, R, L>(
-        rng_s,
-        rng_r,
-        receiver_bits,
-        delta_msg,
-    )
+    softspoken_cot_extend_base::<ChouOrlandi<G, D>, D, R, L>(rng_s, rng_r, receiver_bits, delta_msg)
 }
 
 #[cfg(test)]

@@ -16,9 +16,9 @@ use volar_ir::ir::{IRBlockTargetId, IRVarId};
 use volar_ir_common::Node;
 use volar_mpc::InputOwner;
 use volar_mpc::ot::LoopbackOt;
+use volar_side::SideId;
 use volar_spec::garble::{Garble, GlobalSecret};
 use volar_vc::{VcEmbedder, VcOutcome, partition_from_sides};
-use volar_side::SideId;
 
 type N = U16;
 type D = Sha256;
@@ -27,7 +27,9 @@ fn det_bytes(seed: u8) -> Array<u8, N> {
     Array::<u8, N>::from_fn(|i| seed.wrapping_mul(31).wrapping_add(i as u8))
 }
 fn det_label(seed: u8) -> Garble<N> {
-    Garble { base: det_bytes(seed) }
+    Garble {
+        base: det_bytes(seed),
+    }
 }
 
 /// `(x0 ^ x1) & x2` — a 3-input, 1-AND circuit: wires 0,1,2 inputs;
@@ -142,12 +144,7 @@ fn vc_invoke_all_visibilities() {
             }
             let mut ot = LoopbackOt::<N>::new();
             let out = embedder().invoke::<D, _>(
-                &circuit,
-                &partition,
-                &public_b,
-                &private_b,
-                &blind_b,
-                &mut ot,
+                &circuit, &partition, &public_b, &private_b, &blind_b, &mut ot,
             );
             match out {
                 VcOutcome::Value(bits) => {
@@ -210,14 +207,7 @@ fn vc_rejects_non_circuit() {
         pre_init: vec![],
     };
     let mut ot = LoopbackOt::<N>::new();
-    let out = embedder().invoke::<D, _>(
-        &bad,
-        &[InputOwner::Public],
-        &[true],
-        &[],
-        &[],
-        &mut ot,
-    );
+    let out = embedder().invoke::<D, _>(&bad, &[InputOwner::Public], &[true], &[], &[], &mut ot);
     assert!(matches!(out, VcOutcome::Error(_)), "got {out:?}");
 }
 
@@ -324,8 +314,7 @@ fn storage_concrete(d: bool, a: bool) -> bool {
 fn gram_mux_baseline_through_mpc() {
     let circuit = storage_circuit_mux();
     // After MUX lowering the circuit is pure boolean gates; compile it.
-    let and_count = circuit
-        .blocks[0]
+    let and_count = circuit.blocks[0]
         .stmts
         .iter()
         .filter(|n| matches!(n.kind, volar_ir::boolar::BIrStmt::And(..)))
@@ -407,11 +396,7 @@ fn three_output_circuit() -> BIrBlocks {
 }
 
 fn three_output_concrete(inputs: &[bool; 3]) -> [bool; 3] {
-    [
-        inputs[0] & inputs[1],
-        inputs[0] ^ inputs[1],
-        !inputs[2],
-    ]
+    [inputs[0] & inputs[1], inputs[0] ^ inputs[1], !inputs[2]]
 }
 
 /// The schedule compiler surfaces all three output wires.
@@ -470,17 +455,16 @@ fn vc_invoke_multi_output_all_visibilities() {
             let embedder: VcEmbedder<N, 3, 1> = VcEmbedder::with_secret(secret, labels);
             let mut ot = LoopbackOt::<N>::new();
             let out = embedder.invoke::<D, _>(
-                &circuit,
-                &partition,
-                &public_b,
-                &private_b,
-                &blind_b,
-                &mut ot,
+                &circuit, &partition, &public_b, &private_b, &blind_b, &mut ot,
             );
             match out {
                 VcOutcome::Value(bits) => {
                     assert_eq!(bits.len(), 3);
-                    assert_eq!(bits.as_slice(), &three_output_concrete(&b), "vis {vis:?} inputs {b:?}");
+                    assert_eq!(
+                        bits.as_slice(),
+                        &three_output_concrete(&b),
+                        "vis {vis:?} inputs {b:?}"
+                    );
                 }
                 other => panic!("expected Value, got {other:?} for vis {vis:?} inputs {b:?}"),
             }
@@ -579,7 +563,12 @@ fn gram_storage_schedule_has_concrete_cells() {
     let n_storage = schedule
         .gates
         .iter()
-        .filter(|g| matches!(g, volar_mpc::Gate::StorageRead { .. } | volar_mpc::Gate::StorageWrite { .. }))
+        .filter(|g| {
+            matches!(
+                g,
+                volar_mpc::Gate::StorageRead { .. } | volar_mpc::Gate::StorageWrite { .. }
+            )
+        })
         .count();
     assert_eq!(n_storage, 3, "one write + two reads");
 }

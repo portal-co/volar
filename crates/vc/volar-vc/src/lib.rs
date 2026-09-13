@@ -69,9 +69,16 @@
 
 extern crate alloc;
 
-pub mod embedder;
 pub mod aes_extern;
 pub mod aes_gadget;
+pub mod embedder;
+pub mod faest_owf;
+pub mod oram_2pc;
+pub mod oram_gadget;
+pub mod oram_host;
+pub mod oram_lower;
+pub mod partition;
+pub mod schedule;
 pub mod sha_gadget;
 pub mod tls13;
 pub mod tls13_2pc;
@@ -80,13 +87,6 @@ pub mod tls13_2pc_correlate;
 #[cfg(feature = "std")]
 pub mod tls13_live;
 pub mod x25519_gadget;
-pub mod faest_owf;
-pub mod oram_2pc;
-pub mod oram_gadget;
-pub mod oram_lower;
-pub mod oram_host;
-pub mod partition;
-pub mod schedule;
 
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use oram_host::{GramEvalDrive, OramHost, OramHostError, OramHostShim};

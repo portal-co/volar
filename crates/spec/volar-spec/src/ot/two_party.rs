@@ -9,34 +9,32 @@ use digest::Digest;
 use sha3::Sha3_256;
 
 use super::base_ot::BaseOt;
+use super::ferret::FerretParams;
 use super::ferret::cot::{
-    ferret_prepare_receiver, ferret_receiver_mpcot, ferret_sender_mpcot, sample_seed, FerretPrep,
-    FerretReceiverSeed, FerretSenderSeed,
+    FerretPrep, FerretReceiverSeed, FerretSenderSeed, ferret_prepare_receiver,
+    ferret_receiver_mpcot, ferret_sender_mpcot, sample_seed,
 };
 use super::ferret::mpcot_reg::{
     mpcot_reg_choice_bits, mpcot_reg_receiver, mpcot_reg_sender, sample_regular_noise,
 };
-use super::ferret::pool::{
-    bea95_chosen_bit, CotPoolReceiver, CotPoolSender,
-};
+use super::ferret::pool::{CotPoolReceiver, CotPoolSender, bea95_chosen_bit};
 use super::ferret::spcot::{
-    spcot_batched_fs_chis, spcot_batched_masked_choice, spcot_batched_receiver_hash_w,
-    spcot_batched_sender_hash_v, KAPPA_BITS,
+    KAPPA_BITS, spcot_batched_fs_chis, spcot_batched_masked_choice, spcot_batched_receiver_hash_w,
+    spcot_batched_sender_hash_v,
 };
-use super::ferret::FerretParams;
 use super::iknp::{
-    iknp_receiver_finish, iknp_receiver_u_cols, iknp_sender_from_u, pack_kappa, IKNP_KAPPA,
-    IKNP_KAPPA_BYTES,
+    IKNP_KAPPA, IKNP_KAPPA_BYTES, iknp_receiver_finish, iknp_receiver_u_cols, iknp_sender_from_u,
+    pack_kappa,
 };
-use super::lwe::{LweBaseOt, LWE_N};
+use super::lwe::{LWE_N, LweBaseOt};
 use super::softspoken::TAG_DOMAIN;
 use super::wire::{
-    decode_ferret_open, decode_iknp_corr, decode_iknp_u, decode_lwe_crs, decode_lwe_payload,
-    decode_lwe_recv, decode_mpcot_reg, encode_bools, encode_ferret_open, encode_iknp_corr,
-    encode_iknp_u, encode_lwe_crs, encode_lwe_payload, encode_lwe_recv, encode_mpcot_reg,
-    decode_bools, TAG_BEA95, TAG_DELTA, TAG_FERRET_CHECK_HV, TAG_FERRET_CHECK_MASK,
-    TAG_FERRET_MPCOT, TAG_FERRET_OPEN, TAG_IKNP_CORR, TAG_IKNP_U, TAG_LWE_PAYLOAD, TAG_LWE_RECV,
-    TAG_LWE_SETUP, TAG_SSP_R, TAG_SSP_S,
+    TAG_BEA95, TAG_DELTA, TAG_FERRET_CHECK_HV, TAG_FERRET_CHECK_MASK, TAG_FERRET_MPCOT,
+    TAG_FERRET_OPEN, TAG_IKNP_CORR, TAG_IKNP_U, TAG_LWE_PAYLOAD, TAG_LWE_RECV, TAG_LWE_SETUP,
+    TAG_SSP_R, TAG_SSP_S, decode_bools, decode_ferret_open, decode_iknp_corr, decode_iknp_u,
+    decode_lwe_crs, decode_lwe_payload, decode_lwe_recv, decode_mpcot_reg, encode_bools,
+    encode_ferret_open, encode_iknp_corr, encode_iknp_u, encode_lwe_crs, encode_lwe_payload,
+    encode_lwe_recv, encode_mpcot_reg,
 };
 use crate::SpecRng;
 
@@ -631,7 +629,8 @@ mod tests {
                 let hat_bytes = io.recv(TAG_HAT);
                 let mut hat_block = [0u8; 16];
                 hat_block.copy_from_slice(&hat_bytes);
-                let hat = Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(hat_block)));
+                let hat =
+                    Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(hat_block)));
                 let q_and = derive_and_q(&delta, &q_a, &q_b, &hat);
                 let vope_bytes = io.recv(TAG_HAT);
                 let mut vb = [0u8; 16];

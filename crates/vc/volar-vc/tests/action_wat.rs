@@ -103,7 +103,8 @@ fn run(x: u64) -> (u64, usize) {
 
     let secret = GlobalSecret::<N>::new(Array::clone_from_slice(&[0x5Au8; 16]));
     let input_labels: Vec<Garble<N>> = (0..n_in).map(|i| det_label((i % 251) as u8 + 3)).collect();
-    let full = garble_schedule_strict_dyn_full::<N, D>(&elim, secret, input_labels).expect("garble");
+    let full =
+        garble_schedule_strict_dyn_full::<N, D>(&elim, secret, input_labels).expect("garble");
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = format!("{}", listener.local_addr().unwrap());
@@ -115,7 +116,15 @@ fn run(x: u64) -> (u64, usize) {
         let mut session = transport.try_clone().expect("clone");
         let mut rng = SeedRng::new(0xA11CE);
         let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
-        run_garbler_strict_actions::<N, D, _>(&full, &elim, &g_partition, &[], &[], &mut session, &mut ot)
+        run_garbler_strict_actions::<N, D, _>(
+            &full,
+            &elim,
+            &g_partition,
+            &[],
+            &[],
+            &mut session,
+            &mut ot,
+        )
     });
 
     // GRAM drivers for the schedule's storage spaces (the call-ABI spill
@@ -123,8 +132,13 @@ fn run(x: u64) -> (u64, usize) {
     let spec = g_sched.storages[0].clone();
     let mut tree = volar_oram::OramTree::<4, 8>::new(spec.levels);
     let drive_secret = GlobalSecret::<N>::new(Array::clone_from_slice(&[0x29u8; 16]));
-    let mut drive: volar_vc::GramEvalDrive<D, N, 4, 8> =
-        volar_vc::GramEvalDrive::new(&drive_secret, &mut tree, spec.levels, spec.num_cells, 0x5EED);
+    let mut drive: volar_vc::GramEvalDrive<D, N, 4, 8> = volar_vc::GramEvalDrive::new(
+        &drive_secret,
+        &mut tree,
+        spec.levels,
+        spec.num_cells,
+        0x5EED,
+    );
 
     let transport = TcpTransport::connect(&addr).expect("connect");
     let mut session = transport.try_clone().expect("clone");

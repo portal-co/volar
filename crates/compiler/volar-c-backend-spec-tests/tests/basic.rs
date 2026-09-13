@@ -746,7 +746,9 @@ fn test_native_loop_sum_to() {
         lower_function_with_loop_lowering(&build(), &mut b, LoopLowering::Native);
         let c_src = b.finish();
         std::fs::write("/tmp/test_c_src.c", &c_src).unwrap();
-        if std::env::var("VOLAR_DUMP_NATIVE_C").is_ok() { eprintln!("{c_src}"); }
+        if std::env::var("VOLAR_DUMP_NATIVE_C").is_ok() {
+            eprintln!("{c_src}");
+        }
         assert!(
             c_src.contains("goto block"),
             "native mode must emit a CFG back-edge, got straight-line code"
@@ -928,7 +930,7 @@ fn test_native_loop_struct_field_accumulate() {
         IrPattern, IrStmtKind, IrStruct, IrType, PrimitiveType, SpecBinOp, StructKind,
     };
     use volar_lir_codegen::{
-        LoopLowering, MonoPlanOptions, lower_module_monomorphized, mono::MonoEnv, MonoRoot,
+        LoopLowering, MonoPlanOptions, MonoRoot, lower_module_monomorphized, mono::MonoEnv,
     };
 
     let struct_def = IrStruct {
@@ -1046,7 +1048,10 @@ fn test_native_loop_struct_field_accumulate() {
         },
     );
     let c_src = b.finish();
-    assert!(c_src.contains("slot_"), "struct accumulator must be promoted to a slot");
+    assert!(
+        c_src.contains("slot_"),
+        "struct accumulator must be promoted to a slot"
+    );
     let output = compile_and_run(
         &c_src,
         r#"
@@ -1155,7 +1160,10 @@ fn test_native_while_loop() {
     let mut b = CBackend::new();
     lower_function_with_loop_lowering(&build(), &mut b, LoopLowering::Native);
     let c_src = b.finish();
-    assert!(c_src.contains("goto block"), "while loop must lower to a CFG loop");
+    assert!(
+        c_src.contains("goto block"),
+        "while loop must lower to a CFG loop"
+    );
     let output = compile_and_run(
         &c_src,
         r#"  printf("%llu\n", (unsigned long long)count_down(10ull));"#,
@@ -1268,7 +1276,7 @@ fn test_mem_backed_struct_local() {
         ExternalKind, IrBlock, IrExprKind, IrField, IrFunction, IrLit, IrModule, IrParam,
         IrPattern, IrStmtKind, IrStruct, IrType, PrimitiveType, SpecBinOp, StructKind,
     };
-    use volar_lir_codegen::{MonoPlanOptions, lower_module_monomorphized, mono::MonoEnv, MonoRoot};
+    use volar_lir_codegen::{MonoPlanOptions, MonoRoot, lower_module_monomorphized, mono::MonoEnv};
 
     let struct_def = IrStruct {
         kind: StructKind::Custom("Acc".to_owned()),
@@ -1397,10 +1405,10 @@ fn test_mem_backed_struct_local() {
 #[test]
 fn test_mem_backed_array_runtime_index() {
     use volar_compiler::ir::{
-        ArrayKind, ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrParam, IrPattern,
-        IrStmtKind, IrType, ArrayLength, PrimitiveType, SpecBinOp,
+        ArrayKind, ArrayLength, ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrParam,
+        IrPattern, IrStmtKind, IrType, PrimitiveType, SpecBinOp,
     };
-    use volar_lir_codegen::{lower_function_with_loop_lowering, LoopLowering};
+    use volar_lir_codegen::{LoopLowering, lower_function_with_loop_lowering};
 
     let arr_ty = IrType::Array {
         kind: ArrayKind::FixedArray,
@@ -1477,7 +1485,7 @@ fn test_mem_backed_if_join_struct() {
         ExternalKind, IrBlock, IrExprKind, IrField, IrFunction, IrLit, IrModule, IrParam,
         IrPattern, IrStmtKind, IrStruct, IrType, PrimitiveType, SpecBinOp, StructKind,
     };
-    use volar_lir_codegen::{MonoPlanOptions, lower_module_monomorphized, mono::MonoEnv, MonoRoot};
+    use volar_lir_codegen::{MonoPlanOptions, MonoRoot, lower_module_monomorphized, mono::MonoEnv};
 
     let struct_def = IrStruct {
         kind: StructKind::Custom("Pair".to_owned()),
@@ -1523,44 +1531,42 @@ fn test_mem_backed_if_join_struct() {
         return_type: Some(IrType::Primitive(PrimitiveType::U64)),
         where_clause: vec![],
         body: IrBlock {
-            stmts: vec![
-                ir_stmt(IrStmtKind::Let {
-                    pattern: IrPattern::Ident {
-                        mutable: false,
-                        name: "p".to_owned(),
-                        subpat: None,
-                    },
-                    ty: Some(pair_ty.clone()),
-                    init: Some(ir_expr(IrExprKind::If {
-                        cond: Box::new(ir_expr(IrExprKind::Binary {
-                            op: SpecBinOp::Ne,
-                            left: Box::new(ir_expr(IrExprKind::Var("flag".to_owned()))),
-                            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
-                        })),
-                        then_branch: IrBlock {
-                            stmts: vec![],
-                            expr: Some(Box::new(ir_expr(IrExprKind::StructExpr {
-                                kind: StructKind::Custom("Pair".to_owned()),
-                                type_args: vec![],
-                                fields: vec![
-                                    ("a".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(10)))),
-                                    ("b".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(20)))),
-                                ],
-                                rest: None,
-                            }))),
-                        },
-                        else_branch: Some(Box::new(ir_expr(IrExprKind::StructExpr {
+            stmts: vec![ir_stmt(IrStmtKind::Let {
+                pattern: IrPattern::Ident {
+                    mutable: false,
+                    name: "p".to_owned(),
+                    subpat: None,
+                },
+                ty: Some(pair_ty.clone()),
+                init: Some(ir_expr(IrExprKind::If {
+                    cond: Box::new(ir_expr(IrExprKind::Binary {
+                        op: SpecBinOp::Ne,
+                        left: Box::new(ir_expr(IrExprKind::Var("flag".to_owned()))),
+                        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+                    })),
+                    then_branch: IrBlock {
+                        stmts: vec![],
+                        expr: Some(Box::new(ir_expr(IrExprKind::StructExpr {
                             kind: StructKind::Custom("Pair".to_owned()),
                             type_args: vec![],
                             fields: vec![
-                                ("a".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(100)))),
-                                ("b".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(200)))),
+                                ("a".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(10)))),
+                                ("b".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(20)))),
                             ],
                             rest: None,
                         }))),
-                    })),
-                }),
-            ],
+                    },
+                    else_branch: Some(Box::new(ir_expr(IrExprKind::StructExpr {
+                        kind: StructKind::Custom("Pair".to_owned()),
+                        type_args: vec![],
+                        fields: vec![
+                            ("a".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(100)))),
+                            ("b".to_owned(), ir_expr(IrExprKind::Lit(IrLit::Int(200)))),
+                        ],
+                        rest: None,
+                    }))),
+                })),
+            })],
             expr: Some(Box::new(ir_expr(IrExprKind::Binary {
                 op: SpecBinOp::Add,
                 left: Box::new(field_expr("p", "a")),

@@ -23,13 +23,7 @@ const MAX_STASH: usize = 2 * LEVELS + Z + (1 << AB);
 fn guest() -> BIrBlocks<()> {
     let storage = StorageId(0);
     let lane = LaneId(0);
-    let (a0, a1, d, c0, c1) = (
-        IRVarId(0),
-        IRVarId(1),
-        IRVarId(2),
-        IRVarId(3),
-        IRVarId(4),
-    );
+    let (a0, a1, d, c0, c1) = (IRVarId(0), IRVarId(1), IRVarId(2), IRVarId(3), IRVarId(4));
     let mut block: BIrBlock<()> = BIrBlock {
         params: 5,
         stmts: vec![],
@@ -110,13 +104,7 @@ fn s3_symbolic_storage_matches_model() {
     for a in 0..4u64 {
         for d in [false, true] {
             for c in 0..4u64 {
-                let inputs = vec![
-                    a & 1 == 1,
-                    a & 2 == 2,
-                    d,
-                    c & 1 == 1,
-                    c & 2 == 2,
-                ];
+                let inputs = vec![a & 1 == 1, a & 2 == 2, d, c & 1 == 1, c & 2 == 2];
                 let (out, _tree) = run_concrete::<Z>(&program, &inputs);
                 // Model: write d to cell a; r1 = cell a = d; r2 = cell c.
                 let r1 = d;
@@ -156,7 +144,12 @@ fn s3_secure_default_encrypted_tree() {
 
     // A few (a, d, c) combos through the encrypted ORAM, checked against the
     // model (the full cross-product is covered by the plaintext test above).
-    for (a, d, c) in [(0u64, true, 0u64), (1, false, 2), (2, true, 3), (3, false, 3)] {
+    for (a, d, c) in [
+        (0u64, true, 0u64),
+        (1, false, 2),
+        (2, true, 3),
+        (3, false, 3),
+    ] {
         let inputs = vec![a & 1 == 1, a & 2 == 2, d, c & 1 == 1, c & 2 == 2];
         let (out, tree) = run_concrete::<Z>(&program, &inputs);
         let r1 = d;
@@ -250,7 +243,11 @@ fn s3_write_cells_then_symbolic_read() {
                     1 => e,
                     _ => false,
                 };
-                assert_eq!(out, vec![want], "d={d} e={e} a={a}: got {out:?}, want [{want}]");
+                assert_eq!(
+                    out,
+                    vec![want],
+                    "d={d} e={e} a={a}: got {out:?}, want [{want}]"
+                );
             }
         }
     }
@@ -278,8 +275,23 @@ fn guest_wide_addr() -> BIrBlocks<()> {
         next += 1;
         id
     };
-    push(BIrStmt::StorageWrite { storage, lane, src: d, addr: a.clone() }, &mut block);
-    let r = push(BIrStmt::StorageRead { storage, lane, addr: a.clone() }, &mut block);
+    push(
+        BIrStmt::StorageWrite {
+            storage,
+            lane,
+            src: d,
+            addr: a.clone(),
+        },
+        &mut block,
+    );
+    let r = push(
+        BIrStmt::StorageRead {
+            storage,
+            lane,
+            addr: a.clone(),
+        },
+        &mut block,
+    );
     block.terminator = BIrTerminator::Jmp(BIrTarget {
         block: IRBlockTargetId::Return,
         args: vec![r],
@@ -362,8 +374,23 @@ fn s3_larger_oram_instance_concrete() {
             next += 1;
             id
         };
-        push(BIrStmt::StorageWrite { storage, lane, src: d, addr: a.clone() }, &mut block);
-        let r = push(BIrStmt::StorageRead { storage, lane, addr: a.clone() }, &mut block);
+        push(
+            BIrStmt::StorageWrite {
+                storage,
+                lane,
+                src: d,
+                addr: a.clone(),
+            },
+            &mut block,
+        );
+        let r = push(
+            BIrStmt::StorageRead {
+                storage,
+                lane,
+                addr: a.clone(),
+            },
+            &mut block,
+        );
         block.terminator = BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return,
             args: vec![r],
@@ -429,10 +456,40 @@ fn guest_two_spaces() -> BIrBlocks<()> {
     };
     let sa = StorageId(0);
     let sb = StorageId(1);
-    push(BIrStmt::StorageWrite { storage: sa, lane, src: d, addr: vec![a0, a1] }, &mut block);
-    push(BIrStmt::StorageWrite { storage: sb, lane, src: e, addr: vec![b0, b1] }, &mut block);
-    let r0 = push(BIrStmt::StorageRead { storage: sa, lane, addr: vec![a0, a1] }, &mut block);
-    let r1 = push(BIrStmt::StorageRead { storage: sb, lane, addr: vec![b0, b1] }, &mut block);
+    push(
+        BIrStmt::StorageWrite {
+            storage: sa,
+            lane,
+            src: d,
+            addr: vec![a0, a1],
+        },
+        &mut block,
+    );
+    push(
+        BIrStmt::StorageWrite {
+            storage: sb,
+            lane,
+            src: e,
+            addr: vec![b0, b1],
+        },
+        &mut block,
+    );
+    let r0 = push(
+        BIrStmt::StorageRead {
+            storage: sa,
+            lane,
+            addr: vec![a0, a1],
+        },
+        &mut block,
+    );
+    let r1 = push(
+        BIrStmt::StorageRead {
+            storage: sb,
+            lane,
+            addr: vec![b0, b1],
+        },
+        &mut block,
+    );
     block.terminator = BIrTerminator::Jmp(BIrTarget {
         block: IRBlockTargetId::Return,
         args: vec![r0, r1],

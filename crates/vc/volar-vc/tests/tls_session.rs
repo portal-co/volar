@@ -18,7 +18,10 @@
 use volar_fuzz::interpreter::biir::eval_biir;
 use volar_ir::boolar::BIrBlocks;
 use volar_vc::sha_gadget::build_sha256;
-use volar_vc::tls13::{expand_label_circuit, extract_circuit, nonce_xor, record_open_circuit, record_seal_circuit, transcript_circuit};
+use volar_vc::tls13::{
+    expand_label_circuit, extract_circuit, nonce_xor, record_open_circuit, record_seal_circuit,
+    transcript_circuit,
+};
 
 fn hex(s: &str) -> Vec<u8> {
     let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
@@ -162,7 +165,11 @@ fn run_session(shared: &[u8; 32]) {
     let s_hs = expand_label(&hs, b"s hs traffic", &th1, 32);
     let s_key: [u8; 16] = expand_label(&s_hs, b"key", &[], 16).try_into().unwrap();
     let s_iv: [u8; 12] = expand_label(&s_hs, b"iv", &[], 12).try_into().unwrap();
-    assert_eq!(s_key, hex("3fce516009c21727d0f2e4e86ee403bc")[..], "s hs key");
+    assert_eq!(
+        s_key,
+        hex("3fce516009c21727d0f2e4e86ee403bc")[..],
+        "s hs key"
+    );
     assert_eq!(s_iv, hex("5d313eb2671276ee13000b30")[..], "s hs iv");
 
     // ---- open the server's encrypted handshake flight (seq 0) ----
@@ -189,7 +196,11 @@ fn run_session(shared: &[u8; 32]) {
         hex("9b9b141d906337fbd2cbdce71df4deda4ab42c309572cb7fffee5454b78f0718"),
         "server verify_data"
     );
-    assert_eq!(&payload[payload.len() - 32..], &vd_s[..], "Finished body matches");
+    assert_eq!(
+        &payload[payload.len() - 32..],
+        &vd_s[..],
+        "Finished body matches"
+    );
 
     // ---- master + application secrets (transcript through server Fin) --
     let th6 = sha256(&transcript);
@@ -238,22 +249,35 @@ fn run_session(shared: &[u8; 32]) {
     fin_inner.extend_from_slice(&vd_c);
     fin_inner.push(0x16);
     let fin_record = seal_record(&c_key, &c_iv, 0, &fin_inner);
-    assert_eq!(fin_record, hex(CLIENT_FIN_RECORD), "client Finished record byte-exact");
+    assert_eq!(
+        fin_record,
+        hex(CLIENT_FIN_RECORD),
+        "client Finished record byte-exact"
+    );
 
     // ---- application traffic keys --------------------------------------
     let ck_ap: [u8; 16] = expand_label(&c_ap, b"key", &[], 16).try_into().unwrap();
     let civ_ap: [u8; 12] = expand_label(&c_ap, b"iv", &[], 12).try_into().unwrap();
-    assert_eq!(ck_ap, hex("17422dda596ed5d9acd890e3c63f5051")[..], "client app key");
+    assert_eq!(
+        ck_ap,
+        hex("17422dda596ed5d9acd890e3c63f5051")[..],
+        "client app key"
+    );
     assert_eq!(civ_ap, hex("5b78923dee08579033e523d9")[..], "client app iv");
     let sk_ap: [u8; 16] = expand_label(&s_ap, b"key", &[], 16).try_into().unwrap();
     let siv_ap: [u8; 12] = expand_label(&s_ap, b"iv", &[], 12).try_into().unwrap();
-    assert_eq!(sk_ap, hex("9f02283b6c9c07efc26bb9f2ac92e356")[..], "server app key");
+    assert_eq!(
+        sk_ap,
+        hex("9f02283b6c9c07efc26bb9f2ac92e356")[..],
+        "server app key"
+    );
     assert_eq!(siv_ap, hex("cf782b88dd83549aadf1e984")[..], "server app iv");
 
     // ---- Turnstile siteverify over the application channel -------------
     // The POST body carries the server-private secret and the
     // client-private token (both private inputs in the MPC driver).
-    let post = b"{\"secret\":\"1x0000000000000000000000000000000AA\",\"response\":\"03AFcWeA4...\"}";
+    let post =
+        b"{\"secret\":\"1x0000000000000000000000000000000AA\",\"response\":\"03AFcWeA4...\"}";
     let req_inner = {
         let mut v = Vec::new();
         v.extend_from_slice(post);
@@ -262,7 +286,10 @@ fn run_session(shared: &[u8; 32]) {
     };
     let req_record = seal_record(&ck_ap, &civ_ap, 0, &req_inner);
     let (req_back, req_ok) = open_record(&ck_ap, &civ_ap, 0, &req_record);
-    assert!(req_ok && req_back == req_inner, "client app record round-trip");
+    assert!(
+        req_ok && req_back == req_inner,
+        "client app record round-trip"
+    );
 
     // The scripted siteverify response, sealed with the server app keys.
     let resp_json = b"{\"success\":true,\"challenge_ts\":\"2026-09-12T00:00:00Z\",\"hostname\":\"portalsolutions.com\"}";
