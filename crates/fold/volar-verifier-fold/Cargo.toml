@@ -8,10 +8,10 @@ repository.workspace = true
 
 [dependencies]
 volar-discipline = { workspace = true }
-volar-compiler = { path = "../../compiler/volar-compiler" }
-volar-lir-codegen = { path = "../../compiler/volar-lir-codegen" }
+volar-compiler = { git = "https://github.com/portal-co/volar.git" }
+volar-lir-codegen = { git = "https://github.com/portal-co/volar.git" }
 volar-c-backend = { workspace = true }
-volar-weaver = { path = "../../compiler/volar-weaver" }
+volar-weaver = { git = "https://github.com/portal-co/volar.git" }
 
 [dev-dependencies]
 volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }

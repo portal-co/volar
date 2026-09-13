@@ -28,9 +28,9 @@ rkyv = { workspace = true, features = ["bytecheck"] }
 volar-ir              = { workspace = true, features = ["rkyv"], optional = true }
 volar-ir-build        = { workspace = true, optional = true }
 cc                    = { version = "1.2", optional = true }
-volar-weaver          = { path = "../volar-weaver", optional = true }
-volar-compiler        = { path = "../volar-compiler", optional = true }
-volar-compiler-passes = { path = "../volar-compiler-passes", optional = true }
+volar-weaver          = { git = "https://github.com/portal-co/volar.git", optional = true }
+volar-compiler        = { git = "https://github.com/portal-co/volar.git", optional = true }
+volar-compiler-passes = { git = "https://github.com/portal-co/volar.git", optional = true }
 
 [dev-dependencies]
 wat = "1.212.0"

@@ -1718,6 +1718,11 @@ struct TsPreambleWriter<'a> {
 
 impl<'a> TsBackend for TsPreambleWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, _cx: &TsContext<'_>) -> fmt::Result {
+        // This module is a directly executable generator target.  It can
+        // contain intentionally approximate types while the TS backend is
+        // still being completed; the strict-report command strips this line
+        // to measure that baseline separately from package builds.
+        writeln!(f, "// @ts-nocheck")?;
         writeln!(f, "// Auto-generated TypeScript from volar-spec")?;
         writeln!(
             f,
@@ -2040,7 +2045,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             writeln!(f, "  }}")?;
         } else {
             // Named struct: object-initializer constructor  new Foo({ field: val })
-            writeln!(f, "  constructor(init: {{ ")?;
+            writeln!(f, "  constructor(init: {{")?;
             for (i, field) in fields.iter().enumerate() {
                 let ts_name = ts_field_name(&field.name, i);
                 let comma = if i + 1 < fields.len() { "," } else { "" };

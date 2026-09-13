@@ -140,7 +140,7 @@ where
 /// `encode` consumes — a free linear combination (public `pow2` powers).  Use
 /// the same `pow2` on prover and verifier.
 pub fn vope_bitpack<const BITS: usize, N, T>(
-    bits: &[Vope<N, T, U1>; BITS],
+    bit_values: &[Vope<N, T, U1>; BITS],
     pow2: &[T; BITS],
 ) -> Vope<N, T, U1>
 where
@@ -153,7 +153,7 @@ where
         v: Array::<T, N>::from_fn(|_| T::default()),
     };
     for index in 0..BITS {
-        acc = acc + vope_scale_const(&bits[index], &pow2[index]);
+        acc = acc + vope_scale_const(&bit_values[index], &pow2[index]);
     }
     acc
 }
@@ -202,7 +202,10 @@ where
 }
 
 /// Verifier mirror of [`vope_bitpack`]: `Σ bits[i] · pow2[i]` over `Q` shares.
-pub fn q_bitpack<const BITS: usize, N, T>(bits: &[Q<N, T>; BITS], pow2: &[T; BITS]) -> Q<N, T>
+pub fn q_bitpack<const BITS: usize, N, T>(
+    bit_values: &[Q<N, T>; BITS],
+    pow2: &[T; BITS],
+) -> Q<N, T>
 where
     N: ArraySize,
     T: Clone + Add<Output = T> + Mul<Output = T> + Default,
@@ -211,7 +214,7 @@ where
         q: Array::<T, N>::from_fn(|_| T::default()),
     };
     for index in 0..BITS {
-        let scaled = q_scale_const(&bits[index], &pow2[index]);
+        let scaled = q_scale_const(&bit_values[index], &pow2[index]);
         acc = Q {
             q: Array::<T, N>::from_fn(|i| acc.q[i].clone() + scaled.q[i].clone()),
         };

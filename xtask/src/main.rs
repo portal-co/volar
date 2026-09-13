@@ -87,7 +87,7 @@ fn gen_specs(check_only: bool) {
     // ── Generate outputs ────────────────────────────────────────────────────
     let generated = [
         (
-            workspace.join("packages/volar-runtime/src/generated.ts"),
+            workspace.join("packages/volar-spec-ts/generated.ts"),
             print_module_typescript(&combined_module),
         ),
         (

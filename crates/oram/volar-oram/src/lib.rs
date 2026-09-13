@@ -37,6 +37,9 @@ use volar_channel::{Protocol, Yield};
 // Re-export core types so downstream doesn't need to depend on both crates.
 pub use volar_oram_core::{Bucket, OramEntry};
 
+pub mod bit_host;
+pub use bit_host::{OramHost, OramHostError};
+
 // Re-export core helper functions (used by both crates).
 pub use volar_oram_core::{bit_reverse, bits_needed, eviction_target};
 
@@ -145,6 +148,72 @@ fn path_indices_for(leaf: u64, levels: usize) -> Vec<usize> {
     }
     path.reverse();
     path
+}
+
+/// A **memory-compact** ORAM tree for the encrypted-tree regime: it stores only
+/// the `B`-byte ciphertext per slot, dropping the plaintext [`OramEntry`]'s
+/// `addr`/`leaf` fields (which are encrypted *into* the block and so need not
+/// be stored separately). This is the host-side representation that meets the
+/// RAM budget: at `B` bytes/slot it uses `(2^levels - 1) * Z * B` bytes, versus
+/// the plaintext tree's `(16 + B)` bytes/slot.
+///
+/// For 128M blocks (2^27 addresses, levels=28) with Z=4, B=8 this is ~8 GiB
+/// (vs ~24 GiB for [`OramTree`]). Only usable with an encrypted tree (the
+/// ciphertext hides the tags); the plaintext tree must keep `addr`/`leaf`.
+pub struct CompactOramTree<const Z: usize, const B: usize> {
+    /// Tree depth (number of levels). The tree has `2^(L-1)` leaves.
+    pub levels: usize,
+    /// Flat slot storage: `(2^levels - 1) * Z` slots, `B` bytes each, heap order.
+    pub data: Vec<u8>,
+}
+
+impl<const Z: usize, const B: usize> CompactOramTree<Z, B> {
+    /// A fresh tree of `levels` levels, all slots zeroed (the caller pre-formats
+    /// it to the encrypted-dummy pads).
+    pub fn new(levels: usize) -> Self {
+        let nodes = (1usize << levels) - 1;
+        CompactOramTree {
+            levels,
+            data: vec![0u8; nodes * Z * B],
+        }
+    }
+
+    /// Total bytes held by the tree.
+    pub fn byte_len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// The heap-indexed path (root-to-leaf) for `leaf`.
+    pub fn path_indices(&self, leaf: u64) -> Vec<usize> {
+        path_indices_for(leaf, self.levels)
+    }
+
+    /// Read the path to `leaf`, one `[[u8; B]; Z]` bucket-array per level
+    /// (root-to-leaf order).
+    pub fn read_path(&self, leaf: u64) -> Vec<[[u8; B]; Z]> {
+        self.path_indices(leaf)
+            .iter()
+            .map(|&idx| {
+                let base = idx * Z * B;
+                core::array::from_fn(|zs| {
+                    self.data[base + zs * B..base + (zs + 1) * B].try_into().unwrap()
+                })
+            })
+            .collect()
+    }
+
+    /// Write the path to `leaf`. `path` holds one `[[u8; B]; Z]` bucket-array
+    /// per level (root-to-leaf), so `path.len() == levels`.
+    pub fn write_path(&mut self, leaf: u64, path: &[[[u8; B]; Z]]) {
+        let indices = self.path_indices(leaf);
+        assert_eq!(path.len(), indices.len(), "bucket count must match path length");
+        for (i, &idx) in indices.iter().enumerate() {
+            let base = idx * Z * B;
+            for zs in 0..Z {
+                self.data[base + zs * B..base + (zs + 1) * B].copy_from_slice(&path[i][zs]);
+            }
+        }
+    }
 }
 
 /// Check whether a leaf is in the subtree rooted at `node_idx` in a tree

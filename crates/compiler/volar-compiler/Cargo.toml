@@ -23,4 +23,4 @@ volar-ir-common.workspace = true
 volar-provenance.workspace = true
 
 [dev-dependencies]
-volar-compiler = { path = ".", features = ["parsing"] }
+volar-compiler = { git = "https://github.com/portal-co/volar.git", features = ["parsing"] }

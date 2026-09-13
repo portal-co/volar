@@ -70,6 +70,7 @@ use volar_ir::{
 pub use volar_provenance::{ProvenanceHandler, NoProvenance, KeepProvenance, MapProvenance};
 
 pub mod garble;
+pub mod mpc;
 pub mod vole;
 pub(crate) mod vole_common;
 pub(crate) mod vole_split;
@@ -99,6 +100,9 @@ pub use garble::{
     weave_garbler_with_handler, weave_garbler_bounded_with_handler,
     weave_into_gc_with_handler, weave_into_gc_bounded_with_handler,
     weave_eval_from_setup_with_handler, weave_eval_from_setup_bounded_with_handler,
+    GramActionConfig,
+    weave_evaluator_with_gram,
+    weave_garbler_with_gram,
     LoweringMode,
 };
 #[cfg(feature = "linking")]

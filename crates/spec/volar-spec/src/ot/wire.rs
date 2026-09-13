@@ -34,6 +34,10 @@ pub const TAG_FERRET_MPCOT: u8 = 10;
 pub const TAG_BEA95: u8 = 11;
 /// Quicksilver AND `hat`.
 pub const TAG_HAT: u8 = 12;
+/// Ferret malicious consistency check: receiver's masked extra choice `x*′`.
+pub const TAG_FERRET_CHECK_MASK: u8 = 13;
+/// Ferret malicious consistency check: sender's `H'(V)`.
+pub const TAG_FERRET_CHECK_HV: u8 = 14;
 
 fn push_u32(buf: &mut Vec<u8>, x: u32) {
     buf.extend_from_slice(&x.to_le_bytes());

@@ -15,8 +15,8 @@ digest.workspace = true
 sha3.workspace = true
 hybrid-array.workspace = true
 elliptic-curve = {workspace = true,features = ["arithmetic"]}
-volar-primitives = { path = "../volar-primitives" }
-volar-common = { path = "../volar-common" }
+volar-primitives = { git = "https://github.com/portal-co/volar.git" }
+volar-common = { git = "https://github.com/portal-co/volar.git" }
 
 [dev-dependencies]
 proptest = "1"

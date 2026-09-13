@@ -15,6 +15,7 @@ use sha3::Sha3_256;
 use super::params::FerretParams;
 use super::spcot::{
     spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend, Block, SpcotSenderMsg,
+    KAPPA_BITS,
 };
 use crate::SpecRng;
 
@@ -108,6 +109,8 @@ fn next_pow2(x: usize) -> usize {
 }
 
 /// Uniform MPCOT sender. Pads each bucket+1 up to a power of two for SPCOT.
+/// Returns the final (XOR-combined) `s`, the per-bucket SPCOT outputs `s_bins`
+/// (needed for the malicious consistency check), and the sender message.
 pub fn mpcot_uni_sender<R: SpecRng>(
     rng: &mut R,
     delta: &Block,
@@ -115,7 +118,7 @@ pub fn mpcot_uni_sender<R: SpecRng>(
     hash_seed: [u8; 16],
     cot_q_chunks: &[Vec<Block>],
     choices_chunks: &[Vec<bool>],
-) -> (Vec<Block>, MpcotUniSenderMsg) {
+) -> (Vec<Block>, Vec<Vec<Block>>, MpcotUniSenderMsg) {
     let n = params.n;
     let m = cuckoo_table_size(params.t);
     let buckets = build_buckets(&hash_seed, n, m);
@@ -144,6 +147,7 @@ pub fn mpcot_uni_sender<R: SpecRng>(
     }
     (
         s,
+        s_bins,
         MpcotUniSenderMsg {
             hash_seed,
             blocks,
@@ -151,13 +155,14 @@ pub fn mpcot_uni_sender<R: SpecRng>(
     )
 }
 
-/// Uniform MPCOT receiver.
+/// Uniform MPCOT receiver. Returns the final (XOR-combined) `r` and the
+/// per-bucket SPCOT outputs `r_bins` (needed for the consistency check).
 pub fn mpcot_uni_receiver(
     params: FerretParams,
     table: &[Option<usize>],
     cot_t_chunks: &[Vec<Block>],
     msg: &MpcotUniSenderMsg,
-) -> Vec<Block> {
+) -> (Vec<Block>, Vec<Vec<Block>>) {
     let n = params.n;
     let m = cuckoo_table_size(params.t);
     let buckets = build_buckets(&msg.hash_seed, n, m);
@@ -183,7 +188,67 @@ pub fn mpcot_uni_receiver(
         }
         r[x] = acc;
     }
-    r
+    (r, r_bins)
+}
+
+/// Per-bucket `(puncture index α, padded SPCOT length)` for the consistency
+/// check: bucket `j`'s puncture is the Cuckoo-table value's position (or the
+/// extra cell `|B_j|` when the bucket is empty), and the length is
+/// `next_pow2(|B_j| + 1)`.
+pub fn mpcot_uni_bucket_params(
+    params: FerretParams,
+    hash_seed: &[u8; 16],
+    table: &[Option<usize>],
+) -> (Vec<usize>, Vec<usize>) {
+    let n = params.n;
+    let m = cuckoo_table_size(params.t);
+    let buckets = build_buckets(hash_seed, n, m);
+    let mut alphas = Vec::with_capacity(m);
+    let mut lens = Vec::with_capacity(m);
+    for j in 0..m {
+        let need = buckets[j].len() + 1;
+        let splen = next_pow2(need);
+        let p = match table[j] {
+            None => buckets[j].len(),
+            Some(val) => buckets[j].iter().position(|&y| y == val).unwrap(),
+        };
+        alphas.push(p);
+        lens.push(splen);
+    }
+    (alphas, lens)
+}
+
+/// Batched malicious-security consistency check over the `m` Cuckoo-bucket
+/// SPCOT executions (Ferret-Uni Fig. 6 steps 6–9 batched). Each bucket's bins
+/// (`s_bins` / `r_bins`) carry that bucket's padded SPCOT output; `alphas` and
+/// `lens` come from [`mpcot_uni_bucket_params`].
+pub fn mpcot_uni_consistency_check(
+    delta: &Block,
+    s_bins: &[Vec<Block>],
+    r_bins: &[Vec<Block>],
+    alphas: &[usize],
+    lens: &[usize],
+    extra_q: &[Block],
+    extra_r: &[bool],
+    extra_t: &[Block],
+    transcript: &[u8],
+) -> bool {
+    use super::spcot::{
+        spcot_batched_fs_chis, spcot_batched_masked_choice, spcot_batched_receiver_hash_w,
+        spcot_batched_sender_hash_v,
+    };
+    debug_assert_eq!(s_bins.len(), r_bins.len());
+    debug_assert_eq!(s_bins.len(), alphas.len());
+    debug_assert_eq!(extra_q.len(), KAPPA_BITS);
+    debug_assert_eq!(extra_r.len(), KAPPA_BITS);
+    debug_assert_eq!(extra_t.len(), KAPPA_BITS);
+    let chis = spcot_batched_fs_chis(lens, transcript);
+    let x_star_prime = spcot_batched_masked_choice(alphas, extra_r, &chis);
+    let vs: Vec<&[Block]> = s_bins.iter().map(|b| b.as_slice()).collect();
+    let ws: Vec<&[Block]> = r_bins.iter().map(|b| b.as_slice()).collect();
+    let hv = spcot_batched_sender_hash_v(delta, &vs, extra_q, &x_star_prime, &chis);
+    let hw = spcot_batched_receiver_hash_w(&ws, extra_t, &chis);
+    hv == hw
 }
 
 /// Choice bits per bucket for the receiver's Cuckoo table.
@@ -227,6 +292,12 @@ pub fn uni_seed_cot_count(hash_seed: &[u8; 16], params: FerretParams) -> usize {
             .iter()
             .copied()
             .sum::<usize>()
+}
+
+/// Seed COTs for one malicious-secure Uni iteration: `k + ∑ h_j + κ` (the κ
+/// extra COTs for the batched consistency check).
+pub fn uni_seed_cot_count_malicious(hash_seed: &[u8; 16], params: FerretParams) -> usize {
+    uni_seed_cot_count(hash_seed, params) + KAPPA_BITS
 }
 
 /// Sample `t` distinct uniform points in `[n)` (sorted).
@@ -313,8 +384,8 @@ mod tests {
             cot_t.push(trows);
         }
         let choices = mpcot_uni_choice_bits(p, &hash_seed, &table, &cot_r);
-        let (s, msg) = mpcot_uni_sender(&mut rng, &delta, p, hash_seed, &cot_q, &choices);
-        let r = mpcot_uni_receiver(p, &table, &cot_t, &msg);
+        let (s, _s_bins, msg) = mpcot_uni_sender(&mut rng, &delta, p, hash_seed, &cot_q, &choices);
+        let (r, _r_bins) = mpcot_uni_receiver(p, &table, &cot_t, &msg);
 
         let mut expected_e = alloc::vec![false; p.n];
         for slot in &table {

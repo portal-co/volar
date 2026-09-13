@@ -12,8 +12,8 @@ rand.workspace = true
 digest.workspace = true
 typenum.workspace = true
 hybrid-array.workspace = true
-volar-primitives = { path = "../volar-primitives" }
-volar-common = { path = "../volar-common" }
+volar-primitives = { git = "https://github.com/portal-co/volar.git" }
+volar-common = { git = "https://github.com/portal-co/volar.git" }
 
 [features]
 default = ["std"]

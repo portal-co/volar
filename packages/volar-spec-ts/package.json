@@ -1,0 +1,32 @@
+{
+  "name": "@portal-solutions/volar-spec-ts",
+  "version": "0.1.0",
+  "type": "module",
+  "zshy": "generated.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/generated.d.cts",
+      "import": "./dist/generated.js",
+      "require": "./dist/generated.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@portal-solutions/volar-runtime": "^0.1.0"
+  },
+  "scripts": {
+    "generate": "cd ../.. && cargo generate-ts",
+    "build": "npx zshy --project ../../tsconfig.json",
+    "test": "npm run build --workspace @portal-solutions/volar-runtime && npm run build && node scripts/import-smoke.mjs",
+    "typecheck": "./scripts/typecheck-strict.sh",
+    "typecheck:count": "./scripts/typecheck-strict.sh --count"
+  },
+  "main": "./dist/generated.cjs",
+  "module": "./dist/generated.js",
+  "types": "./dist/generated.d.cts"
+}
