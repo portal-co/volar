@@ -77,6 +77,8 @@ pub mod tls13;
 pub mod tls13_2pc;
 #[cfg(feature = "std")]
 pub mod tls13_2pc_correlate;
+#[cfg(feature = "std")]
+pub mod tls13_live;
 pub mod x25519_gadget;
 pub mod faest_owf;
 pub mod oram_2pc;

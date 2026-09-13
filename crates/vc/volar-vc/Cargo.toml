@@ -32,6 +32,10 @@ portal-pc-waffle-frontend.workspace = true
 volar-ir-opt.workspace = true
 volar-fuzz.workspace = true
 wat = "1.212.0"
+# Live-TLS integration test: a real rustls server on loopback.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [features]
 default = []

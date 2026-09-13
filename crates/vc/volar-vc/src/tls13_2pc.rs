@@ -44,7 +44,7 @@ use crate::tls13::{
 /// threaded value fits. HKDF-Expand-Label rounds hold the full 256-bit
 /// HMAC output; consumers read only the first `out_len` bytes (the RFC
 /// 8446 truncation), matching the concrete driver.
-pub mod slots {
+pub(crate) mod slots {
     /// Transcript SHA-256 over CH||SH (256).
     pub const T_HASH: usize = 0;
     /// Early secret (256).
@@ -113,7 +113,7 @@ pub mod slots {
 
 /// `bits[off..off + len]`, or the empty slice when `bits` is empty (the
 /// non-owning party's stand-in).
-fn take(bits: &[bool], off: usize, len: usize) -> &[bool] {
+pub(crate) fn take(bits: &[bool], off: usize, len: usize) -> &[bool] {
     if bits.is_empty() {
         &[]
     } else {
@@ -121,11 +121,11 @@ fn take(bits: &[bool], off: usize, len: usize) -> &[bool] {
     }
 }
 
-fn hold_range(base: usize, n: usize) -> Vec<ChainOut> {
+pub(crate) fn hold_range(base: usize, n: usize) -> Vec<ChainOut> {
     (0..n).map(|i| ChainOut::Hold(base + i)).collect()
 }
 
-fn held_feeds(base: usize, n: usize) -> Vec<ChainFeed> {
+pub(crate) fn held_feeds(base: usize, n: usize) -> Vec<ChainFeed> {
     (0..n).map(|i| ChainFeed::Held(base + i)).collect()
 }
 
@@ -162,9 +162,33 @@ fn finish(params: usize, stmts: Vec<Node<BIrStmt, ()>>, args: Vec<IRVarId>) -> B
     }
 }
 
+
+/// A tiny circuit: bitwise XOR of two n-bit inputs (with a constant
+/// second operand this folds to polarity flips under Not-elimination).
+pub(crate) fn xor_const_circuit(n: usize) -> BIrBlocks {
+    let mut stmts: Vec<Node<BIrStmt, ()>> = Vec::new();
+    let mut args = Vec::new();
+    for i in 0..n {
+        stmts.push(Node::new(
+            BIrStmt::Xor(IRVarId(i as u32), IRVarId((n + i) as u32)),
+            (),
+            None,
+        ));
+        args.push(IRVarId((2 * n + i) as u32));
+    }
+    finish(2 * n, stmts, args)
+}
+
+/// A tiny circuit: the identity on n input bits (free pass-through;
+/// used to reveal held slot contents via the strict-chain reveal round).
+pub(crate) fn identity_circuit(n: usize) -> BIrBlocks {
+    let args: Vec<IRVarId> = (0..n).map(|i| IRVarId(i as u32)).collect();
+    finish(n, Vec::new(), args)
+}
+
 /// A tiny hand-built pure-boolean circuit: bitwise-XNOR equality of two
 /// n-bit inputs, output 1 bit.
-fn eq_bits_circuit(n: usize) -> BIrBlocks {
+pub(crate) fn eq_bits_circuit(n: usize) -> BIrBlocks {
     let mut stmts: Vec<Node<BIrStmt, ()>> = Vec::new();
     for i in 0..n {
         // xnor_i = Not(Xor(a_i, b_i)); var ids: params = 2n, stmt j = 2n + j.
@@ -190,7 +214,7 @@ fn eq_bits_circuit(n: usize) -> BIrBlocks {
 }
 
 /// A tiny circuit: AND-fold of n input bits, output 1 bit.
-fn and_fold_circuit(n: usize) -> BIrBlocks {
+pub(crate) fn and_fold_circuit(n: usize) -> BIrBlocks {
     let mut stmts: Vec<Node<BIrStmt, ()>> = Vec::new();
     let mut acc = IRVarId(0);
     for i in 1..n {
@@ -205,7 +229,7 @@ fn and_fold_circuit(n: usize) -> BIrBlocks {
 /// compile-time constant) at any byte offset — OR over offsets of the
 /// per-offset bit match (XNOR-with-constant folds to Not where the needle
 /// bit is 0).
-fn contains_bytes_circuit(hay_bytes: usize, needle: &[u8]) -> BIrBlocks {
+pub(crate) fn contains_bytes_circuit(hay_bytes: usize, needle: &[u8]) -> BIrBlocks {
     let nb = needle.len();
     assert!(nb > 0 && hay_bytes >= nb);
     let mut stmts: Vec<Node<BIrStmt, ()>> = Vec::new();
@@ -324,13 +348,13 @@ pub struct TurnstileTlsOutcome {
 
 /// One compiled HKDF-Expand-Label stage: the circuit plus the constant
 /// HkdfLabel prefix the driver feeds before the context.
-struct Expand {
-    sched: GateSchedule,
-    prefix: Vec<u8>,
-    ctx_len: usize,
+pub(crate) struct Expand {
+    pub(crate) sched: GateSchedule,
+    pub(crate) prefix: Vec<u8>,
+    pub(crate) ctx_len: usize,
 }
 
-fn expand(out_len: u16, label: &[u8], ctx_len: usize) -> Expand {
+pub(crate) fn expand(out_len: u16, label: &[u8], ctx_len: usize) -> Expand {
     let (c, prefix) = expand_label_circuit(out_len, label, ctx_len);
     Expand {
         sched: crate::compile_schedule(&c).expect("expand label schedules"),
@@ -339,58 +363,58 @@ fn expand(out_len: u16, label: &[u8], ctx_len: usize) -> Expand {
     }
 }
 
-fn sched(c: &BIrBlocks) -> GateSchedule {
+pub(crate) fn sched(c: &BIrBlocks) -> GateSchedule {
     crate::compile_schedule(c).expect("TLS chain circuit schedules")
 }
 
 /// Pre-compiled session circuits (identical on both parties).
-struct Circuits {
-    transcript1: GateSchedule,
-    early: GateSchedule,
-    derived: Expand,
-    hs: GateSchedule,
-    c_hs: Expand,
-    s_hs: Expand,
-    c_key: Expand,
-    c_iv: Expand,
-    s_key: Expand,
-    s_iv: Expand,
-    open_flight: GateSchedule,
-    eq_tag: GateSchedule,
-    transcript2: GateSchedule,
-    fk_s: Expand,
-    server_fin: GateSchedule,
-    eq_fin: GateSchedule,
-    transcript3: GateSchedule,
-    derived2: Expand,
-    master: GateSchedule,
-    c_ap: Expand,
-    s_ap: Expand,
-    c_ap_key: Expand,
-    c_ap_iv: Expand,
-    s_ap_key: Expand,
-    s_ap_iv: Expand,
-    cfk: Expand,
-    client_fin: GateSchedule,
-    seal_fin: GateSchedule,
-    seal_req: GateSchedule,
-    open_resp: GateSchedule,
-    eq_rtag: GateSchedule,
-    success: GateSchedule,
+pub(crate) struct Circuits {
+    pub(crate) transcript1: GateSchedule,
+    pub(crate) early: GateSchedule,
+    pub(crate) derived: Expand,
+    pub(crate) hs: GateSchedule,
+    pub(crate) c_hs: Expand,
+    pub(crate) s_hs: Expand,
+    pub(crate) c_key: Expand,
+    pub(crate) c_iv: Expand,
+    pub(crate) s_key: Expand,
+    pub(crate) s_iv: Expand,
+    pub(crate) open_flight: GateSchedule,
+    pub(crate) eq_tag: GateSchedule,
+    pub(crate) transcript2: GateSchedule,
+    pub(crate) fk_s: Expand,
+    pub(crate) server_fin: GateSchedule,
+    pub(crate) eq_fin: GateSchedule,
+    pub(crate) transcript3: GateSchedule,
+    pub(crate) derived2: Expand,
+    pub(crate) master: GateSchedule,
+    pub(crate) c_ap: Expand,
+    pub(crate) s_ap: Expand,
+    pub(crate) c_ap_key: Expand,
+    pub(crate) c_ap_iv: Expand,
+    pub(crate) s_ap_key: Expand,
+    pub(crate) s_ap_iv: Expand,
+    pub(crate) cfk: Expand,
+    pub(crate) client_fin: GateSchedule,
+    pub(crate) seal_fin: GateSchedule,
+    pub(crate) seal_req: GateSchedule,
+    pub(crate) open_resp: GateSchedule,
+    pub(crate) eq_rtag: GateSchedule,
+    pub(crate) success: GateSchedule,
 }
 
 impl TurnstileTlsScript {
     /// The inner plaintext length of the flight record (payload + content
     /// type).
-    fn inner_len(&self) -> usize {
+    pub(crate) fn inner_len(&self) -> usize {
         self.flight_len - 5 - 16
     }
 
-    fn resp_inner_len(&self) -> usize {
+    pub(crate) fn resp_inner_len(&self) -> usize {
         self.response_len - 5 - 16
     }
 
-    fn body_len(&self) -> usize {
+    pub(crate) fn body_len(&self) -> usize {
         self.req_prefix.len()
             + self.secret_len
             + self.req_mid.len()
@@ -398,7 +422,7 @@ impl TurnstileTlsScript {
             + self.req_suffix.len()
     }
 
-    fn circuits(&self) -> Circuits {
+    pub(crate) fn circuits(&self) -> Circuits {
         let inner = self.inner_len();
         Circuits {
             transcript1: sched(&transcript_circuit(self.ch_len + self.sh_len)),
