@@ -38,8 +38,8 @@ use volar_spec::garble::{Garble, GarbleTable, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
 use crate::{
-    DynEvalSetup, DynGarbledCircuit, DynGarbledExec, Eval, Gate, GateSchedule, InputOwner,
-    MpcError, OtChannel, SessionFrame, Transport,
+    DynGarbledCircuit, DynGarbledExec, Eval, Gate, GateSchedule, InputOwner, MpcError, OtChannel,
+    SessionFrame, Transport,
 };
 
 /// The result of [`eliminate_nots`]: a Not/One-free schedule plus the
@@ -553,25 +553,6 @@ where
         return Err(MpcError::BadPartition);
     }
 
-    // Setup: tables only (no delta, no output bases).
-    transport.send(
-        &SessionFrame::SetupStrict {
-            tables: exec
-                .circuit
-                .tables
-                .iter()
-                .map(|t| {
-                    let mut rows: [Vec<u8>; 4] = Default::default();
-                    for (r, row) in t.table.iter().enumerate() {
-                        rows[r] = arr_to_vec(row);
-                    }
-                    rows
-                })
-                .collect(),
-        }
-        .encode(),
-    );
-
     // Owned-input labels (public + garbler-owned), in circuit-input order.
     let mut owned: Vec<Vec<u8>> = Vec::new();
     let mut pub_i = 0usize;
@@ -608,6 +589,32 @@ where
         }
     }
 
+    // Stream tables only after all input labels are available. The evaluator
+    // consumes each chunk immediately, so it never materializes the full set.
+    for tables in exec.circuit.tables.chunks(STRICT_TABLE_CHUNK) {
+        transport.send(
+            &SessionFrame::SetupStrictChunk {
+                tables: tables
+                    .iter()
+                    .map(|t| {
+                        let mut rows: [Vec<u8>; 4] = Default::default();
+                        for (r, row) in t.table.iter().enumerate() {
+                            rows[r] = arr_to_vec(row);
+                        }
+                        rows
+                    })
+                    .collect(),
+            }
+            .encode(),
+        );
+    }
+    transport.send(
+        &SessionFrame::SetupStrictEnd {
+            table_count: exec.circuit.tables.len() as u32,
+        }
+        .encode(),
+    );
+
     // Receive the evaluator's output labels and decode each against its
     // private base + polarity: exact match against one of the two valid
     // encodings, else forgery.
@@ -639,6 +646,114 @@ where
     Ok(verdict)
 }
 
+/// Number of AND tables per strict streaming frame. This bounds table-frame
+/// allocation while keeping transport framing amortized for large TLS rounds.
+pub const STRICT_TABLE_CHUNK: usize = 256;
+
+fn decode_table_chunk<N: VoleArray<u8>>(
+    raw: Vec<[Vec<u8>; 4]>,
+) -> Result<Vec<GarbleTable<N>>, MpcError> {
+    raw.into_iter()
+        .map(|rows| {
+            let mut table: [Array<u8, N>; 4] = Default::default();
+            for (row, bytes) in rows.iter().enumerate() {
+                table[row] = vec_to_arr(bytes).ok_or(MpcError::MalformedSchedule)?;
+            }
+            Ok(GarbleTable { table })
+        })
+        .collect()
+}
+
+/// Evaluate a Not-free strict schedule as table chunks arrive. At most one
+/// received chunk is retained; wires are the unavoidable live circuit state.
+fn eval_strict_table_stream<N: VoleArray<u8>, D: Digest, T: Transport>(
+    schedule: &GateSchedule,
+    inputs: &[Eval<N>],
+    transport: &mut T,
+) -> Result<Vec<Eval<N>>, MpcError> {
+    if inputs.len() != schedule.num_inputs
+        || schedule.gates.iter().any(|g| {
+            matches!(
+                g,
+                Gate::Not(_)
+                    | Gate::One
+                    | Gate::StorageRead { .. }
+                    | Gate::StorageWrite { .. }
+                    | Gate::ActionBit { .. }
+            )
+        })
+    {
+        return Err(MpcError::MalformedSchedule);
+    }
+    let mut wires = Vec::with_capacity(schedule.wire_count());
+    wires.extend_from_slice(inputs);
+    let mut gate_i = 0usize;
+    let mut table_i = 0usize;
+    let mut seen_tables = 0usize;
+    loop {
+        let frame = SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
+        match frame {
+            SessionFrame::SetupStrictChunk { tables } => {
+                let tables = decode_table_chunk::<N>(tables)?;
+                for table in tables {
+                    while gate_i < schedule.gates.len()
+                        && !matches!(schedule.gates[gate_i], Gate::And(..))
+                    {
+                        let out = match schedule.gates[gate_i] {
+                            Gate::Zero => Eval::zero(),
+                            Gate::Xor(a, b) => {
+                                wires.get(a).cloned().ok_or(MpcError::MalformedSchedule)?
+                                    ^ wires.get(b).cloned().ok_or(MpcError::MalformedSchedule)?
+                            }
+                            _ => return Err(MpcError::MalformedSchedule),
+                        };
+                        wires.push(out);
+                        gate_i += 1;
+                    }
+                    let Gate::And(a, b) = schedule
+                        .gates
+                        .get(gate_i)
+                        .copied()
+                        .ok_or(MpcError::MalformedSchedule)?
+                    else {
+                        return Err(MpcError::MalformedSchedule);
+                    };
+                    let left = wires.get(a).ok_or(MpcError::MalformedSchedule)?;
+                    let right = wires.get(b).ok_or(MpcError::MalformedSchedule)?;
+                    wires.push(left.and_via_table::<D>(right, &table));
+                    gate_i += 1;
+                    table_i += 1;
+                }
+                seen_tables += table_i;
+                table_i = 0;
+            }
+            SessionFrame::SetupStrictEnd { table_count } => {
+                if seen_tables != table_count as usize || seen_tables != schedule.and_count() {
+                    return Err(MpcError::MalformedSchedule);
+                }
+                while gate_i < schedule.gates.len() {
+                    let out = match schedule.gates[gate_i] {
+                        Gate::Zero => Eval::zero(),
+                        Gate::Xor(a, b) => {
+                            wires.get(a).cloned().ok_or(MpcError::MalformedSchedule)?
+                                ^ wires.get(b).cloned().ok_or(MpcError::MalformedSchedule)?
+                        }
+                        _ => return Err(MpcError::MalformedSchedule),
+                    };
+                    wires.push(out);
+                    gate_i += 1;
+                }
+                return schedule
+                    .output_wires()
+                    .iter()
+                    .map(|&wire| wires.get(wire).cloned().ok_or(MpcError::MalformedSchedule))
+                    .collect();
+            }
+            _ => return Err(MpcError::UnexpectedMessage),
+        }
+    }
+}
+
 /// The strict evaluator role: receives the tables and owned-input labels,
 /// chooses its own input labels via OT, evaluates, and returns its output
 /// labels to the garbler (never decoding — it cannot). Returns the
@@ -657,22 +772,6 @@ where
     if partition.len() != schedule.num_inputs {
         return Err(MpcError::BadPartition);
     }
-
-    let setup_frame = SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
-    let tables_raw = match setup_frame {
-        SessionFrame::SetupStrict { tables } => tables,
-        _ => return Err(MpcError::UnexpectedMessage),
-    };
-    let tables: Vec<GarbleTable<N>> = tables_raw
-        .into_iter()
-        .map(|rows| {
-            let mut t: [Array<u8, N>; 4] = Default::default();
-            for (r, row) in rows.iter().enumerate() {
-                t[r] = vec_to_arr(row).ok_or(MpcError::MalformedSchedule)?;
-            }
-            Ok(GarbleTable { table: t })
-        })
-        .collect::<Result<Vec<_>, MpcError>>()?;
 
     let owned_frame = SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
     let owned: Vec<Eval<N>> = match owned_frame {
@@ -706,13 +805,8 @@ where
         }
     }
 
-    // Evaluate on the Not-free schedule: no one-wire (delta) is needed.
-    let setup = DynEvalSetup {
-        one_wire: Eval::zero(),
-        tables,
-        output_label: Garble::zero(),
-    };
-    let out_labels = DynGarbledExec::<N>::eval_labels_multi::<D>(&setup, schedule, &labels)?;
+    // Consume the table stream incrementally. No delta/output base is needed.
+    let out_labels = eval_strict_table_stream::<N, D, T>(schedule, &labels, transport)?;
     transport.send(
         &SessionFrame::OutputLabels(out_labels.iter().map(|l| arr_to_vec(&l.target)).collect())
             .encode(),

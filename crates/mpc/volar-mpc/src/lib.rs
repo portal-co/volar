@@ -1162,6 +1162,12 @@ pub enum SessionFrame {
     /// output base stays garbler-private so the evaluator cannot forge the
     /// true output label.
     SetupStrict { tables: Vec<[Vec<u8>; 4]> },
+    /// Garbler → evaluator: one bounded chunk of strict-session tables.
+    /// Chunks are ordered and terminated by [`Self::SetupStrictEnd`].
+    SetupStrictChunk { tables: Vec<[Vec<u8>; 4]> },
+    /// Garbler → evaluator: terminates a strict table stream and binds the
+    /// total table count. A mismatch aborts before output evaluation.
+    SetupStrictEnd { table_count: u32 },
     /// Evaluator → garbler: the evaluator's output-wire labels, one per
     /// schedule output (in `output_wires()` order). The garbler decodes them
     /// against its private output bases — the verdict is server-authenticated,
@@ -1240,6 +1246,19 @@ impl SessionFrame {
                         push_bytes(&mut out, row);
                     }
                 }
+            }
+            SessionFrame::SetupStrictChunk { tables } => {
+                out.push(9);
+                push_u32(&mut out, tables.len() as u32);
+                for t in tables {
+                    for row in t {
+                        push_bytes(&mut out, row);
+                    }
+                }
+            }
+            SessionFrame::SetupStrictEnd { table_count } => {
+                out.push(10);
+                push_u32(&mut out, *table_count);
             }
             SessionFrame::OutputLabels(labels) => {
                 out.push(5);
@@ -1322,6 +1341,21 @@ impl SessionFrame {
                 }
                 Some(SessionFrame::SetupStrict { tables })
             }
+            9 => {
+                let nt = r.u32()? as usize;
+                let mut tables = Vec::with_capacity(nt);
+                for _ in 0..nt {
+                    let mut rows: [Vec<u8>; 4] = Default::default();
+                    for row in &mut rows {
+                        *row = r.bytes()?;
+                    }
+                    tables.push(rows);
+                }
+                Some(SessionFrame::SetupStrictChunk { tables })
+            }
+            10 => Some(SessionFrame::SetupStrictEnd {
+                table_count: r.u32()?,
+            }),
             5 => {
                 let n = r.u32()? as usize;
                 let mut labels = Vec::with_capacity(n);
