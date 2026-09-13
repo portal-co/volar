@@ -666,7 +666,7 @@ fn decode_table_chunk<N: VoleArray<u8>>(
 
 /// Evaluate a Not-free strict schedule as table chunks arrive. At most one
 /// received chunk is retained; wires are the unavoidable live circuit state.
-fn eval_strict_table_stream<N: VoleArray<u8>, D: Digest, T: Transport>(
+pub(crate) fn eval_strict_table_stream<N: VoleArray<u8>, D: Digest, T: Transport>(
     schedule: &GateSchedule,
     inputs: &[Eval<N>],
     transport: &mut T,

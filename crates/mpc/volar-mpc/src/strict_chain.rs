@@ -30,10 +30,12 @@ use hybrid_array::{Array, ArraySize};
 use volar_spec::garble::{Garble, GarbleTable, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
-use crate::strict::{decode_output_label, eliminate_nots, garble_schedule_strict_dyn_full};
+use crate::strict::{
+    STRICT_TABLE_CHUNK, decode_output_label, eliminate_nots, eval_strict_table_stream,
+    garble_schedule_strict_dyn_full,
+};
 use crate::{
-    DynEvalSetup, Eval, GateSchedule, MpcError, OtChannel, SessionFrame, Transport, arr_to_vec,
-    vec_to_arr,
+    Eval, GateSchedule, MpcError, OtChannel, SessionFrame, Transport, arr_to_vec, vec_to_arr,
 };
 
 /// A chain input feed, per circuit-input bit. The feed script is shared by
@@ -265,26 +267,6 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
 
         let full = garble_schedule_strict_dyn_full::<N, D>(&elim, self.secret.clone(), bases)?;
 
-        // SetupStrict: tables only.
-        transport.send(
-            &SessionFrame::SetupStrict {
-                tables: full
-                    .exec
-                    .circuit
-                    .tables
-                    .iter()
-                    .map(|t| {
-                        let mut rows: [Vec<u8>; 4] = Default::default();
-                        for (r, row) in t.table.iter().enumerate() {
-                            rows[r] = arr_to_vec(row);
-                        }
-                        rows
-                    })
-                    .collect(),
-            }
-            .encode(),
-        );
-
         // OwnedInputs: Const + Garbler labels in circuit-input order.
         let mut owned: Vec<Vec<u8>> = Vec::new();
         let mut const_i = 0usize;
@@ -316,6 +298,33 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
                 ot.send([&f.target, &t.target]);
             }
         }
+
+        // Stream after labels/OTs are available. The evaluator consumes each
+        // chunk immediately, so a large jointly-secret ORAM/TLS round does
+        // not materialize all tables at once.
+        for tables in full.exec.circuit.tables.chunks(STRICT_TABLE_CHUNK) {
+            transport.send(
+                &SessionFrame::SetupStrictChunk {
+                    tables: tables
+                        .iter()
+                        .map(|t| {
+                            let mut rows: [Vec<u8>; 4] = Default::default();
+                            for (r, row) in t.table.iter().enumerate() {
+                                rows[r] = arr_to_vec(row);
+                            }
+                            rows
+                        })
+                        .collect(),
+                }
+                .encode(),
+            );
+        }
+        transport.send(
+            &SessionFrame::SetupStrictEnd {
+                table_count: full.exec.circuit.tables.len() as u32,
+            }
+            .encode(),
+        );
 
         // Revealed outputs: exact-match decode.
         let n_reveal = outs.iter().filter(|o| **o == ChainOut::Reveal).count();
@@ -458,23 +467,6 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainEvaluator<N> {
             return Err(MpcError::BadPartition);
         }
 
-        let setup_frame =
-            SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
-        let tables_raw = match setup_frame {
-            SessionFrame::SetupStrict { tables } => tables,
-            _ => return Err(MpcError::UnexpectedMessage),
-        };
-        let tables: Vec<GarbleTable<N>> = tables_raw
-            .into_iter()
-            .map(|rows| {
-                let mut t: [Array<u8, N>; 4] = Default::default();
-                for (r, row) in rows.iter().enumerate() {
-                    t[r] = vec_to_arr(row).ok_or(MpcError::MalformedSchedule)?;
-                }
-                Ok(GarbleTable { table: t })
-            })
-            .collect::<Result<Vec<_>, MpcError>>()?;
-
         let owned_frame =
             SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
         let owned: Vec<Eval<N>> = match owned_frame {
@@ -510,13 +502,7 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainEvaluator<N> {
             }
         }
 
-        let setup = DynEvalSetup {
-            one_wire: Eval::zero(),
-            tables,
-            output_label: Garble::zero(),
-        };
-        let out_labels =
-            crate::DynGarbledExec::<N>::eval_labels_multi::<D>(&setup, sched, &labels)?;
+        let out_labels = eval_strict_table_stream::<N, D, T>(sched, &labels, transport)?;
 
         let mut send_labels: Vec<Vec<u8>> = Vec::new();
         for (o, out) in outs.iter().enumerate() {
