@@ -277,6 +277,12 @@ pub enum LiveSecrets<'a> {
 
 /// What the live driver returns on success.
 pub struct LiveTlsOutcome {
+    /// The ClientHello / ServerHello handshake messages (public; the
+    /// garbler learned them from the phase-0 frame for its native
+    /// CertVerify transcript).
+    pub ch: Vec<u8>,
+    /// ServerHello bytes.
+    pub sh: Vec<u8>,
     /// The clean flight message stream (all flight records decrypted,
     /// content types stripped, concatenated; revealed to both parties).
     /// The garbler's native pinned-root check consumes this.
@@ -357,6 +363,31 @@ fn send_lens<T: Transport>(transport: &mut T, lens: &[usize]) {
         f.extend_from_slice(&(l as u32).to_be_bytes());
     }
     transport.send(&f);
+}
+
+/// Phase-0 frame: [ch_len, sh_len, ch bytes, sh bytes] — the public
+/// handshake bytes; the garbler needs them for the native CertVerify
+/// transcript (a client tampering with this copy only fails the cert
+/// check, failing closed).
+fn send_hello_frame<T: Transport>(transport: &mut T, ch: &[u8], sh: &[u8]) {
+    let mut f = Vec::new();
+    f.extend_from_slice(&(ch.len() as u32).to_be_bytes());
+    f.extend_from_slice(&(sh.len() as u32).to_be_bytes());
+    f.extend_from_slice(ch);
+    f.extend_from_slice(sh);
+    transport.send(&f);
+}
+fn recv_hello_frame<T: Transport>(transport: &mut T) -> Result<(Vec<u8>, Vec<u8>), MpcError> {
+    let f = transport.recv();
+    if f.len() < 8 {
+        return Err(MpcError::UnexpectedMessage);
+    }
+    let ch_len = u32::from_be_bytes(f[0..4].try_into().unwrap()) as usize;
+    let sh_len = u32::from_be_bytes(f[4..8].try_into().unwrap()) as usize;
+    if f.len() != 8 + ch_len + sh_len {
+        return Err(MpcError::UnexpectedMessage);
+    }
+    Ok((f[8..8 + ch_len].to_vec(), f[8 + ch_len..].to_vec()))
 }
 fn recv_lens<T: Transport>(transport: &mut T, n: usize) -> Result<Vec<usize>, MpcError> {
     let f = transport.recv();
@@ -463,20 +494,20 @@ where
             }
         }
         server_pub = parse_sh_key_share(&sh)?;
-        send_lens(transport, &[ch.len(), sh.len()]);
+        send_hello_frame(transport, &ch, &sh);
     }
-    let (ch_len, sh_len) = if is_eval {
-        (ch.len(), sh.len())
-    } else {
-        let l = recv_lens(transport, 2)?;
-        (l[0], l[1])
-    };
+    if !is_eval {
+        let (gch, gsh) = recv_hello_frame(transport)?;
+        ch = gch;
+        sh = gsh;
+    }
+    let (ch_len, sh_len) = (ch.len(), sh.len());
 
     // ---- Key-schedule rounds (identical shapes to the scripted driver) ----
     let t1 = sched(&transcript_circuit(ch_len + sh_len));
     let mut a = Asm::new();
-    a.eval(ch_len * 8, &bits_of(&ch));
-    a.eval(sh_len * 8, &bits_of(&sh));
+    a.konst(&bits_of(&ch));
+    a.konst(&bits_of(&sh));
     let _ = round!(&t1, a, hold_range(slots::T_HASH, 256));
 
     let early = sched(&extract_circuit(32, 32));
@@ -649,8 +680,8 @@ where
     // ---- Transcript2 + server-Finished verification ----
     let t2 = sched(&transcript_circuit(ch_len + sh_len + t2_len));
     let mut a = Asm::new();
-    a.eval(ch_len * 8, &bits_of(&ch));
-    a.eval(sh_len * 8, &bits_of(&sh));
+    a.konst(&bits_of(&ch));
+    a.konst(&bits_of(&sh));
     feed_clean_prefix(&mut a, t2_len);
     let _ = round!(&t2, a, hold_range(slots::T2, 256));
 
@@ -680,8 +711,8 @@ where
     // ---- Transcript3 (through the server Finished) ----
     let t3 = sched(&transcript_circuit(ch_len + sh_len + t_th_len));
     let mut a = Asm::new();
-    a.eval(ch_len * 8, &bits_of(&ch));
-    a.eval(sh_len * 8, &bits_of(&sh));
+    a.konst(&bits_of(&ch));
+    a.konst(&bits_of(&sh));
     feed_clean_prefix(&mut a, t_th_len);
     let _ = round!(&t3, a, hold_range(slots::T_TH, 256));
 
@@ -853,6 +884,8 @@ where
     );
 
     Ok(LiveTlsOutcome {
+        ch,
+        sh,
         flight_stream: stream,
         vt_records,
         vf_server: slots::VF_SERVER,
