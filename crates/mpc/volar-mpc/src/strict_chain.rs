@@ -31,12 +31,10 @@ use hybrid_array::{Array, ArraySize};
 use volar_spec::garble::{Garble, GarbleTable, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
-use crate::strict::{
-    decode_output_label, eliminate_nots, garble_schedule_strict_dyn_full,
-};
+use crate::strict::{decode_output_label, eliminate_nots, garble_schedule_strict_dyn_full};
 use crate::{
-    arr_to_vec, vec_to_arr, DynEvalSetup, Eval, GateSchedule, MpcError, OtChannel, SessionFrame,
-    Transport,
+    DynEvalSetup, Eval, GateSchedule, MpcError, OtChannel, SessionFrame, Transport, arr_to_vec,
+    vec_to_arr,
 };
 
 /// A chain input feed, per circuit-input bit. The feed script is shared by
@@ -64,6 +62,87 @@ pub enum ChainOut {
     Reveal,
     /// Thread into the held-slot registry (never decoded).
     Hold(usize),
+}
+
+/// A contiguous allocation in the strict-chain held-label registry.
+///
+/// This is deliberately a small value object: TLS and interpreter drivers name
+/// data regions once, then derive their input feeds/output dispositions from
+/// the range instead of scattering manually coordinated slot arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeldRange {
+    start: usize,
+    len: usize,
+}
+
+impl HeldRange {
+    /// Number of labels in this allocation.
+    pub const fn len(self) -> usize {
+        self.len
+    }
+
+    /// Whether this allocation contains no slots.
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// The registry slot at `index`, or `None` when it is outside this range.
+    pub const fn slot(self, index: usize) -> Option<usize> {
+        if index < self.len {
+            Some(self.start + index)
+        } else {
+            None
+        }
+    }
+
+    /// Build held input feeds in range order.
+    pub fn feeds(self) -> Vec<ChainFeed> {
+        (0..self.len)
+            .map(|i| ChainFeed::Held(self.start + i))
+            .collect()
+    }
+
+    /// Build held output dispositions in range order.
+    pub fn holds(self) -> Vec<ChainOut> {
+        (0..self.len)
+            .map(|i| ChainOut::Hold(self.start + i))
+            .collect()
+    }
+}
+
+/// Deterministic allocator for a chain driver's secret-to-neither registry.
+///
+/// Allocation is purely script construction: it does not allocate labels or
+/// reveal values. Both parties use the same allocation sequence, which makes
+/// held-state shape auditable before a session begins.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeldSlots {
+    next: usize,
+}
+
+impl HeldSlots {
+    /// Start with no allocated slots.
+    pub const fn new() -> Self {
+        Self { next: 0 }
+    }
+
+    /// Reserve `len` contiguous held slots. Panics on `usize` overflow rather
+    /// than wrapping two independent secret regions onto the same labels.
+    pub fn reserve(&mut self, len: usize) -> HeldRange {
+        let start = self.next;
+        self.next = self.next.checked_add(len).expect("held slot overflow");
+        HeldRange { start, len }
+    }
+
+    /// Number of slots allocated so far.
+    pub const fn len(&self) -> usize {
+        self.next
+    }
+
+    /// Whether no slots have been allocated.
+    pub const fn is_empty(&self) -> bool {
+        self.next == 0
+    }
 }
 
 /// One party's chain-round driver. Implemented by [`ChainGarbler`] and
@@ -105,6 +184,12 @@ impl<N: VoleArray<u8>> ChainGarbler<N> {
             held: BTreeMap::new(),
             fresh: 0,
         }
+    }
+
+    /// Count of currently held labels. This exposes storage shape for
+    /// instrumentation without exposing labels or their logical values.
+    pub fn held_len(&self) -> usize {
+        self.held.len()
     }
 
     fn fresh_base<D: Digest>(&mut self) -> Garble<N> {
@@ -232,7 +317,8 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
         for (o, out) in outs.iter().enumerate() {
             match out {
                 ChainOut::Reveal => {
-                    let label = vec_to_arr::<N>(&labels[rev_i]).ok_or(MpcError::MalformedSchedule)?;
+                    let label =
+                        vec_to_arr::<N>(&labels[rev_i]).ok_or(MpcError::MalformedSchedule)?;
                     rev_i += 1;
                     let bit = decode_output_label(
                         &full.exec.circuit.secret,
@@ -276,11 +362,46 @@ impl<N: VoleArray<u8>> ChainEvaluator<N> {
             held: BTreeMap::new(),
         }
     }
+
+    /// Count of currently held labels. This exposes storage shape for
+    /// instrumentation without exposing labels or their logical values.
+    pub fn held_len(&self) -> usize {
+        self.held.len()
+    }
 }
 
 impl<N: VoleArray<u8>> Default for ChainEvaluator<N> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn held_slots_are_contiguous_and_scriptable_at_scale() {
+        let mut slots = HeldSlots::new();
+        let key_schedule = slots.reserve(1_024 * 8);
+        let record_window = slots.reserve(64 * 1_024 * 8);
+        let heap_image = slots.reserve(1_024 * 1_024 * 8);
+
+        assert_eq!(key_schedule.slot(0), Some(0));
+        assert_eq!(key_schedule.slot(key_schedule.len()), None);
+        assert_eq!(record_window.slot(0), Some(key_schedule.len()));
+        assert_eq!(
+            heap_image.slot(0),
+            Some(key_schedule.len() + record_window.len())
+        );
+        assert_eq!(
+            slots.len(),
+            key_schedule.len() + record_window.len() + heap_image.len()
+        );
+        assert_eq!(heap_image.feeds().len(), heap_image.len());
+        assert_eq!(heap_image.holds().len(), heap_image.len());
+        assert!(matches!(heap_image.feeds()[0], ChainFeed::Held(_)));
+        assert!(matches!(heap_image.holds()[0], ChainOut::Hold(_)));
     }
 }
 
