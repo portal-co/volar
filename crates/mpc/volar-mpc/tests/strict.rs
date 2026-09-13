@@ -267,12 +267,18 @@ fn strict_session_tcp_forged_output_rejected() {
     let mut rng = SeedRng::new(0xB0B);
     let mut ot = NetOtChannel::new(transport, OtRole::Receiver, &mut rng);
 
-    // Consume setup + owned inputs.
-    let _setup = SessionFrame::decode(&session.recv()).expect("setup frame");
+    // Consume owned inputs, OTs, then the complete table stream.
     let _owned = SessionFrame::decode(&session.recv()).expect("owned frame");
     // Complete the OTs (choice bits arbitrary).
     for _ in 0..2 {
         let _: Array<u8, N> = ot.receive(false);
+    }
+    loop {
+        match SessionFrame::decode(&session.recv()).expect("table stream frame") {
+            SessionFrame::SetupStrictChunk { .. } => {}
+            SessionFrame::SetupStrictEnd { .. } => break,
+            other => panic!("unexpected strict stream frame: {other:?}"),
+        }
     }
     // Fabricate: all-zero labels (never valid encodings of either value).
     let forged: Vec<Vec<u8>> = (0..elim.schedule.output_wires().len())
