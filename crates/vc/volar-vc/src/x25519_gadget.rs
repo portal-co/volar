@@ -440,6 +440,35 @@ pub fn build_x25519_step() -> BIrBlocks {
     finish(b, params, outputs)
 }
 
+/// The final ladder conditional swap as a circuit (the 2PC KX's last
+/// ladder round). Params (1021 bits): `swap ++ x2 ++ z2 ++ x3 ++ z3`;
+/// outputs (510 bits): the maybe-swapped `x2' ++ z2'` — the only
+/// coordinates the finish chain consumes. The swap bit is a held secret
+/// wire two-party, so this runs in-circuit rather than natively.
+#[doc(hidden)]
+pub fn build_final_cswap() -> BIrBlocks {
+    let params: u32 = (1 + 4 * F) as u32;
+    let mut b = Builder::new(params);
+    let zero = b.const0();
+    let swap = 0u32;
+    let mut x2: Fe = [zero; F];
+    let mut z2: Fe = [zero; F];
+    let mut x3: Fe = [zero; F];
+    let mut z3: Fe = [zero; F];
+    for i in 0..F {
+        x2[i] = (1 + i) as u32;
+        z2[i] = (1 + F + i) as u32;
+        x3[i] = (1 + 2 * F + i) as u32;
+        z3[i] = (1 + 3 * F + i) as u32;
+    }
+    b.cswap(swap, &mut x2, &mut x3);
+    b.cswap(swap, &mut z2, &mut z3);
+    let mut outputs = Vec::with_capacity(2 * F);
+    outputs.extend_from_slice(&x2);
+    outputs.extend_from_slice(&z2);
+    finish(b, params, outputs)
+}
+
 /// One field squaring (params: 255, output: 255 canonical) — the stepped
 /// finish chain's square step.
 #[doc(hidden)]

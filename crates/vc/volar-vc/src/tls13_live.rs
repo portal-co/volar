@@ -16,14 +16,18 @@
 //! client (evaluator) discovers them from the wire and ships them to the
 //! garbler as small length frames over the same transport between rounds.
 //!
-//! ## KX status (security-critical placeholder)
+//! ## KX: two-party X25519 (no placeholder)
 //!
-//! The X25519 shared secret is computed NATIVELY by the client
-//! ([`NativeKx`]), so the client learns the session keys. This is fine
-//! for local-server integration testing but MUST NOT be used with a real
-//! garbler secret: the client could decrypt the request record. The 2PC
-//! KX (Edwards partial-addition, one round, ~1–2M ANDs) is the follow-up
-//! that removes this hole.
+//! The X25519 shared secret is computed IN CIRCUIT by the two parties:
+//! the client's clamped scalar is an evaluator-private input, the server's
+//! public key share is public, and the 255 ladder iterations + the final
+//! cswap + the stepped inversion chain run as ~520 strict-chain rounds
+//! with the ladder/field state threaded as held labels that are never
+//! decoded. The shared secret lands in a held slot and feeds the key
+//! schedule directly — neither party ever holds the session keys, so
+//! neither can decrypt the request record alone.
+
+
 
 extern crate std;
 
@@ -167,12 +171,18 @@ pub fn parse_sh_key_share(sh: &[u8]) -> Result<[u8; 32], MpcError> {
     Err(MpcError::UnexpectedMessage)
 }
 
-/// The client-side key exchange (placeholder, see module docs).
-pub trait NativeKx {
+/// The client-side key exchange inputs for the in-circuit X25519.
+///
+/// Only the client's PUBLIC key and its (unclamped) ephemeral scalar are
+/// needed: the public key is wire-public, and the scalar stays an
+/// evaluator-private input to the two-party ladder. The shared secret is
+/// never computed natively.
+pub trait ClientKx {
     /// The client's ephemeral public key (key_share bytes for the CH).
     fn public_key(&self) -> [u8; 32];
-    /// Compute the shared secret against the server's public key.
-    fn shared_secret(&self, server_public: &[u8; 32]) -> [u8; 32];
+    /// The client's ephemeral scalar (32 bytes, unclamped; the driver
+    /// applies the RFC 7748 clamping before the ladder).
+    fn scalar_bytes(&self) -> [u8; 32];
 }
 
 /// Build a minimal TLS 1.3 ClientHello handshake message (4-byte header
@@ -300,13 +310,32 @@ pub struct LiveTlsOutcome {
 }
 
 // Live-session held-slot regions (distinct from the scripted driver's).
-const LIVE_INNER: usize = 40 << 16; // + rec * (1<<17)
+// (record inners live at (rec+1)<<22 — see inner_slot)
 const LIVE_TAG: usize = 42 << 16; // + rec * 256
 const LIVE_NONCE: usize = 43 << 16; // + rec * 256
 const LIVE_VT: usize = 44 << 16; // + rec
+// Two-party X25519 KX state (255-bit field elements, 1-bit swap).
+const LIVE_KX_X2: usize = 45 << 16;
+const LIVE_KX_Z2: usize = 46 << 16;
+const LIVE_KX_X3: usize = 47 << 16;
+const LIVE_KX_Z3: usize = 48 << 16;
+const LIVE_KX_SWAP: usize = 49 << 16;
+const LIVE_KX_T0: usize = 50 << 16;
+const LIVE_KX_T1: usize = 51 << 16;
+const LIVE_KX_T2: usize = 52 << 16;
+const LIVE_KX_T3: usize = 53 << 16;
+/// The shared secret (255 canonical bits; bit 255 is always zero).
+/// Doc-hidden public for the standalone KX test harness.
+#[doc(hidden)]
+pub const LIVE_KX_SHARED: usize = 54 << 16;
 
 fn inner_slot(rec: usize) -> usize {
-    LIVE_INNER + rec * (1 << 17)
+    // Disjoint from every other region (all <= 54<<16) and far enough
+    // apart per record that a max-size record inner never collides with
+    // the next record's region, the tag/nonce/verdict regions, or the KX
+    // state (the previous 40<<16 + rec*(1<<17) layout collided with
+    // LIVE_TAG at rec 1 and LIVE_VT at rec 2 for split flights).
+    (rec + 1) << 22
 }
 
 struct Asm {
@@ -426,6 +455,161 @@ fn locate(inner_lens: &[usize], clean_off: usize) -> Result<(usize, usize), MpcE
     Err(MpcError::UnexpectedMessage)
 }
 
+/// The two-party X25519 key exchange as strict-chain rounds: the 255
+/// ladder iterations (state threaded as held labels, the scalar bit an
+/// evaluator-private input, the server's public share a public const),
+/// the final in-circuit cswap, and the stepped inversion chain, leaving
+/// the shared secret's 255 canonical bits held at [`LIVE_KX_SHARED`].
+///
+/// Both parties run the identical round sequence; only the evaluator's
+/// scalar feeds differ (empty on the garbler). Circuits: one ladder step
+/// (~0.5M ANDs, reused across all 255 rounds), one tiny final cswap, and
+/// the shared square/mul pair for the inversion chain.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn run_kx_2pc<N, D, C, T>(
+    chain: &mut C,
+    server_pub: &[u8; 32],
+    scalar_bits: &[bool],
+    step: &volar_mpc::GateSchedule,
+    cswap: &volar_mpc::GateSchedule,
+    sq: &volar_mpc::GateSchedule,
+    mul: &volar_mpc::GateSchedule,
+    transport: &mut T,
+    ot: &mut dyn OtChannel<N>,
+) -> Result<(), MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+    C: ChainParty<N>,
+    T: Transport,
+{
+    const F: usize = 255;
+    // The u-coordinate, high bit masked (RFC 7748 section 5).
+    let mut u_bytes = *server_pub;
+    u_bytes[31] &= 0x7f;
+    let u255 = bits_of(&u_bytes)[..F].to_vec();
+    let zero255 = alloc::vec![false; F];
+    let mut one255 = alloc::vec![false; F];
+    one255[0] = true;
+
+    // The ladder: bits 254 down to 0, init x2=1 z2=0 x3=u z3=1 swap=0.
+    for i in (0..F).rev() {
+        let mut a = Asm::new();
+        if i == F - 1 {
+            a.konst(&one255);
+            a.konst(&zero255);
+            a.konst(&u255);
+            a.konst(&one255);
+            a.konst(&u255);
+            a.konst(&[false]);
+        } else {
+            a.held(LIVE_KX_X2, F);
+            a.held(LIVE_KX_Z2, F);
+            a.held(LIVE_KX_X3, F);
+            a.held(LIVE_KX_Z3, F);
+            a.konst(&u255);
+            a.held(LIVE_KX_SWAP, 1);
+        }
+        let kt: &[bool] = if scalar_bits.is_empty() {
+            &[]
+        } else {
+            &scalar_bits[i..i + 1]
+        };
+        a.eval(1, kt);
+        let outs = [
+            hold_range(LIVE_KX_X2, F),
+            hold_range(LIVE_KX_Z2, F),
+            hold_range(LIVE_KX_X3, F),
+            hold_range(LIVE_KX_Z3, F),
+            hold_range(LIVE_KX_SWAP, 1),
+        ]
+        .concat();
+        chain.run_round::<D, T>(step, &a.feeds, &a.consts, &a.secrets, &outs, transport, ot)?;
+    }
+
+    // Final cswap in-circuit (the swap bit is a held secret).
+    let mut a = Asm::new();
+    a.held(LIVE_KX_SWAP, 1);
+    a.held(LIVE_KX_X2, F);
+    a.held(LIVE_KX_Z2, F);
+    a.held(LIVE_KX_X3, F);
+    a.held(LIVE_KX_Z3, F);
+    let outs = [hold_range(LIVE_KX_X2, F), hold_range(LIVE_KX_Z2, F)].concat();
+    chain.run_round::<D, T>(cswap, &a.feeds, &a.consts, &a.secrets, &outs, transport, ot)?;
+
+    // The stepped inversion chain (the scalar-verified addition chain of
+    // x25519_gadget's `invert`), as square/mul rounds over the slot file.
+    enum Op {
+        Sq(usize, usize),
+        Mul(usize, usize, usize),
+    }
+    use Op::{Mul, Sq};
+    const T0: usize = LIVE_KX_T0;
+    const T1: usize = LIVE_KX_T1;
+    const T2: usize = LIVE_KX_T2;
+    const T3: usize = LIVE_KX_T3;
+    const Z2: usize = LIVE_KX_Z2;
+    const X2: usize = LIVE_KX_X2;
+    let mut ops: Vec<Op> = alloc::vec![
+        Sq(T0, Z2),
+        Sq(T1, T0),
+        Sq(T1, T1),
+        Mul(T1, Z2, T1),
+        Mul(T0, T0, T1),
+        Sq(T2, T0),
+        Mul(T2, T1, T2),
+        Sq(T1, T2),
+    ];
+    ops.extend((0..4).map(|_| Sq(T1, T1)));
+    ops.push(Mul(T1, T1, T2));
+    ops.push(Sq(T2, T1));
+    ops.extend((0..9).map(|_| Sq(T2, T2)));
+    ops.push(Mul(T2, T2, T1));
+    ops.push(Sq(T3, T2));
+    ops.extend((0..19).map(|_| Sq(T3, T3)));
+    ops.push(Mul(T2, T3, T2));
+    ops.push(Sq(T3, T2));
+    ops.extend((0..9).map(|_| Sq(T3, T3)));
+    ops.push(Mul(T1, T3, T1));
+    ops.push(Sq(T3, T1));
+    ops.extend((0..49).map(|_| Sq(T3, T3)));
+    ops.push(Mul(T2, T3, T1));
+    ops.push(Sq(T3, T2));
+    ops.extend((0..99).map(|_| Sq(T3, T3)));
+    ops.push(Mul(T2, T3, T2));
+    ops.extend((0..50).map(|_| Sq(T2, T2)));
+    ops.push(Mul(T1, T2, T1));
+    ops.extend((0..5).map(|_| Sq(T1, T1)));
+    ops.push(Mul(T0, T1, T0)); // zinv -> T0
+    ops.push(Mul(LIVE_KX_SHARED, X2, T0)); // shared = x2 * zinv
+
+    for op in ops {
+        let mut a = Asm::new();
+        let (sched, dst) = match op {
+            Sq(dst, x) => {
+                a.held(x, F);
+                (sq, dst)
+            }
+            Mul(dst, x, y) => {
+                a.held(x, F);
+                a.held(y, F);
+                (mul, dst)
+            }
+        };
+        chain.run_round::<D, T>(
+            sched,
+            &a.feeds,
+            &a.consts,
+            &a.secrets,
+            &hold_range(dst, F),
+            transport,
+            ot,
+        )?;
+    }
+    Ok(())
+}
+
 /// Run the live two-party TLS 1.3 session as a strict chain.
 ///
 /// Both parties execute this same function with their role's chain driver;
@@ -436,7 +620,7 @@ pub fn run_live_tls_session<N, D, C, T, Io>(
     server_name: &str,
     template: &LiveRequestTemplate,
     secrets: &LiveSecrets,
-    kx: Option<&dyn NativeKx>,
+    kx: Option<&dyn ClientKx>,
     ch_random: &[u8; 32],
     mut io: Option<&mut Io>,
     transport: &mut T,
@@ -500,6 +684,12 @@ where
         let (gch, gsh) = recv_hello_frame(transport)?;
         ch = gch;
         sh = gsh;
+        // The SH is public: the garbler parses the server's key share
+        // itself. (Previously server_pub stayed zero on the garbler, so
+        // both parties computed X25519(k, 0) — the RFC 7748 small-order
+        // all-zero output — because const feeds come from the garbler's
+        // labels. A tampered SH copy only fails the cert check later.)
+        server_pub = parse_sh_key_share(&sh)?;
     }
     let (ch_len, sh_len) = (ch.len(), sh.len());
 
@@ -520,16 +710,47 @@ where
     a.expand(&derived, slots::EARLY, Ctx::Const(&empty_hash));
     let _ = round!(&derived.sched, a, hold_range(slots::DERIVED, 256));
 
-    // The shared secret is an evaluator-private input; the garbler passes
-    // an empty secret slice (it never learns the value).
-    let ss_bits: Vec<bool> = match kx {
-        Some(kx) => bits_of(&kx.shared_secret(&server_pub)),
+    // ---- Two-party X25519 KX: the shared secret lands held (never
+    // decoded) at LIVE_KX_SHARED. The evaluator's clamped scalar is its
+    // private input; the server's public share is wire-public.
+    let scalar_bits: Vec<bool> = match kx {
+        Some(kx) => {
+            let mut k = kx.scalar_bytes();
+            k[0] &= 248;
+            k[31] &= 127;
+            k[31] |= 64;
+            bits_of(&k)[..255].to_vec()
+        }
         None => Vec::new(),
     };
+    let step_sched = sched(&crate::x25519_gadget::build_x25519_step());
+    let cswap_sched = sched(&crate::x25519_gadget::build_final_cswap());
+    let sq_sched = sched(&crate::x25519_gadget::build_fe_square());
+    let mul_sched = sched(&crate::x25519_gadget::build_fe_mul());
+    run_kx_2pc::<N, D, C, T>(
+        chain,
+        &server_pub,
+        &scalar_bits,
+        &step_sched,
+        &cswap_sched,
+        &sq_sched,
+        &mul_sched,
+        transport,
+        ot,
+    )?;
+    if std::env::var("TLS13_LIVE_DEBUG").is_ok() {
+        std::eprintln!("[tls13_live] kx done (eval={is_eval})");
+    }
+    if std::env::var("TLS13_LIVE_DEBUG").is_ok() {
+        std::eprintln!("[tls13_live] hs extract done (eval={is_eval})");
+    }
+
     let hs = sched(&extract_circuit(32, 32));
     let mut a = Asm::new();
     a.held(slots::DERIVED, 256);
-    a.eval(256, &ss_bits);
+    // shared secret: 255 held canonical bits + the always-zero top bit.
+    a.held(LIVE_KX_SHARED, 255);
+    a.konst(&[false]);
     let _ = round!(&hs, a, hold_range(slots::HS, 256));
 
     let c_hs = expand(32, b"c hs traffic", 32);
@@ -554,6 +775,9 @@ where
         let _ = round!(&e.sched, a, hold_range(dst, 256));
     }
 
+    if std::env::var("TLS13_LIVE_DEBUG").is_ok() {
+        std::eprintln!("[tls13_live] entering flight loop (eval={is_eval})");
+    }
     // ---- Flight loop: per-record open + tag verdict + inner reveal ----
     let mut stream: Vec<u8> = Vec::new();
     let mut inner_lens: Vec<usize> = Vec::new();
@@ -651,6 +875,9 @@ where
         inner_lens.push(inner);
         vt_records.push(LIVE_VT + rec_idx);
         saw_finished = walk_handshake(&stream).iter().any(|m| m.hs_type == 20);
+        if std::env::var("TLS13_LIVE_DEBUG").is_ok() {
+            std::eprintln!("[tls13_live] flight rec {rec_idx} inner {inner} ct {ct:?} finished {saw_finished} (eval={is_eval})");
+        }
         if rec_idx >= 16 && !saw_finished {
             return Err(MpcError::UnexpectedMessage);
         }

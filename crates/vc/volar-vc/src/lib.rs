@@ -91,4 +91,4 @@ pub mod schedule;
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use oram_host::{GramEvalDrive, OramHost, OramHostError, OramHostShim};
 pub use partition::partition_from_sides;
-pub use schedule::{ScheduleError, compile_schedule};
+pub use schedule::{ScheduleError, compile_schedule, compile_schedule_optimized};

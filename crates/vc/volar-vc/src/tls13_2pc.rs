@@ -364,7 +364,7 @@ pub(crate) fn expand(out_len: u16, label: &[u8], ctx_len: usize) -> Expand {
 }
 
 pub(crate) fn sched(c: &BIrBlocks) -> GateSchedule {
-    crate::compile_schedule(c).expect("TLS chain circuit schedules")
+    crate::compile_schedule_optimized(c).expect("TLS chain circuit schedules")
 }
 
 /// Pre-compiled session circuits (identical on both parties).

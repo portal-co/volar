@@ -14,6 +14,7 @@ volar-ir.workspace = true
 volar-ir-common.workspace = true
 volar-side.workspace = true
 volar-oram.workspace = true
+volar-ir-opt.workspace = true
 digest.workspace = true
 hybrid-array.workspace = true
 

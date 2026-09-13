@@ -27,7 +27,7 @@ use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
 use volar_spec::garble::GlobalSecret;
 use volar_vc::tls13_2pc::{bits_of, correlation_circuit};
 use volar_vc::tls13_live::{
-    LiveRequestTemplate, LiveSecrets, NativeKx, NativeStream, run_live_tls_session,
+    ClientKx, LiveRequestTemplate, LiveSecrets, NativeStream, run_live_tls_session,
     walk_handshake,
 };
 
@@ -37,14 +37,12 @@ type D = Sha256;
 struct DalekKx {
     secret: x25519_dalek::StaticSecret,
 }
-impl NativeKx for DalekKx {
+impl ClientKx for DalekKx {
     fn public_key(&self) -> [u8; 32] {
         x25519_dalek::PublicKey::from(&self.secret).to_bytes()
     }
-    fn shared_secret(&self, server_public: &[u8; 32]) -> [u8; 32] {
-        self.secret
-            .diffie_hellman(&x25519_dalek::PublicKey::from(*server_public))
-            .to_bytes()
+    fn scalar_bytes(&self) -> [u8; 32] {
+        self.secret.to_bytes()
     }
 }
 
