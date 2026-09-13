@@ -23,6 +23,8 @@
 //! LOGICAL value under that base (free-XOR: L = raw_base XOR raw*delta =
 //! base' XOR (raw XOR pol)*delta).
 
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use digest::Digest;
@@ -121,6 +123,25 @@ pub struct HeldSlots {
     next: usize,
 }
 
+/// Per-chain execution counters for sizing jointly-secret state and strict
+/// table streaming. Values are public protocol shape, never wire labels or
+/// logical secret values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChainMetrics {
+    /// Strict circuit rounds executed.
+    pub rounds: u64,
+    /// AND tables scheduled across all rounds.
+    pub and_tables: u64,
+    /// Garbler-to-evaluator strict table frames emitted (garbler side only).
+    pub table_frames: u64,
+    /// Payload bytes in those table frames, excluding transport framing.
+    pub table_bytes: u64,
+    /// Inputs fed from the jointly-secret held registry.
+    pub held_inputs: u64,
+    /// Outputs retained as jointly-secret labels.
+    pub held_outputs: u64,
+}
+
 impl HeldSlots {
     /// Start with no allocated slots.
     pub const fn new() -> Self {
@@ -171,10 +192,61 @@ pub trait ChainParty<N: VoleArray<u8>> {
 
 /// The garbler's chain driver: holds the global secret (delta), the held
 /// slots' false-label bases, and a fresh-base counter.
+/// Logical slot page width. The TLS driver retains legacy sparse slot names;
+/// paging keeps those names from allocating every absent label below them.
+const HELD_PAGE_BITS: usize = 10;
+const HELD_PAGE_LEN: usize = 1 << HELD_PAGE_BITS;
+
+/// Sparse, page-backed jointly-secret label store. The public slot namespace
+/// may be sparse; physical allocation scales with touched pages, not the
+/// largest logical slot id.
+struct HeldPages<T> {
+    pages: BTreeMap<usize, Box<[Option<T>; HELD_PAGE_LEN]>>,
+    initialized: usize,
+    high_water: usize,
+}
+
+impl<T> Default for HeldPages<T> {
+    fn default() -> Self {
+        Self {
+            pages: BTreeMap::new(),
+            initialized: 0,
+            high_water: 0,
+        }
+    }
+}
+
+impl<T: Clone> HeldPages<T> {
+    fn get(&self, slot: usize) -> Option<T> {
+        self.pages
+            .get(&(slot >> HELD_PAGE_BITS))?
+            .get(slot & (HELD_PAGE_LEN - 1))?
+            .clone()
+    }
+
+    fn set(&mut self, slot: usize, value: T) {
+        let page = self
+            .pages
+            .entry(slot >> HELD_PAGE_BITS)
+            .or_insert_with(|| Box::new(core::array::from_fn(|_| None)));
+        let index = slot & (HELD_PAGE_LEN - 1);
+        if page[index].is_none() {
+            self.initialized += 1;
+        }
+        page[index] = Some(value);
+        self.high_water = self.high_water.max(slot.saturating_add(1));
+    }
+
+    fn allocated_slots(&self) -> usize {
+        self.pages.len() * HELD_PAGE_LEN
+    }
+}
+
 pub struct ChainGarbler<N: VoleArray<u8>> {
     secret: GlobalSecret<N>,
-    held: Vec<Option<Garble<N>>>,
+    held: HeldPages<Garble<N>>,
     fresh: u64,
+    metrics: ChainMetrics,
 }
 
 impl<N: VoleArray<u8>> ChainGarbler<N> {
@@ -182,36 +254,41 @@ impl<N: VoleArray<u8>> ChainGarbler<N> {
     pub fn new(secret: GlobalSecret<N>) -> Self {
         Self {
             secret,
-            held: Vec::new(),
+            held: HeldPages::default(),
             fresh: 0,
+            metrics: ChainMetrics::default(),
         }
     }
 
     /// Count of currently held labels. This exposes storage shape for
     /// instrumentation without exposing labels or their logical values.
     pub fn held_len(&self) -> usize {
-        self.held.iter().filter(|slot| slot.is_some()).count()
+        self.held.initialized
     }
 
-    /// Allocated slots, including unwritten holes; this is the peak-state
-    /// shape relevant to large jointly-secret ORAM/key material.
+    /// Physically allocated slots. Sparse logical TLS/ORAM slot ids allocate
+    /// only pages that contain an actual jointly-secret label.
     pub fn held_capacity(&self) -> usize {
-        self.held.len()
+        self.held.allocated_slots()
+    }
+
+    /// Largest logical slot extent touched; report separately from physical
+    /// capacity so sparse naming cannot masquerade as retained memory.
+    pub fn held_address_span(&self) -> usize {
+        self.held.high_water
     }
 
     fn held_get(&self, slot: usize) -> Result<Garble<N>, MpcError> {
-        self.held
-            .get(slot)
-            .and_then(Option::as_ref)
-            .cloned()
-            .ok_or(MpcError::MalformedSchedule)
+        self.held.get(slot).ok_or(MpcError::MalformedSchedule)
     }
 
     fn held_set(&mut self, slot: usize, value: Garble<N>) {
-        if self.held.len() <= slot {
-            self.held.resize(slot + 1, None);
-        }
-        self.held[slot] = Some(value);
+        self.held.set(slot, value);
+    }
+
+    /// Snapshot public execution-shape counters.
+    pub fn metrics(&self) -> ChainMetrics {
+        self.metrics
     }
 
     fn fresh_base<D: Digest>(&mut self) -> Garble<N> {
@@ -239,6 +316,16 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
     ) -> Result<Vec<bool>, MpcError> {
         let elim = eliminate_nots(schedule)?;
         let sched = &elim.schedule;
+        self.metrics.rounds += 1;
+        self.metrics.and_tables += sched.and_count() as u64;
+        self.metrics.held_inputs += feeds
+            .iter()
+            .filter(|f| matches!(f, ChainFeed::Held(_)))
+            .count() as u64;
+        self.metrics.held_outputs += outs
+            .iter()
+            .filter(|o| matches!(o, ChainOut::Hold(_)))
+            .count() as u64;
         if feeds.len() != sched.num_inputs || outs.len() != sched.output_wires().len() {
             return Err(MpcError::BadPartition);
         }
@@ -303,6 +390,8 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
         // chunk immediately, so a large jointly-secret ORAM/TLS round does
         // not materialize all tables at once.
         for tables in full.exec.circuit.tables.chunks(STRICT_TABLE_CHUNK) {
+            self.metrics.table_frames += 1;
+            self.metrics.table_bytes += (tables.len() * 4 * N::USIZE) as u64;
             transport.send(
                 &SessionFrame::SetupStrictChunk {
                     tables: tables
@@ -376,38 +465,38 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
 /// The evaluator's chain driver: holds only the held slots' labels (never
 /// the delta).
 pub struct ChainEvaluator<N: VoleArray<u8>> {
-    held: Vec<Option<Eval<N>>>,
+    held: HeldPages<Eval<N>>,
 }
 
 impl<N: VoleArray<u8>> ChainEvaluator<N> {
     /// A new driver with an empty held registry.
     pub fn new() -> Self {
-        Self { held: Vec::new() }
+        Self {
+            held: HeldPages::default(),
+        }
     }
 
     /// Number of initialized jointly-secret labels.
     pub fn held_len(&self) -> usize {
-        self.held.iter().filter(|slot| slot.is_some()).count()
+        self.held.initialized
     }
 
-    /// Allocated evaluator-label slots, including unwritten holes.
+    /// Physical evaluator-label capacity, page-backed for sparse slots.
     pub fn held_capacity(&self) -> usize {
-        self.held.len()
+        self.held.allocated_slots()
+    }
+
+    /// Largest logical slot extent touched.
+    pub fn held_address_span(&self) -> usize {
+        self.held.high_water
     }
 
     fn held_get(&self, slot: usize) -> Result<Eval<N>, MpcError> {
-        self.held
-            .get(slot)
-            .and_then(Option::as_ref)
-            .cloned()
-            .ok_or(MpcError::MalformedSchedule)
+        self.held.get(slot).ok_or(MpcError::MalformedSchedule)
     }
 
     fn held_set(&mut self, slot: usize, value: Eval<N>) {
-        if self.held.len() <= slot {
-            self.held.resize(slot + 1, None);
-        }
-        self.held[slot] = Some(value);
+        self.held.set(slot, value);
     }
 }
 

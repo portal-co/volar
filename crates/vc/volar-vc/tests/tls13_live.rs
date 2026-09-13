@@ -181,7 +181,14 @@ fn live_two_party_tls_against_real_rustls_server() {
                 &mut ot,
             )
             .expect("correlation round");
-        (verdict[0], out)
+        (
+            verdict[0],
+            out,
+            chain.metrics(),
+            chain.held_len(),
+            chain.held_capacity(),
+            chain.held_address_span(),
+        )
     });
 
     // Evaluator (client): real TCP to the rustls server + MPC transport.
@@ -228,7 +235,20 @@ fn live_two_party_tls_against_real_rustls_server() {
         )
         .expect("correlation round");
 
-    let (garb_verdict, garb_out) = garbler.join().expect("garbler join");
+    let (garb_verdict, garb_out, metrics, held_len, held_capacity, held_address_span) =
+        garbler.join().expect("garbler join");
+    eprintln!(
+        "minimal-live-tls metrics: rounds={} and_tables={} table_frames={} table_bytes={} held_inputs={} held_outputs={} held_labels={} held_capacity={} held_address_span={}",
+        metrics.rounds,
+        metrics.and_tables,
+        metrics.table_frames,
+        metrics.table_bytes,
+        metrics.held_inputs,
+        metrics.held_outputs,
+        held_len,
+        held_capacity,
+        held_address_span,
+    );
     tls_server.join().expect("tls server join");
 
     assert!(garb_verdict, "all verdicts must hold (garbler)");
