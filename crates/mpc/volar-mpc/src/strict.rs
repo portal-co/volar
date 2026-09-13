@@ -37,6 +37,7 @@ use hybrid_array::Array;
 use volar_spec::garble::{Garble, GarbleTable, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
+use crate::strict_cursor::{CursorState, StrictGateCursor};
 use crate::{
     DynGarbledCircuit, DynGarbledExec, Eval, Gate, GateSchedule, InputOwner, MpcError, OtChannel,
     SessionFrame, Transport,
@@ -332,25 +333,8 @@ where
         return Err(MpcError::BadPartition);
     }
 
-    // Setup: tables only (no delta, no output bases).
-    transport.send(
-        &SessionFrame::SetupStrict {
-            tables: exec
-                .circuit
-                .tables
-                .iter()
-                .map(|t| {
-                    let mut rows: [Vec<u8>; 4] = Default::default();
-                    for (r, row) in t.table.iter().enumerate() {
-                        rows[r] = arr_to_vec(row);
-                    }
-                    rows
-                })
-                .collect(),
-        }
-        .encode(),
-    );
-
+    // Tables stream after the owned inputs and OTs below. The evaluator cursor
+    // pauses at action/storage gates and resumes from the same table stream.
     // Owned-input labels (public + garbler-owned), in circuit-input order.
     let mut owned: Vec<Vec<u8>> = Vec::new();
     let mut pub_i = 0usize;
@@ -386,6 +370,30 @@ where
             ot.send([&f.target, &t.target]);
         }
     }
+
+    for tables in exec.circuit.tables.chunks(STRICT_TABLE_CHUNK) {
+        transport.send(
+            &SessionFrame::SetupStrictChunk {
+                tables: tables
+                    .iter()
+                    .map(|t| {
+                        let mut rows: [Vec<u8>; 4] = Default::default();
+                        for (r, row) in t.table.iter().enumerate() {
+                            rows[r] = arr_to_vec(row);
+                        }
+                        rows
+                    })
+                    .collect(),
+            }
+            .encode(),
+        );
+    }
+    transport.send(
+        &SessionFrame::SetupStrictEnd {
+            table_count: exec.circuit.tables.len() as u32,
+        }
+        .encode(),
+    );
 
     // Lockstep action walk: per call, decode the evaluator's arg labels and
     // offer each result bit by OT (both parties derive the same sequence of
@@ -754,6 +762,45 @@ pub(crate) fn eval_strict_table_stream<N: VoleArray<u8>, D: Digest, T: Transport
     }
 }
 
+/// Evaluate a strict table stream with a resumable cursor. Unlike
+/// [`eval_strict_table_stream`], this supports GRAM and evaluator-hosted
+/// actions, pausing only at AND gates until the next table arrives.
+fn eval_strict_table_stream_cursor<N: VoleArray<u8>, D: Digest, T: Transport>(
+    schedule: &GateSchedule,
+    inputs: &[Eval<N>],
+    transport: &mut T,
+    ot: &mut dyn OtChannel<N>,
+    host: &mut dyn StrictActionHost,
+    gram: &mut [&mut dyn crate::GramDrive<N>],
+) -> Result<Vec<Eval<N>>, MpcError> {
+    let mut cursor = StrictGateCursor::new(schedule, inputs)?;
+    let mut seen = 0usize;
+    loop {
+        match SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)? {
+            SessionFrame::SetupStrictChunk { tables } => {
+                for table in decode_table_chunk::<N>(tables)? {
+                    if cursor.advance::<D, T>(transport, ot, host, gram)? != CursorState::NeedsTable
+                    {
+                        return Err(MpcError::MalformedSchedule);
+                    }
+                    cursor.apply_table::<D>(&table)?;
+                    seen += 1;
+                }
+            }
+            SessionFrame::SetupStrictEnd { table_count } => {
+                if seen != table_count as usize || seen != schedule.and_count() {
+                    return Err(MpcError::MalformedSchedule);
+                }
+                if cursor.advance::<D, T>(transport, ot, host, gram)? != CursorState::Complete {
+                    return Err(MpcError::MalformedSchedule);
+                }
+                return cursor.outputs();
+            }
+            _ => return Err(MpcError::UnexpectedMessage),
+        }
+    }
+}
+
 /// The strict evaluator role: receives the tables and owned-input labels,
 /// chooses its own input labels via OT, evaluates, and returns its output
 /// labels to the garbler (never decoding — it cannot). Returns the
@@ -846,181 +893,41 @@ where
         return Err(MpcError::MalformedSchedule);
     }
 
-    let setup_frame = SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
-    let tables_raw = match setup_frame {
-        SessionFrame::SetupStrict { tables } => tables,
-        _ => return Err(MpcError::UnexpectedMessage),
-    };
-    let tables: Vec<GarbleTable<N>> = tables_raw
-        .into_iter()
-        .map(|rows| {
-            let mut t: [Array<u8, N>; 4] = Default::default();
-            for (r, row) in rows.iter().enumerate() {
-                t[r] = vec_to_arr(row).ok_or(MpcError::MalformedSchedule)?;
-            }
-            Ok(GarbleTable { table: t })
-        })
-        .collect::<Result<Vec<_>, MpcError>>()?;
-
     let owned_frame = SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
     let owned: Vec<Eval<N>> = match owned_frame {
         SessionFrame::OwnedInputs(labels) => labels
             .iter()
-            .map(|l| {
+            .map(|label| {
                 Ok(Eval {
-                    target: vec_to_arr(l).ok_or(MpcError::MalformedSchedule)?,
+                    target: vec_to_arr(label).ok_or(MpcError::MalformedSchedule)?,
                 })
             })
-            .collect::<Result<Vec<_>, MpcError>>()?,
+            .collect::<Result<_, MpcError>>()?,
         _ => return Err(MpcError::UnexpectedMessage),
     };
-
-    let mut labels: Vec<Eval<N>> = Vec::with_capacity(schedule.num_inputs);
+    let mut labels = Vec::with_capacity(schedule.num_inputs);
     let mut owned_i = 0usize;
-    let mut ev_i = 0usize;
-    for owner in partition.iter() {
+    let mut eval_i = 0usize;
+    for owner in partition {
         match owner {
             InputOwner::Public | InputOwner::Garbler => {
-                let l = owned.get(owned_i).ok_or(MpcError::BadPartition)?;
+                labels.push(owned.get(owned_i).cloned().ok_or(MpcError::BadPartition)?);
                 owned_i += 1;
-                labels.push(l.clone());
             }
             InputOwner::Evaluator => {
-                let b = *evaluator_bits.get(ev_i).ok_or(MpcError::BadPartition)?;
-                ev_i += 1;
-                let chosen = ot.receive(b);
-                labels.push(Eval { target: chosen });
+                let bit = *evaluator_bits.get(eval_i).ok_or(MpcError::BadPartition)?;
+                eval_i += 1;
+                labels.push(Eval {
+                    target: ot.receive(bit),
+                });
             }
         }
     }
-
-    // Evaluate on the Not-free schedule, with the action interactions inline.
-    let mut wires: Vec<Eval<N>> = Vec::with_capacity(schedule.wire_count());
-    wires.extend_from_slice(&labels);
-    let mut table = 0usize;
-    let mut call_results: Vec<Option<Vec<Eval<N>>>> =
-        (0..schedule.actions.len()).map(|_| None).collect();
-    for gate in &schedule.gates {
-        let out = match *gate {
-            Gate::Zero => Eval::zero(),
-            Gate::One => return Err(MpcError::MalformedSchedule),
-            Gate::Xor(a, b) => {
-                let (x, y) = (wires.get(a), wires.get(b));
-                match (x, y) {
-                    (Some(x), Some(y)) => x.clone() ^ y.clone(),
-                    _ => return Err(MpcError::MalformedSchedule),
-                }
-            }
-            Gate::Not(_) => return Err(MpcError::MalformedSchedule),
-            Gate::And(a, b) => {
-                let t = tables.get(table).ok_or(MpcError::MalformedSchedule)?;
-                table += 1;
-                match (wires.get(a), wires.get(b)) {
-                    (Some(x), Some(y)) => x.and_via_table::<D>(y, t),
-                    _ => return Err(MpcError::MalformedSchedule),
-                }
-            }
-            Gate::StorageRead {
-                storage,
-                cell,
-                access,
-            } => {
-                let driver = gram.get_mut(storage).ok_or(MpcError::MalformedSchedule)?;
-                let base = crate::gram_data_base::<D, N>(access, 0);
-                driver.read(cell, access, &base)
-            }
-            Gate::StorageWrite {
-                storage,
-                cell,
-                src,
-                access,
-            } => {
-                let driver = gram.get_mut(storage).ok_or(MpcError::MalformedSchedule)?;
-                let value = wires.get(src).cloned().ok_or(MpcError::MalformedSchedule)?;
-                driver.write(cell, access, &value)?;
-                // Dummy-zero wire (matches BIrStmt::StorageWrite).
-                Eval::zero()
-            }
-            Gate::ActionBit { call, bit } => {
-                let call = call as usize;
-                if call_results.get(call).and_then(|r| r.as_ref()).is_none() {
-                    let spec = schedule
-                        .actions
-                        .get(call)
-                        .ok_or(MpcError::MalformedSchedule)?;
-                    // Send the wire labels [guard, args..., fallback...].
-                    let mut arg_labels: Vec<Vec<u8>> =
-                        Vec::with_capacity(1 + spec.arg_wires.len() + spec.fallback_wires.len());
-                    arg_labels.push(arr_to_vec(
-                        &wires
-                            .get(spec.guard)
-                            .ok_or(MpcError::MalformedSchedule)?
-                            .target,
-                    ));
-                    for &w in spec.arg_wires.iter().chain(spec.fallback_wires.iter()) {
-                        arg_labels.push(arr_to_vec(
-                            &wires.get(w).ok_or(MpcError::MalformedSchedule)?.target,
-                        ));
-                    }
-                    transport.send(
-                        &SessionFrame::ActionArgs {
-                            call: call as u32,
-                            labels: arg_labels,
-                        }
-                        .encode(),
-                    );
-                    let frame = SessionFrame::decode(&transport.recv())
-                        .ok_or(MpcError::UnexpectedMessage)?;
-                    let bits = match frame {
-                        SessionFrame::ActionArgsClear { call: c, bits } if c as usize == call => {
-                            bits
-                        }
-                        _ => return Err(MpcError::UnexpectedMessage),
-                    };
-                    if bits.len() != 1 + spec.arg_wires.len() + spec.fallback_wires.len() {
-                        return Err(MpcError::UnexpectedMessage);
-                    }
-                    let guard = bits[0];
-                    let args = &bits[1..1 + spec.arg_wires.len()];
-                    let fallback = &bits[1 + spec.arg_wires.len()..];
-                    let result: Vec<bool> = if guard {
-                        let r = host.action(&spec.name, args)?;
-                        if r.len() != spec.num_bits {
-                            return Err(MpcError::ActionHost);
-                        }
-                        r
-                    } else {
-                        if fallback.len() != spec.num_bits {
-                            return Err(MpcError::MalformedSchedule);
-                        }
-                        fallback.to_vec()
-                    };
-                    // Each result bit is delivered by OT against the pinned
-                    // action-result base.
-                    let mut outs: Vec<Eval<N>> = Vec::with_capacity(spec.num_bits);
-                    for &b in result.iter() {
-                        outs.push(Eval {
-                            target: ot.receive(b),
-                        });
-                    }
-                    call_results[call] = Some(outs);
-                }
-                let outs = call_results[call]
-                    .as_ref()
-                    .ok_or(MpcError::MalformedSchedule)?;
-                outs.get(bit as usize)
-                    .cloned()
-                    .ok_or(MpcError::MalformedSchedule)?
-            }
-        };
-        wires.push(out);
+    if owned_i != owned.len() || eval_i != evaluator_bits.len() {
+        return Err(MpcError::BadPartition);
     }
-
-    let out_labels: Vec<Eval<N>> = schedule
-        .output_wires()
-        .iter()
-        .map(|&w| wires.get(w).cloned().ok_or(MpcError::MalformedSchedule))
-        .collect::<Result<_, MpcError>>()?;
+    let out_labels =
+        eval_strict_table_stream_cursor::<N, D, T>(schedule, &labels, transport, ot, host, gram)?;
     transport.send(
         &SessionFrame::OutputLabels(out_labels.iter().map(|l| arr_to_vec(&l.target)).collect())
             .encode(),
