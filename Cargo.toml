@@ -65,7 +65,7 @@ volar-oram = {path="crates/oram/volar-oram", version = "0.1.0"}
 volar-oram-core = {path="crates/oram/volar-oram-core", version = "0.1.0"}
 volar-macros = {path="crates/macros/volar-macros", version = "0.1.0"}
 volar-net = {path="crates/net/volar-net", version = "0.1.0"}
-volar-compiler-passes = {path="crates/compiler/volar-compiler-passes", version = "0.1.0"}
+volar-compiler-passes = {git = "https://github.com/portal-co/volar.git", version = "0.1.0"}
 volar-lir-test-corpus = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 volar-lir-saved = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 volar-wasm-backend = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
@@ -86,7 +86,7 @@ volar-provenance        = { version = "0.1.0", git = "https://github.com/portal-
 volar-side              = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 volar-ir-opt            = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 volar-ir-virt           = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
-volar-ir-build          = { path = "../volar-ir/crates/frontends/volar-ir-build", version = "0.1.0" }
+volar-ir-build          = { git = "https://github.com/portal-co/volar-ir", version = "0.1.0" }
 volar-fuzz              = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }

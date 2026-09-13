@@ -8,14 +8,14 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-volar-c-backend = { path = "../../../../volar-ir/crates/backends/volar-c-backend" }
-volar-compiler = { path = "../volar-compiler", features = ["parsing"] }
-volar-lir-codegen = { path = "../volar-lir-codegen" }
-volar-weaver = { path = "../volar-weaver" }
-volar-wasm-backend = { path = "../../../../volar-ir/crates/backends/volar-wasm-backend" }
-volar-lir = { path = "../../../../volar-ir/crates/ir/volar-lir" }
-volar-lir-saved = { path = "../../../../volar-ir/crates/ir/volar-lir-saved" }
-volar-lir-test-corpus = { path = "../../../../volar-ir/crates/ir/volar-lir-test-corpus" }
-volar-ir = { path = "../../../../volar-ir/crates/ir/volar-ir" }
-volar-ir-passes = { path = "../../../../volar-ir/crates/ir/volar-ir-passes" }
+volar-c-backend = { git = "https://github.com/portal-co/volar-ir" }
+volar-compiler = { git = "https://github.com/portal-co/volar.git", features = ["parsing"] }
+volar-lir-codegen = { git = "https://github.com/portal-co/volar.git" }
+volar-weaver = { git = "https://github.com/portal-co/volar.git" }
+volar-wasm-backend = { git = "https://github.com/portal-co/volar-ir" }
+volar-lir = { git = "https://github.com/portal-co/volar-ir" }
+volar-lir-saved = { git = "https://github.com/portal-co/volar-ir" }
+volar-lir-test-corpus = { git = "https://github.com/portal-co/volar-ir" }
+volar-ir = { git = "https://github.com/portal-co/volar-ir" }
+volar-ir-passes = { git = "https://github.com/portal-co/volar-ir" }
 wasmtime = "46.0.1"

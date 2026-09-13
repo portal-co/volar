@@ -13,9 +13,9 @@ volar-ir-common = { workspace = true }
 volar-vaffle-target = { workspace = true }
 vaffle = { workspace = true }
 volar-ir-passes = { workspace = true }
-volar-weaver = { path = "../../compiler/volar-weaver" }
+volar-weaver = { git = "https://github.com/portal-co/volar.git" }
 volar-discipline = { workspace = true }
-volar-spec = { path = "../../spec/volar-spec" }
+volar-spec = { git = "https://github.com/portal-co/volar.git" }
 portal-pc-waffle-ir = { workspace = true }
 portal-pc-waffle-frontend = { workspace = true }
 rv-asm = { git = "https://github.com/portal-co/rv-utils.git" }
@@ -23,15 +23,15 @@ hybrid-array = { workspace = true }
 cipher = { workspace = true }
 anyhow = { version = "^1.0", default-features = false }
 volar-ir-opt = { workspace = true }
-volar-riscv-test-programs = { path = "../../../../volar-ir/crates/ir/volar-riscv-test-programs" }
+volar-riscv-test-programs = { git = "https://github.com/portal-co/volar-ir" }
 
 [dev-dependencies]
 volar-verifier-fold = { path = "../../fold/volar-verifier-fold" }
 volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }
 volar-iop = { path = "../../iop/volar-iop" }
-volar-compiler = { path = "../../compiler/volar-compiler", features = ["parsing"] }
+volar-compiler = { git = "https://github.com/portal-co/volar.git", features = ["parsing"] }
 volar-fuzz = { workspace = true }
-volar-lir-codegen = { path = "../../compiler/volar-lir-codegen" }
+volar-lir-codegen = { git = "https://github.com/portal-co/volar.git" }
 volar-c-backend = { workspace = true }
 volar-lir-test-corpus = { workspace = true }
 wat = "1.212.0"

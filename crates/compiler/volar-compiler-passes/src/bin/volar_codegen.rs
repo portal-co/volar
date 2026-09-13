@@ -9,7 +9,7 @@
 //! volar-codegen <target> [OPTIONS]
 //!
 //! TARGETS
-//!   ts        Emit TypeScript (for packages/volar-runtime)
+//!   ts        Emit TypeScript (for packages/volar-spec-ts)
 //!   dyn       Emit dynamic Rust (for crates/spec/volar-spec-dyn)
 //!
 //! OPTIONS
@@ -17,7 +17,7 @@
 //!                         Default (ts):  crates/spec/volar-spec/src
 //!                         Default (dyn): crates/spec/volar-spec/src
 //!   --out <path>          Output file path.
-//!                         Default (ts):  packages/volar-runtime/src/generated.ts
+//!                         Default (ts):  packages/volar-spec-ts/generated.ts
 //!                         Default (dyn): crates/spec/volar-spec-dyn/src/generated.rs
 //!   --dump-ir             Write pre-lowering IR dump to ir_dump.txt.
 //!   --dump-ir-dyn         Write post-lowering IR dump to ir_dump_dyn.txt.
@@ -78,7 +78,7 @@ impl Target {
 
     fn default_out(self) -> &'static str {
         match self {
-            Target::Ts => "packages/volar-runtime/src/generated.ts",
+            Target::Ts => "packages/volar-spec-ts/generated.ts",
             Target::Dyn => "crates/spec/volar-spec-dyn/src/generated.rs",
             Target::Manifest => "crates/spec/volar-primitives/volar-primitives.volar.d",
         }

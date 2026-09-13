@@ -14,8 +14,8 @@ rkyv = ["volar-compiler/rkyv", "volar-ir-common/rkyv", "volar-side/rkyv"]
 net = ["dep:volar-net"]
 
 [dependencies]
-volar-compiler = {path="../volar-compiler"}
-volar-compiler-common ={path="../volar-compiler-common"}
+volar-compiler = {git = "https://github.com/portal-co/volar.git"}
+volar-compiler-common ={git = "https://github.com/portal-co/volar.git"}
 volar-discipline = { workspace = true }
 volar-provenance.workspace = true
 volar-ir-common.workspace = true
@@ -23,7 +23,7 @@ volar-side.workspace = true
 volar-ir.workspace = true
 volar-ir-passes = { workspace = true }
 volar-lir = { workspace = true }
-volar-lir-codegen = {path="../volar-lir-codegen"}
+volar-lir-codegen = {git = "https://github.com/portal-co/volar.git"}
 volar-c-backend = { workspace = true }
 vaffle.workspace = true
 portal-pc-waffle-ir.workspace = true
