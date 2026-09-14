@@ -12,6 +12,9 @@ combined `Oram2pc` harness:
 - evaluator-private inputs use the supplied `OtChannel`;
 - table transfer uses the normal strict framed transport;
 - neither role calls `LoopbackOt` or shares a `HeldState`.
+- `SplitOutput::{Reveal, Opaque}` now makes output disposition explicit:
+  opaque output labels are never transmitted to the garbler, while each role
+  retains its own corresponding material for later threading.
 
 This is deliberately a small, deep module: a future begin/access/evict ORAM
 adapter need only build its public input partition and role-local inputs. It
@@ -71,7 +74,9 @@ the split circuit.
 
 Migrate `Oram2pc::run_access` in this order:
 
-1. Replace `run_circuit` calls with `SplitGarbler` / `SplitEvaluator` calls.
+1. Replace `run_circuit` calls with `SplitGarbler` / `SplitEvaluator` calls,
+   using `SplitOutput::Opaque` for every threaded state wire. **The output
+   primitive is now available; this migration remains.**
 2. Split `HeldState` into role-local posmap/stash types.
 3. Give the evaluator a ciphertext-tree adapter and explicit path
    request/read/write frames, validating widths/version before circuit input.

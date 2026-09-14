@@ -6,6 +6,7 @@
 //! It deliberately delegates table streaming and OT to the strict protocol;
 //! it never uses loopback OT or a local evaluator walk.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use digest::Digest;
@@ -32,6 +33,26 @@ impl Transport for TransportRef<'_> {
     }
 }
 
+/// Disposition of one lower-level circuit output. The script is public and
+/// shared by both roles; an opaque output never crosses the role seam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitOutput {
+    /// Return the evaluator label to the garbler for exact-match decoding.
+    Reveal,
+    /// Keep the evaluator label and garbler base in their respective roles.
+    /// This is the disposition for threaded posmap/stash/material wires.
+    Opaque,
+}
+
+/// Garbler-local result of a split invocation.
+pub struct SplitGarblerResult<N: VoleArray<u8>> {
+    /// One false-label base per circuit output. No evaluator labels occur here.
+    pub output_bases: Vec<Garble<N>>,
+    /// Authenticated bits for the `Reveal` entries, in output order restricted
+    /// to revealed outputs.
+    pub revealed: Vec<bool>,
+}
+
 /// Garbler role of a single lower-level strict circuit invocation.
 pub struct SplitGarbler<N: VoleArray<u8>> {
     secret: GlobalSecret<N>,
@@ -42,8 +63,8 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
         Self { secret }
     }
 
-    /// Execute a circuit and return only the garbler-owned output bases. The
-    /// evaluator's active output labels never enter this role.
+    /// Execute a circuit with all outputs revealed. New durable-state callers
+    /// should use [`Self::run_with_outputs`] and mark threaded wires opaque.
     pub fn run<D: Digest>(
         &self,
         schedule: &GateSchedule,
@@ -54,7 +75,40 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<Vec<Garble<N>>, MpcError> {
-        if partition.len() != schedule.num_inputs || input_bases.len() != schedule.num_inputs {
+        let outputs = vec![SplitOutput::Reveal; schedule.output_wires().len()];
+        Ok(self
+            .run_with_outputs::<D>(
+                schedule,
+                input_bases,
+                partition,
+                public_bits,
+                garbler_bits,
+                &outputs,
+                transport,
+                ot,
+            )?
+            .output_bases)
+    }
+
+    /// Execute a circuit and retain opaque outputs in separate role-local
+    /// state. The evaluator sends labels only for `Reveal` entries, so this
+    /// role never receives an evaluator label for an opaque output.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_with_outputs<D: Digest>(
+        &self,
+        schedule: &GateSchedule,
+        input_bases: Vec<Garble<N>>,
+        partition: &[InputOwner],
+        public_bits: &[bool],
+        garbler_bits: &[bool],
+        outputs: &[SplitOutput],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<SplitGarblerResult<N>, MpcError> {
+        if partition.len() != schedule.num_inputs
+            || input_bases.len() != schedule.num_inputs
+            || outputs.len() != schedule.output_wires().len()
+        {
             return Err(MpcError::BadPartition);
         }
         let eliminated = eliminate_nots(schedule)?;
@@ -110,25 +164,36 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
             Some(SessionFrame::OutputLabels(labels)) => labels,
             _ => return Err(MpcError::UnexpectedMessage),
         };
-        if labels.len() != full.exec.output_labels.len() {
+        let reveal_count = outputs
+            .iter()
+            .filter(|output| **output == SplitOutput::Reveal)
+            .count();
+        if labels.len() != reveal_count {
             return Err(MpcError::UnexpectedMessage);
         }
-        let mut verdict = Vec::with_capacity(labels.len());
-        for (index, bytes) in labels.iter().enumerate() {
-            let label = vec_to_arr::<N>(bytes).ok_or(MpcError::MalformedSchedule)?;
-            let base = &full.exec.output_labels[index];
-            verdict.push(
-                decode_output_label(
-                    &self.secret,
-                    base,
-                    eliminated.output_polarity[index],
-                    &label,
-                )
-                .ok_or(MpcError::DecodeFailure)?,
-            );
+        let mut revealed = Vec::with_capacity(reveal_count);
+        let mut label_i = 0usize;
+        for (index, output) in outputs.iter().enumerate() {
+            if *output == SplitOutput::Reveal {
+                let label = vec_to_arr::<N>(&labels[label_i]).ok_or(MpcError::MalformedSchedule)?;
+                label_i += 1;
+                let base = &full.exec.output_labels[index];
+                revealed.push(
+                    decode_output_label(
+                        &self.secret,
+                        base,
+                        eliminated.output_polarity[index],
+                        &label,
+                    )
+                    .ok_or(MpcError::DecodeFailure)?,
+                );
+            }
         }
-        transport.send(&SessionFrame::VerdictBits(verdict).encode());
-        Ok(full.exec.output_labels)
+        transport.send(&SessionFrame::VerdictBits(revealed.clone()).encode());
+        Ok(SplitGarblerResult {
+            output_bases: full.exec.output_labels,
+            revealed,
+        })
     }
 }
 
@@ -140,8 +205,8 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
         Self(core::marker::PhantomData)
     }
 
-    /// Execute a circuit and return only evaluator-owned active output labels.
-    /// The garbler's output bases and free-XOR delta never enter this role.
+    /// Execute a circuit with all outputs revealed. New durable-state callers
+    /// should use [`Self::run_with_outputs`] and mark threaded wires opaque.
     pub fn run<D: Digest>(
         &self,
         schedule: &GateSchedule,
@@ -150,7 +215,30 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<Vec<Eval<N>>, MpcError> {
-        if partition.len() != schedule.num_inputs {
+        let output_script = vec![SplitOutput::Reveal; schedule.output_wires().len()];
+        self.run_with_outputs::<D>(
+            schedule,
+            partition,
+            evaluator_bits,
+            &output_script,
+            transport,
+            ot,
+        )
+    }
+
+    /// Execute a circuit, transmitting only output labels the shared script
+    /// explicitly marks `Reveal`.
+    pub fn run_with_outputs<D: Digest>(
+        &self,
+        schedule: &GateSchedule,
+        partition: &[InputOwner],
+        evaluator_bits: &[bool],
+        outputs: &[SplitOutput],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<Vec<Eval<N>>, MpcError> {
+        if partition.len() != schedule.num_inputs || outputs.len() != schedule.output_wires().len()
+        {
             return Err(MpcError::BadPartition);
         }
         let eliminated = eliminate_nots(schedule)?;
@@ -185,19 +273,18 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
             return Err(MpcError::BadPartition);
         }
         let mut link = TransportRef(transport);
-        let outputs =
+        let output_labels =
             eval_strict_table_stream::<N, D, _>(&eliminated.schedule, &labels, &mut link)?;
-        transport.send(
-            &SessionFrame::OutputLabels(
-                outputs
-                    .iter()
-                    .map(|label| arr_to_vec(&label.target))
-                    .collect(),
-            )
-            .encode(),
-        );
+        let revealed_labels: Vec<Vec<u8>> = output_labels
+            .iter()
+            .zip(outputs)
+            .filter_map(|(label, disposition)| {
+                (*disposition == SplitOutput::Reveal).then(|| arr_to_vec(&label.target))
+            })
+            .collect();
+        transport.send(&SessionFrame::OutputLabels(revealed_labels).encode());
         match SessionFrame::decode(&transport.recv()) {
-            Some(SessionFrame::VerdictBits(_)) => Ok(outputs),
+            Some(SessionFrame::VerdictBits(_)) => Ok(output_labels),
             Some(SessionFrame::Verdict(Err(()))) => Err(MpcError::DecodeFailure),
             _ => Err(MpcError::UnexpectedMessage),
         }
