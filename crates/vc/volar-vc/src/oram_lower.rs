@@ -58,11 +58,16 @@ pub struct OramLowerConfig {
     pub bucket_size: usize,
     /// Stash capacity (entries). `>= num_addrs` is always safe.
     pub max_stash: usize,
-    /// When set (the default posture), the physical ORAM tree is **encrypted**
-    /// (AES-128 per-node pads, encrypted valid bit, versioned pads) — the
-    /// secure-by-default configuration. Tests set this to `false` for the fast
-    /// plaintext scaffold.
+    /// When set, the physical ORAM tree is **encrypted**. The legacy mode uses
+    /// native key-holder formatting plus encrypted-valid/versioned pads;
+    /// `shared_tree_key` selects the jointly-held AES-key adapter instead.
+    /// Tests set this to `false` for the fast plaintext scaffold.
     pub secure: bool,
+    /// Use the shared-key ORAM adapter: AES-128 key bits 0..64 belong to the
+    /// garbler and bits 64..128 to the evaluator. This deliberately selects
+    /// lazy all-zero initialization without encrypted-valid/versioned pads,
+    /// because those native operations require a complete key.
+    pub shared_tree_key: bool,
     /// **Address narrowing**: when set, each storage address is truncated to its
     /// low `narrow_bits` bits and the ORAM spans `2^narrow_bits` cells. This is
     /// how a guest with a wide (e.g. 32-bit) symbolic address space runs on a
@@ -447,8 +452,23 @@ pub fn storage_to_oram<P: Clone>(
     // Build the ORAM gadget circuits once for this geometry. Encryption is the
     // default posture (`OramGadgetConfig::secure`); tests set `secure: false`
     // for the fast plaintext scaffold.
-    let mut oram = if cfg.secure {
+    let mut oram = if cfg.secure && !cfg.shared_tree_key {
         OramGadgetConfig::secure(num_addrs, cfg.levels, cfg.bucket_size, 1)
+    } else if cfg.shared_tree_key {
+        assert!(cfg.secure, "shared_tree_key requires encrypted ORAM");
+        OramGadgetConfig {
+            num_addrs,
+            levels: cfg.levels,
+            bucket_size: cfg.bucket_size,
+            data_bits: 1,
+            max_stash: cfg.max_stash,
+            encrypted: true,
+            tree_key_bits: 128,
+            encrypt_valid: false,
+            keyed_leaf: false,
+            versioned_pads: false,
+            version_bits: 0,
+        }
     } else {
         OramGadgetConfig {
             num_addrs,

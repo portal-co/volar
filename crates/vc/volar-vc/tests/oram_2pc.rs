@@ -95,6 +95,7 @@ fn s4_oram_program_two_party_matches_concrete() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: false,
+            shared_tree_key: false,
             narrow_bits: None,
         },
     )
@@ -150,6 +151,7 @@ fn s4_oram_program_two_party_secure_default() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: true,
+            shared_tree_key: false,
             narrow_bits: None,
         },
     )

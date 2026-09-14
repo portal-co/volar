@@ -43,6 +43,7 @@ fn config() -> OramLowerConfig {
         bucket_size: Z,
         max_stash: MAX_STASH,
         secure: false,
+        shared_tree_key: false,
         narrow_bits: None,
     }
 }

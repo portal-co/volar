@@ -83,6 +83,7 @@ fn s3_symbolic_storage_matches_model() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: false,
+            shared_tree_key: false,
             narrow_bits: None,
         },
     )
@@ -132,6 +133,7 @@ fn s3_secure_default_encrypted_tree() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: true,
+            shared_tree_key: false,
             narrow_bits: None,
         },
     )
@@ -229,6 +231,7 @@ fn s3_write_cells_then_symbolic_read() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: false,
+            shared_tree_key: false,
             narrow_bits: None,
         },
     )
@@ -316,6 +319,7 @@ fn s3_narrowing_bounds_the_oram() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: false,
+            shared_tree_key: false,
             narrow_bits: None,
         },
     )
@@ -329,6 +333,7 @@ fn s3_narrowing_bounds_the_oram() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: false,
+            shared_tree_key: false,
             narrow_bits: Some(4),
         },
     )
@@ -408,6 +413,7 @@ fn s3_larger_oram_instance_concrete() {
             bucket_size: Z,
             max_stash: 2 * 15 + Z + 16,
             secure: false,
+            shared_tree_key: false,
             narrow_bits: None,
         },
     )
@@ -509,6 +515,7 @@ fn s3_multi_space_two_orams() {
             bucket_size: Z,
             max_stash: MAX_STASH,
             secure: false,
+            shared_tree_key: false,
             narrow_bits: None,
         },
     )

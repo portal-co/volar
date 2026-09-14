@@ -23,6 +23,18 @@
 //! Scope / honesty: single-process harness drives both parties over a loopback
 //! OT (mechanism and label-consistency are pinned, not transport). Plaintext
 //! tree is the S1–S4 scaffold; the encrypted tree is S5.
+//!
+//! ## Shared-key adapter
+//!
+//! [`Oram2pc::new_with_shared_key`] is the storage seam used when this state
+//! backs a strict-chain value: its AES-128 key is split 64/64 between garbler
+//! and evaluator and is supplied to every access circuit as separate private
+//! inputs. The production role adapter must retain only its local half; this
+//! in-process two-party driver receives both halves solely to construct the
+//! test harness's combined circuit invocation. It is intentionally limited to
+//! non-versioned, non-preformatted encrypted trees: those modes need native
+//! key-holder formatting/version-pad work and therefore cannot honestly claim
+//! a jointly held key yet.
 
 use alloc::vec::Vec;
 
@@ -35,6 +47,38 @@ use volar_spec::garble::{Eval, Garble, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
 use crate::oram_gadget::OramGadgetConfig;
+
+/// A 128-bit ORAM AES key split between the two MPC roles. This is the
+/// in-process two-party harness configuration; a networked role adapter must
+/// retain only its own half. The constructor accepts halves rather than a
+/// `[u8; 16]` so circuit ownership remains explicit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SharedOramKey {
+    garbler_half: [u8; 8],
+    evaluator_half: [u8; 8],
+}
+
+impl SharedOramKey {
+    /// Construct a jointly held AES-128 key from its role-local halves.
+    pub const fn new(garbler_half: [u8; 8], evaluator_half: [u8; 8]) -> Self {
+        Self {
+            garbler_half,
+            evaluator_half,
+        }
+    }
+
+    fn garbler_bits(self) -> impl Iterator<Item = bool> {
+        self.garbler_half
+            .into_iter()
+            .flat_map(|byte| (0..8).map(move |bit| (byte >> bit) & 1 == 1))
+    }
+
+    fn evaluator_bits(self) -> impl Iterator<Item = bool> {
+        self.evaluator_half
+            .into_iter()
+            .flat_map(|byte| (0..8).map(move |bit| (byte >> bit) & 1 == 1))
+    }
+}
 use crate::oram_lower::{OramProgram, Stage};
 
 /// A bundle of threaded wires: the evaluator holds `labels`, the garbler knows
@@ -164,9 +208,12 @@ pub struct Oram2pc<N: VoleArray<u8>> {
     counter: u64,
     fresh: u64,
     leaf_rng: u64,
-    /// Driver-side tree encryption state (S5/S6): the garbler-held tree key and
-    /// the public per-node versions. Only meaningful for `encrypted` configs.
-    crypto: crate::oram_gadget::TreeCrypto,
+    /// Native tree formatting/version state. Present only for the legacy
+    /// garbler-key mode; shared-key mode intentionally cannot materialize this.
+    crypto: Option<crate::oram_gadget::TreeCrypto>,
+    /// When present, the AES key is 64/64 split and enters every encrypted
+    /// access as separate garbler/evaluator inputs.
+    shared_key: Option<SharedOramKey>,
     /// Whether the tree has been pre-formatted (encrypted `valid` bit).
     tree_formatted: bool,
     // Compiled schedules, cached so repeated begin/access invocations don't
@@ -216,11 +263,42 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
             counter: 0,
             fresh,
             leaf_rng: 0x5EED,
-            crypto,
+            crypto: Some(crypto),
+            shared_key: None,
             tree_formatted: false,
             begin_sched,
             access_sched,
         }
+    }
+
+    /// Build an ORAM adapter whose AES key is jointly held. This is the
+    /// replacement storage seam for strict-chain state: encrypted tree bytes
+    /// are external, while logical ORAM state remains garbled in the access
+    /// circuits. Neither role obtains the complete tree key.
+    ///
+    /// `encrypt_valid` and `versioned_pads` are rejected because their current
+    /// native pre-formatting/version bookkeeping requires a full key. They need
+    /// a follow-up circuit-only formatter before becoming shared-key modes.
+    pub fn new_with_shared_key<D: Digest>(
+        config: &OramGadgetConfig,
+        secret: GlobalSecret<N>,
+        key: SharedOramKey,
+    ) -> Self {
+        assert!(config.encrypted, "shared key requires encrypted ORAM");
+        assert_eq!(config.tree_key_bits, 128, "shared key is AES-128");
+        assert!(
+            !config.encrypt_valid && !config.versioned_pads,
+            "shared-key adapter requires circuit-only tree initialization/versioning"
+        );
+        let mut driver = Self::new::<D>(config, secret);
+        driver.crypto = None;
+        driver.shared_key = Some(key);
+        driver
+    }
+
+    /// Whether this driver is using the jointly held AES-key adapter.
+    pub fn uses_shared_key(&self) -> bool {
+        self.shared_key.is_some()
     }
 
     /// Run one ORAM access (begin → main → evict) against `tree`, threading the
@@ -265,29 +343,34 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
         // access feeds the garbler-held tree key plus the public per-node
         // versions, and the versions bump on each write.
         if cfg.encrypted && !self.tree_formatted {
-            self.crypto.format_tree(cfg, tree);
+            if let Some(crypto) = &self.crypto {
+                crypto.format_tree(cfg, tree);
+            }
             self.tree_formatted = true;
         }
-        let tree_key_bits = if cfg.encrypted {
-            self.crypto.key_bits()
-        } else {
-            Vec::new()
-        };
         // Append the tree_key (garbler-secret) + per-node versions (public) feeds.
-        let mut push_crypto_feeds = |feeds: &mut Vec<Feed>,
-                                     crypto: &crate::oram_gadget::TreeCrypto,
-                                     tree: &OramTree<Z, 1>,
-                                     leaf: u64| {
-            if cfg.encrypted {
-                for &b in &tree_key_bits {
-                    feeds.push(Feed::Garbler(b));
+        let push_crypto_feeds = |feeds: &mut Vec<Feed>,
+                                 crypto: Option<&crate::oram_gadget::TreeCrypto>,
+                                 shared_key: Option<SharedOramKey>,
+                                 tree: &OramTree<Z, 1>,
+                                 leaf: u64| {
+            if !cfg.encrypted {
+                return;
+            }
+            match shared_key {
+                Some(key) => {
+                    feeds.extend(key.garbler_bits().map(Feed::Garbler));
+                    feeds.extend(key.evaluator_bits().map(Feed::Eval));
                 }
-                if cfg.versioned_pads {
-                    for v in crypto.path_versions(tree, leaf) {
-                        for bit in enc(v, cfg.version_bits) {
-                            feeds.push(Feed::Const(bit));
-                        }
-                    }
+                None => {
+                    let crypto = crypto.expect("legacy encrypted ORAM has tree crypto");
+                    feeds.extend(crypto.key_bits().into_iter().map(Feed::Garbler));
+                }
+            }
+            if cfg.versioned_pads {
+                let crypto = crypto.expect("versioned pads require native tree crypto");
+                for v in crypto.path_versions(tree, leaf) {
+                    feeds.extend(enc(v, cfg.version_bits).into_iter().map(Feed::Const));
                 }
             }
         };
@@ -331,7 +414,13 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
         feeds.extend(enc(old_leaf, lb).into_iter().map(Feed::Const));
         feeds.extend(enc(new_leaf, lb).into_iter().map(Feed::Garbler));
         feeds.push(Feed::Const(false)); // evict_only
-        push_crypto_feeds(&mut feeds, &self.crypto, tree, old_leaf);
+        push_crypto_feeds(
+            &mut feeds,
+            self.crypto.as_ref(),
+            self.shared_key,
+            tree,
+            old_leaf,
+        );
         let (al, ab_) = run_circuit::<N, D>(
             &self.secret,
             &self.tape,
@@ -348,7 +437,9 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
             .map(|k| reveal(&al[np_off + k], &ab_[np_off + k]))
             .collect();
         tree.write_path(old_leaf, &unflatten_path::<Z>(&new_path_bits, cfg));
-        self.crypto.bump_path(tree, old_leaf);
+        if let Some(crypto) = &mut self.crypto {
+            crypto.bump_path(tree, old_leaf);
+        }
         // Patch the tape's result slot with the (threaded) read-data wire.
         if let Some(slot) = result_slot {
             self.tape.labels[slot] = al[1].clone();
@@ -374,7 +465,13 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
             feeds.extend(enc(evict_leaf, lb).into_iter().map(Feed::Const));
             feeds.extend(enc(0, lb).into_iter().map(Feed::Const)); // dummy new_leaf
             feeds.push(Feed::Const(true)); // evict_only
-            push_crypto_feeds(&mut feeds, &self.crypto, tree, evict_leaf);
+            push_crypto_feeds(
+                &mut feeds,
+                self.crypto.as_ref(),
+                self.shared_key,
+                tree,
+                evict_leaf,
+            );
             let (el, eb_) = run_circuit::<N, D>(
                 &self.secret,
                 &self.tape,
@@ -391,7 +488,9 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
                 .map(|k| reveal(&el[np_off + k], &eb_[np_off + k]))
                 .collect();
             tree.write_path(evict_leaf, &unflatten_path::<Z>(&new_epath_bits, cfg));
-            self.crypto.bump_path(tree, evict_leaf);
+            if let Some(crypto) = &mut self.crypto {
+                crypto.bump_path(tree, evict_leaf);
+            }
             let stash_off = np_off + n_path * eb;
             self.stash = HeldState {
                 labels: el[stash_off..].to_vec(),
@@ -475,6 +574,59 @@ impl<N: VoleArray<u8>> Oram2pc<N> {
         self.fresh += 1;
         let base = fresh_base::<N, D>(self.fresh);
         (self.secret.encode(&base, bit), base)
+    }
+}
+
+/// A shared-key encrypted ORAM adapter for a lowered symbolic-storage
+/// program. Its interface exposes only fresh garbled input wires and garbled
+/// output wires; it neither accepts nor returns a complete AES key.
+///
+/// This is the seam that replaces a large caller-owned secret-state image:
+/// the external tree retains ciphertext, while the access circuit receives the
+/// garbler/evaluator key halves under their respective input ownership. The
+/// current implementation is an in-process two-party adapter over
+/// [`LoopbackOt`]; a networked strict-chain integration must implement the
+/// same interface over `Transport` before the chain's in-memory held registry
+/// can be removed.
+pub struct SharedKeyOramAdapter<N: VoleArray<u8>> {
+    driver: Oram2pc<N>,
+}
+
+impl<N: VoleArray<u8>> SharedKeyOramAdapter<N> {
+    /// Create an encrypted, jointly-keyed ORAM adapter. `config` must have
+    /// been produced with `OramLowerConfig { secure: true,
+    /// shared_tree_key: true, .. }`.
+    pub fn new<D: Digest>(
+        config: &OramGadgetConfig,
+        secret: GlobalSecret<N>,
+        key: SharedOramKey,
+    ) -> Self {
+        Self {
+            driver: Oram2pc::new_with_shared_key::<D>(config, secret, key),
+        }
+    }
+
+    /// Encode one guest input bit as a garbled wire for a subsequent program
+    /// execution. The returned pair is opaque protocol state, not a plaintext
+    /// key or a decoded stored value.
+    pub fn fresh_input<D: Digest>(&mut self, bit: bool) -> (Eval<N>, Garble<N>) {
+        self.driver.fresh_input::<D>(bit)
+    }
+
+    /// Execute the lowered guest through the shared-key encrypted tree.
+    pub fn run_program<D: Digest, const Z: usize>(
+        &mut self,
+        program: &OramProgram,
+        inputs: &[(Eval<N>, Garble<N>)],
+        tree: &mut OramTree<Z, 1>,
+        ot: &mut LoopbackOt<N>,
+    ) -> Vec<(Eval<N>, Garble<N>)> {
+        self.driver.run_program::<D, Z>(program, inputs, tree, ot)
+    }
+
+    /// Whether the underlying driver has the required jointly-keyed mode.
+    pub fn uses_shared_key(&self) -> bool {
+        self.driver.uses_shared_key()
     }
 }
 

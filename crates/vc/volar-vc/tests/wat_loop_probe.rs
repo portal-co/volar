@@ -122,6 +122,7 @@ fn wat_loop_guest_lowers_multi_space() {
             bucket_size: 2,
             max_stash: 2 * 13 + 2 + 16,
             secure: false,
+            shared_tree_key: false,
             narrow_bits: Some(12),
         },
     )
@@ -161,6 +162,7 @@ fn wat_loop_guest_runs_multi_space_oram() {
             bucket_size: 2,
             max_stash: 2 * (NARROW + 1) + 2 + 16,
             secure: false,
+            shared_tree_key: false,
             narrow_bits: Some(NARROW),
         },
     )
