@@ -104,9 +104,15 @@ Migrate `Oram2pc::run_access` in this order:
    public interface exposes the other half. The still-private garbler helper
    retains all 128 key input bases, as required by garbling, but not evaluator
    labels or key bits.
-5. Give the evaluator a ciphertext-tree adapter and explicit encrypted-path
-   request/read/write frames, validating widths/version before circuit input;
-   then bind both key-bearing drivers to the split access circuit and use
-   packed held-material encryption for durable material regions.
-6. Build the paired `HeldMaterialStore` adapters on top of the completed
+5. Add the evaluator-owned ciphertext tree. **Completed as phase two:**
+   `oram_ciphertext_tree::CiphertextTree` owns only evaluator physical tree
+   bytes and a public epoch; an `OpenedCiphertextPath`/prepared access is
+   single-use, width-checked, leaf-bound, and epoch-bound before mutation.
+   Unsupported formatter/version modes fail closed.
+6. Bind both key-bearing drivers and the prepared tree access to the split AES
+   access circuit, then use packed held-material encryption for durable
+   material regions. This remains intentionally pending: the existing
+   plaintext `SplitOram*::run_access` rejects encryption, so it cannot be
+   misrepresented as an atomic encrypted operation.
+7. Build the paired `HeldMaterialStore` adapters on top of the completed
    boundary phase, then replace `MemoryHeldStore` in the TCP acceptance test.
