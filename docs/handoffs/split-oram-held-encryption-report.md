@@ -211,3 +211,27 @@ and sizing baseline, **not** a performance claim for rustls: the next
 measurement needs to drive a realistic storage-bearing guest through the
 networked durable material adapters and compare base OT/Ferret channel bytes
 and round count.
+
+## Split-key and held-encryption sizing probes
+
+The Wasm and LLVM storage probes now also compile the shared-key encrypted ORAM
+shape and all four directional held-material AES circuits. The probes use a
+byte store/load to avoid conflating the measurement with 32 independent byte
+lanes. At the current 64-cell, `levels=4`, `Z=2`, stash-96 geometry:
+
+| probe | tape bits | bit-cell ORAM accesses | shared access ANDs | material AES ANDs per direction |
+| --- | ---: | ---: | ---: | ---: |
+| Wasm linear-memory byte store/load | 767 | 80 | 90,516 | 16,000 |
+| LLVM `alloca i8` / store / load | 700 | 80 | 90,516 | 16,000 |
+
+A complete role-pair material save+open has four 16,000-AND material
+invocations (garbler seal/open plus evaluator seal/open), or 64,000 ANDs per
+held bit. Naively wrapping the entire tape at every durable boundary would
+therefore cost 49,088,000 ANDs for the Wasm tape and 44,800,000 for LLVM,
+versus 7,241,280 ANDs for the 80 shared-key memory accesses themselves. The
+probes assert that this unfavorable ratio exists. **Conclusion:** material
+must be encapsulated/cached in coarser fixed-size blocks and flushed only at
+true persistence boundaries; per-bit tape re-encryption is not viable for
+memory-heavy modules such as rustls. These figures are static circuit sizing,
+not an OT byte benchmark: a next networked benchmark must compare Net OT and a
+Ferret-backed `OtChannel` with the chosen block/cache policy.

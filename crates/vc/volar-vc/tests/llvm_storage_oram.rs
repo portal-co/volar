@@ -3,16 +3,23 @@
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
 use volar_llvm_vaffle_import::import_module;
+use volar_vc::compile_schedule;
+use volar_vc::oram_gadget::{
+    build_material_open_evaluator_block, build_material_open_garbler_block,
+    build_material_seal_evaluator_block, build_material_seal_garbler_block,
+};
 use volar_vc::oram_lower::{OramLowerConfig, Stage, run_concrete, storage_to_oram};
 
 const GUEST: &str = r#"
 target datalayout = "e-p:32:32"
 define i32 @roundtrip(i32 %x) {
 entry:
-  %slot = alloca i32, align 4
-  store i32 %x, ptr %slot, align 4
-  %result = load i32, ptr %slot, align 4
-  ret i32 %result
+  %slot = alloca i8, align 1
+  %byte = trunc i32 %x to i8
+  store i8 %byte, ptr %slot, align 1
+  %result = load i8, ptr %slot, align 1
+  %wide = zext i8 %result to i32
+  ret i32 %wide
 }
 "#;
 
@@ -66,5 +73,52 @@ fn llvm_alloca_store_load_is_lowered_to_oram_and_preserves_a_word() {
         .enumerate()
         .take(32)
         .fold(0u32, |word, (bit, set)| word | ((*set as u32) << bit));
-    assert_eq!(got, x);
+    assert_eq!(got, x & 0xff);
+
+    let shared = storage_to_oram(
+        &boolar,
+        &OramLowerConfig {
+            levels: 4,
+            bucket_size: 2,
+            max_stash: 96,
+            secure: true,
+            shared_tree_key: true,
+            narrow_bits: Some(6),
+        },
+    )
+    .expect("shared-key memory lowers to ORAM");
+    assert!(shared.oram.encrypted);
+    assert!(!shared.oram.encrypt_valid && !shared.oram.versioned_pads);
+    let access_ands = compile_schedule(&shared.access)
+        .expect("shared access schedule")
+        .and_count();
+    let begin_ands = compile_schedule(&shared.begin)
+        .expect("shared begin schedule")
+        .and_count();
+    let material_ands = [
+        build_material_seal_garbler_block(),
+        build_material_open_garbler_block(),
+        build_material_seal_evaluator_block(),
+        build_material_open_evaluator_block(),
+    ]
+    .iter()
+    .map(|circuit| {
+        compile_schedule(circuit)
+            .expect("material schedule")
+            .and_count()
+    })
+    .collect::<Vec<_>>();
+    let held_round_trip_ands: usize = material_ands.iter().sum();
+    let tape_material_round_trip_ands = shared.tape_width * held_round_trip_ands;
+    let memory_access_ands = accesses * access_ands;
+    assert!(
+        tape_material_round_trip_ands > memory_access_ands,
+        "the full tape must be encapsulated/cached rather than sealed on every storage epoch"
+    );
+    eprintln!(
+        "llvm-split-key: begin_ands={begin_ands}, access_ands={access_ands}, \
+         material_direction_ands={material_ands:?}, held_both_round_trip_ands={held_round_trip_ands}, \
+         tape_material_round_trip_ands={tape_material_round_trip_ands}, \
+         guest_memory_access_ands={memory_access_ands}",
+    );
 }
