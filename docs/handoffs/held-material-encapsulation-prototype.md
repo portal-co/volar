@@ -95,17 +95,20 @@ iteration count itself is public/acceptable for its persistence protocol.
 
 ### Deferred opaque remapping
 
-`DeferredLabelRemapPlan` describes a safe post-restoration protocol shape:
+`deferred_remap_schedule(bits)` is now a concrete post-restoration rebase
+circuit. For each bit it evaluates the free-XOR relation:
 
 ```text
-[source held label | fresh garbler target encoding | evaluator selector]
-  -> opaque remapped label
+[held label | fresh garbler-base public-zero label] -> opaque remapped label
 ```
 
-The target is an opaque split output. Neither host decodes the Boolean first.
-This is compatible with strict-chain's normal zero-cost rebasing: whenever the
-next circuit can adopt the previous output false base, that direct threading
-remains superior and requires no remap circuit.
+The garbler provides a fresh false-label base for the public-zero wire while
+the evaluator receives only its zero label. XOR therefore changes the output
+false base without changing the hidden Boolean. Neither role decodes the bit,
+and the output remains `SplitOutput::Opaque`. The TCP test verifies that a true
+held label is accepted under the new base while no reveal disposition is
+present. Direct strict-chain threading is still superior whenever the next
+circuit can adopt the prior output base, because it needs no circuit at all.
 
 ## What did not work / remains intentionally absent
 
@@ -119,10 +122,10 @@ remains superior and requires no remap circuit.
 3. **The CFG loop does not lower total cryptographic cost.** It trades peak
    memory for sequential circuit invocations. It needs the revealed
    termination policy audited for the concrete guest protocol.
-4. **Deferred remapping is a public protocol plan, not a landed remap
-   circuit.** A real circuit must establish the fresh target wire encodings
-   while retaining the source Boolean as opaque held state; a host-side copy
-   or decode/re-encode is not acceptable.
+4. **Deferred remapping is a rebase, not compression.** It preserves the full
+   opaque label and only gives it a fresh false base. It does not define a
+   narrower durable representation or authorize host-side copy/decode/re-
+   encode.
 5. **ORAM return batching is conservative.** Repeated public-leaf reads may
    reuse a path. Writes sharing any non-root physical bucket remain serial;
    even leaves that diverge below root still require ordered root commits.
@@ -138,7 +141,11 @@ remains superior and requires no remap circuit.
 3. Extend the now-landed resident cache to block-granular packed writeback once
    that narrower representation exists; retain explicit eviction at each
    persistence boundary.
-4. Add a network `OtChannel` backed by the repository's Ferret stack, then
-   drive a real storage-bearing module through both it and `NetOtChannel`;
-   report table bytes, OT bytes, number of material blocks, cache hit rate,
-   and termination rounds.
+4. Measure a real storage-bearing module through both `NetOtChannel` and the
+   now-landed Ferret-backed channel with production Ferret parameters; report
+   table bytes, OT bytes, number of material blocks, cache hit rate, and
+   termination rounds. The `FERRET_REG_TOY` test parameters are correctness
+   fixtures only and must never be deployed.
+5. Evaluate whole-construction alternatives for garbled-table or input-label
+   communication reductions while retaining a reviewed durable-label security
+   level; see [`../research/garbled-label-size-options.md`](../research/garbled-label-size-options.md).

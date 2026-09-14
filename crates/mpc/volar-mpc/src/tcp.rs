@@ -21,6 +21,16 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::vec::Vec;
 
+use digest::Digest;
+use hybrid_array::Array;
+use sha2::Sha256;
+use volar_spec::ot::ferret::FerretParams;
+use volar_spec::ot::ferret::pool::{CotPoolReceiver, CotPoolSender};
+use volar_spec::ot::two_party::{
+    StackIo, stack_bea95_receiver, stack_bea95_sender, stack_setup_receiver,
+    stack_setup_receiver_malicious, stack_setup_sender, stack_setup_sender_malicious,
+};
+
 use crate::Transport;
 
 /// A framed, blocking-TCP [`Transport`].
@@ -164,6 +174,250 @@ impl<N: volar_spec::vole::VoleArray<u8>, T: Transport> crate::OtChannel<N> for N
         self.transport.send(&r_msg);
         let frame = self.transport.recv();
         receiver.finish(&frame).expect("OT receiver finish")
+    }
+}
+
+// ============================================================================
+// Ferret chosen-bit OT channel (std)
+
+/// Public transport accounting for one Ferret-backed OT role. Counts include
+/// the tagged Ferret stack frames and label-mask frames sent or received by
+/// this role, but never their contents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FerretOtMetrics {
+    pub sent_frames: u64,
+    pub sent_bytes: u64,
+    pub received_frames: u64,
+    pub received_bytes: u64,
+}
+
+struct FerretIo<'a, T: Transport> {
+    transport: &'a mut T,
+    metrics: &'a mut FerretOtMetrics,
+}
+
+impl<T: Transport> StackIo for FerretIo<'_, T> {
+    fn send(&mut self, tag: u8, payload: &[u8]) {
+        let mut frame = Vec::with_capacity(payload.len() + 1);
+        frame.push(tag);
+        frame.extend_from_slice(payload);
+        self.metrics.sent_frames += 1;
+        self.metrics.sent_bytes += frame.len() as u64;
+        self.transport.send(&frame);
+    }
+
+    fn recv(&mut self, expected_tag: u8) -> Vec<u8> {
+        let frame = self.transport.recv();
+        self.metrics.received_frames += 1;
+        self.metrics.received_bytes += frame.len() as u64;
+        assert!(
+            !frame.is_empty() && frame[0] == expected_tag,
+            "unexpected Ferret stack frame"
+        );
+        frame[1..].to_vec()
+    }
+}
+
+struct RngRef<'a>(&'a mut dyn volar_spec::SpecRng);
+
+impl volar_spec::SpecRng for RngRef<'_> {
+    fn next_u32(&mut self) -> u32 {
+        self.0.next_u32()
+    }
+}
+
+/// Ferret-Reg extension backed 1-of-2 OT over a framed transport.
+///
+/// The channel bootstraps the repository's LWE → SoftSpoken → Ferret stack at
+/// construction. Each [`crate::OtChannel`] call converts one buffered random
+/// COT with Bea95 and masks the offered pair using SHA-256 domain-separated
+/// pads. The receiver gets exactly one pad, selected by its private bit.
+///
+/// `params` must be a production Ferret parameter set in deployments;
+/// `FERRET_REG_TOY` is appropriate only for tests.
+pub struct FerretOtChannel<'a, T: Transport> {
+    transport: T,
+    role: OtRole,
+    rng: &'a mut dyn volar_spec::SpecRng,
+    sender: Option<CotPoolSender>,
+    receiver: Option<CotPoolReceiver>,
+    metrics: FerretOtMetrics,
+}
+
+impl<'a, T: Transport> FerretOtChannel<'a, T> {
+    /// Construct a semi-honest Ferret-Reg channel and run its one-time setup.
+    pub fn new(
+        mut transport: T,
+        role: OtRole,
+        rng: &'a mut dyn volar_spec::SpecRng,
+        params: FerretParams,
+    ) -> Self {
+        let mut metrics = FerretOtMetrics::default();
+        let (sender, receiver) = {
+            let mut io = FerretIo {
+                transport: &mut transport,
+                metrics: &mut metrics,
+            };
+            match role {
+                OtRole::Sender => {
+                    let mut rng = RngRef(rng);
+                    (Some(stack_setup_sender(&mut rng, params, &mut io)), None)
+                }
+                OtRole::Receiver => {
+                    let mut rng = RngRef(rng);
+                    (None, Some(stack_setup_receiver(&mut rng, params, &mut io)))
+                }
+            }
+        };
+        Self {
+            transport,
+            role,
+            rng,
+            sender,
+            receiver,
+            metrics,
+        }
+    }
+
+    /// Construct a Ferret channel whose refills use the stack's batched SPCOT
+    /// consistency check. This does not make garbling malicious-secure by
+    /// itself; it authenticates the Ferret COT extension only.
+    pub fn new_malicious(
+        mut transport: T,
+        role: OtRole,
+        rng: &'a mut dyn volar_spec::SpecRng,
+        params: FerretParams,
+    ) -> Self {
+        let mut metrics = FerretOtMetrics::default();
+        let (sender, receiver) = {
+            let mut io = FerretIo {
+                transport: &mut transport,
+                metrics: &mut metrics,
+            };
+            match role {
+                OtRole::Sender => {
+                    let mut rng = RngRef(rng);
+                    (
+                        Some(stack_setup_sender_malicious(&mut rng, params, &mut io)),
+                        None,
+                    )
+                }
+                OtRole::Receiver => {
+                    let mut rng = RngRef(rng);
+                    (
+                        None,
+                        Some(stack_setup_receiver_malicious(&mut rng, params, &mut io)),
+                    )
+                }
+            }
+        };
+        Self {
+            transport,
+            role,
+            rng,
+            sender,
+            receiver,
+            metrics,
+        }
+    }
+
+    pub fn transport(&mut self) -> &mut T {
+        &mut self.transport
+    }
+
+    pub fn metrics(&self) -> FerretOtMetrics {
+        self.metrics
+    }
+
+    pub fn into_transport(self) -> T {
+        self.transport
+    }
+
+    fn send_masked(&mut self, frame: &[u8]) {
+        self.metrics.sent_frames += 1;
+        self.metrics.sent_bytes += frame.len() as u64;
+        self.transport.send(frame);
+    }
+
+    fn receive_masked(&mut self) -> Vec<u8> {
+        let frame = self.transport.recv();
+        self.metrics.received_frames += 1;
+        self.metrics.received_bytes += frame.len() as u64;
+        frame
+    }
+}
+
+fn ferret_pad<N: volar_spec::vole::VoleArray<u8>>(block: &[u8; 16], choice: bool) -> Array<u8, N> {
+    let mut out = Vec::with_capacity(N::USIZE);
+    let mut counter = 0u32;
+    while out.len() < N::USIZE {
+        let mut hash = Sha256::new();
+        hash.update(b"volar-mpc/ferret-ot-pad-v1");
+        hash.update(block);
+        hash.update([choice as u8]);
+        hash.update(counter.to_le_bytes());
+        out.extend_from_slice(&hash.finalize());
+        counter += 1;
+    }
+    Array::from_fn(|i| out[i])
+}
+
+impl<N: volar_spec::vole::VoleArray<u8>, T: Transport> crate::OtChannel<N>
+    for FerretOtChannel<'_, T>
+{
+    fn send(&mut self, labels: [&Array<u8, N>; 2]) {
+        assert_eq!(self.role, OtRole::Sender, "only the garbler sends OTs");
+        let r0 = {
+            let sender = self.sender.as_mut().expect("sender Ferret state");
+            let mut io = FerretIo {
+                transport: &mut self.transport,
+                metrics: &mut self.metrics,
+            };
+            let mut rng = RngRef(self.rng);
+            stack_bea95_sender(&mut rng, sender, &mut io)
+        };
+        let delta = self
+            .sender
+            .as_ref()
+            .expect("sender Ferret state")
+            .seed
+            .delta;
+        let pad0 = ferret_pad::<N>(&r0, false);
+        let mut r1 = r0;
+        for (byte, delta_byte) in r1.iter_mut().zip(delta) {
+            *byte ^= delta_byte;
+        }
+        let pad1 = ferret_pad::<N>(&r1, true);
+        let mut masked = Vec::with_capacity(N::USIZE * 2);
+        masked.extend((0..N::USIZE).map(|i| labels[0][i] ^ pad0[i]));
+        masked.extend((0..N::USIZE).map(|i| labels[1][i] ^ pad1[i]));
+        self.send_masked(&masked);
+    }
+
+    fn receive(&mut self, bit: bool) -> Array<u8, N> {
+        assert_eq!(
+            self.role,
+            OtRole::Receiver,
+            "only the evaluator receives OTs"
+        );
+        let z = {
+            let receiver = self.receiver.as_mut().expect("receiver Ferret state");
+            let mut io = FerretIo {
+                transport: &mut self.transport,
+                metrics: &mut self.metrics,
+            };
+            let mut rng = RngRef(self.rng);
+            stack_bea95_receiver(&mut rng, receiver, &mut io, bit)
+        };
+        let masked = self.receive_masked();
+        assert_eq!(
+            masked.len(),
+            N::USIZE * 2,
+            "malformed Ferret OT label frame"
+        );
+        let pad = ferret_pad::<N>(&z, bit);
+        let start = if bit { N::USIZE } else { 0 };
+        Array::from_fn(|i| masked[start + i] ^ pad[i])
     }
 }
 
