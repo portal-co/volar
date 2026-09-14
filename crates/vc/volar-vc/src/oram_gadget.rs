@@ -374,6 +374,20 @@ impl Builder {
             })
             .collect()
     }
+    /// `value - 1` (LSB-first) with modular underflow. Callers use a public
+    /// termination guard and therefore never execute an underflowing step.
+    fn decr(&mut self, value: &[u32]) -> Vec<u32> {
+        let mut borrow = self.const1();
+        value
+            .iter()
+            .map(|&bit| {
+                let diff = self.xor(bit, borrow);
+                let not_bit = self.not(bit);
+                borrow = self.and(not_bit, borrow);
+                diff
+            })
+            .collect()
+    }
     /// Inline a single-block sub-circuit: append its gates with var ids
     /// remapped (`inputs[i]` is the parent wire for sub-param `i`), returning
     /// the sub-circuit's output wires in the parent. Used to instantiate the
@@ -782,6 +796,63 @@ fn build_material_block_xor() -> BIrBlocks {
     aes_in.extend(tweak);
     let pad = b.inline_sub(&aes, &aes_in);
     let output = b.xor_word(&material, &pad);
+    b.finish(output)
+}
+
+/// Build `blocks` material AES-XOR operations under one 128-bit split key.
+///
+/// Input layout is `[key:128 | tweaks: blocks×128 | materials: blocks×128]`;
+/// outputs are the encrypted/decrypted blocks in block order. This is an
+/// encapsulation candidate: one split invocation amortizes framing, OT setup,
+/// and the role-local transaction boundary across `blocks` packed values.
+/// It deliberately does **not** claim AES-key-schedule sharing yet: each
+/// inlined AES instance remains independent, so AND cost still scales linearly
+/// with `blocks`. The sizing probe makes that limitation visible.
+pub fn build_material_block_cipher_n(blocks: usize) -> BIrBlocks {
+    assert!(blocks > 0, "material batch needs at least one block");
+    let params = 128 + 2 * blocks * 128;
+    let mut b = Builder::new(params as u32);
+    let key: Vec<u32> = (0..128).collect();
+    let aes = crate::aes_gadget::build_aes128();
+    let mut output = Vec::with_capacity(blocks * 128);
+    for block in 0..blocks {
+        let tweak_start = 128 + block * 128;
+        let material_start = 128 + blocks * 128 + block * 128;
+        let mut aes_input = key.clone();
+        aes_input.extend((tweak_start..tweak_start + 128).map(|wire| wire as u32));
+        let pad = b.inline_sub(&aes, &aes_input);
+        let material: Vec<u32> = (material_start..material_start + 128)
+            .map(|wire| wire as u32)
+            .collect();
+        output.extend(b.xor_word(&material, &pad));
+    }
+    b.finish(output)
+}
+
+/// One fixed-shape multi-block loop step.
+///
+/// Input layout: `[key:128 | tweak:128 | material:128 | remaining: counter_bits]`.
+/// Output layout: `[material':128 | next_remaining:counter_bits | done:1]`.
+/// `done` is true exactly for `remaining == 1`; a driver reveals it and feeds
+/// `next_remaining` as held state into the following invocation. This is the
+/// CFG-style alternative to fully unrolling an `n`-block material gadget.
+pub fn build_material_block_loop_step(counter_bits: usize) -> BIrBlocks {
+    assert!(
+        counter_bits > 0 && counter_bits <= 64,
+        "bounded public loop counter"
+    );
+    let mut b = Builder::new((384 + counter_bits) as u32);
+    let key: Vec<u32> = (0..128).collect();
+    let tweak: Vec<u32> = (128..256).collect();
+    let material: Vec<u32> = (256..384).collect();
+    let remaining: Vec<u32> = (384..384 + counter_bits as u32).collect();
+    let aes = crate::aes_gadget::build_aes128();
+    let mut aes_input = key;
+    aes_input.extend(tweak);
+    let pad = b.inline_sub(&aes, &aes_input);
+    let mut output = b.xor_word(&material, &pad);
+    output.extend(b.decr(&remaining));
+    output.push(b.eq_const(&remaining, 1));
     b.finish(output)
 }
 

@@ -254,3 +254,7 @@ remain ordered because every Path ORAM path shares root. This intentionally
 avoids claiming unsafe whole-path parallel commits. Integrating the planner
 with a network tree transport is the next layer; the current ORAM driver
 remains sequential.
+
+A detailed prototype record—including the multi-block circuit, CFG-style
+termination-reveal loop, deferred opaque remapping plan, and rejected scaling
+paths—is in [`held-material-encapsulation-prototype.md`](held-material-encapsulation-prototype.md).

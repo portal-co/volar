@@ -73,6 +73,7 @@ pub mod aes_extern;
 pub mod aes_gadget;
 pub mod embedder;
 pub mod faest_owf;
+pub mod held_remap;
 pub mod oram_2pc;
 pub mod oram_batch;
 pub mod oram_ciphertext_tree;
