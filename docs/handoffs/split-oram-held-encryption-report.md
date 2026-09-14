@@ -135,3 +135,14 @@ Migrate `Oram2pc::run_access` in this order:
    `HeldMaterialStore` adapters and keep their sealed/opened blocks inside
    split-circuit input/output handling; do not expose block plaintext to a
    role host.
+
+## Current durable-material runner seam
+
+`strict_split::SplitOutput::EvaluatorReveal` now supplies the required narrow
+primitive: an output label stays evaluator-local, while the garbler sends the
+two output encodings in a dedicated `OutputDecodes` frame. The garbler never
+receives that active label or decoded bit. TCP/OT coverage exercises this
+shape independently. This is the correct output disposition for a material
+ciphertext block produced by the split AES circuit; the next adapter slice can
+store that evaluator-decoded ciphertext without adding a host-visible
+plaintext channel.

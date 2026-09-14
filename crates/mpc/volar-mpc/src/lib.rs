@@ -1199,6 +1199,9 @@ pub enum SessionFrame {
         /// The decoded logical bits.
         bits: Vec<bool>,
     },
+    /// Garbler → evaluator: false/true encodings for output wires that are
+    /// intentionally decoded only by the evaluator.
+    OutputDecodes(Vec<[Vec<u8>; 2]>),
 }
 
 impl SessionFrame {
@@ -1287,6 +1290,14 @@ impl SessionFrame {
                 push_u32(&mut out, *call);
                 push_u32(&mut out, bits.len() as u32);
                 out.extend(bits.iter().map(|&b| b as u8));
+            }
+            SessionFrame::OutputDecodes(decodes) => {
+                out.push(14);
+                push_u32(&mut out, decodes.len() as u32);
+                for [zero, one] in decodes {
+                    push_bytes(&mut out, zero);
+                    push_bytes(&mut out, one);
+                }
             }
         }
         out
@@ -1391,6 +1402,14 @@ impl SessionFrame {
                     bits.push(r.u8()? != 0);
                 }
                 Some(SessionFrame::ActionArgsClear { call, bits })
+            }
+            14 => {
+                let count = r.u32()? as usize;
+                let mut decodes = Vec::with_capacity(count);
+                for _ in 0..count {
+                    decodes.push([r.bytes()?, r.bytes()?]);
+                }
+                Some(SessionFrame::OutputDecodes(decodes))
             }
             _ => None,
         }

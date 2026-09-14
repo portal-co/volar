@@ -39,6 +39,9 @@ impl Transport for TransportRef<'_> {
 pub enum SplitOutput {
     /// Return the evaluator label to the garbler for exact-match decoding.
     Reveal,
+    /// Reveal only to the evaluator. Its active label never crosses to the
+    /// garbler; the garbler sends both valid encodings for local decoding.
+    EvaluatorReveal,
     /// Keep the evaluator label and garbler base in their respective roles.
     /// This is the disposition for threaded posmap/stash/material wires.
     Opaque,
@@ -189,6 +192,30 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
                 );
             }
         }
+        let evaluator_decodes: Vec<[Vec<u8>; 2]> = outputs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, output)| {
+                (*output == SplitOutput::EvaluatorReveal).then(|| {
+                    let base = &full.exec.output_labels[index];
+                    [
+                        arr_to_vec(
+                            &self
+                                .secret
+                                .encode(base, eliminated.output_polarity[index])
+                                .target,
+                        ),
+                        arr_to_vec(
+                            &self
+                                .secret
+                                .encode(base, !eliminated.output_polarity[index])
+                                .target,
+                        ),
+                    ]
+                })
+            })
+            .collect();
+        transport.send(&SessionFrame::OutputDecodes(evaluator_decodes).encode());
         transport.send(&SessionFrame::VerdictBits(revealed.clone()).encode());
         Ok(SplitGarblerResult {
             output_bases: full.exec.output_labels,
@@ -407,6 +434,30 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
                 );
             }
         }
+        let evaluator_decodes: Vec<[Vec<u8>; 2]> = outputs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, output)| {
+                (*output == SplitOutput::EvaluatorReveal).then(|| {
+                    let base = &full.exec.output_labels[index];
+                    [
+                        arr_to_vec(
+                            &self
+                                .secret
+                                .encode(base, eliminated.output_polarity[index])
+                                .target,
+                        ),
+                        arr_to_vec(
+                            &self
+                                .secret
+                                .encode(base, !eliminated.output_polarity[index])
+                                .target,
+                        ),
+                    ]
+                })
+            })
+            .collect();
+        transport.send(&SessionFrame::OutputDecodes(evaluator_decodes).encode());
         transport.send(&SessionFrame::VerdictBits(revealed.clone()).encode());
         Ok(SplitGarblerResult {
             output_bases: full.exec.output_labels,
@@ -486,8 +537,36 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
             })
             .collect();
         transport.send(&SessionFrame::OutputLabels(revealed).encode());
+        let evaluator_outputs: Vec<&Eval<N>> = output_labels
+            .iter()
+            .zip(outputs)
+            .filter_map(|(label, output)| {
+                (*output == SplitOutput::EvaluatorReveal).then_some(label)
+            })
+            .collect();
+        let decodes = match SessionFrame::decode(&transport.recv()) {
+            Some(SessionFrame::OutputDecodes(decodes))
+                if decodes.len() == evaluator_outputs.len() =>
+            {
+                decodes
+            }
+            _ => return Err(MpcError::UnexpectedMessage),
+        };
+        let mut evaluator_revealed = Vec::with_capacity(decodes.len());
+        for (label, [zero, one]) in evaluator_outputs.into_iter().zip(decodes) {
+            if label.target.as_slice() == zero.as_slice() {
+                evaluator_revealed.push(false);
+            } else if label.target.as_slice() == one.as_slice() {
+                evaluator_revealed.push(true);
+            } else {
+                return Err(MpcError::DecodeFailure);
+            }
+        }
         match SessionFrame::decode(&transport.recv()) {
-            Some(SessionFrame::VerdictBits(revealed)) => Ok((output_labels, revealed)),
+            Some(SessionFrame::VerdictBits(mut revealed)) => {
+                revealed.extend(evaluator_revealed);
+                Ok((output_labels, revealed))
+            }
             Some(SessionFrame::Verdict(Err(()))) => Err(MpcError::DecodeFailure),
             _ => Err(MpcError::UnexpectedMessage),
         }
