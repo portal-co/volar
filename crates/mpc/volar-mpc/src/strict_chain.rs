@@ -73,6 +73,15 @@ pub enum ChainOut {
     EvaluatorMaterial(usize),
 }
 
+/// Public owner of a role-local material write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialRole {
+    Garbler,
+    Evaluator,
+    /// Both roles persist their corresponding half of a threaded material.
+    Both,
+}
+
 /// A contiguous allocation in the strict-chain role-local material store.
 ///
 /// This is deliberately a small value object: TLS and interpreter drivers name
@@ -173,6 +182,30 @@ impl HeldSlots {
     }
 }
 
+/// A role-local storage phase. It runs only at an explicit chain round
+/// boundary, before ordinary strict frames begin or after the verdict frame
+/// completes. Implementations may therefore use the same transport and OT
+/// channel for a multi-round durable-storage protocol without nesting frames.
+pub trait ChainStoragePhase<N: VoleArray<u8>> {
+    /// Run the public operation script in role-local storage state.
+    fn run_storage_phase<D: Digest>(
+        &mut self,
+        operations: &[StorageOperation],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError>;
+}
+
+/// One public, fixed-shape storage operation. The role-local material is
+/// supplied by the adapter; this script carries neither labels nor bases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageOperation {
+    /// Fetch the material at `slot` into the adapter's role-local cache.
+    Load { slot: usize },
+    /// Persist the role-local material at `slot`, whose owning role is public.
+    Store { slot: usize, owner: MaterialRole },
+}
+
 /// One party's chain-round driver. Implemented by [`ChainGarbler`] and
 /// [`ChainEvaluator`]; a session script (e.g. the TLS 1.3 client driver) is
 /// written once against this trait and executed by both parties with their
@@ -221,6 +254,7 @@ pub trait HeldMaterialStore<T, N: VoleArray<u8>> {
     fn store(
         &mut self,
         slot: usize,
+        owner: MaterialRole,
         value: Option<T>,
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
@@ -263,6 +297,7 @@ impl<T: Clone, N: VoleArray<u8>> HeldMaterialStore<T, N> for MemoryHeldStore<T> 
     fn store(
         &mut self,
         slot: usize,
+        _: MaterialRole,
         value: Option<T>,
         _: &mut dyn Transport,
         _: &mut dyn OtChannel<N>,
@@ -345,11 +380,12 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainGarbler<N, S> {
     fn held_set(
         &mut self,
         slot: usize,
+        owner: MaterialRole,
         value: Option<Garble<N>>,
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<(), MpcError> {
-        self.held.store(slot, value, transport, ot)
+        self.held.store(slot, owner, value, transport, ot)
     }
 
     /// Snapshot public execution-shape counters.
@@ -366,6 +402,29 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainGarbler<N, S> {
         let mut base = Array::<u8, N>::default();
         base.as_mut_slice().copy_from_slice(&h[..N::USIZE]);
         Garble { base }
+    }
+}
+
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainStoragePhase<N>
+    for ChainGarbler<N, S>
+{
+    fn run_storage_phase<D: Digest>(
+        &mut self,
+        operations: &[StorageOperation],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        for operation in operations {
+            match *operation {
+                StorageOperation::Load { slot } => {
+                    let _ = self.held_get(slot, transport, ot)?;
+                }
+                StorageOperation::Store { slot, owner } => {
+                    self.held_set(slot, owner, None, transport, ot)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -523,12 +582,12 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainParty<N> for Cha
                     } else {
                         raw.clone()
                     };
-                    self.held_set(*slot, Some(base), transport, ot)?;
+                    self.held_set(*slot, MaterialRole::Garbler, Some(base), transport, ot)?;
                 }
                 ChainOut::EvaluatorMaterial(slot) => {
                     // Advance the paired durable adapter at the same logical
                     // operation without giving the garbler an evaluator label.
-                    self.held_set(*slot, None, transport, ot)?;
+                    self.held_set(*slot, MaterialRole::Evaluator, None, transport, ot)?;
                 }
                 ChainOut::Hold(slot) => {
                     // Thread: register the polarity-adjusted base so the held
@@ -541,7 +600,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainParty<N> for Cha
                     } else {
                         raw.clone()
                     };
-                    self.held_set(*slot, Some(base), transport, ot)?;
+                    self.held_set(*slot, MaterialRole::Both, Some(base), transport, ot)?;
                 }
             }
         }
@@ -606,11 +665,12 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainEvaluator<N, S> {
     fn held_set(
         &mut self,
         slot: usize,
+        owner: MaterialRole,
         value: Option<Eval<N>>,
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<(), MpcError> {
-        self.held.store(slot, value, transport, ot)
+        self.held.store(slot, owner, value, transport, ot)
     }
 }
 
@@ -646,6 +706,29 @@ mod tests {
         assert_eq!(heap_image.holds().len(), heap_image.len());
         assert!(matches!(heap_image.feeds()[0], ChainFeed::Held(_)));
         assert!(matches!(heap_image.holds()[0], ChainOut::Hold(_)));
+    }
+}
+
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainStoragePhase<N>
+    for ChainEvaluator<N, S>
+{
+    fn run_storage_phase<D: Digest>(
+        &mut self,
+        operations: &[StorageOperation],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        for operation in operations {
+            match *operation {
+                StorageOperation::Load { slot } => {
+                    let _ = self.held_get(slot, transport, ot)?;
+                }
+                StorageOperation::Store { slot, owner } => {
+                    self.held_set(slot, owner, None, transport, ot)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -718,13 +801,25 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainParty<N> for Chain
                 ChainOut::GarblerMaterial(slot) => {
                     // Advance the paired durable adapter at the same logical
                     // operation without giving the evaluator a false base.
-                    self.held_set(*slot, None, transport, ot)?;
+                    self.held_set(*slot, MaterialRole::Garbler, None, transport, ot)?;
                 }
                 ChainOut::EvaluatorMaterial(slot) => {
-                    self.held_set(*slot, Some(out_labels[o].clone()), transport, ot)?;
+                    self.held_set(
+                        *slot,
+                        MaterialRole::Evaluator,
+                        Some(out_labels[o].clone()),
+                        transport,
+                        ot,
+                    )?;
                 }
                 ChainOut::Hold(slot) => {
-                    self.held_set(*slot, Some(out_labels[o].clone()), transport, ot)?;
+                    self.held_set(
+                        *slot,
+                        MaterialRole::Both,
+                        Some(out_labels[o].clone()),
+                        transport,
+                        ot,
+                    )?;
                 }
             }
         }

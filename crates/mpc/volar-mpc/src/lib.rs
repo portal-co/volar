@@ -69,6 +69,7 @@ pub mod ot_mlkem;
 pub mod strict;
 pub mod strict_chain;
 pub mod strict_cursor;
+pub mod strict_split;
 #[cfg(feature = "std")]
 pub mod tcp;
 
@@ -1428,10 +1429,10 @@ impl<'a> Reader<'a> {
 }
 
 /// Convert an `N`-byte label array to/from the wire.
-fn arr_to_vec<N: VoleArray<u8>>(a: &Array<u8, N>) -> Vec<u8> {
+pub(crate) fn arr_to_vec<N: VoleArray<u8>>(a: &Array<u8, N>) -> Vec<u8> {
     a.as_slice().to_vec()
 }
-fn vec_to_arr<N: VoleArray<u8>>(v: &[u8]) -> Option<Array<u8, N>> {
+pub(crate) fn vec_to_arr<N: VoleArray<u8>>(v: &[u8]) -> Option<Array<u8, N>> {
     if v.len() != N::USIZE {
         return None;
     }
