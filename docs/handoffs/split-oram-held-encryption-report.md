@@ -110,9 +110,13 @@ Migrate `Oram2pc::run_access` in this order:
    single-use, width-checked, leaf-bound, and epoch-bound before mutation.
    Unsupported formatter/version modes fail closed.
 6. Bind both key-bearing drivers and the prepared tree access to the split AES
-   access circuit, then use packed held-material encryption for durable
-   material regions. This remains intentionally pending: the existing
-   plaintext `SplitOram*::run_access` rejects encryption, so it cannot be
-   misrepresented as an atomic encrypted operation.
+   access circuit. **Completed for the current lazy/non-versioned encrypted
+   shape:** the role-local drivers invoke `build_access` with 128 garbler
+   input bases, garbler 64-bit key input, evaluator 64-bit OT input, and
+   evaluator-owned ciphertext-path OT inputs. The evaluator commits its
+   consuming prepared path before acknowledging success; the garbler advances
+   only after that acknowledgement. The TCP test proves both key epochs and
+   the tree epoch advance together. Packed held-material encryption remains
+   the next durable-material phase.
 7. Build the paired `HeldMaterialStore` adapters on top of the completed
    boundary phase, then replace `MemoryHeldStore` in the TCP acceptance test.

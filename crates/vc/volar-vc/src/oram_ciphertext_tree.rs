@@ -116,6 +116,16 @@ impl<'a, const Z: usize> PreparedCiphertextAccess<'a, Z> {
         self.opening.as_ref().expect("prepared path").bits()
     }
 
+    /// Public physical leaf bound to this pending access.
+    pub fn leaf(&self) -> u64 {
+        self.opening.as_ref().expect("prepared path").leaf()
+    }
+
+    /// Public epoch bound to this pending access.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     /// Commit a same-epoch circuit write-back. Consuming `self` prevents a
     /// second commit from the same opening even in one process.
     pub fn commit(mut self, epoch: u64, writeback: &[bool]) -> Result<(), MpcError> {

@@ -13,8 +13,9 @@ use alloc::vec::Vec;
 use digest::Digest;
 use hybrid_array::Array;
 use volar_mpc::strict_split::{SplitEvaluator, SplitGarbler, SplitInput, SplitOutput};
-use volar_mpc::{GateSchedule, MpcError, OtChannel, Transport};
+use volar_mpc::{GateSchedule, MpcError, OtChannel, SessionFrame, Transport};
 
+use crate::oram_ciphertext_tree::PreparedCiphertextAccess;
 use crate::oram_gadget::OramGadgetConfig;
 use volar_spec::garble::{Eval, Garble, GlobalSecret};
 use volar_spec::vole::VoleArray;
@@ -190,10 +191,9 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
         Ok(bits_to_u64(&result.revealed))
     }
 
-    /// Run the plaintext-path access circuit. The path comes from the
-    /// evaluator's physical tree as evaluator-private bits; stash/address/data
-    /// thread as opaque split material. The API deliberately returns only the
-    /// public host write-back shape, never logical read data.
+    /// Run a plaintext or split-key encrypted access. For encrypted access,
+    /// this role supplies only its 64 AES key bits; the matching 128 bases are
+    /// garbler-local circuit metadata, not evaluator key material.
     #[allow(clippy::too_many_arguments)]
     pub fn run_access<D: Digest>(
         &mut self,
@@ -206,6 +206,7 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
         path_leaf: u64,
         new_leaf: u64,
         evict_only: bool,
+        garbler_key: Option<(&[Garble<N>], &[bool])>,
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<SplitAccessResult, MpcError> {
@@ -216,8 +217,7 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
             cfg.data_bits,
         );
         let path_width = cfg.path_entries() * eb;
-        if cfg.encrypted
-            || cfg.versioned_pads
+        if cfg.versioned_pads
             || cfg.keyed_leaf
             || db != 1
             || self.state.stash.len() != cfg.max_stash * eb
@@ -225,21 +225,27 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
             || addr_slots.len() != ab
             || write && wdata_slot.is_none()
             || schedule.num_inputs != cfg.access_params()
+            || (cfg.encrypted
+                && !matches!(garbler_key, Some((bases, bits)) if bases.len() == 128 && bits.len() == 64))
+            || (!cfg.encrypted && garbler_key.is_some())
         {
             return Err(MpcError::BadPartition);
         }
         let mut bases = self.state.stash.clone();
         bases.extend((0..path_width).map(|_| self.fresh_base::<D>()));
         bases.extend(addr_slots.iter().map(|&slot| self.state.tape[slot].clone()));
-        bases.push(self.fresh_base::<D>()); // op_write public
+        bases.push(self.fresh_base::<D>());
         if write {
             bases.push(self.state.tape[wdata_slot.expect("checked")].clone());
         } else {
             bases.push(self.fresh_base::<D>());
         }
-        bases.extend((0..lb).map(|_| self.fresh_base::<D>())); // path leaf
-        bases.extend((0..lb).map(|_| self.fresh_base::<D>())); // new leaf
-        bases.push(self.fresh_base::<D>()); // evict_only
+        bases.extend((0..lb).map(|_| self.fresh_base::<D>()));
+        bases.extend((0..lb).map(|_| self.fresh_base::<D>()));
+        bases.push(self.fresh_base::<D>());
+        if let Some((key_bases, _)) = garbler_key {
+            bases.extend_from_slice(key_bases);
+        }
 
         let mut inputs = vec![SplitInput::Held; self.state.stash.len()];
         inputs.extend(vec![SplitInput::Evaluator; path_width]);
@@ -251,6 +257,10 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
             SplitInput::Public
         });
         inputs.extend(vec![SplitInput::Public; lb * 2 + 1]);
+        if cfg.encrypted {
+            inputs.extend(vec![SplitInput::Garbler; 64]);
+            inputs.extend(vec![SplitInput::Evaluator; 64]);
+        }
         let mut public = Vec::with_capacity(1 + usize::from(!write) + lb * 2 + 1);
         public.push(write);
         if !write {
@@ -262,8 +272,8 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
 
         let path_off = 1 + db;
         let stash_off = path_off + path_width;
-        let mut outputs = vec![SplitOutput::Reveal; 1]; // overflow
-        outputs.push(SplitOutput::Opaque); // logical rdata
+        let mut outputs = vec![SplitOutput::Reveal; 1];
+        outputs.push(SplitOutput::Opaque);
         outputs.extend(vec![SplitOutput::Reveal; path_width]);
         outputs.extend(vec![SplitOutput::Opaque; self.state.stash.len()]);
         let result = self.runner.run_with_state::<D>(
@@ -271,7 +281,7 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
             bases,
             &inputs,
             &public,
-            &[],
+            garbler_key.map_or(&[], |(_, bits)| bits),
             &outputs,
             transport,
             ot,
@@ -379,14 +389,55 @@ impl<N: VoleArray<u8>> GarblerEncryptedOramDriver<N> {
         Ok(())
     }
 
-    /// Internal encrypted-access inputs: 128 garbler-only bases and just this
-    /// role's 64 private bits. The evaluator half cannot be obtained here.
-    pub(crate) fn key_inputs(&self) -> (&[Garble<N>], &[bool]) {
-        (&self.key_input_bases, self.key_half.bits())
-    }
-
-    pub(crate) fn driver_mut(&mut self) -> &mut SplitOramGarbler<N> {
-        &mut self.driver
+    /// Execute the garbler half of an atomic encrypted access. It does not
+    /// receive ciphertext tree bytes: physical-path bits are evaluator inputs.
+    /// The evaluator sends a one-bit commit acknowledgement only after its
+    /// prepared tree path has been successfully committed; only then does this
+    /// role advance its matching public epoch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_access<D: Digest>(
+        &mut self,
+        cfg: &OramGadgetConfig,
+        schedule: &GateSchedule,
+        write: bool,
+        addr_slots: &[usize],
+        wdata_slot: Option<usize>,
+        path_leaf: u64,
+        new_leaf: u64,
+        evict_only: bool,
+        epoch: u64,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<SplitAccessResult, MpcError> {
+        if epoch != self.epoch {
+            return Err(MpcError::MalformedSchedule);
+        }
+        let key_bases = self.key_input_bases.clone();
+        let key_bits = *self.key_half.bits();
+        // The garbler only needs the public path width to construct the input
+        // script; these values are never encoded or sent by this role.
+        let path_shape = vec![false; cfg.path_entries() * cfg.entry_bits()];
+        let result = self.driver.run_access::<D>(
+            cfg,
+            schedule,
+            &path_shape,
+            write,
+            addr_slots,
+            wdata_slot,
+            path_leaf,
+            new_leaf,
+            evict_only,
+            Some((&key_bases, &key_bits)),
+            transport,
+            ot,
+        )?;
+        match SessionFrame::decode(&transport.recv()) {
+            Some(SessionFrame::VerdictBits(bits)) if bits == vec![true] => {
+                self.complete_access(epoch)?;
+                Ok(result)
+            }
+            _ => Err(MpcError::MalformedSchedule),
+        }
     }
 }
 
@@ -422,12 +473,48 @@ impl<N: VoleArray<u8>> EvaluatorEncryptedOramDriver<N> {
         Ok(())
     }
 
-    pub(crate) fn key_input_bits(&self) -> &[bool] {
-        self.key_half.bits()
-    }
-
-    pub(crate) fn driver_mut(&mut self) -> &mut SplitOramEvaluator<N> {
-        &mut self.driver
+    /// Evaluator half of the atomic encrypted access binding. `prepared`
+    /// consumes the evaluator's path capability, so a successful circuit
+    /// response is committed exactly once before the commit acknowledgement is
+    /// sent to the garbler.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_access<D: Digest, const Z: usize>(
+        &mut self,
+        cfg: &OramGadgetConfig,
+        schedule: &GateSchedule,
+        prepared: PreparedCiphertextAccess<'_, Z>,
+        write: bool,
+        addr_slots: &[usize],
+        wdata_slot: Option<usize>,
+        path_leaf: u64,
+        new_leaf: u64,
+        evict_only: bool,
+        epoch: u64,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<SplitAccessResult, MpcError> {
+        if epoch != self.epoch || prepared.epoch() != epoch || prepared.leaf() != path_leaf {
+            return Err(MpcError::MalformedSchedule);
+        }
+        let key_bits = *self.key_half.bits();
+        let result = self.driver.run_access::<D>(
+            cfg,
+            schedule,
+            prepared.path_bits(),
+            write,
+            addr_slots,
+            wdata_slot,
+            path_leaf,
+            new_leaf,
+            evict_only,
+            Some(&key_bits),
+            transport,
+            ot,
+        )?;
+        prepared.commit(epoch, &result.new_path)?;
+        self.complete_access(epoch)?;
+        transport.send(&SessionFrame::VerdictBits(vec![true]).encode());
+        Ok(result)
     }
 }
 
@@ -485,9 +572,8 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         Ok(bits_to_u64(&revealed))
     }
 
-    /// Evaluator half of [`SplitOramGarbler::run_access`]. The evaluator owns
-    /// physical path bytes and returns the revealed write-back path, but never
-    /// receives a garbler base for the opaque stash/read-data outputs.
+    /// Evaluator half of [`SplitOramGarbler::run_access`]. For encrypted
+    /// access this role contributes its 64 AES bits through OT.
     #[allow(clippy::too_many_arguments)]
     pub fn run_access<D: Digest>(
         &mut self,
@@ -500,6 +586,7 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         path_leaf: u64,
         new_leaf: u64,
         evict_only: bool,
+        evaluator_key: Option<&[bool]>,
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<SplitAccessResult, MpcError> {
@@ -510,8 +597,7 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
             cfg.data_bits,
         );
         let path_width = cfg.path_entries() * eb;
-        if cfg.encrypted
-            || cfg.versioned_pads
+        if cfg.versioned_pads
             || cfg.keyed_leaf
             || db != 1
             || self.state.stash.len() != cfg.max_stash * eb
@@ -519,6 +605,8 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
             || addr_slots.len() != ab
             || write && wdata_slot.is_none()
             || schedule.num_inputs != cfg.access_params()
+            || (cfg.encrypted && !matches!(evaluator_key, Some(bits) if bits.len() == 64))
+            || (!cfg.encrypted && evaluator_key.is_some())
         {
             return Err(MpcError::BadPartition);
         }
@@ -537,6 +625,10 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
             SplitInput::Public
         });
         inputs.extend(vec![SplitInput::Public; lb * 2 + 1]);
+        if cfg.encrypted {
+            inputs.extend(vec![SplitInput::Garbler; 64]);
+            inputs.extend(vec![SplitInput::Evaluator; 64]);
+        }
         let mut public = Vec::with_capacity(1 + usize::from(!write) + lb * 2 + 1);
         public.push(write);
         if !write {
@@ -551,9 +643,19 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         outputs.push(SplitOutput::Opaque);
         outputs.extend(vec![SplitOutput::Reveal; path_width]);
         outputs.extend(vec![SplitOutput::Opaque; self.state.stash.len()]);
-        let (labels, revealed) = self
-            .runner
-            .run_with_state::<D>(schedule, &inputs, path_bits, &held, &outputs, transport, ot)?;
+        let mut evaluator_bits = path_bits.to_vec();
+        if let Some(key_half) = evaluator_key {
+            evaluator_bits.extend_from_slice(key_half);
+        }
+        let (labels, revealed) = self.runner.run_with_state::<D>(
+            schedule,
+            &inputs,
+            &evaluator_bits,
+            &held,
+            &outputs,
+            transport,
+            ot,
+        )?;
         self.state.stash = labels[stash_off..].to_vec();
         Ok(SplitAccessResult {
             overflow: revealed[0],
