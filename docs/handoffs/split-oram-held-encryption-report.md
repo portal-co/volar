@@ -15,6 +15,11 @@ combined `Oram2pc` harness:
 - `SplitOutput::{Reveal, Opaque}` now makes output disposition explicit:
   opaque output labels are never transmitted to the garbler, while each role
   retains its own corresponding material for later threading.
+- `SplitInput::{Public, Garbler, Evaluator, Held}` and the paired
+  `run_with_state` methods now provide that later threading directly: garbler
+  bases and evaluator labels enter separate role-local vectors, with no frame
+  or OT for `Held` wires. The TCP test executes an opaque round followed by a
+  distinct round that consumes its output as `Held`.
 
 This is deliberately a small, deep module: a future begin/access/evict ORAM
 adapter need only build its public input partition and role-local inputs. It
@@ -74,9 +79,11 @@ the split circuit.
 
 Migrate `Oram2pc::run_access` in this order:
 
-1. Replace `run_circuit` calls with `SplitGarbler` / `SplitEvaluator` calls,
-   using `SplitOutput::Opaque` for every threaded state wire. **The output
-   primitive is now available; this migration remains.**
+1. Split the current `Oram2pc` combined harness into a paired
+   `SplitOramGarbler` / `SplitOramEvaluator` driver and replace its
+   `run_circuit` calls with `run_with_state`, using `SplitOutput::Opaque` for
+   tape/posmap/stash. **The invocation and state primitives are now available;
+   the legacy one-process harness must not be relabelled as this migration.**
 2. Split `HeldState` into role-local posmap/stash types.
 3. Give the evaluator a ciphertext-tree adapter and explicit path
    request/read/write frames, validating widths/version before circuit input.

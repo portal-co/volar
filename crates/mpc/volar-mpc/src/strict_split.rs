@@ -296,3 +296,200 @@ impl<N: VoleArray<u8>> Default for SplitEvaluator<N> {
         Self::new()
     }
 }
+
+/// Source of an input to a state-threading split circuit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitInput {
+    Public,
+    Garbler,
+    Evaluator,
+    /// The corresponding false-label base / active label is supplied from
+    /// role-local state. No owned-input frame or OT is emitted for this wire.
+    Held,
+}
+
+impl<N: VoleArray<u8>> SplitGarbler<N> {
+    /// Execute a state-threading circuit. `Held` wires consume the supplied
+    /// garbler bases; their matching evaluator labels remain entirely with the
+    /// evaluator. This is the primitive used to replace `Oram2pc::run_circuit`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_with_state<D: Digest>(
+        &self,
+        schedule: &GateSchedule,
+        input_bases: Vec<Garble<N>>,
+        inputs: &[SplitInput],
+        public_bits: &[bool],
+        garbler_bits: &[bool],
+        outputs: &[SplitOutput],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<SplitGarblerResult<N>, MpcError> {
+        if inputs.len() != schedule.num_inputs
+            || input_bases.len() != schedule.num_inputs
+            || outputs.len() != schedule.output_wires().len()
+        {
+            return Err(MpcError::BadPartition);
+        }
+        let eliminated = eliminate_nots(schedule)?;
+        let full =
+            garble_schedule_strict_dyn_full::<N, D>(&eliminated, self.secret.clone(), input_bases)?;
+        let mut owned = Vec::new();
+        let mut public_i = 0;
+        let mut garbler_i = 0;
+        for (wire, input) in full.exec.circuit.input_labels.iter().zip(inputs) {
+            match input {
+                SplitInput::Public => {
+                    let bit = *public_bits.get(public_i).ok_or(MpcError::BadPartition)?;
+                    public_i += 1;
+                    owned.push(arr_to_vec(&self.secret.encode(wire, bit).target));
+                }
+                SplitInput::Garbler => {
+                    let bit = *garbler_bits.get(garbler_i).ok_or(MpcError::BadPartition)?;
+                    garbler_i += 1;
+                    owned.push(arr_to_vec(&self.secret.encode(wire, bit).target));
+                }
+                SplitInput::Evaluator | SplitInput::Held => {}
+            }
+        }
+        if public_i != public_bits.len() || garbler_i != garbler_bits.len() {
+            return Err(MpcError::BadPartition);
+        }
+        transport.send(&SessionFrame::OwnedInputs(owned).encode());
+        for (wire, input) in full.exec.circuit.input_labels.iter().zip(inputs) {
+            if *input == SplitInput::Evaluator {
+                let zero = self.secret.encode(wire, false);
+                let one = self.secret.encode(wire, true);
+                ot.send([&zero.target, &one.target]);
+            }
+        }
+        for tables in full.exec.circuit.tables.chunks(STRICT_TABLE_CHUNK) {
+            transport.send(
+                &SessionFrame::SetupStrictChunk {
+                    tables: tables
+                        .iter()
+                        .map(|table| core::array::from_fn(|row| arr_to_vec(&table.table[row])))
+                        .collect(),
+                }
+                .encode(),
+            );
+        }
+        transport.send(
+            &SessionFrame::SetupStrictEnd {
+                table_count: full.exec.circuit.tables.len() as u32,
+            }
+            .encode(),
+        );
+        let labels = match SessionFrame::decode(&transport.recv()) {
+            Some(SessionFrame::OutputLabels(labels)) => labels,
+            _ => return Err(MpcError::UnexpectedMessage),
+        };
+        let reveal_count = outputs
+            .iter()
+            .filter(|o| **o == SplitOutput::Reveal)
+            .count();
+        if labels.len() != reveal_count {
+            return Err(MpcError::UnexpectedMessage);
+        }
+        let mut revealed = Vec::with_capacity(reveal_count);
+        let mut label_i = 0;
+        for (index, output) in outputs.iter().enumerate() {
+            if *output == SplitOutput::Reveal {
+                let label = vec_to_arr::<N>(&labels[label_i]).ok_or(MpcError::MalformedSchedule)?;
+                label_i += 1;
+                revealed.push(
+                    decode_output_label(
+                        &self.secret,
+                        &full.exec.output_labels[index],
+                        eliminated.output_polarity[index],
+                        &label,
+                    )
+                    .ok_or(MpcError::DecodeFailure)?,
+                );
+            }
+        }
+        transport.send(&SessionFrame::VerdictBits(revealed.clone()).encode());
+        Ok(SplitGarblerResult {
+            output_bases: full.exec.output_labels,
+            revealed,
+        })
+    }
+}
+
+impl<N: VoleArray<u8>> SplitEvaluator<N> {
+    /// Evaluator half of [`SplitGarbler::run_with_state`]. `held_labels` are
+    /// consumed in `SplitInput::Held` order and never enter an OT or frame.
+    pub fn run_with_state<D: Digest>(
+        &self,
+        schedule: &GateSchedule,
+        inputs: &[SplitInput],
+        evaluator_bits: &[bool],
+        held_labels: &[Eval<N>],
+        outputs: &[SplitOutput],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<Vec<Eval<N>>, MpcError> {
+        if inputs.len() != schedule.num_inputs || outputs.len() != schedule.output_wires().len() {
+            return Err(MpcError::BadPartition);
+        }
+        let eliminated = eliminate_nots(schedule)?;
+        let owned = match SessionFrame::decode(&transport.recv()) {
+            Some(SessionFrame::OwnedInputs(labels)) => labels,
+            _ => return Err(MpcError::UnexpectedMessage),
+        };
+        let mut labels = Vec::with_capacity(schedule.num_inputs);
+        let mut owned_i = 0;
+        let mut evaluator_i = 0;
+        let mut held_i = 0;
+        for input in inputs {
+            match input {
+                SplitInput::Public | SplitInput::Garbler => {
+                    labels.push(Eval {
+                        target: vec_to_arr(owned.get(owned_i).ok_or(MpcError::BadPartition)?)
+                            .ok_or(MpcError::MalformedSchedule)?,
+                    });
+                    owned_i += 1;
+                }
+                SplitInput::Evaluator => {
+                    let bit = *evaluator_bits
+                        .get(evaluator_i)
+                        .ok_or(MpcError::BadPartition)?;
+                    evaluator_i += 1;
+                    labels.push(Eval {
+                        target: ot.receive(bit),
+                    });
+                }
+                SplitInput::Held => {
+                    labels.push(
+                        held_labels
+                            .get(held_i)
+                            .cloned()
+                            .ok_or(MpcError::BadPartition)?,
+                    );
+                    held_i += 1;
+                }
+            }
+        }
+        if owned_i != owned.len()
+            || evaluator_i != evaluator_bits.len()
+            || held_i != held_labels.len()
+        {
+            return Err(MpcError::BadPartition);
+        }
+        let mut link = TransportRef(transport);
+        let output_labels =
+            eval_strict_table_stream::<N, D, _>(&eliminated.schedule, &labels, &mut link)?;
+        let revealed: Vec<Vec<u8>> = output_labels
+            .iter()
+            .zip(outputs)
+            .filter_map(|(label, output)| {
+                (*output == SplitOutput::Reveal).then(|| arr_to_vec(&label.target))
+            })
+            .collect();
+        transport.send(&SessionFrame::OutputLabels(revealed).encode());
+        match SessionFrame::decode(&transport.recv()) {
+            Some(SessionFrame::VerdictBits(_)) => Ok(output_labels),
+            Some(SessionFrame::Verdict(Err(()))) => Err(MpcError::DecodeFailure),
+            _ => Err(MpcError::UnexpectedMessage),
+        }
+    }
+}
