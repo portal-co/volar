@@ -242,7 +242,7 @@ pub trait HeldMaterialStore<T, N: VoleArray<u8>> {
     /// Load one opaque role-local material item. Both roles invoke this before
     /// a strict round's ordinary frames begin, so a durable adapter may run a
     /// request/response fetch on the strict transport and its OT channel.
-    fn load(
+    fn load<D: Digest>(
         &mut self,
         slot: usize,
         transport: &mut dyn Transport,
@@ -251,7 +251,7 @@ pub trait HeldMaterialStore<T, N: VoleArray<u8>> {
     /// Persist one opaque role-local material item. Both roles invoke this at
     /// the corresponding output position, so a durable adapter may run a
     /// split-key encrypted ORAM write before the next strict round.
-    fn store(
+    fn store<D: Digest>(
         &mut self,
         slot: usize,
         owner: MaterialRole,
@@ -285,7 +285,7 @@ impl<T> Default for MemoryHeldStore<T> {
 }
 
 impl<T: Clone, N: VoleArray<u8>> HeldMaterialStore<T, N> for MemoryHeldStore<T> {
-    fn load(
+    fn load<D: Digest>(
         &mut self,
         slot: usize,
         _: &mut dyn Transport,
@@ -294,7 +294,7 @@ impl<T: Clone, N: VoleArray<u8>> HeldMaterialStore<T, N> for MemoryHeldStore<T> 
         Ok(self.values.get(&slot).cloned())
     }
 
-    fn store(
+    fn store<D: Digest>(
         &mut self,
         slot: usize,
         _: MaterialRole,
@@ -366,18 +366,18 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainGarbler<N, S> {
         self.held.address_span()
     }
 
-    fn held_get(
+    fn held_get<D: Digest>(
         &mut self,
         slot: usize,
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<Garble<N>, MpcError> {
         self.held
-            .load(slot, transport, ot)?
+            .load::<D>(slot, transport, ot)?
             .ok_or(MpcError::MalformedSchedule)
     }
 
-    fn held_set(
+    fn held_set<D: Digest>(
         &mut self,
         slot: usize,
         owner: MaterialRole,
@@ -385,7 +385,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainGarbler<N, S> {
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<(), MpcError> {
-        self.held.store(slot, owner, value, transport, ot)
+        self.held.store::<D>(slot, owner, value, transport, ot)
     }
 
     /// Snapshot public execution-shape counters.
@@ -417,10 +417,10 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainStoragePhase<N>
         for operation in operations {
             match *operation {
                 StorageOperation::Load { slot } => {
-                    let _ = self.held_get(slot, transport, ot)?;
+                    let _ = self.held_get::<D>(slot, transport, ot)?;
                 }
                 StorageOperation::Store { slot, owner } => {
-                    self.held_set(slot, owner, None, transport, ot)?;
+                    self.held_set::<D>(slot, owner, None, transport, ot)?;
                 }
             }
         }
@@ -471,7 +471,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainParty<N> for Cha
                 }
                 ChainFeed::Eval => bases.push(self.fresh_base::<D>()),
                 ChainFeed::Held(slot) => {
-                    bases.push(self.held_get(*slot, transport, ot)?);
+                    bases.push(self.held_get::<D>(*slot, transport, ot)?);
                 }
             }
         }
@@ -582,12 +582,12 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainParty<N> for Cha
                     } else {
                         raw.clone()
                     };
-                    self.held_set(*slot, MaterialRole::Garbler, Some(base), transport, ot)?;
+                    self.held_set::<D>(*slot, MaterialRole::Garbler, Some(base), transport, ot)?;
                 }
                 ChainOut::EvaluatorMaterial(slot) => {
                     // Advance the paired durable adapter at the same logical
                     // operation without giving the garbler an evaluator label.
-                    self.held_set(*slot, MaterialRole::Evaluator, None, transport, ot)?;
+                    self.held_set::<D>(*slot, MaterialRole::Evaluator, None, transport, ot)?;
                 }
                 ChainOut::Hold(slot) => {
                     // Thread: register the polarity-adjusted base so the held
@@ -600,7 +600,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainParty<N> for Cha
                     } else {
                         raw.clone()
                     };
-                    self.held_set(*slot, MaterialRole::Both, Some(base), transport, ot)?;
+                    self.held_set::<D>(*slot, MaterialRole::Both, Some(base), transport, ot)?;
                 }
             }
         }
@@ -651,18 +651,18 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainEvaluator<N, S> {
         self.held.address_span()
     }
 
-    fn held_get(
+    fn held_get<D: Digest>(
         &mut self,
         slot: usize,
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<Eval<N>, MpcError> {
         self.held
-            .load(slot, transport, ot)?
+            .load::<D>(slot, transport, ot)?
             .ok_or(MpcError::MalformedSchedule)
     }
 
-    fn held_set(
+    fn held_set<D: Digest>(
         &mut self,
         slot: usize,
         owner: MaterialRole,
@@ -670,7 +670,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainEvaluator<N, S> {
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<(), MpcError> {
-        self.held.store(slot, owner, value, transport, ot)
+        self.held.store::<D>(slot, owner, value, transport, ot)
     }
 }
 
@@ -721,10 +721,10 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainStoragePhase<N>
         for operation in operations {
             match *operation {
                 StorageOperation::Load { slot } => {
-                    let _ = self.held_get(slot, transport, ot)?;
+                    let _ = self.held_get::<D>(slot, transport, ot)?;
                 }
                 StorageOperation::Store { slot, owner } => {
-                    self.held_set(slot, owner, None, transport, ot)?;
+                    self.held_set::<D>(slot, owner, None, transport, ot)?;
                 }
             }
         }
@@ -785,7 +785,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainParty<N> for Chain
                     });
                 }
                 ChainFeed::Held(slot) => {
-                    labels.push(self.held_get(*slot, transport, ot)?);
+                    labels.push(self.held_get::<D>(*slot, transport, ot)?);
                 }
             }
         }
@@ -801,10 +801,10 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainParty<N> for Chain
                 ChainOut::GarblerMaterial(slot) => {
                     // Advance the paired durable adapter at the same logical
                     // operation without giving the evaluator a false base.
-                    self.held_set(*slot, MaterialRole::Garbler, None, transport, ot)?;
+                    self.held_set::<D>(*slot, MaterialRole::Garbler, None, transport, ot)?;
                 }
                 ChainOut::EvaluatorMaterial(slot) => {
-                    self.held_set(
+                    self.held_set::<D>(
                         *slot,
                         MaterialRole::Evaluator,
                         Some(out_labels[o].clone()),
@@ -813,7 +813,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainParty<N> for Chain
                     )?;
                 }
                 ChainOut::Hold(slot) => {
-                    self.held_set(
+                    self.held_set::<D>(
                         *slot,
                         MaterialRole::Both,
                         Some(out_labels[o].clone()),

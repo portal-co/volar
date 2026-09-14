@@ -146,3 +146,10 @@ shape independently. This is the correct output disposition for a material
 ciphertext block produced by the split AES circuit; the next adapter slice can
 store that evaluator-decoded ciphertext without adding a host-visible
 plaintext channel.
+
+`HeldMaterialStore::{load,store}` are now generic over the chain circuit's
+`Digest`. The injected backing therefore uses the same digest type when it
+invokes the material AES circuit, rather than baking a second hash choice into
+durable material format. `ChainGarbler` and `ChainEvaluator` thread that type
+through ordinary held loads/stores and explicit `ChainStoragePhase` scripts;
+the compatibility memory store remains digest-independent.
