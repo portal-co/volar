@@ -90,6 +90,35 @@ impl<N: VoleArray<u8>> EvaluatorOramState<N> {
     }
 }
 
+/// Garbler-only half of the split AES-128 tree key. The type intentionally
+/// has no operation for reconstructing a full key.
+#[derive(Clone, Copy)]
+pub struct GarblerTreeKeyHalf([bool; 64]);
+
+impl GarblerTreeKeyHalf {
+    pub const fn new(bits: [bool; 64]) -> Self {
+        Self(bits)
+    }
+
+    fn bits(&self) -> &[bool; 64] {
+        &self.0
+    }
+}
+
+/// Evaluator-only half of the split AES-128 tree key.
+#[derive(Clone, Copy)]
+pub struct EvaluatorTreeKeyHalf([bool; 64]);
+
+impl EvaluatorTreeKeyHalf {
+    pub const fn new(bits: [bool; 64]) -> Self {
+        Self(bits)
+    }
+
+    fn bits(&self) -> &[bool; 64] {
+        &self.0
+    }
+}
+
 /// Garbler role of the migrated ORAM driver.
 pub struct SplitOramGarbler<N: VoleArray<u8>> {
     runner: SplitGarbler<N>,
@@ -299,6 +328,109 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
     }
 }
 
+/// Garbler-only persistent key-bearing driver for the encrypted migration.
+/// It owns all AES input bases (as every garbling input needs a base) but only
+/// the garbler's 64 Boolean key bits. It has no evaluator labels or tree.
+pub struct GarblerEncryptedOramDriver<N: VoleArray<u8>> {
+    driver: SplitOramGarbler<N>,
+    key_half: GarblerTreeKeyHalf,
+    key_input_bases: Vec<Garble<N>>,
+    epoch: u64,
+}
+
+impl<N: VoleArray<u8>> GarblerEncryptedOramDriver<N> {
+    /// Bind a role-local garbler driver to its AES half. `base_seed` is
+    /// garbler-local entropy used only to derive false-label bases; it is not
+    /// an AES key and must not be shared with the evaluator.
+    pub fn new<D: Digest>(
+        driver: SplitOramGarbler<N>,
+        key_half: GarblerTreeKeyHalf,
+        base_seed: &[u8],
+    ) -> Result<Self, MpcError> {
+        if base_seed.is_empty() {
+            return Err(MpcError::BadPartition);
+        }
+        let key_input_bases = (0..128)
+            .map(|index| key_base::<N, D>(base_seed, index as u64))
+            .collect();
+        Ok(Self {
+            driver,
+            key_half,
+            key_input_bases,
+            epoch: 0,
+        })
+    }
+
+    /// Public access ordinal. The peer independently maintains the same
+    /// ordinal; later encrypted access framing binds it to tree commits.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Advance only after the access protocol succeeds.
+    pub fn complete_access(&mut self, expected_epoch: u64) -> Result<(), MpcError> {
+        if expected_epoch != self.epoch {
+            return Err(MpcError::MalformedSchedule);
+        }
+        self.epoch = self
+            .epoch
+            .checked_add(1)
+            .ok_or(MpcError::MalformedSchedule)?;
+        Ok(())
+    }
+
+    /// Internal encrypted-access inputs: 128 garbler-only bases and just this
+    /// role's 64 private bits. The evaluator half cannot be obtained here.
+    pub(crate) fn key_inputs(&self) -> (&[Garble<N>], &[bool]) {
+        (&self.key_input_bases, self.key_half.bits())
+    }
+
+    pub(crate) fn driver_mut(&mut self) -> &mut SplitOramGarbler<N> {
+        &mut self.driver
+    }
+}
+
+/// Evaluator-only persistent key-bearing driver. It owns only the evaluator
+/// key half and labels/state. It cannot obtain garbler bases or input bases.
+pub struct EvaluatorEncryptedOramDriver<N: VoleArray<u8>> {
+    driver: SplitOramEvaluator<N>,
+    key_half: EvaluatorTreeKeyHalf,
+    epoch: u64,
+}
+
+impl<N: VoleArray<u8>> EvaluatorEncryptedOramDriver<N> {
+    pub fn new(driver: SplitOramEvaluator<N>, key_half: EvaluatorTreeKeyHalf) -> Self {
+        Self {
+            driver,
+            key_half,
+            epoch: 0,
+        }
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn complete_access(&mut self, expected_epoch: u64) -> Result<(), MpcError> {
+        if expected_epoch != self.epoch {
+            return Err(MpcError::MalformedSchedule);
+        }
+        self.epoch = self
+            .epoch
+            .checked_add(1)
+            .ok_or(MpcError::MalformedSchedule)?;
+        Ok(())
+    }
+
+    pub(crate) fn key_input_bits(&self) -> &[bool] {
+        self.key_half.bits()
+    }
+
+    pub(crate) fn driver_mut(&mut self) -> &mut SplitOramEvaluator<N> {
+        &mut self.driver
+    }
+}
+
 /// Evaluator role of the migrated ORAM driver.
 pub struct SplitOramEvaluator<N: VoleArray<u8>> {
     runner: SplitEvaluator<N>,
@@ -454,6 +586,20 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         )?;
         self.state.tape = labels;
         Ok(())
+    }
+}
+
+fn key_base<N: VoleArray<u8>, D: Digest>(seed: &[u8], index: u64) -> Garble<N> {
+    let digest = D::digest(
+        &[
+            b"volar-vc/encrypted-oram-key-base".as_slice(),
+            seed,
+            &index.to_le_bytes(),
+        ]
+        .concat(),
+    );
+    Garble {
+        base: Array::from_fn(|i| digest[i % digest.len()]),
     }
 }
 
