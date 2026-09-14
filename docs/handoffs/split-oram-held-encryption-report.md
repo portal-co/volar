@@ -235,3 +235,22 @@ true persistence boundaries; per-bit tape re-encryption is not viable for
 memory-heavy modules such as rustls. These figures are static circuit sizing,
 not an OT byte benchmark: a next networked benchmark must compare Net OT and a
 Ferret-backed `OtChannel` with the chosen block/cache policy.
+
+## Encapsulation, cache, and return planning
+
+`MaterialBlockLayout` now packs fixed-width role-local values into 16-byte AES
+blocks without splitting a value across blocks. `MaterialBlockCachePlan` tracks
+public resident slots and dirty block indices: repeated resident reads require
+no reopening, and several writes to slots in the same packed block produce one
+flush candidate. The layout is immediately useful for narrower opaque material
+representations; current `U16` garbling labels are themselves 16 bytes and
+therefore occupy one block each, so a separate label-compression/encapsulation
+format is required before those labels can share a physical AES block.
+
+`oram_batch` provides conservative public path-return planning. Consecutive
+reads of the same public physical leaf share one fetched path. Writes are
+batchable only for non-root buckets with no common public node; root commits
+remain ordered because every Path ORAM path shares root. This intentionally
+avoids claiming unsafe whole-path parallel commits. Integrating the planner
+with a network tree transport is the next layer; the current ORAM driver
+remains sequential.
