@@ -31,8 +31,8 @@ fn cfg() -> OramGadgetConfig {
         max_stash: 6,
         encrypted: true,
         tree_key_bits: 128,
-        versioned_pads: false,
-        version_bits: 0,
+        versioned_pads: true,
+        version_bits: 8,
         encrypt_valid: false,
         keyed_leaf: false,
     }
@@ -92,6 +92,7 @@ fn encrypted_access_commits_prepared_tree_and_advances_both_epochs() {
                 1,
                 false,
                 0,
+                &[0, 0],
                 &mut session,
                 &mut ot,
             )
@@ -128,5 +129,6 @@ fn encrypted_access_commits_prepared_tree_and_advances_both_epochs() {
     assert!(!result.overflow);
     assert_eq!(driver.epoch(), 1);
     assert_eq!(tree.epoch(), 1);
+    assert_eq!(tree.path_versions(0).expect("versions"), vec![1, 1]);
     garbler.join().expect("garbler join");
 }

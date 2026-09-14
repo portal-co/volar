@@ -738,6 +738,61 @@ pub fn build_begin(cfg: &OramGadgetConfig) -> BIrBlocks {
     b.finish(out)
 }
 
+/// Build one split-key tree-formatting circuit for physical node
+/// `depth`/`prefix`. It emits the encrypted representation of an all-zero
+/// bucket, i.e. dummy entries. The 128 AES key inputs are deliberately the
+/// only inputs, so roles can partition them 64/64 without materializing a
+/// complete key. This is required before `encrypt_valid` paths can be read.
+///
+/// The output is `Z * entry_bits` ciphertext bits in slot order. With
+/// versioned pads the supplied `version` is incorporated into the same tweak
+/// layout as [`build_access`].
+pub fn build_tree_node_formatter(
+    cfg: &OramGadgetConfig,
+    depth: usize,
+    prefix: u64,
+    version: u64,
+) -> BIrBlocks {
+    assert!(
+        cfg.encrypted && cfg.encrypt_valid,
+        "formatter needs encrypted valid bits"
+    );
+    assert_eq!(cfg.tree_key_bits, 128, "formatter uses AES-128");
+    assert!(depth < cfg.levels, "node depth in tree");
+    let eb = cfg.entry_bits();
+    let mut b = Builder::new(128);
+    let zc = b.const0();
+    let oc = b.const1();
+    let key: Vec<u32> = (0..128).collect();
+    let mut tweak = vec![zc; 128];
+    for bit in 0..8 {
+        if (depth >> bit) & 1 != 0 {
+            tweak[bit] = oc;
+        }
+    }
+    for bit in 0..depth {
+        if (prefix >> (depth - 1 - bit)) & 1 != 0 {
+            tweak[16 + bit] = oc;
+        }
+    }
+    if cfg.versioned_pads {
+        for bit in 0..cfg.version_bits {
+            if (version >> bit) & 1 != 0 {
+                tweak[32 + bit] = oc;
+            }
+        }
+    }
+    let aes = crate::aes_gadget::build_aes128();
+    let mut aes_in = key;
+    aes_in.extend(tweak);
+    let pad = b.inline_sub(&aes, &aes_in);
+    assert!(
+        cfg.bucket_size * eb <= 128,
+        "one AES block covers formatted bucket"
+    );
+    b.finish(pad[..cfg.bucket_size * eb].to_vec())
+}
+
 /// Build the **access** circuit: absorb a path, optionally select/read/write
 /// the target block, then evict along the path. Used for both the main access
 /// (`evict_only = 0`) and the post-access eviction (`evict_only = 1`).

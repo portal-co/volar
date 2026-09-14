@@ -87,6 +87,7 @@ fn split_access_reveals_only_writeback_path_over_tcp() {
                 1,
                 false,
                 None,
+                &[],
                 &mut session,
                 &mut ot,
             )
@@ -113,6 +114,7 @@ fn split_access_reveals_only_writeback_path_over_tcp() {
             1,
             false,
             None,
+            &[],
             &mut session,
             &mut ot,
         )

@@ -191,6 +191,40 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
         Ok(bits_to_u64(&result.revealed))
     }
 
+    /// Run one public encrypted-valid tree-node formatter. The ciphertext
+    /// dummy bucket is public output; neither role learns a complete AES key.
+    pub fn run_formatter<D: Digest>(
+        &mut self,
+        schedule: &GateSchedule,
+        key_bases: &[Garble<N>],
+        key_half: &[bool],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<Vec<bool>, MpcError> {
+        if key_bases.len() != 128 || key_half.len() != 64 || schedule.num_inputs != 128 {
+            return Err(MpcError::BadPartition);
+        }
+        let inputs = [
+            vec![SplitInput::Garbler; 64],
+            vec![SplitInput::Evaluator; 64],
+        ]
+        .concat();
+        let outputs = vec![SplitOutput::Reveal; schedule.output_wires().len()];
+        Ok(self
+            .runner
+            .run_with_state::<D>(
+                schedule,
+                key_bases.to_vec(),
+                &inputs,
+                &[],
+                key_half,
+                &outputs,
+                transport,
+                ot,
+            )?
+            .revealed)
+    }
+
     /// Run a plaintext or split-key encrypted access. For encrypted access,
     /// this role supplies only its 64 AES key bits; the matching 128 bases are
     /// garbler-local circuit metadata, not evaluator key material.
@@ -207,6 +241,7 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
         new_leaf: u64,
         evict_only: bool,
         garbler_key: Option<(&[Garble<N>], &[bool])>,
+        path_versions: &[u64],
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<SplitAccessResult, MpcError> {
@@ -217,8 +252,7 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
             cfg.data_bits,
         );
         let path_width = cfg.path_entries() * eb;
-        if cfg.versioned_pads
-            || cfg.keyed_leaf
+        if cfg.keyed_leaf
             || db != 1
             || self.state.stash.len() != cfg.max_stash * eb
             || path_bits.len() != path_width
@@ -228,6 +262,8 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
             || (cfg.encrypted
                 && !matches!(garbler_key, Some((bases, bits)) if bases.len() == 128 && bits.len() == 64))
             || (!cfg.encrypted && garbler_key.is_some())
+            || (cfg.versioned_pads && path_versions.len() != cfg.levels)
+            || (!cfg.versioned_pads && !path_versions.is_empty())
         {
             return Err(MpcError::BadPartition);
         }
@@ -246,6 +282,9 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
         if let Some((key_bases, _)) = garbler_key {
             bases.extend_from_slice(key_bases);
         }
+        if cfg.versioned_pads {
+            bases.extend((0..cfg.levels * cfg.version_bits).map(|_| self.fresh_base::<D>()));
+        }
 
         let mut inputs = vec![SplitInput::Held; self.state.stash.len()];
         inputs.extend(vec![SplitInput::Evaluator; path_width]);
@@ -261,6 +300,9 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
             inputs.extend(vec![SplitInput::Garbler; 64]);
             inputs.extend(vec![SplitInput::Evaluator; 64]);
         }
+        if cfg.versioned_pads {
+            inputs.extend(vec![SplitInput::Public; cfg.levels * cfg.version_bits]);
+        }
         let mut public = Vec::with_capacity(1 + usize::from(!write) + lb * 2 + 1);
         public.push(write);
         if !write {
@@ -269,6 +311,11 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
         public.extend(u64_bits(path_leaf, lb));
         public.extend(u64_bits(new_leaf, lb));
         public.push(evict_only);
+        if cfg.versioned_pads {
+            for &version in path_versions {
+                public.extend(u64_bits(version, cfg.version_bits));
+            }
+        }
 
         let path_off = 1 + db;
         let stash_off = path_off + path_width;
@@ -406,6 +453,7 @@ impl<N: VoleArray<u8>> GarblerEncryptedOramDriver<N> {
         new_leaf: u64,
         evict_only: bool,
         epoch: u64,
+        path_versions: &[u64],
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<SplitAccessResult, MpcError> {
@@ -428,6 +476,7 @@ impl<N: VoleArray<u8>> GarblerEncryptedOramDriver<N> {
             new_leaf,
             evict_only,
             Some((&key_bases, &key_bits)),
+            path_versions,
             transport,
             ot,
         )?;
@@ -508,6 +557,11 @@ impl<N: VoleArray<u8>> EvaluatorEncryptedOramDriver<N> {
             new_leaf,
             evict_only,
             Some(&key_bits),
+            if cfg.versioned_pads {
+                prepared.path_versions()
+            } else {
+                &[]
+            },
             transport,
             ot,
         )?;
@@ -572,6 +626,35 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         Ok(bits_to_u64(&revealed))
     }
 
+    /// Evaluator half of [`SplitOramGarbler::run_formatter`].
+    pub fn run_formatter<D: Digest>(
+        &mut self,
+        schedule: &GateSchedule,
+        key_half: &[bool],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<Vec<bool>, MpcError> {
+        if key_half.len() != 64 || schedule.num_inputs != 128 {
+            return Err(MpcError::BadPartition);
+        }
+        let inputs = [
+            vec![SplitInput::Garbler; 64],
+            vec![SplitInput::Evaluator; 64],
+        ]
+        .concat();
+        let outputs = vec![SplitOutput::Reveal; schedule.output_wires().len()];
+        let (_labels, revealed) = self.runner.run_with_state::<D>(
+            schedule,
+            &inputs,
+            key_half,
+            &[],
+            &outputs,
+            transport,
+            ot,
+        )?;
+        Ok(revealed)
+    }
+
     /// Evaluator half of [`SplitOramGarbler::run_access`]. For encrypted
     /// access this role contributes its 64 AES bits through OT.
     #[allow(clippy::too_many_arguments)]
@@ -587,6 +670,7 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         new_leaf: u64,
         evict_only: bool,
         evaluator_key: Option<&[bool]>,
+        path_versions: &[u64],
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<SplitAccessResult, MpcError> {
@@ -597,8 +681,7 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
             cfg.data_bits,
         );
         let path_width = cfg.path_entries() * eb;
-        if cfg.versioned_pads
-            || cfg.keyed_leaf
+        if cfg.keyed_leaf
             || db != 1
             || self.state.stash.len() != cfg.max_stash * eb
             || path_bits.len() != path_width
@@ -607,6 +690,8 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
             || schedule.num_inputs != cfg.access_params()
             || (cfg.encrypted && !matches!(evaluator_key, Some(bits) if bits.len() == 64))
             || (!cfg.encrypted && evaluator_key.is_some())
+            || (cfg.versioned_pads && path_versions.len() != cfg.levels)
+            || (!cfg.versioned_pads && !path_versions.is_empty())
         {
             return Err(MpcError::BadPartition);
         }
@@ -628,6 +713,9 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         if cfg.encrypted {
             inputs.extend(vec![SplitInput::Garbler; 64]);
             inputs.extend(vec![SplitInput::Evaluator; 64]);
+        }
+        if cfg.versioned_pads {
+            inputs.extend(vec![SplitInput::Public; cfg.levels * cfg.version_bits]);
         }
         let mut public = Vec::with_capacity(1 + usize::from(!write) + lb * 2 + 1);
         public.push(write);

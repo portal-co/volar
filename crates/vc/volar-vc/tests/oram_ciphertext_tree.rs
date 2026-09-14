@@ -52,11 +52,28 @@ fn ciphertext_path_commit_is_single_use_and_epoch_bound() {
 }
 
 #[test]
-fn tree_rejects_modes_without_split_key_formatter() {
+fn encrypted_valid_requires_formatter_and_versioned_commits_advance_path_versions() {
     let mut cfg = cfg();
     cfg.encrypt_valid = true;
-    assert!(CiphertextTree::<Z>::new(&cfg).is_err());
+    let tree = CiphertextTree::<Z>::new(&cfg).expect("formatter-capable tree");
+    assert!(
+        tree.open(0).is_err(),
+        "unformatted encrypted-valid tree fails closed"
+    );
+
     cfg.encrypt_valid = false;
     cfg.versioned_pads = true;
-    assert!(CiphertextTree::<Z>::new(&cfg).is_err());
+    cfg.version_bits = 8;
+    let mut tree = CiphertextTree::<Z>::new(&cfg).expect("versioned tree");
+    assert_eq!(
+        tree.path_versions(0).expect("versions"),
+        vec![0; cfg.levels]
+    );
+    let open = tree.open(0).expect("open versioned path");
+    let writeback = open.bits().to_vec();
+    tree.commit(open, &writeback).expect("versioned commit");
+    assert_eq!(
+        tree.path_versions(0).expect("versions"),
+        vec![1; cfg.levels]
+    );
 }

@@ -110,13 +110,18 @@ Migrate `Oram2pc::run_access` in this order:
    single-use, width-checked, leaf-bound, and epoch-bound before mutation.
    Unsupported formatter/version modes fail closed.
 6. Bind both key-bearing drivers and the prepared tree access to the split AES
-   access circuit. **Completed for the current lazy/non-versioned encrypted
-   shape:** the role-local drivers invoke `build_access` with 128 garbler
-   input bases, garbler 64-bit key input, evaluator 64-bit OT input, and
-   evaluator-owned ciphertext-path OT inputs. The evaluator commits its
-   consuming prepared path before acknowledging success; the garbler advances
-   only after that acknowledgement. The TCP test proves both key epochs and
-   the tree epoch advance together. Packed held-material encryption remains
-   the next durable-material phase.
-7. Build the paired `HeldMaterialStore` adapters on top of the completed
+   access circuit. **Completed:** role-local drivers invoke `build_access`
+   with 128 garbler input bases, garbler 64-bit key input, evaluator 64-bit OT
+   input, evaluator ciphertext-path OT inputs, and public path-version inputs.
+   The evaluator commits its consuming prepared path before acknowledging
+   success; the garbler advances only after that acknowledgement. TCP coverage
+   proves both key epochs, tree epoch, and versioned path counters advance
+   together.
+7. Encrypted-valid formatting is now a separate split formatter circuit:
+   `build_tree_node_formatter` consumes the same 64/64 key partition and emits
+   ciphertext dummy buckets. `CiphertextTree` refuses encrypted-valid opens
+   until every public tree node has a formatter output installed. Versioned
+   pads use evaluator-owned public node counters, validated on prepare and
+   bumped only on successful commit.
+8. Build the paired `HeldMaterialStore` adapters on top of the completed
    boundary phase, then replace `MemoryHeldStore` in the TCP acceptance test.
