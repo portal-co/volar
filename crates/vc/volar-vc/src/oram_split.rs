@@ -13,6 +13,8 @@ use alloc::vec::Vec;
 use digest::Digest;
 use volar_mpc::strict_split::{SplitEvaluator, SplitGarbler, SplitInput, SplitOutput};
 use volar_mpc::{GateSchedule, MpcError, OtChannel, Transport};
+
+use crate::oram_gadget::OramGadgetConfig;
 use volar_spec::garble::{Eval, Garble, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
@@ -105,6 +107,49 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
         &self.state
     }
 
+    /// Run the ORAM posmap-update circuit. The old physical leaf is explicitly
+    /// revealed; the replacement posmap remains opaque role-local state.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_begin<D: Digest>(
+        &mut self,
+        cfg: &OramGadgetConfig,
+        schedule: &GateSchedule,
+        addr_slots: &[usize],
+        new_leaf_bases: Vec<Garble<N>>,
+        new_leaf_bits: &[bool],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<u64, MpcError> {
+        if cfg.keyed_leaf
+            || self.state.posmap.len() != cfg.num_addrs * cfg.leaf_bits()
+            || addr_slots.len() != cfg.addr_bits()
+            || new_leaf_bases.len() != cfg.leaf_bits()
+            || new_leaf_bits.len() != cfg.leaf_bits()
+            || schedule.num_inputs != cfg.begin_params()
+        {
+            return Err(MpcError::BadPartition);
+        }
+        let mut bases = self.state.posmap.clone();
+        bases.extend(addr_slots.iter().map(|&slot| self.state.tape[slot].clone()));
+        bases.extend(new_leaf_bases);
+        let mut inputs = vec![SplitInput::Held; self.state.posmap.len() + addr_slots.len()];
+        inputs.extend(vec![SplitInput::Garbler; cfg.leaf_bits()]);
+        let mut outputs = vec![SplitOutput::Reveal; cfg.leaf_bits()];
+        outputs.extend(vec![SplitOutput::Opaque; self.state.posmap.len()]);
+        let result = self.runner.run_with_state::<D>(
+            schedule,
+            bases,
+            &inputs,
+            &[],
+            new_leaf_bits,
+            &outputs,
+            transport,
+            ot,
+        )?;
+        self.state.posmap = result.output_bases[cfg.leaf_bits()..].to_vec();
+        Ok(bits_to_u64(&result.revealed))
+    }
+
     /// Replace one legacy `Stage::Compute` invocation. All tape inputs and
     /// outputs are opaque held wires: the evaluator never returns labels to
     /// the garbler, and the next stage reuses the exact relation.
@@ -154,6 +199,42 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         &self.state
     }
 
+    /// Evaluator half of [`SplitOramGarbler::run_begin`]. Only the physical
+    /// old leaf is returned; replacement posmap labels remain evaluator-local.
+    pub fn run_begin<D: Digest>(
+        &mut self,
+        cfg: &OramGadgetConfig,
+        schedule: &GateSchedule,
+        addr_slots: &[usize],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<u64, MpcError> {
+        if cfg.keyed_leaf
+            || self.state.posmap.len() != cfg.num_addrs * cfg.leaf_bits()
+            || addr_slots.len() != cfg.addr_bits()
+            || schedule.num_inputs != cfg.begin_params()
+        {
+            return Err(MpcError::BadPartition);
+        }
+        let mut held = self.state.posmap.clone();
+        held.extend(addr_slots.iter().map(|&slot| self.state.tape[slot].clone()));
+        let mut inputs = vec![SplitInput::Held; held.len()];
+        inputs.extend(vec![SplitInput::Garbler; cfg.leaf_bits()]);
+        let mut outputs = vec![SplitOutput::Reveal; cfg.leaf_bits()];
+        outputs.extend(vec![SplitOutput::Opaque; self.state.posmap.len()]);
+        let (labels, revealed) = self.runner.run_with_state::<D>(
+            schedule,
+            &inputs,
+            &[],
+            &held,
+            &outputs,
+            transport,
+            ot,
+        )?;
+        self.state.posmap = labels[cfg.leaf_bits()..].to_vec();
+        Ok(bits_to_u64(&revealed))
+    }
+
     /// Evaluator half of [`SplitOramGarbler::run_compute`].
     pub fn run_compute<D: Digest>(
         &mut self,
@@ -168,7 +249,7 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         }
         let inputs = vec![SplitInput::Held; self.state.tape.len()];
         let outputs = vec![SplitOutput::Opaque; self.state.tape.len()];
-        self.state.tape = self.runner.run_with_state::<D>(
+        let (labels, _revealed) = self.runner.run_with_state::<D>(
             schedule,
             &inputs,
             &[],
@@ -177,6 +258,13 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
             transport,
             ot,
         )?;
+        self.state.tape = labels;
         Ok(())
     }
+}
+
+fn bits_to_u64(bits: &[bool]) -> u64 {
+    bits.iter()
+        .enumerate()
+        .fold(0u64, |value, (bit, set)| value | ((*set as u64) << bit))
 }

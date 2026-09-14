@@ -88,7 +88,10 @@ Migrate `Oram2pc::run_access` in this order:
    remains unchanged until the begin/access/evict path is migrated.
 2. Extend those role-local types with posmap/stash initialization and migrate
    `build_begin`; its old leaf must be a deliberate revealed output while the
-   replacement posmap is opaque.
+   replacement posmap is opaque. **Completed for non-keyed leaves:**
+   `SplitOram*::run_begin` has TCP/OT coverage, returns only the public old
+   physical leaf, and retains its updated posmap in distinct role-local state.
+   The keyed-leaf variant remains with the later split-key migration.
 3. Give the evaluator a ciphertext-tree adapter and explicit path
    request/read/write frames, validating widths/version before circuit input.
 4. Feed the separate AES halves to each access and use packed held-material

@@ -82,7 +82,7 @@ fn held_input_reuses_split_opaque_output_over_tcp() {
     let mut rng = SeedRng::new(0x5B_11CE);
     let mut ot = NetOtChannel::new(transport, OtRole::Receiver, &mut rng);
     let runner = SplitEvaluator::<N>::new();
-    let first = runner
+    let (first, _revealed) = runner
         .run_with_state::<D>(
             &xor_schedule(),
             &[SplitInput::Garbler, SplitInput::Evaluator],
@@ -93,7 +93,7 @@ fn held_input_reuses_split_opaque_output_over_tcp() {
             &mut ot,
         )
         .expect("opaque round");
-    let second = runner
+    let (second, revealed) = runner
         .run_with_state::<D>(
             &xor_schedule(),
             &[SplitInput::Held, SplitInput::Public],
@@ -105,5 +105,6 @@ fn held_input_reuses_split_opaque_output_over_tcp() {
         )
         .expect("held round");
     assert_eq!(second.len(), 1);
+    assert_eq!(revealed, vec![true]);
     garbler.join().expect("garbler join");
 }

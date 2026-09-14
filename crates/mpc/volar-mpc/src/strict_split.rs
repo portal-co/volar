@@ -427,7 +427,7 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
         outputs: &[SplitOutput],
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
-    ) -> Result<Vec<Eval<N>>, MpcError> {
+    ) -> Result<(Vec<Eval<N>>, Vec<bool>), MpcError> {
         if inputs.len() != schedule.num_inputs || outputs.len() != schedule.output_wires().len() {
             return Err(MpcError::BadPartition);
         }
@@ -487,7 +487,7 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
             .collect();
         transport.send(&SessionFrame::OutputLabels(revealed).encode());
         match SessionFrame::decode(&transport.recv()) {
-            Some(SessionFrame::VerdictBits(_)) => Ok(output_labels),
+            Some(SessionFrame::VerdictBits(revealed)) => Ok((output_labels, revealed)),
             Some(SessionFrame::Verdict(Err(()))) => Err(MpcError::DecodeFailure),
             _ => Err(MpcError::UnexpectedMessage),
         }
