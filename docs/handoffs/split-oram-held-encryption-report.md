@@ -82,9 +82,13 @@ Migrate `Oram2pc::run_access` in this order:
 1. Split the current `Oram2pc` combined harness into a paired
    `SplitOramGarbler` / `SplitOramEvaluator` driver and replace its
    `run_circuit` calls with `run_with_state`, using `SplitOutput::Opaque` for
-   tape/posmap/stash. **The invocation and state primitives are now available;
-   the legacy one-process harness must not be relabelled as this migration.**
-2. Split `HeldState` into role-local posmap/stash types.
+   tape/posmap/stash. The new `oram_split` module has migrated the
+   tape-to-tape `Compute` segment with separate `GarblerOramState` and
+   `EvaluatorOramState`, validated over TCP/OT. The legacy one-process harness
+   remains unchanged until the begin/access/evict path is migrated.
+2. Extend those role-local types with posmap/stash initialization and migrate
+   `build_begin`; its old leaf must be a deliberate revealed output while the
+   replacement posmap is opaque.
 3. Give the evaluator a ciphertext-tree adapter and explicit path
    request/read/write frames, validating widths/version before circuit input.
 4. Feed the separate AES halves to each access and use packed held-material
