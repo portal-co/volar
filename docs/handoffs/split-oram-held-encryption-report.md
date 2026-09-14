@@ -192,3 +192,22 @@ output, flushes and prefetches encrypted material through real network OT, and
 uses it in a later `Held` circuit round. The adapter accepts any `OtChannel`;
 a Ferret-backed channel applies its lower-communication extension without a
 second adapter path.
+
+## Real module storage probes
+
+Two concrete real-front-end probes now exercise the same ORAM lowering seam:
+
+- **Wasm:** a WAT module storing then loading an `i32` from linear memory;
+- **LLVM:** an imported LLVM IR module using `alloca`, `store`, and `load` on
+  an `i32` stack slot.
+
+Both pass through their normal frontend → VAFFLE → IR → boolar pipeline and
+then `storage_to_oram`, which proves the storage accesses are not a
+hand-assembled boolar fixture. With the current small, safe probe geometry
+(`levels=4`, `Z=2`, `64` narrowed cells, `stash=96`), the probes report 128
+bit-cell ORAM accesses: Wasm has a 1,250-bit tape and LLVM has a 972-bit tape.
+They preserve the whole input `i32` through store/load. This is a correctness
+and sizing baseline, **not** a performance claim for rustls: the next
+measurement needs to drive a realistic storage-bearing guest through the
+networked durable material adapters and compare base OT/Ferret channel bytes
+and round count.

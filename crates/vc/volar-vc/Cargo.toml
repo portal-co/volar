@@ -33,6 +33,8 @@ portal-pc-waffle-frontend.workspace = true
 volar-ir-opt.workspace = true
 volar-fuzz.workspace = true
 wat = "1.212.0"
+volar-llvm-vaffle-import = { path = "../../../../volar-ir/crates/frontends/volar-llvm-vaffle-import" }
+inkwell.workspace = true
 # Live-TLS integration test: a real rustls server on loopback.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.13"
