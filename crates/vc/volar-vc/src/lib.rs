@@ -81,6 +81,8 @@ pub mod partition;
 pub mod schedule;
 pub mod sha_gadget;
 pub mod tls13;
+pub mod tls13_extern;
+pub mod tls13_held;
 pub mod tls13_2pc;
 #[cfg(feature = "std")]
 pub mod tls13_2pc_correlate;
