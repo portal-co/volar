@@ -42,6 +42,12 @@ fn resident_reads_do_not_need_another_open() {
     cache.mark_open(7);
     assert!(!cache.needs_open(7));
     assert_eq!(cache.resident_slots(), 1);
+    cache.evict(7);
+    assert!(
+        cache.needs_open(7),
+        "a persistence boundary invalidates cache"
+    );
+    assert_eq!(cache.resident_slots(), 0);
 }
 
 #[test]

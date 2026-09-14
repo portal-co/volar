@@ -47,11 +47,17 @@ fn flush_ops() -> [StorageOperation; 1] {
     }]
 }
 
-fn prefetch_ops() -> [StorageOperation; 1] {
-    [StorageOperation::Load {
-        slot: 0,
-        owner: MaterialRole::Both,
-    }]
+fn repeated_prefetch_ops() -> [StorageOperation; 2] {
+    [
+        StorageOperation::Load {
+            slot: 0,
+            owner: MaterialRole::Both,
+        },
+        StorageOperation::Load {
+            slot: 0,
+            owner: MaterialRole::Both,
+        },
+    ]
 }
 
 #[test]
@@ -93,9 +99,9 @@ fn encrypted_role_local_material_survives_a_later_held_round_over_tcp() {
             .run_storage_phase::<D>(&flush_ops(), &mut session, &mut ot)
             .expect("encrypt material");
         chain
-            .run_storage_phase::<D>(&prefetch_ops(), &mut session, &mut ot)
-            .expect("open material");
-        chain
+            .run_storage_phase::<D>(&repeated_prefetch_ops(), &mut session, &mut ot)
+            .expect("open material once and reuse resident cache");
+        let output = chain
             .run_round::<D, _>(
                 &g_consume,
                 &[ChainFeed::Held(0), ChainFeed::Held(0)],
@@ -105,7 +111,9 @@ fn encrypted_role_local_material_survives_a_later_held_round_over_tcp() {
                 &mut session,
                 &mut ot,
             )
-            .expect("consume opened base")
+            .expect("consume opened base");
+        let metrics = chain.into_held().metrics();
+        (output, metrics)
     });
 
     let transport = TcpTransport::connect(&address.to_string()).expect("connect");
@@ -129,8 +137,8 @@ fn encrypted_role_local_material_survives_a_later_held_round_over_tcp() {
         .run_storage_phase::<D>(&flush_ops(), &mut session, &mut ot)
         .expect("encrypt material");
     chain
-        .run_storage_phase::<D>(&prefetch_ops(), &mut session, &mut ot)
-        .expect("open material");
+        .run_storage_phase::<D>(&repeated_prefetch_ops(), &mut session, &mut ot)
+        .expect("open material once and reuse resident cache");
     let evaluator = chain
         .run_round::<D, _>(
             &consume,
@@ -142,6 +150,18 @@ fn encrypted_role_local_material_survives_a_later_held_round_over_tcp() {
             &mut ot,
         )
         .expect("consume opened label");
+    let evaluator_metrics = chain.into_held().metrics();
     assert_eq!(evaluator, vec![false]);
-    assert_eq!(garbler.join().expect("garbler join"), vec![false]);
+    let (garbler_output, garbler_metrics) = garbler.join().expect("garbler join");
+    assert_eq!(garbler_output, vec![false]);
+    // One paired store and the first paired load run four material blocks per
+    // role (one seal and one open for each role-local stream). The duplicate
+    // paired load hits the explicit resident cache and starts no AES/OT work.
+    for metrics in [garbler_metrics, evaluator_metrics] {
+        assert_eq!(metrics.material_blocks, 4);
+        assert_eq!(metrics.seals, 2);
+        assert_eq!(metrics.opens, 2);
+        assert_eq!(metrics.cache_hits, 1);
+        assert_eq!(metrics.cache_hit_rate(), Some((1, 2)));
+    }
 }

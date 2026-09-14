@@ -119,6 +119,12 @@ impl MaterialBlockCachePlan {
         self.resident.insert(slot);
         self.dirty_blocks.insert(self.layout.block_for(slot));
     }
+    /// Forget a resident value at an explicit persistence boundary. A later
+    /// read will require opening its public packed block again.
+    pub fn evict(&mut self, slot: usize) {
+        self.resident.remove(&slot);
+    }
+
     /// Return each dirty packed block once, in public block-index order.
     pub fn take_flush_blocks(&mut self) -> Vec<usize> {
         core::mem::take(&mut self.dirty_blocks)

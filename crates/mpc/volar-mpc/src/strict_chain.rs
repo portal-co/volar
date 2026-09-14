@@ -354,10 +354,11 @@ fn material_load<N: VoleArray<u8>, S: HeldMaterialStore<T, N>, T, D: Digest>(
     ot: &mut dyn OtChannel<N>,
 ) -> Result<(), MpcError> {
     match owner {
-        MaterialRole::Both => {
-            held.prefetch::<D>(slot, MaterialRole::Garbler, transport, ot)?;
-            held.prefetch::<D>(slot, MaterialRole::Evaluator, transport, ot)
-        }
+        // A paired backing may cache a complete logical slot only when it sees
+        // both role-local streams together. Invoke it once so it can skip the
+        // entire paired protocol on a cache hit; splitting this into two calls
+        // can leave one peer waiting for the other's AES/OT frames.
+        MaterialRole::Both => held.prefetch::<D>(slot, MaterialRole::Both, transport, ot),
         role => held.prefetch::<D>(slot, role, transport, ot),
     }
 }
@@ -420,6 +421,13 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainGarbler<N, S> {
     /// Largest logical held slot touched by the injected material adapter.
     pub fn held_address_span(&self) -> usize {
         self.held.address_span()
+    }
+
+    /// Consume the driver and return its role-local material backing. This is
+    /// useful for public post-session accounting; it does not expose opaque
+    /// values through the chain protocol.
+    pub fn into_held(self) -> S {
+        self.held
     }
 
     fn held_get<D: Digest>(
@@ -709,6 +717,13 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainEvaluator<N, S> {
     /// Largest logical held slot touched by the injected material adapter.
     pub fn held_address_span(&self) -> usize {
         self.held.address_span()
+    }
+
+    /// Consume the driver and return its role-local material backing. This is
+    /// useful for public post-session accounting; it does not expose opaque
+    /// values through the chain protocol.
+    pub fn into_held(self) -> S {
+        self.held
     }
 
     fn held_get<D: Digest>(

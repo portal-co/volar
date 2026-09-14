@@ -24,11 +24,35 @@ use crate::oram_gadget::{
     build_material_seal_evaluator_block, build_material_seal_garbler_block,
     material_block_tweak_checked,
 };
-use crate::oram_material::{MATERIAL_BLOCK_BITS, MaterialBlockProtocol};
+use crate::oram_material::{
+    MATERIAL_BLOCK_BITS, MaterialBlockCachePlan, MaterialBlockLayout, MaterialBlockProtocol,
+};
 
 const BLOCK_BYTES: usize = 16;
 const GARBLER_REGION: u8 = 0;
 const EVALUATOR_REGION: u8 = 1;
+
+/// Public execution-shape counters for one role-local durable material store.
+/// They contain no labels, keys, plaintext, or OT contents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaterialStoreMetrics {
+    /// AES material circuits actually run (one per encrypted 16-byte block).
+    pub material_blocks: u64,
+    /// Opening circuits actually run.
+    pub opens: u64,
+    /// Sealing circuits actually run.
+    pub seals: u64,
+    /// Complete paired loads skipped because the slot was already resident.
+    pub cache_hits: u64,
+}
+
+impl MaterialStoreMetrics {
+    /// Cache-hit ratio over completed paired-load requests, if any occurred.
+    pub fn cache_hit_rate(self) -> Option<(u64, u64)> {
+        let requests = self.opens / 2 + self.cache_hits;
+        (requests != 0).then_some((self.cache_hits, requests))
+    }
+}
 
 pub struct GarblerSplitKeyMaterialStore<N: VoleArray<u8>> {
     runner: SplitGarbler<N>,
@@ -37,8 +61,10 @@ pub struct GarblerSplitKeyMaterialStore<N: VoleArray<u8>> {
     circuits: Circuits,
     staged: BTreeMap<usize, Garble<N>>,
     cached: BTreeMap<usize, Garble<N>>,
+    cache: MaterialBlockCachePlan,
     versions: BTreeMap<(u8, usize), u64>,
     high_water: usize,
+    metrics: MaterialStoreMetrics,
 }
 
 pub struct EvaluatorSplitKeyMaterialStore<N: VoleArray<u8>> {
@@ -47,9 +73,11 @@ pub struct EvaluatorSplitKeyMaterialStore<N: VoleArray<u8>> {
     circuits: Circuits,
     staged: BTreeMap<usize, Eval<N>>,
     cached: BTreeMap<usize, Eval<N>>,
+    cache: MaterialBlockCachePlan,
     ciphertexts: BTreeMap<(u8, usize), Vec<u8>>,
     versions: BTreeMap<(u8, usize), u64>,
     high_water: usize,
+    metrics: MaterialStoreMetrics,
 }
 
 struct Circuits {
@@ -100,13 +128,32 @@ impl<N: VoleArray<u8>> GarblerSplitKeyMaterialStore<N> {
             circuits: Circuits::new()?,
             staged: BTreeMap::new(),
             cached: BTreeMap::new(),
+            cache: label_cache_plan::<N>()?,
             versions: BTreeMap::new(),
             high_water: 0,
+            metrics: MaterialStoreMetrics::default(),
         })
     }
 
+    /// Snapshot public durable-material work counters for this role.
+    pub fn metrics(&self) -> MaterialStoreMetrics {
+        self.metrics
+    }
+
+    fn count_block(&mut self, direction: MaterialBlockDirection) {
+        self.metrics.material_blocks += 1;
+        if matches!(
+            direction,
+            MaterialBlockDirection::OpenGarbler | MaterialBlockDirection::OpenEvaluator
+        ) {
+            self.metrics.opens += 1;
+        } else {
+            self.metrics.seals += 1;
+        }
+    }
+
     fn run<D: Digest>(
-        &self,
+        &mut self,
         direction: MaterialBlockDirection,
         slot: usize,
         version: u64,
@@ -114,6 +161,7 @@ impl<N: VoleArray<u8>> GarblerSplitKeyMaterialStore<N> {
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<Vec<u8>, MpcError> {
+        self.count_block(direction);
         let protocol = MaterialBlockProtocol::for_direction(direction);
         let tweak = tweak(region(direction), slot, version)?;
         let mut bases = self.key_bases.clone();
@@ -155,14 +203,33 @@ impl<N: VoleArray<u8>> EvaluatorSplitKeyMaterialStore<N> {
             circuits: Circuits::new()?,
             staged: BTreeMap::new(),
             cached: BTreeMap::new(),
+            cache: label_cache_plan::<N>()?,
             ciphertexts: BTreeMap::new(),
             versions: BTreeMap::new(),
             high_water: 0,
+            metrics: MaterialStoreMetrics::default(),
         })
     }
 
+    /// Snapshot public durable-material work counters for this role.
+    pub fn metrics(&self) -> MaterialStoreMetrics {
+        self.metrics
+    }
+
+    fn count_block(&mut self, direction: MaterialBlockDirection) {
+        self.metrics.material_blocks += 1;
+        if matches!(
+            direction,
+            MaterialBlockDirection::OpenGarbler | MaterialBlockDirection::OpenEvaluator
+        ) {
+            self.metrics.opens += 1;
+        } else {
+            self.metrics.seals += 1;
+        }
+    }
+
     fn run<D: Digest>(
-        &self,
+        &mut self,
         direction: MaterialBlockDirection,
         material: &[u8],
         transport: &mut dyn Transport,
@@ -171,6 +238,7 @@ impl<N: VoleArray<u8>> EvaluatorSplitKeyMaterialStore<N> {
         if material.len() != BLOCK_BYTES {
             return Err(MpcError::BadPartition);
         }
+        self.count_block(direction);
         let protocol = MaterialBlockProtocol::for_direction(direction);
         let mut evaluator_bits = self.key_half.to_vec();
         if direction != MaterialBlockDirection::SealGarbler {
@@ -232,11 +300,25 @@ impl<N: VoleArray<u8>> HeldMaterialStore<Garble<N>, N> for GarblerSplitKeyMateri
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<(), MpcError> {
+        if owner == MaterialRole::Both {
+            if !self.cache.needs_open(slot) {
+                self.metrics.cache_hits += 1;
+                return Ok(());
+            }
+            self.prefetch::<D>(slot, MaterialRole::Garbler, transport, ot)?;
+            return self.prefetch::<D>(slot, MaterialRole::Evaluator, transport, ot);
+        }
         let direction = match owner {
             MaterialRole::Garbler => MaterialBlockDirection::OpenGarbler,
             MaterialRole::Evaluator => MaterialBlockDirection::OpenEvaluator,
-            MaterialRole::Both => return Err(MpcError::BadPartition),
+            MaterialRole::Both => unreachable!("handled paired material load"),
         };
+        // This adapter only retains garbler bases. The paired evaluator
+        // operation still runs, so it must not consume this cache entry.
+        let owns_cached_material = direction == MaterialBlockDirection::OpenGarbler;
+        if owns_cached_material && !self.cache.needs_open(slot) {
+            return Ok(());
+        }
         let region = region(direction);
         let version = *self
             .versions
@@ -250,6 +332,9 @@ impl<N: VoleArray<u8>> HeldMaterialStore<Garble<N>, N> for GarblerSplitKeyMateri
                     base: Array::from_fn(|i| block[i]),
                 },
             );
+        }
+        if owns_cached_material {
+            self.cache.mark_open(slot);
         }
         Ok(())
     }
@@ -280,6 +365,9 @@ impl<N: VoleArray<u8>> HeldMaterialStore<Garble<N>, N> for GarblerSplitKeyMateri
         };
         let _ = self.run::<D>(direction, slot, version, &material, transport, ot)?;
         self.versions.insert((region, slot), version);
+        self.cache.mark_write(slot);
+        self.cache.evict(slot);
+        self.cached.remove(&slot);
         self.high_water = self.high_water.max(slot.saturating_add(1));
         Ok(())
     }
@@ -324,10 +412,25 @@ impl<N: VoleArray<u8>> HeldMaterialStore<Eval<N>, N> for EvaluatorSplitKeyMateri
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<(), MpcError> {
+        if owner == MaterialRole::Both {
+            if !self.cache.needs_open(slot) {
+                self.metrics.cache_hits += 1;
+                return Ok(());
+            }
+            self.prefetch::<D>(slot, MaterialRole::Garbler, transport, ot)?;
+            return self.prefetch::<D>(slot, MaterialRole::Evaluator, transport, ot);
+        }
         let direction = match owner {
-            MaterialRole::Garbler | MaterialRole::Both => MaterialBlockDirection::OpenGarbler,
+            MaterialRole::Garbler => MaterialBlockDirection::OpenGarbler,
             MaterialRole::Evaluator => MaterialBlockDirection::OpenEvaluator,
+            MaterialRole::Both => unreachable!("handled paired material load"),
         };
+        // This adapter only retains evaluator labels. Opening a garbler base
+        // is still a paired protocol operation, not an evaluator-cache hit.
+        let owns_cached_material = matches!(owner, MaterialRole::Evaluator | MaterialRole::Both);
+        if owns_cached_material && !self.cache.needs_open(slot) {
+            return Ok(());
+        }
         let key = (region(direction), slot);
         let ciphertext = self
             .ciphertexts
@@ -342,6 +445,9 @@ impl<N: VoleArray<u8>> HeldMaterialStore<Eval<N>, N> for EvaluatorSplitKeyMateri
                     target: Array::from_fn(|i| block[i]),
                 },
             );
+        }
+        if owns_cached_material {
+            self.cache.mark_open(slot);
         }
         Ok(())
     }
@@ -371,6 +477,9 @@ impl<N: VoleArray<u8>> HeldMaterialStore<Eval<N>, N> for EvaluatorSplitKeyMateri
         self.ciphertexts
             .insert((region(direction), slot), ciphertext);
         self.versions.insert((region(direction), slot), version);
+        self.cache.mark_write(slot);
+        self.cache.evict(slot);
+        self.cached.remove(&slot);
         self.high_water = self.high_water.max(slot.saturating_add(1));
         Ok(())
     }
@@ -383,6 +492,12 @@ impl<N: VoleArray<u8>> HeldMaterialStore<Eval<N>, N> for EvaluatorSplitKeyMateri
     fn address_span(&self) -> usize {
         self.high_water
     }
+}
+
+fn label_cache_plan<N: VoleArray<u8>>() -> Result<MaterialBlockCachePlan, MpcError> {
+    MaterialBlockLayout::new(N::USIZE)
+        .map(MaterialBlockCachePlan::new)
+        .ok_or(MpcError::BadPartition)
 }
 
 fn region(direction: MaterialBlockDirection) -> u8 {

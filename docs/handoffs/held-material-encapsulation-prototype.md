@@ -52,6 +52,26 @@ circuits (while still costing more than one block). This removes duplicated
 key-expansion S-box work, but SubBytes/MixColumns remain necessarily linear in
 the number of plaintext blocks.
 
+### Adapter cache boundary and public accounting
+
+The paired split-key adapters now own a `MaterialBlockCachePlan` for the
+current label width. A `MaterialRole::Both` load is one cacheable, paired
+protocol operation: a repeated load of a resident slot starts neither AES nor
+OT. A flush explicitly evicts the slot after sealing, so later loads cannot
+mistake a stale role-local label for the newly persisted material. The chain
+storage dispatcher invokes a paired load once rather than independently
+asking each role stream; this preserves lockstep framing when the complete
+paired operation is skipped.
+
+`MaterialStoreMetrics` reports only public execution shape: material blocks,
+opens, seals, and paired-load cache hits. The TCP round-trip test performs one
+paired seal, two identical paired loads, and a held round; each role reports
+four material circuits (two seals, two opens) and one cache hit out of two
+paired requests. This is intentionally **not** a packed-block writeback yet:
+current `U16` labels remain exactly one AES block, so a narrower proven opaque
+representation is required before dirty slots can collapse into one physical
+seal.
+
 ### CFG-style repeated material step
 
 `build_material_block_loop_step(counter_bits)` processes one material block
@@ -93,9 +113,9 @@ remains superior and requires no remap circuit.
    consume all 16 bytes. Packing helps only after a new fixed-width compressed
    or encapsulated representation is defined and proven to preserve garbling
    semantics.
-2. **The multi-block circuit does not share AES key expansion.** It has one
-   public key input but currently inlines independent AES instances, so AND
-   count remains linear in `n`.
+2. **Shared key expansion does not make AES rounds sublinear.** The multi-block
+   circuit removes duplicated key-schedule S-boxes, but its per-block
+   SubBytes/MixColumns work (and therefore most table work) remains linear.
 3. **The CFG loop does not lower total cryptographic cost.** It trades peak
    memory for sequential circuit invocations. It needs the revealed
    termination policy audited for the concrete guest protocol.
@@ -115,9 +135,10 @@ remains superior and requires no remap circuit.
 2. Choose a fixed, narrower opaque durable representation (or an
    encapsulation construction) and prove pack/unpack plus deferred remapping
    preserve the garbling relation.
-3. Integrate `MaterialBlockCachePlan` into the paired durable adapters, with
-   block-granular dirty flush and explicit cache eviction at persistence
-   boundaries.
-4. Drive a real storage-bearing module through the networked adapter using
-   both `NetOtChannel` and a Ferret-backed `OtChannel`; report table bytes, OT
-   bytes, number of material blocks, cache hit rate, and termination rounds.
+3. Extend the now-landed resident cache to block-granular packed writeback once
+   that narrower representation exists; retain explicit eviction at each
+   persistence boundary.
+4. Add a network `OtChannel` backed by the repository's Ferret stack, then
+   drive a real storage-bearing module through both it and `NetOtChannel`;
+   report table bytes, OT bytes, number of material blocks, cache hit rate,
+   and termination rounds.
