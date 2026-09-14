@@ -1,7 +1,7 @@
 //! Network test for role-private strict outputs. The conversion primitive is
 //! used to move raw garbling-label bytes into/out of split-key encrypted ORAM:
-//! garbler material returns only to the garbler, evaluator material only to the
-//! evaluator. No loopback OT or shared in-process transport is involved.
+//! each role persists only its local material and neither output path decodes a
+//! Boolean value. No loopback OT or shared in-process transport is involved.
 
 use std::thread;
 

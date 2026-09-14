@@ -65,8 +65,8 @@ pub enum ChainOut {
     /// Thread through the configured role-local material store (never decoded).
     Hold(usize),
     /// Persist only the garbler's raw false-label base at `slot`. The
-    /// evaluator returns its active output label for exact-match validation,
-    /// then discards it; no logical bit is decoded or sent back.
+    /// evaluator retains its matching active label locally; it is not returned
+    /// to the garbler, so neither party decodes the logical bit.
     GarblerMaterial(usize),
     /// Persist only the evaluator's active output label at `slot`. Nothing is
     /// sent to the garbler; no logical bit is decoded.
@@ -205,11 +205,26 @@ pub trait ChainParty<N: VoleArray<u8>> {
 /// default [`MemoryHeldStore`] exists only for compatibility and small tests;
 /// network deployments must inject a durable role-local backing with
 /// [`ChainGarbler::with_held_store`] / [`ChainEvaluator::with_held_store`].
-pub trait HeldMaterialStore<T> {
-    /// Load one opaque role-local material item.
-    fn load(&mut self, slot: usize) -> Option<T>;
-    /// Persist one opaque role-local material item.
-    fn store(&mut self, slot: usize, value: T);
+pub trait HeldMaterialStore<T, N: VoleArray<u8>> {
+    /// Load one opaque role-local material item. Both roles invoke this before
+    /// a strict round's ordinary frames begin, so a durable adapter may run a
+    /// request/response fetch on the strict transport and its OT channel.
+    fn load(
+        &mut self,
+        slot: usize,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<Option<T>, MpcError>;
+    /// Persist one opaque role-local material item. Both roles invoke this at
+    /// the corresponding output position, so a durable adapter may run a
+    /// split-key encrypted ORAM write before the next strict round.
+    fn store(
+        &mut self,
+        slot: usize,
+        value: Option<T>,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError>;
     /// Number of initialized logical slots, for public resource accounting.
     fn len(&self) -> usize;
     /// Physical capacity consumed by the backing, for public accounting.
@@ -235,14 +250,28 @@ impl<T> Default for MemoryHeldStore<T> {
     }
 }
 
-impl<T: Clone> HeldMaterialStore<T> for MemoryHeldStore<T> {
-    fn load(&mut self, slot: usize) -> Option<T> {
-        self.values.get(&slot).cloned()
+impl<T: Clone, N: VoleArray<u8>> HeldMaterialStore<T, N> for MemoryHeldStore<T> {
+    fn load(
+        &mut self,
+        slot: usize,
+        _: &mut dyn Transport,
+        _: &mut dyn OtChannel<N>,
+    ) -> Result<Option<T>, MpcError> {
+        Ok(self.values.get(&slot).cloned())
     }
 
-    fn store(&mut self, slot: usize, value: T) {
-        self.values.insert(slot, value);
-        self.high_water = self.high_water.max(slot.saturating_add(1));
+    fn store(
+        &mut self,
+        slot: usize,
+        value: Option<T>,
+        _: &mut dyn Transport,
+        _: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        if let Some(value) = value {
+            self.values.insert(slot, value);
+            self.high_water = self.high_water.max(slot.saturating_add(1));
+        }
+        Ok(())
     }
 
     fn len(&self) -> usize {
@@ -276,7 +305,7 @@ impl<N: VoleArray<u8>> ChainGarbler<N> {
     }
 }
 
-impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainGarbler<N, S> {
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainGarbler<N, S> {
     /// Construct a garbler role with an injected role-local material backing.
     pub fn with_held_store(secret: GlobalSecret<N>, held: S) -> Self {
         Self {
@@ -302,12 +331,25 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainGarbler<N, S> {
         self.held.address_span()
     }
 
-    fn held_get(&mut self, slot: usize) -> Result<Garble<N>, MpcError> {
-        self.held.load(slot).ok_or(MpcError::MalformedSchedule)
+    fn held_get(
+        &mut self,
+        slot: usize,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<Garble<N>, MpcError> {
+        self.held
+            .load(slot, transport, ot)?
+            .ok_or(MpcError::MalformedSchedule)
     }
 
-    fn held_set(&mut self, slot: usize, value: Garble<N>) {
-        self.held.store(slot, value);
+    fn held_set(
+        &mut self,
+        slot: usize,
+        value: Option<Garble<N>>,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        self.held.store(slot, value, transport, ot)
     }
 
     /// Snapshot public execution-shape counters.
@@ -327,7 +369,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainGarbler<N, S> {
     }
 }
 
-impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainParty<N> for ChainGarbler<N, S> {
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainParty<N> for ChainGarbler<N, S> {
     fn run_round<D: Digest, T: Transport>(
         &mut self,
         schedule: &GateSchedule,
@@ -369,7 +411,9 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainParty<N> for ChainG
                     bases.push(self.fresh_base::<D>());
                 }
                 ChainFeed::Eval => bases.push(self.fresh_base::<D>()),
-                ChainFeed::Held(slot) => bases.push(self.held_get(*slot)?),
+                ChainFeed::Held(slot) => {
+                    bases.push(self.held_get(*slot, transport, ot)?);
+                }
             }
         }
         if const_bits.len() != n_const || secret_bits.len() != n_garbler {
@@ -441,11 +485,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainParty<N> for ChainG
 
         // Revealed outputs: exact-match decode.
         let n_reveal = outs.iter().filter(|out| **out == ChainOut::Reveal).count();
-        let n_garbler_material = outs
-            .iter()
-            .filter(|out| matches!(out, ChainOut::GarblerMaterial(_)))
-            .count();
-        let n_labels_to_garbler = n_reveal + n_garbler_material;
+        let n_labels_to_garbler = n_reveal;
         let frame = SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
         let labels = match frame {
             SessionFrame::OutputLabels(labels) => labels,
@@ -472,19 +512,9 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainParty<N> for ChainG
                     revealed.push(bit);
                 }
                 ChainOut::GarblerMaterial(slot) => {
-                    let label =
-                        vec_to_arr::<N>(&labels[rev_i]).ok_or(MpcError::MalformedSchedule)?;
-                    rev_i += 1;
-                    // Exact-match validation is mandatory even though no role
-                    // receives the logical bit. The garbler persists only the
-                    // output's raw false-label base.
-                    decode_output_label(
-                        &full.exec.circuit.secret,
-                        &full.exec.output_labels[o],
-                        elim.output_polarity[o],
-                        &label,
-                    )
-                    .ok_or(MpcError::DecodeFailure)?;
+                    // No evaluator label comes back on this path: returning it
+                    // would let the garbler decode the material bit using its
+                    // false base and delta. The label remains evaluator-local.
                     let raw = &full.exec.output_labels[o];
                     let base = if elim.output_polarity[o] {
                         Garble {
@@ -493,9 +523,13 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainParty<N> for ChainG
                     } else {
                         raw.clone()
                     };
-                    self.held_set(*slot, base);
+                    self.held_set(*slot, Some(base), transport, ot)?;
                 }
-                ChainOut::EvaluatorMaterial(_) => {}
+                ChainOut::EvaluatorMaterial(slot) => {
+                    // Advance the paired durable adapter at the same logical
+                    // operation without giving the garbler an evaluator label.
+                    self.held_set(*slot, None, transport, ot)?;
+                }
                 ChainOut::Hold(slot) => {
                     // Thread: register the polarity-adjusted base so the held
                     // label encodes the LOGICAL value.
@@ -507,7 +541,7 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainParty<N> for ChainG
                     } else {
                         raw.clone()
                     };
-                    self.held_set(*slot, base);
+                    self.held_set(*slot, Some(base), transport, ot)?;
                 }
             }
         }
@@ -534,7 +568,7 @@ impl<N: VoleArray<u8>> ChainEvaluator<N> {
     }
 }
 
-impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>>> ChainEvaluator<N, S> {
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainEvaluator<N, S> {
     /// Construct an evaluator role with an injected role-local material backing.
     pub fn with_held_store(held: S) -> Self {
         Self {
@@ -558,12 +592,25 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>>> ChainEvaluator<N, S> {
         self.held.address_span()
     }
 
-    fn held_get(&mut self, slot: usize) -> Result<Eval<N>, MpcError> {
-        self.held.load(slot).ok_or(MpcError::MalformedSchedule)
+    fn held_get(
+        &mut self,
+        slot: usize,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<Eval<N>, MpcError> {
+        self.held
+            .load(slot, transport, ot)?
+            .ok_or(MpcError::MalformedSchedule)
     }
 
-    fn held_set(&mut self, slot: usize, value: Eval<N>) {
-        self.held.store(slot, value);
+    fn held_set(
+        &mut self,
+        slot: usize,
+        value: Option<Eval<N>>,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        self.held.store(slot, value, transport, ot)
     }
 }
 
@@ -602,7 +649,7 @@ mod tests {
     }
 }
 
-impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>>> ChainParty<N> for ChainEvaluator<N, S> {
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainParty<N> for ChainEvaluator<N, S> {
     fn run_round<D: Digest, T: Transport>(
         &mut self,
         schedule: &GateSchedule,
@@ -654,7 +701,9 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>>> ChainParty<N> for ChainEva
                         target: ot.receive(b),
                     });
                 }
-                ChainFeed::Held(slot) => labels.push(self.held_get(*slot)?),
+                ChainFeed::Held(slot) => {
+                    labels.push(self.held_get(*slot, transport, ot)?);
+                }
             }
         }
 
@@ -663,14 +712,19 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>>> ChainParty<N> for ChainEva
         let mut send_labels: Vec<Vec<u8>> = Vec::new();
         for (o, out) in outs.iter().enumerate() {
             match out {
-                ChainOut::Reveal | ChainOut::GarblerMaterial(_) => {
+                ChainOut::Reveal => {
                     send_labels.push(arr_to_vec(&out_labels[o].target));
                 }
+                ChainOut::GarblerMaterial(slot) => {
+                    // Advance the paired durable adapter at the same logical
+                    // operation without giving the evaluator a false base.
+                    self.held_set(*slot, None, transport, ot)?;
+                }
                 ChainOut::EvaluatorMaterial(slot) => {
-                    self.held_set(*slot, out_labels[o].clone());
+                    self.held_set(*slot, Some(out_labels[o].clone()), transport, ot)?;
                 }
                 ChainOut::Hold(slot) => {
-                    self.held_set(*slot, out_labels[o].clone());
+                    self.held_set(*slot, Some(out_labels[o].clone()), transport, ot)?;
                 }
             }
         }
