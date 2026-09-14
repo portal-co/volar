@@ -179,6 +179,16 @@ aliasing AES pads.
 This gives a durable adapter an unambiguous, non-nested transport/OT seam:
 ordinary strict rounds only consume a local cache, while the public storage
 script drives material AES transactions at a round boundary. The hooks default
-to no-ops for `MemoryHeldStore`. A `MaterialRole::Both` output must be expanded
-into separate Garbler and Evaluator storage operations; combining their blocks
-would recreate the prohibited combined held state.
+to no-ops for `MemoryHeldStore`.
+
+**Completed adapter implementation:** `GarblerSplitKeyMaterialStore` and
+`EvaluatorSplitKeyMaterialStore` are paired role-local adapters. They stage
+strict outputs, use the direction-specific AES circuit at `flush`, persist
+ciphertext only evaluator-side by `(region, slot)`, and recover local material
+at `prefetch`. `MaterialRole::Both` is expanded internally into two sequential
+transactions—garbler stream then evaluator stream—without ever combining a
+false-label base and active label. The TCP acceptance test stages a private
+output, flushes and prefetches encrypted material through real network OT, and
+uses it in a later `Held` circuit round. The adapter accepts any `OtChannel`;
+a Ferret-backed channel applies its lower-communication extension without a
+second adapter path.

@@ -201,7 +201,7 @@ pub trait ChainStoragePhase<N: VoleArray<u8>> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageOperation {
     /// Fetch the material at `slot` into the adapter's role-local cache.
-    Load { slot: usize },
+    Load { slot: usize, owner: MaterialRole },
     /// Persist the role-local material at `slot`, whose owning role is public.
     Store { slot: usize, owner: MaterialRole },
 }
@@ -265,6 +265,7 @@ pub trait HeldMaterialStore<T, N: VoleArray<u8>> {
     fn prefetch<D: Digest>(
         &mut self,
         _slot: usize,
+        _owner: MaterialRole,
         _transport: &mut dyn Transport,
         _ot: &mut dyn OtChannel<N>,
     ) -> Result<(), MpcError> {
@@ -342,6 +343,38 @@ impl<T: Clone, N: VoleArray<u8>> HeldMaterialStore<T, N> for MemoryHeldStore<T> 
 
     fn address_span(&self) -> usize {
         self.high_water
+    }
+}
+
+fn material_load<N: VoleArray<u8>, S: HeldMaterialStore<T, N>, T, D: Digest>(
+    held: &mut S,
+    slot: usize,
+    owner: MaterialRole,
+    transport: &mut dyn Transport,
+    ot: &mut dyn OtChannel<N>,
+) -> Result<(), MpcError> {
+    match owner {
+        MaterialRole::Both => {
+            held.prefetch::<D>(slot, MaterialRole::Garbler, transport, ot)?;
+            held.prefetch::<D>(slot, MaterialRole::Evaluator, transport, ot)
+        }
+        role => held.prefetch::<D>(slot, role, transport, ot),
+    }
+}
+
+fn material_store<N: VoleArray<u8>, S: HeldMaterialStore<T, N>, T, D: Digest>(
+    held: &mut S,
+    slot: usize,
+    owner: MaterialRole,
+    transport: &mut dyn Transport,
+    ot: &mut dyn OtChannel<N>,
+) -> Result<(), MpcError> {
+    match owner {
+        MaterialRole::Both => {
+            held.flush::<D>(slot, MaterialRole::Garbler, transport, ot)?;
+            held.flush::<D>(slot, MaterialRole::Evaluator, transport, ot)
+        }
+        role => held.flush::<D>(slot, role, transport, ot),
     }
 }
 
@@ -439,10 +472,16 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainStoragePhase<N>
     ) -> Result<(), MpcError> {
         for operation in operations {
             match *operation {
-                StorageOperation::Load { slot } => self.held.prefetch::<D>(slot, transport, ot)?,
-                StorageOperation::Store { slot, owner } => {
-                    self.held.flush::<D>(slot, owner, transport, ot)?
+                StorageOperation::Load { slot, owner } => {
+                    material_load::<N, S, Garble<N>, D>(&mut self.held, slot, owner, transport, ot)?
                 }
+                StorageOperation::Store { slot, owner } => material_store::<N, S, Garble<N>, D>(
+                    &mut self.held,
+                    slot,
+                    owner,
+                    transport,
+                    ot,
+                )?,
             }
         }
         Ok(())
@@ -741,9 +780,11 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainStoragePhase<N>
     ) -> Result<(), MpcError> {
         for operation in operations {
             match *operation {
-                StorageOperation::Load { slot } => self.held.prefetch::<D>(slot, transport, ot)?,
+                StorageOperation::Load { slot, owner } => {
+                    material_load::<N, S, Eval<N>, D>(&mut self.held, slot, owner, transport, ot)?
+                }
                 StorageOperation::Store { slot, owner } => {
-                    self.held.flush::<D>(slot, owner, transport, ot)?
+                    material_store::<N, S, Eval<N>, D>(&mut self.held, slot, owner, transport, ot)?
                 }
             }
         }
