@@ -42,6 +42,9 @@ pub enum SplitOutput {
     /// Reveal only to the evaluator. Its active label never crosses to the
     /// garbler; the garbler sends both valid encodings for local decoding.
     EvaluatorReveal,
+    /// Reveal only to the garbler. The evaluator sends its active output label,
+    /// while the final verdict intentionally omits the recovered bit.
+    GarblerReveal,
     /// Keep the evaluator label and garbler base in their respective roles.
     /// This is the disposition for threaded posmap/stash/material wires.
     Opaque,
@@ -412,7 +415,7 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
         };
         let reveal_count = outputs
             .iter()
-            .filter(|o| **o == SplitOutput::Reveal)
+            .filter(|o| **o == SplitOutput::Reveal || **o == SplitOutput::GarblerReveal)
             .count();
         if labels.len() != reveal_count {
             return Err(MpcError::UnexpectedMessage);
@@ -420,7 +423,7 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
         let mut revealed = Vec::with_capacity(reveal_count);
         let mut label_i = 0;
         for (index, output) in outputs.iter().enumerate() {
-            if *output == SplitOutput::Reveal {
+            if *output == SplitOutput::Reveal || *output == SplitOutput::GarblerReveal {
                 let label = vec_to_arr::<N>(&labels[label_i]).ok_or(MpcError::MalformedSchedule)?;
                 label_i += 1;
                 revealed.push(
@@ -458,7 +461,12 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
             })
             .collect();
         transport.send(&SessionFrame::OutputDecodes(evaluator_decodes).encode());
-        transport.send(&SessionFrame::VerdictBits(revealed.clone()).encode());
+        let public_revealed: Vec<bool> = outputs
+            .iter()
+            .zip(&revealed)
+            .filter_map(|(output, &bit)| (*output == SplitOutput::Reveal).then_some(bit))
+            .collect();
+        transport.send(&SessionFrame::VerdictBits(public_revealed).encode());
         Ok(SplitGarblerResult {
             output_bases: full.exec.output_labels,
             revealed,
@@ -533,7 +541,8 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
             .iter()
             .zip(outputs)
             .filter_map(|(label, output)| {
-                (*output == SplitOutput::Reveal).then(|| arr_to_vec(&label.target))
+                (*output == SplitOutput::Reveal || *output == SplitOutput::GarblerReveal)
+                    .then(|| arr_to_vec(&label.target))
             })
             .collect();
         transport.send(&SessionFrame::OutputLabels(revealed).encode());

@@ -153,3 +153,13 @@ invokes the material AES circuit, rather than baking a second hash choice into
 durable material format. `ChainGarbler` and `ChainEvaluator` thread that type
 through ordinary held loads/stores and explicit `ChainStoragePhase` scripts;
 the compatibility memory store remains digest-independent.
+
+The inverse private-output primitive is now also present:
+`SplitOutput::GarblerReveal` gives the garbler an exact-match decoded output
+while the evaluator receives no decoded verdict bit. Together with
+`EvaluatorReveal`, the material transaction has the two directions it needs:
+seal produces evaluator-owned ciphertext; opening an evaluator-supplied
+ciphertext produces a garbler-owned false-label base. Both directions have
+separate TCP/OT tests. The adapter must select its material input partition
+(`Garbler` for a false-base save, `Evaluator` for ciphertext opens and active
+label save) rather than treating all material bytes as one role's input.
