@@ -525,6 +525,49 @@ pub fn build_aes128() -> BIrBlocks {
     b.finish(out)
 }
 
+/// Build AES-128 encryption of `blocks` plaintext blocks with one shared key
+/// expansion. Inputs are `[key:128 | plaintexts: blocks*128]`; outputs are
+/// `blocks*128` ciphertext bits in block order.
+///
+/// This is the material-encapsulation primitive: compared with `blocks`
+/// independent [`build_aes128`] circuits, key schedule S-boxes are emitted
+/// once and reused across all block encryptions.
+pub fn build_aes128_multi(blocks: usize) -> BIrBlocks {
+    assert!(blocks > 0, "AES multi needs at least one block");
+    let mut b = B::new((128 + blocks * 128) as u32);
+    let mut key: State = [[0u32; 8]; 16];
+    for i in 0..16 {
+        for j in 0..8 {
+            key[i][j] = (i * 8 + j) as u32;
+        }
+    }
+    let round_keys = key_expansion_c(&mut b, &key);
+    let mut out = Vec::with_capacity(blocks * 128);
+    for block in 0..blocks {
+        let mut state: State = [[0u32; 8]; 16];
+        let start = 128 + block * 128;
+        for i in 0..16 {
+            for j in 0..8 {
+                state[i][j] = (start + i * 8 + j) as u32;
+            }
+        }
+        add_round_key_c(&mut b, &mut state, &round_keys[0]);
+        for r in 1..10 {
+            sub_bytes_c(&mut b, &mut state);
+            shift_rows_c(&mut state);
+            mix_columns_c(&mut b, &mut state);
+            add_round_key_c(&mut b, &mut state, &round_keys[r]);
+        }
+        sub_bytes_c(&mut b, &mut state);
+        shift_rows_c(&mut state);
+        add_round_key_c(&mut b, &mut state, &round_keys[10]);
+        for byte in &state {
+            out.extend_from_slice(byte);
+        }
+    }
+    b.finish(out)
+}
+
 // ---------------------------------------------------------------------------
 // AES-128-GCM (NIST SP 800-38D) boolar gadget (P4c-i) — the TLS 1.3 record-layer
 // AEAD, built from the composite-field AES block gadget plus a GF(2^128)

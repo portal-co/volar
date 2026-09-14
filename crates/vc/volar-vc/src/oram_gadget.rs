@@ -812,19 +812,21 @@ pub fn build_material_block_cipher_n(blocks: usize) -> BIrBlocks {
     assert!(blocks > 0, "material batch needs at least one block");
     let params = 128 + 2 * blocks * 128;
     let mut b = Builder::new(params as u32);
-    let key: Vec<u32> = (0..128).collect();
-    let aes = crate::aes_gadget::build_aes128();
-    let mut output = Vec::with_capacity(blocks * 128);
+    let mut aes_input: Vec<u32> = (0..128).collect();
     for block in 0..blocks {
         let tweak_start = 128 + block * 128;
-        let material_start = 128 + blocks * 128 + block * 128;
-        let mut aes_input = key.clone();
         aes_input.extend((tweak_start..tweak_start + 128).map(|wire| wire as u32));
-        let pad = b.inline_sub(&aes, &aes_input);
+    }
+    // Shared-key schedule: the AES gadget expands the 128-bit split key once,
+    // then encrypts all public tweaks under those round keys.
+    let pads = b.inline_sub(&crate::aes_gadget::build_aes128_multi(blocks), &aes_input);
+    let mut output = Vec::with_capacity(blocks * 128);
+    for block in 0..blocks {
+        let material_start = 128 + blocks * 128 + block * 128;
         let material: Vec<u32> = (material_start..material_start + 128)
             .map(|wire| wire as u32)
             .collect();
-        output.extend(b.xor_word(&material, &pad));
+        output.extend(b.xor_word(&material, &pads[block * 128..(block + 1) * 128]));
     }
     b.finish(output)
 }

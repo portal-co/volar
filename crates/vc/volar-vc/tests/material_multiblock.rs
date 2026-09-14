@@ -12,9 +12,10 @@ fn multi_block_material_gadget_has_one_key_and_linear_block_io() {
     assert_eq!(one.output_wires().len(), 128);
     assert_eq!(four.num_inputs, 128 + 4 * 256);
     assert_eq!(four.output_wires().len(), 4 * 128);
-    // The current prototype inlines independent AES blocks. This asserts the
-    // honest baseline that motivates the loop/key-schedule sharing follow-up.
-    assert_eq!(four.and_count(), one.and_count() * 4);
+    // Key expansion is now shared across all four blocks, so the multi-block
+    // material shape is strictly cheaper than four standalone AES circuits.
+    assert!(four.and_count() < one.and_count() * 4);
+    assert!(four.and_count() > one.and_count());
 }
 
 #[test]

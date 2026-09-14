@@ -5,7 +5,7 @@
 //! evaluated concretely via `volar_fuzz::interpreter::biir::eval_biir`.
 
 use volar_fuzz::interpreter::biir::eval_biir;
-use volar_vc::aes_gadget::build_aes128;
+use volar_vc::aes_gadget::{build_aes128, build_aes128_multi};
 
 fn bits_of_bytes(bytes: &[u8; 16]) -> Vec<bool> {
     let mut v = Vec::with_capacity(128);
@@ -38,6 +38,25 @@ fn run_aes(key: [u8; 16], plain: [u8; 16]) -> [u8; 16] {
     let out = eval_biir(&circ, &inp).expect("aes circuit evaluates");
     assert_eq!(out.len(), 128);
     bytes_of_bits(&out)
+}
+
+#[test]
+fn aes_multi_reuses_one_key_schedule_and_matches_independent_blocks() {
+    let key = [
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f,
+        0x3c,
+    ];
+    let first = [
+        0x32, 0x43, 0xf6, 0xa8, 0x88, 0x5a, 0x30, 0x8d, 0x31, 0x31, 0x98, 0xa2, 0xe0, 0x37, 0x07,
+        0x34,
+    ];
+    let second = [0x00; 16];
+    let mut input = bits_of_bytes(&key);
+    input.extend(bits_of_bytes(&first));
+    input.extend(bits_of_bytes(&second));
+    let output = eval_biir(&build_aes128_multi(2), &input).expect("multi AES");
+    assert_eq!(bytes_of_bits(&output[..128]), run_aes(key, first));
+    assert_eq!(bytes_of_bits(&output[128..]), run_aes(key, second));
 }
 
 #[test]

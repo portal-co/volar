@@ -42,11 +42,15 @@ one split invocation:
 This combines protocol framing and OT scheduling at one public invocation
 boundary. The test confirms its I/O geometry for `n = 4`.
 
-The current implementation inlines a complete AES circuit per block. Its AND
-count is exactly linear: the four-block schedule is four times the one-block
-schedule. Thus it does not yet amortize AES key expansion or nonlinear gate
-cost. It is useful as a fixed-shape batching baseline, not the final scaling
-answer.
+The initial implementation inlined a complete AES circuit per block. This is
+now superseded by `build_aes128_multi(blocks)`: it expands the 128-bit split
+key once and reuses the 11 round keys for every block. The multi-block
+material gadget now uses that shared-key-schedule AES circuit. Concrete AES
+vectors confirm each output block matches independent AES-128 encryption, and
+the schedule test confirms four blocks cost strictly less than four one-block
+circuits (while still costing more than one block). This removes duplicated
+key-expansion S-box work, but SubBytes/MixColumns remain necessarily linear in
+the number of plaintext blocks.
 
 ### CFG-style repeated material step
 
@@ -106,8 +110,8 @@ remains superior and requires no remap circuit.
 
 ## Next implementation sequence
 
-1. Add an AES multi-block gadget with shared expanded round keys, then compare
-   AND count against the current `n × 16,000` baseline.
+1. Measure `build_aes128_multi(n)` AND/table bytes for representative `n` and
+   select a bounded material-batch size that fits the strict-table stream.
 2. Choose a fixed, narrower opaque durable representation (or an
    encapsulation construction) and prove pack/unpack plus deferred remapping
    preserve the garbling relation.

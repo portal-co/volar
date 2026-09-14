@@ -257,4 +257,6 @@ remains sequential.
 
 A detailed prototype record—including the multi-block circuit, CFG-style
 termination-reveal loop, deferred opaque remapping plan, and rejected scaling
-paths—is in [`held-material-encapsulation-prototype.md`](held-material-encapsulation-prototype.md).
+paths—is in [`held-material-encapsulation-prototype.md`](held-material-encapsulation-prototype.md). The multi-block AES path now shares one expanded
+AES-128 key schedule across all packed blocks; it removes duplicated key
+expansion but not per-block AES rounds.
