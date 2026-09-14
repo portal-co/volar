@@ -23,13 +23,12 @@
 //! LOGICAL value under that base (free-XOR: L = raw_base XOR raw*delta =
 //! base' XOR (raw XOR pol)*delta).
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use digest::Digest;
-use hybrid_array::{Array, ArraySize};
-use volar_spec::garble::{Garble, GarbleTable, GlobalSecret};
+use hybrid_array::Array;
+use volar_spec::garble::{Garble, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
 use crate::strict::{
@@ -63,11 +62,18 @@ pub enum ChainOut {
     /// Reveal via the strict OutputLabels/VerdictBits round (exact-match
     /// decode; a forged label aborts the session).
     Reveal,
-    /// Thread into the held-slot registry (never decoded).
+    /// Thread through the configured role-local material store (never decoded).
     Hold(usize),
+    /// Persist only the garbler's raw false-label base at `slot`. The
+    /// evaluator returns its active output label for exact-match validation,
+    /// then discards it; no logical bit is decoded or sent back.
+    GarblerMaterial(usize),
+    /// Persist only the evaluator's active output label at `slot`. Nothing is
+    /// sent to the garbler; no logical bit is decoded.
+    EvaluatorMaterial(usize),
 }
 
-/// A contiguous allocation in the strict-chain held-label registry.
+/// A contiguous allocation in the strict-chain role-local material store.
 ///
 /// This is deliberately a small value object: TLS and interpreter drivers name
 /// data regions once, then derive their input feeds/output dispositions from
@@ -113,7 +119,7 @@ impl HeldRange {
     }
 }
 
-/// Deterministic allocator for a chain driver's secret-to-neither registry.
+/// Deterministic allocator for a chain driver's role-local material store.
 ///
 /// Allocation is purely script construction: it does not allocate labels or
 /// reveal values. Both parties use the same allocation sequence, which makes
@@ -136,9 +142,9 @@ pub struct ChainMetrics {
     pub table_frames: u64,
     /// Payload bytes in those table frames, excluding transport framing.
     pub table_bytes: u64,
-    /// Inputs fed from the jointly-secret held registry.
+    /// Inputs loaded from role-local opaque material storage.
     pub held_inputs: u64,
-    /// Outputs retained as jointly-secret labels.
+    /// Outputs persisted as role-local opaque material.
     pub held_outputs: u64,
 }
 
@@ -190,100 +196,118 @@ pub trait ChainParty<N: VoleArray<u8>> {
     ) -> Result<Vec<bool>, MpcError>;
 }
 
-/// The garbler's chain driver: holds the global secret (delta), the held
-/// slots' false-label bases, and a fresh-base counter.
-/// Logical slot page width. The TLS driver retains legacy sparse slot names;
-/// paging keeps those names from allocating every absent label below them.
-const HELD_PAGE_BITS: usize = 10;
-const HELD_PAGE_LEN: usize = 1 << HELD_PAGE_BITS;
+/// Role-local backing for strict-chain wire material. A held bit is not a
+/// Boolean value: the garbler stores its false-label base and the evaluator
+/// stores its active label. A backing must preserve those opaque bytes exactly;
+/// it must never decode, re-encode, or combine the two roles' materials.
+///
+/// This is the seam for the split-key encrypted ORAM material adapter. The
+/// default [`MemoryHeldStore`] exists only for compatibility and small tests;
+/// network deployments must inject a durable role-local backing with
+/// [`ChainGarbler::with_held_store`] / [`ChainEvaluator::with_held_store`].
+pub trait HeldMaterialStore<T> {
+    /// Load one opaque role-local material item.
+    fn load(&mut self, slot: usize) -> Option<T>;
+    /// Persist one opaque role-local material item.
+    fn store(&mut self, slot: usize, value: T);
+    /// Number of initialized logical slots, for public resource accounting.
+    fn len(&self) -> usize;
+    /// Physical capacity consumed by the backing, for public accounting.
+    fn capacity(&self) -> usize;
+    /// Largest logical slot extent touched by this backing.
+    fn address_span(&self) -> usize;
+}
 
-/// Sparse, page-backed jointly-secret label store. The public slot namespace
-/// may be sparse; physical allocation scales with touched pages, not the
-/// largest logical slot id.
-struct HeldPages<T> {
-    pages: BTreeMap<usize, Box<[Option<T>; HELD_PAGE_LEN]>>,
-    initialized: usize,
+/// Compatibility backing for test/small-session material. It is deliberately
+/// a narrow adapter, not part of strict-chain's protocol implementation.
+#[derive(Clone, Debug)]
+pub struct MemoryHeldStore<T> {
+    values: BTreeMap<usize, T>,
     high_water: usize,
 }
 
-impl<T> Default for HeldPages<T> {
+impl<T> Default for MemoryHeldStore<T> {
     fn default() -> Self {
         Self {
-            pages: BTreeMap::new(),
-            initialized: 0,
+            values: BTreeMap::new(),
             high_water: 0,
         }
     }
 }
 
-impl<T: Clone> HeldPages<T> {
-    fn get(&self, slot: usize) -> Option<T> {
-        self.pages
-            .get(&(slot >> HELD_PAGE_BITS))?
-            .get(slot & (HELD_PAGE_LEN - 1))?
-            .clone()
+impl<T: Clone> HeldMaterialStore<T> for MemoryHeldStore<T> {
+    fn load(&mut self, slot: usize) -> Option<T> {
+        self.values.get(&slot).cloned()
     }
 
-    fn set(&mut self, slot: usize, value: T) {
-        let page = self
-            .pages
-            .entry(slot >> HELD_PAGE_BITS)
-            .or_insert_with(|| Box::new(core::array::from_fn(|_| None)));
-        let index = slot & (HELD_PAGE_LEN - 1);
-        if page[index].is_none() {
-            self.initialized += 1;
-        }
-        page[index] = Some(value);
+    fn store(&mut self, slot: usize, value: T) {
+        self.values.insert(slot, value);
         self.high_water = self.high_water.max(slot.saturating_add(1));
     }
 
-    fn allocated_slots(&self) -> usize {
-        self.pages.len() * HELD_PAGE_LEN
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.values.len()
+    }
+
+    fn address_span(&self) -> usize {
+        self.high_water
     }
 }
 
-pub struct ChainGarbler<N: VoleArray<u8>> {
+/// The garbler's strict-chain role. Its backing contains only false-label
+/// bases; it never contains evaluator labels or decoded logical values.
+pub struct ChainGarbler<N: VoleArray<u8>, S = MemoryHeldStore<Garble<N>>> {
     secret: GlobalSecret<N>,
-    held: HeldPages<Garble<N>>,
+    held: S,
     fresh: u64,
     metrics: ChainMetrics,
 }
 
 impl<N: VoleArray<u8>> ChainGarbler<N> {
-    /// A new driver over `secret` with an empty held registry.
+    /// A new driver using the compatibility memory backing. Production callers
+    /// should use [`Self::with_held_store`] with a split-key ORAM material
+    /// adapter instead.
     pub fn new(secret: GlobalSecret<N>) -> Self {
+        Self::with_held_store(secret, MemoryHeldStore::default())
+    }
+}
+
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainGarbler<N, S> {
+    /// Construct a garbler role with an injected role-local material backing.
+    pub fn with_held_store(secret: GlobalSecret<N>, held: S) -> Self {
         Self {
             secret,
-            held: HeldPages::default(),
+            held,
             fresh: 0,
             metrics: ChainMetrics::default(),
         }
     }
 
-    /// Count of currently held labels. This exposes storage shape for
-    /// instrumentation without exposing labels or their logical values.
+    /// Count of stored opaque false-label bases.
     pub fn held_len(&self) -> usize {
-        self.held.initialized
+        self.held.len()
     }
 
-    /// Physically allocated slots. Sparse logical TLS/ORAM slot ids allocate
-    /// only pages that contain an actual jointly-secret label.
+    /// Physical backing capacity reported by the injected material adapter.
     pub fn held_capacity(&self) -> usize {
-        self.held.allocated_slots()
+        self.held.capacity()
     }
 
-    /// Largest logical slot extent touched; report separately from physical
-    /// capacity so sparse naming cannot masquerade as retained memory.
+    /// Largest logical held slot touched by the injected material adapter.
     pub fn held_address_span(&self) -> usize {
-        self.held.high_water
+        self.held.address_span()
     }
 
-    fn held_get(&self, slot: usize) -> Result<Garble<N>, MpcError> {
-        self.held.get(slot).ok_or(MpcError::MalformedSchedule)
+    fn held_get(&mut self, slot: usize) -> Result<Garble<N>, MpcError> {
+        self.held.load(slot).ok_or(MpcError::MalformedSchedule)
     }
 
     fn held_set(&mut self, slot: usize, value: Garble<N>) {
-        self.held.set(slot, value);
+        self.held.store(slot, value);
     }
 
     /// Snapshot public execution-shape counters.
@@ -303,7 +327,7 @@ impl<N: VoleArray<u8>> ChainGarbler<N> {
     }
 }
 
-impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>>> ChainParty<N> for ChainGarbler<N, S> {
     fn run_round<D: Digest, T: Transport>(
         &mut self,
         schedule: &GateSchedule,
@@ -416,13 +440,18 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
         );
 
         // Revealed outputs: exact-match decode.
-        let n_reveal = outs.iter().filter(|o| **o == ChainOut::Reveal).count();
+        let n_reveal = outs.iter().filter(|out| **out == ChainOut::Reveal).count();
+        let n_garbler_material = outs
+            .iter()
+            .filter(|out| matches!(out, ChainOut::GarblerMaterial(_)))
+            .count();
+        let n_labels_to_garbler = n_reveal + n_garbler_material;
         let frame = SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
         let labels = match frame {
             SessionFrame::OutputLabels(labels) => labels,
             _ => return Err(MpcError::UnexpectedMessage),
         };
-        if labels.len() != n_reveal {
+        if labels.len() != n_labels_to_garbler {
             return Err(MpcError::UnexpectedMessage);
         }
         let mut revealed: Vec<bool> = Vec::with_capacity(n_reveal);
@@ -442,6 +471,31 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
                     .ok_or(MpcError::DecodeFailure)?;
                     revealed.push(bit);
                 }
+                ChainOut::GarblerMaterial(slot) => {
+                    let label =
+                        vec_to_arr::<N>(&labels[rev_i]).ok_or(MpcError::MalformedSchedule)?;
+                    rev_i += 1;
+                    // Exact-match validation is mandatory even though no role
+                    // receives the logical bit. The garbler persists only the
+                    // output's raw false-label base.
+                    decode_output_label(
+                        &full.exec.circuit.secret,
+                        &full.exec.output_labels[o],
+                        elim.output_polarity[o],
+                        &label,
+                    )
+                    .ok_or(MpcError::DecodeFailure)?;
+                    let raw = &full.exec.output_labels[o];
+                    let base = if elim.output_polarity[o] {
+                        Garble {
+                            base: full.exec.circuit.secret.encode(raw, true).target,
+                        }
+                    } else {
+                        raw.clone()
+                    };
+                    self.held_set(*slot, base);
+                }
+                ChainOut::EvaluatorMaterial(_) => {}
                 ChainOut::Hold(slot) => {
                     // Thread: register the polarity-adjusted base so the held
                     // label encodes the LOGICAL value.
@@ -464,39 +518,52 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainGarbler<N> {
 
 /// The evaluator's chain driver: holds only the held slots' labels (never
 /// the delta).
-pub struct ChainEvaluator<N: VoleArray<u8>> {
-    held: HeldPages<Eval<N>>,
+/// The evaluator's strict-chain role. Its backing contains only active labels;
+/// it never contains garbler bases, the free-XOR delta, or decoded values.
+pub struct ChainEvaluator<N: VoleArray<u8>, S = MemoryHeldStore<Eval<N>>> {
+    held: S,
+    _label: core::marker::PhantomData<N>,
 }
 
 impl<N: VoleArray<u8>> ChainEvaluator<N> {
-    /// A new driver with an empty held registry.
+    /// A new driver using the compatibility memory backing. Production callers
+    /// should use [`Self::with_held_store`] with a split-key ORAM material
+    /// adapter instead.
     pub fn new() -> Self {
+        Self::with_held_store(MemoryHeldStore::default())
+    }
+}
+
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>>> ChainEvaluator<N, S> {
+    /// Construct an evaluator role with an injected role-local material backing.
+    pub fn with_held_store(held: S) -> Self {
         Self {
-            held: HeldPages::default(),
+            held,
+            _label: core::marker::PhantomData,
         }
     }
 
-    /// Number of initialized jointly-secret labels.
+    /// Number of stored opaque active labels.
     pub fn held_len(&self) -> usize {
-        self.held.initialized
+        self.held.len()
     }
 
-    /// Physical evaluator-label capacity, page-backed for sparse slots.
+    /// Physical backing capacity reported by the injected material adapter.
     pub fn held_capacity(&self) -> usize {
-        self.held.allocated_slots()
+        self.held.capacity()
     }
 
-    /// Largest logical slot extent touched.
+    /// Largest logical held slot touched by the injected material adapter.
     pub fn held_address_span(&self) -> usize {
-        self.held.high_water
+        self.held.address_span()
     }
 
-    fn held_get(&self, slot: usize) -> Result<Eval<N>, MpcError> {
-        self.held.get(slot).ok_or(MpcError::MalformedSchedule)
+    fn held_get(&mut self, slot: usize) -> Result<Eval<N>, MpcError> {
+        self.held.load(slot).ok_or(MpcError::MalformedSchedule)
     }
 
     fn held_set(&mut self, slot: usize, value: Eval<N>) {
-        self.held.set(slot, value);
+        self.held.store(slot, value);
     }
 }
 
@@ -535,7 +602,7 @@ mod tests {
     }
 }
 
-impl<N: VoleArray<u8>> ChainParty<N> for ChainEvaluator<N> {
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>>> ChainParty<N> for ChainEvaluator<N, S> {
     fn run_round<D: Digest, T: Transport>(
         &mut self,
         schedule: &GateSchedule,
@@ -596,7 +663,12 @@ impl<N: VoleArray<u8>> ChainParty<N> for ChainEvaluator<N> {
         let mut send_labels: Vec<Vec<u8>> = Vec::new();
         for (o, out) in outs.iter().enumerate() {
             match out {
-                ChainOut::Reveal => send_labels.push(arr_to_vec(&out_labels[o].target)),
+                ChainOut::Reveal | ChainOut::GarblerMaterial(_) => {
+                    send_labels.push(arr_to_vec(&out_labels[o].target));
+                }
+                ChainOut::EvaluatorMaterial(slot) => {
+                    self.held_set(*slot, out_labels[o].clone());
+                }
                 ChainOut::Hold(slot) => {
                     self.held_set(*slot, out_labels[o].clone());
                 }
