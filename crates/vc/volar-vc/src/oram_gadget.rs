@@ -747,6 +747,44 @@ pub fn build_begin(cfg: &OramGadgetConfig) -> BIrBlocks {
 /// The output is `Z * entry_bits` ciphertext bits in slot order. With
 /// versioned pads the supplied `version` is incorporated into the same tweak
 /// layout as [`build_access`].
+/// Build one fixed 128-bit split-key material encryption/decryption circuit.
+///
+/// Inputs are `[key: 128, tweak: 128, material: 128]`; outputs are
+/// `material XOR AES-128(key, tweak)`. The same circuit opens and seals a
+/// block. Callers must name the tweak with the public material stream, slot,
+/// version, and block index so an old ciphertext cannot be accepted for a new
+/// transaction.
+pub fn build_material_block_cipher() -> BIrBlocks {
+    let mut b = Builder::new(384);
+    let key: Vec<u32> = (0..128).collect();
+    let tweak: Vec<u32> = (128..256).collect();
+    let material: Vec<u32> = (256..384).collect();
+    let aes = crate::aes_gadget::build_aes128();
+    let mut aes_in = key;
+    aes_in.extend(tweak);
+    let pad = b.inline_sub(&aes, &aes_in);
+    let output = b.xor_word(&material, &pad);
+    b.finish(output)
+}
+
+/// Public 128-bit tweak for a role-local durable material block.
+///
+/// The fields are deliberately explicit: different roles use different
+/// `region`s, while `slot`, monotonically increasing `version`, and `block`
+/// make substitution/replay across transactions decrypt to an invalid label.
+pub fn material_block_tweak(region: u8, slot: u64, version: u64, block: u32) -> [u8; 16] {
+    let mut tweak = [0u8; 16];
+    tweak[0] = 0xD4; // material-store domain separator
+    tweak[1] = region;
+    tweak[2..4].copy_from_slice(&(block as u16).to_le_bytes());
+    // The bounded durable-store interface uses 48-bit public slot and version
+    // counters. Refuse wider values at the adapter seam rather than folding
+    // them, which could turn distinct transactions into one pad.
+    tweak[4..10].copy_from_slice(&slot.to_le_bytes()[..6]);
+    tweak[10..16].copy_from_slice(&version.to_le_bytes()[..6]);
+    tweak
+}
+
 pub fn build_tree_node_formatter(
     cfg: &OramGadgetConfig,
     depth: usize,

@@ -125,3 +125,13 @@ Migrate `Oram2pc::run_access` in this order:
    bumped only on successful commit.
 8. Build the paired `HeldMaterialStore` adapters on top of the completed
    boundary phase, then replace `MemoryHeldStore` in the TCP acceptance test.
+   **Started with the durable block-format protocol:**
+   `build_material_block_cipher` is a fixed `[key:128, tweak:128,
+   material:128] -> material XOR AES_K(tweak)` circuit. The public tweak
+   names the material role, slot, version, and block, using independently
+   encoded fields rather than XOR folding. Concrete circuit coverage confirms
+   that it matches the AES reference and that any role/slot/version/block
+   change yields a different pad. The next slice must add the paired
+   `HeldMaterialStore` adapters and keep their sealed/opened blocks inside
+   split-circuit input/output handling; do not expose block plaintext to a
+   role host.
