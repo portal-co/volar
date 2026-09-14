@@ -11,6 +11,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use digest::Digest;
+use hybrid_array::Array;
 use volar_mpc::strict_split::{SplitEvaluator, SplitGarbler, SplitInput, SplitOutput};
 use volar_mpc::{GateSchedule, MpcError, OtChannel, Transport};
 
@@ -93,6 +94,15 @@ impl<N: VoleArray<u8>> EvaluatorOramState<N> {
 pub struct SplitOramGarbler<N: VoleArray<u8>> {
     runner: SplitGarbler<N>,
     state: GarblerOramState<N>,
+    fresh: u64,
+}
+
+/// Public result of one plaintext-path access. `new_path` is intentionally
+/// revealed: the evaluator must write it to its physical tree. Logical read
+/// data and the replacement stash remain opaque role-local state.
+pub struct SplitAccessResult {
+    pub overflow: bool,
+    pub new_path: Vec<bool>,
 }
 
 impl<N: VoleArray<u8>> SplitOramGarbler<N> {
@@ -100,6 +110,7 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
         Self {
             runner: SplitGarbler::new(secret),
             state,
+            fresh: 0,
         }
     }
 
@@ -148,6 +159,113 @@ impl<N: VoleArray<u8>> SplitOramGarbler<N> {
         )?;
         self.state.posmap = result.output_bases[cfg.leaf_bits()..].to_vec();
         Ok(bits_to_u64(&result.revealed))
+    }
+
+    /// Run the plaintext-path access circuit. The path comes from the
+    /// evaluator's physical tree as evaluator-private bits; stash/address/data
+    /// thread as opaque split material. The API deliberately returns only the
+    /// public host write-back shape, never logical read data.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_access<D: Digest>(
+        &mut self,
+        cfg: &OramGadgetConfig,
+        schedule: &GateSchedule,
+        path_bits: &[bool],
+        write: bool,
+        addr_slots: &[usize],
+        wdata_slot: Option<usize>,
+        path_leaf: u64,
+        new_leaf: u64,
+        evict_only: bool,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<SplitAccessResult, MpcError> {
+        let (ab, lb, eb, db) = (
+            cfg.addr_bits(),
+            cfg.leaf_bits(),
+            cfg.entry_bits(),
+            cfg.data_bits,
+        );
+        let path_width = cfg.path_entries() * eb;
+        if cfg.encrypted
+            || cfg.versioned_pads
+            || cfg.keyed_leaf
+            || db != 1
+            || self.state.stash.len() != cfg.max_stash * eb
+            || path_bits.len() != path_width
+            || addr_slots.len() != ab
+            || write && wdata_slot.is_none()
+            || schedule.num_inputs != cfg.access_params()
+        {
+            return Err(MpcError::BadPartition);
+        }
+        let mut bases = self.state.stash.clone();
+        bases.extend((0..path_width).map(|_| self.fresh_base::<D>()));
+        bases.extend(addr_slots.iter().map(|&slot| self.state.tape[slot].clone()));
+        bases.push(self.fresh_base::<D>()); // op_write public
+        if write {
+            bases.push(self.state.tape[wdata_slot.expect("checked")].clone());
+        } else {
+            bases.push(self.fresh_base::<D>());
+        }
+        bases.extend((0..lb).map(|_| self.fresh_base::<D>())); // path leaf
+        bases.extend((0..lb).map(|_| self.fresh_base::<D>())); // new leaf
+        bases.push(self.fresh_base::<D>()); // evict_only
+
+        let mut inputs = vec![SplitInput::Held; self.state.stash.len()];
+        inputs.extend(vec![SplitInput::Evaluator; path_width]);
+        inputs.extend(vec![SplitInput::Held; ab]);
+        inputs.push(SplitInput::Public);
+        inputs.push(if write {
+            SplitInput::Held
+        } else {
+            SplitInput::Public
+        });
+        inputs.extend(vec![SplitInput::Public; lb * 2 + 1]);
+        let mut public = Vec::with_capacity(1 + usize::from(!write) + lb * 2 + 1);
+        public.push(write);
+        if !write {
+            public.push(false);
+        }
+        public.extend(u64_bits(path_leaf, lb));
+        public.extend(u64_bits(new_leaf, lb));
+        public.push(evict_only);
+
+        let path_off = 1 + db;
+        let stash_off = path_off + path_width;
+        let mut outputs = vec![SplitOutput::Reveal; 1]; // overflow
+        outputs.push(SplitOutput::Opaque); // logical rdata
+        outputs.extend(vec![SplitOutput::Reveal; path_width]);
+        outputs.extend(vec![SplitOutput::Opaque; self.state.stash.len()]);
+        let result = self.runner.run_with_state::<D>(
+            schedule,
+            bases,
+            &inputs,
+            &public,
+            &[],
+            &outputs,
+            transport,
+            ot,
+        )?;
+        self.state.stash = result.output_bases[stash_off..].to_vec();
+        Ok(SplitAccessResult {
+            overflow: result.revealed[0],
+            new_path: result.revealed[1..].to_vec(),
+        })
+    }
+
+    fn fresh_base<D: Digest>(&mut self) -> Garble<N> {
+        self.fresh += 1;
+        let hash = D::digest(
+            &[
+                b"volar-vc/oram-split-base".as_slice(),
+                &self.fresh.to_le_bytes(),
+            ]
+            .concat(),
+        );
+        Garble {
+            base: Array::from_fn(|i| hash[i % hash.len()]),
+        }
     }
 
     /// Replace one legacy `Stage::Compute` invocation. All tape inputs and
@@ -235,6 +353,82 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         Ok(bits_to_u64(&revealed))
     }
 
+    /// Evaluator half of [`SplitOramGarbler::run_access`]. The evaluator owns
+    /// physical path bytes and returns the revealed write-back path, but never
+    /// receives a garbler base for the opaque stash/read-data outputs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_access<D: Digest>(
+        &mut self,
+        cfg: &OramGadgetConfig,
+        schedule: &GateSchedule,
+        path_bits: &[bool],
+        write: bool,
+        addr_slots: &[usize],
+        wdata_slot: Option<usize>,
+        path_leaf: u64,
+        new_leaf: u64,
+        evict_only: bool,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<SplitAccessResult, MpcError> {
+        let (ab, lb, eb, db) = (
+            cfg.addr_bits(),
+            cfg.leaf_bits(),
+            cfg.entry_bits(),
+            cfg.data_bits,
+        );
+        let path_width = cfg.path_entries() * eb;
+        if cfg.encrypted
+            || cfg.versioned_pads
+            || cfg.keyed_leaf
+            || db != 1
+            || self.state.stash.len() != cfg.max_stash * eb
+            || path_bits.len() != path_width
+            || addr_slots.len() != ab
+            || write && wdata_slot.is_none()
+            || schedule.num_inputs != cfg.access_params()
+        {
+            return Err(MpcError::BadPartition);
+        }
+        let mut held = self.state.stash.clone();
+        held.extend(addr_slots.iter().map(|&slot| self.state.tape[slot].clone()));
+        if write {
+            held.push(self.state.tape[wdata_slot.expect("checked")].clone());
+        }
+        let mut inputs = vec![SplitInput::Held; self.state.stash.len()];
+        inputs.extend(vec![SplitInput::Evaluator; path_width]);
+        inputs.extend(vec![SplitInput::Held; ab]);
+        inputs.push(SplitInput::Public);
+        inputs.push(if write {
+            SplitInput::Held
+        } else {
+            SplitInput::Public
+        });
+        inputs.extend(vec![SplitInput::Public; lb * 2 + 1]);
+        let mut public = Vec::with_capacity(1 + usize::from(!write) + lb * 2 + 1);
+        public.push(write);
+        if !write {
+            public.push(false);
+        }
+        public.extend(u64_bits(path_leaf, lb));
+        public.extend(u64_bits(new_leaf, lb));
+        public.push(evict_only);
+        let path_off = 1 + db;
+        let stash_off = path_off + path_width;
+        let mut outputs = vec![SplitOutput::Reveal; 1];
+        outputs.push(SplitOutput::Opaque);
+        outputs.extend(vec![SplitOutput::Reveal; path_width]);
+        outputs.extend(vec![SplitOutput::Opaque; self.state.stash.len()]);
+        let (labels, revealed) = self
+            .runner
+            .run_with_state::<D>(schedule, &inputs, path_bits, &held, &outputs, transport, ot)?;
+        self.state.stash = labels[stash_off..].to_vec();
+        Ok(SplitAccessResult {
+            overflow: revealed[0],
+            new_path: revealed[1..].to_vec(),
+        })
+    }
+
     /// Evaluator half of [`SplitOramGarbler::run_compute`].
     pub fn run_compute<D: Digest>(
         &mut self,
@@ -261,6 +455,10 @@ impl<N: VoleArray<u8>> SplitOramEvaluator<N> {
         self.state.tape = labels;
         Ok(())
     }
+}
+
+fn u64_bits(value: u64, width: usize) -> Vec<bool> {
+    (0..width).map(|bit| (value >> bit) & 1 != 0).collect()
 }
 
 fn bits_to_u64(bits: &[bool]) -> u64 {

@@ -92,9 +92,14 @@ Migrate `Oram2pc::run_access` in this order:
    `SplitOram*::run_begin` has TCP/OT coverage, returns only the public old
    physical leaf, and retains its updated posmap in distinct role-local state.
    The keyed-leaf variant remains with the later split-key migration.
-3. Give the evaluator a ciphertext-tree adapter and explicit path
-   request/read/write frames, validating widths/version before circuit input.
-4. Feed the separate AES halves to each access and use packed held-material
+3. Migrate the plaintext `build_access` circuit. **Completed:**
+   `SplitOram*::run_access` accepts the evaluator-owned physical path as OT
+   inputs, threads stash/address/write-data as opaque state, reveals only
+   overflow plus the physical write-back path, and has TCP/OT coverage. Logical
+   read data remains opaque and is not exposed by this migration API.
+4. Give the evaluator a ciphertext-tree adapter and explicit encrypted-path
+   request/read/write frames, validating widths/version before circuit input;
+   then feed the separate AES halves to each access and use packed held-material
    encryption for the durable material regions.
 5. Build the paired `HeldMaterialStore` adapters on top of the completed
    boundary phase, then replace `MemoryHeldStore` in the TCP acceptance test.
