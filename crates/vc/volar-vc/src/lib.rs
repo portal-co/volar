@@ -78,6 +78,7 @@ pub mod oram_ciphertext_tree;
 pub mod oram_gadget;
 pub mod oram_host;
 pub mod oram_lower;
+pub mod oram_material;
 pub mod oram_split;
 pub mod partition;
 pub mod schedule;

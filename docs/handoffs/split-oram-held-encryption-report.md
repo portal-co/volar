@@ -160,6 +160,16 @@ while the evaluator receives no decoded verdict bit. Together with
 `EvaluatorReveal`, the material transaction has the two directions it needs:
 seal produces evaluator-owned ciphertext; opening an evaluator-supplied
 ciphertext produces a garbler-owned false-label base. Both directions have
-separate TCP/OT tests. The adapter must select its material input partition
-(`Garbler` for a false-base save, `Evaluator` for ciphertext opens and active
-label save) rather than treating all material bytes as one role's input.
+separate TCP/OT tests.
+
+The directional circuit/partition API is now explicit:
+`MaterialBlockDirection::{SealGarbler, OpenGarbler, SealEvaluator,
+OpenEvaluator}` names the only valid ownership transitions.
+`MaterialBlockProtocol::for_direction` provides the exact 384-input
+`SplitInput` partition and private `SplitOutput` disposition for each. This
+means adapters cannot mistakenly feed a garbler base as evaluator input, or
+leak an opened garbler base to the evaluator. The arithmetic remains one fixed
+AES-XOR circuit; the direction-specific constructors document and test the
+ownership contract. `material_block_tweak_checked` rejects slot/version/block
+values that cannot fit in the fixed public tweak encoding, instead of silently
+aliasing AES pads.

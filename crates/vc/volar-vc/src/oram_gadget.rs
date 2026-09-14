@@ -747,14 +747,32 @@ pub fn build_begin(cfg: &OramGadgetConfig) -> BIrBlocks {
 /// The output is `Z * entry_bits` ciphertext bits in slot order. With
 /// versioned pads the supplied `version` is incorporated into the same tweak
 /// layout as [`build_access`].
-/// Build one fixed 128-bit split-key material encryption/decryption circuit.
+/// A directionally-owned durable material block operation.
 ///
-/// Inputs are `[key: 128, tweak: 128, material: 128]`; outputs are
-/// `material XOR AES-128(key, tweak)`. The same circuit opens and seals a
-/// block. Callers must name the tweak with the public material stream, slot,
-/// version, and block index so an old ciphertext cannot be accepted for a new
-/// transaction.
-pub fn build_material_block_cipher() -> BIrBlocks {
+/// The AES-XOR arithmetic is involutory, but its input owner and output
+/// recipient are protocol facts. Naming them here prevents a storage adapter
+/// from accidentally using the evaluator-ciphertext shape to save a
+/// garbler-only false-label base, or vice versa.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialBlockDirection {
+    /// Garbler-private false-label base -> evaluator-private ciphertext.
+    SealGarbler,
+    /// Evaluator-private ciphertext -> garbler-private false-label base.
+    OpenGarbler,
+    /// Evaluator-private active label -> evaluator-private ciphertext.
+    SealEvaluator,
+    /// Evaluator-private ciphertext -> evaluator-private active label.
+    OpenEvaluator,
+}
+
+/// Shared arithmetic for every [`MaterialBlockDirection`].
+///
+/// Inputs are `[key: 128, tweak: 128, material: 128]`; output is
+/// `material XOR AES-128(key, tweak)`. Ownership is deliberately represented
+/// by the direction-specific constructors below, rather than by the circuit
+/// bits themselves: this preserves the one circuit identity while making the
+/// split runner's input/output partition auditable at each call site.
+fn build_material_block_xor() -> BIrBlocks {
     let mut b = Builder::new(384);
     let key: Vec<u32> = (0..128).collect();
     let tweak: Vec<u32> = (128..256).collect();
@@ -767,12 +785,58 @@ pub fn build_material_block_cipher() -> BIrBlocks {
     b.finish(output)
 }
 
+/// Legacy/general material block arithmetic constructor. New protocol code
+/// should use a direction-specific constructor below.
+pub fn build_material_block_cipher() -> BIrBlocks {
+    build_material_block_xor()
+}
+
+/// Build the garbler-base sealing circuit. Its final 128 input bits must be
+/// `SplitInput::Garbler` and its output must be `EvaluatorReveal`.
+pub fn build_material_seal_garbler_block() -> BIrBlocks {
+    build_material_block_xor()
+}
+
+/// Build the garbler-base opening circuit. Its final 128 input bits must be
+/// `SplitInput::Evaluator` and its output must be `GarblerReveal`.
+pub fn build_material_open_garbler_block() -> BIrBlocks {
+    build_material_block_xor()
+}
+
+/// Build evaluator-label sealing. Its material input and ciphertext output are
+/// evaluator-private (`Evaluator` / `EvaluatorReveal`).
+pub fn build_material_seal_evaluator_block() -> BIrBlocks {
+    build_material_block_xor()
+}
+
+/// Build evaluator-label opening. Its ciphertext input and label output are
+/// evaluator-private (`Evaluator` / `EvaluatorReveal`).
+pub fn build_material_open_evaluator_block() -> BIrBlocks {
+    build_material_block_xor()
+}
+
 /// Public 128-bit tweak for a role-local durable material block.
 ///
 /// The fields are deliberately explicit: different roles use different
 /// `region`s, while `slot`, monotonically increasing `version`, and `block`
 /// make substitution/replay across transactions decrypt to an invalid label.
 pub fn material_block_tweak(region: u8, slot: u64, version: u64, block: u32) -> [u8; 16] {
+    material_block_tweak_checked(region, slot, version, block)
+        .expect("durable material slot/version/block exceeds fixed tweak encoding")
+}
+
+/// Checked form of [`material_block_tweak`]. The fixed format has 48-bit slot
+/// and version fields plus a 16-bit block field; rejecting larger values avoids
+/// turning distinct durable transactions into one AES pad.
+pub fn material_block_tweak_checked(
+    region: u8,
+    slot: u64,
+    version: u64,
+    block: u32,
+) -> Option<[u8; 16]> {
+    if slot > 0xFFFF_FFFF_FFFF || version > 0xFFFF_FFFF_FFFF || block > u16::MAX as u32 {
+        return None;
+    }
     let mut tweak = [0u8; 16];
     tweak[0] = 0xD4; // material-store domain separator
     tweak[1] = region;
@@ -782,7 +846,7 @@ pub fn material_block_tweak(region: u8, slot: u64, version: u64, block: u32) -> 
     // them, which could turn distinct transactions into one pad.
     tweak[4..10].copy_from_slice(&slot.to_le_bytes()[..6]);
     tweak[10..16].copy_from_slice(&version.to_le_bytes()[..6]);
-    tweak
+    Some(tweak)
 }
 
 pub fn build_tree_node_formatter(
