@@ -173,3 +173,12 @@ AES-XOR circuit; the direction-specific constructors document and test the
 ownership contract. `material_block_tweak_checked` rejects slot/version/block
 values that cannot fit in the fixed public tweak encoding, instead of silently
 aliasing AES pads.
+
+`ChainStoragePhase` now invokes explicit `HeldMaterialStore::prefetch` and
+`flush` hooks rather than calling `load`/`store` inside the storage phase.
+This gives a durable adapter an unambiguous, non-nested transport/OT seam:
+ordinary strict rounds only consume a local cache, while the public storage
+script drives material AES transactions at a round boundary. The hooks default
+to no-ops for `MemoryHeldStore`. A `MaterialRole::Both` output must be expanded
+into separate Garbler and Evaluator storage operations; combining their blocks
+would recreate the prohibited combined held state.

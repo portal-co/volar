@@ -259,6 +259,29 @@ pub trait HeldMaterialStore<T, N: VoleArray<u8>> {
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<(), MpcError>;
+    /// Run a durable read at an explicit chain storage boundary. Implementors
+    /// populate their local cache here; ordinary [`Self::load`] calls during a
+    /// strict round must not start a nested transport protocol.
+    fn prefetch<D: Digest>(
+        &mut self,
+        _slot: usize,
+        _transport: &mut dyn Transport,
+        _ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        Ok(())
+    }
+    /// Persist staged role-local output at an explicit chain storage boundary.
+    /// `store` only stages data so strict output framing is never nested with
+    /// AES/OT material storage framing.
+    fn flush<D: Digest>(
+        &mut self,
+        _slot: usize,
+        _owner: MaterialRole,
+        _transport: &mut dyn Transport,
+        _ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        Ok(())
+    }
     /// Number of initialized logical slots, for public resource accounting.
     fn len(&self) -> usize;
     /// Physical capacity consumed by the backing, for public accounting.
@@ -416,11 +439,9 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainStoragePhase<N>
     ) -> Result<(), MpcError> {
         for operation in operations {
             match *operation {
-                StorageOperation::Load { slot } => {
-                    let _ = self.held_get::<D>(slot, transport, ot)?;
-                }
+                StorageOperation::Load { slot } => self.held.prefetch::<D>(slot, transport, ot)?,
                 StorageOperation::Store { slot, owner } => {
-                    self.held_set::<D>(slot, owner, None, transport, ot)?;
+                    self.held.flush::<D>(slot, owner, transport, ot)?
                 }
             }
         }
@@ -720,11 +741,9 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainStoragePhase<N>
     ) -> Result<(), MpcError> {
         for operation in operations {
             match *operation {
-                StorageOperation::Load { slot } => {
-                    let _ = self.held_get::<D>(slot, transport, ot)?;
-                }
+                StorageOperation::Load { slot } => self.held.prefetch::<D>(slot, transport, ot)?,
                 StorageOperation::Store { slot, owner } => {
-                    self.held_set::<D>(slot, owner, None, transport, ot)?;
+                    self.held.flush::<D>(slot, owner, transport, ot)?
                 }
             }
         }

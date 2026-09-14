@@ -8,6 +8,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use volar_mpc::strict_chain::MaterialRole;
 use volar_mpc::strict_split::{SplitInput, SplitOutput};
 
 use crate::oram_gadget::MaterialBlockDirection;
@@ -25,6 +26,26 @@ pub struct MaterialBlockProtocol {
 }
 
 impl MaterialBlockProtocol {
+    /// Select the one valid direction for a role-local store operation.
+    /// `Both` is intentionally rejected: each half must persist in a separate
+    /// transaction, so the physical ciphertext stream never combines them.
+    pub fn for_store_owner(owner: MaterialRole) -> Option<MaterialBlockDirection> {
+        match owner {
+            MaterialRole::Garbler => Some(MaterialBlockDirection::SealGarbler),
+            MaterialRole::Evaluator => Some(MaterialBlockDirection::SealEvaluator),
+            MaterialRole::Both => None,
+        }
+    }
+
+    /// Select the one valid opening direction for one role-local stream.
+    pub fn for_load_owner(owner: MaterialRole) -> Option<MaterialBlockDirection> {
+        match owner {
+            MaterialRole::Garbler => Some(MaterialBlockDirection::OpenGarbler),
+            MaterialRole::Evaluator => Some(MaterialBlockDirection::OpenEvaluator),
+            MaterialRole::Both => None,
+        }
+    }
+
     /// Construct the ownership script for one explicitly named direction.
     pub fn for_direction(direction: MaterialBlockDirection) -> Self {
         let material_owner = match direction {

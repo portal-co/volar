@@ -1,5 +1,6 @@
 //! Directional ownership scripts for durable held-material AES blocks.
 
+use volar_mpc::strict_chain::MaterialRole;
 use volar_mpc::strict_split::{SplitInput, SplitOutput};
 use volar_vc::compile_schedule;
 use volar_vc::oram_gadget::{
@@ -97,6 +98,34 @@ fn all_directional_circuits_are_fixed_384_to_128_aes_xor_shapes() {
         assert_eq!(schedule.num_inputs, 384);
         assert_eq!(schedule.output_wires().len(), MATERIAL_BLOCK_BITS);
     }
+}
+
+#[test]
+fn both_material_halves_require_separate_durable_transactions() {
+    assert_eq!(
+        MaterialBlockProtocol::for_store_owner(MaterialRole::Garbler),
+        Some(MaterialBlockDirection::SealGarbler)
+    );
+    assert_eq!(
+        MaterialBlockProtocol::for_load_owner(MaterialRole::Garbler),
+        Some(MaterialBlockDirection::OpenGarbler)
+    );
+    assert_eq!(
+        MaterialBlockProtocol::for_store_owner(MaterialRole::Evaluator),
+        Some(MaterialBlockDirection::SealEvaluator)
+    );
+    assert_eq!(
+        MaterialBlockProtocol::for_load_owner(MaterialRole::Evaluator),
+        Some(MaterialBlockDirection::OpenEvaluator)
+    );
+    assert_eq!(
+        MaterialBlockProtocol::for_store_owner(MaterialRole::Both),
+        None
+    );
+    assert_eq!(
+        MaterialBlockProtocol::for_load_owner(MaterialRole::Both),
+        None
+    );
 }
 
 #[test]
