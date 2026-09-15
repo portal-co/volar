@@ -220,11 +220,12 @@ fn priv_ks<const BIG_N: usize, const LOG_Q: u32, const PRIV_ELL: usize, const PR
 /// Level-`j` test polynomial: bins `[0, Delta_pos) -> 0`,
 /// `[Delta_pos, 2*Delta_pos) -> g_j`, zero elsewhere (an in-budget selector
 /// phase never leaves `[0, 2*Delta_pos)`).
-fn level_test_poly<const BIG_N: usize, const LOG_Q: u32, const K_MAX: usize>(
+fn level_test_poly<const BIG_N: usize, const LOG_Q: u32>(
     level: usize,
     bs_base_log: u32,
+    k_max: u32,
 ) -> [u32; BIG_N] {
-    let width = BIG_N >> K_MAX;
+    let width = BIG_N >> k_max;
     let g = gadget::level_factor::<LOG_Q>(bs_base_log, level);
     let mut poly = [0u32; BIG_N];
     for p in width..(2 * width) {
@@ -246,16 +247,16 @@ pub fn circuit_bootstrap<
     const KS_ELL: usize,
     const PRIV_ELL: usize,
     const PRIV_BASE_LOG: u32,
-    const K_MAX: usize,
 >(
     ct: &LweCiphertext<N_LWE>,
     cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
+    k_max: u32,
 ) -> RgswCiphertext<BIG_N, BS_ELL> {
-    let delta = wire_delta::<LOG_Q_LWE>(K_MAX as u32);
+    let delta = wire_delta::<LOG_Q_LWE>(k_max);
     // Center the wire's bin: phase becomes m * Delta + Delta/2.
     let centered = lwe_add_const::<N_LWE, LOG_Q_LWE>(ct, delta / 2);
     let rows = core::array::from_fn(|j| {
-        let test_poly = level_test_poly::<BIG_N, LOG_Q, K_MAX>(j, BS_BASE_LOG);
+        let test_poly = level_test_poly::<BIG_N, LOG_Q>(j, BS_BASE_LOG, k_max);
         let acc = blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(
             &centered,
             &test_poly,
@@ -356,8 +357,8 @@ mod tests {
             let rgsw = circuit_bootstrap::<
                 { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                 { toy::BS_ELL }, { toy::BS_BASE_LOG }, { toy::KS_ELL },
-                { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG }, 2,
-            >(&wire, &cbk);
+                { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG },
+            >(&wire, &cbk, 2);
             // Row invariant: phase(rlwe0_j) = -m * g_j * s'(X),
             // phase(rlwe1_j) = m * g_j (constant).
             for (j, row) in rgsw.rows.iter().enumerate() {
@@ -391,8 +392,8 @@ mod tests {
             let rgsw = circuit_bootstrap::<
                 { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                 { toy::BS_ELL }, { toy::BS_BASE_LOG }, { toy::KS_ELL },
-                { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG }, 2,
-            >(&wire, &cbk);
+                { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG },
+            >(&wire, &cbk, 2);
             let out = external_product::<
                 { toy::BIG_N }, 7, { toy::BS_ELL }, { toy::BS_BASE_LOG },
             >(&rgsw, &content);
@@ -427,8 +428,8 @@ mod tests {
                 circuit_bootstrap::<
                     { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                     { toy::BS_ELL }, { toy::BS_BASE_LOG }, { toy::KS_ELL },
-                    { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG }, 2,
-                >(&wire, &cbk)
+                    { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG },
+                >(&wire, &cbk, 2)
             };
             let s0 = select(addr & 1 == 1);
             let s1 = select(addr & 2 == 2);

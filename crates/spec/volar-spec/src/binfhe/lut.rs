@@ -52,6 +52,92 @@ pub enum LutError {
     ShapeUnsupported,
 }
 
+/// Runtime-shaped table validation, shared by the compile-time [`Lut`]
+/// type and the plan interpreter ([`crate::binfhe::plan`]). Const fn:
+/// callable in both contexts. Returns the bin width (`big_n >> k_max`) on
+/// success.
+pub const fn check_lut_shape(
+    addr_bits: usize,
+    table_len: usize,
+    big_n: usize,
+    log_q: u32,
+    log_q_lwe: u32,
+    k_max: usize,
+) -> Result<usize, LutError> {
+    if addr_bits == 0 || addr_bits >= usize::BITS as usize {
+        return Err(LutError::AddressShapeInvalid);
+    }
+    if table_len != 1usize << addr_bits {
+        return Err(LutError::AddressShapeInvalid);
+    }
+    if addr_bits > k_max {
+        return Err(LutError::ArityExceedsCircuitMax);
+    }
+    if (k_max as u32) + 2 > log_q_lwe
+        || !big_n.is_power_of_two()
+        || (1usize << k_max) > big_n
+        || (1usize << log_q_lwe) != 2 * big_n
+        || log_q_lwe > log_q
+        || log_q > 32
+    {
+        return Err(LutError::ShapeUnsupported);
+    }
+    Ok(big_n >> k_max)
+}
+
+/// Whether every entry of the table equals the first.
+pub const fn table_is_constant(logical: &[bool]) -> bool {
+    let mut i = 1;
+    while i < logical.len() {
+        if logical[i] != logical[0] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Fill the test polynomial for a logical table: the shared layout used by
+/// both [`Lut::new`] (compile time) and the plan interpreter (runtime).
+///
+/// Requires [`check_lut_shape`] to have passed. Constant tables get a zero
+/// polynomial (the read path short-circuits them before bootstrapping).
+/// Bin `a` occupies `[a*W, (a+1)*W)` with `W = BIG_N >> k_max`; the stored
+/// value is `Delta_out * (Q/q)` per true bin.
+pub const fn fill_test_poly<const BIG_N: usize>(
+    logical: &[bool],
+    addr_bits: usize,
+    k_max: usize,
+    log_q: u32,
+    log_q_lwe: u32,
+) -> [u32; BIG_N] {
+    let table_len = 1usize << addr_bits;
+    let is_constant = table_is_constant(logical);
+    let delta_shift = log_q_lwe - 1 - k_max as u32;
+    let value = if log_q >= 32 {
+        delta_out_full_width(delta_shift, log_q - log_q_lwe)
+    } else {
+        (1u32 << (delta_shift + (log_q - log_q_lwe))) & ((1u32 << log_q) - 1)
+    };
+    let width = BIG_N >> k_max;
+    let used = if is_constant { 0 } else { table_len * width };
+    let mut test_poly = [0u32; BIG_N];
+    let mut p = 0;
+    while p < used {
+        test_poly[p] = if logical[p / width] { value } else { 0 };
+        p += 1;
+    }
+    test_poly
+}
+
+/// Full-width (LOG_Q = 32) variant of the output value: `2^(delta_shift +
+/// upscale)` with no mask. Separate so the 32-shift is explicit.
+const fn delta_out_full_width(delta_shift: u32, upscale: u32) -> u32 {
+    // For valid shapes, delta_shift + upscale <= 31 whenever LOG_Q = 32 is
+    // in use with q = 2N (LOG_Q_LWE <= 32 forces k_max small enough).
+    1u32 << (delta_shift + upscale)
+}
+
 /// A validated Boolean lookup table with its precomputed test polynomial.
 ///
 /// Const-generic parameters: `ADDR_BITS`/`TABLE_LEN` describe the logical
@@ -84,56 +170,18 @@ impl<
 {
     /// Construct and validate a table. `const`, so a fixed table selected
     /// by the weaver can be materialized at compile time.
+    ///
+    /// Shares validation ([`check_lut_shape`]) and layout
+    /// ([`fill_test_poly`]) with the runtime plan interpreter.
     pub const fn new(logical: [bool; TABLE_LEN]) -> Result<Self, LutError> {
-        // Shape checks.
-        if ADDR_BITS == 0 || ADDR_BITS >= usize::BITS as usize {
-            return Err(LutError::AddressShapeInvalid);
+        match check_lut_shape(ADDR_BITS, TABLE_LEN, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX) {
+            Err(e) => Err(e),
+            Ok(_) => Ok(Self {
+                logical,
+                test_poly: fill_test_poly::<BIG_N>(&logical, ADDR_BITS, K_MAX, LOG_Q, LOG_Q_LWE),
+                is_constant: table_is_constant(&logical),
+            }),
         }
-        if TABLE_LEN != 1usize << ADDR_BITS {
-            return Err(LutError::AddressShapeInvalid);
-        }
-        if ADDR_BITS > K_MAX {
-            return Err(LutError::ArityExceedsCircuitMax);
-        }
-        if (K_MAX as u32) + 2 > LOG_Q_LWE
-            || !BIG_N.is_power_of_two()
-            || (1usize << K_MAX) > BIG_N
-            || (1usize << LOG_Q_LWE) != 2 * BIG_N
-            || LOG_Q_LWE > LOG_Q
-            || LOG_Q > 32
-        {
-            return Err(LutError::ShapeUnsupported);
-        }
-
-        let mut is_constant = true;
-        let mut i = 1;
-        while i < TABLE_LEN {
-            if logical[i] != logical[0] {
-                is_constant = false;
-                break;
-            }
-            i += 1;
-        }
-
-        // Output value at ring-modulus scale: Delta_out * (Q / q).
-        let delta_out: u32 = 1u32 << (LOG_Q_LWE - 1 - K_MAX as u32);
-        let value = torus::reduce::<LOG_Q>(delta_out << (LOG_Q - LOG_Q_LWE));
-        let width = BIG_N >> K_MAX; // coefficients per bin, >= 1
-        let used = if is_constant { 0 } else { TABLE_LEN * width }; // <= BIG_N since ADDR_BITS <= K_MAX
-        let mut test_poly = [0u32; BIG_N];
-        let mut p = 0;
-        while p < used {
-            test_poly[p] = if logical[p / width] { value } else { 0 };
-            p += 1;
-        }
-        // Positions [used, BIG_N) stay zero: an in-budget selector phase
-        // never reads them (phase < TABLE_LEN * width + width / 2).
-
-        Ok(Self {
-            logical,
-            test_poly,
-            is_constant,
-        })
     }
 
     /// The logical table entries, address-ordered (bit 0 = LSB).
