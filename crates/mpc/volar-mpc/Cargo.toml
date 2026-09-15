@@ -22,6 +22,9 @@ typenum = { version = "1.17", default-features = false }
 default = []
 # Framed-TCP transport + std-only helpers. The crate is no_std+alloc by default.
 std = []
+# Explicit server-only admission and adapter surface for batched TinyLabels
+# delivery. It never enables automatically and is unavailable without `std`.
+tinylabels = ["std"]
 # ML-KEM-1024 1-of-2 OT (post-quantum KEM-based), an alternative to the
 # default Chou-Orlandi base OT. No extra std requirement.
 mlkem = ["dep:ml-kem", "dep:rand_core"]

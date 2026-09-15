@@ -73,6 +73,8 @@ pub mod strict_cursor;
 pub mod strict_split;
 #[cfg(feature = "std")]
 pub mod tcp;
+#[cfg(all(feature = "std", feature = "tinylabels"))]
+pub mod tinylabels_delivery;
 
 /// The deterministic Garbled-RAM data-wire base: access `access`'s `bit`-th
 /// data-bit false-label is derived as `H(0xDA || access || bit)` — a pure
