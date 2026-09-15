@@ -23,6 +23,9 @@
 //! enough to make a deployment-security claim: label encoding, noise sampling,
 //! parameter review, and transcript formats still require validation.
 
+/// Canonical bounded stage-frame envelope for transcript-bound adapters.
+pub mod frame;
+
 /// Experimental Ring-LWE batch selection following TinyLabels Construction 3.
 ///
 /// This module is intentionally separate from the local [`LabelBatch`] adapter.
