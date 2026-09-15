@@ -60,7 +60,10 @@ against treating 80 or 96 bits as an unqualified storage optimization. [CKPR19]
    *TinyLabels* targets communication of input labels with an offline/online
    construction and Ring-LWE machinery. It may be relevant to bulk OT/input
    transfer, but it does not provide a 16-byte durable opaque label format and
-   has materially different assumptions/complexity. [HLL24]
+   has materially different assumptions/complexity. The explicit, server-only
+   cross-repository plan is in
+   [`tinylabels-cross-repository-plan.md`](tinylabels-cross-repository-plan.md).
+   [HLL24]
 
 3. **Evaluate a different complete garbling scheme.**
    BHKR fixed-key-AES token constructions are the most concrete short-token
