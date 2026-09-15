@@ -5,8 +5,10 @@ plumbing. Updated 2026-09-14.
 
 This ledger is required reading before adding or changing a provider adapter,
 provider artifact toolchain, FHE boundary, heavy-garbling backend import, or a
-check/test that is intentionally deferred. The current tree contains no valid
-FHE implementation suitable for this plumbing. In particular, the historical
+check/test that is intentionally deferred. The V2 `volar_spec::binfhe` module
+now provides evidence-grounded **internal arithmetic and plan execution** for
+this plumbing, but remains Unpinned and Very unstable and has no deployment,
+frame-interoperability, or parameter-security claim. The historical
 `FheScheme` / legacy TFHE path is not a validation target and must not be used
 as a stand-in provider.
 
@@ -41,6 +43,8 @@ check.
 | FHE-PLUMB-TOOLCHAIN-02 | Imported Rust-WASM LLVM artifact reaches VAFFLE/Volar IR through `Pipeline::from_command` | A reviewed, deterministic fixture with an explicit entry ABI; after toolchain prerequisite clears | TODO |
 | FHE-PLUMB-TOOLCHAIN-03 | Heavy-garbling LLVM artifact import | A practical, reviewed heavy-garbling implementation and a fixed public ABI; reference output must be independently checkable | TODO |
 | FHE-PLUMB-PROVIDER-01 | Concrete provider artifact/profile validation | Maintained implementation, parameter/profile fingerprint, canonical frame format, key/evaluation-material lifecycle, and independent oracle | TODO |
+| FHE-PLUMB-BINFHE-BOUNDARY-01 | `binfhe::boundary::PlanBoundary`: encrypt fixed plan inputs, execute, decrypt only declared Boolean outputs | `toy` exact profile and the already validated `BootstrapPlan` executor | **PASS (internal arithmetic only):** boundary test exhausts the AND truth table, validates before input conversion, and checks input shape. No frame, transport, security, or interoperable-provider claim. |
+| FHE-PLUMB-BINFHE-BOUNDARY-02 | Bind `PlanBoundary` to generated BinFHE weaver function input/output ABI | Generated-code compile-and-run test against the plan boundary under the same profile and key material | TODO |
 | FHE-PLUMB-PROVIDER-02 | Provider boundary attached to `PreFheStoragePlan` | Reviewed provider plus end-to-end strict-ORAM/held-material reference test with no secret host exposure | TODO |
 | FHE-PLUMB-PROVIDER-03 | Provider-induced failure/abort/replay semantics | Reviewed session/key-epoch binding and adversarial transport test plan | TODO |
 | FHE-PLUMB-MOVF-01 | 5a1/5a2 plans consume provider chunk inputs after movfuscation | Stable frontend marker consumer plus reviewed provider | TODO |

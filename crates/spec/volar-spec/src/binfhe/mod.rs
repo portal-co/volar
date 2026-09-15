@@ -49,11 +49,13 @@
 
 // Milestone-scoped module list; extended as later milestones land.
 pub mod blind_rotate;
+/// Validated host-side plaintext/ciphertext conversion for a fixed plan.
+pub mod boundary;
 pub mod circuit_bs;
 pub mod gadget;
 pub mod keys;
-pub mod lwe;
 pub mod lut;
+pub mod lwe;
 pub mod modswitch;
 pub mod params;
 pub mod pbs;

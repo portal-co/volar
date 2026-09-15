@@ -39,8 +39,32 @@ pub struct LweCiphertext<const N: usize> {
 /// The canonical Boolean wire delta for maximum LUT arity `K`:
 /// `Delta = q / 2^(K+1)`. Requires `K + 1 <= LOG_Q_LWE` (profiles guarantee
 /// `K + 2 <= LOG_Q_LWE`, leaving one more bit for the centering offset).
+/// Validate and return the canonical Boolean-wire delta for `k_max`.
+///
+/// The uniform selector needs a half-bin centering offset, so it requires
+/// `k_max + 2 <= LOG_Q_LWE`; `k_max = 0` is allowed for a plan containing no
+/// LUT input, while a normal Boolean plan uses `k_max >= 1`. Unlike
+/// [`wire_delta`], this is suitable at an encryption/decryption boundary that
+/// receives its shape from a plan rather than a compile-time constant.
+#[inline]
+pub const fn checked_wire_delta<const LOG_Q_LWE: u32>(k_max: usize) -> Option<u32> {
+    if k_max > (LOG_Q_LWE as usize).saturating_sub(2) {
+        None
+    } else {
+        Some(1u32 << (LOG_Q_LWE - 1 - k_max as u32))
+    }
+}
+
+/// Canonical Boolean-wire delta for a previously validated `k_max`.
+///
+/// Internal fixed-shape operations use this compact form. Public runtime
+/// boundaries should use [`checked_wire_delta`] and reject an invalid plan
+/// shape before encrypting or decrypting any wire.
 pub const fn wire_delta<const LOG_Q_LWE: u32>(k_max: usize) -> u32 {
-    1u32 << (LOG_Q_LWE - 1 - k_max as u32)
+    match checked_wire_delta::<LOG_Q_LWE>(k_max) {
+        Some(delta) => delta,
+        None => panic!("binfhe wire encoding exceeds the modulus capacity"),
+    }
 }
 
 /// Generate a binary LWE secret key.
@@ -314,7 +338,10 @@ mod tests {
             assert_eq!(nn, ct);
             // Trivial ciphertexts behave like encrypted ones.
             let t = binfhe_trivial::<{ toy::N_LWE }, LOG_Q>(m, delta);
-            assert_eq!(lwe_phase::<{ toy::N_LWE }, LOG_Q>(&t, &sk), if m { delta } else { 0 });
+            assert_eq!(
+                lwe_phase::<{ toy::N_LWE }, LOG_Q>(&t, &sk),
+                if m { delta } else { 0 }
+            );
             assert_eq!(lwe_decrypt::<{ toy::N_LWE }, LOG_Q>(&t, &sk, delta), m);
         }
     }
