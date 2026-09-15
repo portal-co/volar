@@ -106,6 +106,12 @@ pub enum CircuitProviderError {
         expected: KeyUse,
         actual: KeyUse,
     },
+    UnknownTrackedWire(IRVarId),
+    TrackedWireAlreadyRegistered(IRVarId),
+    SelectKeyMismatch {
+        left: KeyUse,
+        right: KeyUse,
+    },
 }
 
 /// Programs validated as pure single-block circuits with declared geometry.
@@ -159,6 +165,54 @@ pub struct CircuitProviderComposition<'a, P: Clone> {
     keys: BTreeMap<KeyUse, DerivedKey>,
     ciphertexts: BTreeMap<CiphertextUse, CiphertextRecord>,
     randomness: BTreeSet<Vec<IRVarId>>,
+}
+
+/// Why an encrypted value crosses into an ordinary Boolean consumer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecryptReason {
+    /// The value must enter a cache representation; V1 has no durable
+    /// authenticated ciphertext cache.
+    Cached,
+    /// The first consumer is not select-only propagation.
+    FirstNonSelectUse,
+}
+
+/// Conservative source-value residence tracked by exact Boolar wire identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireResidence {
+    Clear,
+    Encrypted {
+        key_use: KeyUse,
+        ciphertext_use: CiphertextUse,
+    },
+}
+
+/// One deferred expensive conversion request emitted exactly at a semantic
+/// demand boundary. The request has no plaintext/ciphertext payload itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireConversionDemand {
+    Decrypt {
+        source: IRVarId,
+        key_use: KeyUse,
+        ciphertext_use: CiphertextUse,
+        reason: DecryptReason,
+    },
+    EncryptForSelect {
+        source: IRVarId,
+        key_use: KeyUse,
+    },
+}
+
+/// Exact-`IRVarId` demand tracker for conversions around FHE-region selects.
+///
+/// It never keys by a source name. `select_only` merely preserves an encrypted
+/// value; `cached` and `first_non_select_use` emit at most one decryption
+/// demand per source. At a mixed clear/encrypted select it emits exactly one
+/// encryption demand for the clear source, and only at that actual merge.
+#[derive(Clone, Debug, Default)]
+pub struct ProviderWireTracker {
+    wires: BTreeMap<IRVarId, WireResidence>,
+    decrypt_requested: BTreeSet<IRVarId>,
 }
 
 impl<P: Clone> CircuitProviderPrograms<P> {
@@ -263,6 +317,147 @@ impl<P: Clone> ValidatedCircuitProvider<P> {
         inputs.extend_from_slice(key);
         inputs.extend_from_slice(ciphertext);
         append_program(into, ProviderProgramKind::Decrypt, &self.decrypt, &inputs)
+    }
+}
+
+impl ProviderWireTracker {
+    /// Register a source wire once as an ordinary clear value.
+    pub fn register_clear(&mut self, source: IRVarId) -> Result<(), CircuitProviderError> {
+        self.register(source, WireResidence::Clear)
+    }
+
+    /// Register a source wire once as an encrypted value.
+    pub fn register_encrypted(
+        &mut self,
+        source: IRVarId,
+        key_use: KeyUse,
+        ciphertext_use: CiphertextUse,
+    ) -> Result<(), CircuitProviderError> {
+        self.register(
+            source,
+            WireResidence::Encrypted {
+                key_use,
+                ciphertext_use,
+            },
+        )
+    }
+
+    /// Obtain a source wire's current residence.
+    pub fn residence(&self, source: IRVarId) -> Result<WireResidence, CircuitProviderError> {
+        self.wires
+            .get(&source)
+            .copied()
+            .ok_or(CircuitProviderError::UnknownTrackedWire(source))
+    }
+
+    /// A select-only consumer cannot by itself force decryption.
+    pub fn select_only(&self, source: IRVarId) -> Result<(), CircuitProviderError> {
+        self.residence(source).map(|_| ())
+    }
+
+    /// Emit a decrypt demand only if the source has not been demanded before.
+    pub fn cached(
+        &mut self,
+        source: IRVarId,
+    ) -> Result<Option<WireConversionDemand>, CircuitProviderError> {
+        self.decrypt_if_needed(source, DecryptReason::Cached)
+    }
+
+    /// Emit a decrypt demand only at the actual first non-select consumer.
+    pub fn first_non_select_use(
+        &mut self,
+        source: IRVarId,
+    ) -> Result<Option<WireConversionDemand>, CircuitProviderError> {
+        self.decrypt_if_needed(source, DecryptReason::FirstNonSelectUse)
+    }
+
+    /// Inspect an actual select merge. If exactly one branch is encrypted,
+    /// request encryption of only the clear branch under the encrypted branch's
+    /// key use. Two encrypted branches must have the same key use; otherwise a
+    /// caller must cut the region rather than silently converting either side.
+    pub fn merge_select(
+        &self,
+        when_true: IRVarId,
+        when_false: IRVarId,
+    ) -> Result<Option<WireConversionDemand>, CircuitProviderError> {
+        let left = self.residence(when_true)?;
+        let right = self.residence(when_false)?;
+        match (left, right) {
+            (WireResidence::Clear, WireResidence::Clear) => Ok(None),
+            (WireResidence::Clear, WireResidence::Encrypted { key_use, .. }) => {
+                Ok(Some(WireConversionDemand::EncryptForSelect {
+                    source: when_true,
+                    key_use,
+                }))
+            }
+            (WireResidence::Encrypted { key_use, .. }, WireResidence::Clear) => {
+                Ok(Some(WireConversionDemand::EncryptForSelect {
+                    source: when_false,
+                    key_use,
+                }))
+            }
+            (
+                WireResidence::Encrypted {
+                    key_use: left_key, ..
+                },
+                WireResidence::Encrypted {
+                    key_use: right_key, ..
+                },
+            ) if left_key == right_key => Ok(None),
+            (
+                WireResidence::Encrypted {
+                    key_use: left_key, ..
+                },
+                WireResidence::Encrypted {
+                    key_use: right_key, ..
+                },
+            ) => Err(CircuitProviderError::SelectKeyMismatch {
+                left: left_key,
+                right: right_key,
+            }),
+        }
+    }
+
+    /// Record the encrypted result produced by the FHE-region select after a
+    /// caller has fulfilled any [`WireConversionDemand::EncryptForSelect`].
+    pub fn register_select_result(
+        &mut self,
+        result: IRVarId,
+        key_use: KeyUse,
+        ciphertext_use: CiphertextUse,
+    ) -> Result<(), CircuitProviderError> {
+        self.register_encrypted(result, key_use, ciphertext_use)
+    }
+
+    fn register(
+        &mut self,
+        source: IRVarId,
+        residence: WireResidence,
+    ) -> Result<(), CircuitProviderError> {
+        if self.wires.insert(source, residence).is_some() {
+            return Err(CircuitProviderError::TrackedWireAlreadyRegistered(source));
+        }
+        Ok(())
+    }
+
+    fn decrypt_if_needed(
+        &mut self,
+        source: IRVarId,
+        reason: DecryptReason,
+    ) -> Result<Option<WireConversionDemand>, CircuitProviderError> {
+        match self.residence(source)? {
+            WireResidence::Clear => Ok(None),
+            WireResidence::Encrypted {
+                key_use,
+                ciphertext_use,
+            } if self.decrypt_requested.insert(source) => Ok(Some(WireConversionDemand::Decrypt {
+                source,
+                key_use,
+                ciphertext_use,
+                reason,
+            })),
+            WireResidence::Encrypted { .. } => Ok(None),
+        }
     }
 }
 
@@ -568,6 +763,55 @@ mod tests {
             bad.validate(GEOMETRY),
             Err(CircuitProviderError::UnsupportedStatement {
                 program: ProviderProgramKind::DeriveKey,
+            })
+        ));
+    }
+
+    #[test]
+    fn wire_tracker_delays_decrypt_and_encrypts_only_at_mixed_select() {
+        let encrypted = IRVarId(10);
+        let clear = IRVarId(11);
+        let mut tracker = ProviderWireTracker::default();
+        tracker
+            .register_encrypted(encrypted, KeyUse(1), CiphertextUse(2))
+            .unwrap();
+        tracker.register_clear(clear).unwrap();
+
+        tracker.select_only(encrypted).unwrap();
+        assert_eq!(
+            tracker.merge_select(encrypted, clear).unwrap(),
+            Some(WireConversionDemand::EncryptForSelect {
+                source: clear,
+                key_use: KeyUse(1),
+            })
+        );
+        assert_eq!(
+            tracker.first_non_select_use(encrypted).unwrap(),
+            Some(WireConversionDemand::Decrypt {
+                source: encrypted,
+                key_use: KeyUse(1),
+                ciphertext_use: CiphertextUse(2),
+                reason: DecryptReason::FirstNonSelectUse,
+            })
+        );
+        // A later cache boundary shares the already-requested decrypt.
+        assert_eq!(tracker.cached(encrypted).unwrap(), None);
+    }
+
+    #[test]
+    fn wire_tracker_rejects_mixed_encrypted_key_uses() {
+        let mut tracker = ProviderWireTracker::default();
+        tracker
+            .register_encrypted(IRVarId(10), KeyUse(1), CiphertextUse(2))
+            .unwrap();
+        tracker
+            .register_encrypted(IRVarId(11), KeyUse(3), CiphertextUse(4))
+            .unwrap();
+        assert!(matches!(
+            tracker.merge_select(IRVarId(10), IRVarId(11)),
+            Err(CircuitProviderError::SelectKeyMismatch {
+                left: KeyUse(1),
+                right: KeyUse(3),
             })
         ));
     }
