@@ -7,6 +7,10 @@ claim.
 
 ## Current direction
 
+- [Future provider integration ledger](future-provider-integration-ledger.md) —
+  mandatory ledger for generic provider/LLVM plumbing and every deferred
+  provider check. It explicitly excludes the legacy `FheScheme`/TFHE surface
+  as a validation substitute.
 - [TFHE two-track plan](tfhe-two-track-cleanup-plan.md) — Track S is the
   speculative legacy steady state, backed by a growing completeness/fuzzing
   corpus; Track V2 is separate construction research.

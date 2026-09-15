@@ -359,6 +359,43 @@ impl Pipeline<VaffleStage> {
         ))
     }
 
+    /// Construct the deterministic baseline Rust-to-LLVM command for a future
+    /// deferred-compute provider, then import it structurally through the
+    /// ordinary LLVM/VAFFLE pipeline. `entries` are the provider's declared
+    /// public ABI names; protocol code must still validate and bind that ABI.
+    ///
+    /// This is intentionally generic: it accepts a reviewed future FHE
+    /// provider or a practical heavy-garbling implementation, but selects
+    /// neither and does not use the historical `FheScheme` integration.
+    // TODO(provider-ledger: FHE-PLUMB-TOOLCHAIN-02): exercise this with a
+    // reviewed deterministic fixture after the target toolchain prerequisite.
+    #[cfg(feature = "provider-llvm-toolchain")]
+    pub fn from_provider_artifact(
+        spec: crate::fhe_provider::ProviderArtifactSpec,
+        rustc: impl AsRef<Path>,
+    ) -> Result<Self, BoxError> {
+        let entries = spec.entry_points.clone();
+        let entry_refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let source = spec.source.clone();
+        let command = spec.command_build(rustc)?;
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_command(command, &entry_refs)?,
+            [source],
+        ))
+    }
+
+    /// [`Self::from_provider_artifact`] plus VAFFLE inline-everything over the
+    /// provider's declared public entry ABI.
+    #[cfg(feature = "provider-llvm-toolchain")]
+    pub fn from_provider_artifact_inlined(
+        spec: crate::fhe_provider::ProviderArtifactSpec,
+        rustc: impl AsRef<Path>,
+    ) -> Result<Self, BoxError> {
+        let entries = spec.entry_points.clone();
+        let entry_refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        Self::from_provider_artifact(spec, rustc)?.inline_vaffle_everything_over(&entry_refs)
+    }
+
     /// Inline every non-recursive intra-module VAFFLE call, using every
     /// export (or every function body) as the root set.
     pub fn inline_vaffle_everything(self) -> Result<Self, BoxError> {

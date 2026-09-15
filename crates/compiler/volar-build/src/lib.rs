@@ -45,6 +45,9 @@
 //!     .with_cpu("cortex-a55");
 //! ```
 
+#[cfg(feature = "provider-llvm-toolchain")]
+pub mod fhe_provider;
+
 #[cfg(any(feature = "weave-rust", feature = "pipeline"))]
 mod circuit;
 #[cfg(any(feature = "weave-rust", feature = "pipeline"))]

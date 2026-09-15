@@ -127,6 +127,7 @@ Load these when working in the relevant area:
 | Higher-K gate degree (future track) | `docs/agent-context/higher-k-gates.md` | Touching `BIrStmt::And`'s degree dispatch, `gate_degree`, or K=3+/FAEST AES pinning |
 | TypeScript class witnesses | `docs/agent-context/ts-class-witnesses.md` | Working on TS codegen: `WitnessKind`, `ctx` parameter, type-param-as-value, static method dispatch |
 | ORAM & channel | `docs/agent-context/oram.md` | Working on ORAM crates, channel protocol, ORAM weaver integration |
+| **Future FHE/provider plumbing ledger** | **`docs/fhe/future-provider-integration-ledger.md`** | **Adding/changing a generic FHE provider adapter, provider LLVM artifact toolchain, heavy-garbling import, FHE boundary, or any skipped provider test/check; record every deferral there and do not use the legacy `FheScheme`/TFHE path as validation** |
 | Progress tracking | `PROGRESS.md` | Starting a new session, reviewing status, planning next steps |
 | Top-level doc index | `docs/README.md` | Looking for a specific subsystem reference |
 
