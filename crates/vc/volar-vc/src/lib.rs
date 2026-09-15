@@ -71,6 +71,9 @@ extern crate alloc;
 
 pub mod aes_extern;
 pub mod aes_gadget;
+/// Provider-neutral validation and inline composition for finite FHE circuit
+/// programs. See `docs/fhe/circuit-provider-abi.md`.
+pub mod circuit_provider;
 pub mod embedder;
 pub mod faest_owf;
 /// Stateless fused-GC handoff after an imported FHE module exchanges its
@@ -102,6 +105,10 @@ pub mod tls13_held;
 pub mod tls13_live;
 pub mod x25519_gadget;
 
+pub use circuit_provider::{
+    CircuitProviderError, CircuitProviderGeometry, CircuitProviderPrograms, ProviderProgramKind,
+    ValidatedCircuitProvider,
+};
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};
 pub use hybrid_storage::{
