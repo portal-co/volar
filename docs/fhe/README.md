@@ -18,6 +18,10 @@ claim.
   record of the exact legacy profile, reproducible corpus, failures, and
   admissible next experiments.
 - [Integer-sampled V2 draft](tfhe-mlkem-rework-draft.md) — design draft only.
+- [`binfhe` V2 implementation plan](binfhe-v2-implementation-plan.md) —
+  research + plan for a licensed, paper-bound GINX/CGGI replacement module
+  with programmable and circuit bootstrapping and a shared weaver/interpreter
+  bootstrap-plan structure.
 
 ## Validation and historical planning
 

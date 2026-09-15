@@ -2,6 +2,25 @@
 
 > Load at the start of a session to see what's done and what's next.
 
+## binfhe V2 (Track V2) — M1–M8 landed (2026-07)
+
+New `volar_spec::binfhe` module family: a from-scratch, licensed-parameter
+GINX/CGGI Boolean-FHE construction replacing the legacy `tfhe.rs` surface
+(TFHE-rs untouched; OpenFHE STD128 transcription, binary secrets, CBD
+noise). Includes programmable bootstrapping with validated multi-input LUTs
+(half-circle selector; arbitrary arity within profile budget), CGGI17
+circuit bootstrapping (LWE→RGSW with private key switching; binding record
+`docs/fhe/reviews/binfhe-cbs-binding.md`), the serializable `BootstrapPlan`
+(shared by weaver codegen and interpreters; `execute_plan` reference
+interpreter in-spec), weaver-side `BinFheScheme` + cone-fusion plan builder
++ `weave_binfhe_plan` codegen (e2e: generated code runs bit-identically to
+`execute_plan`), and the noise-budget suite (256-bootstrap corpus, 0
+failures; `selector_margin` accounting; Std128 smoke green in 18.6s
+release, opt-in). Open: M7 dyn-mirror compile blocked by pre-existing
+generator limitations (recorded in the plan doc); §9 security validation
+(estimator run) is human-gated; M9/M10 (WWL+24 CBS, cross-impl vectors)
+optional. Plan: `docs/fhe/binfhe-v2-implementation-plan.md`.
+
 ## Local `volar-ir` upgrade — b436363 (2026-09-05)
 
 The local overlay now resolves the sibling `../volar-ir` checkout at
