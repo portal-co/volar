@@ -1113,12 +1113,31 @@ mod tests {
         crate::tests_common::run_compile_check(&with_imports, test_name);
     }
 
+    /// The weaver's emitted IR must itself be Vec-free (AGENTS.md Core
+    /// Design Rule 11): the weaver emits presized calls, never a `Vec`.
+    fn assert_module_vec_free(plan: &BootstrapPlan, name: &str) {
+        let module = weave_binfhe_plan(plan, name);
+        let errors = volar_compiler_passes::vec_lint::lint_module(module.inner(), &|_| false);
+        assert!(
+            errors.is_empty(),
+            "weaver-emitted IR must be Vec-free: {:?}",
+            errors
+        );
+    }
+
     #[test]
-    fn fused_and_circuit_compiles() {
+    fn fused_and_circuit_compiles_and_is_vec_free() {
         let plan = build_bootstrap_plan(&build_and_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
+        assert_module_vec_free(&plan, "and_fused");
         let module = weave_binfhe_plan(&plan, "and_fused");
         let code = crate::fhe::print_fhe_flat_module(module.inner(), true);
         compile_check_binfhe(&code, "binfhe_fused_and");
+    }
+
+    #[test]
+    fn fused_xor_and_plan_is_vec_free() {
+        let plan = build_bootstrap_plan(&xor_and_or_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
+        assert_module_vec_free(&plan, "xor_and_or");
     }
 
     #[test]
