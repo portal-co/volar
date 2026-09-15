@@ -15,6 +15,9 @@ volar-ir-common.workspace = true
 volar-side.workspace = true
 volar-oram.workspace = true
 volar-ir-opt.workspace = true
+# Used by the provider-neutral 5a1 marker tunnel. It only transports IR
+# variable identity through movfuscation; it does not select or invoke FHE.
+volar-ir-passes.workspace = true
 digest.workspace = true
 hybrid-array.workspace = true
 
@@ -24,7 +27,6 @@ volar-ir-common.workspace = true
 volar-side.workspace = true
 sha2 = { version = "0.11.0-rc.0", default-features = false }
 typenum = { version = "1.17", default-features = false }
-volar-ir-passes.workspace = true
 # D2 WAT conformance test: drive a real guest through the vc pipeline.
 volar-vaffle-target.workspace = true
 vaffle.workspace = true

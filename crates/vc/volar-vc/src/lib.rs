@@ -101,8 +101,11 @@ pub mod x25519_gadget;
 
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use hybrid_storage::{
-    DeferredChunkId, DeferredInputSlot, HeldMaterialPreOpen, OramReadPreRun, OramReadToken,
-    PreFheStoragePlan, PreFheStoragePlanError, PublicAddressStoragePlan,
+    DeferredChunkId, DeferredInputSlot, HeldMarkerTunnel, HeldMarkerTunnelError,
+    HeldMaterialMarker, HeldMaterialPreOpen, InferredSelect, InferredSelectFragment,
+    InferredSelectGraph, InferredSelectNode, OramReadPreRun, OramReadToken, PreFheStoragePlan,
+    PreFheStoragePlanError, PublicAddressStoragePlan, TunneledHeldMaterialMarker,
+    infer_selects_from_poly, tunnel_held_material_markers,
 };
 pub use oram_host::{GramEvalDrive, OramHost, OramHostError, OramHostShim};
 pub use partition::partition_from_sides;

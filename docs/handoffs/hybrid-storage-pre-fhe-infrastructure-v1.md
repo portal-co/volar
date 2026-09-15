@@ -84,6 +84,55 @@ adapter keeps the directional ownership rule:
 - `Both` expands to paired role-local transactions;
 - neither host combines or locally decrypts material.
 
+## 5a pass variants
+
+**Implementation note:** the shared marker tunnel required one small upstream
+IR-interface export: `volar-ir-passes` now publicly re-exports its already
+implemented `movfuscate_ir_with_boundary_and_watch` function. The algorithm is
+unchanged; the export prevents 5a1 from reimplementing or guessing the
+movfuscator's SSA renaming.
+
+Both variants share the same output seam: a bounded set of
+`HeldMaterialPreOpen` demands is lowered to `StorageOperation::Prefetch` and
+runs before the strict/movfuscated chunk that consumes role-local held
+material. Neither variant performs host-side AES opening or uses FHE.
+
+### 5a1 — marker consumption and movfuscation tunnel
+
+`HeldMaterialMarker` names a pre-movfuscation block/SSA statement result plus
+its public durable slot and owner. `tunnel_held_material_markers` validates
+that the marker names a real statement result and uses the existing
+`movfuscate_ir_with_boundary_and_watch` facility to return the exact
+movfuscated SSA result. Duplicate, invalid, or missing tunnels fail closed.
+
+This is the direct path when a frontend/lowering can identify held-material
+demand before flattening. It consumes sidecar marker metadata; it does not add
+a speculative IR operation variant while the frontend contract remains fluid.
+A future stable instruction-group consumer must build these markers and reject
+any required marker left unconsumed before movfuscation.
+
+### 5a2 — raw `Poly` select recovery
+
+`infer_selects_from_poly(blocks, types)` discovers an exact Boolean MUX only
+when a `Poly` is structurally equivalent over GF(2) to:
+
+```text
+x * a + (x + 1) * b = x*a + x*b + b
+```
+
+It requires a Bit result type, a zero constant, and exactly the canonical three
+coefficient-one monomials `{x,a}`, `{x,b}`, and `{b}` for a whole-statement
+select. It reports nested select-producing operands and select results embedded
+in larger polynomial expressions. It also records an inline three-term select
+fragment when that canonical subset occurs among additional Boolean polynomial
+terms; the surrounding expression remains ordinary arithmetic and is never
+claimed to be a whole MUX.
+
+This is deliberately recognition-only in v1. A later consumer may choose a
+bounded, public-shape select region for prefetch; otherwise it must retain the
+ordinary strict boundary. It must not infer plaintext equality, perform a
+secret host lookup, or rewrite ambiguous/noncanonical arithmetic.
+
 ## Explicit non-goals
 
 - No native FHE ORAM.
@@ -118,6 +167,12 @@ be added at the public seams named below, not by inspecting private state.
 | V2-PROVIDER-02 | FHE chunk result re-enters explicit ORAM boundary | End-to-end strict ORAM + provider reference computation | TODO | No reviewed provider selected |
 | V2-MOVF-01 | required pre-run/held-demand marker is consumed before movfuscation | IR evaluator before/after pass + marker rejection | TODO | IR representation not pinned yet |
 | V2-MOVF-02 | unconsumed marker makes movfuscation/lowering fail closed | Compiler diagnostic | TODO | IR representation not pinned yet |
+| V2-5A1-01 | marker tunnel maps each valid statement to its movfuscated SSA result | IR evaluator + stable instruction-group source | TODO | Stable frontend marker contract pending |
+| V2-5A1-02 | invalid/duplicate/missing marker fails before a storage/FHE action | Compiler diagnostic and transcript absence | TODO | Full plan executor pending |
+| V2-5A2-01 | canonical `x*a + x*b + b` recovers `x ? a : b` | IR evaluator and worked truth tables | TODO | Test seam intentionally deferred with provider-independent pass review |
+| V2-5A2-02 | nested select graph preserves child dependencies | IR evaluator and worked truth tables | TODO | Test seam intentionally deferred with provider-independent pass review |
+| V2-5A2-03 | select consumed inside larger polynomial is reported only as embedded | IR evaluator plus negative structural cases | TODO | Test seam intentionally deferred with provider-independent pass review |
+| V2-5A2-04 | non-Bit, nonzero-constant, duplicate/ambiguous monomials are rejected | IR evaluator plus negative structural cases | TODO | Test seam intentionally deferred with provider-independent pass review |
 
 ## Required v2 design gates
 
