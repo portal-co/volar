@@ -55,6 +55,10 @@ pub struct ProviderArtifactSpec {
     pub kind: DeferredComputeKind,
     pub source: PathBuf,
     pub output_bitcode: PathBuf,
+    /// ABI entry points. An FHE circuit provider must expose only the fixed
+    /// circuit functions described in `docs/fhe/circuit-provider-abi.md`;
+    /// its key derivation, encryptors, and decryptors are composed circuits,
+    /// not host-callable cryptographic services.
     pub entry_points: Vec<String>,
     /// Extra explicit rustc flags. They may not override the deterministic
     /// target, emit mode, or safety flags chosen by this module.

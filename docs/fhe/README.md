@@ -11,6 +11,10 @@ claim.
   mandatory ledger for generic provider/LLVM plumbing and every deferred
   provider check. It explicitly excludes the legacy `FheScheme`/TFHE surface
   as a validation substitute.
+- [Self-contained circuit-provider ABI](circuit-provider-abi.md) — draft
+  compiler contract for split-seed AES-GCM-keystream KDF, randomized
+  encryption/decryption circuits, full unrolling, inline composition, and
+  demand-driven wire conversion.
 - [TFHE two-track plan](tfhe-two-track-cleanup-plan.md) — Track S is the
   speculative legacy steady state, backed by a growing completeness/fuzzing
   corpus; Track V2 is separate construction research.

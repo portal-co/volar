@@ -17,6 +17,9 @@
 //! `binfhe::boundary::PlanBoundary` owns typed host conversion; an imported
 //! LLVM/WASM module must first lower to an actual `BIrBlocks` circuit before
 //! it can be supplied here. The legacy `FheScheme`/TFHE surface is never used.
+//! The next provider shape is documented in `docs/fhe/circuit-provider-abi.md`:
+//! it will inline complete split-seed key-derivation and randomized conversion
+//! circuits before calling this state-eliding transition seam.
 //!
 //! # Ledger
 //!
