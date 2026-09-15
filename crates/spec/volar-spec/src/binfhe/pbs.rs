@@ -82,7 +82,7 @@ pub fn binfhe_lut_read<
     lut: &Lut<ADDR_BITS, TABLE_LEN, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>,
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
-    let delta = wire_delta::<LOG_Q_LWE>(K_MAX as u32);
+    let delta = wire_delta::<LOG_Q_LWE>(K_MAX);
     if lut.is_constant() {
         return binfhe_trivial::<N_LWE, LOG_Q_LWE>(lut.constant_value(), delta);
     }
@@ -106,6 +106,55 @@ pub fn binfhe_lut_read<
     >(&combined, lut.test_polynomial(), bk)
 }
 
+/// Runtime-table LUT read: the shared executor for the plan interpreter
+/// ([`crate::binfhe::plan::execute_plan`]) and weaver-generated code.
+///
+/// Same semantics as [`binfhe_lut_read`] but with the table as a runtime
+/// slice (length `2^k`, `k = inputs.len()`); `k_max` is the circuit-wide
+/// maximum arity fixing the wire encoding. Panics if the shape is invalid —
+/// callers validate with [`check_lut_shape`](crate::binfhe::lut::check_lut_shape)
+/// first (the plan's `validate()` does).
+pub fn binfhe_lut_read_dyn<
+    const N_LWE: usize,
+    const BIG_N: usize,
+    const LOG_Q: u32,
+    const LOG_Q_LWE: u32,
+    const LOG_MOD_KS: u32,
+    const BS_ELL: usize,
+    const BS_BASE_LOG: u32,
+    const KS_ELL: usize,
+    const KS_BASE_LOG: u32,
+>(
+    inputs: &[LweCiphertext<N_LWE>],
+    table: &[bool],
+    k_max: usize,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+) -> LweCiphertext<N_LWE> {
+    let delta = wire_delta::<LOG_Q_LWE>(k_max as usize);
+    if crate::binfhe::lut::table_is_constant(table) {
+        return binfhe_trivial::<N_LWE, LOG_Q_LWE>(table[0], delta);
+    }
+    let arity = table.len().trailing_zeros() as usize;
+    assert_eq!(inputs.len(), arity, "LUT arity must match the table");
+    let test_poly = crate::binfhe::lut::fill_test_poly::<BIG_N>(
+        table,
+        arity,
+        k_max as usize,
+        LOG_Q,
+        LOG_Q_LWE,
+    );
+    let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0);
+    for (j, bit) in inputs.iter().enumerate() {
+        let scaled = lwe_scale::<N_LWE, LOG_Q_LWE>(bit, 1u32 << j);
+        combined = lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
+    }
+    combined = lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, delta / 2);
+    binfhe_pbs_core::<
+        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
+        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+    >(&combined, &test_poly, bk)
+}
+
 /// Macro-generating gate wrappers would obscure the const wiring; each
 /// gate is written out with its associated-constant table.
 
@@ -122,8 +171,8 @@ pub fn binfhe_gate_and<
     const KS_BASE_LOG: u32,
     const K_MAX: usize,
 >(
-    a: &LweCiphertext<N_LWE>,
-    b: &LweCiphertext<N_LWE>,
+    a: LweCiphertext<N_LWE>,
+    b: LweCiphertext<N_LWE>,
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
     let lut = match Lut::<2, 4, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>::AND {
@@ -133,7 +182,7 @@ pub fn binfhe_gate_and<
     binfhe_lut_read::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 2, 4, K_MAX,
-    >(&[*a, *b], &lut, bk)
+    >(&[a, b], &lut, bk)
 }
 
 /// OR gate: one programmable bootstrap.
@@ -149,8 +198,8 @@ pub fn binfhe_gate_or<
     const KS_BASE_LOG: u32,
     const K_MAX: usize,
 >(
-    a: &LweCiphertext<N_LWE>,
-    b: &LweCiphertext<N_LWE>,
+    a: LweCiphertext<N_LWE>,
+    b: LweCiphertext<N_LWE>,
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
     let lut = match Lut::<2, 4, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>::OR {
@@ -160,7 +209,7 @@ pub fn binfhe_gate_or<
     binfhe_lut_read::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 2, 4, K_MAX,
-    >(&[*a, *b], &lut, bk)
+    >(&[a, b], &lut, bk)
 }
 
 /// XOR gate: one programmable bootstrap (unlike the legacy raw linear XOR,
@@ -177,8 +226,8 @@ pub fn binfhe_gate_xor<
     const KS_BASE_LOG: u32,
     const K_MAX: usize,
 >(
-    a: &LweCiphertext<N_LWE>,
-    b: &LweCiphertext<N_LWE>,
+    a: LweCiphertext<N_LWE>,
+    b: LweCiphertext<N_LWE>,
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
     let lut = match Lut::<2, 4, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>::XOR {
@@ -188,7 +237,7 @@ pub fn binfhe_gate_xor<
     binfhe_lut_read::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 2, 4, K_MAX,
-    >(&[*a, *b], &lut, bk)
+    >(&[a, b], &lut, bk)
 }
 
 /// CMUX (oblivious select) as a 3-input LUT: `sel ? a : b` with
@@ -206,9 +255,9 @@ pub fn binfhe_cmux<
     const KS_BASE_LOG: u32,
     const K_MAX: usize,
 >(
-    sel: &LweCiphertext<N_LWE>,
-    a: &LweCiphertext<N_LWE>,
-    b: &LweCiphertext<N_LWE>,
+    sel: LweCiphertext<N_LWE>,
+    a: LweCiphertext<N_LWE>,
+    b: LweCiphertext<N_LWE>,
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
     // addr = sel + 2a + 4b; f(sel,a,b) = sel ? a : b.
@@ -220,7 +269,7 @@ pub fn binfhe_cmux<
     binfhe_lut_read::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 3, 8, K_MAX,
-    >(&[*sel, *a, *b], &lut, bk)
+    >(&[sel, a, b], &lut, bk)
 }
 
 #[cfg(test)]
@@ -280,7 +329,7 @@ mod tests {
         sk: &LweSecretKey<{ toy::N_LWE }>,
         seed: u64,
     ) -> LweCiphertext<{ toy::N_LWE }> {
-        let delta = wire_delta::<{ toy::LOG_Q_LWE }>(k_max);
+        let delta = wire_delta::<{ toy::LOG_Q_LWE }>(k_max as usize);
         let mut rng = TestRng::new(seed);
         lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(m, delta, sk, &mut rng)
     }
@@ -293,7 +342,7 @@ mod tests {
         sk: &LweSecretKey<{ toy::N_LWE }>,
         context: &str,
     ) {
-        let delta = wire_delta::<{ toy::LOG_Q_LWE }>(k_max);
+        let delta = wire_delta::<{ toy::LOG_Q_LWE }>(k_max as usize);
         assert_eq!(
             lwe_phase::<{ toy::N_LWE }, { toy::LOG_Q_LWE }>(ct, sk),
             if expected { delta } else { 0 },
@@ -319,7 +368,7 @@ mod tests {
                             { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                             { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
                             { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
-                        >(&ca, &cb, &bk),
+                        >(ca, cb, &bk),
                         a && b, 2, &sk, "AND",
                     );
                     assert_wire(
@@ -327,7 +376,7 @@ mod tests {
                             { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                             { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
                             { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
-                        >(&ca, &cb, &bk),
+                        >(ca, cb, &bk),
                         a || b, 2, &sk, "OR",
                     );
                     assert_wire(
@@ -335,7 +384,7 @@ mod tests {
                             { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                             { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
                             { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
-                        >(&ca, &cb, &bk),
+                        >(ca, cb, &bk),
                         a ^ b, 2, &sk, "XOR",
                     );
                 }
@@ -411,7 +460,7 @@ mod tests {
                             { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                             { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
                             { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
-                        >(&cs, &ca, &cb, &bk),
+                        >(cs, ca, cb, &bk),
                         if sel { a } else { b },
                         3, &sk, "CMUX",
                     );
@@ -472,7 +521,7 @@ mod tests {
                             { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                             { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
                             { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
-                        >(&cts[i], &cts[j], &cts[k], &bk),
+                        >(cts[i], cts[j], cts[k], &bk),
                     )
                 }
                 1 => (
@@ -481,7 +530,7 @@ mod tests {
                         { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                         { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
                         { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
-                    >(&cts[i], &cts[j], &bk),
+                    >(cts[i], cts[j], &bk),
                 ),
                 2 => (
                     wires[i] || wires[j],
@@ -489,7 +538,7 @@ mod tests {
                         { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                         { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
                         { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
-                    >(&cts[i], &cts[j], &bk),
+                    >(cts[i], cts[j], &bk),
                 ),
                 3 => (
                     wires[i] ^ wires[j],
@@ -497,7 +546,7 @@ mod tests {
                         { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
                         { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
                         { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
-                    >(&cts[i], &cts[j], &bk),
+                    >(cts[i], cts[j], &bk),
                 ),
                 _ => (
                     !wires[i],
@@ -563,7 +612,7 @@ mod tests {
                 { toy_noisy::N_LWE }, { toy_noisy::BIG_N }, { toy_noisy::LOG_Q },
                 { toy_noisy::LOG_Q_LWE }, { toy_noisy::LOG_MOD_KS }, { toy_noisy::BS_ELL },
                 { toy_noisy::BS_BASE_LOG }, { toy_noisy::KS_ELL }, { toy_noisy::KS_BASE_LOG }, 2,
-            >(&ca, &cb, &bk);
+            >(ca, cb, &bk);
             let phase = lwe_phase::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }>(&out, &lwe_sk);
             let expected = if a && b { delta } else { 0 };
             let err = phase.wrapping_sub(expected) & 0x7F;

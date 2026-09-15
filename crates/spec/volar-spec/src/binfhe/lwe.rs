@@ -39,8 +39,8 @@ pub struct LweCiphertext<const N: usize> {
 /// The canonical Boolean wire delta for maximum LUT arity `K`:
 /// `Delta = q / 2^(K+1)`. Requires `K + 1 <= LOG_Q_LWE` (profiles guarantee
 /// `K + 2 <= LOG_Q_LWE`, leaving one more bit for the centering offset).
-pub const fn wire_delta<const LOG_Q_LWE: u32>(k_max: u32) -> u32 {
-    1u32 << (LOG_Q_LWE - 1 - k_max)
+pub const fn wire_delta<const LOG_Q_LWE: u32>(k_max: usize) -> u32 {
+    1u32 << (LOG_Q_LWE - 1 - k_max as u32)
 }
 
 /// Generate a binary LWE secret key.
@@ -247,7 +247,7 @@ mod tests {
         // K = 1, 2, 3 (Delta = q/4, q/8, q/16) on the exact toy profile.
         let sk = gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(1));
         for k in 1..=3u32 {
-            let delta = wire_delta::<LOG_Q>(k);
+            let delta = wire_delta::<LOG_Q>(k as usize);
             for m in [false, true] {
                 for seed in 0..8u64 {
                     let mut rng = TestRng::new(seed * 16 + k as u64);

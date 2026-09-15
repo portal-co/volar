@@ -76,6 +76,7 @@ pub(crate) mod vole_split;
 pub(crate) mod nested_block_chunk;
 pub mod faest;
 pub mod fhe;
+pub mod fhe_binfhe;
 pub mod oram;
 pub mod gadgets;
 pub mod noop;

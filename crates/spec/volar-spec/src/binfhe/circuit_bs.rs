@@ -223,7 +223,7 @@ fn priv_ks<const BIG_N: usize, const LOG_Q: u32, const PRIV_ELL: usize, const PR
 fn level_test_poly<const BIG_N: usize, const LOG_Q: u32>(
     level: usize,
     bs_base_log: u32,
-    k_max: u32,
+    k_max: usize,
 ) -> [u32; BIG_N] {
     let width = BIG_N >> k_max;
     let g = gadget::level_factor::<LOG_Q>(bs_base_log, level);
@@ -250,9 +250,9 @@ pub fn circuit_bootstrap<
 >(
     ct: &LweCiphertext<N_LWE>,
     cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
-    k_max: u32,
+    k_max: usize,
 ) -> RgswCiphertext<BIG_N, BS_ELL> {
-    let delta = wire_delta::<LOG_Q_LWE>(k_max);
+    let delta = wire_delta::<LOG_Q_LWE>(k_max as usize);
     // Center the wire's bin: phase becomes m * Delta + Delta/2.
     let centered = lwe_add_const::<N_LWE, LOG_Q_LWE>(ct, delta / 2);
     let rows = core::array::from_fn(|j| {
@@ -285,7 +285,7 @@ mod tests {
     use crate::binfhe::lwe::{gen_lwe_secret_key, lwe_encrypt};
     use crate::binfhe::params::toy;
     use crate::binfhe::rgsw::{cmux, external_product};
-    use crate::binfhe::rlwe::{gen_rlwe_secret_key, rlwe_phase, rlwe_trivial};
+    use crate::binfhe::rlwe::{gen_rlwe_secret_key, rlwe_trivial};
 
     struct TestRng(u64);
     impl TestRng {

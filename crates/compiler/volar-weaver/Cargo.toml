@@ -28,6 +28,9 @@ volar-c-backend = { workspace = true }
 vaffle.workspace = true
 portal-pc-waffle-ir.workspace = true
 volar-net = { workspace = true, optional = true }
+# Path (not git) dep: the binfhe plan types must reflect the local spec
+# crate as edited, like the compile-check harness's generated projects.
+volar-spec = { path = "../../spec/volar-spec" }
 
 [dev-dependencies]
 # Cross-check the `emit_keccak256` boolean gadget against a known-good SHA3-256.

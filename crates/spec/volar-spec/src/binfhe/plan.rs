@@ -29,9 +29,9 @@ use alloc::vec::Vec;
 
 use crate::binfhe::circuit_bs::{CircuitBootstrappingKey, circuit_bootstrap};
 use crate::binfhe::keys::BootstrappingKey;
-use crate::binfhe::lut::{check_lut_shape, fill_test_poly, table_is_constant};
+use crate::binfhe::lut::table_is_constant;
 use crate::binfhe::lwe::{
-    LweCiphertext, binfhe_not, binfhe_trivial, lwe_add, lwe_add_const, lwe_scale, wire_delta,
+    LweCiphertext, binfhe_not, binfhe_trivial, wire_delta,
 };
 use crate::binfhe::pbs::binfhe_pbs_core;
 use crate::binfhe::rgsw::{RgswCiphertext, cmux};
@@ -340,7 +340,7 @@ pub fn execute_plan<
 ) -> (Vec<LweCiphertext<N_LWE>>, Vec<RlweCiphertext<BIG_N>>) {
     assert_eq!(inputs.len(), plan.num_inputs as usize, "input wire count");
     assert_eq!(cells.len(), plan.num_cells as usize, "input cell count");
-    let delta = wire_delta::<LOG_Q_LWE>(plan.k_max);
+    let delta = wire_delta::<LOG_Q_LWE>(plan.k_max as usize);
 
     let mut wires: Vec<LweCiphertext<N_LWE>> = inputs.to_vec();
     let mut rgsws: Vec<RgswCiphertext<BIG_N, BS_ELL>> = Vec::new();
@@ -365,35 +365,22 @@ pub fn execute_plan<
                     let spec = &plan.luts[*table as usize];
                     let arity = spec.entries.len().trailing_zeros() as usize;
                     assert_eq!(inputs.len(), arity, "LUT arity");
-                    if table_is_constant(&spec.entries) {
-                        wires.push(binfhe_trivial::<N_LWE, LOG_Q_LWE>(spec.entries[0], delta));
-                        continue;
-                    }
-                    // Shared layout with the compile-time Lut type.
-                    let test_poly = fill_test_poly::<BIG_N>(
-                        &spec.entries,
-                        arity,
-                        plan.k_max as usize,
-                        LOG_Q,
-                        LOG_Q_LWE,
-                    );
-                    let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0);
-                    for (j, w) in inputs.iter().enumerate() {
-                        let scaled = lwe_scale::<N_LWE, LOG_Q_LWE>(&wires[*w as usize], 1u32 << j);
-                        combined = lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
-                    }
-                    combined = lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, delta / 2);
-                    wires.push(binfhe_pbs_core::<
+                    // Shared executor with weaver-generated code.
+                    let cts: Vec<LweCiphertext<N_LWE>> = inputs
+                        .iter()
+                        .map(|w| wires[*w as usize])
+                        .collect();
+                    wires.push(crate::binfhe::pbs::binfhe_lut_read_dyn::<
                         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
                         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
-                    >(&combined, &test_poly, bk));
+                    >(&cts, &spec.entries, plan.k_max as usize, bk));
                 }
                 PlanOp::CircuitBootstrap { input, out } => {
                     assert_eq!(*out as usize, rgsws.len());
                     rgsws.push(circuit_bootstrap::<
                         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG,
                         KS_ELL, PRIV_ELL, PRIV_BASE_LOG,
-                    >(&wires[*input as usize], cbk, plan.k_max));
+                    >(&wires[*input as usize], cbk, plan.k_max as usize));
                 }
                 PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
                     assert_eq!(*out as usize, cell_arena.len());
@@ -492,7 +479,7 @@ mod tests {
         sk: &LweSecretKey<{ toy::N_LWE }>,
         cbk: &ToyCbk,
     ) -> (Vec<LweCiphertext<{ toy::N_LWE }>>, Vec<RlweCiphertext<{ toy::BIG_N }>>) {
-        let delta = wire_delta::<{ toy::LOG_Q_LWE }>(plan.k_max);
+        let delta = wire_delta::<{ toy::LOG_Q_LWE }>(plan.k_max as usize);
         let inputs: Vec<_> = input_bits
             .iter()
             .enumerate()
@@ -557,12 +544,12 @@ mod tests {
             { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
             { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
             { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
-        >(&ca, &cb, &cbk.bk);
+        >(ca, cb, &cbk.bk);
         let direct = crate::binfhe::pbs::binfhe_gate_xor::<
             { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
             { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
             { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
-        >(&and, &cc, &cbk.bk);
+        >(and, cc, &cbk.bk);
 
         let (wires, _) = run_toy_plan(&plan, &[true, false, true], &[], &sk, &cbk);
         // Note: the plan inputs are re-encrypted inside run_toy_plan with

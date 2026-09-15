@@ -36,8 +36,6 @@
 //! [`crate::binfhe::plan`] is responsible for keeping each fused cone
 //! within budget for the active profile.
 
-use crate::binfhe::torus;
-
 /// A failure to encode a logical table for one programmable bootstrap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LutError {
