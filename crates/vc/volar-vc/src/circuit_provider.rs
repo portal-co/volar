@@ -27,7 +27,7 @@ use core::convert::Infallible;
 
 use volar_ir::boolar::{BIrBlocks, BIrStmt};
 use volar_ir::circuit::{BCircuit, CircuitFusionError};
-use volar_ir::ir::IRVarId;
+use volar_ir::ir::{IRBlocks, IRTypes, IRVarId};
 use volar_ir_common::Node;
 
 /// Fixed public bit geometry of one circuit-provider profile.
@@ -61,6 +61,33 @@ pub enum ProviderProgramKind {
     DeriveKey,
     Encrypt,
     Decrypt,
+}
+
+/// Errors while preparing an IR-origin provider program for this Boolar seam.
+///
+/// The unbounded unroller remains fail-closed for symbolic/non-finite control;
+/// lowering remains fail-closed for undeclared external operations. A provider
+/// must therefore arrive as a finite pure circuit, never as a host callback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CircuitProviderPreparationError {
+    Unroll(volar_ir_passes::UnrollError),
+    Lower(volar_ir_passes::lower_ir_to_boolar::ExternalLoweringError),
+}
+
+/// Fully unroll a finite IR provider program and lower it to Boolar.
+///
+/// This is the intended import seam for *any* FHE provider implementation.
+/// `CircuitProviderPrograms::validate` subsequently enforces the narrower
+/// fixed-geometry and pure-Boolean ABI contract for its KDF/encrypt/decrypt
+/// roles.
+pub fn prepare_unbounded_provider_program<P: Clone>(
+    program: &IRBlocks<P>,
+    types: &IRTypes,
+) -> Result<BIrBlocks<P>, CircuitProviderPreparationError> {
+    let unrolled = volar_ir_passes::unroll_ir_everything_unbounded(program, types)
+        .map_err(CircuitProviderPreparationError::Unroll)?;
+    volar_ir_passes::lower_ir_to_boolar::try_lower_ir_to_boolar(&unrolled, types)
+        .map_err(CircuitProviderPreparationError::Lower)
 }
 
 /// Fail-closed errors at the provider-program composition seam.
@@ -704,7 +731,8 @@ mod tests {
 
     use super::*;
     use volar_ir::boolar::{BIrBlock, BIrTarget, BIrTerminator};
-    use volar_ir::ir::IRBlockTargetId;
+    use volar_ir::ir::{IRBlockTargetId, IRStmt, IRType, IRTypeId};
+    use volar_ir_common::{Constant, Type};
 
     const GEOMETRY: CircuitProviderGeometry = CircuitProviderGeometry {
         seed_half_bits: 1,
@@ -786,6 +814,28 @@ mod tests {
                 program: ProviderProgramKind::DeriveKey,
             })
         ));
+    }
+
+    #[test]
+    fn prepares_a_finite_ir_provider_program_without_unroll_cap() {
+        let types = IRTypes(vec![IRType::Primitive(Type::Bit)]);
+        let ir: IRBlocks<()> = IRBlocks::new(vec![volar_ir::ir::IRBlock {
+            params: vec![IRTypeId(0)],
+            stmts: vec![Node::new(
+                IRStmt::Const(Constant { hi: 0, lo: 1 }, IRTypeId(0)),
+                (),
+                None,
+            )],
+            terminator: volar_ir::ir::IRTerminator::Jmp {
+                target: volar_ir::ir::IRBranchTarget::new(
+                    IRBlockTargetId::Return,
+                    vec![IRVarId(1)],
+                ),
+            },
+        }]);
+        let prepared = prepare_unbounded_provider_program(&ir, &types).unwrap();
+        assert!(prepared.is_circuit());
+        assert_eq!(prepared.blocks[0].params, 1);
     }
 
     #[test]

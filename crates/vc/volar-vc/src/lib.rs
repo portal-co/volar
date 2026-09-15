@@ -107,9 +107,9 @@ pub mod x25519_gadget;
 
 pub use circuit_provider::{
     CiphertextUse, CircuitProviderComposition, CircuitProviderError, CircuitProviderGeometry,
-    CircuitProviderPrograms, DecryptReason, KeyUse, ProviderProgramKind, ProviderWireTracker,
-    ValidatedCircuitProvider, WireConversionDemand, WireResidence,
-    optimize_circuit_provider_composition,
+    CircuitProviderPreparationError, CircuitProviderPrograms, DecryptReason, KeyUse,
+    ProviderProgramKind, ProviderWireTracker, ValidatedCircuitProvider, WireConversionDemand,
+    WireResidence, optimize_circuit_provider_composition, prepare_unbounded_provider_program,
 };
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};
