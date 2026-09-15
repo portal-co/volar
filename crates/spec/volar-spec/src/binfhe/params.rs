@@ -61,6 +61,27 @@ pub const fn max_lut_arity(log_q_lwe: u32) -> u32 {
     log_q_lwe.saturating_sub(2)
 }
 
+/// Selector-noise margin check (plan §7.5 budget accounting): a cone of
+/// arity `k` whose inputs each carry phase error bounded by
+/// `input_noise_bound` (at `q` scale) decodes correctly only if
+///
+/// ```text
+/// (2^k - 1) * input_noise_bound  <  Delta / 2 = 2^(LOG_Q_LWE - k - 2)
+/// ```
+///
+/// because the selector combines the inputs with weights `2^j`. Returns
+/// true when the cone is in budget. Fresh encryption noise bound is
+/// `CBD_ETA` (|e| <= ETA); refreshed (bootstrapped) wire noise is the
+/// profile's end-to-end output error, measured by the noise-budget suite.
+pub const fn selector_margin(log_q_lwe: u32, k: usize, input_noise_bound: u32) -> bool {
+    if (k as u32) + 2 >= log_q_lwe {
+        return false;
+    }
+    let margin = 1u32 << (log_q_lwe - k as u32 - 2);
+    let weight = ((1u64 << k) - 1) as u32;
+    weight.saturating_mul(input_noise_bound) < margin
+}
+
 /// Compile-time-checkable profile invariant assertion.
 ///
 /// Every profile module exposes a `check()` that calls this; the checks are
@@ -149,23 +170,27 @@ pub mod toy {
 
 /// Small-scale noisy fixture for noise-budget tests. Not a parameter set.
 ///
-/// Sized so the full noise path (RGSW external products, key switching,
-/// both modulus switches) is exercised while per-bootstrap failure stays
-/// rare: at `K = 2` the decode margin is `Delta/2 = 8` at `q` scale, the
-/// end-to-end phase noise is only a few `sigma`, and fresh-input selector
-/// amplification for arity-2 tables (`|e| <= 1`, weights 1 and 2) stays
-/// under `Delta/2`. Measured failure counts are recorded in the noise-budget
-/// tests, not assumed.
+/// Sizing (measured by the M8 noise-budget suite, not assumed): `modKS =
+/// 2^14` with a base-4 3-digit-plus KSK shape was originally `2^12`, which
+/// left the down-scaled key-switch noise within ~1 of the `K = 2` decode
+/// margin (observed 1/256 failures); `2^14` moves the end-to-end output
+/// error to ~2 against the margin of 8. **Selector amplification bound**
+/// (see [`selector_margin`]): fresh inputs carry `|e| <= 1` (CBD_ETA = 1),
+/// so an arity-`k` cone of fresh inputs needs `q/2^(k+2) > (2^k - 1)`;
+/// at `q = 128` that admits `k <= 2` only. Arity-3 cones are out of budget
+/// at this profile for both fresh (`7 > 4`) and refreshed inputs — the
+/// noise-budget tests assert this accounting, and profile selection for a
+/// circuit with wide cones must raise `q` (i.e. `N`) or quiet the eval.
 pub mod toy_noisy {
     pub const N_LWE: usize = 8;
     pub const BIG_N: usize = 64;
     pub const LOG_Q: u32 = 16;
     pub const LOG_Q_LWE: u32 = 7;
-    pub const LOG_MOD_KS: u32 = 12;
+    pub const LOG_MOD_KS: u32 = 14;
     pub const BS_BASE_LOG: u32 = 4;
     pub const BS_ELL: usize = 4;
     pub const KS_BASE_LOG: u32 = 4;
-    pub const KS_ELL: usize = 3;
+    pub const KS_ELL: usize = 4;
     pub const PRIV_BASE_LOG: u32 = 4;
     pub const PRIV_ELL: usize = 4;
     pub const CBD_ETA: u32 = 1;

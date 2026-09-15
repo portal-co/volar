@@ -28,7 +28,9 @@ use crate::binfhe::torus;
 /// LWE key at modulus `2^LOG_MOD_KS`.
 #[derive(Clone, Debug)]
 pub struct KeySwitchingKey<const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize> {
-    pub ksk: [[LweCiphertext<N_LWE>; KS_ELL]; BIG_N],
+    /// Heap-held: at Std128 dimensions the array form would be ~18 MB and
+    /// overflow the stack during construction.
+    pub ksk: alloc::vec::Vec<[LweCiphertext<N_LWE>; KS_ELL]>,
 }
 
 /// The full evaluation key: bootstrapping key plus key-switching key.
@@ -43,7 +45,8 @@ pub struct BootstrappingKey<
     const BS_ELL: usize,
     const KS_ELL: usize,
 > {
-    pub bsk: [RgswCiphertext<BIG_N, BS_ELL>; N_LWE],
+    /// Heap-held: at Std128 dimensions the array form would be ~36 MB.
+    pub bsk: alloc::vec::Vec<RgswCiphertext<BIG_N, BS_ELL>>,
     pub ksk: KeySwitchingKey<N_LWE, BIG_N, KS_ELL>,
 }
 
@@ -66,25 +69,29 @@ pub fn gen_bootstrapping_key<
     rlwe_sk: &RlweSecretKey<BIG_N>,
     rng: &mut R,
 ) -> BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> {
-    let bsk = core::array::from_fn(|i| {
-        rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>(
-            lwe_sk.key[i] != 0,
-            rlwe_sk,
-            rng,
-        )
-    });
+    let bsk = (0..N_LWE)
+        .map(|i| {
+            rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>(
+                lwe_sk.key[i] != 0,
+                rlwe_sk,
+                rng,
+            )
+        })
+        .collect();
     let ksk = KeySwitchingKey {
-        ksk: core::array::from_fn(|i| {
-            core::array::from_fn(|j| {
-                let msg = rlwe_sk.key[i]
-                    .wrapping_mul(gadget::level_factor::<LOG_MOD_KS>(KS_BASE_LOG, j));
-                lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(
-                    torus::reduce::<LOG_MOD_KS>(msg),
-                    lwe_sk,
-                    rng,
-                )
+        ksk: (0..BIG_N)
+            .map(|i| {
+                core::array::from_fn(|j| {
+                    let msg = rlwe_sk.key[i]
+                        .wrapping_mul(gadget::level_factor::<LOG_MOD_KS>(KS_BASE_LOG, j));
+                    lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(
+                        torus::reduce::<LOG_MOD_KS>(msg),
+                        lwe_sk,
+                        rng,
+                    )
+                })
             })
-        }),
+            .collect(),
     };
     BootstrappingKey { bsk, ksk }
 }
