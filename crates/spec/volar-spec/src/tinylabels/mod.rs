@@ -12,10 +12,10 @@
 //! useful for correctness tests and for defining the allocation-free embedded
 //! interface, but it is **not** a TinyLabels/Ring-LWE protocol and makes no
 //! privacy or integrity claim. [`ring_lwe`] now implements the paper's staged
-//! Ring-LWE field-element batch-select construction, but it deliberately does
-//! not turn raw labels into field elements: that canonical mapping, the
-//! required CSPRNG and noise sampler, and a framed transport need independent
-//! protocol review. It deliberately has no dependency on a particular
+//! Ring-LWE field-element batch-select construction. It provides a canonical
+//! 16-byte-label encoding, but the required CSPRNG and noise sampler plus a
+//! framed transport still need independent protocol review. It deliberately
+//! has no dependency on a particular
 //! garbling-table format, transport, strict session, or interpreter.
 //!
 //! The [`PAPER_PROFILE`] constants record the reported 128-bit-security
@@ -60,6 +60,70 @@ pub const PAPER_PROFILE: PaperProfile = PaperProfile {
     modulus_bits: 109,
     batch_messages: 699_050,
 };
+
+/// Canonical encoding error for a 16-byte garbling label.
+///
+/// The TinyLabels reference profile uses a 50-bit plaintext field. Three
+/// elements therefore encode one 128-bit label without reducing its entropy:
+/// the first two elements carry six little-endian bytes each and the third
+/// carries four. Values outside that exact image are rejected on decode rather
+/// than silently folded modulo the field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabelEncodingError {
+    /// A field element is not below the TinyLabels plaintext modulus.
+    FieldElementOutOfRange {
+        /// Element position in the three-element encoding.
+        index: usize,
+    },
+    /// A field element is in the field but not in this label encoding's exact
+    /// 48-bit/48-bit/32-bit image.
+    NonCanonicalElement {
+        /// Element position in the three-element encoding.
+        index: usize,
+    },
+}
+
+/// Encode a 16-byte wire label as three canonical TinyLabels plaintexts.
+///
+/// This is an injective byte representation, not a label shortening or a
+/// change to free-XOR. Decoding the result with [`decode_label_16`] returns the
+/// original bytes exactly. Batch selection may operate on modular differences
+/// of these elements; it must decode the selected output before treating it as
+/// a garbling label.
+pub fn encode_label_16(label: [u8; 16]) -> [u64; 3] {
+    let first = u64::from_le_bytes([
+        label[0], label[1], label[2], label[3], label[4], label[5], 0, 0,
+    ]);
+    let second = u64::from_le_bytes([
+        label[6], label[7], label[8], label[9], label[10], label[11], 0, 0,
+    ]);
+    let third = u32::from_le_bytes([label[12], label[13], label[14], label[15]]) as u64;
+    [first, second, third]
+}
+
+/// Decode the exact three-field-element image produced by [`encode_label_16`].
+///
+/// Rejecting field-valid but noncanonical values prevents two wire encodings
+/// from becoming one label at the serialization seam.
+pub fn decode_label_16(elements: [u64; 3]) -> Result<[u8; 16], LabelEncodingError> {
+    const WIDTHS: [u32; 3] = [48, 48, 32];
+    let modulus = ring_lwe::REFERENCE_PLAINTEXT_MODULUS;
+    let mut label = [0u8; 16];
+    let mut offset = 0usize;
+    for (index, (&element, &width)) in elements.iter().zip(WIDTHS.iter()).enumerate() {
+        if element >= modulus {
+            return Err(LabelEncodingError::FieldElementOutOfRange { index });
+        }
+        if element >= (1u64 << width) {
+            return Err(LabelEncodingError::NonCanonicalElement { index });
+        }
+        let bytes = element.to_le_bytes();
+        let count = (width / 8) as usize;
+        label[offset..offset + count].copy_from_slice(&bytes[..count]);
+        offset += count;
+    }
+    Ok(label)
+}
 
 /// The two raw labels allocated for one Boolean input wire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,7 +208,10 @@ impl<'a, const N: usize> LabelBatch<'a, N> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BatchError, LabelBatch, LabelPair, PAPER_PROFILE, SECURITY_BITS};
+    use super::{
+        BatchError, LabelBatch, LabelEncodingError, LabelPair, PAPER_PROFILE, SECURITY_BITS,
+        decode_label_16, encode_label_16,
+    };
 
     const OFFSET: [u8; 16] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
@@ -193,6 +260,24 @@ mod tests {
         assert_eq!(
             batch.select(&[true, false], &mut output),
             Err(BatchError::LengthMismatch)
+        );
+    }
+
+    #[test]
+    fn label_encoding_is_exact_injective_and_rejects_noncanonical_field_values() {
+        let label = [
+            0x00, 0xff, 0x42, 0x13, 0x99, 0x80, 0x7e, 0x51, 0x01, 0xa5, 0xfe, 0x11, 0x88, 0, 0x33,
+            0xcc,
+        ];
+        let encoded = encode_label_16(label);
+        assert_eq!(decode_label_16(encoded), Ok(label));
+        assert_eq!(
+            decode_label_16([1 << 48, 0, 0]),
+            Err(LabelEncodingError::NonCanonicalElement { index: 0 })
+        );
+        assert_eq!(
+            decode_label_16([super::ring_lwe::REFERENCE_PLAINTEXT_MODULUS, 0, 0]),
+            Err(LabelEncodingError::FieldElementOutOfRange { index: 0 })
         );
     }
 
