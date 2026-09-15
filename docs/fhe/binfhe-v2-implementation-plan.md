@@ -349,7 +349,12 @@ probability is recomputed from our decomposition/modulus choices (including
 the 2024/1318 corrections if WWL⁺ is enabled); (c) the recorded budget in
 `BootstrapPlan` matches the recomputation. The Homomorphic Encryption
 Standard v1.1 tables are context, not a substitute for the estimator run.
-This reclassification is a human decision under reliability.md.
+This reclassification is a review decision under reliability.md: the
+estimator run and failure recomputation in (a)-(c) are automatable evidence
+steps, and the production admission that follows them requires review by a
+much more powerful model with grants from the owner, or a cryptographer
+directly. V2 is barely not paper-pinned, so everything up to that production
+gate is expected to work today; what §9 adds is the recorded evidence.
 
 ## 10. Milestones and gates
 
@@ -362,7 +367,7 @@ This reclassification is a human decision under reliability.md.
 | M5 | `BootstrapPlan` + `execute_plan` reference interpreter | plan roundtrip (serialize/execute) tests green |
 | M6 | `BinFheScheme` weaver + cone-fusion pass | generated code compiles and runs vs `execute_plan`; budget enforcement test |
 | M7 | dyn regeneration + interpreter plan execution | **Partial, with a recorded blocker (2026-07):** `volar-codegen dyn` now parses all 13 `binfhe` files and emits the dyn mirrors (`execute_plan`, `binfhe_lut_read_dyn`, `circuit_bootstrap`, the `BootstrapPlan`/`PlanOp` data types, …). The `--features generated` build of `volar-spec-dyn` does not compile: it had 924 pre-existing errors without binfhe (e.g. `<G as _>::Scalar` from `curve.rs`, unresolved turbofish on `commit::<D>`), and 1319 with binfhe — the same generator failure class (unstripped turbofish at cross-module call sites). The interpreter-path differential evidence that **is** green is `execute_plan` (spec) vs weaver-generated code (M6 e2e, bit-identical ciphertexts). Next smallest safe action for full M7: teach the dyn lowering to strip resolved turbofish and inject runtime length args at cross-module call sites (the same mechanism used intra-module), then re-run the differential suite. |
-| M8 | `Std128` profile + noise-budget suite | **Done with evidence (2026-07):** 256-bootstrap `toy_noisy` corpus: 0 failures, max output phase error ≤ half the decode margin; `selector_margin` budget accounting implemented and tested (the suite caught and fixed an undersized first draft: `modKS` 2^12 → 2^14, and arity-3 cones are now provably out-of-budget at `q = 128` for noisy inputs); `std128` smoke test (full keygen + AND truth table at the OpenFHE-STD128 transcription) passes in 18.6s release — run with `cargo test -p volar-spec --lib --release -- --ignored std128_smoke`. **§9 remains open** (lattice-estimator run + failure recomputation are human-gated); `std128` stays labeled an unvalidated transcription. Bootstrapping key material moved to heap storage (`Vec`) after a stack overflow at Std128 dims — recorded in `keys.rs`. |
+| M8 | `Std128` profile + noise-budget suite | **Done with evidence (2026-07):** 256-bootstrap `toy_noisy` corpus: 0 failures, max output phase error ≤ half the decode margin; `selector_margin` budget accounting implemented and tested (the suite caught and fixed an undersized first draft: `modKS` 2^12 → 2^14, and arity-3 cones are now provably out-of-budget at `q = 128` for noisy inputs); `std128` smoke test (full keygen + AND truth table at the OpenFHE-STD128 transcription) passes in 18.6s release — run with `cargo test -p volar-spec --lib --release -- --ignored std128_smoke`. **§9 remains open**: the lattice-estimator run and failure recomputation are automatable evidence steps, and production admission after them is gated on review by a much more powerful model with owner grants or a cryptographer; until both, `std128` stays labeled an unvalidated transcription. Bootstrapping key material moved to heap storage (`Vec`) after a stack overflow at Std128 dims — recorded in `keys.rs`. |
 | M9 | (optional) WWL⁺24 circuit-bs optimization | 2024/1318-corrected analysis documented; equivalence + noise tests green |
 | M10 | (optional) cross-implementation vectors | reconnaissance record in the existing style |
 

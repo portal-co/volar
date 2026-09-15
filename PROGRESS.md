@@ -18,7 +18,7 @@ interpreter in-spec), weaver-side `BinFheScheme` + cone-fusion plan builder
 failures; `selector_margin` accounting; Std128 smoke green in 18.6s
 release, opt-in). Open: M7 dyn-mirror compile blocked by pre-existing
 generator limitations (recorded in the plan doc); §9 security validation
-(estimator run) is human-gated; M9/M10 (WWL+24 CBS, cross-impl vectors)
+(estimator run + failure recomputation) are automatable evidence steps, with production admission then gated on review by a much more powerful model with owner grants or a cryptographer; M9/M10 (WWL+24 CBS, cross-impl vectors)
 optional. Plan: `docs/fhe/binfhe-v2-implementation-plan.md`.
 
 ## Local `volar-ir` upgrade — b436363 (2026-09-05)
