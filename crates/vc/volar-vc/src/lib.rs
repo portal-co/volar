@@ -73,6 +73,9 @@ pub mod aes_extern;
 pub mod aes_gadget;
 pub mod embedder;
 pub mod faest_owf;
+/// Stateless fused-GC handoff after an imported FHE module exchanges its
+/// ciphertext/plaintext boundary values.
+pub mod fhe_transition;
 pub mod held_remap;
 /// Provider-neutral scheduling for pre-FHE ORAM reads, lazy held-material
 /// openings, and existing public-address storage optimizations.
@@ -100,6 +103,7 @@ pub mod tls13_live;
 pub mod x25519_gadget;
 
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
+pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};
 pub use hybrid_storage::{
     DeferredChunkId, DeferredInputSlot, HeldMarkerTunnel, HeldMarkerTunnelError,
     HeldMaterialMarker, HeldMaterialPreOpen, InferredSelect, InferredSelectFragment,
