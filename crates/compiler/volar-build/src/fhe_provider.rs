@@ -98,8 +98,10 @@ impl ProviderArtifactSpec {
     /// The command does not execute a provider and makes no artifact-validity
     /// assertion. The LTO archive loader accepts raw `.bc`, so no archive or
     /// host linker is needed.
-    // TODO(provider-ledger: FHE-PLUMB-TOOLCHAIN-01): compile a minimal
-    // no-std fixture after this active rustc has `wasm32v1-none` core support.
+    // `rustup run stable rustc` successfully produced a baseline raw `.bc`
+    // artifact on 2026-09-14; the reproducible command is recorded in the
+    // provider ledger. The remaining import coverage is intentionally tracked
+    // separately.
     // TODO(provider-ledger: FHE-PLUMB-TOOLCHAIN-02): import the artifact via
     // `Pipeline::from_command` using a reviewed fixture/public ABI.
     pub fn command_build(

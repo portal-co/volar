@@ -37,13 +37,38 @@ check.
 
 | ID | Seam | Required prerequisite / independent oracle | Status |
 |---|---|---|---|
-| FHE-PLUMB-TOOLCHAIN-01 | `RustWasmLlvmBuild::command_build` end-to-end compile of a minimal `#![no_std]` provider fixture to LLVM bitcode | This checkout's active `rustc` must have the `wasm32v1-none` standard-core artifacts; use `rustc`, not merely a different `rustup` installation | BLOCKED: `rustc 1.98.1` reports missing `core` for `wasm32v1-none`, despite `rustup target list --installed` reporting it. No fallback target is permitted. |
+| FHE-PLUMB-TOOLCHAIN-01 | `ProviderArtifactSpec::command_build` end-to-end compile of a minimal `#![no_std]` provider fixture to LLVM bitcode | `rustup run stable rustc` with the installed `wasm32v1-none` standard-core artifacts | **PASS (toolchain only):** 2026-09-14, `rustup run stable rustc 1.98.1` emitted a 2.3 KiB raw LLVM bitcode artifact using the fixed flags below. The Homebrew PATH `rustc` fails to locate target `core`; provider tooling must use the resolved rustup toolchain executable. This is not provider correctness evidence. |
 | FHE-PLUMB-TOOLCHAIN-02 | Imported Rust-WASM LLVM artifact reaches VAFFLE/Volar IR through `Pipeline::from_command` | A reviewed, deterministic fixture with an explicit entry ABI; after toolchain prerequisite clears | TODO |
 | FHE-PLUMB-TOOLCHAIN-03 | Heavy-garbling LLVM artifact import | A practical, reviewed heavy-garbling implementation and a fixed public ABI; reference output must be independently checkable | TODO |
 | FHE-PLUMB-PROVIDER-01 | Concrete provider artifact/profile validation | Maintained implementation, parameter/profile fingerprint, canonical frame format, key/evaluation-material lifecycle, and independent oracle | TODO |
 | FHE-PLUMB-PROVIDER-02 | Provider boundary attached to `PreFheStoragePlan` | Reviewed provider plus end-to-end strict-ORAM/held-material reference test with no secret host exposure | TODO |
 | FHE-PLUMB-PROVIDER-03 | Provider-induced failure/abort/replay semantics | Reviewed session/key-epoch binding and adversarial transport test plan | TODO |
 | FHE-PLUMB-MOVF-01 | 5a1/5a2 plans consume provider chunk inputs after movfuscation | Stable frontend marker consumer plus reviewed provider | TODO |
+
+## Recorded toolchain probe
+
+The passing toolchain-only probe used an ephemeral source:
+
+```rust
+#![no_std]
+#[unsafe(no_mangle)]
+pub extern "C" fn provider_gate(a: u32, b: u32) -> u32 { a ^ b }
+```
+
+and this exact command shape (with temporary source/output paths):
+
+```sh
+rustup run stable rustc --edition=2024 --crate-type=lib \
+  --target=wasm32v1-none --emit=llvm-bc \
+  -Copt-level=2 -Ccodegen-units=1 -Cpanic=abort \
+  -Cdebuginfo=0 -Coverflow-checks=on \
+  -o provider.bc provider.rs
+```
+
+`file provider.bc` identified the output as `LLVM IR bitcode`. The test is a
+**toolchain availability probe only**; it did not run the artifact, import it
+into VAFFLE, instantiate FHE, or make any cryptographic claim. The importer
+and all provider rows remain deferred as listed above.
 
 ## Completion rule for a provider adapter
 
