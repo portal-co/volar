@@ -175,6 +175,30 @@ impl EncodedLabelBatch {
         &self.zeroes
     }
 
+    /// Number of complete 16-byte label pairs represented by this batch.
+    pub fn label_count(&self) -> usize {
+        self.zeroes.len() / 3
+    }
+
+    /// Pad this message vector to the exact field-slot count required by one
+    /// [`ring_lwe::BatchSelect`] instance. Padding is public zero data and is
+    /// never decoded as a wire label.
+    pub fn pad_to_slots(&self, slots: usize) -> Result<PaddedLabelBatch, LabelBatchPaddingError> {
+        let used = self.zeroes.len();
+        if slots < used {
+            return Err(LabelBatchPaddingError::TooFewSlots { slots, used });
+        }
+        let mut differences = self.differences.clone();
+        let mut zeroes = self.zeroes.clone();
+        differences.resize(slots, 0);
+        zeroes.resize(slots, 0);
+        Ok(PaddedLabelBatch {
+            label_count: self.label_count(),
+            differences,
+            zeroes,
+        })
+    }
+
     /// Expand one choice per wire into the three-element field representation.
     pub fn expanded_choices(choices: &[bool]) -> alloc::vec::Vec<bool> {
         let mut out = alloc::vec::Vec::with_capacity(choices.len() * 3);
@@ -199,6 +223,86 @@ impl EncodedLabelBatch {
             })
             .collect()
     }
+}
+
+/// An encoded label batch padded to a concrete TinyLabels field-slot count.
+///
+/// The final `slots - label_count * 3` entries are public zero padding. This
+/// object makes it impossible to accidentally interpret those entries as
+/// labels after a batch-select decryption.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaddedLabelBatch {
+    label_count: usize,
+    differences: alloc::vec::Vec<u64>,
+    zeroes: alloc::vec::Vec<u64>,
+}
+
+impl PaddedLabelBatch {
+    /// Exact number of field slots in this selection instance.
+    pub fn slots(&self) -> usize {
+        self.zeroes.len()
+    }
+
+    /// Number of non-padding labels in this batch.
+    pub fn label_count(&self) -> usize {
+        self.label_count
+    }
+
+    /// `K1 - K0` field messages including public zero padding.
+    pub fn differences(&self) -> &[u64] {
+        &self.differences
+    }
+
+    /// `K0` field messages including public zero padding.
+    pub fn zeroes(&self) -> &[u64] {
+        &self.zeroes
+    }
+
+    /// Expand choices and append false selections for public padding slots.
+    pub fn expanded_choices(
+        &self,
+        choices: &[bool],
+    ) -> Result<alloc::vec::Vec<bool>, LabelBatchPaddingError> {
+        if choices.len() != self.label_count {
+            return Err(LabelBatchPaddingError::ChoiceLengthMismatch {
+                expected: self.label_count,
+                actual: choices.len(),
+            });
+        }
+        let mut out = EncodedLabelBatch::expanded_choices(choices);
+        out.resize(self.slots(), false);
+        Ok(out)
+    }
+
+    /// Recover only the non-padding labels from selected TinyLabels outputs.
+    pub fn decode_selected(
+        &self,
+        selected: &[u64],
+    ) -> Result<alloc::vec::Vec<[u8; 16]>, LabelBatchDecodeError> {
+        if selected.len() != self.slots() {
+            return Err(LabelBatchDecodeError::LengthMismatch);
+        }
+        EncodedLabelBatch::decode_selected(&selected[..self.label_count * 3])
+    }
+}
+
+/// Error while preparing a field-slot-aligned TinyLabels batch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabelBatchPaddingError {
+    /// The selected Ring-LWE profile cannot hold all three-field-element labels.
+    TooFewSlots {
+        /// Available field slots in the profile.
+        slots: usize,
+        /// Required slots before public padding.
+        used: usize,
+    },
+    /// The caller did not provide one Boolean choice for every original label.
+    ChoiceLengthMismatch {
+        /// Number of labels in this padded batch.
+        expected: usize,
+        /// Number of provided choices.
+        actual: usize,
+    },
 }
 
 /// Error while decoding a selected vector of TinyLabels plaintexts.
@@ -301,6 +405,18 @@ mod tests {
 
     const OFFSET: [u8; 16] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
+    struct TestRandom(u64);
+
+    impl super::ring_lwe::RandomSource for TestRandom {
+        fn fill_bytes(&mut self, output: &mut [u8]) -> Result<(), super::ring_lwe::Error> {
+            for byte in output {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                *byte = (self.0 >> 24) as u8;
+            }
+            Ok(())
+        }
+    }
+
     fn pair(zero: u8) -> LabelPair<16> {
         let zero = [zero; 16];
         LabelPair {
@@ -381,6 +497,52 @@ mod tests {
         assert_eq!(
             EncodedLabelBatch::decode_selected(&[0, 1]),
             Err(LabelBatchDecodeError::LengthMismatch)
+        );
+    }
+
+    #[test]
+    fn padded_batch_runs_the_staged_selector_and_discards_public_padding() {
+        let pairs = [pair(0x20), pair(0x40), pair(0x60)];
+        let encoded = EncodedLabelBatch::from_pairs(&pairs, OFFSET).expect("valid pairs");
+        let padded = encoded
+            .pad_to_slots(16)
+            .expect("the test ring has sixteen slots");
+        let choices = [false, true, false];
+        let expanded = padded
+            .expanded_choices(&choices)
+            .expect("one choice per label");
+        assert_eq!(expanded.len(), 16);
+        assert!(expanded[9..].iter().all(|choice| !choice));
+
+        let mut random = TestRandom(0xD1CE_BA5E);
+        let mut noise = super::ring_lwe::ZeroNoise;
+        let selector = super::ring_lwe::BatchSelect::setup(
+            super::ring_lwe::Parameters::scaled_reference(8, 2),
+            &mut random,
+        )
+        .expect("test selector");
+        let first = selector
+            .enc1(padded.differences(), &mut random, &mut noise)
+            .expect("reusable difference ciphertext");
+        let second = selector
+            .enc2(padded.zeroes(), &mut random, &mut noise)
+            .expect("per-use zero ciphertext");
+        let key = selector
+            .keygen(&first, &second, &expanded)
+            .expect("choice key");
+        let selected = selector
+            .dec(&first, &second, &key, &expanded)
+            .expect("selected field messages");
+        assert_eq!(
+            padded.decode_selected(&selected),
+            Ok(alloc::vec![pairs[0].zero, pairs[1].one, pairs[2].zero])
+        );
+        assert_eq!(
+            padded.expanded_choices(&[true]),
+            Err(super::LabelBatchPaddingError::ChoiceLengthMismatch {
+                expected: 3,
+                actual: 1,
+            })
         );
     }
 
