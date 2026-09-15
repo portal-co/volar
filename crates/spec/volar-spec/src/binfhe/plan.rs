@@ -106,6 +106,30 @@ impl AsRef<[WireId]> for LutInputs {
     }
 }
 
+impl From<&[WireId]> for LutInputs {
+    fn from(ids: &[WireId]) -> Self {
+        Self::from_slice(ids)
+    }
+}
+
+impl<const N: usize> From<[WireId; N]> for LutInputs {
+    fn from(ids: [WireId; N]) -> Self {
+        Self::from_slice(&ids)
+    }
+}
+
+impl From<Vec<WireId>> for LutInputs {
+    fn from(ids: Vec<WireId>) -> Self {
+        Self::from_slice(&ids)
+    }
+}
+
+impl From<&Vec<WireId>> for LutInputs {
+    fn from(ids: &Vec<WireId>) -> Self {
+        Self::from_slice(ids)
+    }
+}
+
 /// One scheduled operation. Wires produced by an op always have the next
 /// free id of their arena, in layer order.
 #[derive(Clone, Debug, PartialEq, Eq)]

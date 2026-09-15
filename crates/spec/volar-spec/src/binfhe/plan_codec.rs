@@ -100,7 +100,7 @@ pub fn encode_plan(plan: &BootstrapPlan) -> Result<Vec<u8>, EncodeError> {
                 PlanOp::Lut { inputs, table, out } => {
                     bytes.push(2);
                     put_u32(&mut bytes, inputs.len() as u32);
-                    for input in inputs {
+                    for input in inputs.as_slice() {
                         put_u32(&mut bytes, *input);
                     }
                     put_u32(&mut bytes, *table);
@@ -232,10 +232,11 @@ fn read_op(reader: &mut Reader<'_>) -> Result<PlanOp, DecodeError> {
         1 => Ok(PlanOp::Not { input: reader.u32()?, out: reader.u32()? }),
         2 => {
             let count = reader.count()?;
-            let mut inputs = Vec::with_capacity(count);
+            let mut ids = alloc::vec::Vec::with_capacity(count);
             for _ in 0..count {
-                inputs.push(reader.u32()?);
+                ids.push(reader.u32()?);
             }
+            let inputs = crate::binfhe::plan::LutInputs::from_slice(&ids);
             let table: LutId = reader.u32()?;
             let out: WireId = reader.u32()?;
             Ok(PlanOp::Lut { inputs, table, out })
@@ -304,7 +305,7 @@ mod tests {
             profile: ProfileId::Toy,
             k_max: 2,
             luts: vec![LutSpec { entries: vec![false, true, true, false] }],
-            layers: vec![vec![PlanOp::Lut { inputs: vec![0, 1], table: 0, out: 2 }]],
+            layers: vec![vec![PlanOp::Lut { inputs: crate::binfhe::plan::LutInputs::from_slice(&[0,1]), table: 0, out: 2 }]],
             num_inputs: 2,
             num_cells: 0,
             outputs: vec![2],
