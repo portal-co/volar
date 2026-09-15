@@ -248,6 +248,43 @@ it wins.
 Ciphertext validity, key epoch, and chosen-ciphertext/decryption behavior are
 provider security obligations.
 
+### 4a. ORAM read pre-run before FHE encryption
+
+**Useful idea:** where a bounded set of future ORAM reads is known before a
+long FHE segment, run those reads first through the existing strict path, then
+encrypt their opaque read values into FHE inputs. The FHE segment consumes the
+resulting handles rather than attempting an FHE-native ORAM read:
+
+```text
+GC secret-address ORAM read -> opaque held/read value -> FHE encrypt
+  -> long FHE segment
+```
+
+This is a scheduling transform around the already supported ORAM boundary, not
+an ORAM implementation in FHE. In particular, it gives movfuscated computation
+a fixed collection of inputs before flattening, so it does not need to discover
+or initiate an ORAM transport/action from inside the flat circuit.
+
+**Required checks:** the read set and its public upper bound are available
+before the FHE segment; every address, ORAM epoch, result width, and ordering
+is bound in a pre-run manifest; no earlier queued write can affect a pre-run
+read without first being committed through the normal ORAM path; and no
+later FHE-computed value determines an address that was claimed to have been
+pre-run. The pre-run result crosses to FHE only through an authorized fixed
+GC/encrypt boundary and has the resulting provider/key epoch recorded.
+
+A bounded **conservative superset** is allowed when the access schedule itself
+is shape-public: perform the required ORAM reads in the normal oblivious way,
+then use fixed GC/FHE selection on their opaque results. The superset size,
+order, and any selection representation are protocol shape; it must not
+introduce a host-visible secret cache lookup.
+
+**Does not work:** hoisting a read whose address depends on an FHE result,
+reordering it across an aliasing write, or replacing an ORAM access with a
+host/evaluator dictionary lookup. A miss in the pre-run manifest is a compiler
+scheduling error or forces a new explicit GC/decrypt/ORAM/encrypt boundary;
+it is never permission for the movfuscated FHE segment to call ORAM directly.
+
 ### 5. Lazy decryption with select/MUX preservation
 
 **Useful idea:** keep both old/new FHE ciphertext handles through GC-style
@@ -264,25 +301,71 @@ equality.
 because decryption is lazy. Noise/level exhaustion still requires a provider
 refresh/bootstrap schedule, independent of host laziness.
 
+### 5a. Lazy AES-held-material opening for storage operations
+
+**Useful idea:** retain durable held values as their evaluator-side encrypted
+AES blocks and defer their split-circuit opening until a storage/held-value
+consumer actually needs the role-local material. This is the AES analogue of
+handle-preserving lazy FHE decryption, and it uses the already-defined
+`MaterialBlockProtocol` directional transitions—not a host-side AES decrypt.
+
+The valid flow is:
+
+```text
+held ciphertext block -> scheduled prefetch -> split AES open circuit
+  -> role-local held labels/bases -> strict GC/ORAM operation
+```
+
+The existing `HeldMaterialStore::prefetch` / `flush` seam is the operational
+home for it: prefetch and open transactions run at a public chain-round
+boundary; ordinary strict rounds consume only the resulting role-local cache.
+This is important for movfuscated circuits. The compiler must make the
+bounded held-material demand and the corresponding boundary phase explicit
+*before* movfuscation, rather than trying to recover a storage action from a
+flattened mux/dataflow circuit.
+
+**Required checks:** use exactly one of `OpenGarbler` or `OpenEvaluator` for
+the intended role-local stream; bind region, role, slot, version, block,
+digest, and chain/key epochs into the checked material tweak/frame; retain the
+single-use prepared/opened state discipline; and prove no intervening
+store/flush/rekey can make the cached material stale. If the movfuscated
+segment can select among a bounded public-shape set of held values, prefetch
+and open the required fixed set before it, then select only role-local opaque
+material inside the circuit.
+
+**Does not work:** decrypting AES-held material in either role host,
+combining garbler false-label bases with evaluator active labels, opening a
+block under the wrong directional protocol, or issuing `HeldMaterialStore`
+transport recursively from a strict round. An unplanned demand must end the
+current segment and schedule a new storage phase; it may not become an
+implicit side effect of movfuscation.
+
 ## Pass ordering
 
 ```text
 LLVM or ERT fixed computation
-  -> provider compilation / fixed FHE segment descriptor
+  -> identify bounded ORAM-read and held-material demands
+  -> emit/consume required pre-run and storage-phase markers before movfuscation
   -> public-address and key-epoch analysis
+  -> provider compilation / fixed FHE segment descriptor
   -> conservative handle-SSA threading
   -> identity-write elimination
-  -> distinct-public-write queue formation
+  -> distinct-public-write queue formation (public-address storage only)
   -> required cache/version checks + fallback branches
-  -> provider batch submission / FHE evaluation
+  -> schedule GC/ORAM pre-runs and split-AES held-material prefetches
+  -> provider encrypt / batch submission / FHE evaluation
   -> only then fixed GC boundary or authorized decrypt
 ```
 
 The optimization pass must preserve a sidecar **proof record** for every
-elision/queue item: source SSA IDs, public address fact, provider ID/key epoch,
-frame digest, storage version, intervening-effect summary, and fallback site.
-Tests should invalidate each fact independently and prove that the fallback or
-non-elision occurs.
+elision, queue item, ORAM pre-run, and held-material prefetch: source SSA IDs,
+public schedule/upper-bound fact, address or material identity fact, provider
+ID/key epoch, frame digest, storage version, intervening-effect summary, and
+fallback/boundary site. Required ORAM/held-material markers are
+`MustConsumeBeforeMovfuscation`-style barriers: movfuscation and circuit
+lowering must reject an unconsumed marker rather than erase it. Tests should
+invalidate each fact independently and prove that the fallback, a new explicit
+boundary, or non-elision occurs.
 
 ## Cost model
 
@@ -321,16 +404,23 @@ real provider.
 4. Add an explicit `FHE handle -> GC -> decrypt -> existing ORAM -> encrypt ->
    FHE handle` boundary, with integration tests proving that every secret
    address uses it and retains existing ORAM semantics.
-5. Add opaque-handle SSA threading and its proof-record tests for
+5. Before movfuscation, add required markers and a scheduler for bounded ORAM
+   read pre-runs. Test read/write dependency rejection, conservative-superset
+   selection, manifest binding, and the forced explicit boundary on a miss.
+6. Before movfuscation, add required held-material-demand markers that lower
+   to `prefetch`/split-AES-open storage phases. Test both material directions,
+   stale-version rejection, no host plaintext, and no recursive transport from
+   a strict round.
+7. Add opaque FHE-handle SSA threading and its proof-record tests for
    public-address storage only.
-6. Add only syntactic identity write elision, then public-distinct batching,
+8. Add only syntactic identity write elision, then public-distinct batching,
    then optimistic cache checks—each under a separate feature flag and
    adversarial invalidation tests. Do not apply them across an ORAM boundary.
-7. Consider a jointly authorized output boundary. Treat split/threshold FHE as
+9. Consider a jointly authorized output boundary. Treat split/threshold FHE as
    a separate research project after the one-owner path has a measured win.
-8. Do not claim *native FHE ORAM* until a provider-specific storage construction
-   clears its own security and replay/rollback model; the explicit fallback to
-   existing ORAM remains supported independently.
+10. Do not claim *native FHE ORAM* until a provider-specific storage construction
+    clears its own security and replay/rollback model; the explicit fallback to
+    existing ORAM remains supported independently.
 
 ## Sources
 
