@@ -21,8 +21,8 @@ use core::marker::PhantomData;
 use digest::Digest;
 
 use super::base::{
-    ot_recv, ot_recv_finish, ot_recv_payload, ot_send_finish, ot_send_payload, ot_send_setup,
-    BaseOtReceiver, BaseOtSender, OtReceiverMsg,
+    BaseOtReceiver, BaseOtSender, OtReceiverMsg, ot_recv, ot_recv_finish, ot_recv_payload,
+    ot_send_finish, ot_send_payload, ot_send_setup,
 };
 use super::group::Group;
 use crate::SpecRng;

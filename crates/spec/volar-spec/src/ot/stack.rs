@@ -1,6 +1,10 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! All-in-one OT stack: LWE base OT → SoftSpoken extension → Ferret-Reg pool.
 //!
 //! In-process generator for tests. Two-thread / TCP drivers live in the
@@ -11,17 +15,17 @@ use alloc::vec::Vec;
 use digest::Digest;
 
 use super::base_ot::BaseOt;
-use super::ferret::pool::{
-    bea95_chosen_bit, new_pool, take_random, CotPoolReceiver, CotPoolSender,
-};
 use super::ferret::FerretParams;
+use super::ferret::pool::{
+    CotPoolReceiver, CotPoolSender, bea95_chosen_bit, new_pool, take_random,
+};
 use super::iknp::IKNP_KAPPA_BYTES;
-use super::lwe::{LweBaseOt, LWE_N};
+use super::lwe::{LWE_N, LweBaseOt};
 use super::softspoken::softspoken_cot_extend_base;
-use crate::field::Galois128;
-use crate::vole::setup::{vole_commit_bit_shares, CotSource};
-use crate::vole::{Q, Vope};
 use crate::SpecRng;
+use crate::field::Galois128;
+use crate::vole::setup::{CotSource, vole_commit_bit_shares};
+use crate::vole::{Q, Vope};
 use cipher::consts::U1;
 use hybrid_array::Array;
 
@@ -166,13 +170,8 @@ mod tests {
         for (j, (vope, q)) in committed.iter().enumerate() {
             assert!(vope.clone() * delta.clone() == *q, "bit {j}");
         }
-        let (vope, q) = vole_commit_bit_from(
-            &mut stack,
-            &mut rng,
-            |_| Galois128(1),
-            bit_to_g128,
-            false,
-        );
+        let (vope, q) =
+            vole_commit_bit_from(&mut stack, &mut rng, |_| Galois128(1), bit_to_g128, false);
         assert!(vope * delta == q);
     }
 }

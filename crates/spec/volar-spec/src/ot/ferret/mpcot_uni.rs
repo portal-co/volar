@@ -1,6 +1,10 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! Uniform-noise MPCOT via Cuckoo hashing (Ferret Fig. 7).
 //!
 //! Cuckoo parameters follow §7.1: `m = 1.5 t`, `τ = 3`. Hash functions are
@@ -14,7 +18,7 @@ use sha3::Sha3_256;
 
 use super::params::FerretParams;
 use super::spcot::{
-    spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend, Block, SpcotSenderMsg,
+    Block, SpcotSenderMsg, spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend,
 };
 use crate::SpecRng;
 
@@ -142,13 +146,7 @@ pub fn mpcot_uni_sender<R: SpecRng>(
         }
         s[x] = acc;
     }
-    (
-        s,
-        MpcotUniSenderMsg {
-            hash_seed,
-            blocks,
-        },
-    )
+    (s, MpcotUniSenderMsg { hash_seed, blocks })
 }
 
 /// Uniform MPCOT receiver.

@@ -1,5 +1,9 @@
 // @reliability: experimental
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! Traits that decouple `sign.rs` from the specific QuickSilver proof backend.
 //!
 //! [`FaestAesProver`] is the dependency-inversion point: `sign` and `verify`

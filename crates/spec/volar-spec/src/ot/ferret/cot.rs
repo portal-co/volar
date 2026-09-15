@@ -1,6 +1,10 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! Bootstrapped COT extension ΠCOT (Ferret Fig. 9 + §6.2).
 //!
 //! Consumes `M = k + t log(n/t)` seed COTs (same global `Δ`), runs regular
@@ -11,8 +15,8 @@ use alloc::vec::Vec;
 
 use super::lpn::{encode_bits, encode_blocks};
 use super::mpcot_reg::{
-    mpcot_reg_choice_bits, mpcot_reg_receiver, mpcot_reg_sender, sample_regular_noise,
-    MpcotRegSenderMsg,
+    MpcotRegSenderMsg, mpcot_reg_choice_bits, mpcot_reg_receiver, mpcot_reg_sender,
+    sample_regular_noise,
 };
 use super::params::FerretParams;
 use super::spcot::Block;
@@ -109,14 +113,7 @@ pub fn ferret_sender_mpcot<R: SpecRng>(
     choices: &[bool],
 ) -> (Vec<Block>, MpcotRegSenderMsg) {
     let cot_q = &sender_seed.q[params.k..];
-    mpcot_reg_sender(
-        rng,
-        &sender_seed.delta,
-        params.n,
-        params.t,
-        cot_q,
-        choices,
-    )
+    mpcot_reg_sender(rng, &sender_seed.delta, params.n, params.t, cot_q, choices)
 }
 
 /// Receiver MPCOT given the stored puncture indices.
@@ -240,14 +237,7 @@ pub fn ferret_extend_uni<R: SpecRng>(
     let cot_r = split_cot_chunks(&receiver_seed.u[k..], &heights);
     let choices = mpcot_uni_choice_bits(params, &hash_seed, &table, &cot_r);
     let cot_q = split_cot_chunks(&sender_seed.q[k..], &heights);
-    let (s, mpcot) = mpcot_uni_sender(
-        rng,
-        &sender_seed.delta,
-        params,
-        hash_seed,
-        &cot_q,
-        &choices,
-    );
+    let (s, mpcot) = mpcot_uni_sender(rng, &sender_seed.delta, params, hash_seed, &cot_q, &choices);
     let cot_t = split_cot_chunks(&receiver_seed.w[k..], &heights);
     let r = mpcot_uni_receiver(params, &table, &cot_t, &mpcot);
 
@@ -310,10 +300,7 @@ pub fn sample_seed_cots<R: SpecRng>(
         u.push(bit);
         w.push(t);
     }
-    (
-        FerretSenderSeed { delta, q },
-        FerretReceiverSeed { u, w },
-    )
+    (FerretSenderSeed { delta, q }, FerretReceiverSeed { u, w })
 }
 
 #[cfg(test)]

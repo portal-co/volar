@@ -1,6 +1,10 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! Single-point correlated OT (Ferret Fig. 6, ΠSPCOT).
 //!
 //! Semi-honest path: steps 2–5. Malicious path adds the Fiat–Shamir form of
@@ -13,9 +17,9 @@ use digest::Digest;
 use hybrid_array::{Array, sizes::U16};
 use sha3::Sha3_256;
 
+use crate::SpecRng;
 use crate::byte_gen::LengthDoubler;
 use crate::faest::prg::AesCtrLengthDoubler;
-use crate::SpecRng;
 
 /// `κ = 128` bits.
 pub const KAPPA_BITS: usize = 128;
@@ -333,10 +337,7 @@ pub fn spcot_consistency_check(
         ip_w = xor_block(&ip_w, &field_mul_block(&chis[i], &w[i]));
     }
     let hv = hash_prime(&ip_v);
-    let hw = hash_prime(&xor_block(
-        &ip_w,
-        &field_mul_block(&chis[a], delta),
-    ));
+    let hw = hash_prime(&xor_block(&ip_w, &field_mul_block(&chis[a], delta)));
     hv == hw
 }
 

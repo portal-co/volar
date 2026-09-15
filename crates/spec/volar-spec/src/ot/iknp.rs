@@ -1,6 +1,10 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! IKNP-style correlated-OT extension (Ishai-Kilian-Nielsen-Petrank, 2003).
 //!
 //! Amortises κ base OTs into `M` correlated OTs at the cost of `O(M·κ)`
@@ -181,8 +185,7 @@ where
         chosen_seeds[i] = B::recv_finish(&r_state, &payload);
     }
 
-    let (t_cols, u_msg) =
-        iknp_receiver_u_cols::<D>(m, receiver_bits, &seeds_0, &seeds_1);
+    let (t_cols, u_msg) = iknp_receiver_u_cols::<D>(m, receiver_bits, &seeds_0, &seeds_1);
     let (sender_r0, corrections) = iknp_sender_from_u::<D, L>(
         m,
         delta_msg,

@@ -1,12 +1,16 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! Refillable COT pool (Ferret §6.2 bootstrap) and Bea95 chosen-bit conversion.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-use super::cot::{ferret_extend, sample_seed_cots, FerretReceiverSeed, FerretSenderSeed};
+use super::cot::{FerretReceiverSeed, FerretSenderSeed, ferret_extend, sample_seed_cots};
 use super::params::FerretParams;
 use super::spcot::Block;
 use crate::SpecRng;
@@ -49,10 +53,7 @@ impl CotPoolReceiver {
 }
 
 /// Allocate a pool from `m` ideal seed COTs (tests / one-time setup stand-in).
-pub fn new_pool<R: SpecRng>(
-    rng: &mut R,
-    params: FerretParams,
-) -> (CotPoolSender, CotPoolReceiver) {
+pub fn new_pool<R: SpecRng>(rng: &mut R, params: FerretParams) -> (CotPoolSender, CotPoolReceiver) {
     let m = params.seed_cot_count(false);
     let (seed_s, seed_r) = sample_seed_cots(rng, m);
     (
@@ -100,15 +101,10 @@ fn ensure<R: SpecRng>(
     need: usize,
 ) {
     let watermark = sender.params.seed_cot_count(false);
-    while sender.remaining() < need
-        || sender.remaining().saturating_sub(need) < watermark
-    {
+    while sender.remaining() < need || sender.remaining().saturating_sub(need) < watermark {
         let before = sender.remaining();
         refill(rng, sender, receiver);
-        debug_assert!(
-            sender.remaining() > before,
-            "ΠCOT emitted no output COTs"
-        );
+        debug_assert!(sender.remaining() > before, "ΠCOT emitted no output COTs");
     }
 }
 

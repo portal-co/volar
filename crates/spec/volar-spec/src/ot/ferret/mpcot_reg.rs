@@ -1,6 +1,10 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! Regular-indices MPCOT (Ferret §5, last paragraph).
 //!
 //! Noise is regular: exactly one puncture in each interval
@@ -10,7 +14,7 @@
 use alloc::vec::Vec;
 
 use super::spcot::{
-    spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend, Block, SpcotSenderMsg,
+    Block, SpcotSenderMsg, spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend,
 };
 use crate::SpecRng;
 
@@ -83,16 +87,14 @@ pub fn mpcot_reg_choice_bits(n: usize, t: usize, alphas: &[usize], cot_r: &[bool
 /// Sample a regular weight-`t` noise vector: one uniform index per interval.
 pub fn sample_regular_noise<R: SpecRng>(rng: &mut R, n: usize, t: usize) -> Vec<usize> {
     let splen = n / t;
-    (0..t)
-        .map(|_| (rng.next_u32() as usize) % splen)
-        .collect()
+    (0..t).map(|_| (rng.next_u32() as usize) % splen).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ot::ferret::spcot::spcot_in_process;
     use crate::SpecRng;
+    use crate::ot::ferret::spcot::spcot_in_process;
 
     struct TestRng(u64);
     impl SpecRng for TestRng {

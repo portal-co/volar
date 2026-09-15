@@ -1,3 +1,7 @@
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! Canonical bounded TinyLabels stage-frame envelope.
 //!
 //! This module binds a stage payload to one parameter profile, session,

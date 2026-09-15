@@ -1,3 +1,7 @@
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 #![warn(missing_docs)]
 
 //! Shared offline/online input-label batching and experimental TinyLabels Ring-LWE.

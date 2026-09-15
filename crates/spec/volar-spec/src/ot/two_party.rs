@@ -1,6 +1,10 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! Role-separated LWE → SoftSpoken → Ferret-Reg pool over a byte transport.
 
 use alloc::vec::Vec;
@@ -9,26 +13,24 @@ use digest::Digest;
 use sha3::Sha3_256;
 
 use super::base_ot::BaseOt;
-use super::ferret::cot::{
-    ferret_prepare_receiver, ferret_receiver_mpcot, ferret_sender_mpcot, FerretPrep,
-    FerretReceiverSeed, FerretSenderSeed,
-};
-use super::ferret::pool::{
-    bea95_chosen_bit, CotPoolReceiver, CotPoolSender,
-};
 use super::ferret::FerretParams;
-use super::iknp::{
-    iknp_receiver_finish, iknp_receiver_u_cols, iknp_sender_from_u, pack_kappa, IKNP_KAPPA,
-    IKNP_KAPPA_BYTES,
+use super::ferret::cot::{
+    FerretPrep, FerretReceiverSeed, FerretSenderSeed, ferret_prepare_receiver,
+    ferret_receiver_mpcot, ferret_sender_mpcot,
 };
-use super::lwe::{LweBaseOt, LWE_N};
+use super::ferret::pool::{CotPoolReceiver, CotPoolSender, bea95_chosen_bit};
+use super::iknp::{
+    IKNP_KAPPA, IKNP_KAPPA_BYTES, iknp_receiver_finish, iknp_receiver_u_cols, iknp_sender_from_u,
+    pack_kappa,
+};
+use super::lwe::{LWE_N, LweBaseOt};
 use super::softspoken::TAG_DOMAIN;
 use super::wire::{
-    decode_ferret_open, decode_iknp_corr, decode_iknp_u, decode_lwe_crs, decode_lwe_payload,
-    decode_lwe_recv, decode_mpcot_reg, encode_ferret_open, encode_iknp_corr, encode_iknp_u,
-    encode_lwe_crs, encode_lwe_payload, encode_lwe_recv, encode_mpcot_reg, TAG_BEA95, TAG_DELTA,
-    TAG_FERRET_MPCOT, TAG_FERRET_OPEN, TAG_IKNP_CORR, TAG_IKNP_U, TAG_LWE_PAYLOAD, TAG_LWE_RECV,
-    TAG_LWE_SETUP, TAG_SSP_R, TAG_SSP_S,
+    TAG_BEA95, TAG_DELTA, TAG_FERRET_MPCOT, TAG_FERRET_OPEN, TAG_IKNP_CORR, TAG_IKNP_U,
+    TAG_LWE_PAYLOAD, TAG_LWE_RECV, TAG_LWE_SETUP, TAG_SSP_R, TAG_SSP_S, decode_ferret_open,
+    decode_iknp_corr, decode_iknp_u, decode_lwe_crs, decode_lwe_payload, decode_lwe_recv,
+    decode_mpcot_reg, encode_ferret_open, encode_iknp_corr, encode_iknp_u, encode_lwe_crs,
+    encode_lwe_payload, encode_lwe_recv, encode_mpcot_reg,
 };
 use crate::SpecRng;
 
@@ -230,11 +232,7 @@ fn xor_block(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
     o
 }
 
-fn encode_sender_only(
-    sender: &CotPoolSender,
-    lpn_seed: [u8; 16],
-    s: &[[u8; 16]],
-) -> SenderLpn {
+fn encode_sender_only(sender: &CotPoolSender, lpn_seed: [u8; 16], s: &[[u8; 16]]) -> SenderLpn {
     use super::ferret::lpn::encode_blocks;
     let k = sender.params.k;
     let n = sender.params.n;
@@ -275,11 +273,7 @@ struct RecvLpn {
     z: Vec<[u8; 16]>,
 }
 
-fn encode_receiver_only(
-    receiver: &CotPoolReceiver,
-    prep: &FerretPrep,
-    r: &[[u8; 16]],
-) -> RecvLpn {
+fn encode_receiver_only(receiver: &CotPoolReceiver, prep: &FerretPrep, r: &[[u8; 16]]) -> RecvLpn {
     use super::ferret::lpn::{encode_bits, encode_blocks};
     let k = receiver.params.k;
     let n = receiver.params.n;
@@ -459,7 +453,8 @@ mod tests {
                 let hat_bytes = io.recv(TAG_HAT);
                 let mut hat_block = [0u8; 16];
                 hat_block.copy_from_slice(&hat_bytes);
-                let hat = Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(hat_block)));
+                let hat =
+                    Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(hat_block)));
                 let q_and = derive_and_q(&delta, &q_a, &q_b, &hat);
                 let vope_bytes = io.recv(TAG_HAT);
                 let mut vb = [0u8; 16];

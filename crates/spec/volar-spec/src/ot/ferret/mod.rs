@@ -19,13 +19,13 @@ pub mod pool;
 pub mod spcot;
 
 pub use cot::{
-    ferret_extend, ferret_extend_uni, ferret_finish, ferret_prepare_receiver, ferret_receiver_mpcot,
-    ferret_sender_mpcot, sample_seed_cots, FerretExtendOut, FerretIterMsg, FerretPrep,
-    FerretReceiverSeed, FerretSenderSeed,
+    FerretExtendOut, FerretIterMsg, FerretPrep, FerretReceiverSeed, FerretSenderSeed,
+    ferret_extend, ferret_extend_uni, ferret_finish, ferret_prepare_receiver,
+    ferret_receiver_mpcot, ferret_sender_mpcot, sample_seed_cots,
 };
 pub use params::{
-    FerretParams, FERRET_REG_MAIN, FERRET_REG_SETUP, FERRET_REG_TOY, FERRET_UNI_MAIN,
-    FERRET_UNI_SETUP, FERRET_UNI_TOY,
+    FERRET_REG_MAIN, FERRET_REG_SETUP, FERRET_REG_TOY, FERRET_UNI_MAIN, FERRET_UNI_SETUP,
+    FERRET_UNI_TOY, FerretParams,
 };
-pub use pool::{bea95_chosen_bit, refill, take_random, CotPoolReceiver, CotPoolSender};
-pub use spcot::{spcot_receiver_extend, spcot_sender_extend, Block, KAPPA_BITS, KAPPA_BYTES};
+pub use pool::{CotPoolReceiver, CotPoolSender, bea95_chosen_bit, refill, take_random};
+pub use spcot::{Block, KAPPA_BITS, KAPPA_BYTES, spcot_receiver_extend, spcot_sender_extend};
