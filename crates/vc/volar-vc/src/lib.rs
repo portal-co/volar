@@ -74,6 +74,9 @@ pub mod aes_gadget;
 pub mod embedder;
 pub mod faest_owf;
 pub mod held_remap;
+/// Provider-neutral scheduling for pre-FHE ORAM reads, lazy held-material
+/// openings, and existing public-address storage optimizations.
+pub mod hybrid_storage;
 pub mod oram_2pc;
 pub mod oram_batch;
 pub mod oram_ciphertext_tree;
@@ -97,6 +100,10 @@ pub mod tls13_live;
 pub mod x25519_gadget;
 
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
+pub use hybrid_storage::{
+    DeferredChunkId, DeferredInputSlot, HeldMaterialPreOpen, OramReadPreRun, OramReadToken,
+    PreFheStoragePlan, PreFheStoragePlanError, PublicAddressStoragePlan,
+};
 pub use oram_host::{GramEvalDrive, OramHost, OramHostError, OramHostShim};
 pub use partition::partition_from_sides;
 pub use schedule::{ScheduleError, compile_schedule, compile_schedule_optimized};

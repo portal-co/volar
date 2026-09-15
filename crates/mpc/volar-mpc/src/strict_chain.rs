@@ -201,7 +201,21 @@ pub trait ChainStoragePhase<N: VoleArray<u8>> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageOperation {
     /// Fetch the material at `slot` into the adapter's role-local cache.
+    ///
+    /// New callers should prefer [`Self::Prefetch`], whose name makes the
+    /// required scheduling property explicit. `Load` is retained for existing
+    /// scripts and has identical boundary-only semantics.
     Load { slot: usize, owner: MaterialRole },
+    /// Pre-open durable split-AES held material into the role-local cache at
+    /// an explicit chain-round boundary. This is not a host-side decrypt and
+    /// must never be issued recursively during an ordinary strict round.
+    ///
+    /// This variant is intentionally provider-neutral: it prepares a later
+    /// deferred/FHE chunk without naming an FHE scheme, key, or ciphertext.
+    // TODO(v2-test): execute a `Prefetch` script through paired durable
+    // adapters before a reviewed FHE provider consumes the subsequent chunk;
+    // cover both material roles, `Both`, stale versions, and abort/retry.
+    Prefetch { slot: usize, owner: MaterialRole },
     /// Persist the role-local material at `slot`, whose owning role is public.
     Store { slot: usize, owner: MaterialRole },
 }
@@ -480,7 +494,8 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainStoragePhase<N>
     ) -> Result<(), MpcError> {
         for operation in operations {
             match *operation {
-                StorageOperation::Load { slot, owner } => {
+                StorageOperation::Load { slot, owner }
+                | StorageOperation::Prefetch { slot, owner } => {
                     material_load::<N, S, Garble<N>, D>(&mut self.held, slot, owner, transport, ot)?
                 }
                 StorageOperation::Store { slot, owner } => material_store::<N, S, Garble<N>, D>(
@@ -795,7 +810,8 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainStoragePhase<N>
     ) -> Result<(), MpcError> {
         for operation in operations {
             match *operation {
-                StorageOperation::Load { slot, owner } => {
+                StorageOperation::Load { slot, owner }
+                | StorageOperation::Prefetch { slot, owner } => {
                     material_load::<N, S, Eval<N>, D>(&mut self.held, slot, owner, transport, ot)?
                 }
                 StorageOperation::Store { slot, owner } => {
