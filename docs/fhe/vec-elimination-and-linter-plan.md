@@ -160,11 +160,35 @@ This is the structural change; everything else is downstream.
   `cts: Vec<LweCiphertext>` (plan.rs:426) → inline `ArrayVec`/array, since
   its length is the LUT arity.
 
-### 4.2 `keys.rs` — keep, with exemption
+### 4.2 `keys.rs` — dual storage: borrowed (zero-heap) + owned (`Vec`)
 
-`bsk`/`ksk` stay `Vec` (heap-by-necessity at Std128). Add the exemption
-doc comment recording the byte-size rationale and that they are sized by
-const generics (`N_LWE`, `BIG_N`) but must not live on the stack.
+Evaluation keys are sized entirely by const generics (`N_LWE`, `BIG_N`,
+`BS_ELL`, `KS_ELL`) — they are weaver-known, so a `Vec` is *not*
+semantically required; it is a native-execution convenience. Two storage
+modes, one operation surface:
+
+- **Borrowed (zero-heap), for virtual targets.** `BootstrappingKeyRef`
+  / `KeySwitchingKeyRef` hold `&'a [RgswCiphertext<..>]` /
+  `&'a [[LweCiphertext; KS_ELL]]` slices into caller-managed storage
+  (stack-allocated fixed arrays). Virtual targets with (virtually)
+  unlimited stack — the Volar-IR LLVM target and similar — construct the
+  key material in place on the stack and pass the borrowed view; no heap
+  allocation anywhere. The bootstrap/CB operations are implemented
+  generically over a `Borrow<..>`/trait view so the same `blind_rotate`,
+  `pbs`, and `circuit_bootstrap` code runs on both storage modes.
+- **Owned (`Vec`), for native execution.** The current
+  `BootstrappingKey.bsk: Vec<..>` / `ksk: Vec<..>` stays, exempted with
+  `/// @volar-allow-vec: eval-key-store: ...`. Native targets have a
+  bounded stack (~8 MB) and ~36 MB of Std128 key material cannot live on
+  it; heap is correct there. `BootstrappingKey::borrow()` / `.as_ref()`
+  yields the `..Ref` view so native code reuses the same borrowed
+  operation surface.
+
+This removes the apparent tension between "keys are weaver-known (no
+Vec)" and "keys exceed the native stack": the *shape* is static, the
+*placement* is a target property. The exemption remains on the owned
+variant only; the borrowed variant needs no exemption because it contains
+no `Vec`.
 
 ### 4.3 `pbs.rs` / `circuit_bs.rs` — tests only
 
@@ -236,7 +260,7 @@ kind; a free-form `#[allow]` would defeat the purpose.
 | # | Milestone | Gate |
 |---|---|---|
 | V1 | `vec_lint.rs` pass + exemption parser + unit tests over hand-built IR | lint tests green; detects all three `VecUseKind`s; honors exemptions |
-| V2 | `plan.rs` LUT `inputs` → inline capacity; `cts` temp → inline; exemptions added to `keys.rs` and plan-interpreter items | `cargo test -p volar-spec --lib` green; binfhe plan/dyn/e2e still pass |
+| V2 | `plan.rs` LUT `inputs` → inline capacity; `cts` temp → inline; `keys.rs` dual storage (`BootstrappingKeyRef` borrowed + owned `Vec` + `.as_ref()`); bootstrap/CB ops generic over the key view; exemptions added | `cargo test -p volar-spec --lib` green; binfhe plan/dyn/e2e still pass; a borrowed-key test runs the full pipeline with zero heap key storage |
 | V3 | codegen gate wired into `volar-codegen dyn`/`ts` (fail on non-exempt `Vec`) | `generate.sh` stays green on the current spec (exemptions cover plan/keys); a seeded non-exempt `Vec` fails the gate |
 | V4 | weaver-output lint gate in `fhe_binfhe` tests + confirm no `Collect` emitted | weaver tests green incl. lint gate |
 | V5 | rest-of-spec sweep: classify each `ot/`/`faest/`/`tinylabels/` `Vec`, remove weaver-known ones, exempt the rest with categories | spec tests green; lint report on the whole spec is empty-or-exempt |
