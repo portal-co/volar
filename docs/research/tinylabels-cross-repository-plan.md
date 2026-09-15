@@ -63,6 +63,38 @@ This seam must be batch-oriented. Retrofitting the Ring-LWE protocol behind
 one `OtChannel::receive(bit)` call would make a deep implementation look like a
 shallow per-bit adapter and would conceal unacceptable setup/latency costs.
 
+## Shared implementation ownership
+
+**Volar is the source of truth for TinyLabels.** The construction-neutral,
+`no_std + alloc` typed implementation belongs in a new opt-in
+`volar_spec::tinylabels` module (planned path:
+`crates/spec/volar-spec/src/tinylabels/`). It owns only the reusable
+cryptographic construction and its data model:
+
+- parameter/profile validation;
+- canonical 16-byte-label-to-field-element encoding and inverse;
+- Ring-LWE `setup` / `enc1` / `enc2` / `keygen` / `dec` stages;
+- CSPRNG and clipped-noise traits plus vetted implementations;
+- versioned canonical stage-frame codecs; and
+- construction-level semantic, malformed-frame, and artifact-interoperability
+  tests.
+
+It must not import a strict session, TCP transport, ERT interpreter, or
+Cirrus `Pusher`. That keeps the shared module deep: callers learn one typed
+batch-selection interface while the implementation retains arithmetic and
+frame complexity.
+
+`volar-mpc` owns the strict-session `InputLabelDelivery` adapter, transcript
+binding, and explicit `std + tinylabels` admission profile. Cirrus owns its
+interpreter manifest, coroutine/streaming adapter, and embedded rejection
+policy. The existing Cirrus
+`cirrus-garbled-circuit-tinylabels` implementation is the migration seed, not
+a second long-lived cryptographic implementation: port it upstream with its
+review history and tests, then reduce the Cirrus crate to an
+interpreter-facing adapter/re-export or remove it when no Cirrus-only surface
+remains. No behavior change is accepted until old and new modules pass the
+same deterministic semantic vectors.
+
 ## Volar work plan
 
 ### V1 — manifest and batched delivery seam
@@ -83,20 +115,24 @@ shallow per-bit adapter and would conceal unacceptable setup/latency costs.
    results for the same schedule/choices. This tests the seam without making a
    cryptographic TinyLabels claim.
 
-### V2 — server-only TinyLabels adapter
+### V2 — shared TinyLabels core, then server-only adapter
 
-1. Reuse the separately reviewed Cirrus arithmetic implementation only after
-   its field encoding, framing, sampler, and interoperability gates below are
-   complete; do not copy unreviewed Ring-LWE logic into `volar-mpc`.
-2. Provide an adapter behind a `std` and explicit `tinylabels` feature. Its
-   constructors must demand an explicit profile and resource budget. There is
-   no default constructor and no embedded feature path.
-3. Define canonical frames for public parameters, reusable ciphertext,
+1. Port the existing experimental Cirrus arithmetic implementation into the
+   new `volar_spec::tinylabels` module. Preserve its source-audit record,
+   construction-stage tests, and deliberate no-security-claim status; do not
+   copy it into `volar-mpc` or maintain two Ring-LWE implementations.
+2. Complete the shared core's canonical label encoding, frames, sampler, and
+   artifact interoperability gates before either repository accepts protected
+   labels through it.
+3. Provide the Volar session adapter behind `std` and an explicit
+   `tinylabels` feature. Its constructors must demand an explicit profile and
+   resource budget. There is no default constructor and no embedded feature path.
+4. Define canonical frames for public parameters, reusable ciphertext,
    per-use ciphertext, selection/key material, and completion/error. Every
    frame has a version, parameter fingerprint, stage, exact element count,
    session/manifest binding, and authenticated length. Raw SEAL NTT dumps are
    prohibited.
-4. Add host-only interoperability tests against the pinned author artifact at
+5. Add host-only interoperability tests against the pinned author artifact at
    a small or streamed profile, then a separately gated reference-profile
    test. Do not put the artifact's multi-gigabyte reference ciphertext in the
    repository or CI.
@@ -111,12 +147,13 @@ activate TinyLabels based only on label count.
 
 ## Cirrus work plan and port map
 
-Cirrus already has the correct ownership direction: the
-`cirrus-garbled-circuit-tinylabels` crate owns input-label batching separately
-from the four-row and first-row-fixed table formats, and the ERT/LLVM
-interpreters stream tables through `Pusher` and consume them through ordered
-iterators. The port should deepen those existing modules rather than import
-Volar's strict-session types.
+Cirrus already has the correct *separation* direction: its current
+`cirrus-garbled-circuit-tinylabels` crate is separate from the four-row and
+first-row-fixed table formats, and the ERT/LLVM interpreters stream tables
+through `Pusher` and consume them through ordered iterators. Its Ring-LWE
+implementation will move into Volar's shared `volar_spec::tinylabels` core;
+Cirrus retains only its interpreter/streaming adapter. The port should deepen
+those modules rather than import Volar's strict-session types.
 
 | Recent Volar work | Cirrus equivalent / action |
 | --- | --- |
@@ -126,10 +163,11 @@ Volar's strict-session types.
 | Material/chain metrics | Define a Cirrus `StreamingMetrics` value at the `Pusher`/iterator seam: table records/bytes, input-label records/bytes, Ferret frames/bytes, and peak buffered records. Do not make interpreter contexts own network metrics. |
 | Strict-chain storage boundaries | ERT/LLVM fixed interpreter traces already provide an explicit topology-preprocessing boundary. A future persistence adapter must live outside the interpreter, consume opaque role-local labels, and preserve its streaming table contract. |
 
-### C1 — finish the existing TinyLabels crate safely
+### C1 — consume the shared TinyLabels core safely
 
-The present crate has typed `setup`/`enc1`/`enc2`/`keygen`/`dec` arithmetic but
-correctly has no deployment protocol. Complete these gates in order:
+The current Cirrus crate has typed `setup`/`enc1`/`enc2`/`keygen`/`dec`
+arithmetic but correctly has no deployment protocol. Port that implementation
+to `volar_spec::tinylabels`, then complete the shared-core gates in order:
 
 1. Specify and test a canonical, injective `[u8; 16] <-> Z_p^3` encoding with
    explicit endianness, field bounds, and exact inverse. Prove/test that it
@@ -144,7 +182,10 @@ correctly has no deployment protocol. Complete these gates in order:
 4. Add a semantic interoperability harness against the author artifact,
    preserving the local correction that samples Construction 1's `r` values
    instead of reproducing the artifact's apparent omission.
-5. Run a resource-admission study. The published reference profile's raw
+5. Replace the Cirrus crate's arithmetic with a thin adapter/re-export and
+   move its vectors into shared-core conformance tests. Delete duplicate code
+   rather than allowing profiles or fixes to diverge.
+6. Run a resource-admission study. The published reference profile's raw
    public parameters are about 34 MB and reusable `ct1` about 2.55 GB, far
    beyond Cirrus's 256 KiB RAM/2 MiB flash target. A full profile may run only
    at a server/offline coordinator; an embedded participant needs a separately
