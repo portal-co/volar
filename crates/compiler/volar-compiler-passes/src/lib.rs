@@ -19,6 +19,7 @@ pub mod dump_ir;
 pub mod lowering;
 pub mod lowering_dyn;
 pub mod unpack_packed_bits;
+pub mod vec_lint;
 
 pub use chunk_fns::chunk_function_bodies;
 pub use const_analysis::*;
