@@ -35,7 +35,10 @@ use crate::binfhe::keys::BootstrappingKey;
 use crate::binfhe::lwe::{
     LweCiphertext, LweSecretKey, checked_wire_delta, lwe_decrypt, lwe_encrypt,
 };
-use crate::binfhe::plan::{BootstrapPlan, PlanError, execute_plan};
+use crate::binfhe::plan::{
+    BootstrapPlan, PlanError, PlanWorkspace, PlanWorkspaceError, execute_plan,
+    execute_plan_in_workspace,
+};
 use crate::binfhe::rlwe::RlweCiphertext;
 
 /// Failure to construct or use a plan encryption/decryption boundary.
@@ -49,10 +52,15 @@ pub enum BoundaryError {
     InputCount { expected: usize, actual: usize },
     /// Caller encrypted input count differs from the fixed plan shape.
     CiphertextInputCount { expected: usize, actual: usize },
+    /// A caller-provided reusable input arena cannot hold the fixed plan shape.
+    InputBufferCapacity { required: usize, actual: usize },
     /// The complete returned wire arena cannot contain a declared output.
     WireArenaTooShort { required: usize, actual: usize },
     /// Caller cell input count differs from the fixed plan shape.
     CellCount { expected: usize, actual: usize },
+    /// A reusable no-std plan workspace is invalid, undersized, or received
+    /// a plan/input shape it cannot execute.
+    Workspace(PlanWorkspaceError),
 }
 
 /// Validated host-side conversion contract for one bootstrap plan.
@@ -65,6 +73,30 @@ pub enum BoundaryError {
 pub struct PlanBoundary<'a> {
     plan: &'a BootstrapPlan,
     delta: u32,
+}
+
+/// Reusable encrypted input arena for [`PlanBoundary`].
+///
+/// Create it once for a validated boundary, refill it with
+/// [`PlanBoundary::encrypt_inputs_into`] for each invocation, and pass its
+/// slice to [`PlanBoundary::execute_in_workspace`]. The arena is deliberately
+/// separate from the executor workspace because it is the immutable input
+/// borrowed while that workspace resets/fills its internal arenas.
+pub struct CiphertextInputBuffer<const N_LWE: usize> {
+    ciphertexts: Vec<LweCiphertext<N_LWE>>,
+}
+
+impl<const N_LWE: usize> CiphertextInputBuffer<N_LWE> {
+    /// Borrow the current fixed-shape encrypted input sequence.
+    pub fn as_slice(&self) -> &[LweCiphertext<N_LWE>] {
+        &self.ciphertexts
+    }
+
+    /// Capacity fixed when the buffer was created. A no-std WASM caller can
+    /// account for this before entering the module.
+    pub fn capacity(&self) -> usize {
+        self.ciphertexts.capacity()
+    }
 }
 
 impl<'a> PlanBoundary<'a> {
@@ -94,23 +126,63 @@ impl<'a> PlanBoundary<'a> {
         self.delta
     }
 
-    /// Encrypt exactly the plan's Boolean inputs in plan-input order.
+    /// Allocate a reusable ciphertext-input arena with this plan's exact
+    /// input capacity. This is the one intended setup allocation for a
+    /// no-std/WASM module invocation loop.
+    pub fn input_buffer<const N_LWE: usize>(&self) -> CiphertextInputBuffer<N_LWE> {
+        CiphertextInputBuffer {
+            ciphertexts: Vec::with_capacity(self.plan.num_inputs as usize),
+        }
+    }
+
+    /// Encrypt exactly the plan's Boolean inputs into a caller-owned reusable
+    /// buffer. The buffer is cleared first, so no ciphertext input from a
+    /// completed plaintext/FHE transition survives into the next call.
     ///
     /// This consumes randomness only for nontrivial inputs. The caller owns
     /// the `SpecRng` lifecycle; reproducible tests can supply a deterministic
     /// stream, while an outer production adapter supplies its own approved
     /// randomness source.
+    pub fn encrypt_inputs_into<
+        const N_LWE: usize,
+        const LOG_Q_LWE: u32,
+        const ETA: u32,
+        R: SpecRng,
+    >(
+        &self,
+        inputs: &[bool],
+        sk: &LweSecretKey<N_LWE>,
+        rng: &mut R,
+        output: &mut CiphertextInputBuffer<N_LWE>,
+    ) -> Result<(), BoundaryError> {
+        self.require_input_count(inputs.len())?;
+        if output.ciphertexts.capacity() < inputs.len() {
+            return Err(BoundaryError::InputBufferCapacity {
+                required: inputs.len(),
+                actual: output.ciphertexts.capacity(),
+            });
+        }
+        output.ciphertexts.clear();
+        output.ciphertexts.extend(
+            inputs
+                .iter()
+                .map(|&bit| lwe_encrypt::<N_LWE, LOG_Q_LWE, ETA, R>(bit, self.delta, sk, rng)),
+        );
+        Ok(())
+    }
+
+    /// Allocating compatibility wrapper around [`Self::encrypt_inputs_into`].
+    /// No-std/WASM callers should allocate [`CiphertextInputBuffer`] once and
+    /// use the non-allocating refill method instead.
     pub fn encrypt_inputs<const N_LWE: usize, const LOG_Q_LWE: u32, const ETA: u32, R: SpecRng>(
         &self,
         inputs: &[bool],
         sk: &LweSecretKey<N_LWE>,
         rng: &mut R,
     ) -> Result<Vec<LweCiphertext<N_LWE>>, BoundaryError> {
-        self.require_input_count(inputs.len())?;
-        Ok(inputs
-            .iter()
-            .map(|&bit| lwe_encrypt::<N_LWE, LOG_Q_LWE, ETA, R>(bit, self.delta, sk, rng))
-            .collect())
+        let mut output = self.input_buffer::<N_LWE>();
+        self.encrypt_inputs_into::<N_LWE, LOG_Q_LWE, ETA, R>(inputs, sk, rng, &mut output)?;
+        Ok(output.ciphertexts)
     }
 
     /// Decrypt the plan's Boolean outputs in declared output order.
@@ -188,6 +260,49 @@ impl<'a> PlanBoundary<'a> {
             PRIV_ELL,
             PRIV_BASE_LOG,
         >(self.plan, inputs, cells, bk, cbk))
+    }
+
+    /// Evaluate with a caller-owned bounded `alloc` workspace. Every call
+    /// resets plan-local wire/RGSW/cell/LUT arenas before loading these inputs;
+    /// no logical global or storage arena is retained across transitions.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_in_workspace<
+        'w,
+        const N_LWE: usize,
+        const BIG_N: usize,
+        const LOG_Q: u32,
+        const LOG_Q_LWE: u32,
+        const LOG_MOD_KS: u32,
+        const BS_ELL: usize,
+        const BS_BASE_LOG: u32,
+        const KS_ELL: usize,
+        const KS_BASE_LOG: u32,
+        const PRIV_ELL: usize,
+        const PRIV_BASE_LOG: u32,
+    >(
+        &self,
+        inputs: &[LweCiphertext<N_LWE>],
+        cells: &[RlweCiphertext<BIG_N>],
+        bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+        cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
+        workspace: &'w mut PlanWorkspace<N_LWE, BIG_N, BS_ELL>,
+    ) -> Result<(&'w [LweCiphertext<N_LWE>], &'w [RlweCiphertext<BIG_N>]), BoundaryError> {
+        self.require_ciphertext_input_count(inputs.len())?;
+        self.require_cell_count(cells.len())?;
+        execute_plan_in_workspace::<
+            N_LWE,
+            BIG_N,
+            LOG_Q,
+            LOG_Q_LWE,
+            LOG_MOD_KS,
+            BS_ELL,
+            BS_BASE_LOG,
+            KS_ELL,
+            KS_BASE_LOG,
+            PRIV_ELL,
+            PRIV_BASE_LOG,
+        >(self.plan, inputs, cells, bk, cbk, workspace)
+        .map_err(BoundaryError::Workspace)
     }
 
     fn require_input_count(&self, actual: usize) -> Result<(), BoundaryError> {
@@ -332,6 +447,71 @@ mod tests {
                     Ok(vec![left && right]),
                 );
             }
+        }
+    }
+
+    #[test]
+    fn workspace_execution_resets_plan_arenas_between_calls() {
+        let plan = and_plan();
+        let boundary = PlanBoundary::new::<{ toy::LOG_Q_LWE }>(&plan).unwrap();
+        let mut key_rng = TestRng::new(0xA11C_E5ED);
+        let lwe_sk = gen_lwe_secret_key(&mut key_rng);
+        let rlwe_sk = gen_rlwe_secret_key(&mut key_rng);
+        let bk = gen_bootstrapping_key::<
+            { toy::N_LWE },
+            { toy::BIG_N },
+            { toy::LOG_Q },
+            { toy::LOG_Q_LWE },
+            { toy::LOG_MOD_KS },
+            { toy::BS_ELL },
+            { toy::BS_BASE_LOG },
+            { toy::KS_ELL },
+            { toy::KS_BASE_LOG },
+            { toy::CBD_ETA },
+            _,
+        >(&lwe_sk, &rlwe_sk, &mut key_rng);
+        let cbk = gen_circuit_bootstrapping_key::<
+            { toy::N_LWE },
+            { toy::BIG_N },
+            { toy::LOG_Q },
+            { toy::LOG_Q_LWE },
+            { toy::LOG_MOD_KS },
+            { toy::BS_ELL },
+            { toy::BS_BASE_LOG },
+            { toy::KS_ELL },
+            { toy::KS_BASE_LOG },
+            { toy::PRIV_ELL },
+            { toy::PRIV_BASE_LOG },
+            { toy::CBD_ETA },
+            _,
+        >(&lwe_sk, &rlwe_sk, &mut key_rng);
+        let mut workspace =
+            PlanWorkspace::<{ toy::N_LWE }, { toy::BIG_N }, { toy::BS_ELL }>::new(&plan).unwrap();
+
+        let mut inputs = boundary.input_buffer::<{ toy::N_LWE }>();
+        for (left, right) in [(true, false), (true, true)] {
+            let mut input_rng = TestRng::new((left as u64) << 4 | right as u64);
+            boundary
+                .encrypt_inputs_into::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(
+                    &[left, right],
+                    &lwe_sk,
+                    &mut input_rng,
+                    &mut inputs,
+                )
+                .unwrap();
+            let (wires, cells) = boundary
+                .execute_in_workspace::<
+                    { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
+                    { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
+                    { toy::KS_ELL }, { toy::KS_BASE_LOG }, { toy::PRIV_ELL },
+                    { toy::PRIV_BASE_LOG },
+                >(inputs.as_slice(), &[], &bk, &cbk, &mut workspace)
+                .unwrap();
+            assert!(cells.is_empty());
+            assert_eq!(
+                boundary.decrypt_outputs::<{ toy::N_LWE }, { toy::LOG_Q_LWE }>(wires, &lwe_sk),
+                Ok(vec![left && right]),
+            );
         }
     }
 

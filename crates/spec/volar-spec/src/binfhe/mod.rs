@@ -65,3 +65,5 @@ pub mod rgsw;
 pub mod rlwe;
 pub mod sampler;
 pub mod torus;
+/// Optional bounded allocator for no-std `wasm32v1-none` provider artifacts.
+pub mod wasm_alloc;
