@@ -38,6 +38,7 @@ use volar_compiler::ir::{
 use volar_discipline::{Tagged, Transparent};
 use volar_ir::boolar::{BIrBlocks, BIrStmt};
 use volar_ir_common::Node;
+use volar_spec::binfhe::boundary::{BoundaryError, PlanBoundary};
 use volar_spec::binfhe::plan::{BootstrapPlan, FailureBudget, LutSpec, PlanOp, ProfileId};
 
 use crate::fhe::FheScheme;
@@ -76,7 +77,13 @@ fn bk_ty() -> IrType {
 fn cbk_ty() -> IrType {
     custom(
         "CircuitBootstrappingKey",
-        vec![tp("N_LWE"), tp("BIG_N"), tp("BS_ELL"), tp("KS_ELL"), tp("PRIV_ELL")],
+        vec![
+            tp("N_LWE"),
+            tp("BIG_N"),
+            tp("BS_ELL"),
+            tp("KS_ELL"),
+            tp("PRIV_ELL"),
+        ],
     )
 }
 
@@ -115,8 +122,16 @@ fn binfhe_generics() -> Vec<IrGenericParam> {
 /// Type args for the 10-const gate surface (binfhe_gate_* / binfhe_cmux).
 fn gate_tys() -> Vec<IrType> {
     [
-        "N_LWE", "BIG_N", "LOG_Q", "LOG_Q_LWE", "LOG_MOD_KS",
-        "BS_ELL", "BS_BASE_LOG", "KS_ELL", "KS_BASE_LOG", "K_MAX",
+        "N_LWE",
+        "BIG_N",
+        "LOG_Q",
+        "LOG_Q_LWE",
+        "LOG_MOD_KS",
+        "BS_ELL",
+        "BS_BASE_LOG",
+        "KS_ELL",
+        "KS_BASE_LOG",
+        "K_MAX",
     ]
     .iter()
     .map(|s| tp(s))
@@ -126,8 +141,15 @@ fn gate_tys() -> Vec<IrType> {
 /// Type args for the 9-const executor surface (binfhe_lut_read_dyn).
 fn exec_tys() -> Vec<IrType> {
     [
-        "N_LWE", "BIG_N", "LOG_Q", "LOG_Q_LWE", "LOG_MOD_KS",
-        "BS_ELL", "BS_BASE_LOG", "KS_ELL", "KS_BASE_LOG",
+        "N_LWE",
+        "BIG_N",
+        "LOG_Q",
+        "LOG_Q_LWE",
+        "LOG_MOD_KS",
+        "BS_ELL",
+        "BS_BASE_LOG",
+        "KS_ELL",
+        "KS_BASE_LOG",
     ]
     .iter()
     .map(|s| tp(s))
@@ -243,7 +265,12 @@ impl FheScheme for BinFheScheme {
         )
     }
 
-    fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
+    fn emit_and<Q: Clone + Default>(
+        &self,
+        a: IrExpr<Q>,
+        b: IrExpr<Q>,
+        _gate_idx: usize,
+    ) -> IrExpr<Q> {
         call(
             binfhe_path("pbs", "binfhe_gate_and", gate_tys()),
             vec![a, b, var("bk")],
@@ -257,7 +284,12 @@ impl FheScheme for BinFheScheme {
         )
     }
 
-    fn emit_cmux<Q: Clone + Default>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_cmux<Q: Clone + Default>(
+        &self,
+        sel: IrExpr<Q>,
+        a: IrExpr<Q>,
+        b: IrExpr<Q>,
+    ) -> IrExpr<Q> {
         call(
             binfhe_path("pbs", "binfhe_cmux", gate_tys()),
             vec![sel, a, b, var("bk")],
@@ -452,6 +484,107 @@ pub struct PlanRegionBinding {
     pub output_vars: Vec<u32>,
 }
 
+/// A binding/plan mismatch detected before a ciphertext crosses the BinFHE
+/// encryption boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BinFhePlanAdapterError {
+    /// The plan is malformed or its `k_max` cannot encode a Boolean wire at
+    /// this profile's LWE modulus.
+    Boundary(BoundaryError),
+    /// The source binding does not name one source variable per plan input.
+    InputBindingCount { expected: usize, actual: usize },
+    /// The source binding does not name one source variable per plan output.
+    OutputBindingCount { expected: usize, actual: usize },
+    /// A source variable appears more than once in the input binding.
+    DuplicateInputBinding(u32),
+    /// A source variable appears more than once in the output binding.
+    DuplicateOutputBinding(u32),
+}
+
+/// Runtime adapter joining a fused Boolar region's source-variable binding to
+/// the V2 plan encryption/decryption boundary.
+///
+/// The adapter is deliberately borrowed: the exact immutable `BootstrapPlan`
+/// is shared by the compiler's region binding, host encryption, encrypted
+/// executor, and output decryption. It does not serialize a frame, choose a
+/// session/key epoch, or expose RLWE cell output as plaintext; those are the
+/// next provider/ORAM layer.
+#[derive(Clone, Debug)]
+pub struct BinFhePlanAdapter<'a> {
+    boundary: PlanBoundary<'a>,
+    binding: &'a PlanRegionBinding,
+}
+
+impl<'a> BinFhePlanAdapter<'a> {
+    /// Validate the one-to-one source-variable binding and construct the
+    /// fixed plan encryption/decryption seam for `LOG_Q_LWE`.
+    // TODO(provider-ledger: FHE-PLUMB-BINFHE-BOUNDARY-02): exercise the
+    // generated BinFHE function ABI through this adapter under a selected
+    // profile/key material; current coverage drives the shared spec executor.
+    pub fn new<const LOG_Q_LWE: u32>(
+        plan: &'a BootstrapPlan,
+        binding: &'a PlanRegionBinding,
+    ) -> Result<Self, BinFhePlanAdapterError> {
+        let boundary =
+            PlanBoundary::new::<LOG_Q_LWE>(plan).map_err(BinFhePlanAdapterError::Boundary)?;
+        if binding.input_vars.len() != plan.num_inputs as usize {
+            return Err(BinFhePlanAdapterError::InputBindingCount {
+                expected: plan.num_inputs as usize,
+                actual: binding.input_vars.len(),
+            });
+        }
+        if binding.output_vars.len() != plan.outputs.len() {
+            return Err(BinFhePlanAdapterError::OutputBindingCount {
+                expected: plan.outputs.len(),
+                actual: binding.output_vars.len(),
+            });
+        }
+        if let Some(variable) = duplicate_variable(&binding.input_vars) {
+            return Err(BinFhePlanAdapterError::DuplicateInputBinding(variable));
+        }
+        if let Some(variable) = duplicate_variable(&binding.output_vars) {
+            return Err(BinFhePlanAdapterError::DuplicateOutputBinding(variable));
+        }
+        Ok(Self { boundary, binding })
+    }
+
+    /// The validated plan shared with encryption, execution, and decryption.
+    pub const fn plan(&self) -> &'a BootstrapPlan {
+        self.boundary.plan()
+    }
+
+    /// Original Boolar input variable IDs, in plan encryption order.
+    pub fn input_vars(&self) -> &[u32] {
+        &self.binding.input_vars
+    }
+
+    /// Original Boolar output variable IDs, in authorized plaintext-release
+    /// order. Their matching plan wire IDs remain in `plan().outputs`.
+    pub fn output_vars(&self) -> &[u32] {
+        &self.binding.output_vars
+    }
+
+    /// The canonical plan-selected Boolean wire delta.
+    pub const fn delta(&self) -> u32 {
+        self.boundary.delta()
+    }
+
+    /// Borrow the underlying validated conversion seam for host-side
+    /// `encrypt_inputs`, encrypted `execute`, and `decrypt_outputs` calls.
+    pub const fn boundary(&self) -> PlanBoundary<'a> {
+        self.boundary
+    }
+}
+
+fn duplicate_variable(values: &[u32]) -> Option<u32> {
+    for (index, &value) in values.iter().enumerate() {
+        if values[index + 1..].contains(&value) {
+            return Some(value);
+        }
+    }
+    None
+}
+
 fn build_bootstrap_plan_inner<P: Clone>(
     circuit: &BIrBlocks<P>,
     k_max: usize,
@@ -497,13 +630,11 @@ fn build_bootstrap_plan_inner<P: Clone>(
             ConeState::Virtual(_) | ConeState::Pinned(_) => {
                 // Take the cone out to satisfy the borrow checker while we
                 // recursively materialize its inputs.
-                let cone = match core::mem::replace(
-                    &mut states[v as usize],
-                    ConeState::Const(false),
-                ) {
-                    ConeState::Virtual(c) | ConeState::Pinned(c) => c,
-                    _ => unreachable!(),
-                };
+                let cone =
+                    match core::mem::replace(&mut states[v as usize], ConeState::Const(false)) {
+                        ConeState::Virtual(c) | ConeState::Pinned(c) => c,
+                        _ => unreachable!(),
+                    };
                 let id = if cone.is_identity() {
                     materialize(cone.inputs[0], states, ops, luts, wire_count)
                 } else if volar_spec::binfhe::lut::table_is_constant(&cone.table) {
@@ -559,7 +690,8 @@ fn build_bootstrap_plan_inner<P: Clone>(
             BIrStmt::Not(a) => match &states[a.0 as usize] {
                 ConeState::Const(b) => ConeState::Const(!*b),
                 _ => {
-                    let c = input_cone(&states[a.0 as usize]).unwrap_or_else(|| Cone::identity(a.0));
+                    let c =
+                        input_cone(&states[a.0 as usize]).unwrap_or_else(|| Cone::identity(a.0));
                     ConeState::Virtual(Cone {
                         inputs: c.inputs,
                         table: not_table(&c.table),
@@ -616,13 +748,13 @@ fn build_bootstrap_plan_inner<P: Clone>(
                 }
             }
             BIrStmt::StorageRead { .. } | BIrStmt::StorageWrite { .. } => {
-                return Err(PlanBuildError::UnsupportedStmt("storage"))
+                return Err(PlanBuildError::UnsupportedStmt("storage"));
             }
             BIrStmt::OracleCall { .. } | BIrStmt::OracleBit { .. } => {
-                return Err(PlanBuildError::UnsupportedStmt("oracle"))
+                return Err(PlanBuildError::UnsupportedStmt("oracle"));
             }
             BIrStmt::ActionCall { .. } | BIrStmt::ActionBit { .. } => {
-                return Err(PlanBuildError::UnsupportedStmt("action"))
+                return Err(PlanBuildError::UnsupportedStmt("action"));
             }
             other => {
                 let _ = other;
@@ -641,7 +773,13 @@ fn build_bootstrap_plan_inner<P: Clone>(
         }
     }
     for &v in &output_vars {
-        outputs.push(materialize(v, &mut states, &mut ops, &mut luts, &mut wire_count));
+        outputs.push(materialize(
+            v,
+            &mut states,
+            &mut ops,
+            &mut luts,
+            &mut wire_count,
+        ));
     }
 
     // Failure budget: one blind rotation per non-constant LUT op (plus one
@@ -658,7 +796,9 @@ fn build_bootstrap_plan_inner<P: Clone>(
     };
     let required_total_log2 = per_bootstrap_log2 + ceil_log2;
     if required_total_log2 > max_total_log2 {
-        return Err(PlanBuildError::BudgetExceeded { required_total_log2 });
+        return Err(PlanBuildError::BudgetExceeded {
+            required_total_log2,
+        });
     }
 
     // Topological layering: layer[op] = 1 + max(layer of its inputs).
@@ -669,7 +809,12 @@ fn build_bootstrap_plan_inner<P: Clone>(
             PlanOp::Const { .. } => 0,
             PlanOp::Not { input, .. } => wire_layer[*input as usize] + 1,
             PlanOp::Lut { inputs, .. } => {
-                inputs.iter().map(|w| wire_layer[*w as usize]).max().unwrap_or(0) + 1
+                inputs
+                    .iter()
+                    .map(|w| wire_layer[*w as usize])
+                    .max()
+                    .unwrap_or(0)
+                    + 1
             }
             PlanOp::CircuitBootstrap { input, .. } => wire_layer[*input as usize] + 1,
             PlanOp::RgswMux { .. } => 0, // scheduled after its selector layer by construction
@@ -678,7 +823,9 @@ fn build_bootstrap_plan_inner<P: Clone>(
             layers.resize_with(layer + 1, Vec::new);
         }
         if let Some(out) = match &op {
-            PlanOp::Const { out, .. } | PlanOp::Not { out, .. } | PlanOp::Lut { out, .. } => Some(*out),
+            PlanOp::Const { out, .. } | PlanOp::Not { out, .. } | PlanOp::Lut { out, .. } => {
+                Some(*out)
+            }
             _ => None,
         } {
             if wire_layer.len() <= out as usize {
@@ -727,7 +874,10 @@ fn build_bootstrap_plan_inner<P: Clone>(
 ///
 /// Panics if the plan fails `validate()` — call it first for diagnosable
 /// errors.
-pub fn weave_binfhe_plan(plan: &BootstrapPlan, name: &str) -> Tagged<Transparent, IrModule<IrFunction>> {
+pub fn weave_binfhe_plan(
+    plan: &BootstrapPlan,
+    name: &str,
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     plan.validate().expect("weave_binfhe_plan: invalid plan");
 
     let has_cb = plan
@@ -762,16 +912,10 @@ pub fn weave_binfhe_plan(plan: &BootstrapPlan, name: &str) -> Tagged<Transparent
     let mut stmts: Vec<IrStmt> = Vec::new();
     // Bind plan arena ids to function parameters.
     for i in 0..plan.num_inputs {
-        stmts.push(let_stmt(
-            &format!("w_{}", i),
-            var(&format!("input_{}", i)),
-        ));
+        stmts.push(let_stmt(&format!("w_{}", i), var(&format!("input_{}", i))));
     }
     for i in 0..plan.num_cells {
-        stmts.push(let_stmt(
-            &format!("c_{}", i),
-            var(&format!("cell_{}", i)),
-        ));
+        stmts.push(let_stmt(&format!("c_{}", i), var(&format!("cell_{}", i))));
     }
     for layer in &plan.layers {
         for op in layer {
@@ -816,8 +960,15 @@ pub fn weave_binfhe_plan(plan: &BootstrapPlan, name: &str) -> Tagged<Transparent
                             "circuit_bs",
                             "circuit_bootstrap",
                             [
-                                "N_LWE", "BIG_N", "LOG_Q", "LOG_Q_LWE", "BS_ELL", "BS_BASE_LOG",
-                                "KS_ELL", "PRIV_ELL", "PRIV_BASE_LOG",
+                                "N_LWE",
+                                "BIG_N",
+                                "LOG_Q",
+                                "LOG_Q_LWE",
+                                "BS_ELL",
+                                "BS_BASE_LOG",
+                                "KS_ELL",
+                                "PRIV_ELL",
+                                "PRIV_BASE_LOG",
                             ]
                             .iter()
                             .map(|s| tp(s))
@@ -827,7 +978,12 @@ pub fn weave_binfhe_plan(plan: &BootstrapPlan, name: &str) -> Tagged<Transparent
                     );
                     stmts.push(let_stmt(&format!("r_{}", out), init));
                 }
-                PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
+                PlanOp::RgswMux {
+                    sel,
+                    then_cell,
+                    else_cell,
+                    out,
+                } => {
                     let init = call(
                         binfhe_path(
                             "rgsw",
@@ -874,7 +1030,10 @@ pub fn weave_binfhe_plan(plan: &BootstrapPlan, name: &str) -> Tagged<Transparent
             .map(|_| lwe_ty())
             .chain(plan.cell_outputs.iter().map(|_| rlwe_ty()))
             .collect();
-        (ir_expr(IrExprKind::Tuple(ret_elems)), Some(IrType::Tuple(types)))
+        (
+            ir_expr(IrExprKind::Tuple(ret_elems)),
+            Some(IrType::Tuple(types)),
+        )
     };
 
     let fn_name = format!("{}_binfhe", name);
@@ -930,7 +1089,7 @@ mod tests {
     use std::string::ToString;
 
     use crate::tests_common::{build_and_circuit, build_xor_and_circuit};
-    use volar_ir::boolar::{BIrBlock, BIrTerminator, BIrTarget};
+    use volar_ir::boolar::{BIrBlock, BIrTarget, BIrTerminator};
     use volar_ir::ir::{IRBlockTargetId, IRVarId};
     use volar_spec::binfhe::plan::{BootstrapPlan, PlanOp, ProfileId};
 
@@ -957,25 +1116,22 @@ mod tests {
     #[test]
     fn binding_preserves_source_variables_and_rejects_preinitialization() {
         let circuit = xor_and_or_circuit();
-        let (plan, binding) = build_bootstrap_plan_with_binding(
-            &circuit,
-            4,
-            (30, 34),
-            ProfileId::Toy,
-        )
-        .unwrap();
+        let (plan, binding) =
+            build_bootstrap_plan_with_binding(&circuit, 4, (30, 34), ProfileId::Toy).unwrap();
         assert_eq!(binding.input_vars, vec![0, 1]);
         assert_eq!(binding.output_vars, vec![4]);
         assert_eq!(plan.num_inputs, binding.input_vars.len() as u32);
         assert_eq!(plan.outputs.len(), binding.output_vars.len());
 
         let mut with_preinit = circuit;
-        with_preinit.pre_init.push(volar_ir::boolar::BIrPreInitSegment {
-            storage: volar_ir_common::StorageId(0),
-            lane: volar_ir::boolar::LaneId(0),
-            addr: vec![],
-            data: vec![true],
-        });
+        with_preinit
+            .pre_init
+            .push(volar_ir::boolar::BIrPreInitSegment {
+                storage: volar_ir_common::StorageId(0),
+                lane: volar_ir::boolar::LaneId(0),
+                addr: vec![],
+                data: vec![true],
+            });
         assert!(matches!(
             build_bootstrap_plan_with_binding(&with_preinit, 4, (30, 34), ProfileId::Toy),
             Err(PlanBuildError::HasPreInitialization)
@@ -983,8 +1139,35 @@ mod tests {
     }
 
     #[test]
+    fn plan_adapter_binds_plan_shape_to_source_variable_order() {
+        use volar_spec::binfhe::lwe::wire_delta;
+        use volar_spec::binfhe::params::toy;
+
+        let circuit = xor_and_or_circuit();
+        let (plan, binding) =
+            build_bootstrap_plan_with_binding(&circuit, 4, (30, 34), ProfileId::Toy).unwrap();
+        let adapter = BinFhePlanAdapter::new::<{ toy::LOG_Q_LWE }>(&plan, &binding).unwrap();
+        assert_eq!(adapter.input_vars(), &[0, 1]);
+        assert_eq!(adapter.output_vars(), &[4]);
+        assert_eq!(
+            adapter.delta(),
+            wire_delta::<{ toy::LOG_Q_LWE }>(plan.k_max as usize)
+        );
+
+        let duplicate_inputs = PlanRegionBinding {
+            input_vars: vec![0, 0],
+            output_vars: vec![4],
+        };
+        assert!(matches!(
+            BinFhePlanAdapter::new::<{ toy::LOG_Q_LWE }>(&plan, &duplicate_inputs),
+            Err(BinFhePlanAdapterError::DuplicateInputBinding(0)),
+        ));
+    }
+
+    #[test]
     fn fusion_collapses_cones_into_single_luts() {
-        let plan = build_bootstrap_plan(&xor_and_or_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
+        let plan =
+            build_bootstrap_plan(&xor_and_or_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
         plan.validate().unwrap();
         // The whole DAG is one 2-input cone: one LUT op, one layer.
         let lut_ops: Vec<_> = plan
@@ -1122,7 +1305,8 @@ mod tests {
 
     #[test]
     fn fused_xor_and_circuit_compiles() {
-        let plan = build_bootstrap_plan(&build_xor_and_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
+        let plan =
+            build_bootstrap_plan(&build_xor_and_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
         let module = weave_binfhe_plan(&plan, "xor_and_fused");
         let code = crate::fhe::print_fhe_flat_module(module.inner(), true);
         compile_check_binfhe(&code, "binfhe_fused_xor_and");
@@ -1190,7 +1374,12 @@ mod tests {
                         )
                         .unwrap();
                     }
-                    PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
+                    PlanOp::RgswMux {
+                        sel,
+                        then_cell,
+                        else_cell,
+                        out,
+                    } => {
                         write!(
                             s,
                             "PlanOp::RgswMux {{ sel: {}, then_cell: {}, else_cell: {}, out: {} }},",
@@ -1371,7 +1560,9 @@ mod e2e {{
             .expect("failed to run cargo test");
         let stderr = std::string::String::from_utf8_lossy(&output.stderr).into_owned();
         let stdout = std::string::String::from_utf8_lossy(&output.stdout).into_owned();
-        if std::env::var("BINFHE_KEEP_TMP").is_err() { let _ = std::fs::remove_dir_all(&tmpdir); }
+        if std::env::var("BINFHE_KEEP_TMP").is_err() {
+            let _ = std::fs::remove_dir_all(&tmpdir);
+        }
         if !output.status.success() {
             panic!(
                 "binfhe e2e failed (test: {})\n--- stdout ---\n{}\n--- stderr ---\n{}",
@@ -1383,7 +1574,8 @@ mod e2e {{
     #[test]
     fn fused_xor_and_runs_and_matches_execute_plan() {
         // (a XOR b) AND (a OR b) fused to one LUT = XOR table.
-        let plan = build_bootstrap_plan(&xor_and_or_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
+        let plan =
+            build_bootstrap_plan(&xor_and_or_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
         let module = weave_binfhe_plan(&plan, "xor_and_or");
         let code = crate::fhe::print_fhe_flat_module(module.inner(), true);
         // The generated function name must match the e2e harness call.
