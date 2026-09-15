@@ -65,9 +65,9 @@ use crate::binfhe::torus;
 pub struct PrivateKeySwitchingKey<const BIG_N: usize, const PRIV_ELL: usize> {
     /// a-column entries: `a_col[i][l]` encrypts `s'_i * s'(X) * g_l`
     /// (zero when `s'_i = 0`).
-    pub a_col: [[RlweCiphertext<BIG_N>; PRIV_ELL]; BIG_N],
+    pub a_col: alloc::vec::Vec<[RlweCiphertext<BIG_N>; PRIV_ELL]>,
     /// b-column entries: `b_col[i][l]` encrypts the constant `-s'_i * g_l`.
-    pub b_col: [[RlweCiphertext<BIG_N>; PRIV_ELL]; BIG_N],
+    pub b_col: alloc::vec::Vec<[RlweCiphertext<BIG_N>; PRIV_ELL]>,
     /// a-column body terms: encrypt `-s'(X) * g_l`.
     pub a_body: [RlweCiphertext<BIG_N>; PRIV_ELL],
     /// b-column body terms: encrypt the constant `g_l`.
@@ -143,20 +143,24 @@ pub fn gen_circuit_bootstrapping_key<
         p
     };
 
-    let a_col = core::array::from_fn(|i| {
+    // Column families are heap-allocated: at Std128 dimensions the pair is
+    // tens of MB and cannot live on a test thread's stack (plan §10 M8).
+    let mut a_col = alloc::vec::Vec::with_capacity(BIG_N);
+    for i in 0..BIG_N {
         // f(s'_i) = s'_i * s'(X).
         let msg = if rlwe_sk.key[i] == 1 { &rlwe_sk.key } else { &zero };
-        core::array::from_fn(|l| {
+        a_col.push(core::array::from_fn(|l| {
             encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, PRIV_BASE_LOG, rlwe_sk, rng)
-        })
-    });
-    let b_col = core::array::from_fn(|i| {
+        }));
+    }
+    let mut b_col = alloc::vec::Vec::with_capacity(BIG_N);
+    for i in 0..BIG_N {
         // f(s'_i) = -s'_i (scalar).
         let msg = if rlwe_sk.key[i] == 1 { &neg_one_const } else { &zero };
-        core::array::from_fn(|l| {
+        b_col.push(core::array::from_fn(|l| {
             encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, PRIV_BASE_LOG, rlwe_sk, rng)
-        })
-    });
+        }));
+    }
     let a_body = core::array::from_fn(|l| {
         encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(&neg_sk, l, PRIV_BASE_LOG, rlwe_sk, rng)
     });
@@ -179,7 +183,7 @@ pub fn gen_circuit_bootstrapping_key<
 /// coefficient and the body, accumulate digit-times-entry.
 fn priv_ks<const BIG_N: usize, const LOG_Q: u32, const PRIV_ELL: usize, const PRIV_BASE_LOG: u32>(
     src: &LweCiphertext<BIG_N>,
-    col: &[[RlweCiphertext<BIG_N>; PRIV_ELL]; BIG_N],
+    col: &[[RlweCiphertext<BIG_N>; PRIV_ELL]],
     body: &[RlweCiphertext<BIG_N>; PRIV_ELL],
 ) -> RlweCiphertext<BIG_N> {
     let mut out = RlweCiphertext {
