@@ -30,10 +30,10 @@ use alloc::vec::Vec;
 use crate::binfhe::circuit_bs::{CircuitBootstrappingKey, circuit_bootstrap};
 use crate::binfhe::keys::BootstrappingKey;
 use crate::binfhe::lut::table_is_constant;
+use crate::binfhe::pbs::binfhe_lut_read_dyn;
 use crate::binfhe::lwe::{
     LweCiphertext, binfhe_not, binfhe_trivial, wire_delta,
 };
-use crate::binfhe::pbs::binfhe_pbs_core;
 use crate::binfhe::rgsw::{RgswCiphertext, cmux};
 use crate::binfhe::rlwe::RlweCiphertext;
 
@@ -370,7 +370,7 @@ pub fn execute_plan<
                         .iter()
                         .map(|w| wires[*w as usize])
                         .collect();
-                    wires.push(crate::binfhe::pbs::binfhe_lut_read_dyn::<
+                    wires.push(binfhe_lut_read_dyn::<
                         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
                         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
                     >(&cts, &spec.entries, plan.k_max as usize, bk));

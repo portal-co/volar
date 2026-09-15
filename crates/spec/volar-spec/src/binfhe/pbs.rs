@@ -24,7 +24,7 @@
 
 use crate::binfhe::blind_rotate::blind_rotate;
 use crate::binfhe::keys::{BootstrappingKey, key_switch};
-use crate::binfhe::lut::Lut;
+use crate::binfhe::lut::{Lut, fill_test_poly, table_is_constant};
 use crate::binfhe::lwe::{
     LweCiphertext, binfhe_trivial, lwe_add, lwe_add_const, lwe_scale, wire_delta,
 };
@@ -131,12 +131,12 @@ pub fn binfhe_lut_read_dyn<
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
     let delta = wire_delta::<LOG_Q_LWE>(k_max as usize);
-    if crate::binfhe::lut::table_is_constant(table) {
+    if table_is_constant(table) {
         return binfhe_trivial::<N_LWE, LOG_Q_LWE>(table[0], delta);
     }
     let arity = table.len().trailing_zeros() as usize;
     assert_eq!(inputs.len(), arity, "LUT arity must match the table");
-    let test_poly = crate::binfhe::lut::fill_test_poly::<BIG_N>(
+    let test_poly = fill_test_poly::<BIG_N>(
         table,
         arity,
         k_max as usize,
@@ -175,14 +175,10 @@ pub fn binfhe_gate_and<
     b: LweCiphertext<N_LWE>,
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
-    let lut = match Lut::<2, 4, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>::AND {
-        Ok(l) => l,
-        Err(_) => panic!("the AND table must be representable"),
-    };
-    binfhe_lut_read::<
+    binfhe_lut_read_dyn::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 2, 4, K_MAX,
-    >(&[a, b], &lut, bk)
+        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+    >(&[a, b], &[false, false, false, true], K_MAX, bk)
 }
 
 /// OR gate: one programmable bootstrap.
@@ -202,14 +198,10 @@ pub fn binfhe_gate_or<
     b: LweCiphertext<N_LWE>,
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
-    let lut = match Lut::<2, 4, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>::OR {
-        Ok(l) => l,
-        Err(_) => panic!("the OR table must be representable"),
-    };
-    binfhe_lut_read::<
+    binfhe_lut_read_dyn::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 2, 4, K_MAX,
-    >(&[a, b], &lut, bk)
+        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+    >(&[a, b], &[false, true, true, true], K_MAX, bk)
 }
 
 /// XOR gate: one programmable bootstrap (unlike the legacy raw linear XOR,
@@ -230,14 +222,10 @@ pub fn binfhe_gate_xor<
     b: LweCiphertext<N_LWE>,
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
-    let lut = match Lut::<2, 4, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>::XOR {
-        Ok(l) => l,
-        Err(_) => panic!("the XOR table must be representable"),
-    };
-    binfhe_lut_read::<
+    binfhe_lut_read_dyn::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 2, 4, K_MAX,
-    >(&[a, b], &lut, bk)
+        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+    >(&[a, b], &[false, true, true, false], K_MAX, bk)
 }
 
 /// CMUX (oblivious select) as a 3-input LUT: `sel ? a : b` with
@@ -262,14 +250,10 @@ pub fn binfhe_cmux<
 ) -> LweCiphertext<N_LWE> {
     // addr = sel + 2a + 4b; f(sel,a,b) = sel ? a : b.
     const TABLE: [bool; 8] = [false, false, false, true, true, false, true, true];
-    let lut = match Lut::<3, 8, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>::new(TABLE) {
-        Ok(l) => l,
-        Err(_) => panic!("the CMUX table must be representable (K_MAX >= 3 required)"),
-    };
-    binfhe_lut_read::<
+    binfhe_lut_read_dyn::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 3, 8, K_MAX,
-    >(&[sel, a, b], &lut, bk)
+        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+    >(&[sel, a, b], &TABLE, K_MAX, bk)
 }
 
 #[cfg(test)]

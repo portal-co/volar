@@ -27,6 +27,7 @@ use crate::binfhe::gadget;
 use crate::binfhe::rlwe::{
     RlweCiphertext, RlweSecretKey, poly_mul_neg, rlwe_add, rlwe_encrypt_scalar, rlwe_sub,
 };
+use crate::binfhe::torus;
 
 /// One RGSW row: gadget factor in the a-column (`rlwe0`) and b-column
 /// (`rlwe1`).
@@ -61,7 +62,7 @@ pub fn rgsw_encrypt<
         // a-column: encrypt zero, add m * g_j to a[0] so the phase carries
         // -m * g_j * s(X).
         let mut rlwe0 = rlwe_encrypt_scalar::<N, LOG, ETA, R>(0, sk, rng);
-        rlwe0.a[0] = crate::binfhe::torus::add::<LOG>(rlwe0.a[0], contrib);
+        rlwe0.a[0] = torus::add::<LOG>(rlwe0.a[0], contrib);
         // b-column: encrypt m * g_j in the constant coefficient.
         let rlwe1 = rlwe_encrypt_scalar::<N, LOG, ETA, R>(contrib, sk, rng);
         RgswRow { rlwe0, rlwe1 }
@@ -97,8 +98,8 @@ pub fn external_product<
         }
     }
     for k in 0..N {
-        out_a[k] = crate::binfhe::torus::reduce::<LOG>(out_a[k]);
-        out_b[k] = crate::binfhe::torus::reduce::<LOG>(out_b[k]);
+        out_a[k] = torus::reduce::<LOG>(out_a[k]);
+        out_b[k] = torus::reduce::<LOG>(out_b[k]);
     }
     RlweCiphertext { a: out_a, b: out_b }
 }
