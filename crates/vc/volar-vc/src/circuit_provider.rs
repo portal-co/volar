@@ -114,6 +114,21 @@ pub enum CircuitProviderError {
     },
 }
 
+/// Run the deterministic Boolean optimization fixpoint after provider programs
+/// have been inlined into a combined circuit.
+///
+/// Provider calls are ordinary Boolar gates at this point, so public labels and
+/// domain separators can fold, duplicate pure derivation subgraphs can merge,
+/// and dead conversion work is removed before the GC schedule is built.
+pub fn optimize_circuit_provider_composition<P: Clone>(circuit: &mut BCircuit<P>) {
+    let mut blocks = circuit.clone().to_bir_blocks();
+    volar_ir_opt::biir::fold_biir_blocks(&mut blocks);
+    volar_ir_opt::biir::cse_biir_blocks(&mut blocks);
+    volar_ir_opt::biir::dce_biir_blocks(&mut blocks);
+    *circuit = BCircuit::try_from_ir(&blocks)
+        .expect("optimization preserves the single-block fused-circuit invariant");
+}
+
 /// Programs validated as pure single-block circuits with declared geometry.
 ///
 /// Keeping this type private-fielded makes the validation seam non-optional:
@@ -561,6 +576,12 @@ impl<'a, P: Clone> CircuitProviderComposition<'a, P> {
         Ok(plaintext)
     }
 
+    /// Apply the required fold/CSE/DCE optimization fixpoint to this combined
+    /// circuit. Call after assigning the combined circuit's required outputs.
+    pub fn optimize(&mut self) {
+        optimize_circuit_provider_composition(self.circuit);
+    }
+
     /// Finish composition and recover the circuit borrowed at construction.
     pub fn into_circuit(self) -> &'a mut BCircuit<P> {
         self.circuit
@@ -765,6 +786,24 @@ mod tests {
                 program: ProviderProgramKind::DeriveKey,
             })
         ));
+    }
+
+    #[test]
+    fn combined_optimizer_folds_dead_provider_work() {
+        let provider = provider();
+        let mut combined = BCircuit::new(4);
+        let mut composition = provider.compose_into(&mut combined);
+        let key = composition
+            .derive_key(KeyUse(7), &[IRVarId(0)], &[IRVarId(1)])
+            .unwrap();
+        // Encrypt but do not make the ciphertext live at the output. DCE must
+        // remove the full inlined conversion graph after composition.
+        composition
+            .encrypt(KeyUse(7), CiphertextUse(9), &[IRVarId(2)], &[IRVarId(3)])
+            .unwrap();
+        composition.circuit.outputs = key;
+        composition.optimize();
+        assert_eq!(composition.into_circuit().stmts.len(), 1);
     }
 
     #[test]

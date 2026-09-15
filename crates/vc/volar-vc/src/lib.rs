@@ -109,6 +109,7 @@ pub use circuit_provider::{
     CiphertextUse, CircuitProviderComposition, CircuitProviderError, CircuitProviderGeometry,
     CircuitProviderPrograms, DecryptReason, KeyUse, ProviderProgramKind, ProviderWireTracker,
     ValidatedCircuitProvider, WireConversionDemand, WireResidence,
+    optimize_circuit_provider_composition,
 };
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};
