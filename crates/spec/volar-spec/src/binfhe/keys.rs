@@ -122,6 +122,9 @@ impl<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize, const KS_ELL: 
 /// Key-switching key: `ksk[i][j]` encrypts `s'_i * 2^shift_j` under the
 /// LWE key at modulus `2^LOG_MOD_KS`.
 #[derive(Clone, Debug)]
+/// @volar-allow-vec: eval-key-store: owned variant for native execution;
+/// ~18 MB at Std128 cannot live on the native stack. Use
+/// [`KeySwitchingKeyRef`] (zero-heap) on stack-rich virtual targets.
 pub struct KeySwitchingKey<const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize> {
     /// Heap-held: at Std128 dimensions the array form would be ~18 MB and
     /// overflow the stack during construction.
@@ -134,6 +137,9 @@ pub struct KeySwitchingKey<const N_LWE: usize, const BIG_N: usize, const KS_ELL:
 /// through the const generics of the contained ciphertexts; a key generated
 /// for one profile cannot be passed to another profile's operations.
 #[derive(Clone, Debug)]
+/// @volar-allow-vec: eval-key-store: owned variant for native execution;
+/// ~36 MB at Std128 cannot live on the native stack. Use
+/// [`BootstrappingKeyRef`] (zero-heap) on stack-rich virtual targets.
 pub struct BootstrappingKey<
     const N_LWE: usize,
     const BIG_N: usize,
@@ -147,6 +153,8 @@ pub struct BootstrappingKey<
 
 /// Generate the evaluation key. Noise is CBD-`ETA` at each entry's own
 /// modulus (ring modulus for the BSK, `2^LOG_MOD_KS` for the KSK).
+/// @volar-allow-vec: eval-key-store: collects into the owned key buffers
+/// (native execution); borrowed views skip this allocation on virtual targets.
 pub fn gen_bootstrapping_key<
     const N_LWE: usize,
     const BIG_N: usize,

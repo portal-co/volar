@@ -8,6 +8,11 @@
 //! first LUT bits, and rejects trailing bytes. The generic Cirrus variant
 //! format deliberately has its own envelope and source binding; this module
 //! provides the stable Volar-side plan view it consumes.
+//!
+//! @volar-allow-vec: runtime-boundary: the whole module is a byte adapter
+//! for host-side plan (de)serialization; its buffers never cross into
+//! generated target code. This module-level exemption applies to every item
+//! below (encode/decode buffers and `put_*`/`Reader` helpers).
 
 use alloc::vec;
 use alloc::vec::Vec;

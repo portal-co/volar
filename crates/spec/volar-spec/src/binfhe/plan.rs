@@ -147,6 +147,9 @@ pub enum PlanOp {
 }
 
 /// A logical lookup table (address-ordered entries, length `2^k`).
+/// @volar-allow-vec: runtime-boundary: table *entries* are plan data (not
+/// shape); the inline-capacity treatment applies to the id-list
+/// ([`LutInputs`]), which is shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LutSpec {
     pub entries: Vec<bool>,
@@ -173,6 +176,9 @@ pub struct FailureBudget {
 }
 
 /// A complete bootstrap schedule.
+/// @volar-allow-vec: runtime-boundary: a host interpreter loads a plan whose
+/// size was not known at spec-compile time. Generated code (the weaver)
+/// never sees these buffers; it emits presized calls.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootstrapPlan {
     pub profile: ProfileId,
@@ -460,6 +466,9 @@ impl BootstrapPlan {
 ///
 /// Panics on malformed input or unvalidated structure — call
 /// [`BootstrapPlan::validate`] first for a diagnosable error.
+/// @volar-allow-vec: host-interpreter: grows wire/RGSW/cell arenas while
+/// executing a runtime-supplied plan; the generated-code consumer is the
+/// weaver's presized emission, not this interpreter.
 pub fn execute_plan<
     const N_LWE: usize,
     const BIG_N: usize,

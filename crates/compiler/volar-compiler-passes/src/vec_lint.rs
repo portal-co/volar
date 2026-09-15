@@ -75,10 +75,9 @@ pub enum VecUseKind {
     VecCtorPath,
 }
 
-/// Extract the `@volar-allow-vec:` category from `syn` attributes, if a
-/// valid exemption is present. Returns `Some(category)` on a recognized
-/// category, `None` otherwise (an unrecognized category is *not* an
-/// exemption — it fails closed).
+/// Extract the `@volar-allow-vec:` category from `syn` attributes (the
+/// parse-time form; behind the `parsing` feature). Returns `Some(category)`
+/// on a recognized category, `None` otherwise (fails closed).
 #[cfg(feature = "parsing")]
 pub fn parse_allow_vec(attrs: &[syn::Attribute]) -> Option<&'static str> {
     for attr in attrs {

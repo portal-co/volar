@@ -61,6 +61,8 @@ use crate::binfhe::rlwe::{RlweCiphertext, RlweSecretKey, rlwe_encrypt_poly, samp
 use crate::binfhe::torus;
 
 /// Private key-switching key for circuit bootstrapping.
+/// @volar-allow-vec: eval-key-store: per-column RLWE rows are large
+/// (BIG_N * PRIV_ELL ciphertexts) and heap-held for native execution.
 #[derive(Clone, Debug)]
 pub struct PrivateKeySwitchingKey<const BIG_N: usize, const PRIV_ELL: usize> {
     /// a-column entries: `a_col[i][l]` encrypts `s'_i * s'(X) * g_l`
@@ -449,6 +451,64 @@ mod tests {
             let phase = clear_phase(&out, &rlwe_sk.key);
             for i in 0..toy::BIG_N {
                 assert_eq!(phase[i], contents[addr].b[i], "addr {addr} coeff {i}");
+            }
+        }
+    }
+
+    /// §9 evidence: the Std128 circuit-bootstrap path currently fails its
+    /// selection budget.
+    ///
+    /// This is the first Std128-scale CB differential (M8's smoke was
+    /// wire-only; CB was previously exercised only at the noiseless `toy`
+    /// profile, which cannot fail). The selector/CMUX output at Std128
+    /// (real `CBD_ETA = 16` noise, `q = 2048`) does not meet the decode
+    /// margin, mirroring the noise-budget suite's arity-3 finding at
+    /// `q = 128`. Ignored by default and expected to fail until the §9
+    /// failure recomputation drives a parameter/budget fix; a green run is
+    /// the signal that the CB path meets its recorded budget.
+    #[test]
+    #[ignore = "§9 evidence: Std128 CB is over its selection budget; see doc comment"]
+    fn std128_circuit_bootstrapped_cmux_selects() {
+        use crate::binfhe::params::std128;
+        let mut rng = TestRng::new(0xCB128);
+        let lwe_sk = gen_lwe_secret_key::<{ std128::N_LWE }, _>(&mut rng);
+        let rlwe_sk = gen_rlwe_secret_key::<{ std128::BIG_N }, _>(&mut rng);
+        let cbk = gen_circuit_bootstrapping_key::<
+            { std128::N_LWE }, { std128::BIG_N }, { std128::LOG_Q },
+            { std128::LOG_Q_LWE }, { std128::LOG_MOD_KS }, { std128::BS_ELL },
+            { std128::BS_BASE_LOG }, { std128::KS_ELL }, { std128::KS_BASE_LOG },
+            { std128::PRIV_ELL }, { std128::PRIV_BASE_LOG }, { std128::CBD_ETA }, _,
+        >(&lwe_sk, &rlwe_sk, &mut rng);
+        let delta = wire_delta::<{ std128::LOG_Q_LWE }>(2);
+        let mut content0 = rlwe_trivial::<{ std128::BIG_N }, { std128::LOG_Q }>(
+            &[0u32; std128::BIG_N],
+        );
+        let mut content1 = rlwe_trivial::<{ std128::BIG_N }, { std128::LOG_Q }>(
+            &[0u32; std128::BIG_N],
+        );
+        for i in 0..std128::BIG_N {
+            content0.b[i] = (i as u32 * 3 + 1) & 0x7F;
+            content1.b[i] = (i as u32 * 5 + 2) & 0x7F;
+        }
+        for m in [false, true] {
+            let mut rng = TestRng::new(0xCB200 + m as u64);
+            let wire = lwe_encrypt::<
+                { std128::N_LWE }, { std128::LOG_Q_LWE }, { std128::CBD_ETA }, _,
+            >(m, delta, &lwe_sk, &mut rng);
+            let rgsw = circuit_bootstrap::<
+                { std128::N_LWE }, { std128::BIG_N }, { std128::LOG_Q },
+                { std128::LOG_Q_LWE }, { std128::BS_ELL }, { std128::BS_BASE_LOG },
+                { std128::KS_ELL }, { std128::PRIV_ELL }, { std128::PRIV_BASE_LOG },
+            >(&wire, &cbk, 2);
+            let out = crate::binfhe::rgsw::cmux::<
+                { std128::BIG_N }, { std128::LOG_Q }, { std128::BS_ELL }, { std128::BS_BASE_LOG },
+            >(&rgsw, &content1, &content0);
+            let expected = if m { &content1 } else { &content0 };
+            for i in 0..std128::BIG_N {
+                let phase = crate::binfhe::rlwe::rlwe_phase::<{ std128::BIG_N }, { std128::LOG_Q }>(
+                    &out, &rlwe_sk,
+                );
+                assert_eq!(phase[i], expected.b[i], "coeff {i}, m={m}");
             }
         }
     }
