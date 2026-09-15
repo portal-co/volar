@@ -106,8 +106,8 @@ pub mod tls13_live;
 pub mod x25519_gadget;
 
 pub use circuit_provider::{
-    CircuitProviderError, CircuitProviderGeometry, CircuitProviderPrograms, ProviderProgramKind,
-    ValidatedCircuitProvider,
+    CiphertextUse, CircuitProviderComposition, CircuitProviderError, CircuitProviderGeometry,
+    CircuitProviderPrograms, KeyUse, ProviderProgramKind, ValidatedCircuitProvider,
 };
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};

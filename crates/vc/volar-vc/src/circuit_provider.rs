@@ -21,6 +21,7 @@
 //! Those policies are staged behind the provider descriptor and demand tracker
 //! in `docs/fhe/circuit-provider-abi.md`.
 
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::convert::Infallible;
 
@@ -95,6 +96,16 @@ pub enum CircuitProviderError {
         expected: usize,
         actual: usize,
     },
+    UnknownKeyUse(KeyUse),
+    KeyUseSeedMismatch(KeyUse),
+    CiphertextUseAlreadyUsed(CiphertextUse),
+    RandomnessReused,
+    UnknownCiphertextUse(CiphertextUse),
+    CiphertextKeyMismatch {
+        ciphertext: CiphertextUse,
+        expected: KeyUse,
+        actual: KeyUse,
+    },
 }
 
 /// Programs validated as pure single-block circuits with declared geometry.
@@ -107,6 +118,47 @@ pub struct ValidatedCircuitProvider<P: Clone> {
     derive_key: BCircuit<P>,
     encrypt: BCircuit<P>,
     decrypt: BCircuit<P>,
+}
+
+/// A public domain-separated request for one deterministic key derivation.
+///
+/// It is an opaque compiler identity here. A reviewed session binding must map
+/// it to the ABI's profile/epoch/circuit/key-label tuple before execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeyUse(pub u64);
+
+/// A public identity for one randomized ciphertext event.
+///
+/// It is distinct from source wire identity: equal plaintext inputs may still
+/// require distinct ciphertext events and therefore distinct randomness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CiphertextUse(pub u64);
+
+struct DerivedKey {
+    seed_left: Vec<IRVarId>,
+    seed_right: Vec<IRVarId>,
+    wires: Vec<IRVarId>,
+}
+
+struct CiphertextRecord {
+    key_use: KeyUse,
+    wires: Vec<IRVarId>,
+    decrypted: Option<Vec<IRVarId>>,
+}
+
+/// Per-combined-circuit demand state for a validated provider.
+///
+/// This deep module centralizes the lifetime rules that must not leak across
+/// compiler callers: one `KeyUse` derives once, ciphertext uses and randomness
+/// vectors are single-use, and a ciphertext decrypts once on demand. It does
+/// not decide *when* a wire is first non-select/cached; the upcoming wire
+/// tracker invokes these operations at that decision seam.
+pub struct CircuitProviderComposition<'a, P: Clone> {
+    provider: &'a ValidatedCircuitProvider<P>,
+    circuit: &'a mut BCircuit<P>,
+    keys: BTreeMap<KeyUse, DerivedKey>,
+    ciphertexts: BTreeMap<CiphertextUse, CiphertextRecord>,
+    randomness: BTreeSet<Vec<IRVarId>>,
 }
 
 impl<P: Clone> CircuitProviderPrograms<P> {
@@ -153,6 +205,20 @@ impl<P: Clone> ValidatedCircuitProvider<P> {
         self.geometry
     }
 
+    /// Begin one demand-tracked composition into `circuit`.
+    pub fn compose_into<'a>(
+        &'a self,
+        circuit: &'a mut BCircuit<P>,
+    ) -> CircuitProviderComposition<'a, P> {
+        CircuitProviderComposition {
+            provider: self,
+            circuit,
+            keys: BTreeMap::new(),
+            ciphertexts: BTreeMap::new(),
+            randomness: BTreeSet::new(),
+        }
+    }
+
     /// Inline split-seed key derivation and return its ordinary key wires.
     pub fn derive_key(
         &self,
@@ -197,6 +263,112 @@ impl<P: Clone> ValidatedCircuitProvider<P> {
         inputs.extend_from_slice(key);
         inputs.extend_from_slice(ciphertext);
         append_program(into, ProviderProgramKind::Decrypt, &self.decrypt, &inputs)
+    }
+}
+
+impl<'a, P: Clone> CircuitProviderComposition<'a, P> {
+    /// Derive `key_use` once. Repeated calls with the identical split seed
+    /// return the original wires; a changed seed is a fail-closed error.
+    pub fn derive_key(
+        &mut self,
+        key_use: KeyUse,
+        seed_left: &[IRVarId],
+        seed_right: &[IRVarId],
+    ) -> Result<Vec<IRVarId>, CircuitProviderError> {
+        if let Some(existing) = self.keys.get(&key_use) {
+            return if existing.seed_left == seed_left && existing.seed_right == seed_right {
+                Ok(existing.wires.clone())
+            } else {
+                Err(CircuitProviderError::KeyUseSeedMismatch(key_use))
+            };
+        }
+        let wires = self
+            .provider
+            .derive_key(self.circuit, seed_left, seed_right)?;
+        self.keys.insert(
+            key_use,
+            DerivedKey {
+                seed_left: seed_left.to_vec(),
+                seed_right: seed_right.to_vec(),
+                wires: wires.clone(),
+            },
+        );
+        Ok(wires)
+    }
+
+    /// Encrypt a plaintext for a new ciphertext event using an already-derived
+    /// key. Randomness is single-use even where callers mistakenly supply a
+    /// different ciphertext identity.
+    pub fn encrypt(
+        &mut self,
+        key_use: KeyUse,
+        ciphertext_use: CiphertextUse,
+        plaintext: &[IRVarId],
+        randomness: &[IRVarId],
+    ) -> Result<Vec<IRVarId>, CircuitProviderError> {
+        let key = self
+            .keys
+            .get(&key_use)
+            .ok_or(CircuitProviderError::UnknownKeyUse(key_use))?
+            .wires
+            .clone();
+        if self.ciphertexts.contains_key(&ciphertext_use) {
+            return Err(CircuitProviderError::CiphertextUseAlreadyUsed(
+                ciphertext_use,
+            ));
+        }
+        if !self.randomness.insert(randomness.to_vec()) {
+            return Err(CircuitProviderError::RandomnessReused);
+        }
+        let wires = self
+            .provider
+            .encrypt(self.circuit, &key, plaintext, randomness)?;
+        self.ciphertexts.insert(
+            ciphertext_use,
+            CiphertextRecord {
+                key_use,
+                wires: wires.clone(),
+                decrypted: None,
+            },
+        );
+        Ok(wires)
+    }
+
+    /// Decrypt a ciphertext at most once. All later consumers receive the
+    /// exact already-inlined plaintext wires.
+    pub fn decrypt(
+        &mut self,
+        key_use: KeyUse,
+        ciphertext_use: CiphertextUse,
+    ) -> Result<Vec<IRVarId>, CircuitProviderError> {
+        let record = self
+            .ciphertexts
+            .get_mut(&ciphertext_use)
+            .ok_or(CircuitProviderError::UnknownCiphertextUse(ciphertext_use))?;
+        if record.key_use != key_use {
+            return Err(CircuitProviderError::CiphertextKeyMismatch {
+                ciphertext: ciphertext_use,
+                expected: record.key_use,
+                actual: key_use,
+            });
+        }
+        if let Some(wires) = &record.decrypted {
+            return Ok(wires.clone());
+        }
+        let key = self
+            .keys
+            .get(&key_use)
+            .ok_or(CircuitProviderError::UnknownKeyUse(key_use))?
+            .wires
+            .clone();
+        let plaintext = self.provider.decrypt(self.circuit, &key, &record.wires)?;
+        record.decrypted = Some(plaintext.clone());
+        Ok(plaintext)
+    }
+
+    /// Finish composition and recover the circuit borrowed at construction.
+    pub fn into_circuit(self) -> &'a mut BCircuit<P> {
+        self.circuit
     }
 }
 
@@ -397,6 +569,44 @@ mod tests {
             Err(CircuitProviderError::UnsupportedStatement {
                 program: ProviderProgramKind::DeriveKey,
             })
+        ));
+    }
+
+    #[test]
+    fn composition_memoizes_key_and_decrypt_and_rejects_randomness_reuse() {
+        let provider = provider();
+        let mut combined = BCircuit::new(4);
+        let mut composition = provider.compose_into(&mut combined);
+        let key = composition
+            .derive_key(KeyUse(7), &[IRVarId(0)], &[IRVarId(1)])
+            .unwrap();
+        assert_eq!(
+            key,
+            composition
+                .derive_key(KeyUse(7), &[IRVarId(0)], &[IRVarId(1)])
+                .unwrap()
+        );
+        let ciphertext = composition
+            .encrypt(KeyUse(7), CiphertextUse(9), &[IRVarId(2)], &[IRVarId(3)])
+            .unwrap();
+        let first_plaintext = composition.decrypt(KeyUse(7), CiphertextUse(9)).unwrap();
+        let second_plaintext = composition.decrypt(KeyUse(7), CiphertextUse(9)).unwrap();
+        assert_eq!(first_plaintext, second_plaintext);
+        assert_eq!(ciphertext.len(), 1);
+        // KDF (1) + encrypt (2) + one decrypt (1), not a second KDF/decrypt.
+        assert_eq!(composition.into_circuit().stmts.len(), 4);
+
+        let mut second = BCircuit::new(4);
+        let mut composition = provider.compose_into(&mut second);
+        composition
+            .derive_key(KeyUse(7), &[IRVarId(0)], &[IRVarId(1)])
+            .unwrap();
+        composition
+            .encrypt(KeyUse(7), CiphertextUse(9), &[IRVarId(2)], &[IRVarId(3)])
+            .unwrap();
+        assert!(matches!(
+            composition.encrypt(KeyUse(7), CiphertextUse(10), &[IRVarId(2)], &[IRVarId(3)],),
+            Err(CircuitProviderError::RandomnessReused)
         ));
     }
 }
