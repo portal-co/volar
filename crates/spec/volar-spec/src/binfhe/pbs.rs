@@ -44,17 +44,23 @@ pub fn binfhe_pbs_core<
     const BS_BASE_LOG: u32,
     const KS_ELL: usize,
     const KS_BASE_LOG: u32,
+    BK: crate::binfhe::keys::AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + ?Sized,
 >(
     ct: &LweCiphertext<N_LWE>,
     test_poly: &[u32; BIG_N],
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    bk: &BK,
 ) -> LweCiphertext<N_LWE> {
     let acc = blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(
-        ct, test_poly, &bk.bsk,
+        ct,
+        test_poly,
+        bk.bsk_rows(),
     );
     let extracted = sample_extract::<BIG_N, LOG_Q>(&acc);
     let at_ks = mod_switch_lwe::<BIG_N, LOG_Q, LOG_MOD_KS>(&extracted);
-    let switched = key_switch::<N_LWE, BIG_N, LOG_MOD_KS, KS_ELL, KS_BASE_LOG>(&at_ks, &bk.ksk);
+    let switched = key_switch::<N_LWE, BIG_N, LOG_MOD_KS, KS_ELL, KS_BASE_LOG, _>(
+        &at_ks,
+        &bk.ksk_ref(),
+    );
     mod_switch_lwe::<N_LWE, LOG_MOD_KS, LOG_Q_LWE>(&switched)
 }
 
@@ -103,6 +109,7 @@ pub fn binfhe_lut_read<
         BS_BASE_LOG,
         KS_ELL,
         KS_BASE_LOG,
+        _,
     >(&combined, lut.test_polynomial(), bk)
 }
 
@@ -151,7 +158,7 @@ pub fn binfhe_lut_read_dyn<
     combined = lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, delta / 2);
     binfhe_pbs_core::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _,
     >(&combined, &test_poly, bk)
 }
 
