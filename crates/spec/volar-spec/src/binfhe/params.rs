@@ -76,6 +76,8 @@ pub const fn check_profile(
     bs_ell: usize,
     ks_base_log: u32,
     ks_ell: usize,
+    priv_base_log: u32,
+    priv_ell: usize,
 ) {
     assert!(big_n.is_power_of_two(), "BIG_N must be a power of two");
     assert!(n_lwe > 0, "N_LWE must be non-zero");
@@ -96,6 +98,10 @@ pub const fn check_profile(
     assert!(
         ks_ell as u32 * ks_base_log >= log_mod_ks,
         "KS_ELL * KS_BASE_LOG must cover LOG_MOD_KS"
+    );
+    assert!(
+        priv_ell as u32 * priv_base_log >= log_q,
+        "PRIV_ELL * PRIV_BASE_LOG must cover LOG_Q (circuit bootstrap)"
     );
     // Invariant 4 is per-circuit (max arity); the profile-level cap is
     // LOG_Q_LWE - 2 (see max_lut_arity).
@@ -124,15 +130,20 @@ pub mod toy {
     /// Bootstrapping gadget base `2^4`, two levels covering `LOG_Q = 8`.
     pub const BS_BASE_LOG: u32 = 4;
     pub const BS_ELL: usize = 2;
-    /// Key-switching gadget base `2^4`, two levels covering `LOG_MOD_KS = 8`.
+    /// Key-switching gadget base `2^4`, two levels covering `LOG_MOD_KS`.
     pub const KS_BASE_LOG: u32 = 4;
     pub const KS_ELL: usize = 2;
+    /// Private-key-switching decomposition (circuit bootstrap): base `2^4`,
+    /// two levels covering `LOG_Q`.
+    pub const PRIV_BASE_LOG: u32 = 4;
+    pub const PRIV_ELL: usize = 2;
     /// Centered-binomial width; `0` disables noise entirely.
     pub const CBD_ETA: u32 = 0;
 
     /// Const-checked at profile definition time.
     const _: () = super::check_profile(
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_BASE_LOG, BS_ELL, KS_BASE_LOG, KS_ELL,
+        PRIV_BASE_LOG, PRIV_ELL,
     );
 }
 
@@ -155,10 +166,13 @@ pub mod toy_noisy {
     pub const BS_ELL: usize = 4;
     pub const KS_BASE_LOG: u32 = 4;
     pub const KS_ELL: usize = 3;
+    pub const PRIV_BASE_LOG: u32 = 4;
+    pub const PRIV_ELL: usize = 4;
     pub const CBD_ETA: u32 = 1;
 
     const _: () = super::check_profile(
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_BASE_LOG, BS_ELL, KS_BASE_LOG, KS_ELL,
+        PRIV_BASE_LOG, PRIV_ELL,
     );
 }
 
@@ -179,10 +193,13 @@ pub mod std128 {
     // smaller base and more levels than OpenFHE's table-lookup KSK.
     pub const KS_BASE_LOG: u32 = 2;
     pub const KS_ELL: usize = 8;
+    pub const PRIV_BASE_LOG: u32 = 3;
+    pub const PRIV_ELL: usize = 9;
     pub const CBD_ETA: u32 = 16;
 
     const _: () = super::check_profile(
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_BASE_LOG, BS_ELL, KS_BASE_LOG, KS_ELL,
+        PRIV_BASE_LOG, PRIV_ELL,
     );
 }
 
@@ -205,6 +222,8 @@ mod tests {
             bs_ell: usize,
             ks_base_log: u32,
             ks_ell: usize,
+            priv_base_log: u32,
+            priv_ell: usize,
         ) -> bool {
             big_n.is_power_of_two()
                 && n_lwe > 0
@@ -214,6 +233,7 @@ mod tests {
                 && log_q <= 32
                 && bs_ell as u32 * bs_base_log >= log_q
                 && ks_ell as u32 * ks_base_log >= log_mod_ks
+                && priv_ell as u32 * priv_base_log >= log_q
         }
         assert!(profile_ok(
             toy::N_LWE,
@@ -224,7 +244,9 @@ mod tests {
             toy::BS_BASE_LOG,
             toy::BS_ELL,
             toy::KS_BASE_LOG,
-            toy::KS_ELL
+            toy::KS_ELL,
+            toy::PRIV_BASE_LOG,
+            toy::PRIV_ELL
         ));
         assert!(profile_ok(
             toy_noisy::N_LWE,
@@ -235,7 +257,9 @@ mod tests {
             toy_noisy::BS_BASE_LOG,
             toy_noisy::BS_ELL,
             toy_noisy::KS_BASE_LOG,
-            toy_noisy::KS_ELL
+            toy_noisy::KS_ELL,
+            toy_noisy::PRIV_BASE_LOG,
+            toy_noisy::PRIV_ELL
         ));
         assert!(profile_ok(
             std128::N_LWE,
@@ -246,7 +270,9 @@ mod tests {
             std128::BS_BASE_LOG,
             std128::BS_ELL,
             std128::KS_BASE_LOG,
-            std128::KS_ELL
+            std128::KS_ELL,
+            std128::PRIV_BASE_LOG,
+            std128::PRIV_ELL
         ));
     }
 
@@ -261,13 +287,13 @@ mod tests {
     #[should_panic]
     fn malformed_profile_wrong_lwe_modulus_is_rejected() {
         // q != 2N must fail: LOG_Q_LWE = 6 -> q = 64 != 2 * 64.
-        check_profile(4, 64, 8, 6, 8, 4, 2, 4, 2);
+        check_profile(4, 64, 8, 6, 8, 4, 2, 4, 2, 4, 2);
     }
 
     #[test]
     #[should_panic]
     fn malformed_profile_non_covering_decomposition_is_rejected() {
         // BS_ELL * BS_BASE_LOG = 6 < LOG_Q = 8 must fail.
-        check_profile(4, 64, 8, 7, 8, 3, 2, 4, 2);
+        check_profile(4, 64, 8, 7, 8, 3, 2, 4, 2, 4, 2);
     }
 }

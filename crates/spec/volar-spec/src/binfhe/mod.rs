@@ -49,6 +49,7 @@
 
 // Milestone-scoped module list; extended as later milestones land.
 pub mod blind_rotate;
+pub mod circuit_bs;
 pub mod gadget;
 pub mod keys;
 pub mod lwe;
