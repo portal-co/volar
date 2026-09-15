@@ -58,6 +58,7 @@ pub mod modswitch;
 pub mod params;
 pub mod pbs;
 pub mod plan;
+pub mod plan_codec;
 pub mod rgsw;
 pub mod rlwe;
 pub mod sampler;

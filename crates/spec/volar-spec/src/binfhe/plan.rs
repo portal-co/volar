@@ -126,6 +126,63 @@ pub enum PlanError {
 }
 
 impl BootstrapPlan {
+    /// Evaluate this schedule over clear Boolean wires and cells.
+    ///
+    /// This is a semantic oracle for adapters and serialized-plan consumers;
+    /// unlike [`execute_plan`], it performs no cryptographic operation. A
+    /// circuit-bootstrap result is the selected Boolean value, and an RGSW
+    /// mux selects its `then_cell` exactly when that value is true.
+    ///
+    /// Panics on malformed input or structure. Call [`Self::validate`] first
+    /// when invalid plans must be reported rather than rejected.
+    pub fn execute_clear(
+        &self,
+        inputs: &[bool],
+        cells: &[bool],
+    ) -> (Vec<bool>, Vec<bool>) {
+        assert_eq!(inputs.len(), self.num_inputs as usize, "input wire count");
+        assert_eq!(cells.len(), self.num_cells as usize, "input cell count");
+
+        let mut wires = inputs.to_vec();
+        let mut rgsws = Vec::new();
+        let mut cell_arena = cells.to_vec();
+        for layer in &self.layers {
+            for op in layer {
+                match op {
+                    PlanOp::Const { out, value } => {
+                        assert_eq!(*out as usize, wires.len());
+                        wires.push(*value);
+                    }
+                    PlanOp::Not { input, out } => {
+                        assert_eq!(*out as usize, wires.len());
+                        wires.push(!wires[*input as usize]);
+                    }
+                    PlanOp::Lut { inputs, table, out } => {
+                        assert_eq!(*out as usize, wires.len());
+                        let mut address = 0usize;
+                        for (bit, input) in inputs.iter().enumerate() {
+                            address |= (wires[*input as usize] as usize) << bit;
+                        }
+                        wires.push(self.luts[*table as usize].entries[address]);
+                    }
+                    PlanOp::CircuitBootstrap { input, out } => {
+                        assert_eq!(*out as usize, rgsws.len());
+                        rgsws.push(wires[*input as usize]);
+                    }
+                    PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
+                        assert_eq!(*out as usize, cell_arena.len());
+                        cell_arena.push(if rgsws[*sel as usize] {
+                            cell_arena[*then_cell as usize]
+                        } else {
+                            cell_arena[*else_cell as usize]
+                        });
+                    }
+                }
+            }
+        }
+        (wires, cell_arena)
+    }
+
     /// Count blind rotations scheduled (one per non-constant LUT read, one
     /// per circuit-bootstrap level at evaluation time; here we count the
     /// ops, which is what the budget's `total_log2` refers to).
@@ -640,6 +697,43 @@ mod tests {
         plan = small_plan();
         plan.budget.total_log2 = 30;
         assert!(matches!(plan.validate(), Err(PlanError::BudgetInconsistent)));
+    }
+
+    #[test]
+    fn clear_execution_matches_plan_semantics() {
+        let plan = small_plan();
+        plan.validate().unwrap();
+        for a in [false, true] {
+            for b in [false, true] {
+                for c in [false, true] {
+                    let (wires, cells) = plan.execute_clear(&[a, b, c], &[]);
+                    assert_eq!(wires[plan.outputs[0] as usize], (a && b) ^ c);
+                    assert!(!wires[plan.outputs[1] as usize]);
+                    assert!(cells.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clear_execution_circuit_bootstrap_muxes_cells() {
+        let plan = BootstrapPlan {
+            profile: ProfileId::Toy,
+            k_max: 1,
+            luts: vec![],
+            layers: vec![
+                vec![PlanOp::CircuitBootstrap { input: 0, out: 0 }],
+                vec![PlanOp::RgswMux { sel: 0, then_cell: 1, else_cell: 0, out: 2 }],
+            ],
+            num_inputs: 1,
+            num_cells: 2,
+            outputs: vec![],
+            cell_outputs: vec![2],
+            budget: FailureBudget { per_bootstrap_log2: 30, total_log2: 30 },
+        };
+        plan.validate().unwrap();
+        assert_eq!(plan.execute_clear(&[false], &[false, true]).1[2], false);
+        assert_eq!(plan.execute_clear(&[true], &[false, true]).1[2], true);
     }
 
     #[test]

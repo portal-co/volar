@@ -301,6 +301,8 @@ pub enum PlanBuildError {
     /// The circuit must be a single block with a `Jmp(Return)` terminator
     /// (the post-movfuscation flat shape).
     NotAFlatCircuit,
+    /// The circuit declares static storage, so it is not a pure region.
+    HasPreInitialization,
     /// A statement kind that V2.0 plan building does not fuse.
     UnsupportedStmt(&'static str),
     /// The required failure budget exceeds the caller's bound.
@@ -400,7 +402,57 @@ fn input_cone(state: &ConeState) -> Option<Cone> {
 /// * `budget`: (`per_bootstrap_log2`, `max_total_log2`); building fails
 ///   with [`PlanBuildError::BudgetExceeded`] if the fused schedule needs
 ///   more than `max_total_log2`.
+/// Build a plan together with its exact pure-region source binding.
+///
+/// The binding preserves the original Boolar input and output variable ids.
+/// Consumers that map a plan into another representation must use these lists
+/// rather than assuming generated wire ids are source ids.
+pub fn build_bootstrap_plan_with_binding<P: Clone>(
+    circuit: &BIrBlocks<P>,
+    k_max: usize,
+    budget: (u32, u32),
+    profile: ProfileId,
+) -> Result<(BootstrapPlan, PlanRegionBinding), PlanBuildError> {
+    if !circuit.pre_init.is_empty() {
+        return Err(PlanBuildError::HasPreInitialization);
+    }
+    let plan = build_bootstrap_plan_inner(circuit, k_max, budget, profile)?;
+    let block = &circuit.blocks[0];
+    let volar_ir::boolar::BIrTerminator::Jmp(target) = &block.terminator else {
+        unreachable!("build_bootstrap_plan_inner validated the terminator");
+    };
+    Ok((
+        plan,
+        PlanRegionBinding {
+            input_vars: (0..block.params).collect(),
+            output_vars: target.args.iter().map(|v| v.0).collect(),
+        },
+    ))
+}
+
+/// Build a fused [`BootstrapPlan`] from a pure movfuscated Boolean circuit.
+///
+/// This compatibility helper discards the source binding. New cross-IR
+/// consumers should use [`build_bootstrap_plan_with_binding`].
 pub fn build_bootstrap_plan<P: Clone>(
+    circuit: &BIrBlocks<P>,
+    k_max: usize,
+    budget: (u32, u32),
+    profile: ProfileId,
+) -> Result<BootstrapPlan, PlanBuildError> {
+    build_bootstrap_plan_with_binding(circuit, k_max, budget, profile).map(|(plan, _)| plan)
+}
+
+/// Ordered original Boolar variable ids bound to a pure plan region.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanRegionBinding {
+    /// Source variables imported as `BootstrapPlan` wire inputs.
+    pub input_vars: Vec<u32>,
+    /// Source variables returned by the region in plan-output order.
+    pub output_vars: Vec<u32>,
+}
+
+fn build_bootstrap_plan_inner<P: Clone>(
     circuit: &BIrBlocks<P>,
     k_max: usize,
     budget: (u32, u32),
@@ -900,6 +952,34 @@ mod tests {
             }],
             pre_init: vec![],
         }
+    }
+
+    #[test]
+    fn binding_preserves_source_variables_and_rejects_preinitialization() {
+        let circuit = xor_and_or_circuit();
+        let (plan, binding) = build_bootstrap_plan_with_binding(
+            &circuit,
+            4,
+            (30, 34),
+            ProfileId::Toy,
+        )
+        .unwrap();
+        assert_eq!(binding.input_vars, vec![0, 1]);
+        assert_eq!(binding.output_vars, vec![4]);
+        assert_eq!(plan.num_inputs, binding.input_vars.len() as u32);
+        assert_eq!(plan.outputs.len(), binding.output_vars.len());
+
+        let mut with_preinit = circuit;
+        with_preinit.pre_init.push(volar_ir::boolar::BIrPreInitSegment {
+            storage: volar_ir_common::StorageId(0),
+            lane: volar_ir::boolar::LaneId(0),
+            addr: vec![],
+            data: vec![true],
+        });
+        assert!(matches!(
+            build_bootstrap_plan_with_binding(&with_preinit, 4, (30, 34), ProfileId::Toy),
+            Err(PlanBuildError::HasPreInitialization)
+        ));
     }
 
     #[test]
