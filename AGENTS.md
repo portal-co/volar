@@ -97,7 +97,22 @@ decisions where policy requires them. See
     have the same shadowing and witness patterns as regular `IrModule`
     functions.
 
-11. **ZK / non-ZK proving discipline is a hard boundary**: Proof artifacts
+11. **No `Vec` in spec-compiled program structure.** A `Vec` whose length
+    is known at weave time (const generic, plan dimension, LUT arity,
+    layer count, fixed protocol width) is forbidden in `volar-spec` program
+    code and in any IR a weaver emits. Use `[T; N]`,
+    `core::array::from_fn`, `hybrid_array::Array`, or a presized inline
+    capacity. A `Vec` is allowed only at a documented runtime boundary
+    (adapter codecs, host interpreters running a runtime-supplied plan,
+    evaluation-key backing stores that exceed stack, test fixtures) and
+    only with a `/// @volar-allow-vec: <category>: <reason>` doc comment
+    (categories: `runtime-boundary`, `eval-key-store`, `host-interpreter`,
+    `test-fixture`). The `volar-codegen` IR linter errors on any other
+    `Vec` type, `Collect` pipeline, or `Vec` constructor path. Shape is
+    weaver-known; data is not — classify by who knows the length. See
+    [`docs/fhe/vec-elimination-and-linter-plan.md`](docs/fhe/vec-elimination-and-linter-plan.md).
+
+12. **ZK / non-ZK proving discipline is a hard boundary**: Proof artifacts
     carry a compile-time discipline (`volar_discipline::Tagged<Z, _>`,
     markers `Zk` / `Transparent`, subtrait `NonZk`). A ZK prover
     (`weave_vole_prover*`, `weave_faest_prover*`) is `Zk`; verifiers, garble,

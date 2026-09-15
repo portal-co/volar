@@ -18,6 +18,9 @@ claim.
   research + plan for a licensed, paper-bound GINX/CGGI replacement module
   with programmable and circuit bootstrapping and a shared weaver/interpreter
   bootstrap-plan structure.
+- [Vec elimination + IR linter plan](vec-elimination-and-linter-plan.md) —
+  remove weaver-known `Vec` from the spec and lint `Vec` in compiler IR
+  unless a documented `@volar-allow-vec:` exemption is present.
 
 ## Validation and historical planning
 
