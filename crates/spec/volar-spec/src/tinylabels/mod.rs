@@ -125,6 +125,92 @@ pub fn decode_label_16(elements: [u64; 3]) -> Result<[u8; 16], LabelEncodingErro
     Ok(label)
 }
 
+/// Encoded TinyLabels messages for a batch of 16-byte wire-label pairs.
+///
+/// `differences` is `K1 - K0 (mod p)` for [`ring_lwe::BatchSelect::enc1`].
+/// `zeroes` is `K0` for [`ring_lwe::BatchSelect::enc2`]. A caller expands one
+/// Boolean choice per wire with [`Self::expanded_choices`] before
+/// `keygen`/`dec`, then converts the selected plaintexts back with
+/// [`Self::decode_selected`]. This preserves the complete 128-bit label; it
+/// is input-delivery preparation, never label shortening or material storage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncodedLabelBatch {
+    differences: alloc::vec::Vec<u64>,
+    zeroes: alloc::vec::Vec<u64>,
+}
+
+impl EncodedLabelBatch {
+    /// Encode validated free-XOR label pairs into Construction-3 message
+    /// vectors. The common `offset` is checked before converting any bytes.
+    pub fn from_pairs(pairs: &[LabelPair<16>], offset: [u8; 16]) -> Result<Self, BatchError> {
+        let batch = LabelBatch::new(pairs, offset)?;
+        let mut differences = alloc::vec::Vec::with_capacity(pairs.len() * 3);
+        let mut zeroes = alloc::vec::Vec::with_capacity(pairs.len() * 3);
+        let modulus = ring_lwe::REFERENCE_PLAINTEXT_MODULUS;
+        for pair in batch.pairs {
+            let zero = encode_label_16(pair.zero);
+            let one = encode_label_16(pair.one);
+            for (one, zero) in one.into_iter().zip(zero) {
+                differences.push(if one >= zero {
+                    one - zero
+                } else {
+                    modulus - (zero - one)
+                });
+                zeroes.push(zero);
+            }
+        }
+        Ok(Self {
+            differences,
+            zeroes,
+        })
+    }
+
+    /// Borrow the `K1 - K0` message vector in wire/limb order.
+    pub fn differences(&self) -> &[u64] {
+        &self.differences
+    }
+
+    /// Borrow the `K0` message vector in wire/limb order.
+    pub fn zeroes(&self) -> &[u64] {
+        &self.zeroes
+    }
+
+    /// Expand one choice per wire into the three-element field representation.
+    pub fn expanded_choices(choices: &[bool]) -> alloc::vec::Vec<bool> {
+        let mut out = alloc::vec::Vec::with_capacity(choices.len() * 3);
+        for &choice in choices {
+            out.extend_from_slice(&[choice; 3]);
+        }
+        out
+    }
+
+    /// Decode selected field elements into exact 16-byte labels.
+    pub fn decode_selected(
+        selected: &[u64],
+    ) -> Result<alloc::vec::Vec<[u8; 16]>, LabelBatchDecodeError> {
+        if selected.len() % 3 != 0 {
+            return Err(LabelBatchDecodeError::LengthMismatch);
+        }
+        selected
+            .chunks_exact(3)
+            .map(|chunk| {
+                decode_label_16([chunk[0], chunk[1], chunk[2]])
+                    .map_err(LabelBatchDecodeError::NonCanonicalLabel)
+            })
+            .collect()
+    }
+}
+
+/// Error while decoding a selected vector of TinyLabels plaintexts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabelBatchDecodeError {
+    /// The field-element vector cannot contain an integral number of labels.
+    LengthMismatch,
+    /// One three-element group is not a canonical encoded wire label.
+    NonCanonicalLabel(LabelEncodingError),
+}
+
+/// The two raw labels allocated for one Boolean input wire.
 /// The two raw labels allocated for one Boolean input wire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LabelPair<const N: usize> {
@@ -209,8 +295,8 @@ impl<'a, const N: usize> LabelBatch<'a, N> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchError, LabelBatch, LabelEncodingError, LabelPair, PAPER_PROFILE, SECURITY_BITS,
-        decode_label_16, encode_label_16,
+        BatchError, EncodedLabelBatch, LabelBatch, LabelBatchDecodeError, LabelEncodingError,
+        LabelPair, PAPER_PROFILE, SECURITY_BITS, decode_label_16, encode_label_16,
     };
 
     const OFFSET: [u8; 16] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -260,6 +346,41 @@ mod tests {
         assert_eq!(
             batch.select(&[true, false], &mut output),
             Err(BatchError::LengthMismatch)
+        );
+    }
+
+    #[test]
+    fn encoded_batch_expands_choices_and_reconstructs_selected_labels() {
+        let pairs = [pair(0x20), pair(0x40), pair(0x60)];
+        let encoded = EncodedLabelBatch::from_pairs(&pairs, OFFSET).expect("valid free-XOR pairs");
+        assert_eq!(encoded.differences().len(), 9);
+        assert_eq!(encoded.zeroes().len(), 9);
+        assert_eq!(
+            EncodedLabelBatch::expanded_choices(&[false, true, false]),
+            alloc::vec![false, false, false, true, true, true, false, false, false]
+        );
+
+        let choices = [false, true, false];
+        let mut selected = alloc::vec::Vec::with_capacity(9);
+        for (wire, &choice) in choices.iter().enumerate() {
+            for limb in 0..3 {
+                let index = wire * 3 + limb;
+                let zero = encoded.zeroes()[index];
+                selected.push(if choice {
+                    (zero + encoded.differences()[index])
+                        % super::ring_lwe::REFERENCE_PLAINTEXT_MODULUS
+                } else {
+                    zero
+                });
+            }
+        }
+        assert_eq!(
+            EncodedLabelBatch::decode_selected(&selected),
+            Ok(alloc::vec![pairs[0].zero, pairs[1].one, pairs[2].zero])
+        );
+        assert_eq!(
+            EncodedLabelBatch::decode_selected(&[0, 1]),
+            Err(LabelBatchDecodeError::LengthMismatch)
         );
     }
 
