@@ -46,6 +46,66 @@ pub type CellId = u32;
 /// Index into [`BootstrapPlan::luts`].
 pub type LutId = u32;
 
+/// Maximum LUT arity: matches [`crate::binfhe::params::max_lut_arity`]'s
+/// profile cap (`LOG_Q_LWE - 2 <= 30`); rounded up to 32. A LUT arity is
+/// weaver-known (it is bounded by `plan.k_max`), so the input id-list is an
+/// inline fixed-capacity array, not a heap `Vec`.
+pub const MAX_LUT_ARITY: usize = 32;
+
+/// Inline fixed-capacity list of wire ids (hand-rolled to avoid a new
+/// dependency; AGENTS.md Core Design Rule 11). `len <= MAX_LUT_ARITY`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LutInputs {
+    pub ids: [WireId; MAX_LUT_ARITY],
+    pub len: u8,
+}
+
+impl LutInputs {
+    /// Empty list.
+    pub const fn new() -> Self {
+        LutInputs {
+            ids: [0; MAX_LUT_ARITY],
+            len: 0,
+        }
+    }
+
+    /// Build from a slice, truncating past capacity (callers validate).
+    pub fn from_slice(ids: &[WireId]) -> Self {
+        let mut out = Self::new();
+        let take = ids.len().min(MAX_LUT_ARITY);
+        out.ids[..take].copy_from_slice(&ids[..take]);
+        out.len = take as u8;
+        out
+    }
+
+    /// The occupied prefix.
+    pub fn as_slice(&self) -> &[WireId] {
+        &self.ids[..self.len as usize]
+    }
+
+    /// Number of occupied entries.
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Whether the list is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Default for LutInputs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsRef<[WireId]> for LutInputs {
+    fn as_ref(&self) -> &[WireId] {
+        self.as_slice()
+    }
+}
+
 /// One scheduled operation. Wires produced by an op always have the next
 /// free id of their arena, in layer order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,7 +115,7 @@ pub enum PlanOp {
     /// Free NOT (exact linear op).
     Not { input: WireId, out: WireId },
     /// Multi-input LUT read; `inputs` are LSB-first. One blind rotation.
-    Lut { inputs: Vec<WireId>, table: LutId, out: WireId },
+    Lut { inputs: LutInputs, table: LutId, out: WireId },
     /// Circuit bootstrap: Boolean wire -> RGSW wire.
     CircuitBootstrap { input: WireId, out: RgswId },
     /// Oblivious select between two RLWE cells: `sel ? then : else`.
@@ -160,7 +220,7 @@ impl BootstrapPlan {
                     PlanOp::Lut { inputs, table, out } => {
                         assert_eq!(*out as usize, wires.len());
                         let mut address = 0usize;
-                        for (bit, input) in inputs.iter().enumerate() {
+                        for (bit, input) in inputs.as_slice().iter().enumerate() {
                             address |= (wires[*input as usize] as usize) << bit;
                         }
                         wires.push(self.luts[*table as usize].entries[address]);
@@ -243,7 +303,7 @@ impl BootstrapPlan {
                         }
                         let arity = self.luts[*table as usize].entries.len().trailing_zeros();
                         if inputs.len() != arity as usize
-                            || inputs.iter().any(|w| *w >= wires)
+                            || inputs.as_slice().iter().any(|w| *w >= wires)
                             || *out != wires
                         {
                             return Err(PlanError::BadReference);
@@ -331,7 +391,7 @@ impl BootstrapPlan {
                     PlanOp::Lut { inputs, table, out } => {
                         feed_b!(2);
                         feed_u32!(inputs.len() as u32);
-                        for w in inputs {
+                        for w in inputs.as_slice() {
                             feed_u32!(*w);
                         }
                         feed_u32!(*table);
@@ -422,15 +482,15 @@ pub fn execute_plan<
                     let spec = &plan.luts[*table as usize];
                     let arity = spec.entries.len().trailing_zeros() as usize;
                     assert_eq!(inputs.len(), arity, "LUT arity");
-                    // Shared executor with weaver-generated code.
-                    let cts: Vec<LweCiphertext<N_LWE>> = inputs
-                        .iter()
-                        .map(|w| wires[*w as usize])
-                        .collect();
+                    // Inline presized temp (arity <= MAX_LUT_ARITY); no heap.
+                    let mut cts: [LweCiphertext<N_LWE>; MAX_LUT_ARITY] = [binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0); MAX_LUT_ARITY];
+                    for (j, w) in inputs.as_slice().iter().enumerate() {
+                        cts[j] = wires[*w as usize];
+                    }
                     wires.push(binfhe_lut_read_dyn::<
                         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
                         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
-                    >(&cts, &spec.entries, plan.k_max as usize, bk));
+                    >(&cts[..arity], &spec.entries, plan.k_max as usize, bk));
                 }
                 PlanOp::CircuitBootstrap { input, out } => {
                     assert_eq!(*out as usize, rgsws.len());
@@ -514,9 +574,9 @@ mod tests {
                 LutSpec { entries: vec![false, true, true, false] },  // 1: XOR
             ],
             layers: vec![
-                vec![PlanOp::Lut { inputs: vec![0, 1], table: 0, out: 3 }],
+                vec![PlanOp::Lut { inputs: LutInputs::from_slice(&[0, 1]), table: 0, out: 3 }],
                 vec![
-                    PlanOp::Lut { inputs: vec![3, 2], table: 1, out: 4 },
+                    PlanOp::Lut { inputs: LutInputs::from_slice(&[3, 2]), table: 1, out: 4 },
                     PlanOp::Const { out: 5, value: true },
                     PlanOp::Not { input: 5, out: 6 },
                 ],
@@ -634,7 +694,7 @@ mod tests {
             luts: vec![LutSpec { entries: vec![true, false] }], // NOT as LUT
             layers: vec![
                 vec![
-                    PlanOp::Lut { inputs: vec![0], table: 0, out: 1 },
+                    PlanOp::Lut { inputs: LutInputs::from_slice(&[0]), table: 0, out: 1 },
                     PlanOp::CircuitBootstrap { input: 0, out: 0 },
                 ],
                 vec![PlanOp::RgswMux { sel: 0, then_cell: 1, else_cell: 0, out: 2 }],
@@ -683,11 +743,11 @@ mod tests {
         ));
         // Out-of-range reference.
         plan = small_plan();
-        plan.layers[0][0] = PlanOp::Lut { inputs: vec![0, 9], table: 0, out: 3 };
+        plan.layers[0][0] = PlanOp::Lut { inputs: LutInputs::from_slice(&[0, 9]), table: 0, out: 3 };
         assert!(matches!(plan.validate(), Err(PlanError::BadReference)));
         // Non-sequential output id.
         plan = small_plan();
-        plan.layers[0][0] = PlanOp::Lut { inputs: vec![0, 1], table: 0, out: 4 };
+        plan.layers[0][0] = PlanOp::Lut { inputs: LutInputs::from_slice(&[0, 1]), table: 0, out: 4 };
         assert!(matches!(plan.validate(), Err(PlanError::BadReference)));
         // Bad output.
         plan = small_plan();

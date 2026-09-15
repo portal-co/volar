@@ -515,7 +515,7 @@ fn build_bootstrap_plan_inner<P: Clone>(
                     });
                     id
                 } else {
-                    let input_ids: Vec<u32> = cone
+                    let input_ids: alloc::vec::Vec<u32> = cone
                         .inputs
                         .iter()
                         .map(|&i| materialize(i, states, ops, luts, wire_count))
@@ -527,7 +527,7 @@ fn build_bootstrap_plan_inner<P: Clone>(
                     let id = *wire_count;
                     *wire_count += 1;
                     ops.push(PlanOp::Lut {
-                        inputs: input_ids,
+                        inputs: volar_spec::binfhe::plan::LutInputs::from_slice(&input_ids),
                         table: table_id,
                         out: id,
                     });
@@ -669,7 +669,7 @@ fn build_bootstrap_plan_inner<P: Clone>(
             PlanOp::Const { .. } => 0,
             PlanOp::Not { input, .. } => wire_layer[*input as usize] + 1,
             PlanOp::Lut { inputs, .. } => {
-                inputs.iter().map(|w| wire_layer[*w as usize]).max().unwrap_or(0) + 1
+                inputs.as_slice().iter().map(|w| wire_layer[*w as usize]).max().unwrap_or(0) + 1
             }
             PlanOp::CircuitBootstrap { input, .. } => wire_layer[*input as usize] + 1,
             PlanOp::RgswMux { .. } => 0, // scheduled after its selector layer by construction
@@ -794,6 +794,7 @@ pub fn weave_binfhe_plan(plan: &BootstrapPlan, name: &str) -> Tagged<Transparent
                     let spec = &plan.luts[*table as usize];
                     let input_array = ref_expr(ir_expr(IrExprKind::Array(
                         inputs
+                            .as_slice()
                             .iter()
                             .map(|w| clone_expr(var(&format!("w_{}", w))))
                             .collect(),
@@ -1176,11 +1177,11 @@ mod tests {
                         write!(s, "PlanOp::Not {{ input: {}, out: {} }},", input, out).unwrap();
                     }
                     PlanOp::Lut { inputs, table, out } => {
-                        write!(s, "PlanOp::Lut {{ inputs: vec![").unwrap();
-                        for w in inputs {
+                        write!(s, "PlanOp::Lut {{ inputs: volar_spec::binfhe::plan::LutInputs::from_slice(&[").unwrap();
+                        for w in inputs.as_slice() {
                             write!(s, "{},", w).unwrap();
                         }
-                        write!(s, "], table: {}, out: {} }},", table, out).unwrap();
+                        write!(s, "]), table: {}, out: {} }},", table, out).unwrap();
                     }
                     PlanOp::CircuitBootstrap { input, out } => {
                         write!(
