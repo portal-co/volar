@@ -222,6 +222,11 @@ TinyLabels remains experimental until all of the following are complete:
 No current embedded Cirrus profile may select TinyLabels. No current Volar
 session should expose it by default.
 
+For heavier reusable/succinct garbling candidates and a copied executable cost
+scenario model, see [`heavy-lwe-garbling-options.md`](heavy-lwe-garbling-options.md).
+Those candidates are complementary to TinyLabels and must clear their own
+assumption, parameter, FHE-hybrid, and resource gates.
+
 ## Sources
 
 - **[DLL24]** Marian Dietz, Hanjun Li, and Huijia Lin, *TinyLabels: How to
