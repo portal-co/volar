@@ -102,13 +102,27 @@ separate hard problem, but “ORAM requires FE/iO” is too broad:
   introduce rewindable ORAM plus VBB/iO-like machinery or strong assumptions.
   [GHL+14] [HHWW19]
 
-The hybrid plan therefore **does not claim** oblivious mutable storage. It
-permits an evaluator-hosted ciphertext store only under one of these narrower
-contracts:
+The hybrid plan therefore does **not** claim *native FHE oblivious mutable
+storage*. Existing ORAM remains supported, but is an explicit boundary back to
+the established strict path:
 
-1. public addresses and an accepted access-pattern leak;
-2. a fixed/public physical ORAM path that the existing ORAM protocol already
-   authorizes; or
+```text
+FHE ciphertext/opaque handle -> fixed GC boundary -> authorized decrypt
+  -> existing ORAM operation -> encrypt/validate -> FHE ciphertext handle
+```
+
+The ORAM access therefore retains the current garbled-circuit/decrypt/ORAM
+semantics and its existing transport, versioning, and root-commit constraints;
+it must not be represented as an FHE-native read or write. FHE deferral may
+resume only after the result is re-encrypted and validated under the same
+provider/key epoch.
+
+A direct evaluator-hosted ciphertext store is allowed only under one of these
+narrower contracts:
+
+1. public addresses and an accepted access-pattern leak (an optimization, not
+   ORAM);
+2. the explicit GC/decrypt/existing-ORAM/re-encrypt boundary above; or
 3. a separately specified FHE-ORAM/GRAM provider with its own security proof.
 
 ## Provider module and deep seam
@@ -196,8 +210,10 @@ plaintext-equality optimization.
 
 **Required checks:** address, provider ID, key epoch, ciphertext frame digest,
 and storage version all match; no intervening possible write/eviction/rekey;
-and the storage contract allows a no-op physical operation. Fixed-shape/privacy
-modes may intentionally retain no-op writes.
+and the storage contract allows a no-op physical operation. This optimization
+applies to public-address storage; ORAM writes use the explicit boundary and
+retain their physical protocol effects. Fixed-shape/privacy modes may
+intentionally retain no-op writes.
 
 **Does not work:** comparing randomized FHE ciphertext byte strings to infer
 plaintext identity, or dropping writes just because a GC MUX selected the old
@@ -211,7 +227,8 @@ batch with deterministic public ordering.
 
 **Required checks:** no read between the queued write and its commit observes
 that location; public addresses are pairwise distinct; every provider operation
-is independent; and the provider gives batch atomicity/error semantics.
+is independent; and the provider gives batch atomicity/error semantics. This is
+for public-address storage only, not an optimization across the ORAM boundary.
 
 **Does not work:** treating secret symbolic addresses as “probably distinct,”
 or claiming Path ORAM whole-path commits parallelize. Existing ORAM planning
@@ -301,14 +318,19 @@ real provider.
    `encrypt`, `evaluate`, `refresh`, `validate`, and any allowed `decrypt`.
 3. Compile and measure a minimal one-owner long segment, first with no storage.
    Compare end-to-end all-GC, all-FHE, and hybrid costs.
-4. Add opaque-handle SSA threading and its proof-record tests.
-5. Add only syntactic identity write elision, then public-distinct batching,
+4. Add an explicit `FHE handle -> GC -> decrypt -> existing ORAM -> encrypt ->
+   FHE handle` boundary, with integration tests proving that every secret
+   address uses it and retains existing ORAM semantics.
+5. Add opaque-handle SSA threading and its proof-record tests for
+   public-address storage only.
+6. Add only syntactic identity write elision, then public-distinct batching,
    then optimistic cache checks—each under a separate feature flag and
-   adversarial invalidation tests.
-6. Consider a jointly authorized output boundary. Treat split/threshold FHE as
+   adversarial invalidation tests. Do not apply them across an ORAM boundary.
+7. Consider a jointly authorized output boundary. Treat split/threshold FHE as
    a separate research project after the one-owner path has a measured win.
-7. Do not claim ORAM support until a provider-specific storage construction
-   clears its own security and replay/rollback model.
+8. Do not claim *native FHE ORAM* until a provider-specific storage construction
+   clears its own security and replay/rollback model; the explicit fallback to
+   existing ORAM remains supported independently.
 
 ## Sources
 
