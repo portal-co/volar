@@ -34,6 +34,15 @@
 //!    sqrt(ETA/2) = 2.828`) instead of `stdDev = 3.19`, keeping the sampler
 //!    integer-only and deterministic (FIPS 203 §4.2.2-style mechanics).
 //! 3. `Brk`/`autoKeys` (LMKCDEY automorphism path) are out of scope.
+//! 4. **Multiply-by-digit key switching** with `KS_BASE_LOG = 2`,
+//!    `KS_ELL = 8` instead of OpenFHE's table-lookup KSK (`Bks = 2^5`).
+//!    OpenFHE precomputes one ciphertext per digit *value* (a lookup, so
+//!    digit magnitude never multiplies noise); this module uses the compact
+//!    TFHE-style KSK (one ciphertext per level; digits multiply
+//!    ciphertexts), which needs a smaller base and more levels to keep
+//!    `sum d_j(a_i) * e_ij` small against the `modKS = 2^15` decode margin.
+//!    The failure-probability recomputation in plan §9 must use the
+//!    multiply-by-digit formula, not OpenFHE's.
 //!
 //! # Profile invariants (checked by [`check_profile`])
 //!
@@ -93,20 +102,25 @@ pub const fn check_profile(
 }
 
 /// Exact, noiseless correctness fixture. Not a parameter set: all gadget
-/// decompositions exactly cover their moduli and the noise sampler is
-/// disabled, so every intermediate is bit-exact and canonical-phase
-/// assertions are exact equalities.
+/// decompositions exactly cover their moduli, the noise sampler is
+/// disabled, and **all three moduli coincide** (`Q = q = modKS = 2^7`), so
+/// no downscale modulus switch ever rounds a mask coefficient. Every
+/// intermediate is therefore bit-exact and canonical-phase assertions are
+/// exact equalities. (A downscale switch of a ciphertext with a random
+/// mask necessarily introduces key-dependent rounding error: the body
+/// rounds once but the mask rounds per coefficient; noisy profiles assert
+/// decode margins instead of exact phases.)
 pub mod toy {
     /// LWE secret-key dimension.
     pub const N_LWE: usize = 8;
     /// RLWE ring dimension (power of two).
     pub const BIG_N: usize = 64;
-    /// Ring modulus `Q = 2^8`.
-    pub const LOG_Q: u32 = 8;
+    /// Ring modulus `Q = 2^7`; equals `q` (single-modulus exact profile).
+    pub const LOG_Q: u32 = 7;
     /// LWE modulus `q = 2^7 = 2 * BIG_N`.
     pub const LOG_Q_LWE: u32 = 7;
-    /// Key-switching modulus `2^8` (identity switch from Q).
-    pub const LOG_MOD_KS: u32 = 8;
+    /// Key-switching modulus `2^7` (identity switches throughout).
+    pub const LOG_MOD_KS: u32 = 7;
     /// Bootstrapping gadget base `2^4`, two levels covering `LOG_Q = 8`.
     pub const BS_BASE_LOG: u32 = 4;
     pub const BS_ELL: usize = 2;
@@ -124,23 +138,24 @@ pub mod toy {
 
 /// Small-scale noisy fixture for noise-budget tests. Not a parameter set.
 ///
-/// Sized so that per-bootstrap failure is rare but the full noise path
-/// (RGSW external products, key switching, modulus switches) is exercised:
-/// the blind-rotation accumulator noise tolerance is `Q / (2q) = 2^8`, a
-/// ~3.5-sigma margin for the configured decomposition, and key switching
-/// runs at `modKS = 2^14` so its noise is scaled down by `modKS / q = 2^7`
-/// before the final decode.
+/// Sized so the full noise path (RGSW external products, key switching,
+/// both modulus switches) is exercised while per-bootstrap failure stays
+/// rare: at `K = 2` the decode margin is `Delta/2 = 8` at `q` scale, the
+/// end-to-end phase noise is only a few `sigma`, and fresh-input selector
+/// amplification for arity-2 tables (`|e| <= 1`, weights 1 and 2) stays
+/// under `Delta/2`. Measured failure counts are recorded in the noise-budget
+/// tests, not assumed.
 pub mod toy_noisy {
     pub const N_LWE: usize = 8;
     pub const BIG_N: usize = 64;
     pub const LOG_Q: u32 = 16;
     pub const LOG_Q_LWE: u32 = 7;
-    pub const LOG_MOD_KS: u32 = 14;
+    pub const LOG_MOD_KS: u32 = 12;
     pub const BS_BASE_LOG: u32 = 4;
     pub const BS_ELL: usize = 4;
     pub const KS_BASE_LOG: u32 = 4;
-    pub const KS_ELL: usize = 4;
-    pub const CBD_ETA: u32 = 2;
+    pub const KS_ELL: usize = 3;
+    pub const CBD_ETA: u32 = 1;
 
     const _: () = super::check_profile(
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_BASE_LOG, BS_ELL, KS_BASE_LOG, KS_ELL,
@@ -160,8 +175,10 @@ pub mod std128 {
     pub const LOG_MOD_KS: u32 = 15;
     pub const BS_BASE_LOG: u32 = 7;
     pub const BS_ELL: usize = 4;
-    pub const KS_BASE_LOG: u32 = 5;
-    pub const KS_ELL: usize = 3;
+    // Deviation 4 (module docs): compact multiply-by-digit KSK needs a
+    // smaller base and more levels than OpenFHE's table-lookup KSK.
+    pub const KS_BASE_LOG: u32 = 2;
+    pub const KS_ELL: usize = 8;
     pub const CBD_ETA: u32 = 16;
 
     const _: () = super::check_profile(

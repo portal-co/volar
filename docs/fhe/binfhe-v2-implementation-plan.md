@@ -84,6 +84,23 @@ The same `(Q=2^27, N=1024)` shape appears in Micciancio–Polyakov
 (ePrint 2020/086), so the paper-bound noise analysis in our existing oracle
 binding applies directly.
 
+### 1.2a Implementation-derived design notes (M2–M3)
+
+- **Key switching is multiply-by-digit** (compact TFHE-style KSK: one LWE
+  encryption per source key coefficient and level; the switched ciphertext
+  subtracts `digit * KSK` terms). OpenFHE's KSK is instead a table over
+  digit *values* (a lookup; digit magnitude never multiplies noise) — that
+  is why its `modKS = 2^15` is safe there. With multiply-by-digit at
+  `modKS = 2^15`, `std128` needs `KS_BASE_LOG = 2`, `KS_ELL = 8`
+  (recorded deviation 4 in `params.rs`); failure recomputation (§9) must
+  use the multiply-by-digit noise formula.
+- **Exact profiles need a single modulus.** A downscale modulus switch of
+  a ciphertext with a random mask introduces key-dependent rounding error
+  (the body rounds once; each mask coefficient rounds independently), so
+  zero-noise canonical-phase exactness requires `Q = q = modKS`. The `toy`
+  profile is therefore single-modulus; noisy profiles assert decode margins
+  and measured error magnitudes instead of exact phases.
+
 ### 1.3 Secondary reference profile — CGGI/TFHElib
 
 `n=630`, `N=1024`, `q=Q=2^32` (full torus), `σ≈2^-15` (LWE) / `2^-25` (BSK),
@@ -225,12 +242,14 @@ analysis.
    poly-rotate vs schoolbook monomial multiply; blind rotation on an exact
    torus grid vs clear rotation + clear decryption; sample-extract vs direct
    RLWE decryption (2020/086 p.11 identity); key-switch roundtrip across
-   dimensions; signed pre-restoration bootstrap outputs vs MP20 Table 1
-   certificates — reusing the **existing paper-bound clear oracle**
-   (`tfhe_ginx_oracle.rs`, generic over power-of-two `q`) as the reference.
-   The oracle is lifted from `#[cfg(test)] mod` into a shared test-support
-   module so V2 tests bind to it directly; this is the usage it was written
-   for, not Track-S inheritance.
+   dimensions; gate truth tables vs the ground-truth Boolean operators.
+   *Implementation note (M3):* the MP20-bound clear oracle
+   (`tfhe_ginx_oracle.rs`) models the *affine-preparation + threshold*
+   certificate shape of the legacy construction. V2 uses the unified
+   half-circle LUT selector instead, so oracle binding reduces to
+   truth-table equality, which the tests already obtain more directly from
+   the Boolean operators; the oracle therefore stays a Track-S artifact
+   and V2 does not import it.
 3. **PBS conformance:** multi-input LUT reads (2..=6 address bits on `Toy`)
    vs brute-force cleartext table evaluation; negacyclic-capacity and
    selector-validation rejections; multi-value bundles vs per-LUT PBS.
