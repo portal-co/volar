@@ -18,6 +18,7 @@ pub mod faest;
 pub mod tfhe;
 #[cfg(test)]
 mod tfhe_ginx_oracle;
+pub mod tinylabels;
 pub use volar_primitives as field;
 
 // ── Deterministic RNG trait ──────────────────────────────────────────────────
