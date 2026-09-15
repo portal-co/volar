@@ -48,7 +48,13 @@
 //! integer-only arithmetic; `#![no_std]` + `alloc`.
 
 // Milestone-scoped module list; extended as later milestones land.
+pub mod blind_rotate;
+pub mod gadget;
+pub mod keys;
 pub mod lwe;
+pub mod modswitch;
 pub mod params;
+pub mod rgsw;
+pub mod rlwe;
 pub mod sampler;
 pub mod torus;
