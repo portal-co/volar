@@ -61,6 +61,7 @@ use volar_spec::garble::{Eval, EvalSetup, Garble, GarbleTable, GarbledCircuit, G
 use volar_spec::vole::VoleArray;
 
 pub mod cut_and_choose;
+pub mod input_labels;
 #[cfg(feature = "std")]
 pub mod net;
 pub mod ot;
