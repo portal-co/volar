@@ -1,0 +1,20 @@
+# Clippy deny-lists backing up the weave_text_lint source gate
+# (AGENTS.md Core Design Rule 13; docs/ir-not-text-weaving-plan.md).
+# The syn-based gate in volar-weaver/tests/weave_text_lint.rs is the primary
+# enforcement (it runs in `cargo test --workspace`); this file makes
+# `cargo clippy -- -D clippy::disallowed-methods` flag the same emitter paths
+# for editors/CI. Keep in sync with WEAVER_TEXT_EMITTERS in
+# crates/compiler/volar-compiler-passes/src/weave_text_lint.rs.
+
+disallowed-methods = [
+    { path = "volar_weaver::fhe::print_fhe_flat_module", reason = "weaver output is IR; print wrappers are test-only (AGENTS.md rule 13)" },
+    { path = "volar_weaver::fhe::print_fhe_cfg_module", reason = "weaver output is IR; print wrappers are test-only (AGENTS.md rule 13)" },
+    { path = "volar_weaver::fhe::print_fhe_cfg_module_ts", reason = "TS target printer; production consumption is IR→LIR (AGENTS.md rule 13)" },
+    { path = "volar_weaver::garble::print_weaved_module", reason = "weaver output is IR; print wrappers are test-only (AGENTS.md rule 13)" },
+    { path = "volar_weaver::vole::print_weaved_vole_module", reason = "weaver output is IR; print wrappers are test-only (AGENTS.md rule 13)" },
+    { path = "volar_weaver::faest::print_weaved_faest_module", reason = "weaver output is IR; print wrappers are test-only (AGENTS.md rule 13)" },
+    { path = "volar_weaver::net::print_net_vole_module", reason = "weaver output is IR; print wrappers are test-only (AGENTS.md rule 13)" },
+    { path = "volar_weaver::net::print_net_vole_cfg_module", reason = "weaver output is IR; print wrappers are test-only (AGENTS.md rule 13)" },
+    { path = "volar_weaver::hybrid_net::print_hybrid_net_cfg_module", reason = "weaver output is IR; print wrappers are test-only (AGENTS.md rule 13)" },
+    { path = "volar_weaver::glue::print_glue_module", reason = "weaver output is IR; print wrappers are test-only (AGENTS.md rule 13)" },
+]
