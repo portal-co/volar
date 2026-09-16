@@ -7,9 +7,12 @@ enforcement defaults are flagged as human decisions in §8. **@ai:** assisted.
 [`fhe/vec-elimination-and-linter-plan.md`](fhe/vec-elimination-and-linter-plan.md):
 (1) an AGENTS.md rule that **weavers emit the entire woven program as IR**
 (`IrModule` / `IrCfgModule`) and never as Rust source text destined for
-`rustc`; (2) a Rust-side lint enforcing it on fully-featured Rust code;
-(3) a migration of the remaining text-path production callers to
-IR→LIR compilation.
+`rustc` — with the structural corollary that **no weaving *pass* operates
+on text either** (every weaver is a pure IR→IR transform; text rendering
+lives in a separate test-only `print_*` wrapper); (2) a Rust-side lint
+enforcing both halves on fully-featured Rust code; (3) a migration of the
+remaining text-path production callers **and the text-level weaving passes**
+to IR→LIR compilation.
 
 **Related records:** [direct-to-LIR weaver fast-path plan](direct-to-lir-weaver-fast-path-plan.md) (the enabling compilation track — this plan is its policy/enforcement arm) · [pipeline.md](pipeline.md) · [lir-native-loops plan](lir-native-loops-plan.md) · [Vec linter plan](fhe/vec-elimination-and-linter-plan.md) (sibling triple; exemption-marker precedent) · [reliability.md](reliability.md)
 
@@ -41,9 +44,33 @@ is the lingua franca; every stage reads and writes program structure as IR.
 Text is a *rendering of* IR for a backend's consumer, never the woven
 program itself.
 
+**The second half — no text-level weaving.** A weaver that manipulates the
+program as *printed text* (rather than as IR nodes) breaks the same
+invariant from the inside: the printed form is not a stable program
+representation, so such a pass is only ever exercised through a print →
+compile test — a fragile oracle that tests the *printer's* output format,
+not program semantics. The rule therefore also forbids any weaving or
+post-processing pass whose input is Rust text. The sanctioned shape is:
+`weave_*` (pure IR→IR) plus an optional `print_*` wrapper that renders the
+IR to text **for tests only**.
+
 ## 2. Research: where text is produced today
 
 ### 2.1 Inventory (as of this plan)
+
+**Text-level weaving passes (the second-half violations):**
+
+| Pass | What it does | Evidence |
+|---|---|---|
+| `nested_block_chunk.rs` (`volar-weaver`) | Chunks printed function-body *text* into nested blocks by identifier-token search, to dodge a `rustc_resolve` name-resolution blowup | Its own doc records the text-level choice ("Why text, not `IrExpr`/`IrStmt`") and the profile: 2.1 GB printed source, `rustc` pinned in `resolve_path_with_ribs` at 90 GB+ RSS |
+| `vole.rs::print_weaved_vole_module` | Renders the woven VOLE module to Rust text **and** calls `chunk_function_bodies` on it (i.e. a weaver output path that internally runs a text pass) | `vole.rs:9651` |
+| `volar-build` `emit_woven_rust*` / `pipeline.rs` | The build pipeline's Rust-text output route (`chunk_function_bodies` + `chunk_module_rust` over text) | `volar-build/src/weave.rs:133,419`, `pipeline.rs:189` |
+
+The `nested_block_chunk` justification ("a correct pass over the typed
+`IrExpr` tree would need a free-variable walker over every variant") is the
+cost the rule prices in: the IR-level chunking pass belongs in
+`volar-compiler-passes` over `IrBlock`/`IrStmt` (an IR transform), which is
+also where it becomes reusable by the LIR path and the weaver gate.
 
 Weaver text emitters (`volar-weaver/src/`):
 
@@ -134,7 +161,11 @@ emitter paths. Both reuse existing in-repo infrastructure and precedent.
 | W1 | Call (path or method) to an enumerated weaver text emitter (`print_fhe_flat_module`, `print_fhe_cfg_module`, `print_weaved_module`, `print_weaved_vole_module`, `print_weaved_faest_module`, `print_net_vole_*`, `print_hybrid_net_cfg_module`, `print_glue_module`) in non-test production code | call site |
 | W2 | A function named `weave_*` / `weave_*_split*` whose return type is `String` (a weaver *producing* text) | fn signature |
 | W3 | `std::process::Command::new("cargo")` / `("rustc")` in non-test code whose enclosing function also writes a `.rs` file (the print→rustc pipeline shape) | call site (best-effort heuristic; W1 is the primary signal) |
+| W5 | **A weaving/post-processing pass whose input is Rust text** — a fn in a weaver/pipeline module that takes `&str`/`String` program source and returns `String` (the `chunk_function_bodies` shape). Detected by signature in `volar-weaver`/`volar-build`/`volar-compiler-passes` modules, plus a check that no `weave_*` or `emit_woven_*` path strings-together printed text as an intermediate | fn signature + call graph |
 | W4 | A `let _code = print_*…` (or similarly named binding) whose value flows to a `Command` spawn — same shape as W3, data-flow form (optional, may fold into W3) | — |
+
+W5 is the structural half: it flags text-level weaving passes themselves,
+even where they are only ever exercised through print→compile tests.
 
 W1's emitter list is maintained as a constant in the lint with a test that
 asserts it stays in sync with the weaver's exported `print_*` surface
@@ -205,6 +236,17 @@ production output is IR — see AGENTS.md rule"), or rename to
 deferred per the fast-path plan's scope note). Remove the emitters from
 `lib.rs`'s prelude re-exports.
 
+### 6.3a M-C2 — text-level pass migration
+
+- Re-implement `nested_block_chunk` as an IR pass over `IrBlock`/`IrStmt`
+  in `volar-compiler-passes` (binding-count chunking with a free-variable
+  walk — the pass its text doc punts on), used by the printer's
+  `EmitOptions` where chunking is still wanted for a text target.
+- Remove the text chunking from `print_weaved_vole_module`; the print
+  wrapper becomes a pure render (test-only).
+- Migrate `volar-build`'s `emit_woven_rust*` pipeline to emit IR (or LIR)
+  artifacts; the text route remains only behind a diagnostic flag.
+
 ### 6.4 M-D — enforcement on
 
 - Remove `migration-in-progress` exemptions as M-B completes; the lint is
@@ -216,11 +258,11 @@ deferred per the fast-path plan's scope note). Remove the emitters from
 
 | # | Milestone | Gate |
 |---|---|---|
-| T1 | AGENTS.md rule + `weave_text_lint` (`syn` walk, exemptions, tests) + this doc | lint tests green; seeded violation fails; current tree clean with exemptions |
+| T1 | AGENTS.md rule (both halves) + `weave_text_lint` (`syn` walk, exemptions, tests) + this doc | lint tests green; seeded violations of W1/W2/W5 fail; current tree clean with exemptions |
 | T2 | clippy deny-list layer + CI wiring | `cargo clippy -- -D warnings` flags a seeded call; CI green on the tree |
 | T3 | M-A exemptions landed (test-fixture/ts-target/migration) | violations == 0; every exemption has a category + reason |
 | T4 | M-B `wat_gen.rs` prover+verifier+qsim on LIR (sequenced by the direct-to-LIR plan's component matrix) | per-role: same e2e green on LIR artifact; print calls deleted |
-| T5 | M-C emitter relegation + M-D enforcement-on | no production caller of a text emitter remains; lint gate is the standing check |
+| T5 | M-C emitter relegation + M-C2 `nested_block_chunk` re-implemented as an IR pass; `volar-build` text route behind a diagnostic flag | no text-level weaving pass remains in a production path; lint gate is the standing check |
 
 T4 is the only milestone with an external dependency (Phase-2 spec-to-LIR
 coverage); T1–T3 and T5's lint arm are independently landable.

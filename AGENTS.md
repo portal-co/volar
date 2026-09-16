@@ -114,11 +114,15 @@ decisions where policy requires them. See
 
 13. **Weavers emit IR, not text.** A weaver's deliverable for a Rust
     consumer is the complete woven program as typed IR
-    (`IrModule`/`IrCfgModule`). Producing Rust *source text* of a woven
-    program to be compiled by `rustc` is forbidden in production code:
-    route the IR through `lower_module`/`lower_cfg_module` to an
-    `LirTarget` (C99, WASM, or object code via `volar-build`) instead.
-    Rust text printing of woven modules is allowed only with a
+    (`IrModule`/`IrCfgModule`), and no weaving or post-processing pass may
+    operate on printed text either: every weaver is a pure IR→IR transform,
+    with text rendering confined to a separate test-only `print_*` wrapper.
+    Producing Rust *source text* of a woven program to be compiled by
+    `rustc`, or string-manipulating printed program text as a pass input,
+    is forbidden in production code: route the IR through
+    `lower_module`/`lower_cfg_module` to an `LirTarget` (C99, WASM, or
+    object code via `volar-build`) instead. Rust text printing of woven
+    modules is allowed only with a
     `/// @volar-allow-rust-text: <category>: <reason>` doc comment
     (categories: `test-fixture`, `diagnostic`, `ts-target`,
     `migration-in-progress`). Backend text for non-`rustc` consumers
