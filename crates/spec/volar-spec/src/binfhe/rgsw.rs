@@ -25,22 +25,22 @@
 use crate::SpecRng;
 use crate::binfhe::gadget;
 use crate::binfhe::rlwe::{
-    RlweCiphertext, RlweSecretKey, binfhe_poly_mul_neg, binfhe_rlwe_add, binfhe_rlwe_encrypt_scalar, binfhe_rlwe_sub,
+    BinfheRlweCiphertext, BinfheRlweSecretKey, binfhe_poly_mul_neg, binfhe_rlwe_add, binfhe_rlwe_encrypt_scalar, binfhe_rlwe_sub,
 };
 use crate::binfhe::torus;
 
 /// One RGSW row: gadget factor in the a-column (`rlwe0`) and b-column
 /// (`rlwe1`).
 #[derive(Clone, Copy, Debug)]
-pub struct RgswRow<const N: usize> {
-    pub rlwe0: RlweCiphertext<N>,
-    pub rlwe1: RlweCiphertext<N>,
+pub struct BinfheRgswRow<const N: usize> {
+    pub rlwe0: BinfheRlweCiphertext<N>,
+    pub rlwe1: BinfheRlweCiphertext<N>,
 }
 
 /// RGSW ciphertext with `ELL` decomposition levels.
 #[derive(Clone, Debug)]
-pub struct RgswCiphertext<const N: usize, const ELL: usize> {
-    pub rows: [RgswRow<N>; ELL],
+pub struct BinfheRgswCiphertext<const N: usize, const ELL: usize> {
+    pub rows: [BinfheRgswRow<N>; ELL],
 }
 
 /// Encrypt a bit as RGSW under `sk`.
@@ -53,9 +53,9 @@ pub fn binfhe_rgsw_encrypt<
     R: SpecRng,
 >(
     m: bool,
-    sk: &RlweSecretKey<N>,
+    sk: &BinfheRlweSecretKey<N>,
     rng: &mut R,
-) -> RgswCiphertext<N, ELL> {
+) -> BinfheRgswCiphertext<N, ELL> {
     let rows = core::array::from_fn(|j| {
         let g = gadget::level_factor::<LOG>(BASE_LOG, j);
         let contrib = if m { g } else { 0 };
@@ -65,9 +65,9 @@ pub fn binfhe_rgsw_encrypt<
         rlwe0.a[0] = torus::torus_add::<LOG>(rlwe0.a[0], contrib);
         // b-column: encrypt m * g_j in the constant coefficient.
         let rlwe1 = binfhe_rlwe_encrypt_scalar::<N, LOG, ETA, R>(contrib, sk, rng);
-        RgswRow { rlwe0, rlwe1 }
+        BinfheRgswRow { rlwe0, rlwe1 }
     });
-    RgswCiphertext { rows }
+    BinfheRgswCiphertext { rows }
 }
 
 /// External product `RGSW(m) ⊡ ct -> RLWE` with phase `m * phase(ct)` plus
@@ -78,9 +78,9 @@ pub fn binfhe_external_product<
     const ELL: usize,
     const BASE_LOG: u32,
 >(
-    c: &RgswCiphertext<N, ELL>,
-    ct: &RlweCiphertext<N>,
-) -> RlweCiphertext<N> {
+    c: &BinfheRgswCiphertext<N, ELL>,
+    ct: &BinfheRlweCiphertext<N>,
+) -> BinfheRlweCiphertext<N> {
     let a_dec = gadget::gadget_poly_decompose::<N, LOG, ELL, BASE_LOG>(&ct.a);
     let b_dec = gadget::gadget_poly_decompose::<N, LOG, ELL, BASE_LOG>(&ct.b);
 
@@ -101,16 +101,16 @@ pub fn binfhe_external_product<
         out_a[k] = torus::reduce::<LOG>(out_a[k]);
         out_b[k] = torus::reduce::<LOG>(out_b[k]);
     }
-    RlweCiphertext { a: out_a, b: out_b }
+    BinfheRlweCiphertext { a: out_a, b: out_b }
 }
 
 /// CMUX: `d0` if `m = 0`, `d1` if `m = 1`, computed as
 /// `d0 + C ⊡ (d1 - d0)`.
 pub fn binfhe_rgsw_cmux<const N: usize, const LOG: u32, const ELL: usize, const BASE_LOG: u32>(
-    c: &RgswCiphertext<N, ELL>,
-    d1: &RlweCiphertext<N>,
-    d0: &RlweCiphertext<N>,
-) -> RlweCiphertext<N> {
+    c: &BinfheRgswCiphertext<N, ELL>,
+    d1: &BinfheRlweCiphertext<N>,
+    d0: &BinfheRlweCiphertext<N>,
+) -> BinfheRlweCiphertext<N> {
     let diff = binfhe_rlwe_sub::<N, LOG>(d1, d0);
     let prod = binfhe_external_product::<N, LOG, ELL, BASE_LOG>(c, &diff);
     binfhe_rlwe_add::<N, LOG>(d0, &prod)
@@ -141,7 +141,7 @@ mod tests {
 
     /// Independent phase model: decrypt every coefficient with a directly
     /// written negacyclic convolution (not `binfhe_rlwe_phase`).
-    fn clear_phase<const N: usize>(ct: &RlweCiphertext<N>, key: &[u32; N]) -> [u32; N] {
+    fn clear_phase<const N: usize>(ct: &BinfheRlweCiphertext<N>, key: &[u32; N]) -> [u32; N] {
         let mut phase = [0u32; N];
         for i in 0..N {
             let mut product = 0u32;

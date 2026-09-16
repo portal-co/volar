@@ -28,14 +28,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::binfhe::circuit_bs::{CircuitBootstrappingKey, circuit_bootstrap};
-use crate::binfhe::keys::BootstrappingKey;
+use crate::binfhe::keys::BinfheBootstrappingKey;
 use crate::binfhe::lut::table_is_constant;
 use crate::binfhe::pbs::binfhe_lut_read_dyn;
 use crate::binfhe::lwe::{
-    LweCiphertext, binfhe_not, binfhe_trivial, wire_delta,
+    BinfheLweCiphertext, binfhe_not, binfhe_trivial, wire_delta,
 };
-use crate::binfhe::rgsw::{RgswCiphertext, binfhe_rgsw_cmux};
-use crate::binfhe::rlwe::RlweCiphertext;
+use crate::binfhe::rgsw::{BinfheRgswCiphertext, binfhe_rgsw_cmux};
+use crate::binfhe::rlwe::BinfheRlweCiphertext;
 
 /// Boolean wire (LWE) id.
 pub type WireId = u32;
@@ -483,18 +483,18 @@ pub fn execute_plan<
     const PRIV_BASE_LOG: u32,
 >(
     plan: &BootstrapPlan,
-    inputs: &[LweCiphertext<N_LWE>],
-    cells: &[RlweCiphertext<BIG_N>],
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    inputs: &[BinfheLweCiphertext<N_LWE>],
+    cells: &[BinfheRlweCiphertext<BIG_N>],
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
     cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
-) -> (Vec<LweCiphertext<N_LWE>>, Vec<RlweCiphertext<BIG_N>>) {
+) -> (Vec<BinfheLweCiphertext<N_LWE>>, Vec<BinfheRlweCiphertext<BIG_N>>) {
     assert_eq!(inputs.len(), plan.num_inputs as usize, "input wire count");
     assert_eq!(cells.len(), plan.num_cells as usize, "input cell count");
     let delta = wire_delta::<LOG_Q_LWE>(plan.k_max as usize);
 
-    let mut wires: Vec<LweCiphertext<N_LWE>> = inputs.to_vec();
-    let mut rgsws: Vec<RgswCiphertext<BIG_N, BS_ELL>> = Vec::new();
-    let mut cell_arena: Vec<RlweCiphertext<BIG_N>> = cells.to_vec();
+    let mut wires: Vec<BinfheLweCiphertext<N_LWE>> = inputs.to_vec();
+    let mut rgsws: Vec<BinfheRgswCiphertext<BIG_N, BS_ELL>> = Vec::new();
+    let mut cell_arena: Vec<BinfheRlweCiphertext<BIG_N>> = cells.to_vec();
 
     for layer in &plan.layers {
         for op in layer {
@@ -516,7 +516,7 @@ pub fn execute_plan<
                     let arity = spec.entries.len().trailing_zeros() as usize;
                     assert_eq!(inputs.len(), arity, "LUT arity");
                     // Inline presized temp (arity <= MAX_LUT_ARITY); no heap.
-                    let mut cts: [LweCiphertext<N_LWE>; MAX_LUT_ARITY] = [binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0); MAX_LUT_ARITY];
+                    let mut cts: [BinfheLweCiphertext<N_LWE>; MAX_LUT_ARITY] = [binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0); MAX_LUT_ARITY];
                     for (j, w) in inputs.as_slice().iter().enumerate() {
                         cts[j] = wires[*w as usize];
                     }
@@ -554,9 +554,9 @@ pub use crate::binfhe::lut::check_lut_shape as validate_lut_shape;
 mod tests {
     use super::*;
     use crate::binfhe::circuit_bs::gen_circuit_bootstrapping_key;
-    use crate::binfhe::lwe::{LweSecretKey, binfhe_gen_lwe_secret_key, binfhe_lwe_encrypt, lwe_phase};
+    use crate::binfhe::lwe::{BinfheLweSecretKey, binfhe_gen_lwe_secret_key, binfhe_lwe_encrypt, lwe_phase};
     use crate::binfhe::params::toy;
-    use crate::binfhe::rlwe::{RlweSecretKey, binfhe_gen_rlwe_secret_key, binfhe_rlwe_trivial};
+    use crate::binfhe::rlwe::{BinfheRlweSecretKey, binfhe_gen_rlwe_secret_key, binfhe_rlwe_trivial};
     use crate::SpecRng;
 
     struct TestRng(u64);
@@ -584,7 +584,7 @@ mod tests {
         { toy::PRIV_ELL },
     >;
 
-    fn toy_keys(seed: u64) -> (LweSecretKey<{ toy::N_LWE }>, RlweSecretKey<{ toy::BIG_N }>, ToyCbk) {
+    fn toy_keys(seed: u64) -> (BinfheLweSecretKey<{ toy::N_LWE }>, BinfheRlweSecretKey<{ toy::BIG_N }>, ToyCbk) {
         let mut rng = TestRng::new(seed);
         let lwe_sk = binfhe_gen_lwe_secret_key(&mut rng);
         let rlwe_sk = binfhe_gen_rlwe_secret_key(&mut rng);
@@ -625,10 +625,10 @@ mod tests {
     fn run_toy_plan(
         plan: &BootstrapPlan,
         input_bits: &[bool],
-        cells: &[RlweCiphertext<{ toy::BIG_N }>],
-        sk: &LweSecretKey<{ toy::N_LWE }>,
+        cells: &[BinfheRlweCiphertext<{ toy::BIG_N }>],
+        sk: &BinfheLweSecretKey<{ toy::N_LWE }>,
         cbk: &ToyCbk,
-    ) -> (Vec<LweCiphertext<{ toy::N_LWE }>>, Vec<RlweCiphertext<{ toy::BIG_N }>>) {
+    ) -> (Vec<BinfheLweCiphertext<{ toy::N_LWE }>>, Vec<BinfheRlweCiphertext<{ toy::BIG_N }>>) {
         let delta = wire_delta::<{ toy::LOG_Q_LWE }>(plan.k_max as usize);
         let inputs: Vec<_> = input_bits
             .iter()

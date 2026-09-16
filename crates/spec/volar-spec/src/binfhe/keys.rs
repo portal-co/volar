@@ -11,17 +11,17 @@
 //!   `s'_i * 2^shift_j` under the LWE key, at the intermediate modulus
 //!   `2^LOG_MOD_KS`.
 //!
-//! [`binfhe_key_switch`] converts an `LweCiphertext<BIG_N>` at modulus
-//! `2^LOG_MOD_KS` into an `LweCiphertext<N_LWE>` at the same modulus. The
+//! [`binfhe_key_switch`] converts an `BinfheLweCiphertext<BIG_N>` at modulus
+//! `2^LOG_MOD_KS` into an `BinfheLweCiphertext<N_LWE>` at the same modulus. The
 //! modulus switches that move the ciphertext `Q -> modKS -> q` live in
 //! [`crate::binfhe::modswitch`]; the full pipeline composition lives in
 //! [`crate::binfhe::pbs`].
 
 use crate::SpecRng;
 use crate::binfhe::gadget;
-use crate::binfhe::lwe::{LweCiphertext, LweSecretKey, binfhe_lwe_encrypt_raw};
-use crate::binfhe::rlwe::RlweSecretKey;
-use crate::binfhe::rgsw::{RgswCiphertext, binfhe_rgsw_encrypt};
+use crate::binfhe::lwe::{BinfheLweCiphertext, BinfheLweSecretKey, binfhe_lwe_encrypt_raw};
+use crate::binfhe::rlwe::BinfheRlweSecretKey;
+use crate::binfhe::rgsw::{BinfheRgswCiphertext, binfhe_rgsw_encrypt};
 use crate::binfhe::torus;
 
 /// A borrowed view of a key-switching key (zero heap).
@@ -29,30 +29,30 @@ use crate::binfhe::torus;
 /// Sized entirely by const generics; the referenced storage may be a
 /// stack-allocated fixed array on targets with ample stack (the Volar-IR
 /// LLVM target and similar) or the heap buffer of an owned
-/// [`KeySwitchingKey`] on native targets. See the plan
+/// [`BinfheKeySwitchingKey`] on native targets. See the plan
 /// (`docs/fhe/vec-elimination-and-linter-plan.md` §4.2).
 #[derive(Clone, Copy, Debug)]
-pub struct KeySwitchingKeyRef<'a, const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize> {
-    pub ksk: &'a [[LweCiphertext<N_LWE>; KS_ELL]],
+pub struct BinfheKeySwitchingKeyRef<'a, const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize> {
+    pub ksk: &'a [[BinfheLweCiphertext<N_LWE>; KS_ELL]],
 }
 
 /// A borrowed view of a bootstrapping key (zero heap).
 #[derive(Clone, Copy, Debug)]
-pub struct BootstrappingKeyRef<
+pub struct BinfheBootstrappingKeyRef<
     'a,
     const N_LWE: usize,
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
 > {
-    pub bsk: &'a [RgswCiphertext<BIG_N, BS_ELL>],
-    pub ksk: KeySwitchingKeyRef<'a, N_LWE, BIG_N, KS_ELL>,
+    pub bsk: &'a [BinfheRgswCiphertext<BIG_N, BS_ELL>],
+    pub ksk: BinfheKeySwitchingKeyRef<'a, N_LWE, BIG_N, KS_ELL>,
 }
 
 /// Read access to a key-switching key, abstract over owned vs borrowed
 /// storage so the pipeline operations run on either without copying.
 pub trait AsKeySwitchingKey<const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize> {
-    fn ksk_rows(&self) -> &[[LweCiphertext<N_LWE>; KS_ELL]];
+    fn ksk_rows(&self) -> &[[BinfheLweCiphertext<N_LWE>; KS_ELL]];
 }
 
 /// Read access to a bootstrapping key.
@@ -63,58 +63,58 @@ pub trait AsBootstrappingKey<
     const KS_ELL: usize,
 >
 {
-    fn bsk_rows(&self) -> &[RgswCiphertext<BIG_N, BS_ELL>];
-    fn ksk_ref(&self) -> KeySwitchingKeyRef<'_, N_LWE, BIG_N, KS_ELL>;
+    fn bsk_rows(&self) -> &[BinfheRgswCiphertext<BIG_N, BS_ELL>];
+    fn ksk_ref(&self) -> BinfheKeySwitchingKeyRef<'_, N_LWE, BIG_N, KS_ELL>;
 }
 
 impl<const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize>
-    AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> for KeySwitchingKey<N_LWE, BIG_N, KS_ELL>
+    AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> for BinfheKeySwitchingKey<N_LWE, BIG_N, KS_ELL>
 {
-    fn ksk_rows(&self) -> &[[LweCiphertext<N_LWE>; KS_ELL]] {
+    fn ksk_rows(&self) -> &[[BinfheLweCiphertext<N_LWE>; KS_ELL]] {
         &self.ksk
     }
 }
 
 impl<'a, const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize>
-    AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> for KeySwitchingKeyRef<'a, N_LWE, BIG_N, KS_ELL>
+    AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> for BinfheKeySwitchingKeyRef<'a, N_LWE, BIG_N, KS_ELL>
 {
-    fn ksk_rows(&self) -> &[[LweCiphertext<N_LWE>; KS_ELL]] {
+    fn ksk_rows(&self) -> &[[BinfheLweCiphertext<N_LWE>; KS_ELL]] {
         self.ksk
     }
 }
 
 impl<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize, const KS_ELL: usize>
     AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
-    for BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
+    for BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
 {
-    fn bsk_rows(&self) -> &[RgswCiphertext<BIG_N, BS_ELL>] {
+    fn bsk_rows(&self) -> &[BinfheRgswCiphertext<BIG_N, BS_ELL>] {
         &self.bsk
     }
-    fn ksk_ref(&self) -> KeySwitchingKeyRef<'_, N_LWE, BIG_N, KS_ELL> {
-        KeySwitchingKeyRef { ksk: &self.ksk.ksk }
+    fn ksk_ref(&self) -> BinfheKeySwitchingKeyRef<'_, N_LWE, BIG_N, KS_ELL> {
+        BinfheKeySwitchingKeyRef { ksk: &self.ksk.ksk }
     }
 }
 
 impl<'a, const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize, const KS_ELL: usize>
     AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
-    for BootstrappingKeyRef<'a, N_LWE, BIG_N, BS_ELL, KS_ELL>
+    for BinfheBootstrappingKeyRef<'a, N_LWE, BIG_N, BS_ELL, KS_ELL>
 {
-    fn bsk_rows(&self) -> &[RgswCiphertext<BIG_N, BS_ELL>] {
+    fn bsk_rows(&self) -> &[BinfheRgswCiphertext<BIG_N, BS_ELL>] {
         self.bsk
     }
-    fn ksk_ref(&self) -> KeySwitchingKeyRef<'_, N_LWE, BIG_N, KS_ELL> {
+    fn ksk_ref(&self) -> BinfheKeySwitchingKeyRef<'_, N_LWE, BIG_N, KS_ELL> {
         self.ksk
     }
 }
 
 impl<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize, const KS_ELL: usize>
-    BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
+    BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
 {
     /// Borrow this owned key as a zero-copy view.
-    pub fn as_ref(&self) -> BootstrappingKeyRef<'_, N_LWE, BIG_N, BS_ELL, KS_ELL> {
-        BootstrappingKeyRef {
+    pub fn as_ref(&self) -> BinfheBootstrappingKeyRef<'_, N_LWE, BIG_N, BS_ELL, KS_ELL> {
+        BinfheBootstrappingKeyRef {
             bsk: &self.bsk,
-            ksk: KeySwitchingKeyRef { ksk: &self.ksk.ksk },
+            ksk: BinfheKeySwitchingKeyRef { ksk: &self.ksk.ksk },
         }
     }
 }
@@ -124,11 +124,11 @@ impl<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize, const KS_ELL: 
 #[derive(Clone, Debug)]
 /// @volar-allow-vec: eval-key-store: owned variant for native execution;
 /// ~18 MB at Std128 cannot live on the native stack. Use
-/// [`KeySwitchingKeyRef`] (zero-heap) on stack-rich virtual targets.
-pub struct KeySwitchingKey<const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize> {
+/// [`BinfheKeySwitchingKeyRef`] (zero-heap) on stack-rich virtual targets.
+pub struct BinfheKeySwitchingKey<const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize> {
     /// Heap-held: at Std128 dimensions the array form would be ~18 MB and
     /// overflow the stack during construction.
-    pub ksk: alloc::vec::Vec<[LweCiphertext<N_LWE>; KS_ELL]>,
+    pub ksk: alloc::vec::Vec<[BinfheLweCiphertext<N_LWE>; KS_ELL]>,
 }
 
 /// The full evaluation key: bootstrapping key plus key-switching key.
@@ -139,16 +139,16 @@ pub struct KeySwitchingKey<const N_LWE: usize, const BIG_N: usize, const KS_ELL:
 #[derive(Clone, Debug)]
 /// @volar-allow-vec: eval-key-store: owned variant for native execution;
 /// ~36 MB at Std128 cannot live on the native stack. Use
-/// [`BootstrappingKeyRef`] (zero-heap) on stack-rich virtual targets.
-pub struct BootstrappingKey<
+/// [`BinfheBootstrappingKeyRef`] (zero-heap) on stack-rich virtual targets.
+pub struct BinfheBootstrappingKey<
     const N_LWE: usize,
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
 > {
     /// Heap-held: at Std128 dimensions the array form would be ~36 MB.
-    pub bsk: alloc::vec::Vec<RgswCiphertext<BIG_N, BS_ELL>>,
-    pub ksk: KeySwitchingKey<N_LWE, BIG_N, KS_ELL>,
+    pub bsk: alloc::vec::Vec<BinfheRgswCiphertext<BIG_N, BS_ELL>>,
+    pub ksk: BinfheKeySwitchingKey<N_LWE, BIG_N, KS_ELL>,
 }
 
 /// Generate the evaluation key. Noise is CBD-`ETA` at each entry's own
@@ -168,10 +168,10 @@ pub fn binfhe_gen_bootstrapping_key<
     const ETA: u32,
     R: SpecRng,
 >(
-    lwe_sk: &LweSecretKey<N_LWE>,
-    rlwe_sk: &RlweSecretKey<BIG_N>,
+    lwe_sk: &BinfheLweSecretKey<N_LWE>,
+    rlwe_sk: &BinfheRlweSecretKey<BIG_N>,
     rng: &mut R,
-) -> BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> {
+) -> BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> {
     let bsk = (0..N_LWE)
         .map(|i| {
             binfhe_rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>(
@@ -181,7 +181,7 @@ pub fn binfhe_gen_bootstrapping_key<
             )
         })
         .collect();
-    let ksk = KeySwitchingKey {
+    let ksk = BinfheKeySwitchingKey {
         ksk: (0..BIG_N)
             .map(|i| {
                 core::array::from_fn(|j| {
@@ -196,10 +196,10 @@ pub fn binfhe_gen_bootstrapping_key<
             })
             .collect(),
     };
-    BootstrappingKey { bsk, ksk }
+    BinfheBootstrappingKey { bsk, ksk }
 }
 
-/// Key switching: `LweCiphertext<BIG_N> -> LweCiphertext<N_LWE>` at the
+/// Key switching: `BinfheLweCiphertext<BIG_N> -> BinfheLweCiphertext<N_LWE>` at the
 /// shared modulus `2^LOG_MOD_KS`.
 ///
 /// `out = (0, b) - sum_{i,j} d_j(a_i) * KSK[i][j]` where `d_j` is the exact
@@ -212,9 +212,9 @@ pub fn binfhe_key_switch<
     const KS_BASE_LOG: u32,
     K: AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> + ?Sized,
 >(
-    ct: &LweCiphertext<BIG_N>,
+    ct: &BinfheLweCiphertext<BIG_N>,
     ksk: &K,
-) -> LweCiphertext<N_LWE> {
+) -> BinfheLweCiphertext<N_LWE> {
     let ksk_rows = ksk.ksk_rows();
     let mut out_a = [0u32; N_LWE];
     let mut out_b = ct.b;
@@ -235,7 +235,7 @@ pub fn binfhe_key_switch<
     for k in 0..N_LWE {
         out_a[k] = torus::reduce::<LOG_MOD_KS>(out_a[k]);
     }
-    LweCiphertext {
+    BinfheLweCiphertext {
         a: out_a,
         b: torus::reduce::<LOG_MOD_KS>(out_b),
     }
@@ -268,9 +268,9 @@ mod tests {
     fn toy_bk(
         seed: u64,
     ) -> (
-        LweSecretKey<{ toy::N_LWE }>,
-        RlweSecretKey<{ toy::BIG_N }>,
-        BootstrappingKey<{ toy::N_LWE }, { toy::BIG_N }, { toy::BS_ELL }, { toy::KS_ELL }>,
+        BinfheLweSecretKey<{ toy::N_LWE }>,
+        BinfheRlweSecretKey<{ toy::BIG_N }>,
+        BinfheBootstrappingKey<{ toy::N_LWE }, { toy::BIG_N }, { toy::BS_ELL }, { toy::KS_ELL }>,
     ) {
         let mut rng = TestRng::new(seed);
         let lwe_sk = binfhe_gen_lwe_secret_key(&mut rng);
@@ -296,14 +296,14 @@ mod tests {
         let (_, _, a) = toy_bk(11);
         let (_, _, b) = toy_bk(11);
         assert_eq!(a.ksk.ksk[0][0], b.ksk.ksk[0][0]);
-        // RgswCiphertext derives Debug/Clone but not PartialEq; compare the
+        // BinfheRgswCiphertext derives Debug/Clone but not PartialEq; compare the
         // b-bodies of the first row as a determinism witness.
         assert_eq!(a.bsk[0].rows[0].rlwe1.b, b.bsk[0].rows[0].rlwe1.b);
     }
 
     /// Zero-heap pipeline: build key material in stack-allocated arrays,
-    /// view it through `BootstrappingKeyRef`, and run key switching through
-    /// the shared operation surface with no owned `BootstrappingKey`/`Vec`.
+    /// view it through `BinfheBootstrappingKeyRef`, and run key switching through
+    /// the shared operation surface with no owned `BinfheBootstrappingKey`/`Vec`.
     #[test]
     fn borrowed_key_view_runs_with_zero_heap_storage() {
         use crate::binfhe::lwe::{binfhe_lwe_decrypt, binfhe_lwe_encrypt, lwe_phase};
@@ -317,16 +317,16 @@ mod tests {
             { toy::KS_ELL }, { toy::KS_BASE_LOG }, { toy::CBD_ETA }, _,
         >(&lwe_sk, &rlwe_sk, &mut rng);
         // Stack-allocated storage (toy dims fit on the stack).
-        let bsk_store: [crate::binfhe::rgsw::RgswCiphertext<{ toy::BIG_N }, { toy::BS_ELL }>; { toy::N_LWE }] =
+        let bsk_store: [crate::binfhe::rgsw::BinfheRgswCiphertext<{ toy::BIG_N }, { toy::BS_ELL }>; { toy::N_LWE }] =
             owned.bsk.try_into().unwrap();
-        let ksk_store: [[LweCiphertext<{ toy::N_LWE }>; { toy::KS_ELL }]; { toy::BIG_N }] =
+        let ksk_store: [[BinfheLweCiphertext<{ toy::N_LWE }>; { toy::KS_ELL }]; { toy::BIG_N }] =
             owned.ksk.ksk.try_into().unwrap();
-        let borrowed = BootstrappingKeyRef {
+        let borrowed = BinfheBootstrappingKeyRef {
             bsk: &bsk_store,
-            ksk: KeySwitchingKeyRef { ksk: &ksk_store },
+            ksk: BinfheKeySwitchingKeyRef { ksk: &ksk_store },
         };
         // Key switching through the borrowed view.
-        let source_sk = LweSecretKey::<{ toy::BIG_N }> {
+        let source_sk = BinfheLweSecretKey::<{ toy::BIG_N }> {
             key: core::array::from_fn(|i| rlwe_sk.key[i] as u8),
         };
         let delta = 1u32 << (toy::LOG_MOD_KS - 2);
@@ -357,7 +357,7 @@ mod tests {
         // Encrypt under the *RLWE* key reinterpreted as an LWE key (this is
         // exactly what sample extraction produces) at the key-switch
         // modulus, with delta = modKS/4.
-        let source_sk = LweSecretKey::<{ toy::BIG_N }> {
+        let source_sk = BinfheLweSecretKey::<{ toy::BIG_N }> {
             key: core::array::from_fn(|i| rlwe_sk.key[i] as u8),
         };
         let delta = 1u32 << (toy::LOG_MOD_KS - 2);

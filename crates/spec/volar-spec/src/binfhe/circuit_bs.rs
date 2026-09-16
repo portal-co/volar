@@ -54,10 +54,10 @@
 use crate::SpecRng;
 use crate::binfhe::blind_rotate::binfhe_blind_rotate;
 use crate::binfhe::gadget;
-use crate::binfhe::keys::{BootstrappingKey, binfhe_gen_bootstrapping_key};
-use crate::binfhe::lwe::{LweCiphertext, LweSecretKey, binfhe_lwe_add_const, wire_delta};
-use crate::binfhe::rgsw::{RgswCiphertext, RgswRow};
-use crate::binfhe::rlwe::{RlweCiphertext, RlweSecretKey, binfhe_rlwe_encrypt_poly, binfhe_sample_extract};
+use crate::binfhe::keys::{BinfheBootstrappingKey, binfhe_gen_bootstrapping_key};
+use crate::binfhe::lwe::{BinfheLweCiphertext, BinfheLweSecretKey, binfhe_lwe_add_const, wire_delta};
+use crate::binfhe::rgsw::{BinfheRgswCiphertext, BinfheRgswRow};
+use crate::binfhe::rlwe::{BinfheRlweCiphertext, BinfheRlweSecretKey, binfhe_rlwe_encrypt_poly, binfhe_sample_extract};
 use crate::binfhe::torus;
 
 /// Private key-switching key for circuit bootstrapping.
@@ -67,13 +67,13 @@ use crate::binfhe::torus;
 pub struct PrivateKeySwitchingKey<const BIG_N: usize, const PRIV_ELL: usize> {
     /// a-column entries: `a_col[i][l]` encrypts `s'_i * s'(X) * g_l`
     /// (zero when `s'_i = 0`).
-    pub a_col: alloc::vec::Vec<[RlweCiphertext<BIG_N>; PRIV_ELL]>,
+    pub a_col: alloc::vec::Vec<[BinfheRlweCiphertext<BIG_N>; PRIV_ELL]>,
     /// b-column entries: `b_col[i][l]` encrypts the constant `-s'_i * g_l`.
-    pub b_col: alloc::vec::Vec<[RlweCiphertext<BIG_N>; PRIV_ELL]>,
+    pub b_col: alloc::vec::Vec<[BinfheRlweCiphertext<BIG_N>; PRIV_ELL]>,
     /// a-column body terms: encrypt `-s'(X) * g_l`.
-    pub a_body: [RlweCiphertext<BIG_N>; PRIV_ELL],
+    pub a_body: [BinfheRlweCiphertext<BIG_N>; PRIV_ELL],
     /// b-column body terms: encrypt the constant `g_l`.
-    pub b_body: [RlweCiphertext<BIG_N>; PRIV_ELL],
+    pub b_body: [BinfheRlweCiphertext<BIG_N>; PRIV_ELL],
 }
 
 /// The complete circuit-bootstrapping evaluation key: the ordinary
@@ -87,7 +87,7 @@ pub struct CircuitBootstrappingKey<
     const KS_ELL: usize,
     const PRIV_ELL: usize,
 > {
-    pub bk: BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    pub bk: BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
     pub privksk: PrivateKeySwitchingKey<BIG_N, PRIV_ELL>,
 }
 
@@ -96,9 +96,9 @@ fn encrypt_scaled_poly<const BIG_N: usize, const LOG_Q: u32, const ETA: u32, R: 
     msg: &[u32; BIG_N],
     level: usize,
     base_log: u32,
-    sk: &RlweSecretKey<BIG_N>,
+    sk: &BinfheRlweSecretKey<BIG_N>,
     rng: &mut R,
-) -> RlweCiphertext<BIG_N> {
+) -> BinfheRlweCiphertext<BIG_N> {
     let g = gadget::level_factor::<LOG_Q>(base_log, level);
     let mut scaled = [0u32; BIG_N];
     for i in 0..BIG_N {
@@ -123,8 +123,8 @@ pub fn gen_circuit_bootstrapping_key<
     const ETA: u32,
     R: SpecRng,
 >(
-    lwe_sk: &LweSecretKey<N_LWE>,
-    rlwe_sk: &RlweSecretKey<BIG_N>,
+    lwe_sk: &BinfheLweSecretKey<N_LWE>,
+    rlwe_sk: &BinfheRlweSecretKey<BIG_N>,
     rng: &mut R,
 ) -> CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL> {
     let bk = binfhe_gen_bootstrapping_key::<
@@ -184,11 +184,11 @@ pub fn gen_circuit_bootstrapping_key<
 /// Private key switch on one column family: gadget_decompose each source mask
 /// coefficient and the body, accumulate digit-times-entry.
 fn priv_ks<const BIG_N: usize, const LOG_Q: u32, const PRIV_ELL: usize, const PRIV_BASE_LOG: u32>(
-    src: &LweCiphertext<BIG_N>,
-    col: &[[RlweCiphertext<BIG_N>; PRIV_ELL]],
-    body: &[RlweCiphertext<BIG_N>; PRIV_ELL],
-) -> RlweCiphertext<BIG_N> {
-    let mut out = RlweCiphertext {
+    src: &BinfheLweCiphertext<BIG_N>,
+    col: &[[BinfheRlweCiphertext<BIG_N>; PRIV_ELL]],
+    body: &[BinfheRlweCiphertext<BIG_N>; PRIV_ELL],
+) -> BinfheRlweCiphertext<BIG_N> {
+    let mut out = BinfheRlweCiphertext {
         a: [0u32; BIG_N],
         b: [0u32; BIG_N],
     };
@@ -254,10 +254,10 @@ pub fn circuit_bootstrap<
     const PRIV_ELL: usize,
     const PRIV_BASE_LOG: u32,
 >(
-    ct: &LweCiphertext<N_LWE>,
+    ct: &BinfheLweCiphertext<N_LWE>,
     cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
     k_max: usize,
-) -> RgswCiphertext<BIG_N, BS_ELL> {
+) -> BinfheRgswCiphertext<BIG_N, BS_ELL> {
     let delta = wire_delta::<LOG_Q_LWE>(k_max as usize);
     // Center the wire's bin: phase becomes m * Delta + Delta/2.
     let centered = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(ct, delta / 2);
@@ -280,9 +280,9 @@ pub fn circuit_bootstrap<
             &cbk.privksk.b_col,
             &cbk.privksk.b_body,
         );
-        RgswRow { rlwe0, rlwe1 }
+        BinfheRgswRow { rlwe0, rlwe1 }
     });
-    RgswCiphertext { rows }
+    BinfheRgswCiphertext { rows }
 }
 
 #[cfg(test)]
@@ -318,7 +318,7 @@ mod tests {
         { toy::PRIV_ELL },
     >;
 
-    fn toy_cb_keys(seed: u64) -> (crate::binfhe::lwe::LweSecretKey<{ toy::N_LWE }>, RlweSecretKey<{ toy::BIG_N }>, ToyCbk) {
+    fn toy_cb_keys(seed: u64) -> (crate::binfhe::lwe::BinfheLweSecretKey<{ toy::N_LWE }>, BinfheRlweSecretKey<{ toy::BIG_N }>, ToyCbk) {
         let mut rng = TestRng::new(seed);
         let lwe_sk = binfhe_gen_lwe_secret_key(&mut rng);
         let rlwe_sk = binfhe_gen_rlwe_secret_key(&mut rng);
@@ -333,7 +333,7 @@ mod tests {
 
     /// Independent per-coefficient phase model (shares no code with
     /// `binfhe_rlwe_phase`).
-    fn clear_phase(ct: &RlweCiphertext<{ toy::BIG_N }>, key: &[u32; toy::BIG_N]) -> [u32; toy::BIG_N] {
+    fn clear_phase(ct: &BinfheRlweCiphertext<{ toy::BIG_N }>, key: &[u32; toy::BIG_N]) -> [u32; toy::BIG_N] {
         let mut phase = [0u32; toy::BIG_N];
         for i in 0..toy::BIG_N {
             let mut product = 0u32;

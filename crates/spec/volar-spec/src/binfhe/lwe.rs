@@ -23,7 +23,7 @@ use crate::binfhe::torus;
 
 /// Binary LWE secret key.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LweSecretKey<const N: usize> {
+pub struct BinfheLweSecretKey<const N: usize> {
     pub key: [u8; N],
 }
 
@@ -31,7 +31,7 @@ pub struct LweSecretKey<const N: usize> {
 ///
 /// All components are stored reduced modulo the operation's modulus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LweCiphertext<const N: usize> {
+pub struct BinfheLweCiphertext<const N: usize> {
     pub a: [u32; N],
     pub b: u32,
 }
@@ -44,7 +44,7 @@ pub const fn wire_delta<const LOG_Q_LWE: u32>(k_max: usize) -> u32 {
 }
 
 /// Generate a binary LWE secret key.
-pub fn binfhe_gen_lwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> LweSecretKey<N> {
+pub fn binfhe_gen_lwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> BinfheLweSecretKey<N> {
     let mut key = [0u8; N];
     let mut i = 0;
     while i < N {
@@ -56,7 +56,7 @@ pub fn binfhe_gen_lwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> Lwe
             i += 1;
         }
     }
-    LweSecretKey { key }
+    BinfheLweSecretKey { key }
 }
 
 /// Encrypt bit `m` at encoding `delta` modulo `2^LOG_M` with CBD-`ETA`
@@ -64,9 +64,9 @@ pub fn binfhe_gen_lwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> Lwe
 pub fn binfhe_lwe_encrypt<const N: usize, const LOG_M: u32, const ETA: u32, R: SpecRng>(
     m: bool,
     delta: u32,
-    sk: &LweSecretKey<N>,
+    sk: &BinfheLweSecretKey<N>,
     rng: &mut R,
-) -> LweCiphertext<N> {
+) -> BinfheLweCiphertext<N> {
     let msg = if m { delta } else { 0 };
     binfhe_lwe_encrypt_raw::<N, LOG_M, ETA, R>(msg, sk, rng)
 }
@@ -75,9 +75,9 @@ pub fn binfhe_lwe_encrypt<const N: usize, const LOG_M: u32, const ETA: u32, R: S
 /// construction, where the payload is a gadget-multiple of a key bit.
 pub fn binfhe_lwe_encrypt_raw<const N: usize, const LOG_M: u32, const ETA: u32, R: SpecRng>(
     msg: u32,
-    sk: &LweSecretKey<N>,
+    sk: &BinfheLweSecretKey<N>,
     rng: &mut R,
-) -> LweCiphertext<N> {
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for ai in a.iter_mut() {
         *ai = torus::reduce::<LOG_M>(rng.next_u32());
@@ -88,14 +88,14 @@ pub fn binfhe_lwe_encrypt_raw<const N: usize, const LOG_M: u32, const ETA: u32, 
     }
     let e = sampler::sample_error::<LOG_M, ETA, R>(rng);
     let b = torus::reduce::<LOG_M>(dot.wrapping_add(e).wrapping_add(msg));
-    LweCiphertext { a, b }
+    BinfheLweCiphertext { a, b }
 }
 
 /// Phase `b - <a, s>` modulo `2^LOG_M`. For a fresh ciphertext this is
 /// `m * delta + e`.
 pub fn lwe_phase<const N: usize, const LOG_M: u32>(
-    ct: &LweCiphertext<N>,
-    sk: &LweSecretKey<N>,
+    ct: &BinfheLweCiphertext<N>,
+    sk: &BinfheLweSecretKey<N>,
 ) -> u32 {
     let mut dot = 0u32;
     for i in 0..N {
@@ -115,8 +115,8 @@ pub const fn lwe_decode<const LOG_M: u32>(phase: u32, delta: u32) -> bool {
 
 /// Decrypt a Boolean wire ciphertext.
 pub fn binfhe_lwe_decrypt<const N: usize, const LOG_M: u32>(
-    ct: &LweCiphertext<N>,
-    sk: &LweSecretKey<N>,
+    ct: &BinfheLweCiphertext<N>,
+    sk: &BinfheLweSecretKey<N>,
     delta: u32,
 ) -> bool {
     lwe_decode::<LOG_M>(lwe_phase::<N, LOG_M>(ct, sk), delta)
@@ -124,14 +124,14 @@ pub fn binfhe_lwe_decrypt<const N: usize, const LOG_M: u32>(
 
 /// Exact ciphertext addition.
 pub fn binfhe_lwe_add<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
-    y: &LweCiphertext<N>,
-) -> LweCiphertext<N> {
+    x: &BinfheLweCiphertext<N>,
+    y: &BinfheLweCiphertext<N>,
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
         a[i] = torus::torus_add::<LOG_M>(x.a[i], y.a[i]);
     }
-    LweCiphertext {
+    BinfheLweCiphertext {
         a,
         b: torus::torus_add::<LOG_M>(x.b, y.b),
     }
@@ -139,26 +139,26 @@ pub fn binfhe_lwe_add<const N: usize, const LOG_M: u32>(
 
 /// Exact ciphertext subtraction.
 pub fn binfhe_lwe_sub<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
-    y: &LweCiphertext<N>,
-) -> LweCiphertext<N> {
+    x: &BinfheLweCiphertext<N>,
+    y: &BinfheLweCiphertext<N>,
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
         a[i] = torus::torus_sub::<LOG_M>(x.a[i], y.a[i]);
     }
-    LweCiphertext {
+    BinfheLweCiphertext {
         a,
         b: torus::torus_sub::<LOG_M>(x.b, y.b),
     }
 }
 
 /// Exact ciphertext negation.
-pub fn binfhe_lwe_neg<const N: usize, const LOG_M: u32>(x: &LweCiphertext<N>) -> LweCiphertext<N> {
+pub fn binfhe_lwe_neg<const N: usize, const LOG_M: u32>(x: &BinfheLweCiphertext<N>) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
         a[i] = torus::torus_neg::<LOG_M>(x.a[i]);
     }
-    LweCiphertext {
+    BinfheLweCiphertext {
         a,
         b: torus::torus_neg::<LOG_M>(x.b),
     }
@@ -166,14 +166,14 @@ pub fn binfhe_lwe_neg<const N: usize, const LOG_M: u32>(x: &LweCiphertext<N>) ->
 
 /// Exact scaling by a cleartext integer (multi-input selector weights).
 pub fn binfhe_lwe_scale<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
+    x: &BinfheLweCiphertext<N>,
     c: u32,
-) -> LweCiphertext<N> {
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
         a[i] = torus::mul_exact::<LOG_M>(x.a[i], c);
     }
-    LweCiphertext {
+    BinfheLweCiphertext {
         a,
         b: torus::mul_exact::<LOG_M>(x.b, c),
     }
@@ -181,10 +181,10 @@ pub fn binfhe_lwe_scale<const N: usize, const LOG_M: u32>(
 
 /// Exact addition of a cleartext constant to the body.
 pub fn binfhe_lwe_add_const<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
+    x: &BinfheLweCiphertext<N>,
     c: u32,
-) -> LweCiphertext<N> {
-    LweCiphertext {
+) -> BinfheLweCiphertext<N> {
+    BinfheLweCiphertext {
         a: x.a,
         b: torus::torus_add::<LOG_M>(x.b, c),
     }
@@ -192,17 +192,17 @@ pub fn binfhe_lwe_add_const<const N: usize, const LOG_M: u32>(
 
 /// Free NOT gate: `phase -> Delta - phase`. Exact for any wire encoding.
 pub fn binfhe_not<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
+    x: &BinfheLweCiphertext<N>,
     delta: u32,
-) -> LweCiphertext<N> {
+) -> BinfheLweCiphertext<N> {
     let mut out = binfhe_lwe_neg::<N, LOG_M>(x);
     out.b = torus::torus_add::<LOG_M>(out.b, delta);
     out
 }
 
 /// Trivial (mask-zero) encryption of a cleartext Boolean at `delta`.
-pub fn binfhe_trivial<const N: usize, const LOG_M: u32>(m: bool, delta: u32) -> LweCiphertext<N> {
-    LweCiphertext {
+pub fn binfhe_trivial<const N: usize, const LOG_M: u32>(m: bool, delta: u32) -> BinfheLweCiphertext<N> {
+    BinfheLweCiphertext {
         a: [0u32; N],
         b: if m { delta } else { 0 },
     }

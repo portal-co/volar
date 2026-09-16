@@ -23,10 +23,10 @@
 //! property, not just decode correctness.
 
 use crate::binfhe::blind_rotate::binfhe_blind_rotate;
-use crate::binfhe::keys::{BootstrappingKey, binfhe_key_switch};
+use crate::binfhe::keys::{BinfheBootstrappingKey, binfhe_key_switch};
 use crate::binfhe::lut::{Lut, fill_test_poly, table_is_constant};
 use crate::binfhe::lwe::{
-    LweCiphertext, binfhe_trivial, binfhe_lwe_add, binfhe_lwe_add_const, binfhe_lwe_scale, wire_delta,
+    BinfheLweCiphertext, binfhe_trivial, binfhe_lwe_add, binfhe_lwe_add_const, binfhe_lwe_scale, wire_delta,
 };
 use crate::binfhe::modswitch::mod_switch_lwe;
 use crate::binfhe::rlwe::binfhe_sample_extract;
@@ -46,10 +46,10 @@ pub fn binfhe_pbs_core<
     const KS_BASE_LOG: u32,
     BK: crate::binfhe::keys::AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + ?Sized,
 >(
-    ct: &LweCiphertext<N_LWE>,
+    ct: &BinfheLweCiphertext<N_LWE>,
     test_poly: &[u32; BIG_N],
     bk: &BK,
-) -> LweCiphertext<N_LWE> {
+) -> BinfheLweCiphertext<N_LWE> {
     let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(
         ct,
         test_poly,
@@ -84,10 +84,10 @@ pub fn binfhe_lut_read<
     const TABLE_LEN: usize,
     const K_MAX: usize,
 >(
-    addr: &[LweCiphertext<N_LWE>; ADDR_BITS],
+    addr: &[BinfheLweCiphertext<N_LWE>; ADDR_BITS],
     lut: &Lut<ADDR_BITS, TABLE_LEN, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
-) -> LweCiphertext<N_LWE> {
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+) -> BinfheLweCiphertext<N_LWE> {
     let delta = wire_delta::<LOG_Q_LWE>(K_MAX);
     if lut.is_constant() {
         return binfhe_trivial::<N_LWE, LOG_Q_LWE>(lut.constant_value(), delta);
@@ -132,11 +132,11 @@ pub fn binfhe_lut_read_dyn<
     const KS_ELL: usize,
     const KS_BASE_LOG: u32,
 >(
-    inputs: &[LweCiphertext<N_LWE>],
+    inputs: &[BinfheLweCiphertext<N_LWE>],
     table: &[bool],
     k_max: usize,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
-) -> LweCiphertext<N_LWE> {
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+) -> BinfheLweCiphertext<N_LWE> {
     let delta = wire_delta::<LOG_Q_LWE>(k_max as usize);
     if table_is_constant(table) {
         return binfhe_trivial::<N_LWE, LOG_Q_LWE>(table[0], delta);
@@ -178,10 +178,10 @@ pub fn binfhe_gate_and<
     const KS_BASE_LOG: u32,
     const K_MAX: usize,
 >(
-    a: LweCiphertext<N_LWE>,
-    b: LweCiphertext<N_LWE>,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
-) -> LweCiphertext<N_LWE> {
+    a: BinfheLweCiphertext<N_LWE>,
+    b: BinfheLweCiphertext<N_LWE>,
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+) -> BinfheLweCiphertext<N_LWE> {
     binfhe_lut_read_dyn::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
@@ -201,10 +201,10 @@ pub fn binfhe_gate_or<
     const KS_BASE_LOG: u32,
     const K_MAX: usize,
 >(
-    a: LweCiphertext<N_LWE>,
-    b: LweCiphertext<N_LWE>,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
-) -> LweCiphertext<N_LWE> {
+    a: BinfheLweCiphertext<N_LWE>,
+    b: BinfheLweCiphertext<N_LWE>,
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+) -> BinfheLweCiphertext<N_LWE> {
     binfhe_lut_read_dyn::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
@@ -225,10 +225,10 @@ pub fn binfhe_gate_xor<
     const KS_BASE_LOG: u32,
     const K_MAX: usize,
 >(
-    a: LweCiphertext<N_LWE>,
-    b: LweCiphertext<N_LWE>,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
-) -> LweCiphertext<N_LWE> {
+    a: BinfheLweCiphertext<N_LWE>,
+    b: BinfheLweCiphertext<N_LWE>,
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+) -> BinfheLweCiphertext<N_LWE> {
     binfhe_lut_read_dyn::<
         N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
         BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
@@ -250,11 +250,11 @@ pub fn binfhe_cmux<
     const KS_BASE_LOG: u32,
     const K_MAX: usize,
 >(
-    sel: LweCiphertext<N_LWE>,
-    a: LweCiphertext<N_LWE>,
-    b: LweCiphertext<N_LWE>,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
-) -> LweCiphertext<N_LWE> {
+    sel: BinfheLweCiphertext<N_LWE>,
+    a: BinfheLweCiphertext<N_LWE>,
+    b: BinfheLweCiphertext<N_LWE>,
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+) -> BinfheLweCiphertext<N_LWE> {
     // addr = sel + 2a + 4b; f(sel,a,b) = sel ? a : b.
     const TABLE: [bool; 8] = [false, false, false, true, true, false, true, true];
     binfhe_lut_read_dyn::<
@@ -268,10 +268,10 @@ mod tests {
     use super::*;
     use crate::binfhe::keys::binfhe_gen_bootstrapping_key;
     use crate::binfhe::lwe::{
-        LweSecretKey, binfhe_not, binfhe_gen_lwe_secret_key, binfhe_lwe_decrypt, binfhe_lwe_encrypt, lwe_phase,
+        BinfheLweSecretKey, binfhe_not, binfhe_gen_lwe_secret_key, binfhe_lwe_decrypt, binfhe_lwe_encrypt, lwe_phase,
     };
     use crate::binfhe::params::{toy, toy_noisy};
-    use crate::binfhe::rlwe::{RlweSecretKey, binfhe_gen_rlwe_secret_key};
+    use crate::binfhe::rlwe::{BinfheRlweSecretKey, binfhe_gen_rlwe_secret_key};
     use crate::SpecRng;
     use alloc::vec::Vec;
 
@@ -292,12 +292,12 @@ mod tests {
         }
     }
 
-    type ToyBk = BootstrappingKey<{ toy::N_LWE }, { toy::BIG_N }, { toy::BS_ELL }, { toy::KS_ELL }>;
+    type ToyBk = BinfheBootstrappingKey<{ toy::N_LWE }, { toy::BIG_N }, { toy::BS_ELL }, { toy::KS_ELL }>;
 
-    fn toy_keys(seed: u64) -> (LweSecretKey<{ toy::N_LWE }>, ToyBk) {
+    fn toy_keys(seed: u64) -> (BinfheLweSecretKey<{ toy::N_LWE }>, ToyBk) {
         let mut rng = TestRng::new(seed);
         let lwe_sk = binfhe_gen_lwe_secret_key(&mut rng);
-        let rlwe_sk: RlweSecretKey<{ toy::BIG_N }> = binfhe_gen_rlwe_secret_key(&mut rng);
+        let rlwe_sk: BinfheRlweSecretKey<{ toy::BIG_N }> = binfhe_gen_rlwe_secret_key(&mut rng);
         let bk = binfhe_gen_bootstrapping_key::<
             { toy::N_LWE },
             { toy::BIG_N },
@@ -317,9 +317,9 @@ mod tests {
     fn toy_encrypt(
         m: bool,
         k_max: u32,
-        sk: &LweSecretKey<{ toy::N_LWE }>,
+        sk: &BinfheLweSecretKey<{ toy::N_LWE }>,
         seed: u64,
-    ) -> LweCiphertext<{ toy::N_LWE }> {
+    ) -> BinfheLweCiphertext<{ toy::N_LWE }> {
         let delta = wire_delta::<{ toy::LOG_Q_LWE }>(k_max as usize);
         let mut rng = TestRng::new(seed);
         binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(m, delta, sk, &mut rng)
@@ -327,10 +327,10 @@ mod tests {
 
     /// Assert canonical phase AND decode (toy is exact).
     fn assert_wire(
-        ct: &LweCiphertext<{ toy::N_LWE }>,
+        ct: &BinfheLweCiphertext<{ toy::N_LWE }>,
         expected: bool,
         k_max: u32,
-        sk: &LweSecretKey<{ toy::N_LWE }>,
+        sk: &BinfheLweSecretKey<{ toy::N_LWE }>,
         context: &str,
     ) {
         let delta = wire_delta::<{ toy::LOG_Q_LWE }>(k_max as usize);
@@ -423,7 +423,7 @@ mod tests {
             Lut::<4, 16, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 4>::new(table)
                 .unwrap();
         for addr in 0..16usize {
-            let bits: [LweCiphertext<{ toy::N_LWE }>; 4] = core::array::from_fn(|j| {
+            let bits: [BinfheLweCiphertext<{ toy::N_LWE }>; 4] = core::array::from_fn(|j| {
                 toy_encrypt((addr >> j) & 1 == 1, 4, &sk, 400 + addr as u64 * 8 + j as u64)
             });
             assert_wire(
@@ -487,7 +487,7 @@ mod tests {
         let delta = wire_delta::<{ toy::LOG_Q_LWE }>(3);
         let inputs = [false, true, false, true];
         let mut wires: Vec<bool> = inputs.to_vec();
-        let mut cts: Vec<LweCiphertext<{ toy::N_LWE }>> = inputs
+        let mut cts: Vec<BinfheLweCiphertext<{ toy::N_LWE }>> = inputs
             .iter()
             .enumerate()
             .map(|(i, &v)| toy_encrypt(v, 3, &sk, 700 + i as u64))
@@ -563,7 +563,7 @@ mod tests {
         // sized to be quiet; over this fixed deterministic corpus every
         // bootstrap must succeed and the *observed* output phase error must
         // stay well under Delta/2 = 8 (q=128, K=2).
-        type NBk = BootstrappingKey<
+        type NBk = BinfheBootstrappingKey<
             { toy_noisy::N_LWE },
             { toy_noisy::BIG_N },
             { toy_noisy::BS_ELL },
@@ -620,14 +620,14 @@ mod tests {
 
     // ── M8 noise-budget suite (plan §6.6) ───────────────────────────────
 
-    type NoisyBk = BootstrappingKey<
+    type NoisyBk = BinfheBootstrappingKey<
         { toy_noisy::N_LWE },
         { toy_noisy::BIG_N },
         { toy_noisy::BS_ELL },
         { toy_noisy::KS_ELL },
     >;
 
-    fn noisy_keys(seed: u64) -> (LweSecretKey<{ toy_noisy::N_LWE }>, NoisyBk) {
+    fn noisy_keys(seed: u64) -> (BinfheLweSecretKey<{ toy_noisy::N_LWE }>, NoisyBk) {
         let mut rng = TestRng::new(seed);
         let lwe_sk = binfhe_gen_lwe_secret_key::<{ toy_noisy::N_LWE }, _>(&mut rng);
         let rlwe_sk = binfhe_gen_rlwe_secret_key::<{ toy_noisy::BIG_N }, _>(&mut rng);
@@ -643,9 +643,9 @@ mod tests {
     fn noisy_encrypt(
         m: bool,
         k_max: usize,
-        sk: &LweSecretKey<{ toy_noisy::N_LWE }>,
+        sk: &BinfheLweSecretKey<{ toy_noisy::N_LWE }>,
         seed: u64,
-    ) -> LweCiphertext<{ toy_noisy::N_LWE }> {
+    ) -> BinfheLweCiphertext<{ toy_noisy::N_LWE }> {
         let delta = wire_delta::<{ toy_noisy::LOG_Q_LWE }>(k_max);
         let mut rng = TestRng::new(seed);
         binfhe_lwe_encrypt::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }, { toy_noisy::CBD_ETA }, _>(

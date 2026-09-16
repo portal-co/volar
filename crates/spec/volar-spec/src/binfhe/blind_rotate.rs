@@ -20,9 +20,9 @@
 //! dominant per-bootstrap cost, and the quantity the weaver's multi-value
 //! and circuit-bootstrap optimizations amortize.
 
-use crate::binfhe::lwe::LweCiphertext;
-use crate::binfhe::rgsw::{RgswCiphertext, binfhe_rgsw_cmux};
-use crate::binfhe::rlwe::{RlweCiphertext, binfhe_rlwe_rotate, binfhe_rlwe_trivial};
+use crate::binfhe::lwe::BinfheLweCiphertext;
+use crate::binfhe::rgsw::{BinfheRgswCiphertext, binfhe_rgsw_cmux};
+use crate::binfhe::rlwe::{BinfheRlweCiphertext, binfhe_rlwe_rotate, binfhe_rlwe_trivial};
 
 /// Exact exponent of a `Z_q` value in `Z_{2N}` (valid because `q = 2N`).
 #[inline]
@@ -45,10 +45,10 @@ pub fn binfhe_blind_rotate<
     const BS_ELL: usize,
     const BS_BASE_LOG: u32,
 >(
-    ct: &LweCiphertext<N_LWE>,
+    ct: &BinfheLweCiphertext<N_LWE>,
     test_poly: &[u32; BIG_N],
-    bsk: &[RgswCiphertext<BIG_N, BS_ELL>],
-) -> RlweCiphertext<BIG_N> {
+    bsk: &[BinfheRgswCiphertext<BIG_N, BS_ELL>],
+) -> BinfheRlweCiphertext<BIG_N> {
     debug_assert_eq!(bsk.len(), N_LWE, "one RGSW row per LWE key bit");
     let two_n = 2 * BIG_N;
 
@@ -74,8 +74,8 @@ mod tests {
     use super::*;
     use crate::binfhe::keys;
     use crate::binfhe::params::toy;
-    use crate::binfhe::rlwe::RlweSecretKey;
-    use crate::binfhe::lwe::{LweSecretKey, binfhe_gen_lwe_secret_key};
+    use crate::binfhe::rlwe::BinfheRlweSecretKey;
+    use crate::binfhe::lwe::{BinfheLweSecretKey, binfhe_gen_lwe_secret_key};
     use crate::SpecRng;
 
     struct TestRng(u64);
@@ -97,7 +97,7 @@ mod tests {
 
     /// Independent clear decryption: per-coefficient phase via a directly
     /// written negacyclic convolution (shares no code with rlwe.rs).
-    fn clear_phase(ct: &RlweCiphertext<{ toy::BIG_N }>, key: &[u32; toy::BIG_N]) -> [u32; toy::BIG_N] {
+    fn clear_phase(ct: &BinfheRlweCiphertext<{ toy::BIG_N }>, key: &[u32; toy::BIG_N]) -> [u32; toy::BIG_N] {
         let mut phase = [0u32; toy::BIG_N];
         for i in 0..toy::BIG_N {
             let mut product = 0u32;
@@ -133,8 +133,8 @@ mod tests {
     #[test]
     fn blind_rotation_decrypts_to_clear_rotation() {
         let mut rng = TestRng::new(0xB17D);
-        let lwe_sk: LweSecretKey<{ toy::N_LWE }> = binfhe_gen_lwe_secret_key(&mut rng);
-        let rlwe_sk: RlweSecretKey<{ toy::BIG_N }> =
+        let lwe_sk: BinfheLweSecretKey<{ toy::N_LWE }> = binfhe_gen_lwe_secret_key(&mut rng);
+        let rlwe_sk: BinfheRlweSecretKey<{ toy::BIG_N }> =
             crate::binfhe::rlwe::binfhe_gen_rlwe_secret_key(&mut rng);
         let bk = keys::binfhe_gen_bootstrapping_key::<
             { toy::N_LWE },
@@ -162,7 +162,7 @@ mod tests {
             for ai in a.iter_mut() {
                 *ai = rng.next_u32() & 0x7F;
             }
-            let ct = LweCiphertext {
+            let ct = BinfheLweCiphertext {
                 a,
                 b: (body_exp as u32) & 0x7F,
             };

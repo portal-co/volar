@@ -59,16 +59,16 @@ fn custom(name: &str, args: Vec<IrType>) -> IrType {
 }
 
 fn lwe_ty() -> IrType {
-    custom("LweCiphertext", vec![tp("N_LWE")])
+    custom("BinfheLweCiphertext", vec![tp("N_LWE")])
 }
 
 fn rlwe_ty() -> IrType {
-    custom("RlweCiphertext", vec![tp("BIG_N")])
+    custom("BinfheRlweCiphertext", vec![tp("BIG_N")])
 }
 
 fn bk_ty() -> IrType {
     custom(
-        "BootstrappingKey",
+        "BinfheBootstrappingKey",
         vec![tp("N_LWE"), tp("BIG_N"), tp("BS_ELL"), tp("KS_ELL")],
     )
 }
@@ -179,7 +179,7 @@ fn let_stmt<Q: Clone + Default>(name: &str, init: IrExpr<Q>) -> IrStmt<Q> {
 ///
 /// The flat path lowers `IRBlocks` to a movfuscated Boolean circuit and
 /// emits `binfhe_gate_*` calls. All gate calls take the `bk` parameter
-/// (`&BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>`); the generated
+/// (`&BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>`); the generated
 /// function is generic over the 12 binfhe const parameters.
 pub struct BinFheScheme;
 
@@ -271,7 +271,7 @@ impl FheScheme for BinFheScheme {
                 vec![expr, delta_expr()],
             );
         }
-        // [bool; width] → [LweCiphertext; width]: promote each element.
+        // [bool; width] → [BinfheLweCiphertext; width]: promote each element.
         ir_expr(IrExprKind::FixedArray(
             (0..width)
                 .map(|bit| {
@@ -718,10 +718,10 @@ fn build_bootstrap_plan_inner<P: Clone>(
 ///
 /// ```rust,ignore
 /// fn {name}_binfhe<...>(
-///     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+///     bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ///     cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>, // only if CB ops
-///     input_0..: LweCiphertext<N_LWE>,
-///     cell_0..: RlweCiphertext<BIG_N>,                                       // only if cell ops
+///     input_0..: BinfheLweCiphertext<N_LWE>,
+///     cell_0..: BinfheRlweCiphertext<BIG_N>,                                       // only if cell ops
 /// ) -> ...
 /// ```
 ///
@@ -1098,10 +1098,10 @@ mod tests {
     /// Prepend binfhe imports and cargo-check the generated module (same
     /// harness as the legacy TFHE compile checks).
     fn compile_check_binfhe(code: &str, test_name: &str) {
-        let uses = "use volar_spec::binfhe::lwe::{LweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
-                    use volar_spec::binfhe::rlwe::RlweCiphertext;\n\
+        let uses = "use volar_spec::binfhe::lwe::{BinfheLweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
+                    use volar_spec::binfhe::rlwe::BinfheRlweCiphertext;\n\
                     use volar_spec::binfhe::rgsw::binfhe_rgsw_cmux;\n\
-                    use volar_spec::binfhe::keys::BootstrappingKey;\n\
+                    use volar_spec::binfhe::keys::BinfheBootstrappingKey;\n\
                     use volar_spec::binfhe::circuit_bs::{CircuitBootstrappingKey, circuit_bootstrap};\n\
                     use volar_spec::binfhe::pbs::{binfhe_gate_and, binfhe_gate_or, binfhe_gate_xor, binfhe_cmux, binfhe_lut_read_dyn};\n";
         let with_imports = if let Some(newline) = code.find('\n') {
@@ -1409,8 +1409,8 @@ mod e2e {{
         // The generated function name must match the e2e harness call.
         assert!(code.contains("fn xor_and_or_binfhe"), "code:\n{}", code);
         // Insert imports after the leading `#![allow]` inner attribute.
-        let uses = "use volar_spec::binfhe::lwe::{LweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
-                    use volar_spec::binfhe::keys::BootstrappingKey;\n\
+        let uses = "use volar_spec::binfhe::lwe::{BinfheLweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
+                    use volar_spec::binfhe::keys::BinfheBootstrappingKey;\n\
                     use volar_spec::binfhe::pbs::binfhe_lut_read_dyn;\n";
         let code = if let Some(newline) = code.find('\n') {
             let (head, tail) = code.split_at(newline + 1);
