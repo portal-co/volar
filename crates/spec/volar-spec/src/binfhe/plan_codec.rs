@@ -173,8 +173,8 @@ pub fn decode_plan(bytes: &[u8]) -> Result<BootstrapPlan, DecodeError> {
         }
         layers.push(layer);
     }
-    let outputs = reader.ids::<WireId>()?;
-    let cell_outputs = reader.ids::<CellId>()?;
+    let outputs = reader.ids()?;
+    let cell_outputs = reader.ids()?;
     if reader.offset != bytes.len() {
         return Err(DecodeError::TrailingBytes);
     }
@@ -288,14 +288,11 @@ impl<'a> Reader<'a> {
         Ok(count)
     }
 
-    fn ids<T>(&mut self) -> Result<Vec<T>, DecodeError>
-    where
-        T: From<u32>,
-    {
+    fn ids(&mut self) -> Result<Vec<u32>, DecodeError> {
         let count = self.count()?;
         let mut ids = Vec::with_capacity(count);
         for _ in 0..count {
-            ids.push(T::from(self.u32()?));
+            ids.push(self.u32()?);
         }
         Ok(ids)
     }
