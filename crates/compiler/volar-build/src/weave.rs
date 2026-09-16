@@ -1,5 +1,8 @@
 // @reliability: experimental
 // @ai: assisted
+//! @volar-allow-rust-text: migration-in-progress: this file's
+//! emit_woven_rust* route is the text output path being migrated to IR/LIR
+//! artifacts (docs/ir-not-text-weaving-plan.md M-B/M-C2).
 //! Woven Rust source emission for `build.rs` scripts.
 //!
 //! Enabled by the `weave-rust` Cargo feature.  Provides:

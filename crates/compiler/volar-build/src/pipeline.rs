@@ -12,6 +12,9 @@
 //! checks this crate used to need are narrowed to real per-stage impl
 //! blocks wherever the stage alone determines applicability.
 
+//! @volar-allow-rust-text: migration-in-progress: this file's
+//! emit_woven_rust* pipeline routes are being migrated to IR/LIR
+//! (docs/ir-not-text-weaving-plan.md M-B/M-C2).
 use std::path::{Path, PathBuf};
 
 use volar_ir::ir::{IRBlocks, IRTypes};
