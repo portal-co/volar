@@ -33,8 +33,8 @@ pub fn double_vec<B: LengthDoubler>(v: Vec<u8>) -> [Vec<u8>; 2] {
 pub struct PrivateKeySwitchingKeyDyn {
     pub big_n: usize,
     pub priv_ell: usize,
-    pub a_col: [[RlweCiphertextDyn; PRIV_ELL]; BIG_N],
-    pub b_col: [[RlweCiphertextDyn; PRIV_ELL]; BIG_N],
+    pub a_col: Vec<[RlweCiphertextDyn; PRIV_ELL]>,
+    pub b_col: Vec<[RlweCiphertextDyn; PRIV_ELL]>,
     pub a_body: [RlweCiphertextDyn; PRIV_ELL],
     pub b_body: [RlweCiphertextDyn; PRIV_ELL],
 }
@@ -50,12 +50,30 @@ pub struct CircuitBootstrappingKeyDyn {
     pub privksk: PrivateKeySwitchingKeyDyn,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct KeySwitchingKeyRefDyn {
+    pub n_lwe: usize,
+    pub big_n: usize,
+    pub ks_ell: usize,
+    pub ksk: Vec<[LweCiphertextDyn; KS_ELL]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BootstrappingKeyRefDyn {
+    pub n_lwe: usize,
+    pub big_n: usize,
+    pub bs_ell: usize,
+    pub ks_ell: usize,
+    pub bsk: Vec<RgswCiphertextDyn>,
+    pub ksk: KeySwitchingKeyRefDyn,
+}
+
 #[derive(Clone, Debug)]
 pub struct KeySwitchingKeyDyn {
     pub n_lwe: usize,
     pub big_n: usize,
     pub ks_ell: usize,
-    pub ksk: [[LweCiphertextDyn; KS_ELL]; BIG_N],
+    pub ksk: Vec<[LweCiphertextDyn; KS_ELL]>,
 }
 
 #[derive(Clone, Debug)]
@@ -64,7 +82,7 @@ pub struct BootstrappingKeyDyn {
     pub big_n: usize,
     pub bs_ell: usize,
     pub ks_ell: usize,
-    pub bsk: [RgswCiphertextDyn; N_LWE],
+    pub bsk: Vec<RgswCiphertextDyn>,
     pub ksk: KeySwitchingKeyDyn,
 }
 
@@ -94,6 +112,12 @@ pub struct LweCiphertextDyn {
     pub b: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LutInputs {
+    pub ids: [WireId; MAX_LUT_ARITY],
+    pub len: u8,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LutSpec {
     pub entries: Vec<bool>,
@@ -116,6 +140,12 @@ pub struct BootstrapPlan {
     pub outputs: Vec<WireId>,
     pub cell_outputs: Vec<CellId>,
     pub budget: FailureBudget,
+}
+
+#[derive(Debug, Default)]
+pub struct Reader<'a> {
+    pub bytes: &[u8],
+    pub offset: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -706,7 +736,7 @@ pub enum PlanOp {
         out: WireId,
     },
     Lut {
-        inputs: Vec<WireId>,
+        inputs: LutInputs,
         table: LutId,
         out: WireId,
     },
@@ -741,6 +771,23 @@ pub enum PlanError {
     BadReference,
     BadOutput,
     BudgetInconsistent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EncodeError {
+    InvalidPlan(PlanError),
+    TooLarge,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecodeError {
+    BadMagic,
+    UnsupportedVersion,
+    UnknownTag,
+    Truncated,
+    TooLarge,
+    TrailingBytes,
+    InvalidPlan(PlanError),
 }
 
 #[derive(Debug)]
@@ -814,6 +861,15 @@ pub enum BatchError {
     LengthMismatch,
 }
 
+pub trait AsKeySwitchingKey {
+    fn ksk_rows(&self) -> &[[LweCiphertextDyn; KS_ELL]];
+}
+
+pub trait AsBootstrappingKey {
+    fn bsk_rows(&self) -> &[RgswCiphertextDyn];
+    fn ksk_ref(&self) -> KeySwitchingKeyRefDyn;
+}
+
 pub trait PartyIndex {
     fn party_index(requested: usize) -> usize;
 }
@@ -869,6 +925,75 @@ pub trait MemoryHasher<T> {
 
 pub trait CotSource<T> {
     fn cot<R: SpecRng>(&mut self, rng: &mut R, sample_t: impl Fn, bit: bool) -> (Vec<T>, Vec<T>);
+}
+
+impl  AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> for KeySwitchingKeyDyn {
+    fn ksk_rows(&self) -> &[[LweCiphertextDyn; KS_ELL]]
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let ks_ell: usize = self.ks_ell;
+        &self.ksk
+    }
+}
+
+impl  AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> for KeySwitchingKeyRefDyn {
+    fn ksk_rows(&self) -> &[[LweCiphertextDyn; KS_ELL]]
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let ks_ell: usize = self.ks_ell;
+        self.ksk
+    }
+}
+
+impl  AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> for BootstrappingKeyDyn {
+    fn bsk_rows(&self) -> &[RgswCiphertextDyn]
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        &self.bsk
+    }
+    fn ksk_ref(&self) -> KeySwitchingKeyRefDyn
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        KeySwitchingKeyRefDyn { ksk: &self.ksk.ksk, n_lwe: 0, big_n: 0, ks_ell: 0 }
+    }
+}
+
+impl  AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> for BootstrappingKeyRefDyn {
+    fn bsk_rows(&self) -> &[RgswCiphertextDyn]
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        self.bsk
+    }
+    fn ksk_ref(&self) -> KeySwitchingKeyRefDyn
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        self.ksk
+    }
+}
+
+impl  BootstrappingKeyDyn {
+    pub fn as_ref(&self) -> BootstrappingKeyRefDyn
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        BootstrappingKeyRefDyn { bsk: &self.bsk, ksk: KeySwitchingKeyRefDyn { ksk: &self.ksk.ksk, n_lwe: 0, big_n: 0, ks_ell: 0 }, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0 }
+    }
 }
 
 impl  LutDyn {
@@ -937,7 +1062,112 @@ impl  LutDyn {
 impl  LutDyn {
 }
 
+impl  LutInputs {
+    pub fn new() -> Self
+    {
+        LutInputs { ids: [0; MAX_LUT_ARITY], len: 0 }
+    }
+    pub fn from_slice(mut ids: &[WireId]) -> Self
+    {
+        let mut out = Self::new();
+        let take = ids.len().min(MAX_LUT_ARITY);
+        out.ids[..take].copy_from_slice(&ids[..take]);
+        out.len = (take as u8);
+        out
+    }
+    pub fn as_slice(&self) -> &[WireId]
+    {
+        &self.ids[..(self.len as usize)]
+    }
+    pub fn len(&self) -> usize
+    {
+        self.len as usize
+    }
+    pub fn is_empty(&self) -> bool
+    {
+        self.len == 0
+    }
+}
+
+impl  Default for LutInputs {
+    fn default() -> Self
+    {
+        Self::new()
+    }
+}
+
+impl  AsRef<[WireId]> for LutInputs {
+    fn as_ref(&self) -> &[WireId]
+    {
+        self.as_slice()
+    }
+}
+
+impl  From<&[WireId]> for LutInputs {
+    fn from(mut ids: &[WireId]) -> Self
+    {
+        Self::from_slice(ids)
+    }
+}
+
+impl  From<[WireId; N]> for LutInputs {
+    fn from(mut n: usize, mut ids: [WireId; N]) -> Self
+    {
+        Self::from_slice(&ids)
+    }
+}
+
+impl  From<Vec<WireId>> for LutInputs {
+    fn from(mut ids: Vec<WireId>) -> Self
+    {
+        Self::from_slice(&ids)
+    }
+}
+
+impl  From<&Vec<WireId>> for LutInputs {
+    fn from(mut ids: &Vec<WireId>) -> Self
+    {
+        Self::from_slice(ids)
+    }
+}
+
 impl  BootstrapPlan {
+    pub fn execute_clear(&self, mut inputs: &[bool], mut cells: &[bool]) -> (Vec<bool>, Vec<bool>)
+    {
+        let mut wires = inputs.to_vec();
+        let mut rgsws = Vec::new();
+        let mut cell_arena = cells.to_vec();
+        for layer in &self.layers{
+    for op in layer{
+    match op {
+    PlanOp::Const { out: out, value: value } => {
+    wires.push(*value);
+},
+    PlanOp::Not { input: input, out: out } => {
+    wires.push(!wires[*input as usize]);
+},
+    PlanOp::Lut { inputs: inputs, table: table, out: out } => {
+    let mut address = 0;
+    for (bit, input) in inputs.as_slice().iter().enumerate(){
+    address |= ((wires[*input as usize] as usize) << bit);
+};
+    wires.push(self.luts[*table as usize].entries[address]);
+},
+    PlanOp::CircuitBootstrap { input: input, out: out } => {
+    rgsws.push(wires[*input as usize]);
+},
+    PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
+    cell_arena.push(if rgsws[*sel as usize]{
+    cell_arena[*then_cell as usize]
+} else {
+    cell_arena[*else_cell as usize]
+});
+},
+}
+}
+};
+        (wires, cell_arena)
+    }
     pub fn bootstrap_op_count(&self) -> u64
     {
         let mut count = 0;
@@ -992,7 +1222,7 @@ impl  BootstrapPlan {
     return Err(PlanError::BadReference);
 };
     let arity = self.luts[*table as usize].entries.len().trailing_zeros();
-    if (inputs.len() != (arity as usize)) || inputs.iter().any(|w| (*w >= wires)) || (*out != wires){
+    if (inputs.len() != (arity as usize)) || inputs.as_slice().iter().any(|w| (*w >= wires)) || (*out != wires){
     return Err(PlanError::BadReference);
 };
     wires += 1;
@@ -1044,7 +1274,7 @@ impl  BootstrapPlan {
     PlanOp::Not { input: input, out: out } => {
 },
     PlanOp::Lut { inputs: inputs, table: table, out: out } => {
-    for w in inputs{
+    for w in inputs.as_slice(){
 };
 },
     PlanOp::CircuitBootstrap { input: input, out: out } => {
@@ -1059,6 +1289,42 @@ impl  BootstrapPlan {
         for c in &self.cell_outputs{
 };
         h
+    }
+}
+
+impl  Reader {
+    pub fn take(&mut self, mut count: usize) -> Result<&[u8], DecodeError>
+    {
+        let end = self.offset.checked_add(count).ok_or(DecodeError::Truncated)?;
+        let bytes = self.bytes.get(self.offset..end).ok_or(DecodeError::Truncated)?;
+        self.offset = end;
+        Ok(bytes)
+    }
+    pub fn byte(&mut self) -> Result<u8, DecodeError>
+    {
+        Ok(self.take(1)?[0])
+    }
+    pub fn u32(&mut self) -> Result<u32, DecodeError>
+    {
+        let bytes: [u8; 4] = self.take(4)?.try_into().map_err(|_| DecodeError::Truncated)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+    pub fn count(&mut self) -> Result<usize, DecodeError>
+    {
+        let count = self.u32()? as usize;
+        if count > MAX_ITEMS{
+    return Err(DecodeError::TooLarge);
+};
+        Ok(count)
+    }
+    pub fn ids<T>(&mut self) -> Result<Vec<T>, DecodeError> where T: From<u32>
+    {
+        let count = self.count()?;
+        let mut ids = Vec::with_capacity(count);
+        for _ in 0.. count{
+    ids.push(T::from(self.u32()?));
+};
+        Ok(ids)
     }
 }
 
@@ -3137,26 +3403,28 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
     p[0] = 1;
     p
 };
-    let a_col = (0..n).map(|i| {
+    let mut a_col = alloc::vec::Vec::with_capacity(big_n);
+    for i in 0.. big_n{
     let msg = if rlwe_sk.key[i] == 1{
     &rlwe_sk.key
 } else {
     &zero
 };
-    (0..n).map(|l| {
+    a_col.push((0..n).map(|l| {
     encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, priv_base_log, rlwe_sk, rng)
-}).collect::<Vec<_>>()
-}).collect::<Vec<_>>();
-    let b_col = (0..n).map(|i| {
+}).collect::<Vec<_>>());
+};
+    let mut b_col = alloc::vec::Vec::with_capacity(big_n);
+    for i in 0.. big_n{
     let msg = if rlwe_sk.key[i] == 1{
     &neg_one_const
 } else {
     &zero
 };
-    (0..n).map(|l| {
+    b_col.push((0..n).map(|l| {
     encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, priv_base_log, rlwe_sk, rng)
-}).collect::<Vec<_>>()
-}).collect::<Vec<_>>();
+}).collect::<Vec<_>>());
+};
     let a_body = (0..n).map(|l| {
     encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(&neg_sk, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>();
@@ -3166,7 +3434,7 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
     CircuitBootstrappingKeyDyn { bk: bk, privksk: PrivateKeySwitchingKeyDyn { a_col: a_col, b_col: b_col, a_body: a_body, b_body: b_body, big_n: 0, priv_ell: 0 }, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0, priv_ell: 0 }
 }
 
-pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv_base_log: usize, mut src: &LweCiphertextDyn, mut col: &[[RlweCiphertextDyn; PRIV_ELL]; BIG_N], mut body: &[RlweCiphertextDyn; PRIV_ELL]) -> RlweCiphertextDyn
+pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv_base_log: usize, mut src: &LweCiphertextDyn, mut col: &[[RlweCiphertextDyn; PRIV_ELL]], mut body: &[RlweCiphertextDyn; PRIV_ELL]) -> RlweCiphertextDyn
 {
     let mut out = RlweCiphertextDyn { a: [0; big_n], b: [0; big_n], n: 0 };
     for i in 0.. big_n{
@@ -3276,10 +3544,10 @@ pub fn poly_decompose(mut n: usize, mut log: usize, mut ell: usize, mut base_log
 
 pub fn gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut eta: usize, mut lwe_sk: &LweSecretKeyDyn, mut rlwe_sk: &RlweSecretKeyDyn, mut rng: &mut R) -> BootstrappingKeyDyn
 {
-    let bsk = (0..n).map(|i| {
+    let bsk = (0..n_lwe).map(|i| {
     rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>((lwe_sk.key[i] != 0), rlwe_sk, rng)
 }).collect::<Vec<_>>();
-    let ksk = KeySwitchingKeyDyn { ksk: (0..n).map(|i| {
+    let ksk = KeySwitchingKeyDyn { ksk: (0..big_n).map(|i| {
     (0..n).map(|j| {
     let msg = rlwe_sk.key[i].wrapping_mul(gadget::<LOG_MOD_KS>::level_factor(ks_base_log, j));
     lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(torus::<LOG_MOD_KS>::reduce(msg), lwe_sk, rng)
@@ -3288,8 +3556,9 @@ pub fn gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut
     BootstrappingKeyDyn { bsk: bsk, ksk: ksk, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0 }
 }
 
-pub fn key_switch(mut n_lwe: usize, mut big_n: usize, mut log_mod_ks: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &LweCiphertextDyn, mut ksk: &KeySwitchingKeyDyn) -> LweCiphertextDyn
+pub fn key_switch<K: AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> + Sized>(mut n_lwe: usize, mut big_n: usize, mut log_mod_ks: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &LweCiphertextDyn, mut ksk: &K) -> LweCiphertextDyn
 {
+    let ksk_rows = ksk.ksk_rows();
     let mut out_a = [0; n_lwe];
     let mut out_b = ct.b;
     for i in 0.. big_n{
@@ -3299,7 +3568,7 @@ pub fn key_switch(mut n_lwe: usize, mut big_n: usize, mut log_mod_ks: usize, mut
     if d == 0{
     continue;
 };
-    let entry = &ksk.ksk[i][j];
+    let entry = &ksk_rows[i][j];
     for k in 0.. n_lwe{
     out_a[k] = out_a[k].wrapping_sub(d.wrapping_mul(entry.a[k]));
 };
@@ -3523,16 +3792,26 @@ pub fn max_lut_arity(mut log_q_lwe: u32) -> u32
     log_q_lwe.saturating_sub(2)
 }
 
+pub fn selector_margin(mut log_q_lwe: u32, mut k: usize, mut input_noise_bound: u32) -> bool
+{
+    if ((k as u32) + 2) >= log_q_lwe{
+    return false;
+};
+    let margin = 1 << ((log_q_lwe - (k as u32)) - 2);
+    let weight = ((1 << k) - 1) as u32;
+    weight.saturating_mul(input_noise_bound) < margin
+}
+
 pub fn check_profile(mut n_lwe: usize, mut big_n: usize, mut log_q: u32, mut log_q_lwe: u32, mut log_mod_ks: u32, mut bs_base_log: u32, mut bs_ell: usize, mut ks_base_log: u32, mut ks_ell: usize, mut priv_base_log: u32, mut priv_ell: usize)
 {
 }
 
-pub fn binfhe_pbs_core(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &LweCiphertextDyn, mut test_poly: &[u32; BIG_N], mut bk: &BootstrappingKeyDyn) -> LweCiphertextDyn
+pub fn binfhe_pbs_core<BK: crate::binfhe::keys::AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + Sized>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &LweCiphertextDyn, mut test_poly: &[u32; BIG_N], mut bk: &BK) -> LweCiphertextDyn
 {
-    let acc = blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(ct, test_poly, &bk.bsk);
+    let acc = blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(ct, test_poly, bk.bsk_rows());
     let extracted = sample_extract::<BIG_N, LOG_Q>(&acc);
     let at_ks = mod_switch_lwe::<BIG_N, LOG_Q, LOG_MOD_KS>(&extracted);
-    let switched = key_switch::<N_LWE, BIG_N, LOG_MOD_KS, KS_ELL, KS_BASE_LOG>(&at_ks, &bk.ksk);
+    let switched = key_switch::<N_LWE, BIG_N, LOG_MOD_KS, KS_ELL, KS_BASE_LOG, _>(&at_ks, &bk.ksk_ref());
     mod_switch_lwe::<N_LWE, LOG_MOD_KS, LOG_Q_LWE>(&switched)
 }
 
@@ -3548,7 +3827,7 @@ pub fn binfhe_lut_read(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut
     combined = lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
 };
     combined = lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, (delta / 2));
-    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&combined, lut.test_polynomial(), bk)
+    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(&combined, lut.test_polynomial(), bk)
 }
 
 pub fn binfhe_lut_read_dyn(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut inputs: &[LweCiphertextDyn], mut table: &[bool], mut k_max: usize, mut bk: &BootstrappingKeyDyn) -> LweCiphertextDyn
@@ -3565,7 +3844,7 @@ pub fn binfhe_lut_read_dyn(mut n_lwe: usize, mut big_n: usize, mut log_q: usize,
     combined = lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
 };
     combined = lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, (delta / 2));
-    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&combined, &test_poly, bk)
+    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(&combined, &test_poly, bk)
 }
 
 pub fn binfhe_gate_and(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: LweCiphertextDyn, mut b: LweCiphertextDyn, mut bk: &BootstrappingKeyDyn) -> LweCiphertextDyn
@@ -3606,8 +3885,11 @@ pub fn execute_plan(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut lo
     PlanOp::Lut { inputs: inputs, table: table, out: out } => {
     let spec = &plan.luts[*table as usize];
     let arity = spec.entries.len().trailing_zeros() as usize;
-    let cts: Vec<LweCiphertextDyn> = inputs.iter().map(|w| wires[*w as usize]).collect::<Vec<_>>();
-    wires.push(binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&cts, &spec.entries, (plan.k_max as usize), bk));
+    let mut cts: [LweCiphertextDyn; MAX_LUT_ARITY] = [binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0); MAX_LUT_ARITY];
+    for (j, w) in inputs.as_slice().iter().enumerate(){
+    cts[j] = wires[*w as usize];
+};
+    wires.push(binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&cts[..arity], &spec.entries, (plan.k_max as usize), bk));
 },
     PlanOp::CircuitBootstrap { input: input, out: out } => {
     rgsws.push(circuit_bootstrap::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG, KS_ELL, PRIV_ELL, PRIV_BASE_LOG>(&wires[*input as usize], cbk, (plan.k_max as usize)));
@@ -3620,6 +3902,195 @@ pub fn execute_plan(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut lo
 }
 };
     (wires, cell_arena)
+}
+
+pub fn encode_plan(mut plan: &BootstrapPlan) -> Result<Vec<u8>, EncodeError>
+{
+    plan.validate().map_err(EncodeError::InvalidPlan)?;
+    if (plan.luts.len() > MAX_ITEMS) || (plan.layers.len() > MAX_ITEMS) || (plan.outputs.len() > MAX_ITEMS) || (plan.cell_outputs.len() > MAX_ITEMS) || plan.layers.iter().any(|layer| (layer.len() > MAX_ITEMS)) || plan.luts.iter().any(|lut| (lut.entries.len() > MAX_ITEMS)){
+    return Err(EncodeError::TooLarge);
+};
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(MAGIC);
+    bytes.push(VERSION);
+    bytes.push(profile_tag(plan.profile));
+    put_u32(&mut bytes, plan.k_max);
+    put_u32(&mut bytes, plan.num_inputs);
+    put_u32(&mut bytes, plan.num_cells);
+    put_u32(&mut bytes, plan.budget.per_bootstrap_log2);
+    put_u32(&mut bytes, plan.budget.total_log2);
+    put_u32(&mut bytes, (plan.luts.len() as u32));
+    for lut in &plan.luts{
+    put_u32(&mut bytes, (lut.entries.len() as u32));
+    for chunk in lut.entries.chunks(8){
+    let mut packed = 0;
+    for (bit, entry) in chunk.iter().enumerate(){
+    packed |= ((*entry as u8) << bit);
+};
+    bytes.push(packed);
+}
+};
+    put_u32(&mut bytes, (plan.layers.len() as u32));
+    for layer in &plan.layers{
+    put_u32(&mut bytes, (layer.len() as u32));
+    for op in layer{
+    match op {
+    PlanOp::Const { out: out, value: value } => {
+    bytes.push(0);
+    put_u32(&mut bytes, *out);
+    bytes.push((*value as u8));
+},
+    PlanOp::Not { input: input, out: out } => {
+    bytes.push(1);
+    put_u32(&mut bytes, *input);
+    put_u32(&mut bytes, *out);
+},
+    PlanOp::Lut { inputs: inputs, table: table, out: out } => {
+    bytes.push(2);
+    put_u32(&mut bytes, (inputs.len() as u32));
+    for input in inputs.as_slice(){
+    put_u32(&mut bytes, *input);
+};
+    put_u32(&mut bytes, *table);
+    put_u32(&mut bytes, *out);
+},
+    PlanOp::CircuitBootstrap { input: input, out: out } => {
+    bytes.push(3);
+    put_u32(&mut bytes, *input);
+    put_u32(&mut bytes, *out);
+},
+    PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
+    bytes.push(4);
+    put_u32(&mut bytes, *sel);
+    put_u32(&mut bytes, *then_cell);
+    put_u32(&mut bytes, *else_cell);
+    put_u32(&mut bytes, *out);
+},
+}
+}
+};
+    put_ids(&mut bytes, &plan.outputs);
+    put_ids(&mut bytes, &plan.cell_outputs);
+    Ok(bytes)
+}
+
+pub fn decode_plan(mut bytes: &[u8]) -> Result<BootstrapPlan, DecodeError>
+{
+    let mut reader = Reader { bytes: bytes, offset: 0 };
+    if reader.take(4)? != MAGIC{
+    return Err(DecodeError::BadMagic);
+};
+    if reader.byte()? != VERSION{
+    return Err(DecodeError::UnsupportedVersion);
+};
+    let profile = parse_profile(reader.byte()?)?;
+    let k_max = reader.u32()?;
+    let num_inputs = reader.u32()?;
+    let num_cells = reader.u32()?;
+    let budget = FailureBudget { per_bootstrap_log2: reader.u32()?, total_log2: reader.u32()? };
+    let lut_count = reader.count()?;
+    let mut luts = Vec::with_capacity(lut_count);
+    for _ in 0.. lut_count{
+    let bit_count = reader.count()?;
+    let packed_len = bit_count.div_ceil(8);
+    let packed = reader.take(packed_len)?;
+    if ((bit_count % 8) != 0) && packed.last().is_some_and(|byte| ((*byte >> (bit_count % 8)) != 0)){
+    return Err(DecodeError::UnknownTag);
+};
+    let mut entries = Vec::with_capacity(bit_count);
+    for bit in 0.. bit_count{
+    entries.push((((packed[bit / 8] >> (bit % 8)) & 1) != 0));
+};
+    luts.push(LutSpec { entries: entries });
+};
+    let layer_count = reader.count()?;
+    let mut layers = Vec::with_capacity(layer_count);
+    for _ in 0.. layer_count{
+    let op_count = reader.count()?;
+    let mut layer = Vec::with_capacity(op_count);
+    for _ in 0.. op_count{
+    layer.push(read_op(&mut reader)?);
+};
+    layers.push(layer);
+};
+    let outputs = reader.ids()?;
+    let cell_outputs = reader.ids()?;
+    if reader.offset != bytes.len(){
+    return Err(DecodeError::TrailingBytes);
+};
+    let plan = BootstrapPlan { profile: profile, k_max: k_max, luts: luts, layers: layers, num_inputs: num_inputs, num_cells: num_cells, outputs: outputs, cell_outputs: cell_outputs, budget: budget };
+    plan.validate().map_err(DecodeError::InvalidPlan)?;
+    Ok(plan)
+}
+
+pub fn profile_tag(mut profile: ProfileId) -> u8
+{
+    match profile {
+    _ => 0,
+    _ => 1,
+    _ => 2,
+    _ => 3,
+}
+}
+
+pub fn parse_profile(mut tag: u8) -> Result<ProfileId, DecodeError>
+{
+    match tag {
+    .. => Ok(ProfileId::Toy),
+    .. => Ok(ProfileId::ToyNoisy),
+    .. => Ok(ProfileId::Std128),
+    .. => Ok(ProfileId::Custom),
+    _ => Err(DecodeError::UnknownTag),
+}
+}
+
+pub fn put_u32(mut bytes: &mut Vec<u8>, mut value: u32)
+{
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+pub fn put_ids(mut bytes: &mut Vec<u8>, mut ids: &[u32])
+{
+    put_u32(bytes, (ids.len() as u32));
+    for id in ids{
+    put_u32(bytes, *id);
+}
+}
+
+pub fn read_op(mut reader: &mut Reader) -> Result<PlanOp, DecodeError>
+{
+    match reader.byte()? {
+    .. => {
+    let out = reader.u32()?;
+    let value = match reader.byte()? {
+    .. => false,
+    .. => true,
+    _ => return Err(DecodeError::UnknownTag),
+};
+    Ok(PlanOp::Const { out: out, value: value })
+},
+    .. => Ok(PlanOp::Not { input: reader.u32()?, out: reader.u32()? }),
+    .. => {
+    let count = reader.count()?;
+    let mut ids = alloc::vec::Vec::with_capacity(count);
+    for _ in 0.. count{
+    ids.push(reader.u32()?);
+};
+    let inputs = crate::binfhe::plan::LutInputs::from_slice(&ids);
+    let table: LutId = reader.u32()?;
+    let out: WireId = reader.u32()?;
+    Ok(PlanOp::Lut { inputs: inputs, table: table, out: out })
+},
+    .. => Ok(PlanOp::CircuitBootstrap { input: reader.u32()?, out: reader.u32()? }),
+    .. => {
+    let sel: RgswId = reader.u32()?;
+    let then_cell = reader.u32()?;
+    let else_cell = reader.u32()?;
+    let out = reader.u32()?;
+    Ok(PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out })
+},
+    _ => Err(DecodeError::UnknownTag),
+}
 }
 
 pub fn rgsw_encrypt<R: SpecRng>(mut n: usize, mut log: usize, mut ell: usize, mut base_log: usize, mut eta: usize, mut m: bool, mut sk: &RlweSecretKeyDyn, mut rng: &mut R) -> RgswCiphertextDyn
