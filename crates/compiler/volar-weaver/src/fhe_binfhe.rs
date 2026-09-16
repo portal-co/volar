@@ -832,7 +832,7 @@ pub fn weave_binfhe_plan(plan: &BootstrapPlan, name: &str) -> Tagged<Transparent
                     let init = call(
                         binfhe_path(
                             "rgsw",
-                            "cmux",
+                            "binfhe_rgsw_cmux",
                             ["BIG_N", "LOG_Q", "BS_ELL", "BS_BASE_LOG"]
                                 .iter()
                                 .map(|s| tp(s))
@@ -1100,7 +1100,7 @@ mod tests {
     fn compile_check_binfhe(code: &str, test_name: &str) {
         let uses = "use volar_spec::binfhe::lwe::{LweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
                     use volar_spec::binfhe::rlwe::RlweCiphertext;\n\
-                    use volar_spec::binfhe::rgsw::cmux;\n\
+                    use volar_spec::binfhe::rgsw::binfhe_rgsw_cmux;\n\
                     use volar_spec::binfhe::keys::BootstrappingKey;\n\
                     use volar_spec::binfhe::circuit_bs::{CircuitBootstrappingKey, circuit_bootstrap};\n\
                     use volar_spec::binfhe::pbs::{binfhe_gate_and, binfhe_gate_or, binfhe_gate_xor, binfhe_cmux, binfhe_lut_read_dyn};\n";
@@ -1289,11 +1289,11 @@ mod e2e {{
         BootstrapPlan, FailureBudget, LutSpec, PlanOp, ProfileId, execute_plan,
     }};
     use volar_spec::binfhe::circuit_bs::gen_circuit_bootstrapping_key;
-    use volar_spec::binfhe::keys::gen_bootstrapping_key;
+    use volar_spec::binfhe::keys::binfhe_gen_bootstrapping_key;
     use volar_spec::binfhe::lwe::{{
-        gen_lwe_secret_key, lwe_decrypt, lwe_encrypt, wire_delta,
+        binfhe_gen_lwe_secret_key, binfhe_lwe_decrypt, binfhe_lwe_encrypt, wire_delta,
     }};
-    use volar_spec::binfhe::rlwe::gen_rlwe_secret_key;
+    use volar_spec::binfhe::rlwe::binfhe_gen_rlwe_secret_key;
     use volar_spec::SpecRng;
 
     const N_LWE: usize = 8;
@@ -1329,9 +1329,9 @@ mod e2e {{
         let plan: BootstrapPlan = {plan_src};
         plan.validate().unwrap();
         let mut rng = TestRng::new(0xE2E0);
-        let lwe_sk = gen_lwe_secret_key::<N_LWE, _>(&mut rng);
-        let rlwe_sk = gen_rlwe_secret_key::<BIG_N, _>(&mut rng);
-        let bk = gen_bootstrapping_key::<
+        let lwe_sk = binfhe_gen_lwe_secret_key::<N_LWE, _>(&mut rng);
+        let rlwe_sk = binfhe_gen_rlwe_secret_key::<BIG_N, _>(&mut rng);
+        let bk = binfhe_gen_bootstrapping_key::<
             N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
             BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 0, _,
         >(&lwe_sk, &rlwe_sk, &mut rng);
@@ -1345,8 +1345,8 @@ mod e2e {{
             for b in [false, true] {{
                 let mut ra = TestRng::new(1 + a as u64);
                 let mut rb = TestRng::new(3 + b as u64);
-                let ca = lwe_encrypt::<N_LWE, LOG_Q_LWE, 0, _>(a, delta, &lwe_sk, &mut ra);
-                let cb = lwe_encrypt::<N_LWE, LOG_Q_LWE, 0, _>(b, delta, &lwe_sk, &mut rb);
+                let ca = binfhe_lwe_encrypt::<N_LWE, LOG_Q_LWE, 0, _>(a, delta, &lwe_sk, &mut ra);
+                let cb = binfhe_lwe_encrypt::<N_LWE, LOG_Q_LWE, 0, _>(b, delta, &lwe_sk, &mut rb);
                 let generated = {fn_name}::<
                     N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
                     BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, PRIV_ELL, PRIV_BASE_LOG, K_MAX,
@@ -1363,7 +1363,7 @@ mod e2e {{
                 );
                 let expected = {expected_expr};
                 assert_eq!(
-                    lwe_decrypt::<N_LWE, LOG_Q_LWE>(&generated, &lwe_sk, delta),
+                    binfhe_lwe_decrypt::<N_LWE, LOG_Q_LWE>(&generated, &lwe_sk, delta),
                     expected,
                     "plaintext semantics (a={{}}, b={{}})",
                     a, b

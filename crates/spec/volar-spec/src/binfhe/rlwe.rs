@@ -11,7 +11,7 @@
 //!
 //! # Sample extraction
 //!
-//! [`sample_extract`] maps an RLWE ciphertext to an LWE ciphertext of
+//! [`binfhe_sample_extract`] maps an RLWE ciphertext to an LWE ciphertext of
 //! dimension N whose phase is the constant coefficient of the RLWE phase:
 //! `a_lwe[0] = a[0]`, `a_lwe[i] = -a[N - i]` for `i > 0`, `b_lwe = b[0]`.
 //! This is the standard negacyclic extraction identity (Micciancio &
@@ -37,7 +37,7 @@ pub struct RlweCiphertext<const N: usize> {
 }
 
 /// Generate a binary RLWE secret key.
-pub fn gen_rlwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> RlweSecretKey<N> {
+pub fn binfhe_gen_rlwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> RlweSecretKey<N> {
     let mut key = [0u32; N];
     for k in key.iter_mut() {
         *k = (rng.next_u32() & 1) as u32;
@@ -46,7 +46,7 @@ pub fn gen_rlwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> RlweSecre
 }
 
 /// Negacyclic polynomial product mod `(X^N + 1, 2^LOG)`.
-pub fn poly_mul_neg<const N: usize, const LOG: u32>(a: &[u32; N], b: &[u32; N]) -> [u32; N] {
+pub fn binfhe_poly_mul_neg<const N: usize, const LOG: u32>(a: &[u32; N], b: &[u32; N]) -> [u32; N] {
     let mut result = [0u32; N];
     for i in 0..N {
         for j in 0..N {
@@ -67,7 +67,7 @@ pub fn poly_mul_neg<const N: usize, const LOG: u32>(a: &[u32; N], b: &[u32; N]) 
 
 /// Multiply by `X^exp` mod `X^N + 1`; exponents are taken mod `2N` and the
 /// negacyclic wrap negates.
-pub fn poly_rotate<const N: usize, const LOG: u32>(p: &[u32; N], exp: usize) -> [u32; N] {
+pub fn binfhe_poly_rotate<const N: usize, const LOG: u32>(p: &[u32; N], exp: usize) -> [u32; N] {
     let exp = exp % (2 * N);
     let mut result = [0u32; N];
     for (i, &coeff) in p.iter().enumerate() {
@@ -88,13 +88,13 @@ pub fn poly_rotate<const N: usize, const LOG: u32>(p: &[u32; N], exp: usize) -> 
 
 /// Encrypt a polynomial message. `msg` coefficients must already be reduced
 /// mod `2^LOG`.
-pub fn rlwe_encrypt_poly<const N: usize, const LOG: u32, const ETA: u32, R: SpecRng>(
+pub fn binfhe_rlwe_encrypt_poly<const N: usize, const LOG: u32, const ETA: u32, R: SpecRng>(
     msg: &[u32; N],
     sk: &RlweSecretKey<N>,
     rng: &mut R,
 ) -> RlweCiphertext<N> {
     let a: [u32; N] = core::array::from_fn(|_| torus::reduce::<LOG>(rng.next_u32()));
-    let mut b = poly_mul_neg::<N, LOG>(&a, &sk.key);
+    let mut b = binfhe_poly_mul_neg::<N, LOG>(&a, &sk.key);
     for i in 0..N {
         b[i] = torus::reduce::<LOG>(
             b[i]
@@ -106,38 +106,38 @@ pub fn rlwe_encrypt_poly<const N: usize, const LOG: u32, const ETA: u32, R: Spec
 }
 
 /// Encrypt a scalar placed in the constant coefficient.
-pub fn rlwe_encrypt_scalar<const N: usize, const LOG: u32, const ETA: u32, R: SpecRng>(
+pub fn binfhe_rlwe_encrypt_scalar<const N: usize, const LOG: u32, const ETA: u32, R: SpecRng>(
     m: u32,
     sk: &RlweSecretKey<N>,
     rng: &mut R,
 ) -> RlweCiphertext<N> {
     let mut msg = [0u32; N];
     msg[0] = m;
-    rlwe_encrypt_poly::<N, LOG, ETA, R>(&msg, sk, rng)
+    binfhe_rlwe_encrypt_poly::<N, LOG, ETA, R>(&msg, sk, rng)
 }
 
 /// Phase polynomial `b - a * s`.
-pub fn rlwe_phase<const N: usize, const LOG: u32>(
+pub fn binfhe_rlwe_phase<const N: usize, const LOG: u32>(
     ct: &RlweCiphertext<N>,
     sk: &RlweSecretKey<N>,
 ) -> [u32; N] {
-    let product = poly_mul_neg::<N, LOG>(&ct.a, &sk.key);
+    let product = binfhe_poly_mul_neg::<N, LOG>(&ct.a, &sk.key);
     let mut phase = [0u32; N];
     for i in 0..N {
-        phase[i] = torus::sub::<LOG>(ct.b[i], product[i]);
+        phase[i] = torus::torus_sub::<LOG>(ct.b[i], product[i]);
     }
     phase
 }
 
 /// Extract the constant-coefficient LWE ciphertext (dimension N, same
 /// modulus). See the module docs for the extraction identity.
-pub fn sample_extract<const N: usize, const LOG: u32>(
+pub fn binfhe_sample_extract<const N: usize, const LOG: u32>(
     ct: &RlweCiphertext<N>,
 ) -> LweCiphertext<N> {
     let mut a_lwe = [0u32; N];
     a_lwe[0] = ct.a[0];
     for i in 1..N {
-        a_lwe[i] = torus::neg::<LOG>(ct.a[N - i]);
+        a_lwe[i] = torus::torus_neg::<LOG>(ct.a[N - i]);
     }
     LweCiphertext {
         a: a_lwe,
@@ -146,44 +146,44 @@ pub fn sample_extract<const N: usize, const LOG: u32>(
 }
 
 /// Ciphertext addition.
-pub fn rlwe_add<const N: usize, const LOG: u32>(
+pub fn binfhe_rlwe_add<const N: usize, const LOG: u32>(
     x: &RlweCiphertext<N>,
     y: &RlweCiphertext<N>,
 ) -> RlweCiphertext<N> {
     let mut out = *x;
     for i in 0..N {
-        out.a[i] = torus::add::<LOG>(out.a[i], y.a[i]);
-        out.b[i] = torus::add::<LOG>(out.b[i], y.b[i]);
+        out.a[i] = torus::torus_add::<LOG>(out.a[i], y.a[i]);
+        out.b[i] = torus::torus_add::<LOG>(out.b[i], y.b[i]);
     }
     out
 }
 
 /// Ciphertext subtraction.
-pub fn rlwe_sub<const N: usize, const LOG: u32>(
+pub fn binfhe_rlwe_sub<const N: usize, const LOG: u32>(
     x: &RlweCiphertext<N>,
     y: &RlweCiphertext<N>,
 ) -> RlweCiphertext<N> {
     let mut out = *x;
     for i in 0..N {
-        out.a[i] = torus::sub::<LOG>(out.a[i], y.a[i]);
-        out.b[i] = torus::sub::<LOG>(out.b[i], y.b[i]);
+        out.a[i] = torus::torus_sub::<LOG>(out.a[i], y.a[i]);
+        out.b[i] = torus::torus_sub::<LOG>(out.b[i], y.b[i]);
     }
     out
 }
 
 /// Multiply the ciphertext by `X^exp` (rotates both polynomials).
-pub fn rlwe_rotate<const N: usize, const LOG: u32>(
+pub fn binfhe_rlwe_rotate<const N: usize, const LOG: u32>(
     ct: &RlweCiphertext<N>,
     exp: usize,
 ) -> RlweCiphertext<N> {
     RlweCiphertext {
-        a: poly_rotate::<N, LOG>(&ct.a, exp),
-        b: poly_rotate::<N, LOG>(&ct.b, exp),
+        a: binfhe_poly_rotate::<N, LOG>(&ct.a, exp),
+        b: binfhe_poly_rotate::<N, LOG>(&ct.b, exp),
     }
 }
 
 /// Trivial encryption of a polynomial (`a = 0`); the phase is the message.
-pub fn rlwe_trivial<const N: usize, const LOG: u32>(msg: &[u32; N]) -> RlweCiphertext<N> {
+pub fn binfhe_rlwe_trivial<const N: usize, const LOG: u32>(msg: &[u32; N]) -> RlweCiphertext<N> {
     RlweCiphertext {
         a: [0u32; N],
         b: *msg,
@@ -215,7 +215,7 @@ mod tests {
     /// Independent clear rotation: multiply by X^exp in
     /// `Z_{2^8}[X]/(X^N+1)` by placing coefficients at destinations, with
     /// the negacyclic sign tracked explicitly. Deliberately shares no code
-    /// with `poly_rotate`.
+    /// with `binfhe_poly_rotate`.
     fn clear_rotate<const N: usize>(p: &[u32; N], exp: usize) -> [u32; N] {
         // X^exp with exp' = exp mod 2N; crossing a multiple of N negates.
         let base = exp % (2 * N);
@@ -243,8 +243,8 @@ mod tests {
             } else {
                 mono[exp - toy::BIG_N] = 255; // -1 mod 2^8
             }
-            let expected = poly_mul_neg::<{ toy::BIG_N }, 8>(&p, &mono);
-            let got = poly_rotate::<{ toy::BIG_N }, 8>(&p, exp);
+            let expected = binfhe_poly_mul_neg::<{ toy::BIG_N }, 8>(&p, &mono);
+            let got = binfhe_poly_rotate::<{ toy::BIG_N }, 8>(&p, exp);
             assert_eq!(got, expected, "rotation by {exp}");
             // And against the second independent model.
             assert_eq!(got, clear_rotate(&p, exp), "clear rotation by {exp}");
@@ -254,10 +254,10 @@ mod tests {
     #[test]
     fn rlwe_encrypt_decrypt_roundtrip() {
         let mut rng = TestRng::new(0xB0B);
-        let sk = gen_rlwe_secret_key::<{ toy::BIG_N }, _>(&mut rng);
+        let sk = binfhe_gen_rlwe_secret_key::<{ toy::BIG_N }, _>(&mut rng);
         let msg: [u32; toy::BIG_N] = core::array::from_fn(|i| (i as u32 * 7 + 3) & 0xFF);
-        let ct = rlwe_encrypt_poly::<{ toy::BIG_N }, 8, 0, _>(&msg, &sk, &mut rng);
-        assert_eq!(rlwe_phase::<{ toy::BIG_N }, 8>(&ct, &sk), msg);
+        let ct = binfhe_rlwe_encrypt_poly::<{ toy::BIG_N }, 8, 0, _>(&msg, &sk, &mut rng);
+        assert_eq!(binfhe_rlwe_phase::<{ toy::BIG_N }, 8>(&ct, &sk), msg);
     }
 
     #[test]
@@ -266,9 +266,9 @@ mod tests {
         // b[0] - sum_i a[i]*s[N-i]-with-sign and check the extracted LWE
         // phase equals it (ePrint 2020/086 p.11 identity).
         let mut rng = TestRng::new(0xC0C);
-        let sk = gen_rlwe_secret_key::<{ toy::BIG_N }, _>(&mut rng);
+        let sk = binfhe_gen_rlwe_secret_key::<{ toy::BIG_N }, _>(&mut rng);
         let msg: [u32; toy::BIG_N] = core::array::from_fn(|i| (i as u32 * 0x1B + 1) & 0xFF);
-        let ct = rlwe_encrypt_poly::<{ toy::BIG_N }, 8, 0, _>(&msg, &sk, &mut rng);
+        let ct = binfhe_rlwe_encrypt_poly::<{ toy::BIG_N }, 8, 0, _>(&msg, &sk, &mut rng);
 
         // Direct: phase[0] = b[0] - (a*s)[0] with
         // (a*s)[0] = a0*s0 - sum_{i=1..N} a[i]*s[N-i].
@@ -278,7 +278,7 @@ mod tests {
         }
         let expected_phase0 = ct.b[0].wrapping_sub(product0) & 0xFF;
 
-        let extracted = sample_extract::<{ toy::BIG_N }, 8>(&ct);
+        let extracted = binfhe_sample_extract::<{ toy::BIG_N }, 8>(&ct);
         // LWE phase of the extraction under the RLWE key reused as LWE key.
         let mut dot = 0u32;
         for i in 0..toy::BIG_N {

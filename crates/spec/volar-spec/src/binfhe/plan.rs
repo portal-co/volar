@@ -19,8 +19,8 @@
 //!
 //! # Wire model
 //!
-//! Three arenas: Boolean wires (LWE, [`WireId`]), RGSW wires produced by
-//! circuit bootstrap ([`RgswId`]), and RLWE content cells ([`CellId`]) on
+//! Three arenas: Boolean wires (LWE, [`u32`]), RGSW wires produced by
+//! circuit bootstrap ([`u32`]), and RLWE content cells ([`u32`]) on
 //! which RGSW multiplexers act (the oblivious-read shape). Inputs occupy
 //! the lowest ids of each arena; every op appends exactly one new value.
 
@@ -34,7 +34,7 @@ use crate::binfhe::pbs::binfhe_lut_read_dyn;
 use crate::binfhe::lwe::{
     LweCiphertext, binfhe_not, binfhe_trivial, wire_delta,
 };
-use crate::binfhe::rgsw::{RgswCiphertext, cmux};
+use crate::binfhe::rgsw::{RgswCiphertext, binfhe_rgsw_cmux};
 use crate::binfhe::rlwe::RlweCiphertext;
 
 /// Boolean wire (LWE) id.
@@ -56,7 +56,7 @@ pub const MAX_LUT_ARITY: usize = 32;
 /// dependency; AGENTS.md Core Design Rule 11). `len <= MAX_LUT_ARITY`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LutInputs {
-    pub ids: [WireId; MAX_LUT_ARITY],
+    pub ids: [u32; MAX_LUT_ARITY],
     pub len: u8,
 }
 
@@ -70,7 +70,7 @@ impl LutInputs {
     }
 
     /// Build from a slice, truncating past capacity (callers validate).
-    pub fn from_slice(ids: &[WireId]) -> Self {
+    pub fn from_slice(ids: &[u32]) -> Self {
         let mut out = Self::new();
         let take = ids.len().min(MAX_LUT_ARITY);
         out.ids[..take].copy_from_slice(&ids[..take]);
@@ -79,7 +79,7 @@ impl LutInputs {
     }
 
     /// The occupied prefix.
-    pub fn as_slice(&self) -> &[WireId] {
+    pub fn as_slice(&self) -> &[u32] {
         &self.ids[..self.len as usize]
     }
 
@@ -100,32 +100,32 @@ impl Default for LutInputs {
     }
 }
 
-impl AsRef<[WireId]> for LutInputs {
-    fn as_ref(&self) -> &[WireId] {
+impl AsRef<[u32]> for LutInputs {
+    fn as_ref(&self) -> &[u32] {
         self.as_slice()
     }
 }
 
-impl From<&[WireId]> for LutInputs {
-    fn from(ids: &[WireId]) -> Self {
+impl From<&[u32]> for LutInputs {
+    fn from(ids: &[u32]) -> Self {
         Self::from_slice(ids)
     }
 }
 
-impl<const N: usize> From<[WireId; N]> for LutInputs {
-    fn from(ids: [WireId; N]) -> Self {
+impl<const N: usize> From<[u32; N]> for LutInputs {
+    fn from(ids: [u32; N]) -> Self {
         Self::from_slice(&ids)
     }
 }
 
-impl From<Vec<WireId>> for LutInputs {
-    fn from(ids: Vec<WireId>) -> Self {
+impl From<Vec<u32>> for LutInputs {
+    fn from(ids: Vec<u32>) -> Self {
         Self::from_slice(&ids)
     }
 }
 
-impl From<&Vec<WireId>> for LutInputs {
-    fn from(ids: &Vec<WireId>) -> Self {
+impl From<&Vec<u32>> for LutInputs {
+    fn from(ids: &Vec<u32>) -> Self {
         Self::from_slice(ids)
     }
 }
@@ -135,15 +135,15 @@ impl From<&Vec<WireId>> for LutInputs {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlanOp {
     /// Cleartext constant wire (trivial encryption).
-    Const { out: WireId, value: bool },
+    Const { out: u32, value: bool },
     /// Free NOT (exact linear op).
-    Not { input: WireId, out: WireId },
+    Not { input: u32, out: u32 },
     /// Multi-input LUT read; `inputs` are LSB-first. One blind rotation.
-    Lut { inputs: LutInputs, table: LutId, out: WireId },
+    Lut { inputs: LutInputs, table: u32, out: u32 },
     /// Circuit bootstrap: Boolean wire -> RGSW wire.
-    CircuitBootstrap { input: WireId, out: RgswId },
+    CircuitBootstrap { input: u32, out: u32 },
     /// Oblivious select between two RLWE cells: `sel ? then : else`.
-    RgswMux { sel: RgswId, then_cell: CellId, else_cell: CellId, out: CellId },
+    RgswMux { sel: u32, then_cell: u32, else_cell: u32, out: u32 },
 }
 
 /// A logical lookup table (address-ordered entries, length `2^k`).
@@ -193,9 +193,9 @@ pub struct BootstrapPlan {
     /// Number of input RLWE cells (ids `0..num_cells`).
     pub num_cells: u32,
     /// Output Boolean wires.
-    pub outputs: Vec<WireId>,
+    pub outputs: Vec<u32>,
     /// Output RLWE cells.
-    pub cell_outputs: Vec<CellId>,
+    pub cell_outputs: Vec<u32>,
     pub budget: FailureBudget,
 }
 
@@ -203,9 +203,9 @@ pub struct BootstrapPlan {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlanError {
     /// A LUT table is not a non-empty power of two.
-    BadTableShape { table: LutId },
+    BadTableShape { table: u32 },
     /// A LUT arity exceeds `k_max`.
-    ArityExceedsKMax { table: LutId },
+    ArityExceedsKMax { table: u32 },
     /// An op references a value that does not exist yet (topological
     /// violation) or is out of range.
     BadReference,
@@ -301,11 +301,11 @@ impl BootstrapPlan {
         for (i, spec) in self.luts.iter().enumerate() {
             let len = spec.entries.len();
             if len == 0 || !len.is_power_of_two() {
-                return Err(PlanError::BadTableShape { table: i as LutId });
+                return Err(PlanError::BadTableShape { table: i as u32 });
             }
             let arity = len.trailing_zeros() as usize;
             if arity > self.k_max as usize {
-                return Err(PlanError::ArityExceedsKMax { table: i as LutId });
+                return Err(PlanError::ArityExceedsKMax { table: i as u32 });
             }
         }
         // Reference validity + topology: walk ops, tracking arena sizes.
@@ -534,7 +534,7 @@ pub fn execute_plan<
                 }
                 PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
                     assert_eq!(*out as usize, cell_arena.len());
-                    let out_cell = cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(
+                    let out_cell = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(
                         &rgsws[*sel as usize],
                         &cell_arena[*then_cell as usize],
                         &cell_arena[*else_cell as usize],
@@ -554,9 +554,9 @@ pub use crate::binfhe::lut::check_lut_shape as validate_lut_shape;
 mod tests {
     use super::*;
     use crate::binfhe::circuit_bs::gen_circuit_bootstrapping_key;
-    use crate::binfhe::lwe::{LweSecretKey, gen_lwe_secret_key, lwe_encrypt, lwe_phase};
+    use crate::binfhe::lwe::{LweSecretKey, binfhe_gen_lwe_secret_key, binfhe_lwe_encrypt, lwe_phase};
     use crate::binfhe::params::toy;
-    use crate::binfhe::rlwe::{RlweSecretKey, gen_rlwe_secret_key, rlwe_trivial};
+    use crate::binfhe::rlwe::{RlweSecretKey, binfhe_gen_rlwe_secret_key, binfhe_rlwe_trivial};
     use crate::SpecRng;
 
     struct TestRng(u64);
@@ -586,8 +586,8 @@ mod tests {
 
     fn toy_keys(seed: u64) -> (LweSecretKey<{ toy::N_LWE }>, RlweSecretKey<{ toy::BIG_N }>, ToyCbk) {
         let mut rng = TestRng::new(seed);
-        let lwe_sk = gen_lwe_secret_key(&mut rng);
-        let rlwe_sk = gen_rlwe_secret_key(&mut rng);
+        let lwe_sk = binfhe_gen_lwe_secret_key(&mut rng);
+        let rlwe_sk = binfhe_gen_rlwe_secret_key(&mut rng);
         let cbk = gen_circuit_bootstrapping_key::<
             { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
             { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
@@ -635,7 +635,7 @@ mod tests {
             .enumerate()
             .map(|(i, &b)| {
                 let mut rng = TestRng::new(5000 + i as u64);
-                lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(b, delta, sk, &mut rng)
+                binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(b, delta, sk, &mut rng)
             })
             .collect();
         execute_plan::<
@@ -685,9 +685,9 @@ mod tests {
         let plan = small_plan();
         let delta = wire_delta::<{ toy::LOG_Q_LWE }>(2);
         let mut rng = TestRng::new(0x50A2);
-        let ca = lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(true, delta, &sk, &mut rng);
-        let cb = lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(false, delta, &sk, &mut rng);
-        let cc = lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(true, delta, &sk, &mut rng);
+        let ca = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(true, delta, &sk, &mut rng);
+        let cb = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(false, delta, &sk, &mut rng);
+        let cc = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(true, delta, &sk, &mut rng);
 
         // Direct: AND then XOR via the gate wrappers (same tables).
         let and = crate::binfhe::pbs::binfhe_gate_and::<
@@ -715,8 +715,8 @@ mod tests {
         let (sk, rlwe_sk, cbk) = toy_keys(0x50A3);
         // Cells: two RLWE contents; sel chooses between them; also carry a
         // plain LUT in the same plan.
-        let mut c0 = rlwe_trivial::<{ toy::BIG_N }, 7>(&[0u32; toy::BIG_N]);
-        let mut c1 = rlwe_trivial::<{ toy::BIG_N }, 7>(&[0u32; toy::BIG_N]);
+        let mut c0 = binfhe_rlwe_trivial::<{ toy::BIG_N }, 7>(&[0u32; toy::BIG_N]);
+        let mut c1 = binfhe_rlwe_trivial::<{ toy::BIG_N }, 7>(&[0u32; toy::BIG_N]);
         for i in 0..toy::BIG_N {
             c0.b[i] = (i as u32 * 3 + 1) & 0x7F;
             c1.b[i] = (i as u32 * 5 + 2) & 0x7F;
@@ -751,9 +751,9 @@ mod tests {
             let out = &cells[plan.cell_outputs[0] as usize];
             let expected = if m { &c1 } else { &c0 };
             for i in 0..toy::BIG_N {
-                // Phase via the public rlwe_phase (checked elsewhere against
+                // Phase via the public binfhe_rlwe_phase (checked elsewhere against
                 // an independent convolution).
-                let phase = crate::binfhe::rlwe::rlwe_phase::<{ toy::BIG_N }, 7>(out, &rlwe_sk);
+                let phase = crate::binfhe::rlwe::binfhe_rlwe_phase::<{ toy::BIG_N }, 7>(out, &rlwe_sk);
                 assert_eq!(phase[i], expected.b[i], "cell coeff {i}, m={m}");
             }
         }
