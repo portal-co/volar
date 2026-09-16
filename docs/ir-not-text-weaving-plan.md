@@ -254,15 +254,45 @@ deferred per the fast-path plan's scope note). Remove the emitters from
 - CI: workspace `[lints.clippy]` deny-lists for the enumerated emitter
   paths; the `syn` lint test already runs in `cargo test`.
 
-## 7. Milestones
+## 7. Milestones — status (2026-09)
 
-| # | Milestone | Gate |
+| # | Milestone | Gate / evidence |
 |---|---|---|
-| T1 | AGENTS.md rule (both halves) + `weave_text_lint` (`syn` walk, exemptions, tests) + this doc | lint tests green; seeded violations of W1/W2/W5 fail; current tree clean with exemptions |
-| T2 | clippy deny-list layer + CI wiring | `cargo clippy -- -D warnings` flags a seeded call; CI green on the tree |
-| T3 | M-A exemptions landed (test-fixture/ts-target/migration) | violations == 0; every exemption has a category + reason |
-| T4 | M-B `wat_gen.rs` prover+verifier+qsim on LIR (sequenced by the direct-to-LIR plan's component matrix) | per-role: same e2e green on LIR artifact; print calls deleted |
-| T5 | M-C emitter relegation + M-C2 `nested_block_chunk` re-implemented as an IR pass; `volar-build` text route behind a diagnostic flag | no text-level weaving pass remains in a production path; lint gate is the standing check |
+| T1 | **Done.** Rule 13 (both halves) + `weave_text_lint` in `volar-compiler-passes` (W1/W2/W3/W5, `@volar-allow-rust-text` exemptions) + the `volar-weaver/tests/weave_text_lint.rs` workspace gate (scans `crates/compiler` + `crates/examples`) | lint tests green; the gate is clean with exemptions; emitter-list drift guard in place |
+| T2 | **Done.** `clippy.toml` deny-list at the workspace root | `cargo clippy` flags a seeded call and independently found the faest→vole emitter composition; a clippy *CI job* remains the human-gated open decision (§8.1) |
+| T3 | **Done (folded into T1).** Exemptions landed: `test-fixture` (compile-check harnesses — auto-skipped as `#[cfg(test)]`), `ts-target` (TS printer), `migration-in-progress` (`nested_block_chunk`, `volar-build` `emit_woven_rust*`), `source-preprocessing` (`strip_inner_attributes`) | gate reports 0 violations |
+| T4 | **Substantially done.** `wat_gen.rs`'s print calls were all already `#[cfg(test)]`-gated (no production consumer); `volar-build`'s text emitters remain exempted migration-in-progress pending the LIR emitter route. **LIR-lowering bugs fixed along the way** (see below); the migration-critical components (`vole_prover`, `vole_verifier`, `tfhe`) are green through `lir_backend_components`. | `lir_backend_components`: 3/5 green; `lir_backend` full-spec regression test green (scoped to pre-existing surface, see below) |
+| T5 | **Part 1 done.** All weaver `print_*` emitters are `#[doc(hidden)]` with the IR-only doc note. M-C2 (`nested_block_chunk` as an IR pass) is rescoped: its motivation (`rustc_resolve` blowup) evaporates on the LIR path; it stays exempted for the text test path only. | weaver tests green; emitters no longer in the public API surface |
+
+### LIR-lowering fixes landed during T4 (`volar-lir-codegen`, commit `7f81c14`)
+
+1. **Enum-registration leniency restore was inside the per-enum loop** —
+   only the first enum got the intended opaque-payload treatment; moved
+   after the loop.
+2. **Module-level integer consts** (e.g. `KAPPA_BYTES`) now collected
+   into the `MonoEnv` before enum registration and merged into
+   planned-instance envs.
+3. **Module type aliases** (e.g. `Block = [u8; KAPPA_BYTES]`) resolve in
+   `mono_type` and `struct_instance_env` via a new `MonoEnv.aliases`.
+4. **`VecDeque`** shares `Vec`'s fat-pointer synthesis; **`Option<T>`**
+   gets a tagged `{is_some, value}` layout; **`PhantomData`** an empty
+   struct; **`Existential`** (`impl Trait`) an opaque pointer.
+
+### Recorded open items (direct-to-LIR Phase-2 gap inventory, not blockers)
+
+- `faest_core`: extern (`absorb`) host-state arg marshalling — existential
+  params now lower to an opaque pointer; the call-side marshalling for
+  these externs is the remaining work.
+- `vole_setup`: `cot`/`vole_commit_bit` are generic over `R: SpecRng`,
+  which has **no production implementation anywhere** (all impls are
+  test-only `TestRng`s) — the seeds cannot instantiate until a production
+  `SpecRng` type exists; a spec-design question, not an LIR bug.
+- `lir_backend`'s full-spec plan test excludes the `binfhe` module
+  (documented in-tree): binfhe's presence perturbs the planner's
+  name-indexed resolution of `L::commit` in `faest/bavc.rs` (pre-existing
+  order sensitivity). Restoring full-spec coverage is Phase-2 scope.
+- The `clippy` CI job (§8.1) and the `volar-build` LIR emitter route
+  (T4's remaining production-route migration).
 
 T4 is the only milestone with an external dependency (Phase-2 spec-to-LIR
 coverage); T1–T3 and T5's lint arm are independently landable.
