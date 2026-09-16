@@ -74,6 +74,7 @@ pub mod aes_gadget;
 /// Provider-neutral validation and inline composition for finite FHE circuit
 /// programs. See `docs/fhe/circuit-provider-abi.md`.
 pub mod circuit_provider;
+pub mod circuit_provider_storage;
 pub mod embedder;
 pub mod faest_owf;
 /// Stateless fused-GC handoff after an imported FHE module exchanges its
@@ -110,6 +111,11 @@ pub use circuit_provider::{
     CircuitProviderPreparationError, CircuitProviderPrograms, DecryptReason, KeyUse,
     ProviderProgramKind, ProviderWireTracker, ValidatedCircuitProvider, WireConversionDemand,
     WireResidence, optimize_circuit_provider_composition, prepare_unbounded_provider_program,
+};
+pub use circuit_provider_storage::{
+    BaseCopyRange, BaseStorageCell, BaseStorageEpoch, BaseStorageId, ReadonlyAccessKind,
+    ReadonlyStorageError, ReadonlyStorageLayout, ReadonlyStorageManifest, ReadonlyStorageRequest,
+    ReadonlyStorageSource, SecretBaseRead,
 };
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};
