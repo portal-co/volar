@@ -1065,6 +1065,8 @@ pub fn runtime_linked_spec() -> LinkedSpec {
 /// The volar-compiler parser handles outer attributes (`#[derive(...)]`)
 /// but not inner attributes. This function removes them line-by-line
 /// so the source can be parsed.
+/// @volar-allow-rust-text: source-preprocessing: operates on spec *source*
+/// text ahead of the parser, never on woven-program output.
 #[cfg(feature = "linking")]
 fn strip_inner_attributes(source: &str) -> alloc::string::String {
     use alloc::string::String;

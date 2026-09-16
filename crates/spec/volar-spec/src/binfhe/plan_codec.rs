@@ -8,13 +8,18 @@
 //! first LUT bits, and rejects trailing bytes. The generic Cirrus variant
 //! format deliberately has its own envelope and source binding; this module
 //! provides the stable Volar-side plan view it consumes.
+//!
+//! @volar-allow-vec: runtime-boundary: the whole module is a byte adapter
+//! for host-side plan (de)serialization; its buffers never cross into
+//! generated target code. This module-level exemption applies to every item
+//! below (encode/decode buffers and `put_*`/`Reader` helpers).
 
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::binfhe::plan::{
-    BootstrapPlan, CellId, FailureBudget, LutId, LutSpec, PlanError, PlanOp,
-    ProfileId, RgswId, WireId,
+    BootstrapPlan, CellId, FailureBudget, LutId, LutSpec, PlanError, PlanOp, ProfileId, RgswId,
+    WireId,
 };
 
 const MAGIC: &[u8; 4] = b"VBP1";
@@ -100,7 +105,7 @@ pub fn encode_plan(plan: &BootstrapPlan) -> Result<Vec<u8>, EncodeError> {
                 PlanOp::Lut { inputs, table, out } => {
                     bytes.push(2);
                     put_u32(&mut bytes, inputs.len() as u32);
-                    for input in inputs {
+                    for input in inputs.as_slice() {
                         put_u32(&mut bytes, *input);
                     }
                     put_u32(&mut bytes, *table);
@@ -111,7 +116,12 @@ pub fn encode_plan(plan: &BootstrapPlan) -> Result<Vec<u8>, EncodeError> {
                     put_u32(&mut bytes, *input);
                     put_u32(&mut bytes, *out);
                 }
-                PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
+                PlanOp::RgswMux {
+                    sel,
+                    then_cell,
+                    else_cell,
+                    out,
+                } => {
                     bytes.push(4);
                     put_u32(&mut bytes, *sel);
                     put_u32(&mut bytes, *then_cell);
@@ -149,7 +159,11 @@ pub fn decode_plan(bytes: &[u8]) -> Result<BootstrapPlan, DecodeError> {
         let bit_count = reader.count()?;
         let packed_len = bit_count.div_ceil(8);
         let packed = reader.take(packed_len)?;
-        if bit_count % 8 != 0 && packed.last().is_some_and(|byte| *byte >> (bit_count % 8) != 0) {
+        if bit_count % 8 != 0
+            && packed
+                .last()
+                .is_some_and(|byte| *byte >> (bit_count % 8) != 0)
+        {
             return Err(DecodeError::UnknownTag);
         }
         let mut entries = Vec::with_capacity(bit_count);
@@ -168,8 +182,8 @@ pub fn decode_plan(bytes: &[u8]) -> Result<BootstrapPlan, DecodeError> {
         }
         layers.push(layer);
     }
-    let outputs = reader.ids::<WireId>()?;
-    let cell_outputs = reader.ids::<CellId>()?;
+    let outputs = reader.ids()?;
+    let cell_outputs = reader.ids()?;
     if reader.offset != bytes.len() {
         return Err(DecodeError::TrailingBytes);
     }
@@ -229,24 +243,39 @@ fn read_op(reader: &mut Reader<'_>) -> Result<PlanOp, DecodeError> {
             };
             Ok(PlanOp::Const { out, value })
         }
-        1 => Ok(PlanOp::Not { input: reader.u32()?, out: reader.u32()? }),
+        1 => Ok(PlanOp::Not {
+            input: reader.u32()?,
+            out: reader.u32()?,
+        }),
         2 => {
             let count = reader.count()?;
-            let mut inputs = Vec::with_capacity(count);
+            let mut ids = alloc::vec::Vec::with_capacity(count);
             for _ in 0..count {
-                inputs.push(reader.u32()?);
+                ids.push(reader.u32()?);
+            }
+            let mut inputs = vec![0u32; ids.len()];
+            for (i, id) in ids.iter().enumerate() {
+                inputs[i] = *id;
             }
             let table: LutId = reader.u32()?;
             let out: WireId = reader.u32()?;
             Ok(PlanOp::Lut { inputs, table, out })
         }
-        3 => Ok(PlanOp::CircuitBootstrap { input: reader.u32()?, out: reader.u32()? }),
+        3 => Ok(PlanOp::CircuitBootstrap {
+            input: reader.u32()?,
+            out: reader.u32()?,
+        }),
         4 => {
             let sel: RgswId = reader.u32()?;
             let then_cell = reader.u32()?;
             let else_cell = reader.u32()?;
             let out = reader.u32()?;
-            Ok(PlanOp::RgswMux { sel, then_cell, else_cell, out })
+            Ok(PlanOp::RgswMux {
+                sel,
+                then_cell,
+                else_cell,
+                out,
+            })
         }
         _ => Err(DecodeError::UnknownTag),
     }
@@ -259,8 +288,14 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8], DecodeError> {
-        let end = self.offset.checked_add(count).ok_or(DecodeError::Truncated)?;
-        let bytes = self.bytes.get(self.offset..end).ok_or(DecodeError::Truncated)?;
+        let end = self
+            .offset
+            .checked_add(count)
+            .ok_or(DecodeError::Truncated)?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(DecodeError::Truncated)?;
         self.offset = end;
         Ok(bytes)
     }
@@ -270,7 +305,10 @@ impl<'a> Reader<'a> {
     }
 
     fn u32(&mut self) -> Result<u32, DecodeError> {
-        let bytes: [u8; 4] = self.take(4)?.try_into().map_err(|_| DecodeError::Truncated)?;
+        let bytes: [u8; 4] = self
+            .take(4)?
+            .try_into()
+            .map_err(|_| DecodeError::Truncated)?;
         Ok(u32::from_le_bytes(bytes))
     }
 
@@ -282,14 +320,11 @@ impl<'a> Reader<'a> {
         Ok(count)
     }
 
-    fn ids<T>(&mut self) -> Result<Vec<T>, DecodeError>
-    where
-        T: From<u32>,
-    {
+    fn ids(&mut self) -> Result<Vec<u32>, DecodeError> {
         let count = self.count()?;
         let mut ids = Vec::with_capacity(count);
         for _ in 0..count {
-            ids.push(T::from(self.u32()?));
+            ids.push(self.u32()?);
         }
         Ok(ids)
     }
@@ -303,13 +338,22 @@ mod tests {
         BootstrapPlan {
             profile: ProfileId::Toy,
             k_max: 2,
-            luts: vec![LutSpec { entries: vec![false, true, true, false] }],
-            layers: vec![vec![PlanOp::Lut { inputs: vec![0, 1], table: 0, out: 2 }]],
+            luts: vec![LutSpec {
+                entries: vec![false, true, true, false],
+            }],
+            layers: vec![vec![PlanOp::Lut {
+                inputs: [0, 1].to_vec(),
+                table: 0,
+                out: 2,
+            }]],
             num_inputs: 2,
             num_cells: 0,
             outputs: vec![2],
             cell_outputs: vec![],
-            budget: FailureBudget { per_bootstrap_log2: 30, total_log2: 30 },
+            budget: FailureBudget {
+                per_bootstrap_log2: 30,
+                total_log2: 30,
+            },
         }
     }
 

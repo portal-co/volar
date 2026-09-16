@@ -1,3 +1,7 @@
+//! @volar-allow-rust-text: migration-in-progress: text-level chunking is
+//! being re-implemented as an IR pass (plan: docs/ir-not-text-weaving-plan.md
+//! M-C2); this whole file is the text-pass being migrated.
+//!
 //! Text-level post-processing pass: chunk long, flat function bodies into
 //! nested `{ let (a, b, ..) = { ...; (a, b, ..) }; }` blocks, so rustc's
 //! AST name-resolution pass (`rustc_resolve::late`) never has to walk a

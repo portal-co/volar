@@ -28,12 +28,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::binfhe::circuit_bs::{CircuitBootstrappingKey, circuit_bootstrap};
-use crate::binfhe::keys::BootstrappingKey;
+use crate::binfhe::keys::BinfheBootstrappingKey;
 use crate::binfhe::lut::table_is_constant;
-use crate::binfhe::lwe::{LweCiphertext, binfhe_not, binfhe_trivial, wire_delta};
+use crate::binfhe::lwe::{BinfheLweCiphertext, binfhe_not, binfhe_trivial, wire_delta};
 use crate::binfhe::pbs::binfhe_lut_read_dyn;
-use crate::binfhe::rgsw::{RgswCiphertext, cmux};
-use crate::binfhe::rlwe::RlweCiphertext;
+use crate::binfhe::rgsw::{BinfheRgswCiphertext, binfhe_rgsw_cmux};
+use crate::binfhe::rlwe::BinfheRlweCiphertext;
 
 /// Fixed-capacity arena requirements for one [`BootstrapPlan`] execution.
 ///
@@ -56,10 +56,10 @@ pub struct PlanWorkspaceRequirements {
 /// clears all logical global/storage arenas between module calls, so a prior
 /// computation's wire/cell state cannot become an implicit later input.
 pub struct PlanWorkspace<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize> {
-    wires: Vec<LweCiphertext<N_LWE>>,
-    rgsws: Vec<RgswCiphertext<BIG_N, BS_ELL>>,
-    cells: Vec<RlweCiphertext<BIG_N>>,
-    lut_inputs: Vec<LweCiphertext<N_LWE>>,
+    wires: Vec<BinfheLweCiphertext<N_LWE>>,
+    rgsws: Vec<BinfheRgswCiphertext<BIG_N, BS_ELL>>,
+    cells: Vec<BinfheRlweCiphertext<BIG_N>>,
+    lut_inputs: Vec<BinfheLweCiphertext<N_LWE>>,
 }
 
 /// Workspace construction/execution failure.
@@ -170,7 +170,7 @@ pub enum PlanOp {
     Not { input: WireId, out: WireId },
     /// Multi-input LUT read; `inputs` are LSB-first. One blind rotation.
     Lut {
-        inputs: Vec<WireId>,
+        inputs: Vec<u32>,
         table: LutId,
         out: WireId,
     },
@@ -531,11 +531,14 @@ pub fn execute_plan<
     const PRIV_BASE_LOG: u32,
 >(
     plan: &BootstrapPlan,
-    inputs: &[LweCiphertext<N_LWE>],
-    cells: &[RlweCiphertext<BIG_N>],
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    inputs: &[BinfheLweCiphertext<N_LWE>],
+    cells: &[BinfheRlweCiphertext<BIG_N>],
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
     cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
-) -> (Vec<LweCiphertext<N_LWE>>, Vec<RlweCiphertext<BIG_N>>) {
+) -> (
+    Vec<BinfheLweCiphertext<N_LWE>>,
+    Vec<BinfheRlweCiphertext<BIG_N>>,
+) {
     let mut workspace = PlanWorkspace::<N_LWE, BIG_N, BS_ELL>::new(plan)
         .expect("execute_plan: invalid or overflowing workspace requirements");
     execute_plan_in_workspace::<
@@ -577,12 +580,18 @@ pub fn execute_plan_in_workspace<
     const PRIV_BASE_LOG: u32,
 >(
     plan: &BootstrapPlan,
-    inputs: &[LweCiphertext<N_LWE>],
-    cells: &[RlweCiphertext<BIG_N>],
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    inputs: &[BinfheLweCiphertext<N_LWE>],
+    cells: &[BinfheRlweCiphertext<BIG_N>],
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
     cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
     workspace: &'a mut PlanWorkspace<N_LWE, BIG_N, BS_ELL>,
-) -> Result<(&'a [LweCiphertext<N_LWE>], &'a [RlweCiphertext<BIG_N>]), PlanWorkspaceError> {
+) -> Result<
+    (
+        &'a [BinfheLweCiphertext<N_LWE>],
+        &'a [BinfheRlweCiphertext<BIG_N>],
+    ),
+    PlanWorkspaceError,
+> {
     plan.validate().map_err(PlanWorkspaceError::InvalidPlan)?;
     if inputs.len() != plan.num_inputs as usize {
         return Err(PlanWorkspaceError::InputCount {
@@ -677,7 +686,7 @@ pub fn execute_plan_in_workspace<
                     out,
                 } => {
                     assert_eq!(*out as usize, workspace.cells.len());
-                    let out_cell = cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(
+                    let out_cell = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(
                         &workspace.rgsws[*sel as usize],
                         &workspace.cells[*then_cell as usize],
                         &workspace.cells[*else_cell as usize],
@@ -698,9 +707,13 @@ mod tests {
     use super::*;
     use crate::SpecRng;
     use crate::binfhe::circuit_bs::gen_circuit_bootstrapping_key;
-    use crate::binfhe::lwe::{LweSecretKey, gen_lwe_secret_key, lwe_encrypt, lwe_phase};
+    use crate::binfhe::lwe::{
+        BinfheLweSecretKey, binfhe_gen_lwe_secret_key, binfhe_lwe_encrypt, lwe_phase,
+    };
     use crate::binfhe::params::toy;
-    use crate::binfhe::rlwe::{RlweSecretKey, gen_rlwe_secret_key, rlwe_trivial};
+    use crate::binfhe::rlwe::{
+        BinfheRlweSecretKey, binfhe_gen_rlwe_secret_key, binfhe_rlwe_trivial,
+    };
 
     struct TestRng(u64);
     impl TestRng {
@@ -730,13 +743,13 @@ mod tests {
     fn toy_keys(
         seed: u64,
     ) -> (
-        LweSecretKey<{ toy::N_LWE }>,
-        RlweSecretKey<{ toy::BIG_N }>,
+        BinfheLweSecretKey<{ toy::N_LWE }>,
+        BinfheRlweSecretKey<{ toy::BIG_N }>,
         ToyCbk,
     ) {
         let mut rng = TestRng::new(seed);
-        let lwe_sk = gen_lwe_secret_key(&mut rng);
-        let rlwe_sk = gen_rlwe_secret_key(&mut rng);
+        let lwe_sk = binfhe_gen_lwe_secret_key(&mut rng);
+        let rlwe_sk = binfhe_gen_rlwe_secret_key(&mut rng);
         let cbk = gen_circuit_bootstrapping_key::<
             { toy::N_LWE },
             { toy::BIG_N },
@@ -801,12 +814,12 @@ mod tests {
     fn run_toy_plan(
         plan: &BootstrapPlan,
         input_bits: &[bool],
-        cells: &[RlweCiphertext<{ toy::BIG_N }>],
-        sk: &LweSecretKey<{ toy::N_LWE }>,
+        cells: &[BinfheRlweCiphertext<{ toy::BIG_N }>],
+        sk: &BinfheLweSecretKey<{ toy::N_LWE }>,
         cbk: &ToyCbk,
     ) -> (
-        Vec<LweCiphertext<{ toy::N_LWE }>>,
-        Vec<RlweCiphertext<{ toy::BIG_N }>>,
+        Vec<BinfheLweCiphertext<{ toy::N_LWE }>>,
+        Vec<BinfheRlweCiphertext<{ toy::BIG_N }>>,
     ) {
         let delta = wire_delta::<{ toy::LOG_Q_LWE }>(plan.k_max as usize);
         let inputs: Vec<_> = input_bits
@@ -814,7 +827,9 @@ mod tests {
             .enumerate()
             .map(|(i, &b)| {
                 let mut rng = TestRng::new(5000 + i as u64);
-                lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(b, delta, sk, &mut rng)
+                binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(
+                    b, delta, sk, &mut rng,
+                )
             })
             .collect();
         execute_plan::<
@@ -872,12 +887,15 @@ mod tests {
         let plan = small_plan();
         let delta = wire_delta::<{ toy::LOG_Q_LWE }>(2);
         let mut rng = TestRng::new(0x50A2);
-        let ca =
-            lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(true, delta, &sk, &mut rng);
-        let cb =
-            lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(false, delta, &sk, &mut rng);
-        let cc =
-            lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(true, delta, &sk, &mut rng);
+        let ca = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(
+            true, delta, &sk, &mut rng,
+        );
+        let cb = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(
+            false, delta, &sk, &mut rng,
+        );
+        let cc = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(
+            true, delta, &sk, &mut rng,
+        );
 
         // Direct: AND then XOR via the gate wrappers (same tables).
         let and = crate::binfhe::pbs::binfhe_gate_and::<
@@ -919,8 +937,8 @@ mod tests {
         let (sk, rlwe_sk, cbk) = toy_keys(0x50A3);
         // Cells: two RLWE contents; sel chooses between them; also carry a
         // plain LUT in the same plan.
-        let mut c0 = rlwe_trivial::<{ toy::BIG_N }, 7>(&[0u32; toy::BIG_N]);
-        let mut c1 = rlwe_trivial::<{ toy::BIG_N }, 7>(&[0u32; toy::BIG_N]);
+        let mut c0 = binfhe_rlwe_trivial::<{ toy::BIG_N }, 7>(&[0u32; toy::BIG_N]);
+        let mut c1 = binfhe_rlwe_trivial::<{ toy::BIG_N }, 7>(&[0u32; toy::BIG_N]);
         for i in 0..toy::BIG_N {
             c0.b[i] = (i as u32 * 3 + 1) & 0x7F;
             c1.b[i] = (i as u32 * 5 + 2) & 0x7F;
@@ -969,9 +987,10 @@ mod tests {
             let out = &cells[plan.cell_outputs[0] as usize];
             let expected = if m { &c1 } else { &c0 };
             for i in 0..toy::BIG_N {
-                // Phase via the public rlwe_phase (checked elsewhere against
+                // Phase via the public binfhe_rlwe_phase (checked elsewhere against
                 // an independent convolution).
-                let phase = crate::binfhe::rlwe::rlwe_phase::<{ toy::BIG_N }, 7>(out, &rlwe_sk);
+                let phase =
+                    crate::binfhe::rlwe::binfhe_rlwe_phase::<{ toy::BIG_N }, 7>(out, &rlwe_sk);
                 assert_eq!(phase[i], expected.b[i], "cell coeff {i}, m={m}");
             }
         }

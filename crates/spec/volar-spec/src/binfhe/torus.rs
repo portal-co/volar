@@ -23,19 +23,19 @@ pub const fn reduce<const LOG: u32>(x: u32) -> u32 {
 
 /// `(a + b) mod 2^LOG`.
 #[inline]
-pub const fn add<const LOG: u32>(a: u32, b: u32) -> u32 {
+pub const fn torus_add<const LOG: u32>(a: u32, b: u32) -> u32 {
     reduce::<LOG>(a.wrapping_add(b))
 }
 
 /// `(a - b) mod 2^LOG`.
 #[inline]
-pub const fn sub<const LOG: u32>(a: u32, b: u32) -> u32 {
+pub const fn torus_sub<const LOG: u32>(a: u32, b: u32) -> u32 {
     reduce::<LOG>(a.wrapping_sub(b))
 }
 
 /// `-a mod 2^LOG`.
 #[inline]
-pub const fn neg<const LOG: u32>(a: u32) -> u32 {
+pub const fn torus_neg<const LOG: u32>(a: u32) -> u32 {
     reduce::<LOG>(a.wrapping_neg())
 }
 
@@ -70,14 +70,14 @@ mod tests {
 
     #[test]
     fn arithmetic_reduces_and_wraps_exactly() {
-        assert_eq!(add::<8>(200, 100), 44);
-        assert_eq!(sub::<8>(10, 20), 246);
-        assert_eq!(neg::<8>(1), 255);
-        assert_eq!(neg::<8>(0), 0);
+        assert_eq!(torus_add::<8>(200, 100), 44);
+        assert_eq!(torus_sub::<8>(10, 20), 246);
+        assert_eq!(torus_neg::<8>(1), 255);
+        assert_eq!(torus_neg::<8>(0), 0);
         assert_eq!(mul_exact::<8>(100, 4), 144); // 400 mod 256
         // Full-width path.
-        assert_eq!(add::<32>(u32::MAX, 1), 0);
-        assert_eq!(sub::<32>(0, 1), u32::MAX);
+        assert_eq!(torus_add::<32>(u32::MAX, 1), 0);
+        assert_eq!(torus_sub::<32>(0, 1), u32::MAX);
     }
 
     #[test]

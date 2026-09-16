@@ -1,6 +1,9 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: LPN encode output is a
+//! runtime-sized host protocol buffer, not a weaver-known compiled-program
+//! shape; this module-level exemption applies to the whole file.
 //! 10-local linear code for primal-LPN (Ferret §6.2 / BCGI18).
 //!
 //! Each of the `n` columns of `A ∈ F_2^{k×n}` has Hamming weight 10. The

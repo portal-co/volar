@@ -9608,6 +9608,12 @@ pub fn weave_net_vole_verifier_ir_loop(
 /// The preamble brings in the VOLE AND gate primitives from
 /// `volar_spec::vole::prove` — the implementation that was formerly
 /// embedded as a raw string is now the authoritative spec.
+/// **Diagnostic/test rendering only.** Production consumption of a woven
+/// program is its IR via `lower_module`/`lower_cfg_module` to an
+/// `LirTarget` (AGENTS.md Core Design Rule 13); do not feed this text
+/// to `rustc` in production paths.
+///
+#[doc(hidden)]
 pub fn print_weaved_vole_module(module: &IrModule<IrFunction>) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;

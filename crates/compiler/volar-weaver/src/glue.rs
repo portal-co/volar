@@ -368,6 +368,12 @@ pub fn weave_skip_resume_verifier(
 }
 
 /// Print a continuation-glue CFG module to self-contained Rust source.
+/// **Diagnostic/test rendering only.** Production consumption of a woven
+/// program is its IR via `lower_module`/`lower_cfg_module` to an
+/// `LirTarget` (AGENTS.md Core Design Rule 13); do not feed this text
+/// to `rustc` in production paths.
+///
+#[doc(hidden)]
 pub fn print_glue_module(module: &IrCfgModule) -> String {
     use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
     use alloc::fmt::Write as _;

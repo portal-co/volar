@@ -42,7 +42,7 @@ pub const fn level_factor<const LOG: u32>(base_log: u32, j: usize) -> u32 {
 /// Returns digits ordered most-significant first (level 0 = top bits).
 /// Exact: `sum_j digits[j] << shift_j == x` whenever
 /// `ELL * BASE_LOG >= LOG`.
-pub fn decompose<const LOG: u32, const ELL: usize, const BASE_LOG: u32>(x: u32) -> [u32; ELL] {
+pub fn gadget_decompose<const LOG: u32, const ELL: usize, const BASE_LOG: u32>(x: u32) -> [u32; ELL] {
     debug_assert!(
         ELL as u32 * BASE_LOG >= LOG,
         "gadget decomposition must cover the modulus"
@@ -58,12 +58,12 @@ pub fn decompose<const LOG: u32, const ELL: usize, const BASE_LOG: u32>(x: u32) 
 }
 
 /// Coefficient-wise decomposition of a polynomial.
-pub fn poly_decompose<const N: usize, const LOG: u32, const ELL: usize, const BASE_LOG: u32>(
+pub fn gadget_poly_decompose<const N: usize, const LOG: u32, const ELL: usize, const BASE_LOG: u32>(
     p: &[u32; N],
 ) -> [[u32; N]; ELL] {
     let mut out = [[0u32; N]; ELL];
     for i in 0..N {
-        let digits = decompose::<LOG, ELL, BASE_LOG>(p[i]);
+        let digits = gadget_decompose::<LOG, ELL, BASE_LOG>(p[i]);
         for j in 0..ELL {
             out[j][i] = digits[j];
         }
@@ -92,19 +92,19 @@ mod tests {
     fn decomposition_reconstructs_exactly() {
         // Exhaustive on the toy 8-bit modulus, sampled on larger ones.
         for x in 0u32..=255 {
-            let d = decompose::<8, 2, 4>(x);
+            let d = gadget_decompose::<8, 2, 4>(x);
             assert_eq!(d[0] * 16 + d[1], x);
         }
         // std128 shape: 4 levels of 7 bits over 27 bits.
         for &x in &[0u32, 1, 127, 128, 65_535, (1 << 26) + 12345, (1 << 27) - 1] {
-            let d = decompose::<27, 4, 7>(x);
+            let d = gadget_decompose::<27, 4, 7>(x);
             let recon = (d[0] << 20) + (d[1] << 13) + (d[2] << 6) + d[3];
             assert_eq!(recon, x, "exact reconstruction of {x}");
             assert!(d[3] < 64, "last level holds 6 bits");
         }
         // key-switching shape: LOG_MOD_KS=15, base 2^5, 3 levels.
         for &x in &[0u32, 31, 32, 1023, (1 << 15) - 1] {
-            let d = decompose::<15, 3, 5>(x);
+            let d = gadget_decompose::<15, 3, 5>(x);
             let recon = (d[0] << 10) + (d[1] << 5) + d[2];
             assert_eq!(recon, x);
         }

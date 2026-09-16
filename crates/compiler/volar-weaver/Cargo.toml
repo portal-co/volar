@@ -31,9 +31,12 @@ volar-net = { workspace = true, optional = true }
 # Path (not git) dep: the binfhe plan types must reflect the local spec
 # crate as edited, like the compile-check harness's generated projects.
 volar-spec = { path = "../../spec/volar-spec" }
+volar-compiler-passes = { path = "../volar-compiler-passes" }
 
 [dev-dependencies]
 # Cross-check the `emit_keccak256` boolean gadget against a known-good SHA3-256.
 sha3.workspace = true
+# The weave_text_lint gate needs the syn-walking (parsing) feature.
+volar-compiler-passes = { path = "../volar-compiler-passes", features = ["parsing"] }
 digest = { version = "0.11.2", default-features = false }
 volar-ir-virt = { workspace = true }

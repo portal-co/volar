@@ -31,13 +31,13 @@ pub const fn mod_switch<const FROM: u32, const TO: u32>(x: u32) -> u32 {
 /// Modulus-switch an LWE ciphertext component-wise.
 #[inline]
 pub fn mod_switch_lwe<const N: usize, const FROM: u32, const TO: u32>(
-    ct: &super::lwe::LweCiphertext<N>,
-) -> super::lwe::LweCiphertext<N> {
+    ct: &super::lwe::BinfheLweCiphertext<N>,
+) -> super::lwe::BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
         a[i] = mod_switch::<FROM, TO>(ct.a[i]);
     }
-    super::lwe::LweCiphertext {
+    super::lwe::BinfheLweCiphertext {
         a,
         b: mod_switch::<FROM, TO>(ct.b),
     }

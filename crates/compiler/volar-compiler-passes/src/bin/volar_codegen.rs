@@ -38,7 +38,7 @@ use volar_compiler::{
 };
 use volar_compiler_passes::{
     dump_ir::dump_module, lowering_dyn::lower_module_dyn, print_module_rust_dyn,
-    print_module_typescript,
+    print_module_typescript, vec_lint,
 };
 
 // ---------------------------------------------------------------------------
@@ -154,6 +154,53 @@ fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.get(pos + 1).map(|s| s.as_str())
 }
 
+/// Walk syn items collecting the names of items (and module-block
+/// descendants) carrying a valid `@volar-allow-vec:` exemption.
+fn collect_allow_vec_exemptions(items: &[syn::Item]) -> std::collections::HashSet<String> {
+    fn walk(items: &[syn::Item], parent_exempt: bool, out: &mut std::collections::HashSet<String>) {
+        use syn::Item;
+        for item in items {
+            match item {
+                Item::Struct(s) => {
+                    if parent_exempt || vec_lint::parse_allow_vec(&s.attrs).is_some() {
+                        out.insert(s.ident.to_string());
+                    }
+                }
+                Item::Enum(e) => {
+                    if parent_exempt || vec_lint::parse_allow_vec(&e.attrs).is_some() {
+                        out.insert(e.ident.to_string());
+                    }
+                }
+                Item::Fn(f) => {
+                    if parent_exempt || vec_lint::parse_allow_vec(&f.attrs).is_some() {
+                        out.insert(f.sig.ident.to_string());
+                    }
+                }
+                Item::Type(t) => {
+                    if parent_exempt || vec_lint::parse_allow_vec(&t.attrs).is_some() {
+                        out.insert(t.ident.to_string());
+                    }
+                }
+                Item::Const(c) => {
+                    if parent_exempt || vec_lint::parse_allow_vec(&c.attrs).is_some() {
+                        out.insert(c.ident.to_string());
+                    }
+                }
+                Item::Mod(m) => {
+                    let here = parent_exempt || vec_lint::parse_allow_vec(&m.attrs).is_some();
+                    if let Some((_, items)) = &m.content {
+                        walk(items, here, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(items, false, &mut out);
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Source collection
 // ---------------------------------------------------------------------------
@@ -212,6 +259,29 @@ fn parse_spec(spec_dir: &Path, module_name: &str, crate_name: &str) -> IrModule<
         // disambiguation for the maps. Full sub-path resolution is a future enhancement.
         let module_path: Vec<String> = vec![crate_name.to_string(), stem.to_string()];
 
+        // Collect `@volar-allow-vec:` exemption names at parse time (the
+        // IR does not retain doc comments). Module-block exemptions apply
+        // to every item of the block; a `//! @volar-allow-vec:` file-level
+        // doc comment exempts the whole file (codecs and adapter modules).
+        let file_exempt = vec_lint::allow_vec_category_in_docs(
+            content
+                .lines()
+                .take_while(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("//!") || t.starts_with("//") || t.is_empty()
+                })
+                .filter_map(|l| l.trim_start().strip_prefix("//!").map(str::trim)),
+        )
+        .is_some();
+        let mut exempt_names: std::collections::HashSet<String> =
+            match syn::parse_file(&content) {
+                Ok(file) => collect_allow_vec_exemptions(&file.items),
+                Err(_) => Default::default(),
+            };
+        if file_exempt {
+            // Exempt the whole file by exempting the lint predicate below.
+            exempt_names.insert("*".into());
+        }
         match parse_source(&content, stem, &module_path) {
             Ok(m) => {
                 eprintln!(
@@ -221,6 +291,30 @@ fn parse_spec(spec_dir: &Path, module_name: &str, crate_name: &str) -> IrModule<
                     m.impls.len(),
                     m.functions.len(),
                 );
+                // Vec lint gate (AGENTS.md Core Design Rule 11): parsed
+                // program structure must not use `Vec` outside a documented
+                // `@volar-allow-vec:` exemption.
+                let lint_errors = if file_exempt {
+                    Vec::new()
+                } else {
+                    vec_lint::lint_module(&m, &|n| exempt_names.contains(n))
+                };
+                if !lint_errors.is_empty() {
+                    for e in &lint_errors {
+                        eprintln!(
+                            "  vec-lint error in {:?} [{}]: {} ({})",
+                            file.file_name().unwrap(),
+                            e.path,
+                            e.note,
+                            match e.kind {
+                                vec_lint::VecUseKind::VecType => "Vec type",
+                                vec_lint::VecUseKind::VecCollect => "Vec collect",
+                                vec_lint::VecUseKind::VecCtorPath => "Vec constructor",
+                            }
+                        );
+                    }
+                    errors += lint_errors.len();
+                }
                 module.structs.extend(m.structs);
                 module.enums.extend(m.enums);
                 module.traits.extend(m.traits);

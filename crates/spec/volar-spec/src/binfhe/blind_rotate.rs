@@ -20,9 +20,9 @@
 //! dominant per-bootstrap cost, and the quantity the weaver's multi-value
 //! and circuit-bootstrap optimizations amortize.
 
-use crate::binfhe::lwe::LweCiphertext;
-use crate::binfhe::rgsw::{RgswCiphertext, cmux};
-use crate::binfhe::rlwe::{RlweCiphertext, rlwe_rotate, rlwe_trivial};
+use crate::binfhe::lwe::BinfheLweCiphertext;
+use crate::binfhe::rgsw::{BinfheRgswCiphertext, binfhe_rgsw_cmux};
+use crate::binfhe::rlwe::{BinfheRlweCiphertext, binfhe_rlwe_rotate, binfhe_rlwe_trivial};
 
 /// Exact exponent of a `Z_q` value in `Z_{2N}` (valid because `q = 2N`).
 #[inline]
@@ -37,7 +37,7 @@ fn exponent<const LOG_Q_LWE: u32, const BIG_N: usize>(x: u32) -> usize {
 
 /// Blind rotation with a caller-supplied test polynomial (already reduced
 /// mod `2^LOG_Q`).
-pub fn blind_rotate<
+pub fn binfhe_blind_rotate<
     const N_LWE: usize,
     const BIG_N: usize,
     const LOG_Q: u32,
@@ -45,25 +45,25 @@ pub fn blind_rotate<
     const BS_ELL: usize,
     const BS_BASE_LOG: u32,
 >(
-    ct: &LweCiphertext<N_LWE>,
+    ct: &BinfheLweCiphertext<N_LWE>,
     test_poly: &[u32; BIG_N],
-    bsk: &[RgswCiphertext<BIG_N, BS_ELL>],
-) -> RlweCiphertext<BIG_N> {
+    bsk: &[BinfheRgswCiphertext<BIG_N, BS_ELL>],
+) -> BinfheRlweCiphertext<BIG_N> {
     debug_assert_eq!(bsk.len(), N_LWE, "one RGSW row per LWE key bit");
     let two_n = 2 * BIG_N;
 
     // ACC = X^{-b} * v(X).
     let b_exp = exponent::<LOG_Q_LWE, BIG_N>(ct.b);
-    let mut acc = rlwe_trivial::<BIG_N, LOG_Q>(test_poly);
+    let mut acc = binfhe_rlwe_trivial::<BIG_N, LOG_Q>(test_poly);
     if b_exp != 0 {
-        acc = rlwe_rotate::<BIG_N, LOG_Q>(&acc, two_n - b_exp);
+        acc = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(&acc, two_n - b_exp);
     }
 
     for (i, row) in bsk.iter().enumerate() {
         let a_exp = exponent::<LOG_Q_LWE, BIG_N>(ct.a[i]);
         if a_exp != 0 {
-            let rotated = rlwe_rotate::<BIG_N, LOG_Q>(&acc, a_exp);
-            acc = cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(row, &rotated, &acc);
+            let rotated = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(&acc, a_exp);
+            acc = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(row, &rotated, &acc);
         }
     }
     acc
@@ -72,11 +72,11 @@ pub fn blind_rotate<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binfhe::keys;
-    use crate::binfhe::params::toy;
-    use crate::binfhe::rlwe::RlweSecretKey;
-    use crate::binfhe::lwe::{LweSecretKey, gen_lwe_secret_key};
     use crate::SpecRng;
+    use crate::binfhe::keys;
+    use crate::binfhe::lwe::{BinfheLweSecretKey, binfhe_gen_lwe_secret_key};
+    use crate::binfhe::params::toy;
+    use crate::binfhe::rlwe::BinfheRlweSecretKey;
 
     struct TestRng(u64);
     impl TestRng {
@@ -97,7 +97,10 @@ mod tests {
 
     /// Independent clear decryption: per-coefficient phase via a directly
     /// written negacyclic convolution (shares no code with rlwe.rs).
-    fn clear_phase(ct: &RlweCiphertext<{ toy::BIG_N }>, key: &[u32; toy::BIG_N]) -> [u32; toy::BIG_N] {
+    fn clear_phase(
+        ct: &BinfheRlweCiphertext<{ toy::BIG_N }>,
+        key: &[u32; toy::BIG_N],
+    ) -> [u32; toy::BIG_N] {
         let mut phase = [0u32; toy::BIG_N];
         for i in 0..toy::BIG_N {
             let mut product = 0u32;
@@ -123,7 +126,11 @@ mod tests {
         for (i, &c) in poly.iter().enumerate() {
             let dest = i + base;
             let sign = (dest / n) % 2 == 1;
-            let v = if sign { 256u32.wrapping_sub(c) & 0xFF } else { c };
+            let v = if sign {
+                256u32.wrapping_sub(c) & 0xFF
+            } else {
+                c
+            };
             let slot = dest % n;
             out[slot] = (out[slot] + v) & 0xFF;
         }
@@ -133,10 +140,10 @@ mod tests {
     #[test]
     fn blind_rotation_decrypts_to_clear_rotation() {
         let mut rng = TestRng::new(0xB17D);
-        let lwe_sk: LweSecretKey<{ toy::N_LWE }> = gen_lwe_secret_key(&mut rng);
-        let rlwe_sk: RlweSecretKey<{ toy::BIG_N }> =
-            crate::binfhe::rlwe::gen_rlwe_secret_key(&mut rng);
-        let bk = keys::gen_bootstrapping_key::<
+        let lwe_sk: BinfheLweSecretKey<{ toy::N_LWE }> = binfhe_gen_lwe_secret_key(&mut rng);
+        let rlwe_sk: BinfheRlweSecretKey<{ toy::BIG_N }> =
+            crate::binfhe::rlwe::binfhe_gen_rlwe_secret_key(&mut rng);
+        let bk = keys::binfhe_gen_bootstrapping_key::<
             { toy::N_LWE },
             { toy::BIG_N },
             8,
@@ -151,8 +158,7 @@ mod tests {
         >(&lwe_sk, &rlwe_sk, &mut rng);
 
         // Arbitrary test polynomial content.
-        let test_poly: [u32; toy::BIG_N] =
-            core::array::from_fn(|i| (i as u32 * 13 + 5) & 0xFF);
+        let test_poly: [u32; toy::BIG_N] = core::array::from_fn(|i| (i as u32 * 13 + 5) & 0xFF);
 
         // Hand-crafted ciphertexts on the exact exponent grid (every value
         // of Z_128 is an exact exponent because q = 2N).
@@ -162,7 +168,7 @@ mod tests {
             for ai in a.iter_mut() {
                 *ai = rng.next_u32() & 0x7F;
             }
-            let ct = LweCiphertext {
+            let ct = BinfheLweCiphertext {
                 a,
                 b: (body_exp as u32) & 0x7F,
             };
@@ -173,7 +179,7 @@ mod tests {
             }
             let phi = phi.rem_euclid(128) as usize;
 
-            let acc = blind_rotate::<
+            let acc = binfhe_blind_rotate::<
                 { toy::N_LWE },
                 { toy::BIG_N },
                 8,

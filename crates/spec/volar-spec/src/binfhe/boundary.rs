@@ -31,15 +31,15 @@ use alloc::vec::Vec;
 
 use crate::SpecRng;
 use crate::binfhe::circuit_bs::CircuitBootstrappingKey;
-use crate::binfhe::keys::BootstrappingKey;
+use crate::binfhe::keys::BinfheBootstrappingKey;
 use crate::binfhe::lwe::{
-    LweCiphertext, LweSecretKey, checked_wire_delta, lwe_decrypt, lwe_encrypt,
+    BinfheLweCiphertext, BinfheLweSecretKey, binfhe_lwe_decrypt, binfhe_lwe_encrypt, wire_delta,
 };
 use crate::binfhe::plan::{
     BootstrapPlan, PlanError, PlanWorkspace, PlanWorkspaceError, execute_plan,
     execute_plan_in_workspace,
 };
-use crate::binfhe::rlwe::RlweCiphertext;
+use crate::binfhe::rlwe::BinfheRlweCiphertext;
 
 /// Failure to construct or use a plan encryption/decryption boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,12 +83,12 @@ pub struct PlanBoundary<'a> {
 /// separate from the executor workspace because it is the immutable input
 /// borrowed while that workspace resets/fills its internal arenas.
 pub struct CiphertextInputBuffer<const N_LWE: usize> {
-    ciphertexts: Vec<LweCiphertext<N_LWE>>,
+    ciphertexts: Vec<BinfheLweCiphertext<N_LWE>>,
 }
 
 impl<const N_LWE: usize> CiphertextInputBuffer<N_LWE> {
     /// Borrow the current fixed-shape encrypted input sequence.
-    pub fn as_slice(&self) -> &[LweCiphertext<N_LWE>] {
+    pub fn as_slice(&self) -> &[BinfheLweCiphertext<N_LWE>] {
         &self.ciphertexts
     }
 
@@ -107,12 +107,7 @@ impl<'a> PlanBoundary<'a> {
     // current type-level arithmetic boundary has no frame serialization.
     pub fn new<const LOG_Q_LWE: u32>(plan: &'a BootstrapPlan) -> Result<Self, BoundaryError> {
         plan.validate().map_err(BoundaryError::InvalidPlan)?;
-        let delta = checked_wire_delta::<LOG_Q_LWE>(plan.k_max as usize).ok_or(
-            BoundaryError::InvalidWireEncoding {
-                k_max: plan.k_max,
-                log_q_lwe: LOG_Q_LWE,
-            },
-        )?;
+        let delta = wire_delta::<LOG_Q_LWE>(plan.k_max as usize);
         Ok(Self { plan, delta })
     }
 
@@ -151,7 +146,7 @@ impl<'a> PlanBoundary<'a> {
     >(
         &self,
         inputs: &[bool],
-        sk: &LweSecretKey<N_LWE>,
+        sk: &BinfheLweSecretKey<N_LWE>,
         rng: &mut R,
         output: &mut CiphertextInputBuffer<N_LWE>,
     ) -> Result<(), BoundaryError> {
@@ -164,9 +159,9 @@ impl<'a> PlanBoundary<'a> {
         }
         output.ciphertexts.clear();
         output.ciphertexts.extend(
-            inputs
-                .iter()
-                .map(|&bit| lwe_encrypt::<N_LWE, LOG_Q_LWE, ETA, R>(bit, self.delta, sk, rng)),
+            inputs.iter().map(|&bit| {
+                binfhe_lwe_encrypt::<N_LWE, LOG_Q_LWE, ETA, R>(bit, self.delta, sk, rng)
+            }),
         );
         Ok(())
     }
@@ -177,9 +172,9 @@ impl<'a> PlanBoundary<'a> {
     pub fn encrypt_inputs<const N_LWE: usize, const LOG_Q_LWE: u32, const ETA: u32, R: SpecRng>(
         &self,
         inputs: &[bool],
-        sk: &LweSecretKey<N_LWE>,
+        sk: &BinfheLweSecretKey<N_LWE>,
         rng: &mut R,
-    ) -> Result<Vec<LweCiphertext<N_LWE>>, BoundaryError> {
+    ) -> Result<Vec<BinfheLweCiphertext<N_LWE>>, BoundaryError> {
         let mut output = self.input_buffer::<N_LWE>();
         self.encrypt_inputs_into::<N_LWE, LOG_Q_LWE, ETA, R>(inputs, sk, rng, &mut output)?;
         Ok(output.ciphertexts)
@@ -192,8 +187,8 @@ impl<'a> PlanBoundary<'a> {
     /// treating a non-output intermediate as an authorized decrypt result.
     pub fn decrypt_outputs<const N_LWE: usize, const LOG_Q_LWE: u32>(
         &self,
-        wire_arena: &[LweCiphertext<N_LWE>],
-        sk: &LweSecretKey<N_LWE>,
+        wire_arena: &[BinfheLweCiphertext<N_LWE>],
+        sk: &BinfheLweSecretKey<N_LWE>,
     ) -> Result<Vec<bool>, BoundaryError> {
         let required = self
             .plan
@@ -214,7 +209,7 @@ impl<'a> PlanBoundary<'a> {
             .outputs
             .iter()
             .map(|&wire| {
-                lwe_decrypt::<N_LWE, LOG_Q_LWE>(&wire_arena[wire as usize], sk, self.delta)
+                binfhe_lwe_decrypt::<N_LWE, LOG_Q_LWE>(&wire_arena[wire as usize], sk, self.delta)
             })
             .collect())
     }
@@ -240,11 +235,17 @@ impl<'a> PlanBoundary<'a> {
         const PRIV_BASE_LOG: u32,
     >(
         &self,
-        inputs: &[LweCiphertext<N_LWE>],
-        cells: &[RlweCiphertext<BIG_N>],
-        bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+        inputs: &[BinfheLweCiphertext<N_LWE>],
+        cells: &[BinfheRlweCiphertext<BIG_N>],
+        bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
         cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
-    ) -> Result<(Vec<LweCiphertext<N_LWE>>, Vec<RlweCiphertext<BIG_N>>), BoundaryError> {
+    ) -> Result<
+        (
+            Vec<BinfheLweCiphertext<N_LWE>>,
+            Vec<BinfheRlweCiphertext<BIG_N>>,
+        ),
+        BoundaryError,
+    > {
         self.require_ciphertext_input_count(inputs.len())?;
         self.require_cell_count(cells.len())?;
         Ok(execute_plan::<
@@ -281,12 +282,18 @@ impl<'a> PlanBoundary<'a> {
         const PRIV_BASE_LOG: u32,
     >(
         &self,
-        inputs: &[LweCiphertext<N_LWE>],
-        cells: &[RlweCiphertext<BIG_N>],
-        bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+        inputs: &[BinfheLweCiphertext<N_LWE>],
+        cells: &[BinfheRlweCiphertext<BIG_N>],
+        bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
         cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
         workspace: &'w mut PlanWorkspace<N_LWE, BIG_N, BS_ELL>,
-    ) -> Result<(&'w [LweCiphertext<N_LWE>], &'w [RlweCiphertext<BIG_N>]), BoundaryError> {
+    ) -> Result<
+        (
+            &'w [BinfheLweCiphertext<N_LWE>],
+            &'w [BinfheRlweCiphertext<BIG_N>],
+        ),
+        BoundaryError,
+    > {
         self.require_ciphertext_input_count(inputs.len())?;
         self.require_cell_count(cells.len())?;
         execute_plan_in_workspace::<
@@ -340,11 +347,11 @@ mod tests {
     use super::*;
     use crate::SpecRng;
     use crate::binfhe::circuit_bs::gen_circuit_bootstrapping_key;
-    use crate::binfhe::keys::gen_bootstrapping_key;
-    use crate::binfhe::lwe::gen_lwe_secret_key;
+    use crate::binfhe::keys::binfhe_gen_bootstrapping_key;
+    use crate::binfhe::lwe::binfhe_gen_lwe_secret_key;
     use crate::binfhe::params::toy;
     use crate::binfhe::plan::{FailureBudget, LutSpec, PlanOp, ProfileId};
-    use crate::binfhe::rlwe::gen_rlwe_secret_key;
+    use crate::binfhe::rlwe::binfhe_gen_rlwe_secret_key;
 
     struct TestRng(u64);
 
@@ -392,9 +399,9 @@ mod tests {
         let plan = and_plan();
         let boundary = PlanBoundary::new::<{ toy::LOG_Q_LWE }>(&plan).unwrap();
         let mut key_rng = TestRng::new(0xB0A0_DA7A);
-        let lwe_sk = gen_lwe_secret_key(&mut key_rng);
-        let rlwe_sk = gen_rlwe_secret_key(&mut key_rng);
-        let bk = gen_bootstrapping_key::<
+        let lwe_sk = binfhe_gen_lwe_secret_key(&mut key_rng);
+        let rlwe_sk = binfhe_gen_rlwe_secret_key(&mut key_rng);
+        let bk = binfhe_gen_bootstrapping_key::<
             { toy::N_LWE },
             { toy::BIG_N },
             { toy::LOG_Q },
@@ -455,9 +462,9 @@ mod tests {
         let plan = and_plan();
         let boundary = PlanBoundary::new::<{ toy::LOG_Q_LWE }>(&plan).unwrap();
         let mut key_rng = TestRng::new(0xA11C_E5ED);
-        let lwe_sk = gen_lwe_secret_key(&mut key_rng);
-        let rlwe_sk = gen_rlwe_secret_key(&mut key_rng);
-        let bk = gen_bootstrapping_key::<
+        let lwe_sk = binfhe_gen_lwe_secret_key(&mut key_rng);
+        let rlwe_sk = binfhe_gen_rlwe_secret_key(&mut key_rng);
+        let bk = binfhe_gen_bootstrapping_key::<
             { toy::N_LWE },
             { toy::BIG_N },
             { toy::LOG_Q },
@@ -526,7 +533,7 @@ mod tests {
 
         let plan = and_plan();
         let boundary = PlanBoundary::new::<{ toy::LOG_Q_LWE }>(&plan).unwrap();
-        let sk = gen_lwe_secret_key(&mut TestRng::new(9));
+        let sk = binfhe_gen_lwe_secret_key(&mut TestRng::new(9));
         let mut rng = TestRng::new(10);
         assert_eq!(
             boundary.encrypt_inputs::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(

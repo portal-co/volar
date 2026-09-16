@@ -1,5 +1,9 @@
 // @reliability: experimental
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! FAEST v2 Fiat–Shamir transcript — §6.
 //!
 //! The signing and verification protocols both follow a 7-message

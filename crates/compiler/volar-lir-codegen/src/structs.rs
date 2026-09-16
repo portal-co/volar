@@ -36,6 +36,10 @@ pub struct StructRegistry {
     /// Module type aliases (name → target type) so bare `TypeParam("Zq")`
     /// names (alias uses parsed as unresolved type params) resolve.
     pub(crate) aliases: BTreeMap<String, IrType>,
+    /// Module-level integer constants, so alias targets like
+    /// `[u8; KAPPA_BYTES]` (whose length is a `TypeParam`) resolve during
+    /// registry-level type conversion, which has no `MonoEnv` access.
+    pub(crate) consts: BTreeMap<String, usize>,
 }
 
 #[derive(Clone)]
@@ -54,6 +58,7 @@ impl StructRegistry {
             native_types: BTreeMap::new(),
             lenient: false,
             aliases: BTreeMap::new(),
+            consts: BTreeMap::new(),
         }
     }
 
@@ -274,6 +279,9 @@ fn struct_instance_env(ir_struct: &IrStruct, type_args: &[IrType], outer: &MonoE
     let mut env = MonoEnv::new(outer.hash_suffix.clone());
     // Named module constants participate in field-type length resolution.
     env.consts = outer.consts.clone();
+    // Module type aliases (e.g. `Block = [u8; KAPPA_BYTES]`) participate in
+    // field-type resolution.
+    env.aliases = outer.aliases.clone();
     for (parameter, argument) in ir_struct.generics.iter().zip(type_args.iter()) {
         let argument = mono_type(argument, outer);
         // Length-like args only: numeric `TypeParam("16")`, typenum `U1`, or an
@@ -460,12 +468,15 @@ pub fn ensure_type_nominals<T: LirTarget<P>, P: Clone>(
                 }
                 return;
             }
-            // `Vec<T>` (std, parsed as a nominal struct with one type arg):
-            // synthesize a fat-pointer layout `{ data: Ptr<T>, len: U64 }`.
+            // `Vec<T>` / `VecDeque<T>` (std, parsed as a nominal struct with
+            // one type arg): synthesize a fat-pointer layout
+            // `{ data: Ptr<T>, len: U64 }`.
             // `ir_type_to_lir` has no `target` access, so the synthesized
             // definition must be created here, before any field of a
             // containing struct is mapped.
-            if matches!(&kind, StructKind::Custom(n) if n == "Vec") && type_args.len() == 1 {
+            if matches!(&kind, StructKind::Custom(n) if n == "Vec" || n == "VecDeque")
+                && type_args.len() == 1
+            {
                 ensure_type_nominals(&type_args[0], registry, target, env, all_structs, all_enums);
                 register_tuples_in_type(&type_args[0], registry, target, env);
                 let key = nominal_instance_name(&kind, &type_args);
@@ -491,6 +502,59 @@ pub fn ensure_type_nominals<T: LirTarget<P>, P: Clone>(
                             id,
                             field_names: vec!["data".to_string(), "len".to_string()],
                             field_types: vec![LirType::Ptr(Box::new(elem_lir)), LirType::U64],
+                        },
+                    );
+                }
+                return;
+            }
+            // `PhantomData<T>` (std): zero-sized marker; synthesize an
+            // empty struct so containing structs' field types register.
+            if matches!(&kind, StructKind::Custom(n) if n == "PhantomData") && type_args.len() == 1 {
+                let key = nominal_instance_name(&kind, &type_args);
+                if registry.id_for_name(&key).is_none() {
+                    let id = target.define_struct(StructDef {
+                        name: key.clone(),
+                        fields: vec![],
+                    });
+                    registry.by_name.insert(
+                        key,
+                        StructEntry {
+                            id,
+                            field_names: vec![],
+                            field_types: vec![],
+                        },
+                    );
+                }
+                return;
+            }
+            // `Option<T>` (std): synthesize a tagged layout
+            // `{ is_some: U8, value: T }`, mirroring how enums lower.
+            if matches!(&kind, StructKind::Custom(n) if n == "Option") && type_args.len() == 1 {
+                ensure_type_nominals(&type_args[0], registry, target, env, all_structs, all_enums);
+                register_tuples_in_type(&type_args[0], registry, target, env);
+                let key = nominal_instance_name(&kind, &type_args);
+                if registry.id_for_name(&key).is_none() {
+                    let value_lir = registry.ir_type_to_lir(&type_args[0], env);
+                    let struct_def = StructDef {
+                        name: key.clone(),
+                        fields: vec![
+                            FieldDef {
+                                name: "is_some".to_string(),
+                                ty: LirType::U8,
+                            },
+                            FieldDef {
+                                name: "value".to_string(),
+                                ty: value_lir.clone(),
+                            },
+                        ],
+                    };
+                    let id = target.define_struct(struct_def);
+                    registry.by_name.insert(
+                        key,
+                        StructEntry {
+                            id,
+                            field_names: vec!["is_some".to_string(), "value".to_string()],
+                            field_types: vec![LirType::U8, value_lir],
                         },
                     );
                 }
@@ -557,6 +621,18 @@ pub fn build_struct_registry<T: LirTarget<P>, P: Clone>(
 
 /// Like [`build_struct_registry`], but sets `lenient` before field conversion so
 /// unknown externals (e.g. `Vec<u8>`) do not panic during registration.
+/// Collect module-level integer constants into `env.consts` so array
+/// lengths like `[u8; KAPPA_BYTES]` resolve during registration. Called by
+/// [`build_struct_registry_with_lenient`] and available to callers that run
+/// enum registration first (see `lower_planned_module`).
+pub fn collect_module_consts<P: Clone>(module: &IrModule<IrFunction<P>, P>, env: &mut MonoEnv) {
+    for c in &module.consts {
+        if let IrExprKind::Lit(IrLit::Int(v)) = &c.value.kind {
+            env.consts.entry(c.name.clone()).or_insert(*v as usize);
+        }
+    }
+}
+
 pub fn build_struct_registry_with_lenient<T: LirTarget<P>, P: Clone>(
     module: &IrModule<IrFunction<P>, P>,
     target: &mut T,
@@ -572,15 +648,16 @@ pub fn build_struct_registry_with_lenient<T: LirTarget<P>, P: Clone>(
             .entry(alias.name.clone())
             .or_insert_with(|| alias.target.clone());
     }
+    for c in &module.consts {
+        if let IrExprKind::Lit(IrLit::Int(v)) = &c.value.kind {
+            registry.consts.entry(c.name.clone()).or_insert(*v as usize);
+        }
+    }
 
     // Non-generic struct field types may reference module-level constants
     // (e.g. FAEST's `[u8; LAMBDA_BYTES]`); make them resolvable in `env`.
     let mut env = env.clone();
-    for c in &module.consts {
-        if let IrExprKind::Lit(IrLit::Int(v)) = &c.value.kind {
-            env.consts.entry(c.name.clone()).or_insert(*v as usize);
-        }
-    }
+    collect_module_consts(module, &mut env);
 
     for ir_struct in &module.structs {
         // Skip GenericArray — it maps to LirType::Arr directly, not a LIR struct.
@@ -633,6 +710,9 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                 ArrayLength::Const(n) => *n,
                 ArrayLength::TypeNum(tn) => tn.to_usize(),
                 ArrayLength::TypeParam(name) => {
+                    if let Some(&n) = registry.consts.get(name) {
+                        return LirType::Arr(Box::new(ir_type_to_lir_inner(elem, registry)), n);
+                    }
                     if registry.lenient {
                         // Opaque widen: unknown const-generic length → empty array.
                         0
@@ -762,6 +842,11 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                 }
             }
         }
+
+        // `impl Trait` / `dyn Trait` (e.g. `R: SpecRng` RNG parameters):
+        // host-provided state passed by reference; an opaque pointer is the
+        // LIR value representation.
+        IrType::Existential { .. } => LirType::Ptr(Box::new(LirType::U8)),
 
         other => {
             if registry.lenient {
@@ -1058,7 +1143,6 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
             });
         }
 
-        struct_registry.lenient = outer_lenient;
 
         let max_payload_width = variant_entries
             .iter()
@@ -1112,5 +1196,6 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
         );
     }
 
+    struct_registry.lenient = outer_lenient;
     registry
 }

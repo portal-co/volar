@@ -60,23 +60,23 @@ fn custom(name: &str, args: Vec<IrType>) -> IrType {
 }
 
 fn lwe_ty() -> IrType {
-    custom("LweCiphertext", vec![tp("N_LWE")])
+    custom("BinfheLweCiphertext", vec![tp("N_LWE")])
 }
 
 fn rlwe_ty() -> IrType {
-    custom("RlweCiphertext", vec![tp("BIG_N")])
+    custom("BinfheRlweCiphertext", vec![tp("BIG_N")])
 }
 
 fn bk_ty() -> IrType {
     custom(
-        "BootstrappingKey",
+        "BinfheBootstrappingKey",
         vec![tp("N_LWE"), tp("BIG_N"), tp("BS_ELL"), tp("KS_ELL")],
     )
 }
 
 fn cbk_ty() -> IrType {
     custom(
-        "CircuitBootstrappingKey",
+        "CircuitBinfheBootstrappingKey",
         vec![
             tp("N_LWE"),
             tp("BIG_N"),
@@ -119,7 +119,7 @@ fn binfhe_generics() -> Vec<IrGenericParam> {
     .collect()
 }
 
-/// Type args for the 10-const gate surface (binfhe_gate_* / binfhe_cmux).
+/// Type args for the 10-const gate surface (binfhe_gate_* / binfhe_rgsw_cmux).
 fn gate_tys() -> Vec<IrType> {
     [
         "N_LWE",
@@ -201,7 +201,7 @@ fn let_stmt<Q: Clone + Default>(name: &str, init: IrExpr<Q>) -> IrStmt<Q> {
 ///
 /// The flat path lowers `IRBlocks` to a movfuscated Boolean circuit and
 /// emits `binfhe_gate_*` calls. All gate calls take the `bk` parameter
-/// (`&BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>`); the generated
+/// (`&BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>`); the generated
 /// function is generic over the 12 binfhe const parameters.
 pub struct BinFheScheme;
 
@@ -284,14 +284,14 @@ impl FheScheme for BinFheScheme {
         )
     }
 
-    fn emit_cmux<Q: Clone + Default>(
+    fn emit_binfhe_rgsw_cmux<Q: Clone + Default>(
         &self,
         sel: IrExpr<Q>,
         a: IrExpr<Q>,
         b: IrExpr<Q>,
     ) -> IrExpr<Q> {
         call(
-            binfhe_path("pbs", "binfhe_cmux", gate_tys()),
+            binfhe_path("pbs", "binfhe_rgsw_cmux", gate_tys()),
             vec![sel, a, b, var("bk")],
         )
     }
@@ -303,7 +303,7 @@ impl FheScheme for BinFheScheme {
                 vec![expr, delta_expr()],
             );
         }
-        // [bool; width] → [LweCiphertext; width]: promote each element.
+        // [bool; width] → [BinfheLweCiphertext; width]: promote each element.
         ir_expr(IrExprKind::FixedArray(
             (0..width)
                 .map(|bit| {
@@ -646,7 +646,7 @@ fn build_bootstrap_plan_inner<P: Clone>(
                     });
                     id
                 } else {
-                    let input_ids: Vec<u32> = cone
+                    let input_ids: alloc::vec::Vec<u32> = cone
                         .inputs
                         .iter()
                         .map(|&i| materialize(i, states, ops, luts, wire_count))
@@ -658,7 +658,7 @@ fn build_bootstrap_plan_inner<P: Clone>(
                     let id = *wire_count;
                     *wire_count += 1;
                     ops.push(PlanOp::Lut {
-                        inputs: input_ids,
+                        inputs: volar_spec::binfhe::plan::LutInputs::from_slice(&input_ids),
                         table: table_id,
                         out: id,
                     });
@@ -810,6 +810,7 @@ fn build_bootstrap_plan_inner<P: Clone>(
             PlanOp::Not { input, .. } => wire_layer[*input as usize] + 1,
             PlanOp::Lut { inputs, .. } => {
                 inputs
+                    .as_slice()
                     .iter()
                     .map(|w| wire_layer[*w as usize])
                     .max()
@@ -865,10 +866,10 @@ fn build_bootstrap_plan_inner<P: Clone>(
 ///
 /// ```rust,ignore
 /// fn {name}_binfhe<...>(
-///     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
-///     cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>, // only if CB ops
-///     input_0..: LweCiphertext<N_LWE>,
-///     cell_0..: RlweCiphertext<BIG_N>,                                       // only if cell ops
+///     bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+///     cbk: &CircuitBinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>, // only if CB ops
+///     input_0..: BinfheLweCiphertext<N_LWE>,
+///     cell_0..: BinfheRlweCiphertext<BIG_N>,                                       // only if cell ops
 /// ) -> ...
 /// ```
 ///
@@ -938,6 +939,7 @@ pub fn weave_binfhe_plan(
                     let spec = &plan.luts[*table as usize];
                     let input_array = ref_expr(ir_expr(IrExprKind::Array(
                         inputs
+                            .as_slice()
                             .iter()
                             .map(|w| clone_expr(var(&format!("w_{}", w))))
                             .collect(),
@@ -987,7 +989,7 @@ pub fn weave_binfhe_plan(
                     let init = call(
                         binfhe_path(
                             "rgsw",
-                            "cmux",
+                            "binfhe_rgsw_cmux",
                             ["BIG_N", "LOG_Q", "BS_ELL", "BS_BASE_LOG"]
                                 .iter()
                                 .map(|s| tp(s))
@@ -1280,12 +1282,12 @@ mod tests {
     /// Prepend binfhe imports and cargo-check the generated module (same
     /// harness as the legacy TFHE compile checks).
     fn compile_check_binfhe(code: &str, test_name: &str) {
-        let uses = "use volar_spec::binfhe::lwe::{LweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
-                    use volar_spec::binfhe::rlwe::RlweCiphertext;\n\
-                    use volar_spec::binfhe::rgsw::cmux;\n\
-                    use volar_spec::binfhe::keys::BootstrappingKey;\n\
-                    use volar_spec::binfhe::circuit_bs::{CircuitBootstrappingKey, circuit_bootstrap};\n\
-                    use volar_spec::binfhe::pbs::{binfhe_gate_and, binfhe_gate_or, binfhe_gate_xor, binfhe_cmux, binfhe_lut_read_dyn};\n";
+        let uses = "use volar_spec::binfhe::lwe::{BinfheLweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
+                    use volar_spec::binfhe::rlwe::BinfheRlweCiphertext;\n\
+                    use volar_spec::binfhe::rgsw::binfhe_rgsw_cmux;\n\
+                    use volar_spec::binfhe::keys::BinfheBootstrappingKey;\n\
+                    use volar_spec::binfhe::circuit_bs::{CircuitBinfheBootstrappingKey, circuit_bootstrap};\n\
+                    use volar_spec::binfhe::pbs::{binfhe_gate_and, binfhe_gate_or, binfhe_gate_xor, binfhe_rgsw_cmux, binfhe_lut_read_dyn};\n";
         let with_imports = if let Some(newline) = code.find('\n') {
             let (head, tail) = code.split_at(newline + 1);
             alloc::format!("{head}{uses}{tail}")
@@ -1295,12 +1297,32 @@ mod tests {
         crate::tests_common::run_compile_check(&with_imports, test_name);
     }
 
+    /// The weaver's emitted IR must itself be Vec-free (AGENTS.md Core
+    /// Design Rule 11): the weaver emits presized calls, never a `Vec`.
+    fn assert_module_vec_free(plan: &BootstrapPlan, name: &str) {
+        let module = weave_binfhe_plan(plan, name);
+        let errors = volar_compiler_passes::vec_lint::lint_module(module.inner(), &|_| false);
+        assert!(
+            errors.is_empty(),
+            "weaver-emitted IR must be Vec-free: {:?}",
+            errors
+        );
+    }
+
     #[test]
-    fn fused_and_circuit_compiles() {
+    fn fused_and_circuit_compiles_and_is_vec_free() {
         let plan = build_bootstrap_plan(&build_and_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
+        assert_module_vec_free(&plan, "and_fused");
         let module = weave_binfhe_plan(&plan, "and_fused");
         let code = crate::fhe::print_fhe_flat_module(module.inner(), true);
         compile_check_binfhe(&code, "binfhe_fused_and");
+    }
+
+    #[test]
+    fn fused_xor_and_plan_is_vec_free() {
+        let plan =
+            build_bootstrap_plan(&xor_and_or_circuit(), 4, (30, 34), ProfileId::Toy).unwrap();
+        assert_module_vec_free(&plan, "xor_and_or");
     }
 
     #[test]
@@ -1360,11 +1382,11 @@ mod tests {
                         write!(s, "PlanOp::Not {{ input: {}, out: {} }},", input, out).unwrap();
                     }
                     PlanOp::Lut { inputs, table, out } => {
-                        write!(s, "PlanOp::Lut {{ inputs: vec![").unwrap();
-                        for w in inputs {
+                        write!(s, "PlanOp::Lut {{ inputs: volar_spec::binfhe::plan::LutInputs::from_slice(&[").unwrap();
+                        for w in inputs.as_slice() {
                             write!(s, "{},", w).unwrap();
                         }
-                        write!(s, "], table: {}, out: {} }},", table, out).unwrap();
+                        write!(s, "]), table: {}, out: {} }},", table, out).unwrap();
                     }
                     PlanOp::CircuitBootstrap { input, out } => {
                         write!(
@@ -1458,11 +1480,11 @@ mod e2e {{
         BootstrapPlan, FailureBudget, LutSpec, PlanOp, ProfileId, execute_plan,
     }};
     use volar_spec::binfhe::circuit_bs::gen_circuit_bootstrapping_key;
-    use volar_spec::binfhe::keys::gen_bootstrapping_key;
+    use volar_spec::binfhe::keys::binfhe_gen_bootstrapping_key;
     use volar_spec::binfhe::lwe::{{
-        gen_lwe_secret_key, lwe_decrypt, lwe_encrypt, wire_delta,
+        binfhe_gen_lwe_secret_key, binfhe_lwe_decrypt, binfhe_lwe_encrypt, wire_delta,
     }};
-    use volar_spec::binfhe::rlwe::gen_rlwe_secret_key;
+    use volar_spec::binfhe::rlwe::binfhe_gen_rlwe_secret_key;
     use volar_spec::SpecRng;
 
     const N_LWE: usize = 8;
@@ -1498,9 +1520,9 @@ mod e2e {{
         let plan: BootstrapPlan = {plan_src};
         plan.validate().unwrap();
         let mut rng = TestRng::new(0xE2E0);
-        let lwe_sk = gen_lwe_secret_key::<N_LWE, _>(&mut rng);
-        let rlwe_sk = gen_rlwe_secret_key::<BIG_N, _>(&mut rng);
-        let bk = gen_bootstrapping_key::<
+        let lwe_sk = binfhe_gen_lwe_secret_key::<N_LWE, _>(&mut rng);
+        let rlwe_sk = binfhe_gen_rlwe_secret_key::<BIG_N, _>(&mut rng);
+        let bk = binfhe_gen_bootstrapping_key::<
             N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
             BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, 0, _,
         >(&lwe_sk, &rlwe_sk, &mut rng);
@@ -1514,8 +1536,8 @@ mod e2e {{
             for b in [false, true] {{
                 let mut ra = TestRng::new(1 + a as u64);
                 let mut rb = TestRng::new(3 + b as u64);
-                let ca = lwe_encrypt::<N_LWE, LOG_Q_LWE, 0, _>(a, delta, &lwe_sk, &mut ra);
-                let cb = lwe_encrypt::<N_LWE, LOG_Q_LWE, 0, _>(b, delta, &lwe_sk, &mut rb);
+                let ca = binfhe_lwe_encrypt::<N_LWE, LOG_Q_LWE, 0, _>(a, delta, &lwe_sk, &mut ra);
+                let cb = binfhe_lwe_encrypt::<N_LWE, LOG_Q_LWE, 0, _>(b, delta, &lwe_sk, &mut rb);
                 let generated = {fn_name}::<
                     N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
                     BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, PRIV_ELL, PRIV_BASE_LOG, K_MAX,
@@ -1532,7 +1554,7 @@ mod e2e {{
                 );
                 let expected = {expected_expr};
                 assert_eq!(
-                    lwe_decrypt::<N_LWE, LOG_Q_LWE>(&generated, &lwe_sk, delta),
+                    binfhe_lwe_decrypt::<N_LWE, LOG_Q_LWE>(&generated, &lwe_sk, delta),
                     expected,
                     "plaintext semantics (a={{}}, b={{}})",
                     a, b
@@ -1581,8 +1603,8 @@ mod e2e {{
         // The generated function name must match the e2e harness call.
         assert!(code.contains("fn xor_and_or_binfhe"), "code:\n{}", code);
         // Insert imports after the leading `#![allow]` inner attribute.
-        let uses = "use volar_spec::binfhe::lwe::{LweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
-                    use volar_spec::binfhe::keys::BootstrappingKey;\n\
+        let uses = "use volar_spec::binfhe::lwe::{BinfheLweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
+                    use volar_spec::binfhe::keys::BinfheBootstrappingKey;\n\
                     use volar_spec::binfhe::pbs::binfhe_lut_read_dyn;\n";
         let code = if let Some(newline) = code.find('\n') {
             let (head, tail) = code.split_at(newline + 1);

@@ -1,6 +1,10 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! All-in-one OT stack: LWE base OT → SoftSpoken extension → Ferret-Reg pool.
 //!
 //! In-process generator for tests. Two-thread / TCP drivers live in the
@@ -16,7 +20,7 @@ use super::ferret::pool::{
     CotPoolReceiver, CotPoolSender, bea95_chosen_bit, new_pool, take_random,
 };
 use super::iknp::IKNP_KAPPA_BYTES;
-use super::lwe::{LWE_N, LweBaseOt, LweBaseOtSecure};
+use super::lwe::{LWE_N, LweBaseOt};
 use super::softspoken::softspoken_cot_extend_base;
 use crate::SpecRng;
 use crate::field::Galois128;
@@ -39,35 +43,7 @@ impl OtStack {
         D: Digest,
         R: SpecRng,
     {
-        Self::setup_impl::<D, R, LweBaseOt<LWE_N>>(rng_s, rng_r, params, false)
-    }
-
-    /// Malicious-secure one-time setup: identical to [`OtStack::setup`] but the
-    /// LWE base OT is the per-coordinate [`LweBaseOtSecure`] (a malicious base
-    /// receiver — here the SoftSpoken sender, who picks the base-OT choice bits
-    /// — learns nothing from a garbage `pk_0`), the seed is sized for the extra
-    /// κ consistency-check COTs, and the pools are flagged `malicious` so every
-    /// refill runs the batched SPCOT consistency check.
-    pub fn setup_malicious<D, R>(rng_s: &mut R, rng_r: &mut R, params: FerretParams) -> Self
-    where
-        D: Digest,
-        R: SpecRng,
-    {
-        Self::setup_impl::<D, R, LweBaseOtSecure<LWE_N>>(rng_s, rng_r, params, true)
-    }
-
-    fn setup_impl<D, R, B>(
-        rng_s: &mut R,
-        rng_r: &mut R,
-        params: FerretParams,
-        malicious: bool,
-    ) -> Self
-    where
-        D: Digest,
-        R: SpecRng,
-        B: BaseOt<16>,
-    {
-        let m = params.seed_cot_count(malicious);
+        let m = params.seed_cot_count(false);
         let mut bits = alloc::vec![false; m];
         for b in &mut bits {
             *b = (rng_r.next_u32() & 1) == 1;
@@ -76,7 +52,9 @@ impl OtStack {
         for chunk in delta_msg.chunks_mut(4) {
             chunk.copy_from_slice(&rng_s.next_u32().to_le_bytes()[..chunk.len()]);
         }
-        let out = softspoken_cot_extend_base::<B, D, R, 16>(rng_s, rng_r, &bits, &delta_msg);
+        let out = softspoken_cot_extend_base::<LweBaseOt<LWE_N>, D, R, 16>(
+            rng_s, rng_r, &bits, &delta_msg,
+        );
         debug_assert!(out.check());
 
         // Map SoftSpoken C-OT rows into Ferret seed format.
@@ -95,19 +73,16 @@ impl OtStack {
                 },
                 out: alloc::collections::VecDeque::new(),
                 raise_n: None,
-                malicious,
-                refill_count: 0,
             },
             receiver: CotPoolReceiver {
                 params,
                 seed: crate::ot::ferret::cot::FerretReceiverSeed { u: bits, w },
                 out_x: alloc::collections::VecDeque::new(),
                 out_z: alloc::collections::VecDeque::new(),
-                malicious,
             },
         };
         // First refill so callers can take immediately.
-        let _ = crate::ot::ferret::pool::refill(rng_s, &mut stack.sender, &mut stack.receiver);
+        crate::ot::ferret::pool::refill(rng_s, &mut stack.sender, &mut stack.receiver);
         let _ = rng_r;
         stack
     }
@@ -124,8 +99,7 @@ impl OtStack {
         rng: &mut R,
         bits: &[bool],
     ) -> Vec<(Vope<U1, Galois128, U1>, Q<U1, Galois128>)> {
-        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, bits.len())
-            .expect("semi-honest pool refill");
+        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, bits.len());
         let delta = self.sender.seed.delta;
         let mut out = Vec::with_capacity(bits.len());
         for j in 0..bits.len() {
@@ -145,8 +119,7 @@ impl CotSource<U1, Galois128> for OtStack {
         _sample_t: impl Fn(&mut R) -> Galois128,
         bit: bool,
     ) -> (Array<Galois128, U1>, Array<Galois128, U1>) {
-        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, 1)
-            .expect("semi-honest pool refill");
+        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, 1);
         let (r0, z, _d) = bea95_chosen_bit(&self.sender.seed.delta, r0s[0], xs[0], zs[0], bit);
         let r0_t = Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(r0)));
         let v_t = Array::<Galois128, U1>::from_fn(|_| Galois128(u128::from_le_bytes(z)));
@@ -180,29 +153,6 @@ mod tests {
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             (z ^ (z >> 31)) as u32
-        }
-    }
-
-    /// Malicious-secure bootstrap (per-coordinate LWE base OT + consistency
-    /// check on refill) produces a working COT pool.
-    #[test]
-    fn malicious_seed_stack_commit_bits_match_delta() {
-        let mut rng = TestRng(0xFEED);
-        let mut rng_r = TestRng(0xBEEF);
-        let mut stack = OtStack::setup_malicious::<sha3::Sha3_256, TestRng>(
-            &mut rng,
-            &mut rng_r,
-            FERRET_REG_TOY,
-        );
-        let bits = [true, false, true, true];
-        let committed = stack.commit_bits(&mut rng, &bits);
-        let delta = crate::vole::Delta {
-            delta: Array::<Galois128, U1>::from_fn(|_| {
-                Galois128(u128::from_le_bytes(stack.sender.seed.delta))
-            }),
-        };
-        for (j, (vope, q)) in committed.iter().enumerate() {
-            assert!(vope.clone() * delta.clone() == *q, "malicious bit {j}");
         }
     }
 

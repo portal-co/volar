@@ -23,7 +23,7 @@ use crate::binfhe::torus;
 
 /// Binary LWE secret key.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LweSecretKey<const N: usize> {
+pub struct BinfheLweSecretKey<const N: usize> {
     pub key: [u8; N],
 }
 
@@ -31,7 +31,7 @@ pub struct LweSecretKey<const N: usize> {
 ///
 /// All components are stored reduced modulo the operation's modulus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LweCiphertext<const N: usize> {
+pub struct BinfheLweCiphertext<const N: usize> {
     pub a: [u32; N],
     pub b: u32,
 }
@@ -39,36 +39,12 @@ pub struct LweCiphertext<const N: usize> {
 /// The canonical Boolean wire delta for maximum LUT arity `K`:
 /// `Delta = q / 2^(K+1)`. Requires `K + 1 <= LOG_Q_LWE` (profiles guarantee
 /// `K + 2 <= LOG_Q_LWE`, leaving one more bit for the centering offset).
-/// Validate and return the canonical Boolean-wire delta for `k_max`.
-///
-/// The uniform selector needs a half-bin centering offset, so it requires
-/// `k_max + 2 <= LOG_Q_LWE`; `k_max = 0` is allowed for a plan containing no
-/// LUT input, while a normal Boolean plan uses `k_max >= 1`. Unlike
-/// [`wire_delta`], this is suitable at an encryption/decryption boundary that
-/// receives its shape from a plan rather than a compile-time constant.
-#[inline]
-pub const fn checked_wire_delta<const LOG_Q_LWE: u32>(k_max: usize) -> Option<u32> {
-    if k_max > (LOG_Q_LWE as usize).saturating_sub(2) {
-        None
-    } else {
-        Some(1u32 << (LOG_Q_LWE - 1 - k_max as u32))
-    }
-}
-
-/// Canonical Boolean-wire delta for a previously validated `k_max`.
-///
-/// Internal fixed-shape operations use this compact form. Public runtime
-/// boundaries should use [`checked_wire_delta`] and reject an invalid plan
-/// shape before encrypting or decrypting any wire.
 pub const fn wire_delta<const LOG_Q_LWE: u32>(k_max: usize) -> u32 {
-    match checked_wire_delta::<LOG_Q_LWE>(k_max) {
-        Some(delta) => delta,
-        None => panic!("binfhe wire encoding exceeds the modulus capacity"),
-    }
+    1u32 << (LOG_Q_LWE - 1 - k_max as u32)
 }
 
 /// Generate a binary LWE secret key.
-pub fn gen_lwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> LweSecretKey<N> {
+pub fn binfhe_gen_lwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> BinfheLweSecretKey<N> {
     let mut key = [0u8; N];
     let mut i = 0;
     while i < N {
@@ -80,28 +56,28 @@ pub fn gen_lwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> LweSecretK
             i += 1;
         }
     }
-    LweSecretKey { key }
+    BinfheLweSecretKey { key }
 }
 
 /// Encrypt bit `m` at encoding `delta` modulo `2^LOG_M` with CBD-`ETA`
 /// noise.
-pub fn lwe_encrypt<const N: usize, const LOG_M: u32, const ETA: u32, R: SpecRng>(
+pub fn binfhe_lwe_encrypt<const N: usize, const LOG_M: u32, const ETA: u32, R: SpecRng>(
     m: bool,
     delta: u32,
-    sk: &LweSecretKey<N>,
+    sk: &BinfheLweSecretKey<N>,
     rng: &mut R,
-) -> LweCiphertext<N> {
+) -> BinfheLweCiphertext<N> {
     let msg = if m { delta } else { 0 };
-    lwe_encrypt_raw::<N, LOG_M, ETA, R>(msg, sk, rng)
+    binfhe_lwe_encrypt_raw::<N, LOG_M, ETA, R>(msg, sk, rng)
 }
 
 /// Encrypt a raw (already scaled) phase value. Used for key-switching-key
 /// construction, where the payload is a gadget-multiple of a key bit.
-pub fn lwe_encrypt_raw<const N: usize, const LOG_M: u32, const ETA: u32, R: SpecRng>(
+pub fn binfhe_lwe_encrypt_raw<const N: usize, const LOG_M: u32, const ETA: u32, R: SpecRng>(
     msg: u32,
-    sk: &LweSecretKey<N>,
+    sk: &BinfheLweSecretKey<N>,
     rng: &mut R,
-) -> LweCiphertext<N> {
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for ai in a.iter_mut() {
         *ai = torus::reduce::<LOG_M>(rng.next_u32());
@@ -112,14 +88,14 @@ pub fn lwe_encrypt_raw<const N: usize, const LOG_M: u32, const ETA: u32, R: Spec
     }
     let e = sampler::sample_error::<LOG_M, ETA, R>(rng);
     let b = torus::reduce::<LOG_M>(dot.wrapping_add(e).wrapping_add(msg));
-    LweCiphertext { a, b }
+    BinfheLweCiphertext { a, b }
 }
 
 /// Phase `b - <a, s>` modulo `2^LOG_M`. For a fresh ciphertext this is
 /// `m * delta + e`.
 pub fn lwe_phase<const N: usize, const LOG_M: u32>(
-    ct: &LweCiphertext<N>,
-    sk: &LweSecretKey<N>,
+    ct: &BinfheLweCiphertext<N>,
+    sk: &BinfheLweSecretKey<N>,
 ) -> u32 {
     let mut dot = 0u32;
     for i in 0..N {
@@ -138,95 +114,100 @@ pub const fn lwe_decode<const LOG_M: u32>(phase: u32, delta: u32) -> bool {
 }
 
 /// Decrypt a Boolean wire ciphertext.
-pub fn lwe_decrypt<const N: usize, const LOG_M: u32>(
-    ct: &LweCiphertext<N>,
-    sk: &LweSecretKey<N>,
+pub fn binfhe_lwe_decrypt<const N: usize, const LOG_M: u32>(
+    ct: &BinfheLweCiphertext<N>,
+    sk: &BinfheLweSecretKey<N>,
     delta: u32,
 ) -> bool {
     lwe_decode::<LOG_M>(lwe_phase::<N, LOG_M>(ct, sk), delta)
 }
 
 /// Exact ciphertext addition.
-pub fn lwe_add<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
-    y: &LweCiphertext<N>,
-) -> LweCiphertext<N> {
+pub fn binfhe_lwe_add<const N: usize, const LOG_M: u32>(
+    x: &BinfheLweCiphertext<N>,
+    y: &BinfheLweCiphertext<N>,
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
-        a[i] = torus::add::<LOG_M>(x.a[i], y.a[i]);
+        a[i] = torus::torus_add::<LOG_M>(x.a[i], y.a[i]);
     }
-    LweCiphertext {
+    BinfheLweCiphertext {
         a,
-        b: torus::add::<LOG_M>(x.b, y.b),
+        b: torus::torus_add::<LOG_M>(x.b, y.b),
     }
 }
 
 /// Exact ciphertext subtraction.
-pub fn lwe_sub<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
-    y: &LweCiphertext<N>,
-) -> LweCiphertext<N> {
+pub fn binfhe_lwe_sub<const N: usize, const LOG_M: u32>(
+    x: &BinfheLweCiphertext<N>,
+    y: &BinfheLweCiphertext<N>,
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
-        a[i] = torus::sub::<LOG_M>(x.a[i], y.a[i]);
+        a[i] = torus::torus_sub::<LOG_M>(x.a[i], y.a[i]);
     }
-    LweCiphertext {
+    BinfheLweCiphertext {
         a,
-        b: torus::sub::<LOG_M>(x.b, y.b),
+        b: torus::torus_sub::<LOG_M>(x.b, y.b),
     }
 }
 
 /// Exact ciphertext negation.
-pub fn lwe_neg<const N: usize, const LOG_M: u32>(x: &LweCiphertext<N>) -> LweCiphertext<N> {
+pub fn binfhe_lwe_neg<const N: usize, const LOG_M: u32>(
+    x: &BinfheLweCiphertext<N>,
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
-        a[i] = torus::neg::<LOG_M>(x.a[i]);
+        a[i] = torus::torus_neg::<LOG_M>(x.a[i]);
     }
-    LweCiphertext {
+    BinfheLweCiphertext {
         a,
-        b: torus::neg::<LOG_M>(x.b),
+        b: torus::torus_neg::<LOG_M>(x.b),
     }
 }
 
 /// Exact scaling by a cleartext integer (multi-input selector weights).
-pub fn lwe_scale<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
+pub fn binfhe_lwe_scale<const N: usize, const LOG_M: u32>(
+    x: &BinfheLweCiphertext<N>,
     c: u32,
-) -> LweCiphertext<N> {
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
         a[i] = torus::mul_exact::<LOG_M>(x.a[i], c);
     }
-    LweCiphertext {
+    BinfheLweCiphertext {
         a,
         b: torus::mul_exact::<LOG_M>(x.b, c),
     }
 }
 
 /// Exact addition of a cleartext constant to the body.
-pub fn lwe_add_const<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
+pub fn binfhe_lwe_add_const<const N: usize, const LOG_M: u32>(
+    x: &BinfheLweCiphertext<N>,
     c: u32,
-) -> LweCiphertext<N> {
-    LweCiphertext {
+) -> BinfheLweCiphertext<N> {
+    BinfheLweCiphertext {
         a: x.a,
-        b: torus::add::<LOG_M>(x.b, c),
+        b: torus::torus_add::<LOG_M>(x.b, c),
     }
 }
 
 /// Free NOT gate: `phase -> Delta - phase`. Exact for any wire encoding.
 pub fn binfhe_not<const N: usize, const LOG_M: u32>(
-    x: &LweCiphertext<N>,
+    x: &BinfheLweCiphertext<N>,
     delta: u32,
-) -> LweCiphertext<N> {
-    let mut out = lwe_neg::<N, LOG_M>(x);
-    out.b = torus::add::<LOG_M>(out.b, delta);
+) -> BinfheLweCiphertext<N> {
+    let mut out = binfhe_lwe_neg::<N, LOG_M>(x);
+    out.b = torus::torus_add::<LOG_M>(out.b, delta);
     out
 }
 
 /// Trivial (mask-zero) encryption of a cleartext Boolean at `delta`.
-pub fn binfhe_trivial<const N: usize, const LOG_M: u32>(m: bool, delta: u32) -> LweCiphertext<N> {
-    LweCiphertext {
+pub fn binfhe_trivial<const N: usize, const LOG_M: u32>(
+    m: bool,
+    delta: u32,
+) -> BinfheLweCiphertext<N> {
+    BinfheLweCiphertext {
         a: [0u32; N],
         b: if m { delta } else { 0 },
     }
@@ -258,9 +239,9 @@ mod tests {
 
     #[test]
     fn keygen_is_deterministic_and_binary() {
-        let a = gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(5));
-        let b = gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(5));
-        let c = gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(6));
+        let a = binfhe_gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(5));
+        let b = binfhe_gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(5));
+        let c = binfhe_gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(6));
         assert_eq!(a, b, "same seed must reproduce the key");
         assert_ne!(a, c, "different seeds must differ");
         assert!(a.key.iter().all(|&k| k <= 1), "binary key");
@@ -269,17 +250,17 @@ mod tests {
     #[test]
     fn encrypt_decrypt_roundtrip_all_wire_encodings() {
         // K = 1, 2, 3 (Delta = q/4, q/8, q/16) on the exact toy profile.
-        let sk = gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(1));
+        let sk = binfhe_gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(1));
         for k in 1..=3u32 {
             let delta = wire_delta::<LOG_Q>(k as usize);
             for m in [false, true] {
                 for seed in 0..8u64 {
                     let mut rng = TestRng::new(seed * 16 + k as u64);
-                    let ct = lwe_encrypt::<{ toy::N_LWE }, LOG_Q, { toy::CBD_ETA }, _>(
+                    let ct = binfhe_lwe_encrypt::<{ toy::N_LWE }, LOG_Q, { toy::CBD_ETA }, _>(
                         m, delta, &sk, &mut rng,
                     );
                     assert_eq!(
-                        lwe_decrypt::<{ toy::N_LWE }, LOG_Q>(&ct, &sk, delta),
+                        binfhe_lwe_decrypt::<{ toy::N_LWE }, LOG_Q>(&ct, &sk, delta),
                         m,
                         "K={k} m={m}"
                     );
@@ -297,36 +278,36 @@ mod tests {
 
     #[test]
     fn linear_ops_are_exact_ciphertext_arithmetic() {
-        let sk = gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(2));
+        let sk = binfhe_gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(2));
         let delta = wire_delta::<LOG_Q>(2); // K = 2 -> q/8 = 16
         let mut rng = TestRng::new(20);
-        let ct_a = lwe_encrypt::<{ toy::N_LWE }, LOG_Q, 0, _>(true, delta, &sk, &mut rng);
-        let ct_b = lwe_encrypt::<{ toy::N_LWE }, LOG_Q, 0, _>(false, delta, &sk, &mut rng);
+        let ct_a = binfhe_lwe_encrypt::<{ toy::N_LWE }, LOG_Q, 0, _>(true, delta, &sk, &mut rng);
+        let ct_b = binfhe_lwe_encrypt::<{ toy::N_LWE }, LOG_Q, 0, _>(false, delta, &sk, &mut rng);
 
-        // add: delta + 0 = delta
-        let s = lwe_add::<{ toy::N_LWE }, LOG_Q>(&ct_a, &ct_b);
+        // torus_add: delta + 0 = delta
+        let s = binfhe_lwe_add::<{ toy::N_LWE }, LOG_Q>(&ct_a, &ct_b);
         assert_eq!(lwe_phase::<{ toy::N_LWE }, LOG_Q>(&s, &sk), delta);
-        // sub
-        let d = lwe_sub::<{ toy::N_LWE }, LOG_Q>(&ct_a, &ct_b);
+        // torus_sub
+        let d = binfhe_lwe_sub::<{ toy::N_LWE }, LOG_Q>(&ct_a, &ct_b);
         assert_eq!(lwe_phase::<{ toy::N_LWE }, LOG_Q>(&d, &sk), delta);
-        // neg: -delta mod q
-        let n = lwe_neg::<{ toy::N_LWE }, LOG_Q>(&ct_a);
+        // torus_neg: -delta mod q
+        let n = binfhe_lwe_neg::<{ toy::N_LWE }, LOG_Q>(&ct_a);
         assert_eq!(lwe_phase::<{ toy::N_LWE }, LOG_Q>(&n, &sk), 128 - delta);
         // scale by exact integer (selector weight)
-        let w = lwe_scale::<{ toy::N_LWE }, LOG_Q>(&ct_a, 2);
+        let w = binfhe_lwe_scale::<{ toy::N_LWE }, LOG_Q>(&ct_a, 2);
         assert_eq!(lwe_phase::<{ toy::N_LWE }, LOG_Q>(&w, &sk), 2 * delta);
         // add_const
-        let c = lwe_add_const::<{ toy::N_LWE }, LOG_Q>(&ct_b, delta);
+        let c = binfhe_lwe_add_const::<{ toy::N_LWE }, LOG_Q>(&ct_b, delta);
         assert_eq!(lwe_phase::<{ toy::N_LWE }, LOG_Q>(&c, &sk), delta);
     }
 
     #[test]
     fn not_gate_and_trivial_are_exact_and_composable() {
-        let sk = gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(3));
+        let sk = binfhe_gen_lwe_secret_key::<{ toy::N_LWE }, _>(&mut TestRng::new(3));
         let delta = wire_delta::<LOG_Q>(3);
         let mut rng = TestRng::new(30);
         for m in [false, true] {
-            let ct = lwe_encrypt::<{ toy::N_LWE }, LOG_Q, 0, _>(m, delta, &sk, &mut rng);
+            let ct = binfhe_lwe_encrypt::<{ toy::N_LWE }, LOG_Q, 0, _>(m, delta, &sk, &mut rng);
             let not = binfhe_not::<{ toy::N_LWE }, LOG_Q>(&ct, delta);
             assert_eq!(
                 lwe_phase::<{ toy::N_LWE }, LOG_Q>(&not, &sk),
@@ -342,7 +323,10 @@ mod tests {
                 lwe_phase::<{ toy::N_LWE }, LOG_Q>(&t, &sk),
                 if m { delta } else { 0 }
             );
-            assert_eq!(lwe_decrypt::<{ toy::N_LWE }, LOG_Q>(&t, &sk, delta), m);
+            assert_eq!(
+                binfhe_lwe_decrypt::<{ toy::N_LWE }, LOG_Q>(&t, &sk, delta),
+                m
+            );
         }
     }
 

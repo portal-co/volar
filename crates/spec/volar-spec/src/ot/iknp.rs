@@ -1,6 +1,10 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
+//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
+//! transcripts, and batched commitments are runtime-sized host protocol
+//! buffers, not weaver-known compiled-program shapes; this module-level
+//! exemption applies to the whole file.
 //! IKNP-style correlated-OT extension (Ishai-Kilian-Nielsen-Petrank, 2003).
 //!
 //! Amortises κ base OTs into `M` correlated OTs at the cost of `O(M·κ)`
