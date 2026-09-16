@@ -2,6 +2,28 @@
 
 > Load at the start of a session to see what's done and what's next.
 
+## IR-not-text weaving + Vec linter — landed (2026-09)
+
+Two (rule + lint + migration) triples are in force (AGENTS.md rules 11 and
+13): the `Vec` elimination + `vec_lint` IR gate (spec program structure)
+and the weavers-emit-IR-not-text rule + `weave_text_lint` source gate
+(compiler workspace). `volar_spec::binfhe` LUT inputs are inline
+(`LutInputs`), eval keys have zero-heap borrowed views for virtual targets
+plus the owned `Vec` for native, and the whole spec is `vec_lint`-clean
+(runtime-sized OT/FAEST buffers exempted by category). The weaver
+`print_*` emitters are `#[doc(hidden)]` diagnostics; `volar-build`'s text
+routes and `nested_block_chunk` carry dated migration-in-progress
+exemptions. During migration we fixed five `volar-lir-codegen` lowering
+bugs (enum leniency restore, module consts into enum/instance envs,
+alias resolution in `mono_type`, VecDeque/Option/PhantomData/Existential
+mappings); `lir_backend_components` now has tfhe/vole_prover/vole_verifier
+green. The workspace resolves the whole `volar.git` family to local paths
+via the parent `.cargo/config.toml` patch. Open: `faest_core` extern arg
+marshalling and `vole_setup`'s `R: SpecRng` (no production RNG impl
+exists) are the direct-to-LIR Phase-2 inventory; the clippy CI job is a
+human-gated addition. Plans: `docs/fhe/vec-elimination-and-linter-plan.md`,
+`docs/ir-not-text-weaving-plan.md`.
+
 ## binfhe V2 (Track V2) — M1–M8 landed (2026-07)
 
 New `volar_spec::binfhe` module family: a from-scratch, licensed-parameter
