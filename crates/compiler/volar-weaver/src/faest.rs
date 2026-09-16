@@ -302,6 +302,12 @@ pub fn weave_faest_verifier_with_mode(
 ///
 /// Re-uses the VOLE printer because the output IR is structurally identical
 /// (same Vope/Q/Delta types, same gate dispatch pattern).
+/// **Diagnostic/test rendering only.** Production consumption of a woven
+/// program is its IR via `lower_module`/`lower_cfg_module` to an
+/// `LirTarget` (AGENTS.md Core Design Rule 13); do not feed this text
+/// to `rustc` in production paths.
+///
+#[doc(hidden)]
 pub fn print_weaved_faest_module(
     module: &IrModule<IrFunction<()>, ()>,
 ) -> String {

@@ -1041,6 +1041,12 @@ where
 // ============================================================================
 
 /// Render a weaved garble `IrModule` to Rust source.
+/// **Diagnostic/test rendering only.** Production consumption of a woven
+/// program is its IR via `lower_module`/`lower_cfg_module` to an
+/// `LirTarget` (AGENTS.md Core Design Rule 13); do not feed this text
+/// to `rustc` in production paths.
+///
+#[doc(hidden)]
 pub fn print_weaved_module(module: &IrModule<IrFunction>, self_contained: bool) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;

@@ -1357,6 +1357,12 @@ pub fn weave_hybrid_net_vole_verifier(
 ///
 /// Identical to [`crate::net::print_net_vole_cfg_module`]'s preamble plus the
 /// resilience-layer imports (`ResilientVoleTransport`, `ResumeToken`).
+/// **Diagnostic/test rendering only.** Production consumption of a woven
+/// program is its IR via `lower_module`/`lower_cfg_module` to an
+/// `LirTarget` (AGENTS.md Core Design Rule 13); do not feed this text
+/// to `rustc` in production paths.
+///
+#[doc(hidden)]
 pub fn print_hybrid_net_cfg_module(module: &IrCfgModule) -> String {
     use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
     use alloc::fmt::Write as _;

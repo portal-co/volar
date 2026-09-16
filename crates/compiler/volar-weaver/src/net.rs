@@ -1416,6 +1416,12 @@ pub fn weave_net_vole_verifier_loop(
 // ============================================================================
 
 /// Render a network VOLE `IrModule<IrFunction>` (flat) to Rust source.
+/// **Diagnostic/test rendering only.** Production consumption of a woven
+/// program is its IR via `lower_module`/`lower_cfg_module` to an
+/// `LirTarget` (AGENTS.md Core Design Rule 13); do not feed this text
+/// to `rustc` in production paths.
+///
+#[doc(hidden)]
 pub fn print_net_vole_module(module: &IrModule<IrFunction>) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;
@@ -1444,6 +1450,7 @@ pub fn print_net_vole_module(module: &IrModule<IrFunction>) -> String {
 }
 
 /// Render a network VOLE `IrCfgModule` (loop) to Rust source.
+#[doc(hidden)]
 pub fn print_net_vole_cfg_module(module: &IrCfgModule) -> String {
     use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
     use alloc::fmt::Write as _;

@@ -3619,6 +3619,12 @@ impl FheScheme for TfheScheme {
 // ============================================================================
 
 /// Render a CFG-weaved FHE `IrCfgModule` to Rust source.
+/// **Diagnostic/test rendering only.** Production consumption of a woven
+/// program is its IR via `lower_module`/`lower_cfg_module` to an
+/// `LirTarget` (AGENTS.md Core Design Rule 13); do not feed this text
+/// to `rustc` in production paths.
+///
+#[doc(hidden)]
 pub fn print_fhe_cfg_module(module: &IrCfgModule, self_contained: bool) -> String {
     use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
     use alloc::fmt::Write as _;
@@ -3636,6 +3642,13 @@ pub fn print_fhe_cfg_module(module: &IrCfgModule, self_contained: bool) -> Strin
 }
 
 /// Render a flat FHE `IrModule` to Rust source.
+///
+/// **Diagnostic/test rendering only.** Production consumption of a woven
+/// program is its IR via `lower_module`/`lower_cfg_module` to an
+/// `LirTarget` (AGENTS.md Core Design Rule 13); do not feed this text
+/// to `rustc` in production paths.
+///
+#[doc(hidden)]
 pub fn print_fhe_flat_module(module: &IrModule<IrFunction>, self_contained: bool) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;
