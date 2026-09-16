@@ -112,7 +112,21 @@ decisions where policy requires them. See
     weaver-known; data is not — classify by who knows the length. See
     [`docs/fhe/vec-elimination-and-linter-plan.md`](docs/fhe/vec-elimination-and-linter-plan.md).
 
-12. **ZK / non-ZK proving discipline is a hard boundary**: Proof artifacts
+13. **Weavers emit IR, not text.** A weaver's deliverable for a Rust
+    consumer is the complete woven program as typed IR
+    (`IrModule`/`IrCfgModule`). Producing Rust *source text* of a woven
+    program to be compiled by `rustc` is forbidden in production code:
+    route the IR through `lower_module`/`lower_cfg_module` to an
+    `LirTarget` (C99, WASM, or object code via `volar-build`) instead.
+    Rust text printing of woven modules is allowed only with a
+    `/// @volar-allow-rust-text: <category>: <reason>` doc comment
+    (categories: `test-fixture`, `diagnostic`, `ts-target`,
+    `migration-in-progress`). Backend text for non-`rustc` consumers
+    (C99, WASM, TypeScript) is not a violation. The `weave_text_lint`
+    source lint errors on violations in the compiler workspace. See
+    [`docs/ir-not-text-weaving-plan.md`](docs/ir-not-text-weaving-plan.md).
+
+14. **ZK / non-ZK proving discipline is a hard boundary**: Proof artifacts
     carry a compile-time discipline (`volar_discipline::Tagged<Z, _>`,
     markers `Zk` / `Transparent`, subtrait `NonZk`). A ZK prover
     (`weave_vole_prover*`, `weave_faest_prover*`) is `Zk`; verifiers, garble,

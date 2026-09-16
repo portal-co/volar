@@ -75,6 +75,7 @@ where applicable.
 | Document | What it covers |
 |---|---|
 | [pipeline.md](pipeline.md) | **Full multi-pass pipeline**: parse → weave → lower → codegen, recursive flows, why fixes belong in lowering not backends |
+| [ir-not-text-weaving-plan.md](ir-not-text-weaving-plan.md) | Weavers emit IR not text: the rule, the `weave_text_lint` source lint, and the migration off print→`rustc` |
 | [compiler.md](compiler.md) | `volar-compiler`: parser, IR types, manifests, dynamic lowering, Rust/TS printers |
 | [`volar-ir` repo docs](https://github.com/portal-co/volar-ir/tree/main/docs) | Volar IR, VAFFLE, movfuscation, circuit lowering, virtualization, DCE/CSE/const-fold, LIR, WAFFLE→VAFFLE lowering, WASM feature support, IR text formats — split out of this repo, see `volar-ir`'s `docs/pipeline.md` |
 | [metadata-container-plan.md](metadata-container-plan.md) | Implemented metadata container and propagation ledger; remaining consumer/coverage work |
