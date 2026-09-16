@@ -1001,7 +1001,15 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     // Enums register before structs so struct field types naming an enum
     // (which the parser may emit as a bare TypeParam when the path crosses
     // modules) resolve through the registry during field mapping.
-    let empty = MonoEnv::new("");
+    let mut empty = MonoEnv::new("");
+    // Module-level integer constants (e.g. `[u8; KAPPA_BYTES]`) must be
+    // resolvable during enum registration too — collect them before it.
+    structs::collect_module_consts(module, &mut empty);
+    // Module-level type aliases (e.g. `Block = [u8; KAPPA_BYTES]`) must be
+    // resolvable during all type conversion — collect them too.
+    for alias in &module.type_aliases {
+        empty.aliases.entry(alias.name.clone()).or_insert_with(|| alias.target.clone());
+    }
     let mut registry = structs::StructRegistry::new();
     registry.lenient = lenient;
     let enum_registry = structs::build_enum_registry(&module.enums, &mut registry, target, &empty);
@@ -1009,6 +1017,18 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
         structs::build_struct_registry_with_lenient(module, target, &empty, lenient, registry);
 
     for (key, env) in &plan.instances {
+        // Planned-instance envs do not carry module-level integer consts;
+        // merge them so struct fields like `[u8; KAPPA_BYTES]` resolve
+        // during nominal registration.
+        let mut env_with_consts = env.clone();
+        structs::collect_module_consts(module, &mut env_with_consts);
+        for alias in &module.type_aliases {
+            env_with_consts
+                .aliases
+                .entry(alias.name.clone())
+                .or_insert_with(|| alias.target.clone());
+        }
+        let env = &env_with_consts;
         // Impl methods live in `module.impls`, not `module.functions`; only
         // their parameters' nominals matter here (the instance's own
         // lowering uses the materialized definition when present).

@@ -104,6 +104,11 @@ pub struct MonoEnv {
     /// (e.g. FAEST's `LAMBDA_BYTES`). Populated from `IrModule.consts` by
     /// the planning entry points; left empty for hand-built envs.
     pub consts: BTreeMap<String, usize>,
+    /// Module-level `type Name = Ty;` aliases (name → target), so bare
+    /// `TypeParam("Block")` uses resolve to their targets before nominal
+    /// naming. Populated from `IrModule.type_aliases` by the planning entry
+    /// points; empty for hand-built envs.
+    pub aliases: BTreeMap<String, IrType>,
     /// Struct kind names with a declared `Mul` operator impl (see
     /// `MonoPlan::mul_impl_structs`); needed at planning time to recognize
     /// operator-overload call sites inside function bodies. Populated by
@@ -120,6 +125,7 @@ impl MonoEnv {
             hash_suffix: hash_suffix.into(),
             consts: BTreeMap::new(),
             mul_impl_structs: BTreeMap::new(),
+            aliases: BTreeMap::new(),
         }
     }
 
@@ -662,7 +668,8 @@ pub fn plan_flat_module<P: Clone>(
                     _ => (callee_def, arg_tys),
                 };
             let mut callee_env =
-                bind_call_args(callee_def, &type_args, &arg_tys, &env, expected.as_ref())?;
+                bind_call_args(callee_def, &type_args, &arg_tys, &env, expected.as_ref())
+                    ?;
             if let Some(derived) = derived_held.as_ref() {
                 // Default unbound return-position generics: a field-mul
                 // output (`O` in `T: Mul<U, Output = O>`) has the same layout
@@ -975,8 +982,8 @@ fn bind_one_generic<P: Clone>(
         volar_compiler::ir::IrGenericParamKind::Type => {
             if !is_concrete_type(&argument) {
                 return Err(MonoError::new(format!(
-                    "generic local call '{}': type parameter '{}' is unresolved ({argument:?})",
-                    function.name, parameter.name
+                    "generic local call '{}': type parameter '{}' is unresolved ({argument:?}; caller env: {:?})",
+                    function.name, parameter.name, caller_env
                 )));
             }
             // ArraySize-style type params often arrive as `TypeParam("16")`.
@@ -2435,6 +2442,9 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
         IrType::TypeParam(name) => {
             if let Some(concrete) = env.type_params.get(name) {
                 mono_type(concrete, env) // recurse in case the substituted type itself has params
+            } else if let Some(alias_target) = env.aliases.get(name) {
+                // Module type alias (e.g. `Block = [u8; KAPPA_BYTES]`).
+                mono_type(&alias_target.clone(), env)
             } else if let Some(&n) = env.const_params.get(name) {
                 // Const-generic names often appear as `TypeParam("N")` in
                 // struct type_args (`Vope<N, T, U1>`); bind via `with_len`.
