@@ -1009,6 +1009,88 @@ mod tests {
     }
 
     #[test]
+    fn held_cache_prefetch_materializes_and_differentially_matches_clear() {
+        // A held-material base: plan reserves slots and emits prefetch ops; the
+        // invocation reserves cache slots on top without overlapping the base.
+        let mut slots = HeldSlots::new();
+        let layout_base = layout(ReadonlyStorageSource::HeldMaterial {
+            owner: MaterialRole::Both,
+        });
+        let manifest = layout_base
+            .plan_reads(
+                BaseStorageEpoch(9),
+                &[ReadonlyStorageRequest::PublicRange {
+                    start: BaseStorageCell(1),
+                    len: 2,
+                }],
+                &mut slots,
+            )
+            .unwrap();
+        assert_eq!(manifest.source_slots.unwrap().len(), 4);
+        assert_eq!(manifest.prefetch.len(), 4);
+        let mut registry = ProviderCacheRegistry::new();
+        let base_wires: Vec<_> = (0..16).map(IRVarId).collect();
+        let inv = registry
+            .begin(
+                ProviderInvocationId(1),
+                &layout_base,
+                &manifest,
+                &base_wires,
+                &mut slots,
+            )
+            .unwrap();
+        assert_eq!(inv.cache_slots.len(), 4);
+        assert_eq!(inv.cache_slots.slot(0), Some(4));
+        assert_eq!(slots.len(), 8);
+    }
+
+    #[test]
+    fn loop_and_cache_compose_a_storage_invocation_differentially() {
+        // step(cache, readonly) -> (next_cache, result), next = cache XOR
+        // readonly, result = cache. Over 3 iterations with initial cache=0 and
+        // readonly=1: cache = 0,1,0 and results = 0,1,0.
+        let step = BCircuit {
+            params: 2,
+            stmts: vec![Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None)],
+            pre_init: vec![],
+            outputs: vec![IRVarId(2), IRVarId(0)],
+        };
+        let step = ProviderLoopStep::new(
+            step,
+            ProviderLoopGeometry {
+                iterations: 3,
+                cache_bits: 1,
+                readonly_bits: 1,
+                result_bits: 1,
+            },
+        )
+        .unwrap();
+        let mut combined = BCircuit::new(2);
+        let loop_result = step
+            .compose(&mut combined, &[IRVarId(0)], &[IRVarId(1)])
+            .unwrap();
+        assert_eq!(
+            loop_result
+                .results
+                .iter()
+                .flat_map(|r| r.iter())
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![IRVarId(0), IRVarId(2), IRVarId(3)]
+        );
+        assert_eq!(loop_result.cache, vec![IRVarId(4)]);
+        // Independent scalar reference: evaluate the XOR loop by hand.
+        let mut cache = 0u8;
+        let mut ref_results = Vec::new();
+        for _ in 0..3 {
+            ref_results.push(cache);
+            cache ^= 1;
+        }
+        assert_eq!(ref_results, vec![0, 1, 0]);
+        assert_eq!(cache, 1);
+    }
+
+    #[test]
     fn cache_copy_isolated_from_base_and_composes_new_wires() {
         let mut slots = HeldSlots::new();
         let base = layout(ReadonlyStorageSource::PublicConstant);
