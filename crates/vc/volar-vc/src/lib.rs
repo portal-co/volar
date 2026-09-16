@@ -114,8 +114,9 @@ pub use circuit_provider::{
 };
 pub use circuit_provider_storage::{
     BaseCopyRange, BaseStorageCell, BaseStorageEpoch, BaseStorageId, InvocationCache,
-    ReadonlyAccessKind, ReadonlyStorageError, ReadonlyStorageLayout, ReadonlyStorageManifest,
-    ReadonlyStorageRequest, ReadonlyStorageSource, SecretBaseRead,
+    ProviderLoopGeometry, ProviderLoopResult, ProviderLoopStep, ReadonlyAccessKind,
+    ReadonlyStorageError, ReadonlyStorageLayout, ReadonlyStorageManifest, ReadonlyStorageRequest,
+    ReadonlyStorageSource, SecretBaseRead,
 };
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};

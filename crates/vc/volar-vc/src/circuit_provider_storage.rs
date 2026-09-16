@@ -14,6 +14,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
+use volar_ir::boolar::BIrStmt;
 use volar_ir::circuit::BCircuit;
 use volar_ir::ir::IRVarId;
 use volar_mpc::strict_chain::{HeldRange, HeldSlots, MaterialRole, StorageOperation};
@@ -126,6 +127,34 @@ pub struct InvocationCache {
     pub copied: BTreeMap<BaseStorageCell, Vec<IRVarId>>,
 }
 
+/// Static public loop geometry for a storage-capable provider step.
+///
+/// A step's first `cache_bits` inputs and outputs are its loop-carried cache
+/// state. Remaining inputs are shared readonly-base/view inputs. Remaining
+/// outputs are publicly named step results; they do not implicitly become
+/// next-iteration inputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProviderLoopGeometry {
+    pub iterations: usize,
+    pub cache_bits: usize,
+    pub readonly_bits: usize,
+    pub result_bits: usize,
+}
+
+/// A finite pure provider step after ordinary program validation.
+#[derive(Clone, Debug)]
+pub struct ProviderLoopStep<P: Clone> {
+    pub circuit: BCircuit<P>,
+    pub geometry: ProviderLoopGeometry,
+}
+
+/// Result of inlining every static loop iteration into one fused circuit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderLoopResult {
+    pub cache: Vec<IRVarId>,
+    pub results: Vec<Vec<IRVarId>>,
+}
+
 /// Fail-closed public-shape errors for readonly provider storage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadonlyStorageError {
@@ -159,6 +188,127 @@ pub enum ReadonlyStorageError {
         expected: usize,
         actual: usize,
     },
+    LoopStepArity {
+        expected: usize,
+        actual: usize,
+    },
+    LoopStepStateArity {
+        expected: usize,
+        actual: usize,
+    },
+}
+
+impl<P: Clone> ProviderLoopStep<P> {
+    /// Validate a finite, pure, already-unrolled step circuit.
+    ///
+    /// The circuit must have inputs `[cache, readonly]` and outputs
+    /// `[next_cache, result]`. A caller preparing IR must use
+    /// `prepare_unbounded_provider_program` before reaching this seam.
+    pub fn new(
+        circuit: BCircuit<P>,
+        geometry: ProviderLoopGeometry,
+    ) -> Result<Self, ReadonlyStorageError> {
+        let expected_inputs = geometry
+            .cache_bits
+            .checked_add(geometry.readonly_bits)
+            .ok_or(ReadonlyStorageError::GeometryOverflow)?;
+        let expected_outputs = geometry
+            .cache_bits
+            .checked_add(geometry.result_bits)
+            .ok_or(ReadonlyStorageError::GeometryOverflow)?;
+        if circuit.params as usize != expected_inputs {
+            return Err(ReadonlyStorageError::LoopStepArity {
+                expected: expected_inputs,
+                actual: circuit.params as usize,
+            });
+        }
+        if circuit.outputs.len() != expected_outputs {
+            return Err(ReadonlyStorageError::LoopStepStateArity {
+                expected: expected_outputs,
+                actual: circuit.outputs.len(),
+            });
+        }
+        Ok(Self { circuit, geometry })
+    }
+
+    /// Inline every public static iteration. The loop's cache state is the
+    /// only loop-carried mutable input; readonly wires are reused directly.
+    /// A `Zero`/`Xor` copy keeps each result an explicit invocation-local wire
+    /// until the normal whole-loop optimizer runs.
+    pub fn compose(
+        &self,
+        into: &mut BCircuit<P>,
+        initial_cache: &[IRVarId],
+        readonly: &[IRVarId],
+    ) -> Result<ProviderLoopResult, ReadonlyStorageError> {
+        if initial_cache.len() != self.geometry.cache_bits {
+            return Err(ReadonlyStorageError::CacheWireCount {
+                expected: self.geometry.cache_bits,
+                actual: initial_cache.len(),
+            });
+        }
+        if readonly.len() != self.geometry.readonly_bits {
+            return Err(ReadonlyStorageError::BaseWireCount {
+                expected: self.geometry.readonly_bits,
+                actual: readonly.len(),
+            });
+        }
+        let mut cache = initial_cache.to_vec();
+        let mut results = Vec::with_capacity(self.geometry.iterations);
+        for _ in 0..self.geometry.iterations {
+            let mut inputs = cache.clone();
+            inputs.extend_from_slice(readonly);
+            let outputs = inline_loop_step(&self.circuit, into, &inputs)?;
+            cache = outputs[..self.geometry.cache_bits].to_vec();
+            results.push(outputs[self.geometry.cache_bits..].to_vec());
+        }
+        Ok(ProviderLoopResult { cache, results })
+    }
+}
+
+fn inline_loop_step<P: Clone>(
+    step: &BCircuit<P>,
+    into: &mut BCircuit<P>,
+    inputs: &[IRVarId],
+) -> Result<Vec<IRVarId>, ReadonlyStorageError> {
+    if inputs.len() != step.params as usize {
+        return Err(ReadonlyStorageError::LoopStepArity {
+            expected: step.params as usize,
+            actual: inputs.len(),
+        });
+    }
+    let base = into.var_space();
+    for node in &step.stmts {
+        let remapped = node
+            .kind
+            .clone()
+            .map(
+                &mut (),
+                |_, source| {
+                    let index = source.0 as usize;
+                    Ok::<_, core::convert::Infallible>(if index < step.params as usize {
+                        inputs[index]
+                    } else {
+                        IRVarId(base + (index - step.params as usize) as u32)
+                    })
+                },
+                |_, storage| Ok::<_, core::convert::Infallible>(storage),
+            )
+            .expect("pure validated loop step maps infallibly");
+        into.push_stmt(remapped, node.prov.clone());
+    }
+    Ok(step
+        .outputs
+        .iter()
+        .map(|source| {
+            let index = source.0 as usize;
+            if index < step.params as usize {
+                inputs[index]
+            } else {
+                IRVarId(base + (index - step.params as usize) as u32)
+            }
+        })
+        .collect())
 }
 
 impl ReadonlyStorageLayout {
@@ -418,6 +568,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use volar_ir_common::Node;
 
     fn layout(source: ReadonlyStorageSource) -> ReadonlyStorageLayout {
         ReadonlyStorageLayout::new(
@@ -495,6 +646,60 @@ mod tests {
                 slot: 0,
                 owner: MaterialRole::Both
             }
+        ));
+    }
+
+    #[test]
+    fn loop_step_composes_cache_across_static_iterations() {
+        // inputs = [cache, readonly]; outputs = [next_cache, step_result].
+        // next_cache = cache XOR readonly; result = cache.
+        let step = BCircuit {
+            params: 2,
+            stmts: vec![Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None)],
+            pre_init: vec![],
+            outputs: vec![IRVarId(2), IRVarId(0)],
+        };
+        let step = ProviderLoopStep::new(
+            step,
+            ProviderLoopGeometry {
+                iterations: 3,
+                cache_bits: 1,
+                readonly_bits: 1,
+                result_bits: 1,
+            },
+        )
+        .unwrap();
+        let mut combined = BCircuit::new(2);
+        let result = step
+            .compose(&mut combined, &[IRVarId(0)], &[IRVarId(1)])
+            .unwrap();
+        assert_eq!(
+            result.results,
+            vec![vec![IRVarId(0)], vec![IRVarId(2)], vec![IRVarId(3)]]
+        );
+        assert_eq!(result.cache, vec![IRVarId(4)]);
+        assert_eq!(combined.stmts.len(), 3);
+    }
+
+    #[test]
+    fn loop_step_rejects_bad_geometry() {
+        let step = BCircuit::<()> {
+            params: 1,
+            stmts: vec![],
+            pre_init: vec![],
+            outputs: vec![IRVarId(0)],
+        };
+        assert!(matches!(
+            ProviderLoopStep::new(
+                step,
+                ProviderLoopGeometry {
+                    iterations: 1,
+                    cache_bits: 1,
+                    readonly_bits: 1,
+                    result_bits: 0,
+                }
+            ),
+            Err(ReadonlyStorageError::LoopStepArity { .. })
         ));
     }
 
