@@ -34,6 +34,14 @@ pub struct BaseStorageEpoch(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BaseStorageCell(pub usize);
 
+/// Public identity of one provider invocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProviderInvocationId(pub u64);
+
+/// Unique public identity of an invocation-local mutable cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProviderCacheId(pub u64);
+
 /// Public representation of base cells. It intentionally carries no value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadonlyStorageSource {
@@ -127,6 +135,53 @@ pub struct InvocationCache {
     pub copied: BTreeMap<BaseStorageCell, Vec<IRVarId>>,
 }
 
+/// Deterministic allocator of unique cache identities for one compiled plan.
+///
+/// It contains public plan identities only. It does not retain cache values,
+/// which ensures an invocation cannot accidentally observe a discarded cache.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProviderCacheRegistry {
+    next: u64,
+    seen_invocations: BTreeSet<ProviderInvocationId>,
+}
+
+/// One mutable cache instance, owned by exactly one provider invocation.
+///
+/// Its source cache map is copied from a read-only base. Writes replace only
+/// that map entry; the base wires and all other invocation caches remain
+/// untouched. `finish_*` consumes it, so it cannot be reused afterwards.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderStorageInvocation {
+    pub invocation: ProviderInvocationId,
+    pub cache_id: ProviderCacheId,
+    pub cache_slots: HeldRange,
+    cache: InvocationCache,
+    writes: BTreeMap<BaseStorageCell, Vec<IRVarId>>,
+    cell_bits: usize,
+}
+
+/// Explicit completion of a provider cache invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProviderCacheFinish {
+    /// The cache was destroyed. Its wires/slots have no later-invocation
+    /// identity; a next invocation must copy from a base again.
+    Discard {
+        invocation: ProviderInvocationId,
+        cache_id: ProviderCacheId,
+        base: BaseStorageId,
+        base_epoch: BaseStorageEpoch,
+    },
+    /// Only the explicit write set crosses the cache lifetime. The outer
+    /// storage adapter must materialize this as a new immutable base snapshot.
+    Export {
+        invocation: ProviderInvocationId,
+        cache_id: ProviderCacheId,
+        base: BaseStorageId,
+        next_epoch: BaseStorageEpoch,
+        writes: BTreeMap<BaseStorageCell, Vec<IRVarId>>,
+    },
+}
+
 /// Static public loop geometry for a storage-capable provider step.
 ///
 /// A step's first `cache_bits` inputs and outputs are its loop-carried cache
@@ -196,6 +251,139 @@ pub enum ReadonlyStorageError {
         expected: usize,
         actual: usize,
     },
+    DuplicateInvocation(ProviderInvocationId),
+    CacheIdOverflow,
+    CacheCellNotPopulated(BaseStorageCell),
+    CacheWriteWidth {
+        expected: usize,
+        actual: usize,
+    },
+    InvalidExportEpoch {
+        current: BaseStorageEpoch,
+        requested: BaseStorageEpoch,
+    },
+    EpochOverflow,
+}
+
+impl ProviderCacheRegistry {
+    /// Create an empty registry.
+    pub const fn new() -> Self {
+        Self {
+            next: 0,
+            seen_invocations: BTreeSet::new(),
+        }
+    }
+
+    /// Start a fresh mutable cache by reserving opaque held slots in canonical
+    /// cached-cell order. The caller must run the returned prefetch script at a
+    /// strict-chain boundary before using a held base source.
+    pub fn begin(
+        &mut self,
+        invocation: ProviderInvocationId,
+        layout: &ReadonlyStorageLayout,
+        manifest: &ReadonlyStorageManifest,
+        base_wires: &[IRVarId],
+        held_slots: &mut HeldSlots,
+    ) -> Result<ProviderStorageInvocation, ReadonlyStorageError> {
+        if self.seen_invocations.contains(&invocation) {
+            return Err(ReadonlyStorageError::DuplicateInvocation(invocation));
+        }
+        let cache_id = ProviderCacheId(self.next);
+        let next = self
+            .next
+            .checked_add(1)
+            .ok_or(ReadonlyStorageError::CacheIdOverflow)?;
+        let cache = layout.copy_into_cache(manifest, base_wires)?;
+        let cache_bits = cache
+            .copied
+            .len()
+            .checked_mul(layout.cell_bits)
+            .ok_or(ReadonlyStorageError::GeometryOverflow)?;
+        let cache_slots = held_slots.reserve(cache_bits);
+        self.next = next;
+        self.seen_invocations.insert(invocation);
+        Ok(ProviderStorageInvocation {
+            invocation,
+            cache_id,
+            cache_slots,
+            cache,
+            writes: BTreeMap::new(),
+            cell_bits: layout.cell_bits,
+        })
+    }
+}
+
+impl ProviderStorageInvocation {
+    /// Read a cache line, applying the invocation's latest write if present.
+    pub fn read(&self, cell: BaseStorageCell) -> Result<&[IRVarId], ReadonlyStorageError> {
+        if let Some(wires) = self.writes.get(&cell) {
+            return Ok(wires);
+        }
+        self.cache
+            .copied
+            .get(&cell)
+            .map(Vec::as_slice)
+            .ok_or(ReadonlyStorageError::CacheCellNotPopulated(cell))
+    }
+
+    /// Write one populated cache cell. Last write wins in program order but is
+    /// strictly local to this invocation's map.
+    pub fn write(
+        &mut self,
+        cell: BaseStorageCell,
+        wires: &[IRVarId],
+    ) -> Result<(), ReadonlyStorageError> {
+        if !self.cache.copied.contains_key(&cell) {
+            return Err(ReadonlyStorageError::CacheCellNotPopulated(cell));
+        }
+        if wires.len() != self.cell_bits {
+            return Err(ReadonlyStorageError::CacheWriteWidth {
+                expected: self.cell_bits,
+                actual: wires.len(),
+            });
+        }
+        self.writes.insert(cell, wires.to_vec());
+        Ok(())
+    }
+
+    /// Destroy the mutable cache without exporting state.
+    pub fn discard(self) -> ProviderCacheFinish {
+        ProviderCacheFinish::Discard {
+            invocation: self.invocation,
+            cache_id: self.cache_id,
+            base: self.cache.base,
+            base_epoch: self.cache.base_epoch,
+        }
+    }
+
+    /// Export the explicit write set as the next immutable base version.
+    ///
+    /// An empty write set is valid and still advances the explicit version;
+    /// callers that do not require a next base should use [`Self::discard`].
+    pub fn export(
+        self,
+        next_epoch: BaseStorageEpoch,
+    ) -> Result<ProviderCacheFinish, ReadonlyStorageError> {
+        let expected = self
+            .cache
+            .base_epoch
+            .0
+            .checked_add(1)
+            .ok_or(ReadonlyStorageError::EpochOverflow)?;
+        if next_epoch.0 != expected {
+            return Err(ReadonlyStorageError::InvalidExportEpoch {
+                current: self.cache.base_epoch,
+                requested: next_epoch,
+            });
+        }
+        Ok(ProviderCacheFinish::Export {
+            invocation: self.invocation,
+            cache_id: self.cache_id,
+            base: self.cache.base,
+            next_epoch,
+            writes: self.writes,
+        })
+    }
 }
 
 impl<P: Clone> ProviderLoopStep<P> {
@@ -700,6 +888,123 @@ mod tests {
                 }
             ),
             Err(ReadonlyStorageError::LoopStepArity { .. })
+        ));
+    }
+
+    #[test]
+    fn cache_lifecycle_discards_and_exports_versions() {
+        let layout_base = layout(ReadonlyStorageSource::PublicConstant);
+        let mut slots = HeldSlots::new();
+        let manifest = layout_base
+            .plan_reads(
+                BaseStorageEpoch(9),
+                &[ReadonlyStorageRequest::PublicRange {
+                    start: BaseStorageCell(2),
+                    len: 1,
+                }],
+                &mut slots,
+            )
+            .unwrap();
+        let base_wires: Vec<_> = (0..16).map(IRVarId).collect();
+        let mut registry = ProviderCacheRegistry::new();
+        let mut inv = registry
+            .begin(
+                ProviderInvocationId(1),
+                &layout_base,
+                &manifest,
+                &base_wires,
+                &mut slots,
+            )
+            .unwrap();
+        assert!(
+            registry
+                .begin(
+                    ProviderInvocationId(1),
+                    &layout_base,
+                    &manifest,
+                    &base_wires,
+                    &mut slots,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            *inv.read(BaseStorageCell(2)).unwrap(),
+            vec![IRVarId(4), IRVarId(5)]
+        );
+        inv.write(BaseStorageCell(2), &[IRVarId(40), IRVarId(41)])
+            .unwrap();
+        assert_eq!(
+            *inv.read(BaseStorageCell(2)).unwrap(),
+            vec![IRVarId(40), IRVarId(41)]
+        );
+        assert_eq!(base_wires[4], IRVarId(4));
+
+        let exported = inv.export(BaseStorageEpoch(10)).unwrap();
+        match exported {
+            ProviderCacheFinish::Export {
+                next_epoch, writes, ..
+            } => {
+                assert_eq!(next_epoch, BaseStorageEpoch(10));
+                assert_eq!(writes[&BaseStorageCell(2)], vec![IRVarId(40), IRVarId(41)]);
+            }
+            other => panic!("expected export, got {:?}", other),
+        }
+
+        // A fresh invocation for a different identity still reads the base.
+        let inv2 = registry
+            .begin(
+                ProviderInvocationId(2),
+                &layout_base,
+                &manifest,
+                &base_wires,
+                &mut slots,
+            )
+            .unwrap();
+        assert_eq!(
+            *inv2.read(BaseStorageCell(2)).unwrap(),
+            vec![IRVarId(4), IRVarId(5)]
+        );
+        let discarded = inv2.discard();
+        assert!(
+            matches!(discarded, ProviderCacheFinish::Discard { cache_id, .. } if cache_id == ProviderCacheId(1))
+        );
+    }
+
+    #[test]
+    fn cache_lifecycle_rejects_bad_export_epoch_and_unpopulated_write() {
+        let layout_base = layout(ReadonlyStorageSource::PublicConstant);
+        let mut slots = HeldSlots::new();
+        let manifest = layout_base
+            .plan_reads(
+                BaseStorageEpoch(9),
+                &[ReadonlyStorageRequest::PublicRange {
+                    start: BaseStorageCell(3),
+                    len: 1,
+                }],
+                &mut slots,
+            )
+            .unwrap();
+        let base_wires: Vec<_> = (0..16).map(IRVarId).collect();
+        let mut registry = ProviderCacheRegistry::new();
+        let inv = registry
+            .begin(
+                ProviderInvocationId(1),
+                &layout_base,
+                &manifest,
+                &base_wires,
+                &mut slots,
+            )
+            .unwrap();
+        assert!(matches!(
+            inv.clone().export(BaseStorageEpoch(12)),
+            Err(ReadonlyStorageError::InvalidExportEpoch { .. })
+        ));
+        let mut inv = inv;
+        assert!(matches!(
+            inv.write(BaseStorageCell(1), &[IRVarId(0), IRVarId(1)]),
+            Err(ReadonlyStorageError::CacheCellNotPopulated(
+                BaseStorageCell(1)
+            ))
         ));
     }
 
