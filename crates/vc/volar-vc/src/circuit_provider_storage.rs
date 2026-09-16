@@ -11,9 +11,11 @@
 //! explicit bounded scan / pre-run-ORAM demands for the existing strict
 //! storage seams.
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
+use volar_ir::circuit::BCircuit;
+use volar_ir::ir::IRVarId;
 use volar_mpc::strict_chain::{HeldRange, HeldSlots, MaterialRole, StorageOperation};
 
 /// Stable public identity of one immutable storage snapshot.
@@ -112,6 +114,18 @@ pub struct ReadonlyStorageManifest {
     pub prefetch: Vec<StorageOperation>,
 }
 
+/// Exact ordinary Boolean wires copied into one fresh provider invocation.
+///
+/// The map identifies cache positions, rather than base positions, so a later
+/// cache write can never alias/mutate the caller-owned base vector.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationCache {
+    pub base: BaseStorageId,
+    pub base_epoch: BaseStorageEpoch,
+    /// Base cell -> contiguous cache wires in canonical copy order.
+    pub copied: BTreeMap<BaseStorageCell, Vec<IRVarId>>,
+}
+
 /// Fail-closed public-shape errors for readonly provider storage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadonlyStorageError {
@@ -136,6 +150,14 @@ pub enum ReadonlyStorageError {
     StaleEpoch {
         expected: BaseStorageEpoch,
         actual: BaseStorageEpoch,
+    },
+    BaseWireCount {
+        expected: usize,
+        actual: usize,
+    },
+    CacheWireCount {
+        expected: usize,
+        actual: usize,
     },
 }
 
@@ -248,6 +270,81 @@ impl ReadonlyStorageLayout {
             secret_reads,
             source_slots,
             prefetch,
+        })
+    }
+
+    /// Materialize a fresh invocation cache from the canonical public copy
+    /// manifest. The base is only read; every returned vector is independently
+    /// allocated and a later cache write cannot alter the base input vector.
+    ///
+    /// This is intentionally wire-level copying, not a host value lookup. A
+    /// provider can later replace individual cache wires with transformed
+    /// circuit outputs while the original base wires remain intact.
+    pub fn copy_into_cache(
+        &self,
+        manifest: &ReadonlyStorageManifest,
+        base_wires: &[IRVarId],
+    ) -> Result<InvocationCache, ReadonlyStorageError> {
+        if manifest.base != self.base || manifest.epoch != self.epoch {
+            return Err(ReadonlyStorageError::StaleEpoch {
+                expected: self.epoch,
+                actual: manifest.epoch,
+            });
+        }
+        let expected = self
+            .cells
+            .checked_mul(self.cell_bits)
+            .ok_or(ReadonlyStorageError::GeometryOverflow)?;
+        if base_wires.len() != expected {
+            return Err(ReadonlyStorageError::BaseWireCount {
+                expected,
+                actual: base_wires.len(),
+            });
+        }
+        let mut copied = BTreeMap::new();
+        for range in &manifest.copies {
+            for cell in range.start.0..range.start.0 + range.len {
+                let start = cell * self.cell_bits;
+                copied.insert(
+                    BaseStorageCell(cell),
+                    base_wires[start..start + self.cell_bits].to_vec(),
+                );
+            }
+        }
+        Ok(InvocationCache {
+            base: self.base,
+            base_epoch: self.epoch,
+            copied,
+        })
+    }
+
+    /// Compose the manifest's cached source wires into a fresh fused circuit
+    /// cache. Each bit is `Xor(base, Zero)`: after normal fold/CSE the values
+    /// keep the same logical value but carry explicit cache-result identities
+    /// for the storage planner. A later provider write replaces cache mappings
+    /// only, never the original base wire ids.
+    pub fn compose_cache_copy<P: Clone + Default>(
+        &self,
+        manifest: &ReadonlyStorageManifest,
+        base_wires: &[IRVarId],
+        into: &mut BCircuit<P>,
+    ) -> Result<InvocationCache, ReadonlyStorageError> {
+        let source = self.copy_into_cache(manifest, base_wires)?;
+        let zero = into.push_stmt(volar_ir::boolar::BIrStmt::Zero, P::default());
+        let mut copied = BTreeMap::new();
+        for (cell, wires) in source.copied {
+            let wires = wires
+                .into_iter()
+                .map(|wire| {
+                    into.push_stmt(volar_ir::boolar::BIrStmt::Xor(wire, zero), P::default())
+                })
+                .collect();
+            copied.insert(cell, wires);
+        }
+        Ok(InvocationCache {
+            base: source.base,
+            base_epoch: source.base_epoch,
+            copied,
         })
     }
 
@@ -399,6 +496,46 @@ mod tests {
                 owner: MaterialRole::Both
             }
         ));
+    }
+
+    #[test]
+    fn cache_copy_isolated_from_base_and_composes_new_wires() {
+        let mut slots = HeldSlots::new();
+        let base = layout(ReadonlyStorageSource::PublicConstant);
+        let manifest = base
+            .plan_reads(
+                BaseStorageEpoch(9),
+                &[ReadonlyStorageRequest::PublicRange {
+                    start: BaseStorageCell(1),
+                    len: 2,
+                }],
+                &mut slots,
+            )
+            .unwrap();
+        let base_wires: Vec<_> = (0..16).map(IRVarId).collect();
+        let copied = base.copy_into_cache(&manifest, &base_wires).unwrap();
+        assert_eq!(
+            copied.copied[&BaseStorageCell(1)],
+            vec![IRVarId(2), IRVarId(3)]
+        );
+        // The cache map is its own container: replacing a cache line leaves
+        // the source base wire vector and another fresh invocation untouched.
+        let mut changed = copied.clone();
+        changed
+            .copied
+            .insert(BaseStorageCell(1), vec![IRVarId(99), IRVarId(100)]);
+        assert_eq!(base_wires[2], IRVarId(2));
+        assert_eq!(
+            base.copy_into_cache(&manifest, &base_wires).unwrap().copied[&BaseStorageCell(1)],
+            vec![IRVarId(2), IRVarId(3)]
+        );
+
+        let mut circuit = BCircuit::<()>::new(16);
+        let composed = base
+            .compose_cache_copy(&manifest, &base_wires, &mut circuit)
+            .unwrap();
+        assert_ne!(composed.copied[&BaseStorageCell(1)][0], IRVarId(2));
+        assert_eq!(circuit.stmts.len(), 5); // one zero plus four cache copies
     }
 
     #[test]
