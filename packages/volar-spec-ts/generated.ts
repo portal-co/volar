@@ -423,10 +423,10 @@ export class ViaDigestPuncturableRandomizerDyn<D> {
     return new (this.constructor as any)({  }) as this;
   }
 
-  static double(ctx: { DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, a: bigint[]): bigint[][]
+  static double(ctx: { D_OutputSize: bigint, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, a: bigint[]): bigint[][]
   {
     const v = ctx.DClass.digest(a);
-    return [__clone(v), Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(v[Number(i)], a[Number(i)]))];
+    return [__clone(v), Array.from({length: Number(ctx.D_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(v[Number(i)], a[Number(i)]))];
   }
 }
 

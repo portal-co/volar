@@ -885,7 +885,12 @@ fn lower_function_dyn(
         for g in fn_gen.iter().chain(impl_gen.iter()) {
             bound.insert(g.name.to_lowercase());
         }
-        resolve_placeholder_lengths(&mut body, &bound, ctx, &fn_gen);
+        // Use the *original* (pre-lowering) return type so projection lengths like
+        // `D::OutputSize` survive long enough to resolve against (lowering erases
+        // them to Vec, losing the length). The resolved placeholder becomes
+        // `LengthOf(D::OutputSize)`, which the TS witness system turns into
+        // `ctx.D_OutputSize`.
+        resolve_placeholder_lengths(&mut body, &bound, ctx, &fn_gen, f.return_type.as_ref());
     }
 
     // Unpack witnesses in methods
@@ -1106,6 +1111,7 @@ fn resolve_placeholder_lengths(
     bound: &BTreeSet<String>,
     ctx: &LoweringContext,
     fn_gen: &[IrGenericParam],
+    return_type: Option<&IrType>,
 ) {
     // Collect the let-bound names and their length-position placeholder first.
     // We only rewrite the *length* of an array-producing init (a from_fn-lowered
@@ -1172,6 +1178,59 @@ fn resolve_placeholder_lengths(
                 }
             }
         }
+    }
+
+    // Return-position array producers: `return [.., from_fn(...), ..]` or a tail
+    // array literal. Resolve each array-producing element's placeholder length
+    // against the function's array-return element length.
+    if let Some(ret_ty) = return_type {
+        if let Some(elem_len) = array_elem_length(ret_ty) {
+            let resolved = array_length_to_expr(elem_len, fn_gen, ctx);
+            resolve_placeholders_in_position(&mut block.expr, bound, &resolved);
+            for s in block.stmts.iter_mut() {
+                if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &mut s.kind {
+                    if matches!(e.kind, IrExprKind::Return(_)) {
+                        resolve_placeholders_in_position_expr(e, bound, &resolved);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// If `ty` is `[E; N]`/`[E]`/`Vec<E>` where `E` is itself an array `[T; M]`,
+/// return `Some(M)` (the element array's length). Otherwise `None`.
+fn array_elem_length(ty: &IrType) -> Option<&ArrayLength> {
+    match ty {
+        IrType::Array { elem, .. } | IrType::Vector { elem } => match elem.as_ref() {
+            IrType::Array { len, .. } => Some(len),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Rewrite the length placeholder of any array producer found in tail position.
+fn resolve_placeholders_in_position(
+    tail: &mut Option<Box<IrExpr>>,
+    bound: &BTreeSet<String>,
+    resolved: &IrExpr,
+) {
+    if let Some(e) = tail {
+        resolve_placeholders_in_position_expr(e, bound, resolved);
+    }
+}
+
+fn resolve_placeholders_in_position_expr(
+    expr: &mut IrExpr,
+    bound: &BTreeSet<String>,
+    resolved: &IrExpr,
+) {
+    // Collect length placeholders in this expression; if any, substitute them.
+    let mut phs = Vec::new();
+    collect_length_placeholder(expr, bound, &mut phs);
+    for ph in phs {
+        substitute_var_with_expr(expr, &ph, resolved);
     }
 }
 
@@ -1829,6 +1888,12 @@ fn collect_length_placeholder(expr: &IrExpr, bound: &BTreeSet<String>, out: &mut
         IrExprKind::Block(b) => {
             if let Some(tail) = &b.expr {
                 collect_length_placeholder(tail, bound, out);
+            }
+        }
+        // Array/tuple literals: a producer may be an element (`[v, from_fn(...)]`).
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                collect_length_placeholder(e, bound, out);
             }
         }
         IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {

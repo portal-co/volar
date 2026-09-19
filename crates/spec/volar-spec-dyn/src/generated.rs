@@ -1471,7 +1471,7 @@ impl <D: Digest> LengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
     fn double(mut a: Vec<u8>) -> [Vec<u8>; 2]
     {
         let v = D::digest(&a);
-        vec![v.clone(), (0..n).map(|i| (v[i] ^ a[i])).collect::<Vec<_>>()]
+        vec![v.clone(), (0..<<D>::OutputSize as Unsigned>::to_usize()).map(|i| (v[i] ^ a[i])).collect::<Vec<_>>()]
     }
 }
 
