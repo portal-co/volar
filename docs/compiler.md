@@ -172,16 +172,31 @@ through an iterator. Both Rust and TypeScript backends emit them differently.
 ## Totality
 
 The compiler enforces **totality** — all accepted programs must be provably
-terminating. The following are rejected:
+terminating. The following is rejected:
 
-- `while` loops (unbounded).
-- Bare `loop` constructs.
 - Recursive function calls (not currently checked but architecturally unsupported).
 
-Accepted iteration forms:
+Accepted iteration forms, in two tiers with different termination guarantees:
+
+**Syntactically bounded (the compiler proves termination by construction):**
 - `for i in start..end` / `for i in start..=end` → `BoundedLoop`.
 - `for x in collection` → `IterLoop` (collection must be a finite array/vec).
 - Iterator pipeline with `Collect` or `Fold` terminal → `IterPipeline`.
+
+**`while cond { .. }` and `loop { .. }` (accepted, but not statically
+proven bounded):** both parse into the same `IrExprKind::WhileLoop` node —
+`loop { .. }` lowers to `while true { .. }` — and the parser accepts either
+form unconditionally. **The compiler does not currently verify that these
+loops terminate**; that's left to the spec author, the same way `rustc`
+accepts them. Prefer a syntactically bounded form (above) whenever the
+iteration count is expressible that way; reach for `while`/`loop` only for
+genuinely data-dependent termination (e.g. GCD, modular exponentiation) where
+no syntactically bounded form applies. A prior version of this document (and
+of the parser) rejected bare `loop { .. }` outright while accepting `while`
+unconditionally — that distinction wasn't meaningful, since neither form had
+a real boundedness proof behind it; both are now treated identically. See
+[`docs/ts-emitter-length-params-and-solidity-backend-plan.md`](ts-emitter-length-params-and-solidity-backend-plan.md)
+§1.3.4 for the evidence trail.
 
 This mirrors the totality requirement of the Volar IR (see the `volar-ir` repo's `docs/ir-lowering.md`).
 
