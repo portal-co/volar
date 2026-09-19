@@ -146,6 +146,168 @@ pub trait ExternalBatchActionHost {
     ) -> Result<Vec<bool>, MpcError>;
 }
 
+/// Role of the local strict batch dispatcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalBatchRole {
+    Garbler,
+    Evaluator,
+}
+
+/// One role-aware dispatcher for a mixed-executor action batch.
+///
+/// The dispatcher owns one transcript and routes each request according to its
+/// manifest executor. A role executes only requests assigned to itself; for a
+/// remote request it validates/advances the clear or result phase without
+/// invoking a local host. This is the seam used by both strict TCP roles.
+pub struct ExternalBatchRoleDispatcher {
+    role: ExternalBatchRole,
+    transcript: ExternalBatchTranscript,
+    registrations: BTreeMap<u64, ExternalBatchAction>,
+}
+
+impl ExternalBatchRoleDispatcher {
+    pub fn new(
+        role: ExternalBatchRole,
+        manifest: ExternalBatchManifest,
+        binding: ExternalBatchBinding,
+        registrations: Vec<ExternalBatchAction>,
+    ) -> Result<Self, MpcError> {
+        manifest
+            .validate()
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        let mut by_request = BTreeMap::new();
+        for registration in registrations {
+            if registration.name.is_empty()
+                || by_request
+                    .insert(registration.request_id, registration)
+                    .is_some()
+            {
+                return Err(MpcError::MalformedSchedule);
+            }
+        }
+        if by_request.len() != manifest.actions.len() {
+            return Err(MpcError::MalformedSchedule);
+        }
+        for action in &manifest.actions {
+            if action.execution.reveal != crate::ExternalRevealPolicy::BothRoles
+                || !matches!(
+                    action.execution.executor,
+                    crate::ExternalExecutor::Garbler | crate::ExternalExecutor::Evaluator
+                )
+                || !by_request.contains_key(&action.request_id)
+            {
+                return Err(
+                    if action.execution.reveal != crate::ExternalRevealPolicy::BothRoles {
+                        MpcError::UnsupportedExternalPolicy
+                    } else {
+                        MpcError::MalformedSchedule
+                    },
+                );
+            }
+        }
+        Ok(Self {
+            role,
+            transcript: ExternalBatchTranscript::new(manifest, binding),
+            registrations: by_request,
+        })
+    }
+
+    pub const fn phase(&self) -> ExternalBatchPhase {
+        self.transcript.phase()
+    }
+
+    pub const fn is_complete(&self) -> bool {
+        self.transcript.is_complete()
+    }
+
+    pub fn accept_reveal(&mut self, frame: &ExternalBatchFrame) -> Result<(), MpcError> {
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)
+    }
+
+    /// Process a clear-input phase. Returns `Some(result)` only when this role
+    /// is the assigned executor; otherwise it records the remote clear phase
+    /// and returns `None`, leaving the caller to receive the result frame.
+    pub fn process_clear_inputs(
+        &mut self,
+        frame: &ExternalBatchFrame,
+        mut host: Option<&mut dyn ExternalBatchActionHost>,
+    ) -> Result<Option<ExternalBatchFrame>, MpcError> {
+        let ExternalBatchFrame::ClearInputs {
+            binding,
+            request_id,
+            bits,
+        } = frame
+        else {
+            return Err(MpcError::UnexpectedMessage);
+        };
+        let (expected_request_id, assigned, output_bits) = self
+            .transcript
+            .manifest
+            .actions
+            .get(self.transcript.next_action)
+            .map(|action| {
+                (
+                    action.request_id,
+                    match action.execution.executor {
+                        crate::ExternalExecutor::Garbler => ExternalBatchRole::Garbler,
+                        crate::ExternalExecutor::Evaluator => ExternalBatchRole::Evaluator,
+                    },
+                    action.output_bits,
+                )
+            })
+            .ok_or(MpcError::MalformedSchedule)?;
+        if expected_request_id != *request_id {
+            return Err(MpcError::UnexpectedMessage);
+        }
+        let registration = self
+            .registrations
+            .get(request_id)
+            .ok_or(MpcError::MalformedSchedule)?;
+        let expected = 1usize
+            .checked_add(registration.argument_bits)
+            .and_then(|size| size.checked_add(output_bits))
+            .ok_or(MpcError::MalformedSchedule)?;
+        if bits.len() != expected {
+            return Err(MpcError::UnexpectedMessage);
+        }
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)?;
+        if assigned != self.role {
+            return Ok(None);
+        }
+        let args_start = 1;
+        let fallback_start = args_start + registration.argument_bits;
+        let result_bits = if bits[0] {
+            let host = host
+                .as_deref_mut()
+                .ok_or(MpcError::UnsupportedExternalPolicy)?;
+            let output = host.action(registration, &bits[args_start..fallback_start])?;
+            if output.len() != output_bits {
+                return Err(MpcError::ActionHost);
+            }
+            output
+        } else {
+            bits[fallback_start..].to_vec()
+        };
+        let result = ExternalBatchFrame::Result {
+            binding: *binding,
+            request_id: *request_id,
+            bits: result_bits,
+        };
+        self.transcript
+            .accept(&result)
+            .map_err(frame_error_to_mpc)?;
+        Ok(Some(result))
+    }
+
+    pub fn accept_result(&mut self, frame: &ExternalBatchFrame) -> Result<(), MpcError> {
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)
+    }
+
+    pub fn accept_reinserted(&mut self, frame: &ExternalBatchFrame) -> Result<(), MpcError> {
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)
+    }
+}
+
 /// Evaluator-executor implementation for the explicit legacy `BothRoles`
 /// disclosure profile.
 ///
@@ -1081,6 +1243,99 @@ mod tests {
             })
             .unwrap();
         assert!(executor.is_complete());
+    }
+
+    #[test]
+    fn role_dispatcher_routes_mixed_actions_to_owning_hosts() {
+        let mut first = action(70, 0);
+        first.execution.executor = crate::ExternalExecutor::Evaluator;
+        let mut second = action(71, 1);
+        second.execution.executor = crate::ExternalExecutor::Garbler;
+        let manifest =
+            ExternalBatchManifest::from_actions(ExternalBoundaryId(16), &[first, second]).unwrap();
+        let binding = manifest.bind([7; 32], [8; 32]);
+        let registrations = || {
+            vec![
+                ExternalBatchAction {
+                    request_id: 70,
+                    name: "evaluator".into(),
+                    argument_bits: 1,
+                },
+                ExternalBatchAction {
+                    request_id: 71,
+                    name: "garbler".into(),
+                    argument_bits: 1,
+                },
+            ]
+        };
+        let mut evaluator = ExternalBatchRoleDispatcher::new(
+            ExternalBatchRole::Evaluator,
+            manifest.clone(),
+            binding,
+            registrations(),
+        )
+        .unwrap();
+        let mut garbler = ExternalBatchRoleDispatcher::new(
+            ExternalBatchRole::Garbler,
+            manifest,
+            binding,
+            registrations(),
+        )
+        .unwrap();
+        let mut eval_host = RecordingHost { calls: vec![] };
+        let mut garbler_host = RecordingHost { calls: vec![] };
+        for (request_id, expected_executor) in [
+            (70, ExternalBatchRole::Evaluator),
+            (71, ExternalBatchRole::Garbler),
+        ] {
+            let reveal = ExternalBatchFrame::Reveal {
+                binding,
+                request_id,
+                labels: vec![],
+            };
+            evaluator.accept_reveal(&reveal).unwrap();
+            garbler.accept_reveal(&reveal).unwrap();
+            let clear = ExternalBatchFrame::ClearInputs {
+                binding,
+                request_id,
+                bits: vec![true, request_id == 70, false],
+            };
+            let eval_result = evaluator
+                .process_clear_inputs(
+                    &clear,
+                    (expected_executor == ExternalBatchRole::Evaluator)
+                        .then_some(&mut eval_host as &mut dyn ExternalBatchActionHost),
+                )
+                .unwrap();
+            let garbler_result = garbler
+                .process_clear_inputs(
+                    &clear,
+                    (expected_executor == ExternalBatchRole::Garbler)
+                        .then_some(&mut garbler_host as &mut dyn ExternalBatchActionHost),
+                )
+                .unwrap();
+            let result = eval_result
+                .as_ref()
+                .or(garbler_result.as_ref())
+                .cloned()
+                .unwrap();
+            if eval_result.is_none() {
+                evaluator.accept_result(&result).unwrap();
+            }
+            if garbler_result.is_none() {
+                garbler.accept_result(&result).unwrap();
+            }
+            let ack = ExternalBatchFrame::Reinserted {
+                binding,
+                request_id,
+            };
+            evaluator.accept_reinserted(&ack).unwrap();
+            garbler.accept_reinserted(&ack).unwrap();
+        }
+        assert_eq!(eval_host.calls, vec![(70, vec![true])]);
+        assert_eq!(garbler_host.calls, vec![(71, vec![false])]);
+        assert!(evaluator.is_complete());
+        assert!(garbler.is_complete());
     }
 
     #[test]
