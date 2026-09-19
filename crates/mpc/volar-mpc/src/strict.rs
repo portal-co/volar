@@ -334,6 +334,112 @@ pub fn validate_legacy_action_spec(action: &crate::ActionSpec) -> Result<(), Mpc
     }
 }
 
+/// Decode one evaluator-provided external-action reveal against the garbler's
+/// private wire bases. This is the garbler half of strict label transport.
+///
+/// The returned bits are authorized only for the explicit legacy evaluator +
+/// `BothRoles` policy. The label vector must be exactly
+/// `[guard, args..., fallback...]`, in manifest/request order. It never
+/// accepts a host-selected action name or a different request occurrence.
+pub fn decode_legacy_action_reveal<N: VoleArray<u8>>(
+    full: &StrictGarbledFull<N>,
+    call: usize,
+    request_id: u64,
+    labels: &[Vec<u8>],
+) -> Result<Vec<bool>, MpcError> {
+    let spec = full
+        .exec
+        .schedule
+        .actions
+        .get(call)
+        .ok_or(MpcError::MalformedSchedule)?;
+    validate_legacy_action_spec(spec)?;
+    if request_id != spec.request_id {
+        return Err(MpcError::UnexpectedMessage);
+    }
+    let expected = 1usize
+        .checked_add(spec.arg_wires.len())
+        .and_then(|count| count.checked_add(spec.fallback_wires.len()))
+        .ok_or(MpcError::MalformedSchedule)?;
+    if labels.len() != expected {
+        return Err(MpcError::UnexpectedMessage);
+    }
+    let decode = |index: usize, wire: usize, polarity: bool| -> Result<bool, MpcError> {
+        let label = crate::vec_to_arr::<N>(&labels[index]).ok_or(MpcError::MalformedSchedule)?;
+        let base = full
+            .wire_bases
+            .get(wire)
+            .ok_or(MpcError::MalformedSchedule)?;
+        decode_output_label(&full.exec.circuit.secret, base, polarity, &label)
+            .ok_or(MpcError::DecodeFailure)
+    };
+    let mut bits = Vec::with_capacity(expected);
+    bits.push(decode(0, spec.guard, spec.guard_polarity)?);
+    for (index, (&wire, &polarity)) in spec
+        .arg_wires
+        .iter()
+        .zip(spec.arg_polarity.iter())
+        .enumerate()
+    {
+        bits.push(decode(1 + index, wire, polarity)?);
+    }
+    for (index, (&wire, &polarity)) in spec
+        .fallback_wires
+        .iter()
+        .zip(spec.fallback_polarity.iter())
+        .enumerate()
+    {
+        bits.push(decode(1 + spec.arg_wires.len() + index, wire, polarity)?);
+    }
+    Ok(bits)
+}
+
+/// Offer the two garbled encodings for every action result wire through OT.
+///
+/// The garbler never learns the evaluator host's selected result bit. Bases
+/// are bound to the action's guard/argument wire bases and output index, so a
+/// result label from another request cannot be reinserted at this call site.
+pub fn offer_legacy_action_result_labels<N, D>(
+    full: &StrictGarbledFull<N>,
+    call: usize,
+    ot: &mut dyn OtChannel<N>,
+) -> Result<(), MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let spec = full
+        .exec
+        .schedule
+        .actions
+        .get(call)
+        .ok_or(MpcError::MalformedSchedule)?;
+    validate_legacy_action_spec(spec)?;
+    let guard_base = full
+        .wire_bases
+        .get(spec.guard)
+        .cloned()
+        .ok_or(MpcError::MalformedSchedule)?;
+    let arg_bases: Vec<Garble<N>> = spec
+        .arg_wires
+        .iter()
+        .map(|&wire| {
+            full.wire_bases
+                .get(wire)
+                .cloned()
+                .ok_or(MpcError::MalformedSchedule)
+        })
+        .collect::<Result<_, _>>()?;
+    let arg_refs: Vec<&Garble<N>> = arg_bases.iter().collect();
+    for bit in 0..spec.num_bits {
+        let base = guard_base.action_result_base::<D>(&arg_refs, bit);
+        let false_label = full.exec.circuit.secret.encode(&base, false);
+        let true_label = full.exec.circuit.secret.encode(&base, true);
+        ot.send([&false_label.target, &true_label.target]);
+    }
+    Ok(())
+}
+
 /// The strict garbler role for a schedule carrying actions
 /// ([`Gate::ActionBit`]): identical to [`run_garbler_strict`] plus, per
 /// action call, a decode round-trip (the evaluator sends the arg labels, the
@@ -454,37 +560,7 @@ where
                 } if c as usize == call && request_id == spec.request_id => labels,
                 _ => return Err(MpcError::UnexpectedMessage),
             };
-            let nwires = 1 + spec.arg_wires.len() + spec.fallback_wires.len();
-            if labels.len() != nwires {
-                return Err(MpcError::UnexpectedMessage);
-            }
-            let mut decode_one = |i: usize, wire: usize, pol: bool| -> Result<bool, MpcError> {
-                let label = vec_to_arr::<N>(&labels[i]).ok_or(MpcError::MalformedSchedule)?;
-                let base = full
-                    .wire_bases
-                    .get(wire)
-                    .ok_or(MpcError::MalformedSchedule)?;
-                decode_output_label(&exec.circuit.secret, base, pol, &label)
-                    .ok_or(MpcError::DecodeFailure)
-            };
-            let mut bits = Vec::with_capacity(nwires);
-            bits.push(decode_one(0, spec.guard, spec.guard_polarity)?);
-            for (i, (&w, &p)) in spec
-                .arg_wires
-                .iter()
-                .zip(spec.arg_polarity.iter())
-                .enumerate()
-            {
-                bits.push(decode_one(1 + i, w, p)?);
-            }
-            for (i, (&w, &p)) in spec
-                .fallback_wires
-                .iter()
-                .zip(spec.fallback_polarity.iter())
-                .enumerate()
-            {
-                bits.push(decode_one(1 + spec.arg_wires.len() + i, w, p)?);
-            }
+            let bits = decode_legacy_action_reveal(full, call, spec.request_id, &labels)?;
             transport.send(
                 &SessionFrame::ActionArgsClear {
                     call: call as u32,
@@ -493,29 +569,7 @@ where
                 }
                 .encode(),
             );
-            // Offer each result bit by OT against the pinned base.
-            let guard_base = full
-                .wire_bases
-                .get(spec.guard)
-                .cloned()
-                .ok_or(MpcError::MalformedSchedule)?;
-            let arg_bases: Vec<Garble<N>> = spec
-                .arg_wires
-                .iter()
-                .map(|&w| {
-                    full.wire_bases
-                        .get(w)
-                        .cloned()
-                        .ok_or(MpcError::MalformedSchedule)
-                })
-                .collect::<Result<_, MpcError>>()?;
-            let arg_refs: Vec<&Garble<N>> = arg_bases.iter().collect();
-            for i in 0..spec.num_bits {
-                let base = guard_base.action_result_base::<D>(&arg_refs, i);
-                let f = exec.circuit.secret.encode(&base, false);
-                let t = exec.circuit.secret.encode(&base, true);
-                ot.send([&f.target, &t.target]);
-            }
+            offer_legacy_action_result_labels::<N, D>(full, call, ot)?;
         }
     }
 

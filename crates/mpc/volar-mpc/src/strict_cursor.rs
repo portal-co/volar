@@ -126,6 +126,74 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
             .map(|_| ())
     }
 
+    /// Prepare evaluator-held labels for one paused action reveal.
+    ///
+    /// The caller transports these labels to the garbler action adapter. No
+    /// logical value is decoded locally; the request ID binds the label vector
+    /// to its exact source action occurrence.
+    pub fn action_reveal_labels(&self, call: u32) -> Result<(u64, Vec<Vec<u8>>), MpcError> {
+        let spec = self
+            .schedule
+            .actions
+            .get(call as usize)
+            .ok_or(MpcError::MalformedSchedule)?;
+        crate::strict::validate_legacy_action_spec(spec)?;
+        if self
+            .call_results
+            .get(call as usize)
+            .and_then(|result| result.as_ref())
+            .is_some()
+        {
+            return Err(MpcError::MalformedSchedule);
+        }
+        let mut labels = Vec::with_capacity(1 + spec.arg_wires.len() + spec.fallback_wires.len());
+        labels.push(arr_to_vec(&self.wire(spec.guard)?.target));
+        for &wire in spec.arg_wires.iter().chain(spec.fallback_wires.iter()) {
+            labels.push(arr_to_vec(&self.wire(wire)?.target));
+        }
+        Ok((spec.request_id, labels))
+    }
+
+    /// Reinsert one evaluator-selected action result through OT labels.
+    ///
+    /// The supplied clear bits are used only as OT choices; the cursor stores
+    /// the returned labels, never the bits. The corresponding garbler adapter
+    /// must have offered result pairs derived from this request's pinned bases.
+    pub fn reinsert_action_result(
+        &mut self,
+        call: u32,
+        result_bits: &[bool],
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        let call = call as usize;
+        if self
+            .call_results
+            .get(call)
+            .and_then(|result| result.as_ref())
+            .is_some()
+        {
+            return Err(MpcError::MalformedSchedule);
+        }
+        let spec = self
+            .schedule
+            .actions
+            .get(call)
+            .ok_or(MpcError::MalformedSchedule)?;
+        crate::strict::validate_legacy_action_spec(spec)?;
+        if result_bits.len() != spec.num_bits {
+            return Err(MpcError::ActionHost);
+        }
+        self.call_results[call] = Some(
+            result_bits
+                .iter()
+                .map(|bit| Eval {
+                    target: ot.receive(*bit),
+                })
+                .collect(),
+        );
+        Ok(())
+    }
+
     /// Consume exactly one table for the pending AND gate.
     pub fn apply_table<D: Digest>(&mut self, table: &GarbleTable<N>) -> Result<(), MpcError> {
         let Gate::And(a, b) = self
@@ -176,26 +244,20 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
             .and_then(|r| r.as_ref())
             .is_none()
         {
+            let (request_id, labels) = self.action_reveal_labels(call as u32)?;
+            transport.send(
+                &SessionFrame::ActionArgs {
+                    call: call as u32,
+                    request_id,
+                    labels,
+                }
+                .encode(),
+            );
             let spec: &ActionSpec = self
                 .schedule
                 .actions
                 .get(call)
                 .ok_or(MpcError::MalformedSchedule)?;
-            crate::strict::validate_legacy_action_spec(spec)?;
-            let mut labels =
-                Vec::with_capacity(1 + spec.arg_wires.len() + spec.fallback_wires.len());
-            labels.push(arr_to_vec(&self.wire(spec.guard)?.target));
-            for &wire in spec.arg_wires.iter().chain(spec.fallback_wires.iter()) {
-                labels.push(arr_to_vec(&self.wire(wire)?.target));
-            }
-            transport.send(
-                &SessionFrame::ActionArgs {
-                    call: call as u32,
-                    request_id: spec.request_id,
-                    labels,
-                }
-                .encode(),
-            );
             let bits =
                 match SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)? {
                     SessionFrame::ActionArgsClear {
@@ -221,14 +283,7 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
                 }
                 fallback
             };
-            self.call_results[call] = Some(
-                result
-                    .into_iter()
-                    .map(|bit| Eval {
-                        target: ot.receive(bit),
-                    })
-                    .collect(),
-            );
+            self.reinsert_action_result(call as u32, &result, ot)?;
         }
         self.call_results[call]
             .as_ref()
