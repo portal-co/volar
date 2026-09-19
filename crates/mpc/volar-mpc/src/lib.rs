@@ -65,7 +65,7 @@ pub mod external_batch;
 pub use external_batch::{
     EXTERNAL_BATCH_MAX_ACTIONS, EXTERNAL_BATCH_MAX_VALUE_BYTES, EXTERNAL_BATCH_MAX_VALUES,
     ExternalActionManifestEntry, ExternalBatchBinding, ExternalBatchFrame, ExternalBatchFrameError,
-    ExternalBatchManifest, ExternalBoundaryId,
+    ExternalBatchManifest, ExternalBatchPhase, ExternalBatchTranscript, ExternalBoundaryId,
 };
 pub mod input_labels;
 #[cfg(feature = "std")]

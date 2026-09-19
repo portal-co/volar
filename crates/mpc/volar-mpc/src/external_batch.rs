@@ -89,6 +89,102 @@ pub enum ExternalBatchFrameError {
     ManifestMismatch,
     RequestMismatch,
     ResultWidthMismatch,
+    UnexpectedPhase,
+}
+
+/// Public progress state for the conservative ordered action-batch envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalBatchPhase {
+    Reveal,
+    ClearInputs,
+    Result,
+    Reinserted,
+    Complete,
+}
+
+/// Fail-closed validator for one admitted batch's conservative action flow.
+///
+/// It enforces the current common transcript order
+/// `Reveal → ClearInputs → Result → Reinserted` for every manifest action in
+/// action-chain order. It does not authorize any executor: strict adapters
+/// must separately check their executor/reveal capability before creating a
+/// transcript. This state machine deliberately contains no labels or result
+/// bits beyond bounded frame validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalBatchTranscript {
+    manifest: ExternalBatchManifest,
+    binding: ExternalBatchBinding,
+    next_action: usize,
+    phase: ExternalBatchPhase,
+}
+
+impl ExternalBatchTranscript {
+    /// Start after both roles independently validated the manifest frame.
+    pub fn new(manifest: ExternalBatchManifest, binding: ExternalBatchBinding) -> Self {
+        let phase = if manifest.actions.is_empty() {
+            ExternalBatchPhase::Complete
+        } else {
+            ExternalBatchPhase::Reveal
+        };
+        Self {
+            manifest,
+            binding,
+            next_action: 0,
+            phase,
+        }
+    }
+
+    pub const fn phase(&self) -> ExternalBatchPhase {
+        self.phase
+    }
+
+    pub const fn is_complete(&self) -> bool {
+        matches!(self.phase, ExternalBatchPhase::Complete)
+    }
+
+    /// Accept one received/sent batch phase frame, validating identity, width,
+    /// and exact request/action-chain order before advancing.
+    pub fn accept(&mut self, frame: &ExternalBatchFrame) -> Result<(), ExternalBatchFrameError> {
+        frame.validate_request(&self.manifest, self.binding)?;
+        let expected = self
+            .manifest
+            .actions
+            .get(self.next_action)
+            .ok_or(ExternalBatchFrameError::UnexpectedPhase)?;
+        let request_id = match frame {
+            ExternalBatchFrame::Reveal { request_id, .. }
+            | ExternalBatchFrame::ClearInputs { request_id, .. }
+            | ExternalBatchFrame::Result { request_id, .. }
+            | ExternalBatchFrame::Reinserted { request_id, .. } => *request_id,
+            ExternalBatchFrame::Manifest { .. } => {
+                return Err(ExternalBatchFrameError::UnexpectedPhase);
+            }
+        };
+        if request_id != expected.request_id {
+            return Err(ExternalBatchFrameError::RequestMismatch);
+        }
+        self.phase = match (self.phase, frame) {
+            (ExternalBatchPhase::Reveal, ExternalBatchFrame::Reveal { .. }) => {
+                ExternalBatchPhase::ClearInputs
+            }
+            (ExternalBatchPhase::ClearInputs, ExternalBatchFrame::ClearInputs { .. }) => {
+                ExternalBatchPhase::Result
+            }
+            (ExternalBatchPhase::Result, ExternalBatchFrame::Result { .. }) => {
+                ExternalBatchPhase::Reinserted
+            }
+            (ExternalBatchPhase::Reinserted, ExternalBatchFrame::Reinserted { .. }) => {
+                self.next_action += 1;
+                if self.next_action == self.manifest.actions.len() {
+                    ExternalBatchPhase::Complete
+                } else {
+                    ExternalBatchPhase::Reveal
+                }
+            }
+            _ => return Err(ExternalBatchFrameError::UnexpectedPhase),
+        };
+        Ok(())
+    }
 }
 
 impl ExternalBatchManifest {
@@ -559,6 +655,57 @@ mod tests {
                 labels: vec![vec![1, 2]],
             }
             .encode()
+        );
+    }
+
+    #[test]
+    fn transcript_enforces_ordered_complete_reinsertion() {
+        let manifest = ExternalBatchManifest::from_actions(
+            ExternalBoundaryId(2),
+            &[action(12, 0), action(13, 1)],
+        )
+        .unwrap();
+        let binding = manifest.bind([1; 32], [2; 32]);
+        let mut transcript = ExternalBatchTranscript::new(manifest, binding);
+        for request_id in [12, 13] {
+            for frame in [
+                ExternalBatchFrame::Reveal {
+                    binding,
+                    request_id,
+                    labels: vec![],
+                },
+                ExternalBatchFrame::ClearInputs {
+                    binding,
+                    request_id,
+                    bits: vec![],
+                },
+                ExternalBatchFrame::Result {
+                    binding,
+                    request_id,
+                    bits: vec![true],
+                },
+                ExternalBatchFrame::Reinserted {
+                    binding,
+                    request_id,
+                },
+            ] {
+                transcript.accept(&frame).unwrap();
+            }
+        }
+        assert!(transcript.is_complete());
+        let mut wrong_order = ExternalBatchTranscript::new(
+            ExternalBatchManifest::from_actions(ExternalBoundaryId(3), &[action(8, 0)]).unwrap(),
+            ExternalBatchManifest::from_actions(ExternalBoundaryId(3), &[action(8, 0)])
+                .unwrap()
+                .bind([1; 32], [2; 32]),
+        );
+        assert_eq!(
+            wrong_order.accept(&ExternalBatchFrame::Result {
+                binding: wrong_order.binding,
+                request_id: 8,
+                bits: vec![true],
+            }),
+            Err(ExternalBatchFrameError::UnexpectedPhase)
         );
     }
 
