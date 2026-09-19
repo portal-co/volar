@@ -159,6 +159,20 @@ pub struct EvaluatorBatchExecutor {
     registrations: BTreeMap<u64, ExternalBatchAction>,
 }
 
+/// Garbler-executor implementation for the explicit conservative `BothRoles`
+/// disclosure profile.
+///
+/// The strict garbler first exact-match decodes a `Reveal` into `ClearInputs`,
+/// sends those bits to the evaluator because this mode authorizes both roles,
+/// then this executor invokes the garbler-local host and returns the result
+/// frame. OT label reinsertion remains identical to the evaluator-executor
+/// path: the garbler offers request-bound pairs and the evaluator selects from
+/// the result frame bits.
+pub struct GarblerBatchExecutor {
+    transcript: ExternalBatchTranscript,
+    registrations: BTreeMap<u64, ExternalBatchAction>,
+}
+
 impl EvaluatorBatchExecutor {
     /// Build an executor only for the one legacy strict profile currently
     /// implemented. Garbler execution and executor-only disclosure are rejected
@@ -185,8 +199,11 @@ impl EvaluatorBatchExecutor {
             return Err(MpcError::MalformedSchedule);
         }
         for action in &manifest.actions {
-            if action.execution.executor != crate::ExternalExecutor::Evaluator
-                || action.execution.reveal != crate::ExternalRevealPolicy::BothRoles
+            if action.execution.reveal != crate::ExternalRevealPolicy::BothRoles
+                || !matches!(
+                    action.execution.executor,
+                    crate::ExternalExecutor::Evaluator | crate::ExternalExecutor::Garbler
+                )
             {
                 return Err(MpcError::UnsupportedExternalPolicy);
             }
@@ -229,13 +246,22 @@ impl EvaluatorBatchExecutor {
         else {
             return Err(MpcError::UnexpectedMessage);
         };
-        let (expected_request_id, output_bits) = self
+        let (expected_request_id, output_bits, executor) = self
             .transcript
             .manifest
             .actions
             .get(self.transcript.next_action)
-            .map(|action| (action.request_id, action.output_bits))
+            .map(|action| {
+                (
+                    action.request_id,
+                    action.output_bits,
+                    action.execution.executor,
+                )
+            })
             .ok_or(MpcError::MalformedSchedule)?;
+        if executor != crate::ExternalExecutor::Evaluator {
+            return Err(MpcError::UnsupportedExternalPolicy);
+        }
         if *request_id != expected_request_id {
             return Err(MpcError::UnexpectedMessage);
         }
@@ -273,8 +299,160 @@ impl EvaluatorBatchExecutor {
         Ok(result)
     }
 
+    /// Advance a garbler-executed request through `ClearInputs` without
+    /// executing the evaluator host. The evaluator subsequently receives the
+    /// garbler-produced result through [`Self::accept_garbler_result`].
+    pub fn accept_garbler_clear_inputs(
+        &mut self,
+        frame: &ExternalBatchFrame,
+    ) -> Result<(), MpcError> {
+        let action = self
+            .transcript
+            .manifest
+            .actions
+            .get(self.transcript.next_action)
+            .ok_or(MpcError::MalformedSchedule)?;
+        if action.execution.executor != crate::ExternalExecutor::Garbler {
+            return Err(MpcError::UnsupportedExternalPolicy);
+        }
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)
+    }
+
+    /// Admit a garbler-produced result before evaluator-side OT reinsertion.
+    pub fn accept_garbler_result(&mut self, frame: &ExternalBatchFrame) -> Result<(), MpcError> {
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)
+    }
+
     /// Acknowledge that the result has been reinserted by the separate label
     /// adapter. The next action cannot begin until this succeeds.
+    pub fn accept_reinserted(&mut self, frame: &ExternalBatchFrame) -> Result<(), MpcError> {
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)
+    }
+}
+
+impl GarblerBatchExecutor {
+    /// Build an executor only for explicit Garbler + `BothRoles` actions.
+    /// Executor-only disclosure needs a different transcript direction and is
+    /// rejected rather than being treated as this compatibility profile.
+    pub fn new(
+        manifest: ExternalBatchManifest,
+        binding: ExternalBatchBinding,
+        registrations: Vec<ExternalBatchAction>,
+    ) -> Result<Self, MpcError> {
+        manifest
+            .validate()
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        let mut by_request = BTreeMap::new();
+        for registration in registrations {
+            if registration.name.is_empty()
+                || by_request
+                    .insert(registration.request_id, registration)
+                    .is_some()
+            {
+                return Err(MpcError::MalformedSchedule);
+            }
+        }
+        if by_request.len() != manifest.actions.len() {
+            return Err(MpcError::MalformedSchedule);
+        }
+        for action in &manifest.actions {
+            if action.execution.executor != crate::ExternalExecutor::Garbler
+                || action.execution.reveal != crate::ExternalRevealPolicy::BothRoles
+            {
+                return Err(MpcError::UnsupportedExternalPolicy);
+            }
+            if !by_request.contains_key(&action.request_id) {
+                return Err(MpcError::MalformedSchedule);
+            }
+        }
+        Ok(Self {
+            transcript: ExternalBatchTranscript::new(manifest, binding),
+            registrations: by_request,
+        })
+    }
+
+    pub const fn phase(&self) -> ExternalBatchPhase {
+        self.transcript.phase()
+    }
+
+    pub const fn is_complete(&self) -> bool {
+        self.transcript.is_complete()
+    }
+
+    /// Admit one evaluator-provided label reveal before the strict garbler
+    /// decodes it into an explicit `ClearInputs` frame.
+    pub fn accept_reveal(&mut self, frame: &ExternalBatchFrame) -> Result<(), MpcError> {
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)
+    }
+
+    /// Execute a locally decoded clear-input frame. Guard-false uses the
+    /// declared fallback and never invokes the garbler host.
+    pub fn execute_clear_inputs<H: ExternalBatchActionHost>(
+        &mut self,
+        frame: &ExternalBatchFrame,
+        host: &mut H,
+    ) -> Result<ExternalBatchFrame, MpcError> {
+        let ExternalBatchFrame::ClearInputs {
+            binding,
+            request_id,
+            bits,
+        } = frame
+        else {
+            return Err(MpcError::UnexpectedMessage);
+        };
+        let (expected_request_id, output_bits, executor) = self
+            .transcript
+            .manifest
+            .actions
+            .get(self.transcript.next_action)
+            .map(|action| {
+                (
+                    action.request_id,
+                    action.output_bits,
+                    action.execution.executor,
+                )
+            })
+            .ok_or(MpcError::MalformedSchedule)?;
+        if executor != crate::ExternalExecutor::Garbler {
+            return Err(MpcError::UnsupportedExternalPolicy);
+        }
+        if *request_id != expected_request_id {
+            return Err(MpcError::UnexpectedMessage);
+        }
+        let registration = self
+            .registrations
+            .get(request_id)
+            .ok_or(MpcError::MalformedSchedule)?;
+        let expected = 1usize
+            .checked_add(registration.argument_bits)
+            .and_then(|size| size.checked_add(output_bits))
+            .ok_or(MpcError::MalformedSchedule)?;
+        if bits.len() != expected {
+            return Err(MpcError::UnexpectedMessage);
+        }
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)?;
+        let args_start = 1;
+        let fallback_start = args_start + registration.argument_bits;
+        let result_bits = if bits[0] {
+            let output = host.action(registration, &bits[args_start..fallback_start])?;
+            if output.len() != output_bits {
+                return Err(MpcError::ActionHost);
+            }
+            output
+        } else {
+            bits[fallback_start..].to_vec()
+        };
+        let result = ExternalBatchFrame::Result {
+            binding: *binding,
+            request_id: *request_id,
+            bits: result_bits,
+        };
+        self.transcript
+            .accept(&result)
+            .map_err(frame_error_to_mpc)?;
+        Ok(result)
+    }
+
     pub fn accept_reinserted(&mut self, frame: &ExternalBatchFrame) -> Result<(), MpcError> {
         self.transcript.accept(frame).map_err(frame_error_to_mpc)
     }
@@ -903,6 +1081,66 @@ mod tests {
             })
             .unwrap();
         assert!(executor.is_complete());
+    }
+
+    #[test]
+    fn garbler_executor_runs_guarded_action_and_rejects_evaluator_policy() {
+        let mut garbler_action = action(46, 0);
+        garbler_action.execution.executor = crate::ExternalExecutor::Garbler;
+        let manifest =
+            ExternalBatchManifest::from_actions(ExternalBoundaryId(14), &[garbler_action]).unwrap();
+        let binding = manifest.bind([4; 32], [5; 32]);
+        let mut executor = GarblerBatchExecutor::new(
+            manifest,
+            binding,
+            vec![ExternalBatchAction {
+                request_id: 46,
+                name: "garbler-host".into(),
+                argument_bits: 1,
+            }],
+        )
+        .unwrap();
+        executor
+            .accept_reveal(&ExternalBatchFrame::Reveal {
+                binding,
+                request_id: 46,
+                labels: vec![],
+            })
+            .unwrap();
+        let mut host = RecordingHost { calls: vec![] };
+        let result = executor
+            .execute_clear_inputs(
+                &ExternalBatchFrame::ClearInputs {
+                    binding,
+                    request_id: 46,
+                    bits: vec![true, true, false],
+                },
+                &mut host,
+            )
+            .unwrap();
+        assert_eq!(
+            result,
+            ExternalBatchFrame::Result {
+                binding,
+                request_id: 46,
+                bits: vec![false],
+            }
+        );
+        assert_eq!(host.calls, vec![(46, vec![true])]);
+        let evaluator_manifest =
+            ExternalBatchManifest::from_actions(ExternalBoundaryId(15), &[action(47, 0)]).unwrap();
+        assert!(matches!(
+            GarblerBatchExecutor::new(
+                evaluator_manifest.clone(),
+                evaluator_manifest.bind([4; 32], [6; 32]),
+                vec![ExternalBatchAction {
+                    request_id: 47,
+                    name: "wrong".into(),
+                    argument_bits: 1,
+                }],
+            ),
+            Err(MpcError::UnsupportedExternalPolicy)
+        ));
     }
 
     #[test]

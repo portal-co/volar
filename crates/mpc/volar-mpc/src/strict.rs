@@ -41,8 +41,8 @@ use crate::strict_cursor::{CursorState, StrictGateCursor};
 use crate::{
     DynGarbledCircuit, DynGarbledExec, Eval, EvaluatorBatchExecutor, ExternalBatchAction,
     ExternalBatchActionHost, ExternalBatchBinding, ExternalBatchFrame, ExternalBatchManifest,
-    ExternalBatchTranscript, Gate, GateSchedule, InputOwner, MpcError, OtChannel, SessionFrame,
-    Transport,
+    ExternalBatchTranscript, GarblerBatchExecutor, Gate, GateSchedule, InputOwner, MpcError,
+    OtChannel, SessionFrame, Transport,
 };
 
 /// The result of [`eliminate_nots`]: a Not/One-free schedule plus the
@@ -342,11 +342,11 @@ impl ExternalBatchActionHost for LegacyBatchHost<'_> {
 fn batch_action_registrations(
     schedule: &GateSchedule,
 ) -> Result<Vec<ExternalBatchAction>, MpcError> {
+    validate_batch_action_policy(schedule)?;
     schedule
         .actions
         .iter()
         .map(|action| {
-            validate_legacy_action_spec(action)?;
             Ok(ExternalBatchAction {
                 request_id: action.request_id,
                 name: action.name.clone(),
@@ -356,15 +356,59 @@ fn batch_action_registrations(
         .collect()
 }
 
-/// Validate that a schedule uses the only action disclosure mode implemented
-/// by the current strict compatibility transport.
+/// Determine the one executor role supported by this strict batch runner.
+/// A mixed-executor boundary needs a role-aware dispatcher that can maintain
+/// both local host registries in one transcript; reject it rather than routing
+/// an action to the wrong process.
+fn homogeneous_batch_executor(
+    schedule: &GateSchedule,
+) -> Result<crate::ExternalExecutor, MpcError> {
+    let first = schedule
+        .actions
+        .first()
+        .map(|action| action.execution.executor)
+        .unwrap_or(crate::ExternalExecutor::Evaluator);
+    if schedule
+        .actions
+        .iter()
+        .all(|action| action.execution.executor == first)
+    {
+        Ok(first)
+    } else {
+        Err(MpcError::UnsupportedExternalPolicy)
+    }
+}
+
+/// Validate the original strict compatibility action mode.
 ///
-/// This is deliberately public so VC/chain adapters can reject an unsupported
-/// executor before opening a transport or allocating an OT. Garbler execution
-/// and executor-only disclosure require the future batch/reinsertion protocol.
+/// This remains evaluator-hosted because old `ActionArgs` frames cannot express
+/// a garbler executor. The versioned batch runner uses
+/// [`validate_batch_action_policy`] instead.
 pub fn validate_legacy_action_policy(schedule: &GateSchedule) -> Result<(), MpcError> {
     for action in &schedule.actions {
         validate_legacy_action_spec(action)?;
+    }
+    Ok(())
+}
+
+/// Validate the action modes implemented by the versioned strict batch
+/// transport. Both executors require explicitly authorized `BothRoles`
+/// disclosure; `ExecutorOnly` stays fail-closed until its distinct transcript
+/// direction is implemented.
+pub fn validate_batch_action_policy(schedule: &GateSchedule) -> Result<(), MpcError> {
+    for action in &schedule.actions {
+        if !matches!(
+            (action.execution.executor, action.execution.reveal),
+            (
+                crate::ExternalExecutor::Evaluator,
+                crate::ExternalRevealPolicy::BothRoles
+            ) | (
+                crate::ExternalExecutor::Garbler,
+                crate::ExternalRevealPolicy::BothRoles
+            )
+        ) {
+            return Err(MpcError::UnsupportedExternalPolicy);
+        }
     }
     Ok(())
 }
@@ -382,6 +426,23 @@ pub fn validate_legacy_action_spec(action: &crate::ActionSpec) -> Result<(), Mpc
     }
 }
 
+pub(crate) fn validate_batch_action_spec(action: &crate::ActionSpec) -> Result<(), MpcError> {
+    if matches!(
+        (action.execution.executor, action.execution.reveal),
+        (
+            crate::ExternalExecutor::Evaluator,
+            crate::ExternalRevealPolicy::BothRoles
+        ) | (
+            crate::ExternalExecutor::Garbler,
+            crate::ExternalRevealPolicy::BothRoles
+        )
+    ) {
+        Ok(())
+    } else {
+        Err(MpcError::UnsupportedExternalPolicy)
+    }
+}
+
 /// Decode one evaluator-provided external-action reveal against the garbler's
 /// private wire bases. This is the garbler half of strict label transport.
 ///
@@ -389,7 +450,7 @@ pub fn validate_legacy_action_spec(action: &crate::ActionSpec) -> Result<(), Mpc
 /// `BothRoles` policy. The label vector must be exactly
 /// `[guard, args..., fallback...]`, in manifest/request order. It never
 /// accepts a host-selected action name or a different request occurrence.
-pub fn decode_legacy_action_reveal<N: VoleArray<u8>>(
+fn decode_action_reveal<N: VoleArray<u8>>(
     full: &StrictGarbledFull<N>,
     call: usize,
     request_id: u64,
@@ -401,7 +462,6 @@ pub fn decode_legacy_action_reveal<N: VoleArray<u8>>(
         .actions
         .get(call)
         .ok_or(MpcError::MalformedSchedule)?;
-    validate_legacy_action_spec(spec)?;
     if request_id != spec.request_id {
         return Err(MpcError::UnexpectedMessage);
     }
@@ -442,6 +502,39 @@ pub fn decode_legacy_action_reveal<N: VoleArray<u8>>(
     Ok(bits)
 }
 
+/// Decode a reveal for the legacy evaluator-hosted strict path.
+pub fn decode_legacy_action_reveal<N: VoleArray<u8>>(
+    full: &StrictGarbledFull<N>,
+    call: usize,
+    request_id: u64,
+    labels: &[Vec<u8>],
+) -> Result<Vec<bool>, MpcError> {
+    let spec = full
+        .exec
+        .schedule
+        .actions
+        .get(call)
+        .ok_or(MpcError::MalformedSchedule)?;
+    validate_legacy_action_spec(spec)?;
+    decode_action_reveal(full, call, request_id, labels)
+}
+
+fn decode_batch_action_reveal<N: VoleArray<u8>>(
+    full: &StrictGarbledFull<N>,
+    call: usize,
+    request_id: u64,
+    labels: &[Vec<u8>],
+) -> Result<Vec<bool>, MpcError> {
+    let spec = full
+        .exec
+        .schedule
+        .actions
+        .get(call)
+        .ok_or(MpcError::MalformedSchedule)?;
+    validate_batch_action_spec(spec)?;
+    decode_action_reveal(full, call, request_id, labels)
+}
+
 /// Offer the two garbled encodings for every action result wire through OT.
 ///
 /// The garbler never learns the evaluator host's selected result bit. Bases
@@ -463,6 +556,47 @@ where
         .get(call)
         .ok_or(MpcError::MalformedSchedule)?;
     validate_legacy_action_spec(spec)?;
+    let guard_base = full
+        .wire_bases
+        .get(spec.guard)
+        .cloned()
+        .ok_or(MpcError::MalformedSchedule)?;
+    let arg_bases: Vec<Garble<N>> = spec
+        .arg_wires
+        .iter()
+        .map(|&wire| {
+            full.wire_bases
+                .get(wire)
+                .cloned()
+                .ok_or(MpcError::MalformedSchedule)
+        })
+        .collect::<Result<_, _>>()?;
+    let arg_refs: Vec<&Garble<N>> = arg_bases.iter().collect();
+    for bit in 0..spec.num_bits {
+        let base = guard_base.action_result_base::<D>(&arg_refs, bit);
+        let false_label = full.exec.circuit.secret.encode(&base, false);
+        let true_label = full.exec.circuit.secret.encode(&base, true);
+        ot.send([&false_label.target, &true_label.target]);
+    }
+    Ok(())
+}
+
+fn offer_batch_action_result_labels<N, D>(
+    full: &StrictGarbledFull<N>,
+    call: usize,
+    ot: &mut dyn OtChannel<N>,
+) -> Result<(), MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let spec = full
+        .exec
+        .schedule
+        .actions
+        .get(call)
+        .ok_or(MpcError::MalformedSchedule)?;
+    validate_batch_action_spec(spec)?;
     let guard_base = full
         .wire_bases
         .get(spec.guard)
@@ -536,7 +670,7 @@ pub fn decode_external_batch_action_reveal<N: VoleArray<u8>>(
     {
         return Err(MpcError::UnexpectedMessage);
     }
-    let bits = decode_legacy_action_reveal(full, call, *request_id, labels)?;
+    let bits = decode_batch_action_reveal(full, call, *request_id, labels)?;
     Ok(ExternalBatchFrame::ClearInputs {
         binding,
         request_id: *request_id,
@@ -594,7 +728,7 @@ where
     {
         return Err(MpcError::UnexpectedMessage);
     }
-    offer_legacy_action_result_labels::<N, D>(full, call, ot)
+    offer_batch_action_result_labels::<N, D>(full, call, ot)
 }
 
 /// The strict garbler role for a schedule carrying actions
@@ -606,6 +740,9 @@ where
 /// The decoded argument values are public by design (e.g. TLS ciphertext
 /// records) — never let a secret value reach an action's argument wires
 /// unencrypted.
+/// Run strict actions under the legacy evaluator-hosted policy only.
+/// Garbler-hosted actions require the explicit
+/// [`run_garbler_strict_actions_garbler_host`] entry point.
 pub fn run_garbler_strict_actions<N, D, T: Transport>(
     full: &StrictGarbledFull<N>,
     elim: &EliminatedNots,
@@ -619,13 +756,69 @@ where
     N: VoleArray<u8>,
     D: Digest,
 {
+    validate_legacy_action_policy(&full.exec.schedule)?;
+    run_garbler_strict_actions_inner::<N, D, T>(
+        full,
+        elim,
+        partition,
+        public_bits,
+        garbler_bits,
+        transport,
+        ot,
+        None,
+    )
+}
+
+/// Run a strict batch whose actions are all explicitly assigned to the
+/// garbler under `BothRoles` disclosure. The local host is mandatory.
+pub fn run_garbler_strict_actions_garbler_host<N, D, T: Transport>(
+    full: &StrictGarbledFull<N>,
+    elim: &EliminatedNots,
+    partition: &[InputOwner],
+    public_bits: &[bool],
+    garbler_bits: &[bool],
+    transport: &mut T,
+    ot: &mut dyn OtChannel<N>,
+    host: &mut dyn StrictActionHost,
+) -> Result<Vec<bool>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    validate_batch_action_policy(&full.exec.schedule)?;
+    if homogeneous_batch_executor(&full.exec.schedule)? != crate::ExternalExecutor::Garbler {
+        return Err(MpcError::UnsupportedExternalPolicy);
+    }
+    run_garbler_strict_actions_inner::<N, D, T>(
+        full,
+        elim,
+        partition,
+        public_bits,
+        garbler_bits,
+        transport,
+        ot,
+        Some(host),
+    )
+}
+
+fn run_garbler_strict_actions_inner<N, D, T: Transport>(
+    full: &StrictGarbledFull<N>,
+    elim: &EliminatedNots,
+    partition: &[InputOwner],
+    public_bits: &[bool],
+    garbler_bits: &[bool],
+    transport: &mut T,
+    ot: &mut dyn OtChannel<N>,
+    mut garbler_host: Option<&mut dyn StrictActionHost>,
+) -> Result<Vec<bool>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
     let exec = &full.exec;
     let schedule = &exec.schedule;
-    validate_legacy_action_policy(schedule)?;
-    // Legacy frames remain per-call, but their schedule is first checked as a
-    // canonical boundary manifest. This binds source action identity/order now
-    // and lets a future batched frame replace only the transport loop.
-    crate::ExternalBatchManifest::from_actions(crate::ExternalBoundaryId(0), &schedule.actions)?;
+    validate_batch_action_policy(schedule)?;
+    let executor_role = homogeneous_batch_executor(schedule)?;
     if partition.len() != schedule.num_inputs {
         return Err(MpcError::BadPartition);
     }
@@ -686,6 +879,15 @@ where
         .encode(),
     );
     let mut transcript = ExternalBatchTranscript::new(manifest.clone(), binding);
+    let mut garbler_executor = if executor_role == crate::ExternalExecutor::Garbler {
+        Some(GarblerBatchExecutor::new(
+            manifest.clone(),
+            binding,
+            batch_action_registrations(schedule)?,
+        )?)
+    } else {
+        None
+    };
 
     for tables in exec.circuit.tables.chunks(STRICT_TABLE_CHUNK) {
         transport.send(
@@ -711,7 +913,7 @@ where
         .encode(),
     );
 
-    for (call, _spec) in schedule.actions.iter().enumerate() {
+    for (call, spec) in schedule.actions.iter().enumerate() {
         let reveal = ExternalBatchFrame::decode(&transport.recv())
             .map_err(|_| MpcError::UnexpectedMessage)?;
         transcript
@@ -722,8 +924,23 @@ where
             .accept(&clear)
             .map_err(|_| MpcError::UnexpectedMessage)?;
         transport.send(&clear.encode());
-        let result = ExternalBatchFrame::decode(&transport.recv())
-            .map_err(|_| MpcError::UnexpectedMessage)?;
+        let result = match spec.execution.executor {
+            crate::ExternalExecutor::Evaluator => ExternalBatchFrame::decode(&transport.recv())
+                .map_err(|_| MpcError::UnexpectedMessage)?,
+            crate::ExternalExecutor::Garbler => {
+                let executor = garbler_executor
+                    .as_mut()
+                    .ok_or(MpcError::UnsupportedExternalPolicy)?;
+                executor.accept_reveal(&reveal)?;
+                let host = garbler_host
+                    .as_deref_mut()
+                    .ok_or(MpcError::UnsupportedExternalPolicy)?;
+                let mut batch_host = LegacyBatchHost { host };
+                let result = executor.execute_clear_inputs(&clear, &mut batch_host)?;
+                transport.send(&result.encode());
+                result
+            }
+        };
         transcript
             .accept(&result)
             .map_err(|_| MpcError::UnexpectedMessage)?;
@@ -735,6 +952,9 @@ where
         transcript
             .accept(&ack)
             .map_err(|_| MpcError::UnexpectedMessage)?;
+        if let Some(executor) = garbler_executor.as_mut() {
+            executor.accept_reinserted(&ack)?;
+        }
         if !matches!(ack, ExternalBatchFrame::Reinserted { .. }) {
             return Err(MpcError::UnexpectedMessage);
         }
@@ -1046,6 +1266,7 @@ fn eval_strict_table_stream_batch_cursor<N: VoleArray<u8>, D: Digest, T: Transpo
     host: &mut dyn StrictActionHost,
     gram: &mut [&mut dyn crate::GramDrive<N>],
 ) -> Result<Vec<Eval<N>>, MpcError> {
+    let executor_role = homogeneous_batch_executor(schedule)?;
     let registrations = batch_action_registrations(schedule)?;
     let mut executor = EvaluatorBatchExecutor::new(manifest.clone(), binding, registrations)?;
     transport.send(
@@ -1076,10 +1297,23 @@ fn eval_strict_table_stream_batch_cursor<N: VoleArray<u8>, D: Digest, T: Transpo
                                 transport.send(&reveal.encode());
                                 let clear = ExternalBatchFrame::decode(&transport.recv())
                                     .map_err(|_| MpcError::UnexpectedMessage)?;
-                                let mut batch_host = LegacyBatchHost { host };
-                                let result =
-                                    executor.execute_clear_inputs(&clear, &mut batch_host)?;
-                                transport.send(&result.encode());
+                                let result = match executor_role {
+                                    crate::ExternalExecutor::Evaluator => {
+                                        let mut batch_host = LegacyBatchHost { host };
+                                        let result = executor
+                                            .execute_clear_inputs(&clear, &mut batch_host)?;
+                                        transport.send(&result.encode());
+                                        result
+                                    }
+                                    crate::ExternalExecutor::Garbler => {
+                                        executor.accept_garbler_clear_inputs(&clear)?;
+                                        ExternalBatchFrame::decode(&transport.recv())
+                                            .map_err(|_| MpcError::UnexpectedMessage)?
+                                    }
+                                };
+                                if executor_role == crate::ExternalExecutor::Garbler {
+                                    executor.accept_garbler_result(&result)?;
+                                }
                                 cursor.reinsert_batch_action_result(
                                     &manifest, binding, call, &result, ot,
                                 )?;
@@ -1115,9 +1349,23 @@ fn eval_strict_table_stream_batch_cursor<N: VoleArray<u8>, D: Digest, T: Transpo
                             transport.send(&reveal.encode());
                             let clear = ExternalBatchFrame::decode(&transport.recv())
                                 .map_err(|_| MpcError::UnexpectedMessage)?;
-                            let mut batch_host = LegacyBatchHost { host };
-                            let result = executor.execute_clear_inputs(&clear, &mut batch_host)?;
-                            transport.send(&result.encode());
+                            let result = match executor_role {
+                                crate::ExternalExecutor::Evaluator => {
+                                    let mut batch_host = LegacyBatchHost { host };
+                                    let result =
+                                        executor.execute_clear_inputs(&clear, &mut batch_host)?;
+                                    transport.send(&result.encode());
+                                    result
+                                }
+                                crate::ExternalExecutor::Garbler => {
+                                    executor.accept_garbler_clear_inputs(&clear)?;
+                                    ExternalBatchFrame::decode(&transport.recv())
+                                        .map_err(|_| MpcError::UnexpectedMessage)?
+                                }
+                            };
+                            if executor_role == crate::ExternalExecutor::Garbler {
+                                executor.accept_garbler_result(&result)?;
+                            }
                             cursor.reinsert_batch_action_result(
                                 &manifest, binding, call, &result, ot,
                             )?;
@@ -1231,7 +1479,7 @@ where
     N: VoleArray<u8>,
     D: Digest,
 {
-    validate_legacy_action_policy(schedule)?;
+    validate_batch_action_policy(schedule)?;
     crate::ExternalBatchManifest::from_actions(crate::ExternalBoundaryId(0), &schedule.actions)?;
     if partition.len() != schedule.num_inputs {
         return Err(MpcError::BadPartition);

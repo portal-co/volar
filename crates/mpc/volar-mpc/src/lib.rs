@@ -67,6 +67,7 @@ pub use external_batch::{
     EvaluatorBatchExecutor, ExternalActionManifestEntry, ExternalBatchAction,
     ExternalBatchActionHost, ExternalBatchBinding, ExternalBatchFrame, ExternalBatchFrameError,
     ExternalBatchManifest, ExternalBatchPhase, ExternalBatchTranscript, ExternalBoundaryId,
+    GarblerBatchExecutor,
 };
 pub mod input_labels;
 #[cfg(feature = "std")]

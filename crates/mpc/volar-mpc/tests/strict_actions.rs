@@ -11,7 +11,8 @@ use volar_mpc::ot::{LoopbackOt, SeedRng};
 use volar_mpc::strict::{
     StrictActionHost, StrictGarbledFull, decode_external_batch_action_reveal, eliminate_nots,
     garble_schedule_strict_dyn_full, offer_external_batch_action_result_labels,
-    run_evaluator_strict_actions, run_garbler_strict_actions, validate_legacy_action_policy,
+    run_evaluator_strict_actions, run_garbler_strict_actions,
+    run_garbler_strict_actions_garbler_host, validate_legacy_action_policy,
     validate_legacy_action_spec,
 };
 use volar_mpc::strict_cursor::StrictGateCursor;
@@ -292,6 +293,73 @@ fn evaluator_batch_executor_drives_strict_label_reveal_and_reinsertion() {
         .unwrap();
     assert!(executor.is_complete());
     assert_eq!(ot.pending(), 0);
+}
+
+fn run_garbler_executor_case(inputs: [bool; 4]) -> ([bool; 2], Vec<String>, Vec<String>) {
+    let mut schedule = action_schedule();
+    for action in &mut schedule.actions {
+        action.execution.executor = ExternalExecutor::Garbler;
+    }
+    let elim = eliminate_nots(&schedule).expect("eliminate");
+    let partition = [InputOwner::Evaluator; 4];
+    let secret = GlobalSecret::<N>::new(det_bytes(0x67).into());
+    let input_labels: Vec<Garble<N>> = (0..4).map(|i| det_label(i as u8 + 31)).collect();
+    let full: StrictGarbledFull<N> =
+        garble_schedule_strict_dyn_full::<N, D>(&elim, secret, input_labels).expect("garble");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = format!("{}", listener.local_addr().unwrap());
+    let evaluator_schedule = elim.schedule.clone();
+    let garbler = std::thread::spawn(move || {
+        let transport = TcpTransport::accept(&listener).expect("accept");
+        let mut session = transport.try_clone().expect("clone");
+        let mut rng = SeedRng::new(0xA5A5);
+        let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
+        let mut host = Host { calls: Vec::new() };
+        let out = run_garbler_strict_actions_garbler_host::<N, D, _>(
+            &full,
+            &elim,
+            &partition,
+            &[],
+            &[],
+            &mut session,
+            &mut ot,
+            &mut host,
+        );
+        (out, host.calls)
+    });
+    let transport = TcpTransport::connect(&addr).expect("connect");
+    let mut session = transport.try_clone().expect("clone");
+    let mut rng = SeedRng::new(0xB5B5);
+    let mut ot = NetOtChannel::new(transport, OtRole::Receiver, &mut rng);
+    let mut evaluator_host = Host { calls: Vec::new() };
+    let eval_out = run_evaluator_strict_actions::<N, D, _>(
+        &evaluator_schedule,
+        &partition,
+        &inputs,
+        &mut session,
+        &mut ot,
+        &mut evaluator_host,
+        &mut [],
+    )
+    .expect("evaluator run");
+    let (garbler_out, garbler_calls) = garbler.join().expect("garbler join");
+    assert_eq!(eval_out, garbler_out.expect("garbler run"));
+    (
+        [eval_out[0], eval_out[1]],
+        garbler_calls,
+        evaluator_host.calls,
+    )
+}
+
+#[test]
+fn strict_garbler_executor_runs_host_over_batch_tcp_transport() {
+    let inputs = [true, false, true, true];
+    let mut want_calls = Vec::new();
+    let want = reference(&inputs, &mut want_calls);
+    let (got, garbler_calls, evaluator_calls) = run_garbler_executor_case(inputs);
+    assert_eq!(got, want);
+    assert_eq!(garbler_calls, want_calls);
+    assert!(evaluator_calls.is_empty());
 }
 
 #[test]

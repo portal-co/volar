@@ -138,7 +138,7 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
             .actions
             .get(call as usize)
             .ok_or(MpcError::MalformedSchedule)?;
-        crate::strict::validate_legacy_action_spec(spec)?;
+        crate::strict::validate_batch_action_spec(spec)?;
         if self
             .call_results
             .get(call as usize)
@@ -211,7 +211,7 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
             .actions
             .get(call)
             .ok_or(MpcError::MalformedSchedule)?;
-        crate::strict::validate_legacy_action_spec(spec)?;
+        crate::strict::validate_batch_action_spec(spec)?;
         if result_bits.len() != spec.num_bits {
             return Err(MpcError::ActionHost);
         }
