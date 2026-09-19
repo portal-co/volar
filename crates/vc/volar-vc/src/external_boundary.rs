@@ -424,7 +424,6 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
                     demanded: false,
                     action_ordinal: None,
                     oracle_equivalence: canonical_oracle_equivalence(
-                        name,
                         policy,
                         declared_output_bits,
                         args,
@@ -488,7 +487,6 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
                             demanded: false,
                             action_ordinal: None,
                             oracle_equivalence: canonical_oracle_equivalence(
-                                name,
                                 policy,
                                 declared_output_bits,
                                 args,
@@ -604,11 +602,11 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
 
 /// Canonical pure-oracle CSE key for an explicitly fingerprinted declaration.
 ///
-/// `IRVarId` is identity-bearing compiler state here, not a source spelling.
-/// The all-zero legacy fingerprint has no declaration identity and is never
-/// used to authorize cross-occurrence sharing.
+/// `IRVarId` is identity-bearing compiler state here, not a source spelling;
+/// declaration identity comes from the fingerprint, not its textual name. The
+/// all-zero legacy fingerprint has no declaration identity and is never used
+/// to authorize cross-occurrence sharing.
 fn canonical_oracle_equivalence(
-    name: &str,
     policy: OracleExecutionPolicy,
     output_bits: usize,
     args: &[IRVarId],
@@ -632,8 +630,6 @@ fn canonical_oracle_equivalence(
         volar_ir_common::ExternalRevealPolicy::BothRoles => 1,
     }]);
     digest.update((output_bits as u64).to_le_bytes());
-    digest.update((name.len() as u64).to_le_bytes());
-    digest.update(name.as_bytes());
     digest.update((args.len() as u64).to_le_bytes());
     for argument in args {
         digest.update(argument.0.to_le_bytes());
