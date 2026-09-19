@@ -43,9 +43,12 @@ use alloc::{collections::BTreeMap, format, string::String, vec, vec::Vec};
 #[cfg(feature = "linking")]
 use volar_compiler::linkage::LinkedSpec;
 use volar_ir::ir::{
-    ActionDecl, Constant, IRBlock, IRBlocks, IRBlockTargetId, IRStmt, IRTerminator,
-    IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId, IRBranchTarget};
-use volar_ir_common::{Node, PolyCoeffs};
+    ActionDecl, Constant, IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator,
+    IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId,
+};
+use volar_ir_common::{
+    ActionExecutionPolicy, ExternalExecutor, ExternalRevealPolicy, Node, PolyCoeffs,
+};
 use volar_side::SideId;
 
 use crate::fhe::FheActionConfig;
@@ -171,6 +174,15 @@ impl OramConfig {
             name: self.begin_action_name(),
             params: vec![u64_ty],
             results: vec![u64_ty],
+            // Existing ORAM socket host behavior is evaluator-executed and
+            // conservatively revealed to both roles. It is explicit so a
+            // later executor-private action protocol cannot silently inherit
+            // this compatibility disclosure.
+            execution: ActionExecutionPolicy {
+                executor: ExternalExecutor::Evaluator,
+                reveal: ExternalRevealPolicy::BothRoles,
+                fingerprint: [0; 32],
+            },
         }
     }
 
@@ -194,6 +206,11 @@ impl OramConfig {
             name: self.process_action_name(),
             params: vec![path_ty, data_ty, bit_ty],
             results: vec![path_ty, data_ty, u64_ty, u64_ty],
+            execution: ActionExecutionPolicy {
+                executor: ExternalExecutor::Evaluator,
+                reveal: ExternalRevealPolicy::BothRoles,
+                fingerprint: [0; 32],
+            },
         }
     }
 
@@ -216,6 +233,11 @@ impl OramConfig {
             name: self.evict_action_name(),
             params: vec![path_ty],
             results: vec![path_ty],
+            execution: ActionExecutionPolicy {
+                executor: ExternalExecutor::Evaluator,
+                reveal: ExternalRevealPolicy::BothRoles,
+                fingerprint: [0; 32],
+            },
         }
     }
 
@@ -307,7 +329,10 @@ impl OramConfig {
     /// let env = config.apply_mono(env);
     /// // env now also has Z=4, B=16, L=4, N=15
     /// ```
-    pub fn apply_mono(&self, env: volar_lir_codegen::mono::MonoEnv) -> volar_lir_codegen::mono::MonoEnv {
+    pub fn apply_mono(
+        &self,
+        env: volar_lir_codegen::mono::MonoEnv,
+    ) -> volar_lir_codegen::mono::MonoEnv {
         env.with_len("Z", self.z)
             .with_len("B", self.b)
             .with_len("L", self.l)
@@ -355,7 +380,6 @@ pub fn oram_cell_count_fn(configs: &[OramConfig]) -> impl Fn(StorageId, IRTypeId
 ///
 /// Returns `(ir_blocks, types)`.
 pub fn oram_begin_circuit(config: &OramConfig) -> (IRBlocks, IRTypes) {
-
     let mut types = IRTypes::new();
     let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
     let bit_ty = types.bit();
@@ -391,7 +415,9 @@ pub fn oram_begin_circuit(config: &OramConfig) -> (IRBlocks, IRTypes) {
     let block = IRBlock {
         params: vec![u64_ty],
         stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
-        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(4)],) },
+        terminator: IRTerminator::Jmp {
+            target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(4)]),
+        },
     };
 
     let ir = IRBlocks {
@@ -509,7 +535,13 @@ pub fn rewrite_storage_to_oram<P: Clone>(
             let process_result_ty =
                 types.intern(IRType::Tuple(vec![path_ty, data_ty, u64_ty, u64_ty]));
             let evict_result_ty = types.intern(IRType::Tuple(vec![path_ty]));
-            ConfigTypes { path_ty, data_ty, begin_result_ty, process_result_ty, evict_result_ty }
+            ConfigTypes {
+                path_ty,
+                data_ty,
+                begin_result_ty,
+                process_result_ty,
+                evict_result_ty,
+            }
         })
         .collect();
 
@@ -535,7 +567,13 @@ pub fn rewrite_storage_to_oram<P: Clone>(
         .iter()
         .map(|block| {
             rewrite_block(
-                block, &oram_map, configs, &config_types, types, u64_ty, bit_ty,
+                block,
+                &oram_map,
+                configs,
+                &config_types,
+                types,
+                u64_ty,
+                bit_ty,
             )
         })
         .collect();
@@ -585,9 +623,11 @@ fn rewrite_block<P: Clone>(
         let old_var = num_params + stmt_idx as u32;
 
         match stmt {
-            IRStmt::StorageRead { storage, ty: _data_elem_ty, addr }
-                if oram_map.contains_key(&storage.0) =>
-            {
+            IRStmt::StorageRead {
+                storage,
+                ty: _data_elem_ty,
+                addr,
+            } if oram_map.contains_key(&storage.0) => {
                 let cfg_idx = oram_map[&storage.0];
                 let c = &configs[cfg_idx];
                 let ct = &config_types[cfg_idx];
@@ -616,9 +656,12 @@ fn rewrite_block<P: Clone>(
                 var_remap.insert(old_var, result_var);
             }
 
-            IRStmt::StorageWrite { storage, src, ty: _data_elem_ty, addr }
-                if oram_map.contains_key(&storage.0) =>
-            {
+            IRStmt::StorageWrite {
+                storage,
+                src,
+                ty: _data_elem_ty,
+                addr,
+            } if oram_map.contains_key(&storage.0) => {
                 let cfg_idx = oram_map[&storage.0];
                 let c = &configs[cfg_idx];
                 let ct = &config_types[cfg_idx];
@@ -737,7 +780,11 @@ fn emit_oram_access<P: Clone>(
     });
 
     // v_leaf = ActionOutput(begin, 0, u64) — plaintext leaf
-    let v_leaf = push(IRStmt::ActionOutput { call: IRVarId(v_begin), idx: 0, ty: u64_ty });
+    let v_leaf = push(IRStmt::ActionOutput {
+        call: IRVarId(v_begin),
+        idx: 0,
+        ty: u64_ty,
+    });
 
     // --- Read tree path at plaintext leaf ---
 
@@ -758,7 +805,13 @@ fn emit_oram_access<P: Clone>(
 
     // is_write flag
     let is_write_val = if write_data.is_some() { 1u128 } else { 0u128 };
-    let v_is_write = push(IRStmt::Const(Constant { hi: 0, lo: is_write_val }, bit_ty));
+    let v_is_write = push(IRStmt::Const(
+        Constant {
+            hi: 0,
+            lo: is_write_val,
+        },
+        bit_ty,
+    ));
 
     // Fallbacks for process action (4 outputs: path, data, u64, u64)
     let v_fb_path = push(IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.path_ty));
@@ -782,10 +835,26 @@ fn emit_oram_access<P: Clone>(
     });
 
     // Project process outputs
-    let v_wb_path = push(IRStmt::ActionOutput { call: IRVarId(v_process), idx: 0, ty: ct.path_ty });
-    let v_rd_data = push(IRStmt::ActionOutput { call: IRVarId(v_process), idx: 1, ty: ct.data_ty });
-    let v_evict1 = push(IRStmt::ActionOutput { call: IRVarId(v_process), idx: 2, ty: u64_ty });
-    let v_evict2 = push(IRStmt::ActionOutput { call: IRVarId(v_process), idx: 3, ty: u64_ty });
+    let v_wb_path = push(IRStmt::ActionOutput {
+        call: IRVarId(v_process),
+        idx: 0,
+        ty: ct.path_ty,
+    });
+    let v_rd_data = push(IRStmt::ActionOutput {
+        call: IRVarId(v_process),
+        idx: 1,
+        ty: ct.data_ty,
+    });
+    let v_evict1 = push(IRStmt::ActionOutput {
+        call: IRVarId(v_process),
+        idx: 2,
+        ty: u64_ty,
+    });
+    let v_evict2 = push(IRStmt::ActionOutput {
+        call: IRVarId(v_process),
+        idx: 3,
+        ty: u64_ty,
+    });
 
     // --- Write back updated path ---
 
@@ -799,14 +868,32 @@ fn emit_oram_access<P: Clone>(
 
     // --- Eviction pass 1: read path at evict_leaf_1, evict, write back ---
     emit_eviction_pass(
-        stmts, provs, sides, prov, side, config, ct, num_params,
-        tree_storage, v_guard, v_evict1,
+        stmts,
+        provs,
+        sides,
+        prov,
+        side,
+        config,
+        ct,
+        num_params,
+        tree_storage,
+        v_guard,
+        v_evict1,
     );
 
     // --- Eviction pass 2: read path at evict_leaf_2, evict, write back ---
     emit_eviction_pass(
-        stmts, provs, sides, prov, side, config, ct, num_params,
-        tree_storage, v_guard, v_evict2,
+        stmts,
+        provs,
+        sides,
+        prov,
+        side,
+        config,
+        ct,
+        num_params,
+        tree_storage,
+        v_guard,
+        v_evict2,
     );
 
     // The result for the original StorageRead is the read data.
@@ -866,7 +953,11 @@ fn emit_eviction_pass<P: Clone>(
     });
 
     // Project evict result
-    let v_evict_result = push(IRStmt::ActionOutput { call: IRVarId(v_evict_call), idx: 0, ty: ct.path_ty });
+    let v_evict_result = push(IRStmt::ActionOutput {
+        call: IRVarId(v_evict_call),
+        idx: 0,
+        ty: ct.path_ty,
+    });
 
     // Write back evicted path
     let _v_evict_wb = push(IRStmt::StorageWrite {
@@ -891,19 +982,32 @@ fn remap_stmt(stmt: &IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
             ty: *ty,
             addr: rv(addr),
         },
-        IRStmt::StorageWrite { storage, src, ty, addr } => IRStmt::StorageWrite {
+        IRStmt::StorageWrite {
+            storage,
+            src,
+            ty,
+            addr,
+        } => IRStmt::StorageWrite {
             storage: *storage,
             src: rv(src),
             ty: *ty,
             addr: rv(addr),
         },
         IRStmt::Const(c, t) => IRStmt::Const(*c, *t),
-        IRStmt::Transmute { src, src_ty, dst_ty } => IRStmt::Transmute {
+        IRStmt::Transmute {
+            src,
+            src_ty,
+            dst_ty,
+        } => IRStmt::Transmute {
             src: rv(src),
             src_ty: *src_ty,
             dst_ty: *dst_ty,
         },
-        IRStmt::Poly { ty, coeffs, constant } => {
+        IRStmt::Poly {
+            ty,
+            coeffs,
+            constant,
+        } => {
             let new_coeffs: PolyCoeffs<IRVarId> = coeffs
                 .iter()
                 .map(|(vars, coeff)| {
@@ -911,7 +1015,11 @@ fn remap_stmt(stmt: &IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
                     (new_vars, *coeff)
                 })
                 .collect();
-            IRStmt::Poly { ty: *ty, coeffs: new_coeffs, constant: *constant }
+            IRStmt::Poly {
+                ty: *ty,
+                coeffs: new_coeffs,
+                constant: *constant,
+            }
         }
         IRStmt::Rol { src, ty, n } => IRStmt::Rol {
             src: rv(src),
@@ -925,7 +1033,10 @@ fn remap_stmt(stmt: &IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
         },
         IRStmt::Merge { parts, ty } => {
             let new_parts: Vec<IRVarId> = parts.iter().map(|v| rv(v)).collect();
-            IRStmt::Merge { parts: new_parts, ty: *ty }
+            IRStmt::Merge {
+                parts: new_parts,
+                ty: *ty,
+            }
         }
         IRStmt::Splat { src, ty } => IRStmt::Splat {
             src: rv(src),
@@ -934,31 +1045,42 @@ fn remap_stmt(stmt: &IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
         IRStmt::Shuffle { result_bits, ty } => {
             let new_bits: Vec<(u8, IRVarId)> =
                 result_bits.iter().map(|(bit, v)| (*bit, rv(v))).collect();
-            IRStmt::Shuffle { result_bits: new_bits, ty: *ty }
-        }
-        IRStmt::OracleCall { name, args, output_tys, result_ty } => {
-            IRStmt::OracleCall {
-                name: name.clone(),
-                args: args.iter().map(|v| rv(v)).collect(),
-                output_tys: output_tys.clone(),
-                result_ty: *result_ty,
+            IRStmt::Shuffle {
+                result_bits: new_bits,
+                ty: *ty,
             }
         }
+        IRStmt::OracleCall {
+            name,
+            args,
+            output_tys,
+            result_ty,
+        } => IRStmt::OracleCall {
+            name: name.clone(),
+            args: args.iter().map(|v| rv(v)).collect(),
+            output_tys: output_tys.clone(),
+            result_ty: *result_ty,
+        },
         IRStmt::OracleOutput { call, idx, ty } => IRStmt::OracleOutput {
             call: rv(call),
             idx: *idx,
             ty: *ty,
         },
-        IRStmt::ActionCall { name, guard, args, fallbacks, output_tys, result_ty } => {
-            IRStmt::ActionCall {
-                name: name.clone(),
-                guard: rv(guard),
-                args: args.iter().map(|v| rv(v)).collect(),
-                fallbacks: fallbacks.iter().map(|v| rv(v)).collect(),
-                output_tys: output_tys.clone(),
-                result_ty: *result_ty,
-            }
-        }
+        IRStmt::ActionCall {
+            name,
+            guard,
+            args,
+            fallbacks,
+            output_tys,
+            result_ty,
+        } => IRStmt::ActionCall {
+            name: name.clone(),
+            guard: rv(guard),
+            args: args.iter().map(|v| rv(v)).collect(),
+            fallbacks: fallbacks.iter().map(|v| rv(v)).collect(),
+            output_tys: output_tys.clone(),
+            result_ty: *result_ty,
+        },
         IRStmt::ActionOutput { call, idx, ty } => IRStmt::ActionOutput {
             call: rv(call),
             idx: *idx,
@@ -968,7 +1090,9 @@ fn remap_stmt(stmt: &IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
             name: name.clone(),
             ty: *ty,
         },
-        _ => panic!("remap_stmt: unhandled IRStmt variant — add variable remapping for this variant"),
+        _ => {
+            panic!("remap_stmt: unhandled IRStmt variant — add variable remapping for this variant")
+        }
     }
 }
 
@@ -978,7 +1102,13 @@ fn remap_terminator(term: &IRTerminator, remap: &BTreeMap<u32, u32>) -> IRTermin
     let rargs = |args: &[IRVarId]| -> Vec<IRVarId> { args.iter().map(|v| rv(v)).collect() };
 
     match term {
-        IRTerminator::Jmp { target } => IRTerminator::Jmp { target: IRBranchTarget { dest: target.dest.clone(), args: rargs(&target.args), reentry: target.reentry.clone() } },
+        IRTerminator::Jmp { target } => IRTerminator::Jmp {
+            target: IRBranchTarget {
+                dest: target.dest.clone(),
+                args: rargs(&target.args),
+                reentry: target.reentry.clone(),
+            },
+        },
         IRTerminator::JumpCond {
             condition,
             then_target,
@@ -1012,7 +1142,9 @@ fn remap_terminator(term: &IRTerminator, remap: &BTreeMap<u32, u32>) -> IRTermin
                 })
                 .collect(),
         },
-        _ => panic!("remap_terminator: unhandled IRTerminator variant — add variable remapping for this variant"),
+        _ => panic!(
+            "remap_terminator: unhandled IRTerminator variant — add variable remapping for this variant"
+        ),
     }
 }
 
@@ -1031,8 +1163,14 @@ pub fn oram_linked_spec() -> LinkedSpec {
     use volar_compiler::parser::{SourceInput, parse_sources};
     let source = include_str!("../../../oram/volar-oram-core/src/lib.rs");
     let filtered = strip_inner_attributes(source);
-    let module = parse_sources(&[SourceInput { source: &filtered, name: "oram_core.rs" }], "oram_core")
-        .expect("oram_linked_spec: failed to parse volar-oram-core/src/lib.rs");
+    let module = parse_sources(
+        &[SourceInput {
+            source: &filtered,
+            name: "oram_core.rs",
+        }],
+        "oram_core",
+    )
+    .expect("oram_linked_spec: failed to parse volar-oram-core/src/lib.rs");
     LinkedSpec {
         name: "oram_core".into(),
         module,
@@ -1051,8 +1189,14 @@ pub fn runtime_linked_spec() -> LinkedSpec {
     use volar_compiler::parser::{SourceInput, parse_sources};
     let source = include_str!("../runtime/helpers.rs");
     let filtered = strip_inner_attributes(source);
-    let module = parse_sources(&[SourceInput { source: &filtered, name: "runtime_helpers.rs" }], "runtime_helpers")
-        .expect("runtime_linked_spec: failed to parse runtime/helpers.rs");
+    let module = parse_sources(
+        &[SourceInput {
+            source: &filtered,
+            name: "runtime_helpers.rs",
+        }],
+        "runtime_helpers",
+    )
+    .expect("runtime_linked_spec: failed to parse runtime/helpers.rs");
     LinkedSpec {
         name: "runtime_helpers".into(),
         module,
@@ -1094,7 +1238,12 @@ mod tests_config {
 
     /// Standard test config: Z=4, B=16, L=4 (8 leaves, 15 nodes).
     fn test_config() -> OramConfig {
-        OramConfig { storage_id: 0, z: 4, b: 16, l: 4 }
+        OramConfig {
+            storage_id: 0,
+            z: 4,
+            b: 16,
+            l: 4,
+        }
     }
 
     #[test]
@@ -1135,8 +1284,14 @@ mod tests_config {
         match &types.0[entry_ty.0 as usize] {
             IRType::Tuple(fields) => {
                 assert_eq!(fields.len(), 3);
-                assert_eq!(types.0[fields[0].0 as usize], IRType::Primitive(PrimType::_64));
-                assert_eq!(types.0[fields[1].0 as usize], IRType::Primitive(PrimType::_64));
+                assert_eq!(
+                    types.0[fields[0].0 as usize],
+                    IRType::Primitive(PrimType::_64)
+                );
+                assert_eq!(
+                    types.0[fields[1].0 as usize],
+                    IRType::Primitive(PrimType::_64)
+                );
                 match &types.0[fields[2].0 as usize] {
                     IRType::Vec(len, elem) => {
                         assert_eq!(*len, 16);
@@ -1198,8 +1353,16 @@ mod tests_config {
         let decl = c.process_action_decl(&mut types);
 
         assert_eq!(decl.name, "oram_process_0");
-        assert_eq!(decl.params.len(), 3, "process takes 3 params (path, data, is_write)");
-        assert_eq!(decl.results.len(), 4, "process returns 4 results (path, data, leaf, leaf)");
+        assert_eq!(
+            decl.params.len(),
+            3,
+            "process takes 3 params (path, data, is_write)"
+        );
+        assert_eq!(
+            decl.results.len(),
+            4,
+            "process returns 4 results (path, data, leaf, leaf)"
+        );
 
         let path_ty = c.path_type(&mut types);
         let data_ty = c.data_type(&mut types);
@@ -1230,7 +1393,10 @@ mod tests_config {
     fn process_action_config_mixed_public() {
         let c = test_config();
         let cfg = c.process_action_config();
-        assert!(!cfg.is_output_public(0), "write-back path must be encrypted");
+        assert!(
+            !cfg.is_output_public(0),
+            "write-back path must be encrypted"
+        );
         assert!(!cfg.is_output_public(1), "read data must be encrypted");
         assert!(cfg.is_output_public(2), "eviction leaf 1 must be public");
         assert!(cfg.is_output_public(3), "eviction leaf 2 must be public");
@@ -1266,8 +1432,18 @@ mod tests_config {
 
     #[test]
     fn different_storage_ids_give_different_names() {
-        let c0 = OramConfig { storage_id: 0, z: 4, b: 16, l: 4 };
-        let c1 = OramConfig { storage_id: 1, z: 4, b: 16, l: 4 };
+        let c0 = OramConfig {
+            storage_id: 0,
+            z: 4,
+            b: 16,
+            l: 4,
+        };
+        let c1 = OramConfig {
+            storage_id: 1,
+            z: 4,
+            b: 16,
+            l: 4,
+        };
 
         assert_ne!(c0.begin_action_name(), c1.begin_action_name());
         assert_ne!(c0.process_action_name(), c1.process_action_name());
@@ -1276,7 +1452,12 @@ mod tests_config {
     #[test]
     fn small_oram_config() {
         // Minimal: Z=1, B=1, L=2 (2 leaves, 3 nodes)
-        let c = OramConfig { storage_id: 0, z: 1, b: 1, l: 2 };
+        let c = OramConfig {
+            storage_id: 0,
+            z: 1,
+            b: 1,
+            l: 2,
+        };
         assert_eq!(c.num_nodes(), 3);
         assert_eq!(c.num_leaves(), 2);
         assert_eq!(c.entry_bits(), 136); // 64 + 64 + 8
@@ -1319,7 +1500,7 @@ mod tests_config {
 
     #[test]
     fn oram_begin_circuit_weaves_through_cfg_path() {
-        use crate::fhe::{weave_fhe, FheOutput, TfheScheme};
+        use crate::fhe::{FheOutput, TfheScheme, weave_fhe};
 
         let c = test_config();
         let (ir, types) = oram_begin_circuit(&c);
@@ -1330,7 +1511,10 @@ mod tests_config {
         match output {
             FheOutput::Cfg(module) => {
                 // The output module should have at least one function
-                assert!(!module.functions.is_empty(), "CFG output should have functions");
+                assert!(
+                    !module.functions.is_empty(),
+                    "CFG output should have functions"
+                );
             }
             FheOutput::Flat(_) => panic!("expected CFG output, got Flat"),
         }
@@ -1339,7 +1523,7 @@ mod tests_config {
     #[test]
     #[should_panic(expected = "emit_action_call not implemented")]
     fn oram_begin_circuit_flat_path_panics() {
-        use crate::fhe::{weave_fhe, TfheScheme};
+        use crate::fhe::{TfheScheme, weave_fhe};
 
         let c = test_config();
         let (ir, types) = oram_begin_circuit(&c);
@@ -1385,7 +1569,10 @@ mod tests_config {
         // Original storage id should not match the tree storage.
         assert_eq!(c.tree_cell_count(StorageId(c.storage_id)), None);
         // A different tree storage id should not match either.
-        assert_eq!(c.tree_cell_count(StorageId(super::ORAM_TREE_BASE + 99)), None);
+        assert_eq!(
+            c.tree_cell_count(StorageId(super::ORAM_TREE_BASE + 99)),
+            None
+        );
     }
 
     #[test]
@@ -1406,15 +1593,31 @@ mod tests_config {
 
     #[test]
     fn oram_cell_count_fn_handles_multiple_configs() {
-        let c0 = OramConfig { storage_id: 0, z: 4, b: 16, l: 3 };
-        let c1 = OramConfig { storage_id: 1, z: 2, b: 8, l: 5 };
+        let c0 = OramConfig {
+            storage_id: 0,
+            z: 4,
+            b: 16,
+            l: 3,
+        };
+        let c1 = OramConfig {
+            storage_id: 1,
+            z: 2,
+            b: 8,
+            l: 5,
+        };
         let configs = [c0.clone(), c1.clone()];
         let f = super::oram_cell_count_fn(&configs);
         let mut types = IRTypes::new();
         let dummy_ty = types.intern(IRType::Primitive(PrimType::_64));
 
-        assert_eq!(f(StorageId(super::ORAM_TREE_BASE + 0), dummy_ty), c0.num_nodes());
-        assert_eq!(f(StorageId(super::ORAM_TREE_BASE + 1), dummy_ty), c1.num_nodes());
+        assert_eq!(
+            f(StorageId(super::ORAM_TREE_BASE + 0), dummy_ty),
+            c0.num_nodes()
+        );
+        assert_eq!(
+            f(StorageId(super::ORAM_TREE_BASE + 1), dummy_ty),
+            c1.num_nodes()
+        );
         // Unknown tree storage → 1.
         assert_eq!(f(StorageId(super::ORAM_TREE_BASE + 2), dummy_ty), 1);
     }
@@ -1456,7 +1659,12 @@ mod tests_rewrite {
 
     /// Standard test config: Z=4, B=16, L=4.
     fn test_config() -> OramConfig {
-        OramConfig { storage_id: 0, z: 4, b: 16, l: 4 }
+        OramConfig {
+            storage_id: 0,
+            z: 4,
+            b: 16,
+            l: 4,
+        }
     }
 
     /// Build a minimal single-block IR with the given stmts, params, and terminator.
@@ -1519,13 +1727,11 @@ mod tests_rewrite {
         // StorageId(5) is not in any OramConfig
         let ir = make_ir(
             vec![bit_ty], // param 0: address
-            vec![
-                IRStmt::StorageRead {
-                    storage: StorageId(5),
-                    ty: u8_ty,
-                    addr: IRVarId(0),
-                },
-            ],
+            vec![IRStmt::StorageRead {
+                storage: StorageId(5),
+                ty: u8_ty,
+                addr: IRVarId(0),
+            }],
             return_jmp(vec![IRVarId(1)]),
         );
 
@@ -1586,7 +1792,12 @@ mod tests_rewrite {
 
         // First ActionCall should be "oram_begin_0"
         match &action_calls[0].kind {
-            IRStmt::ActionCall { name, args, output_tys, .. } => {
+            IRStmt::ActionCall {
+                name,
+                args,
+                output_tys,
+                ..
+            } => {
                 assert_eq!(name, "oram_begin_0");
                 assert_eq!(args.len(), 1, "begin takes 1 arg (address)");
                 assert_eq!(output_tys.len(), 1, "begin returns 1 output (leaf)");
@@ -1596,7 +1807,12 @@ mod tests_rewrite {
 
         // Second ActionCall should be "oram_process_0"
         match &action_calls[1].kind {
-            IRStmt::ActionCall { name, args, output_tys, .. } => {
+            IRStmt::ActionCall {
+                name,
+                args,
+                output_tys,
+                ..
+            } => {
                 assert_eq!(name, "oram_process_0");
                 assert_eq!(args.len(), 3, "process takes 3 args (path, data, is_write)");
                 assert_eq!(output_tys.len(), 4, "process returns 4 outputs");
@@ -1611,18 +1827,31 @@ mod tests_rewrite {
             .iter()
             .filter(|s| matches!(&s.kind, IRStmt::StorageRead { storage, .. } if storage.0 == 1000))
             .collect();
-        assert_eq!(tree_reads.len(), 3, "expected 3 tree StorageReads (1 main + 2 evictions)");
+        assert_eq!(
+            tree_reads.len(),
+            3,
+            "expected 3 tree StorageReads (1 main + 2 evictions)"
+        );
 
         // Should have StorageWrites on tree storage (write-back + 2 evictions)
         let tree_writes: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(&s.kind, IRStmt::StorageWrite { storage, .. } if storage.0 == 1000))
+            .filter(
+                |s| matches!(&s.kind, IRStmt::StorageWrite { storage, .. } if storage.0 == 1000),
+            )
             .collect();
-        assert_eq!(tree_writes.len(), 3, "expected 3 tree StorageWrites (1 write-back + 2 evictions)");
+        assert_eq!(
+            tree_writes.len(),
+            3,
+            "expected 3 tree StorageWrites (1 write-back + 2 evictions)"
+        );
 
         // Action declarations should be added.
-        assert!(result.actions.len() >= 3, "expected at least 3 action declarations");
+        assert!(
+            result.actions.len() >= 3,
+            "expected at least 3 action declarations"
+        );
         let action_names: Vec<_> = result.actions.iter().map(|a| a.name.as_str()).collect();
         assert!(action_names.contains(&"oram_begin_0"));
         assert!(action_names.contains(&"oram_process_0"));
@@ -1760,7 +1989,9 @@ mod tests_rewrite {
         // var1 (StorageRead result) should map to the rd_data ActionOutput.
         // var2 (Const) should map to the last statement index.
         match &block.terminator {
-            IRTerminator::Jmp { target: IRBranchTarget { args, .. } } => {
+            IRTerminator::Jmp {
+                target: IRBranchTarget { args, .. },
+            } => {
                 assert_eq!(args.len(), 2, "terminator should have 2 return args");
                 // Both args should be valid var IDs (< num_params + num_stmts)
                 let max_var = 1 + block.stmts.len() as u32;
@@ -1789,8 +2020,18 @@ mod tests_rewrite {
     fn multiple_configs_rewrite_different_storages() {
         let mut types = IRTypes::new();
         let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
-        let c0 = OramConfig { storage_id: 0, z: 4, b: 16, l: 4 };
-        let c1 = OramConfig { storage_id: 1, z: 2, b: 8, l: 3 };
+        let c0 = OramConfig {
+            storage_id: 0,
+            z: 4,
+            b: 16,
+            l: 4,
+        };
+        let c1 = OramConfig {
+            storage_id: 1,
+            z: 2,
+            b: 8,
+            l: 3,
+        };
         let data0_ty = c0.data_type(&mut types);
         let data1_ty = c1.data_type(&mut types);
 
@@ -1820,7 +2061,11 @@ mod tests_rewrite {
             .iter()
             .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
-        assert_eq!(action_calls.len(), 8, "expected 8 ActionCalls for 2 ORAM configs");
+        assert_eq!(
+            action_calls.len(),
+            8,
+            "expected 8 ActionCalls for 2 ORAM configs"
+        );
 
         // Tree storage reads: StorageId(1000) and StorageId(1001), 3 each
         let tree_reads: Vec<u32> = block
@@ -1933,7 +2178,7 @@ mod tests_rewrite {
 
     #[test]
     fn rewritten_ir_weaves_through_cfg() {
-        use crate::fhe::{weave_fhe, FheOutput, TfheScheme};
+        use crate::fhe::{FheOutput, TfheScheme, weave_fhe};
 
         let mut types = IRTypes::new();
         let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
@@ -1957,7 +2202,10 @@ mod tests_rewrite {
 
         match output {
             FheOutput::Cfg(module) => {
-                assert!(!module.functions.is_empty(), "CFG output should have functions");
+                assert!(
+                    !module.functions.is_empty(),
+                    "CFG output should have functions"
+                );
             }
             FheOutput::Flat(_) => panic!("expected CFG output, got Flat"),
         }
@@ -1966,26 +2214,44 @@ mod tests_rewrite {
 
 #[cfg(all(test, feature = "linking"))]
 mod tests_linking {
-    extern crate std;
     extern crate alloc;
+    extern crate std;
     use alloc::vec;
     use alloc::vec::Vec;
 
-    use volar_compiler::parser::{SourceInput, parse_sources};
     use volar_compiler::linkage::LinkageSystem;
+    use volar_compiler::parser::{SourceInput, parse_sources};
 
     #[test]
     fn oram_core_parses_from_include() {
         let source = include_str!("../../../oram/volar-oram-core/src/lib.rs");
         let filtered = super::strip_inner_attributes(source);
-        let module = parse_sources(&[SourceInput { source: &filtered, name: "oram_core.rs" }], "oram_core")
-            .expect("failed to parse oram-core source");
+        let module = parse_sources(
+            &[SourceInput {
+                source: &filtered,
+                name: "oram_core.rs",
+            }],
+            "oram_core",
+        )
+        .expect("failed to parse oram-core source");
 
         // Verify expected structure
-        assert!(module.structs.len() >= 2, "expected at least OramEntry, Bucket structs");
-        assert!(module.enums.len() >= 2, "expected at least ServerRequest, ServerResponse enums");
-        assert!(module.functions.len() >= 4, "expected at least path_indices, read_path, write_path, server_step");
-        assert!(module.impls.len() >= 2, "expected at least OramEntry, Bucket impls");
+        assert!(
+            module.structs.len() >= 2,
+            "expected at least OramEntry, Bucket structs"
+        );
+        assert!(
+            module.enums.len() >= 2,
+            "expected at least ServerRequest, ServerResponse enums"
+        );
+        assert!(
+            module.functions.len() >= 4,
+            "expected at least path_indices, read_path, write_path, server_step"
+        );
+        assert!(
+            module.impls.len() >= 2,
+            "expected at least OramEntry, Bucket impls"
+        );
     }
 
     #[test]
@@ -1994,22 +2260,46 @@ mod tests_linking {
 
         let source = include_str!("../../../oram/volar-oram-core/src/lib.rs");
         let filtered = super::strip_inner_attributes(source);
-        let module = parse_sources(&[SourceInput { source: &filtered, name: "oram_core.rs" }], "oram_core")
-            .expect("failed to parse oram-core source");
+        let module = parse_sources(
+            &[SourceInput {
+                source: &filtered,
+                name: "oram_core.rs",
+            }],
+            "oram_core",
+        )
+        .expect("failed to parse oram-core source");
 
         let out = std::format!("{}", DisplayRust(ModuleWriter { module: &module }));
 
         // Key types present
-        assert!(out.contains("struct OramEntry"), "missing OramEntry in output");
+        assert!(
+            out.contains("struct OramEntry"),
+            "missing OramEntry in output"
+        );
         assert!(out.contains("struct Bucket"), "missing Bucket in output");
-        assert!(out.contains("enum ServerRequest"), "missing ServerRequest in output");
-        assert!(out.contains("enum ServerResponse"), "missing ServerResponse in output");
+        assert!(
+            out.contains("enum ServerRequest"),
+            "missing ServerRequest in output"
+        );
+        assert!(
+            out.contains("enum ServerResponse"),
+            "missing ServerResponse in output"
+        );
 
         // Key functions present
-        assert!(out.contains("fn path_indices"), "missing path_indices in output");
+        assert!(
+            out.contains("fn path_indices"),
+            "missing path_indices in output"
+        );
         assert!(out.contains("fn read_path"), "missing read_path in output");
-        assert!(out.contains("fn write_path"), "missing write_path in output");
-        assert!(out.contains("fn server_step"), "missing server_step in output");
+        assert!(
+            out.contains("fn write_path"),
+            "missing write_path in output"
+        );
+        assert!(
+            out.contains("fn server_step"),
+            "missing server_step in output"
+        );
 
         // Derives preserved
         assert!(out.contains("Clone"), "missing Clone derive in output");
@@ -2023,8 +2313,14 @@ mod tests_linking {
 
         let source = include_str!("../../../oram/volar-oram-core/src/lib.rs");
         let filtered = super::strip_inner_attributes(source);
-        let module = parse_sources(&[SourceInput { source: &filtered, name: "oram_core.rs" }], "oram_core")
-            .expect("failed to parse oram-core source");
+        let module = parse_sources(
+            &[SourceInput {
+                source: &filtered,
+                name: "oram_core.rs",
+            }],
+            "oram_core",
+        )
+        .expect("failed to parse oram-core source");
 
         let code = std::format!("{}", DisplayRust(ModuleWriter { module: &module }));
         run_compile_check(&code, "oram_core_roundtrip");
@@ -2034,8 +2330,14 @@ mod tests_linking {
     fn runtime_helpers_parses_from_include() {
         let source = include_str!("../runtime/helpers.rs");
         let filtered = super::strip_inner_attributes(source);
-        let module = parse_sources(&[SourceInput { source: &filtered, name: "runtime_helpers.rs" }], "runtime_helpers")
-            .expect("failed to parse runtime/helpers.rs");
+        let module = parse_sources(
+            &[SourceInput {
+                source: &filtered,
+                name: "runtime_helpers.rs",
+            }],
+            "runtime_helpers",
+        )
+        .expect("failed to parse runtime/helpers.rs");
 
         // Should contain bools_to_usize
         assert!(
@@ -2050,13 +2352,25 @@ mod tests_linking {
 
         let source = include_str!("../runtime/helpers.rs");
         let filtered = super::strip_inner_attributes(source);
-        let module = parse_sources(&[SourceInput { source: &filtered, name: "runtime_helpers.rs" }], "runtime_helpers")
-            .expect("failed to parse runtime/helpers.rs");
+        let module = parse_sources(
+            &[SourceInput {
+                source: &filtered,
+                name: "runtime_helpers.rs",
+            }],
+            "runtime_helpers",
+        )
+        .expect("failed to parse runtime/helpers.rs");
 
         let out = std::format!("{}", DisplayRust(ModuleWriter { module: &module }));
-        assert!(out.contains("fn bools_to_usize"), "missing bools_to_usize in output");
+        assert!(
+            out.contains("fn bools_to_usize"),
+            "missing bools_to_usize in output"
+        );
         // Must have a real body, not unreachable!()
-        assert!(!out.contains("unreachable!()"), "bools_to_usize should have a real body, not unreachable!()");
+        assert!(
+            !out.contains("unreachable!()"),
+            "bools_to_usize should have a real body, not unreachable!()"
+        );
     }
 
     #[test]
@@ -2066,8 +2380,14 @@ mod tests_linking {
 
         let source = include_str!("../runtime/helpers.rs");
         let filtered = super::strip_inner_attributes(source);
-        let module = parse_sources(&[SourceInput { source: &filtered, name: "runtime_helpers.rs" }], "runtime_helpers")
-            .expect("failed to parse runtime/helpers.rs");
+        let module = parse_sources(
+            &[SourceInput {
+                source: &filtered,
+                name: "runtime_helpers.rs",
+            }],
+            "runtime_helpers",
+        )
+        .expect("failed to parse runtime/helpers.rs");
 
         let code = std::format!("{}", DisplayRust(ModuleWriter { module: &module }));
         run_compile_check(&code, "runtime_helpers_roundtrip");
@@ -2081,7 +2401,10 @@ mod tests_linking {
         let code = print_fhe_cfg_module(&module, true);
 
         // bools_to_usize should be present
-        assert!(code.contains("fn bools_to_usize"), "missing bools_to_usize in woven output");
+        assert!(
+            code.contains("fn bools_to_usize"),
+            "missing bools_to_usize in woven output"
+        );
 
         // Extract the bools_to_usize function body and verify it's not unreachable.
         // Find the function, then scan until the end of its body.
@@ -2093,14 +2416,22 @@ mod tests_linking {
         let mut depth = 0i32;
         let mut end = brace_start;
         for (i, &b) in body_bytes.iter().enumerate() {
-            if b == b'{' { depth += 1; }
-            if b == b'}' { depth -= 1; }
-            if depth == 0 { end = brace_start + i + 1; break; }
+            if b == b'{' {
+                depth += 1;
+            }
+            if b == b'}' {
+                depth -= 1;
+            }
+            if depth == 0 {
+                end = brace_start + i + 1;
+                break;
+            }
         }
         let fn_text = &after[..end];
         assert!(
             !fn_text.contains("unreachable!()"),
-            "bools_to_usize should have a real implementation, not unreachable!(). Got:\n{}", fn_text
+            "bools_to_usize should have a real implementation, not unreachable!(). Got:\n{}",
+            fn_text
         );
     }
 
@@ -2113,7 +2444,10 @@ mod tests_linking {
         let module = build_oram_cfg_module();
 
         // Verify structural properties — circuit code present
-        assert!(!module.functions.is_empty(), "should have at least one CFG function");
+        assert!(
+            !module.functions.is_empty(),
+            "should have at least one CFG function"
+        );
 
         // Verify linked spec content is merged
         assert!(
@@ -2136,27 +2470,60 @@ mod tests_linking {
         let code = print_fhe_cfg_module(&module, true);
 
         // Circuit function
-        assert!(code.contains("fn oram_e2e_tfhe_cfg"), "missing circuit function in output");
+        assert!(
+            code.contains("fn oram_e2e_tfhe_cfg"),
+            "missing circuit function in output"
+        );
 
         // Linked ORAM types
-        assert!(code.contains("struct OramEntry"), "missing OramEntry struct in output");
-        assert!(code.contains("struct Bucket"), "missing Bucket struct in output");
-        assert!(code.contains("enum ServerRequest"), "missing ServerRequest enum in output");
-        assert!(code.contains("enum ServerResponse"), "missing ServerResponse enum in output");
+        assert!(
+            code.contains("struct OramEntry"),
+            "missing OramEntry struct in output"
+        );
+        assert!(
+            code.contains("struct Bucket"),
+            "missing Bucket struct in output"
+        );
+        assert!(
+            code.contains("enum ServerRequest"),
+            "missing ServerRequest enum in output"
+        );
+        assert!(
+            code.contains("enum ServerResponse"),
+            "missing ServerResponse enum in output"
+        );
 
         // Linked ORAM functions
-        assert!(code.contains("fn path_indices"), "missing path_indices in output");
+        assert!(
+            code.contains("fn path_indices"),
+            "missing path_indices in output"
+        );
         assert!(code.contains("fn read_path"), "missing read_path in output");
-        assert!(code.contains("fn write_path"), "missing write_path in output");
-        assert!(code.contains("fn server_step"), "missing server_step in output");
+        assert!(
+            code.contains("fn write_path"),
+            "missing write_path in output"
+        );
+        assert!(
+            code.contains("fn server_step"),
+            "missing server_step in output"
+        );
 
         // Derives preserved in linked types
         assert!(code.contains("Clone"), "missing Clone derive in output");
 
         // Eviction action stubs should be present (3 action types)
-        assert!(code.contains("fn oram_begin_0"), "missing oram_begin_0 action stub");
-        assert!(code.contains("fn oram_process_0"), "missing oram_process_0 action stub");
-        assert!(code.contains("fn oram_evict_0"), "missing oram_evict_0 action stub");
+        assert!(
+            code.contains("fn oram_begin_0"),
+            "missing oram_begin_0 action stub"
+        );
+        assert!(
+            code.contains("fn oram_process_0"),
+            "missing oram_process_0 action stub"
+        );
+        assert!(
+            code.contains("fn oram_evict_0"),
+            "missing oram_evict_0 action stub"
+        );
 
         // Compile check — the generated code (with action stubs,
         // linked ORAM spec, and circuit function) should pass `cargo check`.
@@ -2173,16 +2540,31 @@ mod tests_linking {
 
         // Sanity: output is non-empty and contains the circuit function name
         assert!(!ts_code.is_empty(), "TS output should be non-empty");
-        assert!(ts_code.contains("oram_e2e_tfhe_cfg"), "missing circuit function in TS output");
+        assert!(
+            ts_code.contains("oram_e2e_tfhe_cfg"),
+            "missing circuit function in TS output"
+        );
 
         // Check for linked ORAM types (classes/tagged unions in TS)
-        assert!(ts_code.contains("OramEntry"), "missing OramEntry in TS output");
+        assert!(
+            ts_code.contains("OramEntry"),
+            "missing OramEntry in TS output"
+        );
         assert!(ts_code.contains("Bucket"), "missing Bucket in TS output");
-        assert!(ts_code.contains("ServerRequest"), "missing ServerRequest in TS output");
-        assert!(ts_code.contains("ServerResponse"), "missing ServerResponse in TS output");
+        assert!(
+            ts_code.contains("ServerRequest"),
+            "missing ServerRequest in TS output"
+        );
+        assert!(
+            ts_code.contains("ServerResponse"),
+            "missing ServerResponse in TS output"
+        );
 
         // Check for linked functions
-        assert!(ts_code.contains("path_indices"), "missing path_indices in TS output");
+        assert!(
+            ts_code.contains("path_indices"),
+            "missing path_indices in TS output"
+        );
 
         crate::tests_common::run_compile_check_ts(&ts_code, "oram_e2e_ts");
     }
@@ -2194,7 +2576,12 @@ mod tests_linking {
         use crate::fhe::print_fhe_cfg_module_c;
         use volar_lir_codegen::mono::MonoEnv;
 
-        let c = OramConfig { storage_id: 0, z: 4, b: 16, l: 4 };
+        let c = OramConfig {
+            storage_id: 0,
+            z: 4,
+            b: 16,
+            l: 4,
+        };
         let module = build_oram_cfg_module();
 
         // C has no generics — monomorphize all const params to concrete values.
@@ -2219,17 +2606,27 @@ mod tests_linking {
     #[test]
     #[cfg(feature = "linking")]
     fn rewrite_link_weave_read_write_e2e() {
-        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, runtime_linked_spec, oram_cell_count_fn};
-        use crate::fhe::{weave_fhe, FheOutput, TfheScheme, derive_ir_storage_config, print_fhe_cfg_module};
-        use volar_ir::ir::{
-            IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId,
-            IRTerminator, IRBlockTargetId, PrimType, StorageId, Constant,
+        use super::{
+            OramConfig, oram_cell_count_fn, oram_linked_spec, rewrite_storage_to_oram,
+            runtime_linked_spec,
+        };
+        use crate::fhe::{
+            FheOutput, TfheScheme, derive_ir_storage_config, print_fhe_cfg_module, weave_fhe,
         };
         use volar_compiler::linkage::LinkageSystem;
+        use volar_ir::ir::{
+            Constant, IRBlock, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypes,
+            IRVarId, PrimType, StorageId,
+        };
 
         let mut types = IRTypes::new();
         let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
-        let c = OramConfig { storage_id: 0, z: 4, b: 16, l: 4 };
+        let c = OramConfig {
+            storage_id: 0,
+            z: 4,
+            b: 16,
+            l: 4,
+        };
         let data_ty = c.data_type(&mut types);
 
         // Circuit: param 0 = addr (u64), param 1 = write_data (data_ty)
@@ -2257,7 +2654,9 @@ mod tests_linking {
                     },
                 ],
                 stmt_provs: vec![(); 2],
-                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)]) }, // result of StorageRead (var 2 = StorageWrite dummy, var 3 = StorageRead result)
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)]),
+                }, // result of StorageRead (var 2 = StorageWrite dummy, var 3 = StorageRead result)
             }],
         };
 
@@ -2274,11 +2673,16 @@ mod tests_linking {
         assert_eq!(rewritten.actions.len(), 3, "expected 3 action declarations");
 
         // 8 ActionCalls: 4 per access (begin + process + 2 evicts) x 2 accesses
-        let action_calls: Vec<_> = rewritten.blocks[0].stmts
+        let action_calls: Vec<_> = rewritten.blocks[0]
+            .stmts
             .iter()
             .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
-        assert_eq!(action_calls.len(), 8, "expected 8 ActionCalls for 2 ORAM accesses");
+        assert_eq!(
+            action_calls.len(),
+            8,
+            "expected 8 ActionCalls for 2 ORAM accesses"
+        );
 
         // Link and weave.
         let mut linkage = LinkageSystem::new();
@@ -2290,7 +2694,14 @@ mod tests_linking {
         let storage_config = derive_ir_storage_config(&rewritten, Some(&cell_count));
 
         let scheme = c.configure_scheme(TfheScheme::cfg());
-        let output = weave_fhe(&rewritten, &types, &scheme, "oram_rw_e2e", Some(&linkage), Some(&storage_config));
+        let output = weave_fhe(
+            &rewritten,
+            &types,
+            &scheme,
+            "oram_rw_e2e",
+            Some(&linkage),
+            Some(&storage_config),
+        );
 
         let module = match output {
             FheOutput::Cfg(m) => m,
@@ -2305,7 +2716,10 @@ mod tests_linking {
         assert!(code.contains("fn oram_evict_0"), "missing oram_evict_0");
 
         // Circuit function present.
-        assert!(code.contains("fn oram_rw_e2e_tfhe_cfg"), "missing circuit function");
+        assert!(
+            code.contains("fn oram_rw_e2e_tfhe_cfg"),
+            "missing circuit function"
+        );
 
         // Compile check.
         crate::tests_common::run_compile_check_tfhe_cfg(&code, "oram_rw_e2e");
@@ -2314,16 +2728,24 @@ mod tests_linking {
     /// Shared helper: build a rewritten+linked+woven ORAM CFG module for testing.
     #[cfg(feature = "linking")]
     fn build_oram_cfg_module() -> volar_compiler::IrCfgModule {
-        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, runtime_linked_spec, oram_cell_count_fn};
-        use crate::fhe::{weave_fhe, FheOutput, TfheScheme, derive_ir_storage_config};
+        use super::{
+            OramConfig, oram_cell_count_fn, oram_linked_spec, rewrite_storage_to_oram,
+            runtime_linked_spec,
+        };
+        use crate::fhe::{FheOutput, TfheScheme, derive_ir_storage_config, weave_fhe};
         use volar_ir::ir::{
-            IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId,
-            IRTerminator, IRBlockTargetId, PrimType, StorageId, Constant,
+            Constant, IRBlock, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypes,
+            IRVarId, PrimType, StorageId,
         };
 
         let mut types = IRTypes::new();
         let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
-        let c = OramConfig { storage_id: 0, z: 4, b: 16, l: 4 };
+        let c = OramConfig {
+            storage_id: 0,
+            z: 4,
+            b: 16,
+            l: 4,
+        };
         let data_ty = c.data_type(&mut types);
 
         // Build minimal IR: param 0 = address (u64), stmt 0 = StorageRead
@@ -2340,13 +2762,18 @@ mod tests_linking {
                     addr: IRVarId(0),
                 }],
                 stmt_provs: vec![()],
-                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)]),
+                },
             }],
         };
 
         // Step 1: Rewrite storage to ORAM
         let rewritten = rewrite_storage_to_oram(&ir, &mut types, &[c.clone()]);
-        assert!(rewritten.blocks[0].stmts.len() > 1, "rewrite should expand storage ops");
+        assert!(
+            rewritten.blocks[0].stmts.len() > 1,
+            "rewrite should expand storage ops"
+        );
 
         // Step 2: Build linkage system with ORAM core + runtime helpers
         let mut linkage = LinkageSystem::new();
@@ -2360,7 +2787,14 @@ mod tests_linking {
 
         // Step 4: Weave through CFG with linkage and storage config
         let scheme = c.configure_scheme(TfheScheme::cfg());
-        let output = weave_fhe(&rewritten, &types, &scheme, "oram_e2e", Some(&linkage), Some(&storage_config));
+        let output = weave_fhe(
+            &rewritten,
+            &types,
+            &scheme,
+            "oram_e2e",
+            Some(&linkage),
+            Some(&storage_config),
+        );
 
         match output {
             FheOutput::Cfg(m) => m,

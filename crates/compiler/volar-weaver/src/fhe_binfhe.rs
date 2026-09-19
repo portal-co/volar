@@ -284,18 +284,6 @@ impl FheScheme for BinFheScheme {
         )
     }
 
-    fn emit_binfhe_rgsw_cmux<Q: Clone + Default>(
-        &self,
-        sel: IrExpr<Q>,
-        a: IrExpr<Q>,
-        b: IrExpr<Q>,
-    ) -> IrExpr<Q> {
-        call(
-            binfhe_path("pbs", "binfhe_rgsw_cmux", gate_tys()),
-            vec![sel, a, b, var("bk")],
-        )
-    }
-
     fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>, width: usize) -> IrExpr<Q> {
         if width <= 1 {
             return call(
@@ -658,7 +646,7 @@ fn build_bootstrap_plan_inner<P: Clone>(
                     let id = *wire_count;
                     *wire_count += 1;
                     ops.push(PlanOp::Lut {
-                        inputs: volar_spec::binfhe::plan::LutInputs::from_slice(&input_ids),
+                        inputs: input_ids,
                         table: table_id,
                         out: id,
                     });
