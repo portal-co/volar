@@ -4010,7 +4010,7 @@ impl  GlobalSecretDyn {
     pub fn one_wire_eval(&self) -> EvalDyn
     {
         let n: usize = self.n;
-        self.encode(&GarbleDyn::zero(), true)
+        self.encode(&GarbleDyn::zero(n), true)
     }
     pub fn not_garble(&self, mut a: &GarbleDyn) -> GarbleDyn
     {
@@ -4227,7 +4227,7 @@ impl  BaseOt<L> for LweBaseOtDyn {
     type PayloadMsg = LweOtSenderMsgDyn;
     fn sender_setup<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R) -> (Self::SenderState, Self::SetupMsg)
     {
-        let crs = LweOtCrsDyn::<N>::sample(rng);
+        let crs = LweOtCrsDyn::<N>::sample(n, rng);
         (crs.clone(), crs)
     }
     fn recv_start<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut setup: &Self::SetupMsg, mut c: bool) -> (Self::ReceiverState, Self::RecvMsg)
@@ -5415,7 +5415,7 @@ pub fn memory_check_per_lane<N, T>(mut n: usize, mut challenges: Vec<T>) -> Vec<
 {
     (0..n).map(|i| {
     let key = ChallengeKeyDyn::from_challenge(challenges[i].clone());
-    MemoryCheckStateDyn::new(key)
+    MemoryCheckStateDyn::new(n, key)
 }).collect::<Vec<_>>()
 }
 
@@ -5529,12 +5529,12 @@ pub fn derive_and_q<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut q_a: &QDyn<
 pub fn binfhe_gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut eta: usize, mut lwe_sk: &BinfheLweSecretKeyDyn, mut rlwe_sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheBootstrappingKeyDyn
 {
     let bsk = (0..n_lwe).map(|i| {
-    binfhe_rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>(eta, (lwe_sk.key[i] != 0), rlwe_sk, rng)
+    binfhe_rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>(big_n, log_q, bs_ell, bs_base_log, eta, (lwe_sk.key[i] != 0), rlwe_sk, rng)
 }).collect::<Vec<_>>();
     let ksk = BinfheKeySwitchingKeyDyn { ksk: (0..big_n).map(|i| {
     (0..ks_ell).map(|j| {
     let msg = rlwe_sk.key[i].wrapping_mul(gadget::<LOG_MOD_KS>::level_factor(ks_base_log, j));
-    binfhe_lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(eta, torus::<LOG_MOD_KS>::reduce(msg), lwe_sk, rng)
+    binfhe_lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(n_lwe, log_mod_ks, eta, torus::<LOG_MOD_KS>::reduce(msg), lwe_sk, rng)
 }).collect::<Vec<_>>()
 }).collect::<Vec<_>>(), n_lwe: 0, big_n: 0, ks_ell: 0 };
     BinfheBootstrappingKeyDyn { bsk: bsk, ksk: ksk, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0 }
@@ -5765,7 +5765,7 @@ pub fn mul_exact(mut log: usize, mut a: u32, mut c: u32) -> u32
 
 pub fn embed_up(mut from: usize, mut to: usize, mut x: u32) -> u32
 {
-    reduce::<TO>((x << (to - from)))
+    reduce::<TO>(to, (x << (to - from)))
 }
 
 pub fn exponent(mut log_q_lwe: usize, mut big_n: usize, mut x: u32) -> usize
@@ -5777,15 +5777,15 @@ pub fn binfhe_blind_rotate(mut n_lwe: usize, mut big_n: usize, mut log_q: usize,
 {
     let two_n = 2 * big_n;
     let b_exp = exponent::<LOG_Q_LWE, BIG_N>(log_q_lwe, big_n, ct.b);
-    let mut acc = binfhe_rlwe_trivial::<BIG_N, LOG_Q>(test_poly);
+    let mut acc = binfhe_rlwe_trivial::<BIG_N, LOG_Q>(big_n, log_q, test_poly);
     if b_exp != 0{
-    acc = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(&acc, (two_n - b_exp));
+    acc = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(big_n, log_q, &acc, (two_n - b_exp));
 };
     for (i, row) in bsk.iter().enumerate(){
     let a_exp = exponent::<LOG_Q_LWE, BIG_N>(log_q_lwe, big_n, ct.a[i]);
     if a_exp != 0{
-    let rotated = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(&acc, a_exp);
-    acc = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(row, &rotated, &acc);
+    let rotated = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(big_n, log_q, &acc, a_exp);
+    acc = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(big_n, log_q, bs_ell, bs_base_log, row, &rotated, &acc);
 }
 };
     acc
@@ -5942,15 +5942,15 @@ pub fn execute_plan(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut lo
     for op in layer{
     match op {
     PlanOp::Const { out: out, value: value } => {
-    wires.push(binfhe_trivial::<N_LWE, LOG_Q_LWE>(*value, delta));
+    wires.push(binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, *value, delta));
 },
     PlanOp::Not { input: input, out: out } => {
-    wires.push(binfhe_not::<N_LWE, LOG_Q_LWE>(&wires[*input as usize], delta));
+    wires.push(binfhe_not::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &wires[*input as usize], delta));
 },
     PlanOp::Lut { inputs: inputs, table: table, out: out } => {
     let spec = &plan.luts[*table as usize];
     let arity = spec.entries.len().trailing_zeros() as usize;
-    let mut cts: [BinfheLweCiphertextDyn; MAX_LUT_ARITY] = [binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0); MAX_LUT_ARITY];
+    let mut cts: [BinfheLweCiphertextDyn; MAX_LUT_ARITY] = [binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, false, 0); MAX_LUT_ARITY];
     for (j, w) in inputs.as_slice().iter().enumerate(){
     cts[j] = wires[*w as usize];
 };
@@ -5960,7 +5960,7 @@ pub fn execute_plan(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut lo
     rgsws.push(circuit_bootstrap::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG, KS_ELL, PRIV_ELL, PRIV_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, ks_ell, priv_ell, priv_base_log, &wires[*input as usize], cbk, (plan.k_max as usize)));
 },
     PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
-    let out_cell = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(&rgsws[*sel as usize], &cell_arena[*then_cell as usize], &cell_arena[*else_cell as usize]);
+    let out_cell = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(big_n, log_q, bs_ell, bs_base_log, &rgsws[*sel as usize], &cell_arena[*then_cell as usize], &cell_arena[*else_cell as usize]);
     cell_arena.push(out_cell);
 },
 }
@@ -5976,7 +5976,7 @@ pub fn encrypt_scaled_poly<R: SpecRng>(mut big_n: usize, mut log_q: usize, mut e
     for i in 0.. big_n{
     scaled[i] = torus::<LOG_Q>::mul_exact(msg[i], g);
 };
-    binfhe_rlwe_encrypt_poly::<BIG_N, LOG_Q, ETA, R>(eta, &scaled, sk, rng)
+    binfhe_rlwe_encrypt_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, &scaled, sk, rng)
 }
 
 pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut eta: usize, mut lwe_sk: &BinfheLweSecretKeyDyn, mut rlwe_sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> CircuitBootstrappingKeyDyn
@@ -6073,11 +6073,11 @@ pub fn level_test_poly(mut big_n: usize, mut log_q: usize, mut level: usize, mut
 pub fn circuit_bootstrap(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut priv_ell: usize, mut priv_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut cbk: &CircuitBootstrappingKeyDyn, mut k_max: usize) -> BinfheRgswCiphertextDyn
 {
     let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, (k_max as usize));
-    let centered = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(ct, (delta / 2));
+    let centered = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, ct, (delta / 2));
     let rows = (0..ell).map(|j| {
     let test_poly = level_test_poly::<BIG_N, LOG_Q>(big_n, log_q, j, bs_base_log, k_max);
     let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, &centered, &test_poly, &cbk.bk.bsk);
-    let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(&acc);
+    let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(big_n, log_q, &acc);
     let rlwe0 = priv_ks::<BIG_N, LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(big_n, log_q, priv_ell, priv_base_log, &extracted, &cbk.privksk.a_col, &cbk.privksk.a_body);
     let rlwe1 = priv_ks::<BIG_N, LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(big_n, log_q, priv_ell, priv_base_log, &extracted, &cbk.privksk.b_col, &cbk.privksk.b_body);
     BinfheRgswRowDyn { rlwe0: rlwe0, rlwe1: rlwe1, n: 0 }
@@ -6088,24 +6088,24 @@ pub fn circuit_bootstrap(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, m
 pub fn binfhe_pbs_core<BK: crate::binfhe::keys::AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + Sized>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut test_poly: &[u32; BIG_N], mut bk: &BK) -> BinfheLweCiphertextDyn
 {
     let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, ct, test_poly, bk.bsk_rows());
-    let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(&acc);
-    let at_ks = mod_switch_lwe::<BIG_N, LOG_Q, LOG_MOD_KS>(&extracted);
+    let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(big_n, log_q, &acc);
+    let at_ks = mod_switch_lwe::<BIG_N, LOG_Q, LOG_MOD_KS>(big_n, log_q, log_mod_ks, &extracted);
     let switched = binfhe_key_switch::<N_LWE, BIG_N, LOG_MOD_KS, KS_ELL, KS_BASE_LOG, _>(n_lwe, big_n, log_mod_ks, ks_ell, ks_base_log, &at_ks, &bk.ksk_ref());
-    mod_switch_lwe::<N_LWE, LOG_MOD_KS, LOG_Q_LWE>(&switched)
+    mod_switch_lwe::<N_LWE, LOG_MOD_KS, LOG_Q_LWE>(n_lwe, log_mod_ks, log_q_lwe, &switched)
 }
 
 pub fn binfhe_lut_read(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut addr_bits: usize, mut table_len: usize, mut k_max: usize, mut addr: &[BinfheLweCiphertextDyn; ADDR_BITS], mut lut: &LutDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
     let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, k_max);
     if lut.is_constant(){
-    return binfhe_trivial::<N_LWE, LOG_Q_LWE>(lut.constant_value(), delta);
+    return binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, lut.constant_value(), delta);
 };
-    let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0);
+    let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, false, 0);
     for (j, bit) in addr.iter().enumerate(){
-    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(bit, (1 << j));
-    combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
+    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, bit, (1 << j));
+    combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &combined, &scaled);
 };
-    combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, (delta / 2));
+    combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &combined, (delta / 2));
     binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &combined, lut.test_polynomial(), bk)
 }
 
@@ -6113,16 +6113,16 @@ pub fn binfhe_lut_read_dyn(mut n_lwe: usize, mut big_n: usize, mut log_q: usize,
 {
     let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, (k_max as usize));
     if table_is_constant(table){
-    return binfhe_trivial::<N_LWE, LOG_Q_LWE>(table[0], delta);
+    return binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, table[0], delta);
 };
     let arity = table.len().trailing_zeros() as usize;
     let test_poly = fill_test_poly::<BIG_N>(big_n, table, arity, (k_max as usize), log_q, log_q_lwe);
-    let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0);
+    let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, false, 0);
     for (j, bit) in inputs.iter().enumerate(){
-    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(bit, (1 << j));
-    combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
+    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, bit, (1 << j));
+    combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &combined, &scaled);
 };
-    combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, (delta / 2));
+    combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &combined, (delta / 2));
     binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &combined, &test_poly, bk)
 }
 
@@ -7875,8 +7875,8 @@ pub fn lwe_ot_send<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut 
     for i in 0.. n{
     pk1[i] = zq_sub(crs.h[i], pk0[i]);
 };
-    let (u0, v0) = encrypt_branch::<R, N, L>(n, l, rng, crs, &pk0, m0);
-    let (u1, v1) = encrypt_branch::<R, N, L>(n, l, rng, crs, &pk1, m1);
+    let (u0, v0) = encrypt_branch::<R, N, L>(n, n, rng, crs, &pk0, m0);
+    let (u1, v1) = encrypt_branch::<R, N, L>(n, n, rng, crs, &pk1, m1);
     LweOtSenderMsgLoweredDyn { u0: u0, v0: v0, u1: u1, v1: v1, n: 0, l: 0 }
 }
 

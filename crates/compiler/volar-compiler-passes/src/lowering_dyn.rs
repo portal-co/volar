@@ -2867,6 +2867,25 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     IrExprKind::Path { segments, .. } if segments.len() == 1 => {
                         Some(segments[0].as_str())
                     }
+                    // Associated/static call `Type::method(..)`: the callee is the
+                    // method name (last segment). Only forward when the head is a
+                    // dyn-lowered generic struct (so the method genuinely gained a
+                    // leading length param) — not for type-param-qualified calls like
+                    // `D::new` (handled by class witnesses) where segments[0] is a
+                    // bare type param with no struct info.
+                    IrExprKind::Path { segments, .. } if segments.len() == 2 => {
+                        let head_is_dyn_struct = ctx
+                            .get_struct_info(&segments[0])
+                            .map(|info| {
+                                !info.length_witnesses.is_empty() || !info.type_params.is_empty()
+                            })
+                            .unwrap_or(false);
+                        if head_is_dyn_struct {
+                            Some(segments[1].as_str())
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 };
                 // Never inject into constructors (uppercase first letter).
@@ -2889,11 +2908,34 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                                     }
                                 })
                                 .collect();
-                            // Prepend length params that the callee expects and we have in scope.
+                            // The turbofish type args (`reduce::<LOG_Q>`) directly supply the
+                            // callee's leading length params, positionally — this resolves the
+                            // name mismatch where the callee's param (`log`) differs from the
+                            // caller's generic (`log_q`). Map each type-param turbofish arg to
+                            // its lowercased in-scope var.
+                            let turbofish: Vec<String> = match &func.kind {
+                                IrExprKind::Path { type_args, .. } => type_args
+                                    .iter()
+                                    .filter_map(|t| match t {
+                                        IrType::TypeParam(nm) => Some(nm.to_lowercase()),
+                                        _ => None,
+                                    })
+                                    .collect(),
+                                _ => Vec::new(),
+                            };
+                            // Prepend length params the callee expects. Prefer turbofish args
+                            // positionally; fall back to same-named in-scope params.
                             let mut prepend: Vec<IrExpr> = Vec::new();
-                            for param in expected {
-                                if in_scope.contains(param) {
-                                    prepend.push(ir_expr(IrExprKind::Var(param.clone())));
+                            for (idx, param) in expected.iter().enumerate() {
+                                let v = if idx < turbofish.len() && in_scope.contains(&turbofish[idx]) {
+                                    Some(turbofish[idx].clone())
+                                } else if in_scope.contains(param) {
+                                    Some(param.clone())
+                                } else {
+                                    None
+                                };
+                                if let Some(v) = v {
+                                    prepend.push(ir_expr(IrExprKind::Var(v)));
                                 }
                             }
                             if !prepend.is_empty() {

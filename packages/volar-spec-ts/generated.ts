@@ -4046,7 +4046,7 @@ export class GlobalSecretDyn {
   one_wire_eval(ctx: { defaultT: () => any }): EvalDyn
   {
     const n: bigint = this.$fn;
-    return this.encode(GarbleDyn.zero(), true);
+    return this.encode(GarbleDyn.zero(n), true);
   }
 
   secret(): bigint[]
@@ -4687,7 +4687,7 @@ export class LweBaseOtDyn {
 
   static sender_setup<R>(n: bigint, l: bigint, rng: any): [number /* LweBaseOtDyn::SenderState */, number /* LweBaseOtDyn::SetupMsg */]
   {
-    const crs = LweOtCrsDyn.sample(rng);
+    const crs = LweOtCrsDyn.sample(n, rng);
     return [__clone(crs), crs];
   }
 }
@@ -5633,15 +5633,15 @@ export function binfhe_blind_rotate(n_lwe: bigint, big_n: bigint, log_q: bigint,
 {
   const two_n = fieldMul(2n, big_n);
   const b_exp = exponent(log_q_lwe, big_n, ct.$fb);
-  let acc = binfhe_rlwe_trivial(test_poly);
+  let acc = binfhe_rlwe_trivial(big_n, log_q, test_poly);
   if (!__equals(b_exp, 0n))   {
-    acc = binfhe_rlwe_rotate(acc, fieldSub(two_n, b_exp));
+    acc = binfhe_rlwe_rotate(big_n, log_q, acc, fieldSub(two_n, b_exp));
   }
   for (const [i, row] of bsk.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
     const a_exp = exponent(log_q_lwe, big_n, ct.$fa[Number(i)]);
     if (!__equals(a_exp, 0n))     {
-      const rotated = binfhe_rlwe_rotate(acc, a_exp);
-      acc = binfhe_rgsw_cmux(row, rotated, acc);
+      const rotated = binfhe_rlwe_rotate(big_n, log_q, acc, a_exp);
+      acc = binfhe_rgsw_cmux(big_n, log_q, bs_ell, bs_base_log, row, rotated, acc);
     }
   }
   return acc;
@@ -5695,12 +5695,12 @@ export function binfhe_gate_xor(n_lwe: bigint, big_n: bigint, log_q: bigint, log
 export function binfhe_gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, eta: bigint, lwe_sk: BinfheLweSecretKeyDyn, rlwe_sk: BinfheRlweSecretKeyDyn, rng: any): BinfheBootstrappingKeyDyn
 {
   const bsk = Array.from({length: Number(n_lwe - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
-  return binfhe_rgsw_encrypt(eta, !__equals(lwe_sk.$fkey[Number(i)], 0n), rlwe_sk, rng);
+  return binfhe_rgsw_encrypt(big_n, log_q, bs_ell, bs_base_log, eta, !__equals(lwe_sk.$fkey[Number(i)], 0n), rlwe_sk, rng);
 })());
   const ksk = new BinfheKeySwitchingKeyDyn({ $fksk: Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   return Array.from({length: Number(ks_ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const msg = BigInt(Math.imul(Number(rlwe_sk.$fkey[Number(i)]), Number(level_factor(ks_base_log, j))));
-  return binfhe_lwe_encrypt_raw(eta, reduce(msg), lwe_sk, rng);
+  return binfhe_lwe_encrypt_raw(n_lwe, log_mod_ks, eta, reduce(msg), lwe_sk, rng);
 })());
 })()), $fn_lwe: 0n, $fbig_n: 0n, $fks_ell: 0n });
   return new BinfheBootstrappingKeyDyn({ $fbsk: bsk, $fksk: ksk, $fn_lwe: 0n, $fbig_n: 0n, $fbs_ell: 0n, $fks_ell: 0n });
@@ -5761,14 +5761,14 @@ export function binfhe_lut_read(n_lwe: bigint, big_n: bigint, log_q: bigint, log
 {
   const delta = wire_delta(log_q_lwe, k_max);
   if (lut.is_constant())   {
-    return binfhe_trivial(lut.constant_value(), delta);
+    return binfhe_trivial(n_lwe, log_q_lwe, lut.constant_value(), delta);
   }
-  let combined = binfhe_trivial(false, 0n);
+  let combined = binfhe_trivial(n_lwe, log_q_lwe, false, 0n);
   for (const [j, bit] of addr.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
-    const scaled = binfhe_lwe_scale(bit, fieldShl(1n, j));
-    combined = binfhe_lwe_add(combined, scaled);
+    const scaled = binfhe_lwe_scale(n_lwe, log_q_lwe, bit, fieldShl(1n, j));
+    combined = binfhe_lwe_add(n_lwe, log_q_lwe, combined, scaled);
   }
-  combined = binfhe_lwe_add_const(combined, (delta / 2n));
+  combined = binfhe_lwe_add_const(n_lwe, log_q_lwe, combined, (delta / 2n));
   return binfhe_pbs_core(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, combined, lut.test_polynomial(), bk);
 }
 
@@ -5776,16 +5776,16 @@ export function binfhe_lut_read_dyn(n_lwe: bigint, big_n: bigint, log_q: bigint,
 {
   const delta = wire_delta(log_q_lwe, Number(k_max));
   if (table_is_constant(table))   {
-    return binfhe_trivial(table[Number(0n)], delta);
+    return binfhe_trivial(n_lwe, log_q_lwe, table[Number(0n)], delta);
   }
   const arity = Number(Math.clz32((() => { const __tz = Number(BigInt(table.length)) | 0; return (__tz & -__tz) | 0; })()));
   const test_poly = fill_test_poly(big_n, table, arity, Number(k_max), log_q, log_q_lwe);
-  let combined = binfhe_trivial(false, 0n);
+  let combined = binfhe_trivial(n_lwe, log_q_lwe, false, 0n);
   for (const [j, bit] of inputs.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
-    const scaled = binfhe_lwe_scale(bit, fieldShl(1n, j));
-    combined = binfhe_lwe_add(combined, scaled);
+    const scaled = binfhe_lwe_scale(n_lwe, log_q_lwe, bit, fieldShl(1n, j));
+    combined = binfhe_lwe_add(n_lwe, log_q_lwe, combined, scaled);
   }
-  combined = binfhe_lwe_add_const(combined, (delta / 2n));
+  combined = binfhe_lwe_add_const(n_lwe, log_q_lwe, combined, (delta / 2n));
   return binfhe_pbs_core(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, combined, test_poly, bk);
 }
 
@@ -5871,10 +5871,10 @@ export function binfhe_not(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, 
 export function binfhe_pbs_core<BK>(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, ct: BinfheLweCiphertextDyn, test_poly: bigint[], bk: any): BinfheLweCiphertextDyn
 {
   const acc = binfhe_blind_rotate(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, ct, test_poly, bk.bsk_rows());
-  const extracted = binfhe_sample_extract(acc);
-  const at_ks = mod_switch_lwe(extracted);
+  const extracted = binfhe_sample_extract(big_n, log_q, acc);
+  const at_ks = mod_switch_lwe(big_n, log_q, log_mod_ks, extracted);
   const switched = binfhe_key_switch(n_lwe, big_n, log_mod_ks, ks_ell, ks_base_log, at_ks, bk.ksk_ref());
-  return mod_switch_lwe(switched);
+  return mod_switch_lwe(n_lwe, log_mod_ks, log_q_lwe, switched);
 }
 
 export function binfhe_poly_mul_neg(n: bigint, log: bigint, a: bigint[], b: bigint[]): bigint[]
@@ -6233,11 +6233,11 @@ export function check_profile(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q
 export function circuit_bootstrap(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, priv_ell: bigint, priv_base_log: bigint, ct: BinfheLweCiphertextDyn, cbk: CircuitBootstrappingKeyDyn, k_max: bigint): BinfheRgswCiphertextDyn
 {
   const delta = wire_delta(log_q_lwe, Number(k_max));
-  const centered = binfhe_lwe_add_const(ct, (delta / 2n));
+  const centered = binfhe_lwe_add_const(n_lwe, log_q_lwe, ct, (delta / 2n));
   const rows = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const test_poly = level_test_poly(big_n, log_q, j, bs_base_log, k_max);
   const acc = binfhe_blind_rotate(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, centered, test_poly, cbk.$fbk.$fbsk);
-  const extracted = binfhe_sample_extract(acc);
+  const extracted = binfhe_sample_extract(big_n, log_q, acc);
   const rlwe0 = priv_ks(big_n, log_q, priv_ell, priv_base_log, extracted, cbk.$fprivksk.$fa_col, cbk.$fprivksk.$fa_body);
   const rlwe1 = priv_ks(big_n, log_q, priv_ell, priv_base_log, extracted, cbk.$fprivksk.$fb_col, cbk.$fprivksk.$fb_body);
   return new BinfheRgswRowDyn({ $frlwe0: rlwe0, $frlwe1: rlwe1, $fn: 0n });
@@ -6728,7 +6728,7 @@ export function ed_scalar_mul(p: any, k: bigint[]): EdPoint
 
 export function embed_up(from_: bigint, to: bigint, x: bigint): bigint
 {
-  return reduce(fieldShl(x, fieldSub(to, from_)));
+  return reduce(to, fieldShl(x, fieldSub(to, from_)));
 }
 
 export function encode_bits(seed: bigint[], k: bigint, n: bigint, u: boolean[]): Vec<boolean>
@@ -7069,7 +7069,7 @@ export function encrypt_scaled_poly<R>(big_n: bigint, log_q: bigint, eta: bigint
   for (let i = 0n; i < big_n; i += 1n)   {
     scaled[Number(i)] = mul_exact(msg[Number(i)], g);
   }
-  return binfhe_rlwe_encrypt_poly(eta, scaled, sk, rng);
+  return binfhe_rlwe_encrypt_poly(big_n, log_q, eta, scaled, sk, rng);
 }
 
 export function ensure<R>(rng: any, sender: any, receiver: any, need: bigint)
@@ -7142,18 +7142,18 @@ export function execute_plan(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_
       return (() => { const __match = op; if (__match instanceof PlanOp_Const) { const out = __match.$fout;
 const value = __match.$fvalue;
 return (() => {
-  (wires).push(binfhe_trivial(value, delta));
+  (wires).push(binfhe_trivial(n_lwe, log_q_lwe, value, delta));
 })(); } else if (__match instanceof PlanOp_Not) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
-  (wires).push(binfhe_not(wires[Number(Number(input))], delta));
+  (wires).push(binfhe_not(n_lwe, log_q_lwe, wires[Number(Number(input))], delta));
 })(); } else if (__match instanceof PlanOp_Lut) { const inputs = __match.$finputs;
 const table = __match.$ftable;
 const out = __match.$fout;
 return (() => {
   const spec = plan.$fluts[Number(Number(table))];
   const arity = Number(Math.clz32((() => { const __tz = Number(BigInt(spec.$fentries.length)) | 0; return (__tz & -__tz) | 0; })()));
-  let cts: BinfheLweCiphertextDyn[] = Array.from({length: Number(MAX_LUT_ARITY)}, () => binfhe_trivial(false, 0n));
+  let cts: BinfheLweCiphertextDyn[] = Array.from({length: Number(MAX_LUT_ARITY)}, () => binfhe_trivial(n_lwe, log_q_lwe, false, 0n));
   for (const [j, w] of inputs.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
     cts[Number(j)] = wires[Number(Number(w))];
   }
@@ -7167,7 +7167,7 @@ const then_cell = __match.$fthen_cell;
 const else_cell = __match.$felse_cell;
 const out = __match.$fout;
 return (() => {
-  const out_cell = binfhe_rgsw_cmux(rgsws[Number(Number(sel))], cell_arena[Number(Number(then_cell))], cell_arena[Number(Number(else_cell))]);
+  const out_cell = binfhe_rgsw_cmux(big_n, log_q, bs_ell, bs_base_log, rgsws[Number(Number(sel))], cell_arena[Number(Number(then_cell))], cell_arena[Number(Number(else_cell))]);
   (cell_arena).push(out_cell);
 })(); } })();
     }
@@ -8593,8 +8593,8 @@ export function lwe_ot_send<R>(n: bigint, l: bigint, rng: any, crs: LweOtCrsDyn,
   for (let i = 0n; i < n; i += 1n)   {
     pk1[Number(i)] = zq_sub(crs.$fh[Number(i)], pk0[Number(i)]);
   }
-  const [u0, v0] = encrypt_branch(n, l, rng, crs, pk0, m0);
-  const [u1, v1] = encrypt_branch(n, l, rng, crs, pk1, m1);
+  const [u0, v0] = encrypt_branch(n, n, rng, crs, pk0, m0);
+  const [u1, v1] = encrypt_branch(n, n, rng, crs, pk1, m1);
   return new LweOtSenderMsgLoweredDyn({ $fu0: u0, $fv0: v0, $fu1: u1, $fv1: v1, $fn: 0n, $fl: 0n });
 }
 
@@ -8675,7 +8675,7 @@ export function memory_check_per_lane<T>(ctx: { HClass: { new(...args: any[]): a
 {
   return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const key = ChallengeKeyDyn.from_challenge(__clone(challenges[Number(i)]));
-  return MemoryCheckStateDyn.new(ctx, key);
+  return MemoryCheckStateDyn.new(ctx, n, key);
 })());
 }
 
