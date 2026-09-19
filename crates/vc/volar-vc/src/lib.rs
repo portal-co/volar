@@ -76,6 +76,9 @@ pub mod aes_gadget;
 pub mod circuit_provider;
 pub mod circuit_provider_storage;
 pub mod embedder;
+/// Dependency-aware batching for deferred actions, pure oracles, and storage
+/// requests at MPC circuit boundaries.
+pub mod external_boundary;
 pub mod faest_owf;
 /// Stateless fused-GC handoff after an imported FHE module exchanges its
 /// ciphertext/plaintext boundary values.
@@ -120,6 +123,10 @@ pub use circuit_provider_storage::{
     ReadonlyStorageRequest, ReadonlyStorageSource, SecretBaseRead,
 };
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
+pub use external_boundary::{
+    ExternalBatch, ExternalBatchLimits, ExternalBoundaryError, ExternalBoundaryPlan,
+    ExternalRequest, ExternalRequestId, ExternalRequestKind, plan_external_boundaries,
+};
 pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};
 pub use hybrid_storage::{
     DeferredChunkId, DeferredInputSlot, HeldMarkerTunnel, HeldMarkerTunnelError,
