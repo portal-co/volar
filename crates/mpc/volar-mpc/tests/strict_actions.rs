@@ -10,10 +10,12 @@
 use volar_mpc::ot::SeedRng;
 use volar_mpc::strict::{
     StrictActionHost, StrictGarbledFull, eliminate_nots, garble_schedule_strict_dyn_full,
-    run_evaluator_strict_actions, run_garbler_strict_actions,
+    run_evaluator_strict_actions, run_garbler_strict_actions, validate_legacy_action_policy,
 };
 use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
-use volar_mpc::{ActionSpec, Gate, GateSchedule, InputOwner, MpcError};
+use volar_mpc::{
+    ActionSpec, ExternalExecutor, ExternalRevealPolicy, Gate, GateSchedule, InputOwner, MpcError,
+};
 use volar_spec::SpecRng;
 use volar_spec::garble::{Garble, GlobalSecret};
 
@@ -169,6 +171,22 @@ fn run_case(inputs: [bool; 4]) -> ([bool; 2], Vec<String>) {
     let garb_out = garbler.join().expect("garbler join").expect("garbler run");
     assert_eq!(eval_out, garb_out, "parties agree on the verdict");
     ([eval_out[0], eval_out[1]], host.calls)
+}
+
+#[test]
+fn strict_actions_reject_unimplemented_executor_or_reveal_policy() {
+    let mut schedule = action_schedule();
+    schedule.actions[0].execution.executor = ExternalExecutor::Garbler;
+    assert_eq!(
+        validate_legacy_action_policy(&schedule),
+        Err(MpcError::UnsupportedExternalPolicy)
+    );
+    schedule.actions[0].execution.executor = ExternalExecutor::Evaluator;
+    schedule.actions[0].execution.reveal = ExternalRevealPolicy::ExecutorOnly;
+    assert_eq!(
+        validate_legacy_action_policy(&schedule),
+        Err(MpcError::UnsupportedExternalPolicy)
+    );
 }
 
 #[test]

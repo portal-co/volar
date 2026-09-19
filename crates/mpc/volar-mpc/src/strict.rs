@@ -308,6 +308,23 @@ pub trait StrictActionHost {
     fn action(&mut self, name: &str, args: &[bool]) -> Result<Vec<bool>, MpcError>;
 }
 
+/// Validate that a schedule uses the only action disclosure mode implemented
+/// by the current strict compatibility transport.
+///
+/// This is deliberately public so VC/chain adapters can reject an unsupported
+/// executor before opening a transport or allocating an OT. Garbler execution
+/// and executor-only disclosure require the future batch/reinsertion protocol.
+pub fn validate_legacy_action_policy(schedule: &GateSchedule) -> Result<(), MpcError> {
+    if schedule.actions.iter().any(|spec| {
+        spec.execution.executor != crate::ExternalExecutor::Evaluator
+            || spec.execution.reveal != crate::ExternalRevealPolicy::BothRoles
+    }) {
+        Err(MpcError::UnsupportedExternalPolicy)
+    } else {
+        Ok(())
+    }
+}
+
 /// The strict garbler role for a schedule carrying actions
 /// ([`Gate::ActionBit`]): identical to [`run_garbler_strict`] plus, per
 /// action call, a decode round-trip (the evaluator sends the arg labels, the
@@ -332,12 +349,7 @@ where
 {
     let exec = &full.exec;
     let schedule = &exec.schedule;
-    if schedule.actions.iter().any(|spec| {
-        spec.execution.executor != crate::ExternalExecutor::Evaluator
-            || spec.execution.reveal != crate::ExternalRevealPolicy::BothRoles
-    }) {
-        return Err(MpcError::UnsupportedExternalPolicy);
-    }
+    validate_legacy_action_policy(schedule)?;
     // Legacy frames remain per-call, but their schedule is first checked as a
     // canonical boundary manifest. This binds source action identity/order now
     // and lets a future batched frame replace only the transport loop.
@@ -899,12 +911,7 @@ where
     N: VoleArray<u8>,
     D: Digest,
 {
-    if schedule.actions.iter().any(|spec| {
-        spec.execution.executor != crate::ExternalExecutor::Evaluator
-            || spec.execution.reveal != crate::ExternalRevealPolicy::BothRoles
-    }) {
-        return Err(MpcError::UnsupportedExternalPolicy);
-    }
+    validate_legacy_action_policy(schedule)?;
     crate::ExternalBatchManifest::from_actions(crate::ExternalBoundaryId(0), &schedule.actions)?;
     if partition.len() != schedule.num_inputs {
         return Err(MpcError::BadPartition);
