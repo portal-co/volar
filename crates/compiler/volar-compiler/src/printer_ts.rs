@@ -3931,6 +3931,14 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         write!(f, "new {}_{}()", resolved[0], resolved[1])?;
                         return Ok(());
                     }
+                    // Integer associated consts: `u32::MAX` / `usize::BITS` / etc.
+                    // usize is treated as 64-bit (see primitive_bit_width).
+                    if resolved.len() == 2 {
+                        if let Some(val) = int_assoc_const(&resolved[0], &resolved[1]) {
+                            write!(f, "{}", val)?;
+                            return Ok(());
+                        }
+                    }
                     emit_path(&resolved, f)?;
                 }
             }
@@ -5571,10 +5579,13 @@ fn ts_method_name(rust_name: &str, trait_ref: Option<&IrTraitRef>) -> String {
     }
 }
 
-fn ts_param_name(name: &str) -> &str {
+fn ts_param_name(name: &str) -> String {
     match name {
-        "self" => "this",
-        _ => name,
+        "self" => "this".to_string(),
+        // Escape reserved words so the declaration matches the escape_ts_reserved
+        // used at every use site (e.g. a Rust param named `from` must be declared
+        // as `from_` to match its references).
+        _ => escape_ts_reserved(name),
     }
 }
 
@@ -5857,6 +5868,25 @@ fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
 /// registry never keys on nested/qualified forms.
 fn bare_struct_name(name: &str) -> &str {
     name.split('<').next().unwrap_or(name)
+}
+
+/// Integer-type associated constants (`u32::MAX`, `usize::BITS`, ...). `usize` is
+/// treated as 64-bit (see `primitive_bit_width`). Returns the literal text.
+fn int_assoc_const(ty: &str, name: &str) -> Option<String> {
+    let bits: u128 = match ty {
+        "u8" | "i8" => 8,
+        "u16" | "i16" => 16,
+        "u32" | "i32" => 32,
+        "u64" | "i64" | "usize" | "isize" => 64,
+        "u128" | "i128" => 128,
+        _ => return None,
+    };
+    match name {
+        "BITS" => Some(format!("{}n", bits)),
+        "MAX" => Some(format!("{}n", (1u128 << bits) - 1)),
+        "MIN" => Some("0n".to_string()),
+        _ => None,
+    }
 }
 
 /// Resolve a path head through the type-alias registry to a concrete class

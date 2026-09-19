@@ -4303,7 +4303,7 @@ export class TfheBootstrapTableDyn {
 
   static new(addr_bits: bigint, table_len: bigint, big_n: bigint, logical: boolean[]): Result<TfheBootstrapTableDyn, TfheBootstrapTableError>
   {
-    const max_addr_bits = fieldSub(Number(usize.BITS), 1n);
+    const max_addr_bits = fieldSub(Number(64n), 1n);
     if ((__equals(addr_bits, 0n) || (addr_bits > max_addr_bits)))     {
       return new TfheBootstrapTableError_AddressWidthOutOfRange();
     }
@@ -6028,7 +6028,7 @@ export function bit_reverse(values: bigint[])
 {
   const bits = ilog2(BigInt(values.length));
   for (let index = 0n; index < BigInt(values.length); index += 1n)   {
-    const reversed = fieldShr(index.reverse_bits(), fieldSub(usize.BITS, bits));
+    const reversed = fieldShr(index.reverse_bits(), fieldSub(64n, bits));
     if ((index < reversed))     {
       values.swap(index, reversed);
     }
@@ -6119,7 +6119,7 @@ export function cbd<R>(eta: bigint, rng: any): bigint
     return 0n;
   }
   const mask = (() => { if ((eta >= 32n)) {
-  return u32.MAX;
+  return 4294967295n;
 } else {
   return fieldSub(fieldShl(1n, eta), 1n);
 } })();
@@ -6211,7 +6211,7 @@ export function chall3(ctx: { defaultT: () => any, HClass: { new(...args: any[])
 
 export function check_lut_shape(addr_bits: bigint, table_len: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, k_max: bigint): Result<bigint, LutError>
 {
-  if ((__equals(addr_bits, 0n) || (addr_bits >= Number(usize.BITS))))   {
+  if ((__equals(addr_bits, 0n) || (addr_bits >= Number(64n))))   {
     return new LutError_AddressShapeInvalid();
   }
   if (!__equals(table_len, fieldShl(1n, addr_bits)))   {
@@ -6726,7 +6726,7 @@ export function ed_scalar_mul(p: any, k: bigint[]): EdPoint
   return acc;
 }
 
-export function embed_up(from: bigint, to: bigint, x: bigint): bigint
+export function embed_up(from_: bigint, to: bigint, x: bigint): bigint
 {
   return reduce(fieldShl(x, fieldSub(to, from_)));
 }
@@ -7678,7 +7678,7 @@ export function gadget_decompose(log: bigint, ell: bigint, base_log: bigint, x: 
     const shift = level_shift(log, base_log, j);
     const bits = level_bits(log, base_log, j);
     const m = (() => { if ((bits >= 32n)) {
-  return u32.MAX;
+  return 4294967295n;
 } else {
   return fieldSub(fieldShl(1n, bits), 1n);
 } })();
@@ -8624,7 +8624,7 @@ export function lwe_phase(n: bigint, log_m: bigint, ct: BinfheLweCiphertextDyn, 
 export function mask(log: bigint): bigint
 {
   return (() => { if ((log >= 32n)) {
-  return u32.MAX;
+  return 4294967295n;
 } else {
   return fieldSub(fieldShl(1n, log), 1n);
 } })();
@@ -8694,7 +8694,7 @@ export function mix_columns(state: bigint[])
   }
 }
 
-export function mod_switch(from: bigint, to: bigint, x: bigint): bigint
+export function mod_switch(from_: bigint, to: bigint, x: bigint): bigint
 {
   return (() => { if ((to >= from_)) {
   return embed_up(x);
@@ -8706,7 +8706,7 @@ export function mod_switch(from: bigint, to: bigint, x: bigint): bigint
 } })();
 }
 
-export function mod_switch_lwe(n: bigint, from: bigint, to: bigint, ct: BinfheLweCiphertextDyn): BinfheLweCiphertextDyn
+export function mod_switch_lwe(n: bigint, from_: bigint, to: bigint, ct: BinfheLweCiphertextDyn): BinfheLweCiphertextDyn
 {
   let a = Array.from({length: Number(n)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
@@ -9433,7 +9433,7 @@ export function sample_seed_cots<R>(rng: any, m: bigint): [FerretSenderSeed, Fer
 
 export function sample_uniform(random: any, modulus: bigint, output: bigint[]): Result<void, Error>
 {
-  const threshold = fieldSub(u64.MAX, (u64.MAX % modulus));
+  const threshold = fieldSub(18446744073709551615n, (18446744073709551615n % modulus));
   for (const value of output)   {
     while (true)     {
       let bytes = Array.from({length: Number(8n)}, () => 0n);
