@@ -651,6 +651,34 @@ fn build_structs_by_name(module: &IrModule<IrFunction>) -> BTreeMap<String, IrSt
 /// Build an alias-name → target-type registry for the module, used to resolve
 /// alias heads of paths (`DigestImpl::new()` → `new Sha3_256()`). Keyed by the
 /// bare alias name (aliases are emitted into the flat TS scope by bare name).
+fn collect_error_enums(module: &IrModule<IrFunction>) -> std::collections::HashSet<String> {
+    fn find(ty: &IrType, out: &mut std::collections::HashSet<String>) {
+        match ty {
+            IrType::Struct { kind, type_args, .. } => {
+                if matches!(kind, crate::ir::StructKind::Custom(n) if n == "Result") && type_args.len() >= 2 {
+                    match &type_args[1] {
+                        IrType::Struct { kind: ek, .. } => { out.insert(ek.to_string()); }
+                        IrType::TypeParam(en) => { out.insert(en.clone()); }
+                        _ => {}
+                    }
+                }
+                for a in type_args { find(a, out); }
+            }
+            IrType::Vector { elem } | IrType::Array { elem, .. } | IrType::Reference { elem, .. } => find(elem, out),
+            IrType::Tuple(elems) => elems.iter().for_each(|e| find(e, out)),
+            _ => {}
+        }
+    }
+    let mut errors = std::collections::HashSet::new();
+    for f in &module.functions { if let Some(r) = &f.return_type { find(r, &mut errors); } }
+    for im in &module.impls {
+        for item in &im.items {
+            if let IrImplItem::Method(f) = item { if let Some(r) = &f.return_type { find(r, &mut errors); } }
+        }
+    }
+    errors
+}
+
 fn build_type_aliases(module: &IrModule<IrFunction>) -> BTreeMap<String, IrType> {
     module
         .type_aliases
@@ -952,6 +980,7 @@ pub fn print_module_ts_with_imports(
     // Pre-pass: bare names that appear in more than one origin crate → get $-qualified TS names
     let name_collisions = compute_name_collisions(&module);
     // Enum names for detecting Enum::Variant(...) constructor call sites
+    let error_enums = collect_error_enums(&module);
     let enum_names: std::collections::HashSet<String> =
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map = build_method_t_fields(&module);
@@ -966,6 +995,7 @@ pub fn print_module_ts_with_imports(
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names,
+        error_enums: &error_enums,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map,
         emit_async: false,
@@ -1044,6 +1074,7 @@ fn print_module_ts_with_emit_flags(
         .map(|s| item_irpath(&s.module_path, &s.kind.to_string()))
         .collect();
     let name_collisions = compute_name_collisions(&module);
+    let error_enums = collect_error_enums(&module);
     let enum_names: std::collections::HashSet<String> =
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map = build_method_t_fields(&module);
@@ -1059,6 +1090,7 @@ fn print_module_ts_with_emit_flags(
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names,
+        error_enums: &error_enums,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map,
         emit_async,
@@ -1119,6 +1151,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         .map(|s| item_irpath(&s.module_path, &s.kind.to_string()))
         .collect();
     let name_collisions = compute_name_collisions(&module);
+    let error_enums = collect_error_enums(&module);
     let enum_names: std::collections::HashSet<String> =
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map2 = build_method_t_fields(&module);
@@ -1133,6 +1166,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names,
+        error_enums: &error_enums,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map2,
         emit_async: false,
@@ -1241,6 +1275,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         .map(|s| item_irpath(&s.module_path, &s.kind.to_string()))
         .collect();
     let name_collisions_flat = compute_name_collisions(&flat);
+    let error_enums_flat = collect_error_enums(&flat);
     let enum_names_flat: std::collections::HashSet<String> =
         flat.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map3 = build_method_t_fields(&flat);
@@ -1255,6 +1290,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names_flat,
+        error_enums: &error_enums_flat,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map3,
         emit_async: false,
@@ -1376,6 +1412,9 @@ struct TsContext<'a> {
     /// Enum type names in this module. Used to detect `Enum::Variant(...)` constructor calls
     /// and emit `Enum_Variant(...)` (factory function) instead of `Enum.Variant(...)`.
     enum_names: &'a std::collections::HashSet<String>,
+    /// Enum names used as the `E` in a `Result<T, E>` return type anywhere in the
+    /// module; their variant classes extend `__VolarError` for `?` desugar.
+    error_enums: &'a std::collections::HashSet<String>,
     /// Variable name → type-param name, built from `let x: T = ...` bindings as we
     /// emit statements.  Used to resolve `size_of_val(x)` → `ctx.sizeOfT`.
     /// Uses interior mutability so we can accumulate bindings through `&TsContext`.
@@ -1452,6 +1491,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: self.class_witnesses.clone(),
             mut_refs: self.mut_refs.clone(),
             enum_names: self.enum_names,
+            error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
             emit_async: self.emit_async,
@@ -1475,6 +1515,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: witnesses,
             mut_refs: self.mut_refs.clone(),
             enum_names: self.enum_names,
+            error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
             emit_async: self.emit_async,
@@ -1500,6 +1541,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: self.class_witnesses.clone(),
             mut_refs,
             enum_names: self.enum_names,
+            error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
             emit_async: self.emit_async,
@@ -1528,6 +1570,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: self.class_witnesses.clone(),
             mut_refs: self.mut_refs.clone(),
             enum_names: self.enum_names,
+            error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
             emit_async: self.emit_async,
@@ -1974,6 +2017,7 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         // Generated code represents Result as the raw union (Ok value or error),
         // with `?`/match discriminating — not the Ok/Err wrapper classes above.
         writeln!(f, "type Result<T, E = unknown> = T | E;")?;
+        writeln!(f, "export abstract class __VolarError {{}}")?;
         // Minimal-runtime clone: spread arrays, shallow-copy objects with prototype.
         writeln!(f, "function __clone<T>(x: T): T {{")?;
         writeln!(
@@ -2410,6 +2454,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     class_witnesses: cx.class_witnesses.clone(),
                     mut_refs: cx.mut_refs.clone(),
                     enum_names: cx.enum_names,
+                    error_enums: cx.error_enums,
                     var_types: core::cell::RefCell::new(cx.var_types.borrow().clone()),
                     method_t_fields: cx.method_t_fields.clone(),
                     emit_async: cx.emit_async,
@@ -2744,10 +2789,11 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
             // Emit the variant's body inline
             let body = &variant.func.body;
             let inner_ind = "  ".repeat(self.indent + 2);
-            for stmt in &body.stmts {
+            for (try_index, stmt) in body.stmts.iter().enumerate() {
                 TsStmtWriter {
                     stmt,
                     indent: self.indent + 2,
+                    try_index,
                 }
                 .ts_fmt(f, cx)?;
             }
@@ -3170,10 +3216,11 @@ impl<'a> TsBackend for TsBlockWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         writeln!(f, "{}{{", ind)?;
-        for stmt in &self.block.stmts {
+        for (try_index, stmt) in self.block.stmts.iter().enumerate() {
             TsStmtWriter {
                 stmt,
                 indent: self.indent + 1,
+                try_index,
             }
             .ts_fmt(f, cx)?;
         }
@@ -3374,12 +3421,48 @@ fn emit_statement_expr(
 struct TsStmtWriter<'a> {
     stmt: &'a IrStmt,
     indent: usize,
+    /// Unique within the enclosing block, preventing duplicate `var` declarations
+    /// when multiple Rust `?` expressions occur in one TS scope.
+    try_index: usize,
 }
 
 impl<'a> TsBackend for TsStmtWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         match &self.stmt.kind {
+            // Rust `?` is statement-level control flow, not an expression-level
+            // cast: evaluate once, propagate an error immediately, then bind the
+            // narrowed Ok value. `var` deliberately permits multiple Try statements
+            // in one block without generating an unbounded sequence of temp names.
+            IrStmtKind::Let {
+                pattern,
+                ty,
+                init: Some(init),
+            } if matches!(init.kind, IrExprKind::Try(_)) => {
+                let IrExprKind::Try(inner) = &init.kind else {
+                    unreachable!("match guard above proves Try")
+                };
+                if let Some(IrType::TypeParam(tp)) = ty {
+                    collect_pattern_var_types(pattern, tp, cx);
+                }
+                let try_name = format!("__volar_try_{}", self.try_index);
+                write!(f, "{}const {} = ", ind, try_name)?;
+                TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
+                writeln!(f, ";")?;
+                writeln!(
+                    f,
+                    "{}if ({} instanceof __VolarError) return {};",
+                    ind, try_name, try_name
+                )?;
+                let kw = if pattern_is_mutable(pattern) { "let" } else { "const" };
+                write!(f, "{}{} ", ind, kw)?;
+                TsPatternWriter { pat: pattern }.ts_fmt(f, cx)?;
+                if let Some(t) = ty {
+                    write!(f, ": ")?;
+                    TsTypeWriter { ty: t }.ts_fmt(f, cx)?;
+                }
+                writeln!(f, " = {};", try_name)?;
+            }
             IrStmtKind::Let { pattern, ty, init } => {
                 // Track `let x: T = ...` bindings so size_of_val(x) → ctx.sizeOfT.
                 if let Some(IrType::TypeParam(tp)) = ty {
@@ -3412,6 +3495,22 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                     }
                 }
                 writeln!(f, ";")?;
+            }
+            IrStmtKind::Semi(e) | IrStmtKind::Expr(e)
+                if matches!(e.kind, IrExprKind::Try(_)) =>
+            {
+                let IrExprKind::Try(inner) = &e.kind else {
+                    unreachable!("match guard above proves Try")
+                };
+                let try_name = format!("__volar_try_{}", self.try_index);
+                write!(f, "{}const {} = ", ind, try_name)?;
+                TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
+                writeln!(f, ";")?;
+                writeln!(
+                    f,
+                    "{}if ({} instanceof __VolarError) return {};",
+                    ind, try_name, try_name
+                )?;
             }
             IrStmtKind::Semi(e) => {
                 // Statement-like expressions get special treatment
@@ -6273,8 +6372,12 @@ fn ts_write_enum(f: &mut fmt::Formatter<'_>, e: &IrEnum, cx: &TsContext<'_>) -> 
     // One class per variant
     for v in &e.variants {
         let class_name = format!("{}_{}", name, v.name);
+        let is_error_enum = cx.error_enums.contains(&name);
         write!(f, "export class {}", class_name)?;
         emit_generics(f)?;
+        if is_error_enum {
+            write!(f, " extends __VolarError")?;
+        }
         match &v.fields {
             IrEnumVariantData::Unit => {
                 writeln!(f, " {{")?;
@@ -6293,7 +6396,11 @@ fn ts_write_enum(f: &mut fmt::Formatter<'_>, e: &IrEnum, cx: &TsContext<'_>) -> 
                     write!(f, "public _{}: ", fi)?;
                     TsTypeWriter { ty }.ts_fmt(f, cx)?;
                 }
-                writeln!(f, ") {{}}")?;
+                if is_error_enum {
+                    writeln!(f, ") {{ super(); }}")?;
+                } else {
+                    writeln!(f, ") {{}}")?;
+                }
                 write!(
                     f,
                     "  __zero(): this {{ return new (this.constructor as any)("
@@ -6316,7 +6423,11 @@ fn ts_write_enum(f: &mut fmt::Formatter<'_>, e: &IrEnum, cx: &TsContext<'_>) -> 
                     write!(f, "public $f{}: ", field.name)?;
                     TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
                 }
-                writeln!(f, ") {{}}")?;
+                if is_error_enum {
+                    writeln!(f, ") {{ super(); }}")?;
+                } else {
+                    writeln!(f, ") {{}}")?;
+                }
                 write!(
                     f,
                     "  __zero(): this {{ return new (this.constructor as any)("
@@ -6440,10 +6551,11 @@ impl<'a> TsBackend for TsCfgFunctionWriter<'a> {
         // Single-block fast path (no state machine needed)
         if blocks.len() == 1 {
             let blk = &blocks[0];
-            for stmt in &blk.stmts {
+            for (try_index, stmt) in blk.stmts.iter().enumerate() {
                 TsStmtWriter {
                     stmt,
                     indent: self.indent + 1,
+                    try_index,
                 }
                 .ts_fmt(f, cx)?;
             }
@@ -6508,10 +6620,11 @@ fn ts_write_state_machine(
         }
 
         // Statements
-        for stmt in &blk.stmts {
+        for (try_index, stmt) in blk.stmts.iter().enumerate() {
             TsStmtWriter {
                 stmt,
                 indent: base + 2,
+                try_index,
             }
             .ts_fmt(f, cx)?;
         }

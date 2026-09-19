@@ -40,6 +40,7 @@ class Err<E = unknown> { constructor(public _0: E) {} }
 type Vec<T> = T[];
 type Option<T> = T | undefined;
 type Result<T, E = unknown> = T | E;
+export abstract class __VolarError {}
 function __clone<T>(x: T): T {
   if (Array.isArray(x)) return ([...x] as unknown) as T;
   if (x !== null && typeof x === 'object') return Object.assign(Object.create(Object.getPrototypeOf(x)), x) as T;
@@ -1061,7 +1062,9 @@ return (() => {
           (leaf_seeds).push(Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
           (leaf_coms).push(hidden_commits[Number(i)]);
         } else         {
-          const r_leaf = tree[Number(tree_pos)];
+          const __volar_try_0 = tree[Number(tree_pos)];
+          if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+          const r_leaf = __volar_try_0;
           const tweak = Number(leaf_k);
           const [sd, com] = ctx.LClass.commit(r_leaf, iv, tweak);
           (leaf_seeds).push(sd);
@@ -2623,7 +2626,9 @@ export class Reader {
 
   ids(): Result<Vec<bigint>, DecodeError>
   {
-    const count = this.count();
+    const __volar_try_0 = this.count();
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const count = __volar_try_0;
     let ids = ([] as any[]);
     for (let _ = 0n; _ < count; _ += 1n)     {
       (ids).push(this.u32());
@@ -2633,15 +2638,21 @@ export class Reader {
 
   take(count: bigint): Result<bigint[], DecodeError>
   {
-    const end = (((this.$foffset + (count))) ?? (new DecodeError_Truncated()));
-    const bytes = ((this.$fbytes?.[Array.from({length: Number(end - this.$foffset)}, (_, __i) => BigInt(__i) + this.$foffset)]) ?? (new DecodeError_Truncated()));
+    const __volar_try_0 = (((this.$foffset + (count))) ?? (new DecodeError_Truncated()));
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const end = __volar_try_0;
+    const __volar_try_1 = ((this.$fbytes?.[Array.from({length: Number(end - this.$foffset)}, (_, __i) => BigInt(__i) + this.$foffset)]) ?? (new DecodeError_Truncated()));
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const bytes = __volar_try_1;
     this.$foffset = end;
     return bytes;
   }
 
   u32(): Result<bigint, DecodeError>
   {
-    const bytes: bigint[] = this.take(4n);
+    const __volar_try_0 = this.take(4n);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const bytes: bigint[] = __volar_try_0;
     return u32_from_le_bytes(bytes);
   }
 }
@@ -2845,7 +2856,9 @@ export class EncodedLabelBatch {
 
   static from_pairs(pairs: LabelPairDyn[], offset: bigint[]): Result<EncodedLabelBatch, BatchError>
   {
-    const batch = LabelBatchDyn.new(pairs, offset);
+    const __volar_try_0 = LabelBatchDyn.new(pairs, offset);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const batch = __volar_try_0;
     let differences = ([] as any[]);
     let zeroes = ([] as any[]);
     const modulus = REFERENCE_PLAINTEXT_MODULUS;
@@ -3061,7 +3074,8 @@ export class Parameters {
     if (((((((((((this.$fdegree < 2n) || !((this.$fdegree) > 0n && ((this.$fdegree) & ((this.$fdegree) - 1n)) === 0n)) || (this.$fwidth < 2n)) || !((this.$fwidth) > 0n && ((this.$fwidth) & ((this.$fwidth) - 1n)) === 0n)) || (this.$fplaintext_modulus < 3n)) || (this.$fdelta < 3n)) || (this.$fgadget_base < 2n)) || __equals(this.$fgadget_digits, 0n)) || !__equals((fieldSub(this.$fplaintext_modulus, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)) || !__equals((fieldSub(this.$fdelta, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)))     {
       return new Error_InvalidParameters();
     }
-    this.slots();
+    const __volar_try_1 = this.slots();
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
     const modulus = fieldMul((this.$fplaintext_modulus as unknown as bigint), (this.$fdelta as unknown as bigint));
     let capacity = 1n;
     for (let _ = 0n; _ < this.$fgadget_digits; _ += 1n)     {
@@ -3307,23 +3321,35 @@ export class BatchSelect {
 
   dec(first: any, second: any, key: any, choices: boolean[]): Result<Vec<bigint>, Error>
   {
-    this.check_first(first);
-    this.check_second(second);
+    const __volar_try_0 = this.check_first(first);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const __volar_try_1 = this.check_second(second);
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
     if (!__equals(key.$fkey.degree(), this.$fring.$fparameters.$fdegree))     {
       return new Error_LengthMismatch();
     }
-    const choice = this.$fring.encode_choices(choices);
-    const tree = this.lenc_digest(choice);
-    const digits = this.$fring.decompose(tree.$fdigest);
+    const __volar_try_3 = this.$fring.encode_choices(choices);
+    if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+    const choice = __volar_try_3;
+    const __volar_try_4 = this.lenc_digest(choice);
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const tree = __volar_try_4;
+    const __volar_try_5 = this.$fring.decompose(tree.$fdigest);
+    if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+    const digits = __volar_try_5;
     let result = ([] as any[]);
     for (let index = 0n; index < this.$fring.$fparameters.$fwidth; index += 1n)     {
       const row = first.$flhe_ciphertext.slice(Number(fieldMul(index, this.$fring.$fparameters.$fgadget_digits)), Number(fieldMul(fieldAdd(index, 1n), this.$fring.$fparameters.$fgadget_digits)));
-      let value = inner_product(this.$fring, row, digits);
+      const __volar_try_1 = inner_product(this.$fring, row, digits);
+      if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+      let value = __volar_try_1;
       value.add_assign(this.$fring, second.$flhe_ciphertext[Number(index)]);
       value.sub_assign(this.$fring, this.$fpublic.$flhe_a[Number(index)].product(this.$fring, key.$fkey));
       (result).push(value);
     }
-    const correction = this.lenc_eval(first.$flenc_ciphertext, tree);
+    const __volar_try_8 = this.lenc_eval(first.$flenc_ciphertext, tree);
+    if (__volar_try_8 instanceof __VolarError) return __volar_try_8;
+    const correction = __volar_try_8;
     for (const [value, delta] of result.map((__zip_a: any, __zip_i: number) => [__zip_a, (correction)[__zip_i]]))     {
       value.sub_assign(this.$fring, delta);
     }
@@ -3332,29 +3358,48 @@ export class BatchSelect {
 
   enc1(ctx: { defaultA: () => any }, l1: bigint[], random: any, noise: any): Result<FirstCiphertext, Error>
   {
-    const messages = this.$fring.encode_messages(l1);
-    const [random_vector, lenc_ciphertext] = this.lenc_enc(ctx, messages, random, noise);
-    const [lhe_state, lhe_ciphertext] = this.lhe_enc1(ctx, random_vector, random, noise);
+    const __volar_try_0 = this.$fring.encode_messages(l1);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const messages = __volar_try_0;
+    const __volar_try_1 = this.lenc_enc(ctx, messages, random, noise);
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const [random_vector, lenc_ciphertext] = __volar_try_1;
+    const __volar_try_2 = this.lhe_enc1(ctx, random_vector, random, noise);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const [lhe_state, lhe_ciphertext] = __volar_try_2;
     return new FirstCiphertext({ $flhe_state: lhe_state, $flhe_ciphertext: lhe_ciphertext, $flenc_ciphertext: lenc_ciphertext });
   }
 
   enc2(ctx: { defaultA: () => any }, l2: bigint[], random: any, noise: any): Result<SecondCiphertext, Error>
   {
-    let messages = this.$fring.encode_messages(l2);
+    const __volar_try_0 = this.$fring.encode_messages(l2);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    let messages = __volar_try_0;
     for (const message of messages)     {
-      this.$fring.add_noise(ctx, message, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
+      const __volar_try_0 = this.$fring.add_noise(ctx, message, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
+      if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
     }
-    const [lhe_state, lhe_ciphertext] = this.lhe_enc2(ctx, messages, random, noise);
+    const __volar_try_2 = this.lhe_enc2(ctx, messages, random, noise);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const [lhe_state, lhe_ciphertext] = __volar_try_2;
     return new SecondCiphertext({ $flhe_state: lhe_state, $flhe_ciphertext: lhe_ciphertext });
   }
 
   keygen(first: any, second: any, choices: boolean[]): Result<SelectionKey, Error>
   {
-    this.check_first(first);
-    this.check_second(second);
-    const choice = this.$fring.encode_choices(choices);
-    const tree = this.lenc_digest(choice);
-    const digits = this.$fring.decompose(tree.$fdigest);
+    const __volar_try_0 = this.check_first(first);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const __volar_try_1 = this.check_second(second);
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const __volar_try_2 = this.$fring.encode_choices(choices);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const choice = __volar_try_2;
+    const __volar_try_3 = this.lenc_digest(choice);
+    if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+    const tree = __volar_try_3;
+    const __volar_try_4 = this.$fring.decompose(tree.$fdigest);
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const digits = __volar_try_4;
     let key = __clone(second.$flhe_state);
     for (const [state, digit] of first.$flhe_state.map((__a: any, __i: number) => [__a, digits[__i]] as [typeof __a, any]))     {
       key.add_assign(this.$fring, state.product(this.$fring, digit));
@@ -3370,19 +3415,25 @@ export class BatchSelect {
     }
     let tree = [] as any[];
     for (const [index, value] of choice.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
-      const digits = this.$fring.decompose(value);
+      const __volar_try_0 = this.$fring.decompose(value);
+      if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+      const digits = __volar_try_0;
       const base = fieldMul(fieldAdd(fieldSub(p.$fwidth, 1n), index), p.$fgadget_digits);
       tree.slice(Number(base), Number(fieldAdd(base, p.$fgadget_digits))).clone_from_slice(digits);
     }
     let digest = this.$fring.zero();
     for (const node of (Array.from({length: Number(fieldSub(p.$fwidth, 1n) - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
       const children = fieldMul(fieldAdd(fieldMul(2n, node), 1n), p.$fgadget_digits);
-      let parent = inner_product(this.$fring, this.$fpublic.$flenc_b, tree.slice(Number(children), Number(fieldAdd(children, fieldMul(2n, p.$fgadget_digits)))));
+      const __volar_try_1 = inner_product(this.$fring, this.$fpublic.$flenc_b, tree.slice(Number(children), Number(fieldAdd(children, fieldMul(2n, p.$fgadget_digits)))));
+      if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+      let parent = __volar_try_1;
       parent.negate_assign(this.$fring);
       if (__equals(node, 0n))       {
         digest = parent;
       } else       {
-        const digits = this.$fring.decompose(parent);
+        const __volar_try_0 = this.$fring.decompose(parent);
+        if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+        const digits = __volar_try_0;
         const base = fieldMul(node, p.$fgadget_digits);
         tree.slice(Number(base), Number(fieldAdd(base, p.$fgadget_digits))).clone_from_slice(digits);
       }
@@ -3396,7 +3447,9 @@ export class BatchSelect {
     if (!__equals(BigInt(message.length), p.$fwidth))     {
       return new Error_LengthMismatch();
     }
-    const levels = p.levels();
+    const __volar_try_2 = p.levels();
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const levels = __volar_try_2;
     let random_vector = ([] as any[]);
     for (let _ = 0n; _ < fieldMul(levels, p.$fwidth); _ += 1n)     {
       (random_vector).push(this.$fring.uniform(random));
@@ -3425,7 +3478,8 @@ export class BatchSelect {
       }
     }
     for (const value of ciphertext)     {
-      this.$fring.add_noise(ctx, value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
+      const __volar_try_0 = this.$fring.add_noise(ctx, value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
+      if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
     }
     return [random_vector, ciphertext];
   }
@@ -3433,17 +3487,23 @@ export class BatchSelect {
   lenc_eval(ciphertext: Polynomial[], tree: any): Result<Vec<Polynomial>, Error>
   {
     const p = this.$fring.$fparameters;
-    const levels = p.levels();
+    const __volar_try_1 = p.levels();
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const levels = __volar_try_1;
     if ((!__equals(BigInt(ciphertext.length), fieldMul(fieldMul(fieldMul(levels, p.$fwidth), 2n), p.$fgadget_digits)) || !__equals(BigInt(tree.$ftree.length), fieldMul(fieldSub(fieldMul(2n, p.$fwidth), 1n), p.$fgadget_digits))))     {
       return new Error_LengthMismatch();
     }
     let delta = ([] as any[]);
     for (let row = 0n; row < p.$fwidth; row += 1n)     {
-      let value = inner_product(this.$fring, ciphertext.slice(Number(fieldMul(fieldMul(row, 2n), p.$fgadget_digits)), Number(fieldMul(fieldMul(fieldAdd(row, 1n), 2n), p.$fgadget_digits))), tree.$ftree.slice(Number(p.$fgadget_digits), Number(fieldMul(3n, p.$fgadget_digits))));
+      const __volar_try_0 = inner_product(this.$fring, ciphertext.slice(Number(fieldMul(fieldMul(row, 2n), p.$fgadget_digits)), Number(fieldMul(fieldMul(fieldAdd(row, 1n), 2n), p.$fgadget_digits))), tree.$ftree.slice(Number(p.$fgadget_digits), Number(fieldMul(3n, p.$fgadget_digits))));
+      if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+      let value = __volar_try_0;
       for (let level = 1n; level < levels; level += 1n)       {
         const ciphertext_base = fieldMul(fieldMul(fieldAdd(fieldMul(level, p.$fwidth), row), 2n), p.$fgadget_digits);
         const tree_base = fieldMul(fieldAdd(fieldMul(fieldSub(fieldAdd(fieldShr(row, fieldSub(levels, level)), fieldShl(1n, level)), 1n), 2n), 1n), p.$fgadget_digits);
-        const term = inner_product(this.$fring, ciphertext.slice(Number(ciphertext_base), Number(fieldAdd(ciphertext_base, fieldMul(2n, p.$fgadget_digits)))), tree.$ftree.slice(Number(tree_base), Number(fieldAdd(tree_base, fieldMul(2n, p.$fgadget_digits)))));
+        const __volar_try_2 = inner_product(this.$fring, ciphertext.slice(Number(ciphertext_base), Number(fieldAdd(ciphertext_base, fieldMul(2n, p.$fgadget_digits)))), tree.$ftree.slice(Number(tree_base), Number(fieldAdd(tree_base, fieldMul(2n, p.$fgadget_digits)))));
+        if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+        const term = __volar_try_2;
         value.add_assign(this.$fring, term);
       }
       value.negate_assign(this.$fring);
@@ -3467,7 +3527,8 @@ export class BatchSelect {
       for (let digit = 0n; digit < p.$fgadget_digits; digit += 1n)       {
         let value = this.$fpublic.$flhe_a[Number(index)].product(this.$fring, state[Number(digit)]);
         value.add_assign(this.$fring, message.scaled(this.$fring, p.$fgadget_base, digit));
-        this.$fring.add_noise(ctx, value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
+        const __volar_try_2 = this.$fring.add_noise(ctx, value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
+        if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
         (ciphertext).push(value);
       }
     }
@@ -3479,12 +3540,15 @@ export class BatchSelect {
     if (!__equals(BigInt(messages.length), this.$fring.$fparameters.$fwidth))     {
       return new Error_LengthMismatch();
     }
-    const state = this.$fring.uniform(random);
+    const __volar_try_1 = this.$fring.uniform(random);
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const state = __volar_try_1;
     let ciphertext = ([] as any[]);
     for (const [a, message] of this.$fpublic.$flhe_a.map((__a: any, __i: number) => [__a, messages[__i]] as [typeof __a, any]))     {
       let value = a.product(this.$fring, state);
       value.add_assign(this.$fring, message);
-      this.$fring.add_noise(ctx, value, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
+      const __volar_try_2 = this.$fring.add_noise(ctx, value, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
+      if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
       (ciphertext).push(value);
     }
     return [state, ciphertext];
@@ -3497,7 +3561,9 @@ export class BatchSelect {
 
   static setup(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, parameters: any, random: any): Result<BatchSelect, Error>
   {
-    const ring = Ring.new(ctx, parameters);
+    const __volar_try_0 = Ring.new(ctx, parameters);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const ring = __volar_try_0;
     let lhe_a = ([] as any[]);
     for (let _ = 0n; _ < parameters.$fwidth; _ += 1n)     {
       (lhe_a).push(ring.uniform(random));
@@ -3548,7 +3614,8 @@ export class Ring {
   add_noise(ctx: { defaultA: () => any }, value: any, noise: any, standard_deviation: bigint, bound: bigint): Result<void, Error>
   {
     let coefficients = [] as any[];
-    noise.sample(coefficients.$fn, standard_deviation, bound, coefficients);
+    const __volar_try_1 = noise.sample(coefficients.$fn, standard_deviation, bound, coefficients);
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
     if (coefficients.any((sample) => (sample.unsigned_abs() > bound)))     {
       return new Error_Noise();
     }
@@ -3684,15 +3751,18 @@ export class Ring {
 
   static new(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, parameters: any): Result<Ring, Error>
   {
-    parameters.validate();
+    const __volar_try_0 = parameters.validate();
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
     return new Ring({ $ffirst_ntt: Ntt.new(parameters.$fdegree, parameters.$fplaintext_modulus), $fsecond_ntt: Ntt.new(parameters.$fdegree, parameters.$fdelta), $finverse_plaintext_mod_delta: ((inverse_mod((parameters.$fplaintext_modulus % parameters.$fdelta), parameters.$fdelta)) ?? (new Error_Arithmetic())), $finverse_delta_mod_plaintext: ((inverse_mod((parameters.$fdelta % parameters.$fplaintext_modulus), parameters.$fplaintext_modulus)) ?? (new Error_Arithmetic())), $fparameters: parameters });
   }
 
   uniform(random: any): Result<Polynomial, Error>
   {
     let value = this.zero();
-    sample_uniform(random, this.$fparameters.$fplaintext_modulus, value.$ffirst);
-    sample_uniform(random, this.$fparameters.$fdelta, value.$fsecond);
+    const __volar_try_1 = sample_uniform(random, this.$fparameters.$fplaintext_modulus, value.$ffirst);
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const __volar_try_2 = sample_uniform(random, this.$fparameters.$fdelta, value.$fsecond);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
     return value;
   }
 
@@ -3765,7 +3835,9 @@ export class Ntt {
 
   static new(degree: bigint, modulus: bigint): Result<Ntt, Error>
   {
-    const psi = ((find_negacyclic_root(degree, modulus)) ?? (new Error_Arithmetic()));
+    const __volar_try_0 = ((find_negacyclic_root(degree, modulus)) ?? (new Error_Arithmetic()));
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const psi = __volar_try_0;
     const omega = mul_mod(psi, psi, modulus);
     return new Ntt({ $fmodulus: modulus, $fdegree: degree, $fpsi: psi, $fomega: omega, $finverse_psi: ((inverse_mod(psi, modulus)) ?? (new Error_Arithmetic())), $finverse_omega: ((inverse_mod(omega, modulus)) ?? (new Error_Arithmetic())), $finverse_degree: ((inverse_mod(BigInt(degree), modulus)) ?? (new Error_Arithmetic())) });
   }
@@ -3814,7 +3886,9 @@ export class Frame {
     if ((!__equals(input.slice(0, Number(8n)), MAGIC) || !__equals(u16.from_le_bytes([input[Number(8n)], input[Number(9n)]]), VERSION)))     {
       return new FrameError_UnsupportedFormat();
     }
-    const stage = new Stage_try_from(input[Number(10n)]);
+    const __volar_try_2 = new Stage_try_from(input[Number(10n)]);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const stage = __volar_try_2;
     let offset = 11n;
     let take_32 = () => (() => {
   let value = Array.from({length: Number(32n)}, () => 0n);
@@ -5284,116 +5358,116 @@ export class ProfileId_Custom {
 }
 export type ProfileId = ProfileId_Toy | ProfileId_ToyNoisy | ProfileId_Std128 | ProfileId_Custom;
 
-export class PlanError_BadTableShape { constructor(public $ftable: bigint) {}
+export class PlanError_BadTableShape extends __VolarError { constructor(public $ftable: bigint) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this.$ftable)) as this; }
 }
-export class PlanError_ArityExceedsKMax { constructor(public $ftable: bigint) {}
+export class PlanError_ArityExceedsKMax extends __VolarError { constructor(public $ftable: bigint) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this.$ftable)) as this; }
 }
-export class PlanError_BadReference {
+export class PlanError_BadReference extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class PlanError_BadOutput {
+export class PlanError_BadOutput extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class PlanError_BudgetInconsistent {
+export class PlanError_BudgetInconsistent extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
 export type PlanError = PlanError_BadTableShape | PlanError_ArityExceedsKMax | PlanError_BadReference | PlanError_BadOutput | PlanError_BudgetInconsistent;
 
-export class EncodeError_InvalidPlan { constructor(public _0: PlanError) {}
+export class EncodeError_InvalidPlan extends __VolarError { constructor(public _0: PlanError) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
 }
-export class EncodeError_TooLarge {
+export class EncodeError_TooLarge extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
 export type EncodeError = EncodeError_InvalidPlan | EncodeError_TooLarge;
 
-export class DecodeError_BadMagic {
+export class DecodeError_BadMagic extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class DecodeError_UnsupportedVersion {
+export class DecodeError_UnsupportedVersion extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class DecodeError_UnknownTag {
+export class DecodeError_UnknownTag extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class DecodeError_Truncated {
+export class DecodeError_Truncated extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class DecodeError_TooLarge {
+export class DecodeError_TooLarge extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class DecodeError_TrailingBytes {
+export class DecodeError_TrailingBytes extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class DecodeError_InvalidPlan { constructor(public _0: PlanError) {}
+export class DecodeError_InvalidPlan extends __VolarError { constructor(public _0: PlanError) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
 }
 export type DecodeError = DecodeError_BadMagic | DecodeError_UnsupportedVersion | DecodeError_UnknownTag | DecodeError_Truncated | DecodeError_TooLarge | DecodeError_TrailingBytes | DecodeError_InvalidPlan;
 
-export class LutError_AddressShapeInvalid {
+export class LutError_AddressShapeInvalid extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class LutError_ArityExceedsCircuitMax {
+export class LutError_ArityExceedsCircuitMax extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class LutError_ShapeUnsupported {
+export class LutError_ShapeUnsupported extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
 export type LutError = LutError_AddressShapeInvalid | LutError_ArityExceedsCircuitMax | LutError_ShapeUnsupported;
 
-export class LabelEncodingError_FieldElementOutOfRange { constructor(public $findex: bigint) {}
+export class LabelEncodingError_FieldElementOutOfRange extends __VolarError { constructor(public $findex: bigint) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this.$findex)) as this; }
 }
-export class LabelEncodingError_NonCanonicalElement { constructor(public $findex: bigint) {}
+export class LabelEncodingError_NonCanonicalElement extends __VolarError { constructor(public $findex: bigint) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this.$findex)) as this; }
 }
 export type LabelEncodingError = LabelEncodingError_FieldElementOutOfRange | LabelEncodingError_NonCanonicalElement;
 
-export class LabelBatchPaddingError_TooFewSlots { constructor(public $fslots: bigint, public $fused: bigint) {}
+export class LabelBatchPaddingError_TooFewSlots extends __VolarError { constructor(public $fslots: bigint, public $fused: bigint) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fslots), __zeroValue(this.$fused)) as this; }
 }
-export class LabelBatchPaddingError_ChoiceLengthMismatch { constructor(public $fexpected: bigint, public $factual: bigint) {}
+export class LabelBatchPaddingError_ChoiceLengthMismatch extends __VolarError { constructor(public $fexpected: bigint, public $factual: bigint) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fexpected), __zeroValue(this.$factual)) as this; }
 }
 export type LabelBatchPaddingError = LabelBatchPaddingError_TooFewSlots | LabelBatchPaddingError_ChoiceLengthMismatch;
 
-export class LabelBatchDecodeError_LengthMismatch {
+export class LabelBatchDecodeError_LengthMismatch extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class LabelBatchDecodeError_NonCanonicalLabel { constructor(public _0: LabelEncodingError) {}
+export class LabelBatchDecodeError_NonCanonicalLabel extends __VolarError { constructor(public _0: LabelEncodingError) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
 }
 export type LabelBatchDecodeError = LabelBatchDecodeError_LengthMismatch | LabelBatchDecodeError_NonCanonicalLabel;
 
-export class BatchError_EvenOffset {
+export class BatchError_EvenOffset extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class BatchError_MismatchedPair { constructor(public $findex: bigint) {}
+export class BatchError_MismatchedPair extends __VolarError { constructor(public $findex: bigint) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this.$findex)) as this; }
 }
-export class BatchError_LengthMismatch {
+export class BatchError_LengthMismatch extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
 export type BatchError = BatchError_EvenOffset | BatchError_MismatchedPair | BatchError_LengthMismatch;
 
-export class Error_InvalidParameters {
+export class Error_InvalidParameters extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class Error_LengthMismatch {
+export class Error_LengthMismatch extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class Error_NonCanonicalPlaintext {
+export class Error_NonCanonicalPlaintext extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class Error_Randomness {
+export class Error_Randomness extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class Error_Noise {
+export class Error_Noise extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class Error_Arithmetic {
+export class Error_Arithmetic extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
 export type Error = Error_InvalidParameters | Error_LengthMismatch | Error_NonCanonicalPlaintext | Error_Randomness | Error_Noise | Error_Arithmetic;
@@ -5418,36 +5492,36 @@ export class Stage_Error {
 }
 export type Stage = Stage_PublicParameters | Stage_ReusableCiphertext | Stage_PerUseCiphertext | Stage_SelectionKey | Stage_Complete | Stage_Error;
 
-export class FrameError_Truncated {
+export class FrameError_Truncated extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class FrameError_UnsupportedFormat {
+export class FrameError_UnsupportedFormat extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class FrameError_UnknownStage {
+export class FrameError_UnknownStage extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class FrameError_PayloadTooLarge {
+export class FrameError_PayloadTooLarge extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class FrameError_LengthMismatch {
+export class FrameError_LengthMismatch extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
 export type FrameError = FrameError_Truncated | FrameError_UnsupportedFormat | FrameError_UnknownStage | FrameError_PayloadTooLarge | FrameError_LengthMismatch;
 
-export class TfheBootstrapTableError_AddressWidthOutOfRange {
+export class TfheBootstrapTableError_AddressWidthOutOfRange extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class TfheBootstrapTableError_TableLengthMismatch {
+export class TfheBootstrapTableError_TableLengthMismatch extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class TfheBootstrapTableError_RingCapacityExceeded {
+export class TfheBootstrapTableError_RingCapacityExceeded extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class TfheBootstrapTableError_NegacyclicIncompatible {
+export class TfheBootstrapTableError_NegacyclicIncompatible extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
-export class TfheBootstrapTableError_InputEncodingUnsupported {
+export class TfheBootstrapTableError_InputEncodingUnsupported extends __VolarError {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
 export type TfheBootstrapTableError = TfheBootstrapTableError_AddressWidthOutOfRange | TfheBootstrapTableError_TableLengthMismatch | TfheBootstrapTableError_RingCapacityExceeded | TfheBootstrapTableError_NegacyclicIncompatible | TfheBootstrapTableError_InputEncodingUnsupported;
@@ -6573,17 +6647,31 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
   if (!__equals(reader.byte(), VERSION))   {
     return new DecodeError_UnsupportedVersion();
   }
-  const profile = parse_profile(reader.byte());
-  const k_max = reader.u32();
-  const num_inputs = reader.u32();
-  const num_cells = reader.u32();
+  const __volar_try_3 = parse_profile(reader.byte());
+  if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+  const profile = __volar_try_3;
+  const __volar_try_4 = reader.u32();
+  if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+  const k_max = __volar_try_4;
+  const __volar_try_5 = reader.u32();
+  if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+  const num_inputs = __volar_try_5;
+  const __volar_try_6 = reader.u32();
+  if (__volar_try_6 instanceof __VolarError) return __volar_try_6;
+  const num_cells = __volar_try_6;
   const budget = new FailureBudget({ $fper_bootstrap_log2: reader.u32(), $ftotal_log2: reader.u32() });
-  const lut_count = reader.count();
+  const __volar_try_8 = reader.count();
+  if (__volar_try_8 instanceof __VolarError) return __volar_try_8;
+  const lut_count = __volar_try_8;
   let luts = ([] as any[]);
   for (let _ = 0n; _ < lut_count; _ += 1n)   {
-    const bit_count = reader.count();
+    const __volar_try_0 = reader.count();
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const bit_count = __volar_try_0;
     const packed_len = bit_count.div_ceil(8n);
-    const packed = reader.take(packed_len);
+    const __volar_try_2 = reader.take(packed_len);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const packed = __volar_try_2;
     if ((!__equals((bit_count % 8n), 0n) && packed.last().is_some_and((byte) => !__equals(fieldShr(byte, (bit_count % 8n)), 0n))))     {
       return new DecodeError_UnknownTag();
     }
@@ -6593,23 +6681,32 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
     }
     (luts).push(new LutSpec({ $fentries: entries }));
   }
-  const layer_count = reader.count();
+  const __volar_try_11 = reader.count();
+  if (__volar_try_11 instanceof __VolarError) return __volar_try_11;
+  const layer_count = __volar_try_11;
   let layers = ([] as any[]);
   for (let _ = 0n; _ < layer_count; _ += 1n)   {
-    const op_count = reader.count();
+    const __volar_try_0 = reader.count();
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const op_count = __volar_try_0;
     let layer = ([] as any[]);
     for (let _ = 0n; _ < op_count; _ += 1n)     {
       (layer).push(read_op(reader));
     }
     (layers).push(layer);
   }
-  const outputs = reader.ids();
-  const cell_outputs = reader.ids();
+  const __volar_try_14 = reader.ids();
+  if (__volar_try_14 instanceof __VolarError) return __volar_try_14;
+  const outputs = __volar_try_14;
+  const __volar_try_15 = reader.ids();
+  if (__volar_try_15 instanceof __VolarError) return __volar_try_15;
+  const cell_outputs = __volar_try_15;
   if (!__equals(reader.$foffset, BigInt(bytes.length)))   {
     return new DecodeError_TrailingBytes();
   }
   const plan = new BootstrapPlan({ $fprofile: profile, $fk_max: k_max, $fluts: luts, $flayers: layers, $fnum_inputs: num_inputs, $fnum_cells: num_cells, $foutputs: outputs, $fcell_outputs: cell_outputs, $fbudget: budget });
-  plan.validate();
+  const __volar_try_18 = plan.validate();
+  if (__volar_try_18 instanceof __VolarError) return __volar_try_18;
   return plan;
 }
 
@@ -6853,7 +6950,8 @@ export function encode_mpcot_reg(msg: any): Vec<bigint>
 
 export function encode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, plan: any): Result<Vec<bigint>, EncodeError>
 {
-  plan.validate();
+  const __volar_try_0 = plan.validate();
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
   if (((((((BigInt(plan.$fluts.length) > MAX_ITEMS) || (BigInt(plan.$flayers.length) > MAX_ITEMS)) || (BigInt(plan.$foutputs.length) > MAX_ITEMS)) || (BigInt(plan.$fcell_outputs.length) > MAX_ITEMS)) || plan.$flayers.any((layer) => (BigInt(layer.length) > MAX_ITEMS))) || plan.$fluts.any((lut) => (BigInt(lut.$fentries.length) > MAX_ITEMS))))   {
     return new EncodeError_TooLarge();
   }
@@ -9184,24 +9282,40 @@ export function random_nonzero_delta<T, R>(n: bigint, rng: any, sample_t: any, i
 export function read_op(reader: any): Result<PlanOp, DecodeError>
 {
   return (() => { const __match = reader.byte(); if (__match === 0n) { return (() => {
-  const out = reader.u32();
+  const __volar_try_0 = reader.u32();
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  const out = __volar_try_0;
   const value = (() => { const __match = reader.byte(); if (__match === 0n) { return false; } else if (__match === 1n) { return true; } else { return new DecodeError_UnknownTag(); } })();
   return new Const({ $fout: out, $fvalue: value });
 })(); } else if (__match === 1n) { return new Not({ $finput: reader.u32(), $fout: reader.u32() }); } else if (__match === 2n) { return (() => {
-  const count = reader.count();
+  const __volar_try_0 = reader.count();
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  const count = __volar_try_0;
   let ids = ([] as any[]);
   for (let _ = 0n; _ < count; _ += 1n)   {
     (ids).push(reader.u32());
   }
   const inputs = LutInputs.from_slice(ids);
-  const table: LutId = reader.u32();
-  const out: WireId = reader.u32();
+  const __volar_try_4 = reader.u32();
+  if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+  const table: LutId = __volar_try_4;
+  const __volar_try_5 = reader.u32();
+  if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+  const out: WireId = __volar_try_5;
   return new Lut({ $finputs: inputs, $ftable: table, $fout: out });
 })(); } else if (__match === 3n) { return new CircuitBootstrap({ $finput: reader.u32(), $fout: reader.u32() }); } else if (__match === 4n) { return (() => {
-  const sel: RgswId = reader.u32();
-  const then_cell = reader.u32();
-  const else_cell = reader.u32();
-  const out = reader.u32();
+  const __volar_try_0 = reader.u32();
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  const sel: RgswId = __volar_try_0;
+  const __volar_try_1 = reader.u32();
+  if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+  const then_cell = __volar_try_1;
+  const __volar_try_2 = reader.u32();
+  if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+  const else_cell = __volar_try_2;
+  const __volar_try_3 = reader.u32();
+  if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+  const out = __volar_try_3;
   return new RgswMux({ $fsel: sel, $fthen_cell: then_cell, $felse_cell: else_cell, $fout: out });
 })(); } else { return new DecodeError_UnknownTag(); } })();
 }
@@ -9437,7 +9551,8 @@ export function sample_uniform(random: any, modulus: bigint, output: bigint[]): 
   for (const value of output)   {
     while (true)     {
       let bytes = Array.from({length: Number(8n)}, () => 0n);
-      random.fill_bytes(bytes);
+      const __volar_try_1 = random.fill_bytes(bytes);
+      if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
       const candidate = u64_from_le_bytes(bytes);
       if ((candidate < threshold))       {
         value = (candidate % modulus);
