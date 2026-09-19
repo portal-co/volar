@@ -1946,7 +1946,7 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         // well-typed in the meantime.
         writeln!(
             f,
-            "class __StubDigest {{ readonly outputSize = 32; update(_data: Uint8Array | readonly number[]): void {{}} finalize(): Uint8Array {{ return new Uint8Array(this.outputSize); }} }}"
+            "class __StubDigest {{ readonly outputSize = 32; update(_data: Uint8Array | readonly (number | bigint)[]): void {{}} finalize(): Uint8Array {{ return new Uint8Array(this.outputSize); }} }}"
         )?;
         writeln!(
             f,

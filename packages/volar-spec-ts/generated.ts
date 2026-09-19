@@ -29,7 +29,7 @@ import {
   u128_from_le_bytes,
 } from "./index";
 
-class __StubDigest { readonly outputSize = 32; update(_data: Uint8Array | readonly number[]): void {} finalize(): Uint8Array { return new Uint8Array(this.outputSize); } }
+class __StubDigest { readonly outputSize = 32; update(_data: Uint8Array | readonly (number | bigint)[]): void {} finalize(): Uint8Array { return new Uint8Array(this.outputSize); } }
 class Shake128 extends __StubDigest {} class Shake256 extends __StubDigest {} class Sha3_256 extends __StubDigest {}
 type DigestUpdate = any;
 declare const aes128_encrypt: typeof encrypt_block;
