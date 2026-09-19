@@ -98,6 +98,14 @@ pub enum BoolarBoundaryError {
     NotACircuit,
     MissingActionPolicy(String),
     MissingOraclePolicy(String),
+    OracleOutputWidthMismatch {
+        name: String,
+        declared: usize,
+        call: usize,
+    },
+    ActionOutputWidthMismatch {
+        request: ExternalRequestId,
+    },
     InvalidOutputBit {
         request: ExternalRequestId,
         bit: usize,
@@ -284,7 +292,7 @@ pub fn plan_external_boundaries(
 pub fn plan_boolar_external_boundaries<P: Clone>(
     circuit: &BIrBlocks<P>,
     action_policies: &[(String, ActionExecutionPolicy)],
-    oracle_policies: &[(String, OracleExecutionPolicy)],
+    oracle_policies: &[(String, OracleExecutionPolicy, usize)],
     limits: ExternalBatchLimits,
 ) -> Result<BoolarExternalBoundaryPlan, BoolarBoundaryError> {
     if !circuit.is_circuit() || circuit.blocks.len() != 1 {
@@ -334,8 +342,8 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
     let oracle_policy = |name: &str| {
         oracle_policies
             .iter()
-            .find(|(candidate, _)| candidate == name)
-            .map(|(_, policy)| *policy)
+            .find(|(candidate, _, _)| candidate == name)
+            .map(|(_, policy, output_bits)| (*policy, *output_bits))
             .ok_or_else(|| BoolarBoundaryError::MissingOraclePolicy(name.into()))
     };
 
@@ -350,6 +358,9 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
                 fallback,
                 num_bits,
             } => {
+                if *num_bits == 0 || fallback.len() != *num_bits {
+                    return Err(BoolarBoundaryError::ActionOutputWidthMismatch { request: id });
+                }
                 let policy = action_policy(name)?;
                 let mut inputs = Vec::with_capacity(1 + args.len() + fallback.len());
                 inputs.push(*guard);
@@ -394,7 +405,14 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
                 args,
                 num_bits,
             } => {
-                let policy = oracle_policy(name)?;
+                let (policy, declared_output_bits) = oracle_policy(name)?;
+                if *num_bits != declared_output_bits {
+                    return Err(BoolarBoundaryError::OracleOutputWidthMismatch {
+                        name: name.clone(),
+                        declared: declared_output_bits,
+                        call: *num_bits,
+                    });
+                }
                 let dependencies = dependencies_for(args, &projections);
                 requests.push(ExternalRequest {
                     id,
@@ -434,7 +452,13 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
                 bit,
                 occurrence,
             } => {
-                let policy = oracle_policy(name)?;
+                let (policy, declared_output_bits) = oracle_policy(name)?;
+                if *bit >= declared_output_bits {
+                    return Err(BoolarBoundaryError::InvalidOutputBit {
+                        request: id,
+                        bit: *bit,
+                    });
+                }
                 let call_id = match direct_oracles.get(occurrence) {
                     Some((existing, existing_name, existing_args, existing_policy)) => {
                         if existing_name != name
@@ -705,7 +729,7 @@ mod tests {
             pre_init: vec![],
         };
         let actions = [("act".into(), ActionExecutionPolicy::legacy_evaluator())];
-        let oracles = [("pure".into(), OracleExecutionPolicy::legacy_evaluator())];
+        let oracles = [("pure".into(), OracleExecutionPolicy::legacy_evaluator(), 1)];
         let extracted = plan_boolar_external_boundaries(
             &circuit,
             &actions,
@@ -736,6 +760,44 @@ mod tests {
             ExternalResultProjection {
                 request: ExternalRequestId(4),
                 bit: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn boolar_extraction_rejects_unvalidated_external_geometry() {
+        let circuit = BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 1,
+                stmts: vec![Node::new(
+                    BIrStmt::OracleBit {
+                        name: "pure".into(),
+                        args: vec![IRVarId(0)],
+                        bit: 1,
+                        occurrence: 0,
+                    },
+                    (),
+                    None,
+                )],
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(1)],
+                }),
+            }],
+            pre_init: vec![],
+        };
+        let error = plan_boolar_external_boundaries(
+            &circuit,
+            &[],
+            &[("pure".into(), OracleExecutionPolicy::legacy_evaluator(), 1)],
+            ExternalBatchLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            BoolarBoundaryError::InvalidOutputBit {
+                request: ExternalRequestId(1),
+                bit: 1,
             }
         );
     }

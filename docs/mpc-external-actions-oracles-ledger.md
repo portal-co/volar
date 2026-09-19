@@ -35,9 +35,12 @@ implicit default in action metadata. This preserves current behavior while
 making any claim of executor-private disclosure impossible.
 
 `compile_schedule(...)` retains a compatibility fallback for legacy callers;
-new scheduling code must use `compile_schedule_with_action_policies(...)`. The
-fallback must be removed only after all action-producing frontends carry a
-validated declaration policy and `MPC-EXT-SCHED-01` is complete.
+new scheduling code must use `compile_schedule_with_action_policies(...)`.
+`plan_boolar_external_boundaries(...)` is stricter: it requires both explicit
+policy registries and oracle declaration output geometry, so it cannot invent
+a policy or infer a direct-`OracleBit` result width from use sites. The
+schedule fallback must be removed only after all action-producing frontends
+carry a validated declaration policy and `MPC-EXT-SCHED-01` is complete.
 
 ## Completion rule
 

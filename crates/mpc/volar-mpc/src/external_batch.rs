@@ -43,9 +43,9 @@ impl ExternalBatchManifest {
     /// Construct the canonical action manifest for `actions`.
     ///
     /// Action specs must have unique request identities and a contiguous,
-    /// increasing source action chain. The caller may select a subset only if
-    /// it is a contiguous action-chain prefix at this boundary; a later batch
-    /// constructor will enforce cross-boundary continuity.
+    /// increasing source action chain. A caller may select one contiguous
+    /// action-chain slice; a future multi-boundary runner must enforce
+    /// cross-boundary continuity.
     pub fn from_actions(
         boundary: ExternalBoundaryId,
         actions: &[ActionSpec],
@@ -61,9 +61,10 @@ impl ExternalBatchManifest {
             .collect();
         entries.sort_by_key(|entry| entry.action_ordinal);
         let mut ids = BTreeSet::new();
-        for (expected, entry) in entries.iter().enumerate() {
+        let first_ordinal = entries.first().map_or(0, |entry| entry.action_ordinal);
+        for (offset, entry) in entries.iter().enumerate() {
             if !ids.insert(entry.request_id)
-                || entry.action_ordinal != expected as u64
+                || entry.action_ordinal != first_ordinal + offset as u64
                 || entry.output_bits == 0
             {
                 return Err(MpcError::MalformedSchedule);
@@ -154,6 +155,13 @@ mod tests {
                 &[action(1, 0), action(2, 2)],
             )
             .is_err()
+        );
+        assert!(
+            ExternalBatchManifest::from_actions(
+                ExternalBoundaryId(5),
+                &[action(7, 4), action(8, 5)],
+            )
+            .is_ok()
         );
     }
 }
