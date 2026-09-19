@@ -23,7 +23,7 @@ semantic guarantee merely because a plan/model type exists.
 | `MPC-EXT-STRICT-02` | Garbler-executor strict action batch/reinsertion | Independent disclosure/transcript and OT-direction tests | TODO |
 | `MPC-EXT-ORACLE-01` | Assigned and replicated pure oracle execution | Deterministic oracle adapter test; reviewed replication consistency protocol | **PARTIAL:** pure oracle CSE/demand/batching model supports only `Assigned`; `Replicated` is rejected by the generic planner pending a consistency protocol. No execution adapter exists. |
 | `MPC-EXT-CHAIN-01` | Strict-chain external boundary phase and held result material | Boundary/retry/epoch fixture plus storage co-batching test | TODO |
-| `MPC-EXT-VC-01` | VC external registry and WAT/LLVM imported-guest policy validation | End-to-end guest fixtures and `VcOutcome::Abort` mapping | TODO |
+| `MPC-EXT-VC-01` | VC external registry and WAT/LLVM imported-guest policy validation | End-to-end guest fixtures and `VcOutcome::Abort` mapping | **PARTIAL:** `VcExternalRegistry` validates unique public declaration names/fingerprints and output geometry, then supplies explicit policies/geometries to fused-Boolar boundary planning. It has no host callbacks, WAT/LLVM declaration extraction, `VcEmbedder` invocation integration, or `VcOutcome::Abort` mapping yet; unsupported execution must remain rejected rather than using this registry as host admission. |
 | `MPC-EXT-WEAVER-01` | Generated-weaver/backend policy support or explicit rejection | Generated compile/run corpus for every supported backend | TODO |
 
 ## Current compatibility posture

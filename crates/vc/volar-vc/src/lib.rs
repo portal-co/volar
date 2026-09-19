@@ -79,6 +79,8 @@ pub mod embedder;
 /// Dependency-aware batching for deferred actions, pure oracles, and storage
 /// requests at MPC circuit boundaries.
 pub mod external_boundary;
+/// Validated VC declaration registry used by external-boundary planning.
+pub mod external_registry;
 pub mod faest_owf;
 /// Stateless fused-GC handoff after an imported FHE module exchanges its
 /// ciphertext/plaintext boundary values.
@@ -128,6 +130,10 @@ pub use external_boundary::{
     ExternalBoundaryError, ExternalBoundaryPlan, ExternalRequest, ExternalRequestId,
     ExternalRequestKind, ExternalResultProjection, plan_boolar_external_boundaries,
     plan_external_boundaries,
+};
+pub use external_registry::{
+    ActionExternalRegistration, ExternalRegistryError, OracleExternalRegistration,
+    RegistryPlanningError, VcExternalRegistry,
 };
 pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};
 pub use hybrid_storage::{
