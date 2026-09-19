@@ -87,6 +87,8 @@ pub enum ExternalBatchFrameError {
     Malformed,
     TooLarge,
     ManifestMismatch,
+    RequestMismatch,
+    ResultWidthMismatch,
 }
 
 impl ExternalBatchManifest {
@@ -322,6 +324,56 @@ impl ExternalBatchFrame {
             _ => Err(ExternalBatchFrameError::ManifestMismatch),
         }
     }
+
+    /// Validate a non-manifest phase against the admitted public manifest.
+    ///
+    /// `Result` frames must contain exactly the declared action output width;
+    /// all phases must echo the current binding and name a manifest request.
+    /// Reveal/clear-input geometry is intentionally left to the request's
+    /// declaration adapter because the action manifest does not carry its
+    /// guard/argument/fallback widths.
+    pub fn validate_request(
+        &self,
+        manifest: &ExternalBatchManifest,
+        binding: ExternalBatchBinding,
+    ) -> Result<(), ExternalBatchFrameError> {
+        let (frame_binding, request_id, result_width) = match self {
+            Self::Manifest { .. } => return Err(ExternalBatchFrameError::RequestMismatch),
+            Self::Reveal {
+                binding,
+                request_id,
+                ..
+            }
+            | Self::ClearInputs {
+                binding,
+                request_id,
+                ..
+            }
+            | Self::Reinserted {
+                binding,
+                request_id,
+            } => (*binding, *request_id, None),
+            Self::Result {
+                binding,
+                request_id,
+                bits,
+            } => (*binding, *request_id, Some(bits.len())),
+        };
+        if frame_binding != binding {
+            return Err(ExternalBatchFrameError::ManifestMismatch);
+        }
+        let action = manifest
+            .actions
+            .iter()
+            .find(|action| action.request_id == request_id)
+            .ok_or(ExternalBatchFrameError::RequestMismatch)?;
+        if let Some(width) = result_width
+            && width != action.output_bits
+        {
+            return Err(ExternalBatchFrameError::ResultWidthMismatch);
+        }
+        Ok(())
+    }
 }
 
 fn put_u32(out: &mut Vec<u8>, value: u32) {
@@ -464,6 +516,30 @@ mod tests {
         let decoded = ExternalBatchFrame::decode(&encoded).unwrap();
         assert_eq!(decoded, frame);
         decoded.validate_manifest(&manifest, binding).unwrap();
+        ExternalBatchFrame::Result {
+            binding,
+            request_id: 12,
+            bits: vec![true],
+        }
+        .validate_request(&manifest, binding)
+        .unwrap();
+        assert_eq!(
+            ExternalBatchFrame::Result {
+                binding,
+                request_id: 12,
+                bits: vec![true, false],
+            }
+            .validate_request(&manifest, binding),
+            Err(ExternalBatchFrameError::ResultWidthMismatch)
+        );
+        assert_eq!(
+            ExternalBatchFrame::Reinserted {
+                binding,
+                request_id: 99,
+            }
+            .validate_request(&manifest, binding),
+            Err(ExternalBatchFrameError::RequestMismatch)
+        );
         let mut trailing = encoded;
         trailing.push(0);
         assert_eq!(
