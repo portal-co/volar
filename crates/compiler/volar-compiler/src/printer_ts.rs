@@ -586,13 +586,21 @@ fn build_module_witness_map(module: &IrModule<IrFunction>) -> BTreeMap<Vec<Strin
             let callee_names = collect_call_targets(body);
             let mut extra = WitnessNeeds::default();
             for callee in &callee_names {
-                // Resolve bare callee name by last segment
-                if let Some(callee_needs) = map
-                    .iter()
-                    .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(callee.as_str()))
-                    .map(|(_, v)| v)
-                {
-                    extra.merge(callee_needs);
+                // Resolve bare callee name by last segment. Method keys are stored as
+                // `ClassName.method`, so also match the `.method` suffix for a method
+                // target collected from a MethodCall.
+                let matches = |k: &Vec<String>| {
+                    k.last().map(|s| s.as_str()) == Some(callee.as_str())
+                        || k.last()
+                            .map(|s| s.rsplit('.').next() == Some(callee.as_str()))
+                            .unwrap_or(false)
+                };
+                // Merge needs from *all* matching callees (a method name may be
+                // defined on several structs; conservatively union their needs).
+                for (k, v) in map.iter() {
+                    if matches(k) {
+                        extra.merge(v);
+                    }
                 }
             }
             if extra.is_empty() {
@@ -761,7 +769,21 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
         | IrExprKind::Field { base: expr, .. } => {
             collect_call_targets_expr(expr, targets);
         }
-        IrExprKind::MethodCall { receiver, args, .. } => {
+        IrExprKind::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } => {
+            // Collect the method name so a callee method's witness needs propagate
+            // transitively to this caller (e.g. `encode` calling `scale_by_u64` which
+            // needs a Default witness). Method keys in the witness map are
+            // `ClassName.method`; the merge step matches on the `.method` suffix.
+            match method {
+                MethodKind::Other(m) => targets.push(m.clone()),
+                MethodKind::Vole(v) => targets.push(format!("{:?}", v).to_lowercase()),
+                MethodKind::Known(_) => {}
+            }
             collect_call_targets_expr(receiver, targets);
             for a in args {
                 collect_call_targets_expr(a, targets);
@@ -946,6 +968,7 @@ pub fn print_module_ts_with_imports(
         structs_by_name: &structs_by_name,
         type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
+        has_ctx_param: false,
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1038,6 +1061,7 @@ fn print_module_ts_with_emit_flags(
         structs_by_name: &structs_by_name,
         type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
+        has_ctx_param: false,
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1111,6 +1135,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         structs_by_name: &structs_by_name,
         type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
+        has_ctx_param: false,
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1232,6 +1257,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         structs_by_name: &structs_by_name,
         type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
+        has_ctx_param: false,
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
@@ -1375,6 +1401,11 @@ struct TsContext<'a> {
     /// (type-*param* names for witness resolution), this carries full
     /// `IrType`s for primitive-width inference.
     local_var_types: BTreeMap<String, IrType>,
+    /// True when the function/method currently being printed has a leading
+    /// `ctx` witness parameter (i.e. its witness needs are non-empty), so a
+    /// `ctx` value is in scope to forward to callees that need one. Set by
+    /// each function/method writer from its `witness_needs`.
+    has_ctx_param: bool,
 }
 
 impl<'a> TsContext<'a> {
@@ -1423,6 +1454,7 @@ impl<'a> TsContext<'a> {
             structs_by_name: self.structs_by_name,
             type_aliases: self.type_aliases,
             local_var_types: self.local_var_types.clone(),
+            has_ctx_param: self.has_ctx_param,
         }
     }
 
@@ -1445,6 +1477,7 @@ impl<'a> TsContext<'a> {
             structs_by_name: self.structs_by_name,
             type_aliases: self.type_aliases,
             local_var_types: self.local_var_types.clone(),
+            has_ctx_param: self.has_ctx_param,
         }
     }
 
@@ -1469,6 +1502,7 @@ impl<'a> TsContext<'a> {
             structs_by_name: self.structs_by_name,
             type_aliases: self.type_aliases,
             local_var_types: self.local_var_types.clone(),
+            has_ctx_param: self.has_ctx_param,
         }
     }
 
@@ -1496,6 +1530,7 @@ impl<'a> TsContext<'a> {
             structs_by_name: self.structs_by_name,
             type_aliases: self.type_aliases,
             local_var_types: types,
+            has_ctx_param: self.has_ctx_param,
         }
     }
 
@@ -1525,6 +1560,14 @@ impl<'a> TsContext<'a> {
             || is_crypto_type_param(name)
             || is_primitive_class(name)
             || STD_TYPE_HEADS.contains(&name)
+    }
+
+    /// Return a copy of this context marked as having (or not) a leading `ctx`
+    /// witness parameter in scope — set by each function/method writer.
+    fn with_ctx_param(&self, has_ctx: bool) -> TsContext<'a> {
+        let mut c = self.with_local_var_types(self.local_var_types.clone());
+        c.has_ctx_param = has_ctx;
+        c
     }
 
     fn register_var_type(&self, name: &str, type_param: &str) {
@@ -2366,6 +2409,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     structs_by_name: cx.structs_by_name,
                     type_aliases: cx.type_aliases,
                     local_var_types: cx.local_var_types.clone(),
+                    has_ctx_param: cx.has_ctx_param,
                 };
                 &cx_static
             } else {
@@ -2543,7 +2587,9 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
             .iter()
             .map(|p| (p.name.clone(), p.ty.clone()))
             .collect();
-        let cx_local = cx_after_witnesses.with_local_var_types(param_types);
+        let cx_local = cx_after_witnesses
+            .with_local_var_types(param_types)
+            .with_ctx_param(!self.witness_needs.is_empty());
         let cx_body = &cx_local;
         TsBlockWriter {
             block: &self.func.body,
@@ -2571,6 +2617,16 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         let ind2 = "  ".repeat(self.indent + 1);
+
+        // The merged method emits a leading `ctx` witness param when its needs are
+        // non-empty; make that visible to body emission (ctx-forwarding to callees).
+        let cx_owned;
+        let cx = if self.witness_needs.is_empty() {
+            cx
+        } else {
+            cx_owned = cx.with_ctx_param(true);
+            &cx_owned
+        };
 
         // Use the first variant to determine the signature shape
         let first = &self.merged.variants[0];
@@ -2781,7 +2837,9 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
             .iter()
             .map(|p| (p.name.clone(), p.ty.clone()))
             .collect();
-        let cx_local = cx_after_witnesses.with_local_var_types(param_types);
+        let cx_local = cx_after_witnesses
+            .with_local_var_types(param_types)
+            .with_ctx_param(!self.witness_needs.is_empty());
         let cx_body = &cx_local;
         TsBlockWriter {
             block: &self.func.body,
@@ -2908,7 +2966,9 @@ impl<'a> TsBackend for TsMergedFunctionWriter<'a> {
                 .iter()
                 .map(|p| (p.name.clone(), p.ty.clone()))
                 .collect();
-            let cx_local = cx_after_witnesses.with_local_var_types(param_types);
+            let cx_local = cx_after_witnesses
+            .with_local_var_types(param_types)
+            .with_ctx_param(!self.witness_needs.is_empty());
             let cx_body = &cx_local;
             write!(f, "    return (() => ")?;
             TsBlockWriter {
@@ -4833,9 +4893,41 @@ fn emit_other_method_call(
         write!(f, ")")?;
     }
     write!(f, ".{}(", name)?;
+    // Forward the ambient `ctx` to a method whose signature carries witness
+    // needs, when the caller itself has a `ctx` in scope. The callee's witness
+    // key is `<ReceiverStruct>.<method>`; we resolve the receiver's struct via
+    // the local width-inference machinery. Without this, `a.and_result(b)`
+    // drops the required leading `ctx` arg and the arities mismatch.
+    let receiver_struct = infer_expr_ir_type(receiver, cx).and_then(|ty| {
+        match unwrap_ref(&ty) {
+            IrType::Struct { kind, .. } => Some(bare_struct_name(&kind.to_string()).to_string()),
+            // A field/param typed as a bare `Ring` parses as `TypeParam("Ring")` even
+            // when `Ring` is a concrete struct — resolve it through the registry.
+            IrType::TypeParam(name) if cx.structs_by_name.contains_key(name.as_str()) => {
+                Some(name.clone())
+            }
+            _ => None,
+        }
+    });
+    let callee_needs_ctx = receiver_struct
+        .as_ref()
+        .map(|sname| {
+            let key = format!("{}.{}", sname, name);
+            cx.get_witness_needs(&key).is_some()
+        })
+        .unwrap_or(false);
+    // The caller has a `ctx` to forward iff its own signature carries a leading
+    // witness `ctx` param (any witness kind, not just Class witnesses).
+    let caller_has_ctx = cx.has_ctx_param;
+    let forward_ctx = callee_needs_ctx && caller_has_ctx;
+    if forward_ctx {
+        write!(f, "ctx, ")?;
+    }
     // Inject ctx witness if the method needs one and the caller doesn't have ctx in scope.
     // We construct ctx inline from the receiver's T-bearing field.
-    let inject_ctx = cx.method_t_fields.contains_key(name) && cx.class_witnesses.is_empty();
+    let inject_ctx = !forward_ctx
+        && cx.method_t_fields.contains_key(name)
+        && cx.class_witnesses.is_empty();
     if inject_ctx {
         let field = &cx.method_t_fields[name];
         // { defaultT: () => __zeroValue((recv as any).__field__?.[0] ?? 0n) }
@@ -5588,6 +5680,7 @@ fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
         IrExprKind::Field { base, field } => {
             let base_ty = infer_expr_ir_type(base, cx)?;
             let IrType::Struct { kind, .. } = unwrap_ref(&base_ty) else {
+                #[cfg(feature = "std")] std::eprintln!("INFER field {}: base not struct {:?}", field, base_ty);
                 return None;
             };
             let s = cx.structs_by_name.get(&kind.to_string())?;

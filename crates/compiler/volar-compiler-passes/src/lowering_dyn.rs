@@ -1771,13 +1771,23 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 }
                 _ => None,
             };
+            // These hardcoded rewrites target *free* functions (`commit::<D>(...)`,
+            // `create_vole_from_material::<B,...>(...)`). They must NOT fire on
+            // trait-method calls that merely share the method name — e.g.
+            // `L::commit(...)` (`L: LeafCommit`) has a type-param qualifier and is a
+            // different function from the free `commit::<D>`. Gate on the absence of
+            // a path qualifier so we only rewrite genuinely free calls; a qualified
+            // `Trait::method`/`Type::assoc` call keeps its qualifier for the backend
+            // (witness) machinery to resolve.
+            let is_free_call = func_qualifier.is_none();
             if let Some(name) = &func_name {
                 // `B::double(x)` passes through unchanged — the TS printer handles it
                 // via class witnesses (`ctx.BClass.double(x)`). No lowering hack needed.
                 if false && name == "double" {
                     // (disabled: was rewriting to double_vec which is not spec-consistent)
-                } else if name == "create_vole_from_material"
-                    || name == "create_vole_from_material_expanded"
+                } else if is_free_call
+                    && (name == "create_vole_from_material"
+                        || name == "create_vole_from_material_expanded")
                 {
                     if let Some(b_param) = fn_gen.iter().find(|p| {
                         p.name.starts_with('B')
@@ -1810,7 +1820,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                             name
                         );
                     }
-                } else if name == "commit" {
+                } else if is_free_call && name == "commit" {
                     if let Some(d_param) = fn_gen.iter().find(|p| {
                         p.name.starts_with('D')
                             && p.bounds

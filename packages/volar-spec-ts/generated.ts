@@ -459,7 +459,7 @@ export class CommitmentCoreDyn<D> {
     return __equals(this[0], other[0]);
   }
 
-  validate(ctx: { newD: () => any }, opened_message: bigint[], opened_rand: bigint[]): boolean
+  validate(ctx: { newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, opened_message: bigint[], opened_rand: bigint[]): boolean
   {
     const recomputed: CommitmentCoreDyn<D> = commit(ctx, opened_message, opened_rand);
     return __equals(recomputed[0], this[0]);
@@ -837,7 +837,7 @@ export class FaestTranscript {
     return new FaestTranscript({ $fsponge: new Sponge_Shake256(undefined as any /* Shake256::default() */) });
   }
 
-  squeeze(n: bigint): Vec<bigint>
+  squeeze(ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, n: bigint): Vec<bigint>
   {
     return this.$fsponge.squeeze(n);
   }
@@ -956,7 +956,7 @@ export class BavcDyn<L> {
     return out;
   }
 
-  static commit(ctx: { newD: () => any }, com_bytes: bigint, r: bigint[], iv: bigint[], tau: bigint, n: bigint): BavcCommitmentDyn
+  static commit(ctx: { newD: () => any, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, com_bytes: bigint, r: bigint[], iv: bigint[], tau: bigint, n: bigint): BavcCommitmentDyn
   {
     const leaf_count = fieldMul(tau, n);
     const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
@@ -976,7 +976,7 @@ export class BavcDyn<L> {
         const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
         const r_leaf = tree[Number(tree_pos)];
         const tweak = Number(leaf_k);
-        const [sd, com] = commit(ctx, r_leaf, iv, tweak);
+        const [sd, com] = ctx.LClass.commit(r_leaf, iv, tweak);
         (seeds).push(sd);
         (commitments).push(com);
       }
@@ -1019,7 +1019,7 @@ export class BavcDyn<L> {
     return new BavcOpeningDyn({ $fhidden_commits: deltas.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([i, d]: any) => commitment.$fcommitments[Number(fieldAdd(fieldMul(i, n), d))]), $fnodes: [] as any[], $fcom_bytes: 0n });
   }
 
-  static reconstruct(ctx: { newD: () => any }, com_bytes: bigint, nodes: [bigint, bigint[]][], hidden_commits: bigint[][], deltas: bigint[], iv: bigint[], expected_root: bigint[], tau: bigint, n: bigint): (Vec<bigint[]> | undefined)
+  static reconstruct(ctx: { newD: () => any, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, com_bytes: bigint, nodes: [bigint, bigint[]][], hidden_commits: bigint[][], deltas: bigint[], iv: bigint[], expected_root: bigint[], tau: bigint, n: bigint): (Vec<bigint[]> | undefined)
   {
     const leaf_count = fieldMul(tau, n);
     const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
@@ -1062,7 +1062,7 @@ return (() => {
         } else         {
           const r_leaf = tree[Number(tree_pos)];
           const tweak = Number(leaf_k);
-          const [sd, com] = commit(ctx, r_leaf, iv, tweak);
+          const [sd, com] = ctx.LClass.commit(r_leaf, iv, tweak);
           (leaf_seeds).push(sd);
           (leaf_coms).push(com);
         }
@@ -1196,7 +1196,7 @@ export class ABODyn<B, D> {
     return new (this.constructor as any)({ $fk: __zeroValue(this.$fk), $fn: __zeroValue(this.$fn), $fcommit: __zeroValue(this.$fcommit), $fper_byte: __zeroValue(this.$fper_byte) }) as this;
   }
 
-  open(ctx: { newD: () => any }, t: bigint, u: bigint, m: bigint, bad: bigint[], rand: bigint[])
+  open(ctx: { newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, t: bigint, u: bigint, m: bigint, bad: bigint[], rand: bigint[])
   {
     const k: bigint = this.$fk;
     const n: bigint = this.$fn;
@@ -1371,7 +1371,7 @@ export class ABOOpeningDyn<B, D> {
 })());
   }
 
-  validate(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any }, commit_: bigint[], rand: bigint[]): boolean
+  validate(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, commit_: bigint[], rand: bigint[]): boolean
   {
     const t: bigint = this.$ft;
     const u: bigint = this.$fu;
@@ -1634,23 +1634,23 @@ export class MemoryCheckStateDyn<T, H> {
     return this.$fconsume;
   }
 
-  drain(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, final_value: any, final_timestamp: bigint)
+  drain(ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, final_value: any, final_timestamp: bigint)
   {
-    const enc = this.encode(addr, final_value, final_timestamp);
+    const enc = this.encode(ctx, addr, final_value, final_timestamp);
     ctx.HClass.absorb(this.$fconsume, enc);
   }
 
-  encode(addr: any, value: any, timestamp: bigint)
+  encode(ctx: { defaultT: () => any }, addr: any, value: any, timestamp: bigint)
   {
     const a = fieldMul(addr, __clone(this.$fkey.$fr1));
     const v = fieldMul(value, __clone(this.$fkey.$fr2));
-    const t = this.scale_by_u64(__clone(this.$fkey.$fr3), timestamp);
+    const t = this.scale_by_u64(ctx, __clone(this.$fkey.$fr3), timestamp);
     return fieldAdd(fieldAdd(a, v), t);
   }
 
-  init(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, zero_value: any)
+  init(ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, zero_value: any)
   {
-    const enc = this.encode(addr, zero_value, 0n);
+    const enc = this.encode(ctx, addr, zero_value, 0n);
     ctx.HClass.absorb(this.$fproduce, enc);
   }
 
@@ -1664,11 +1664,11 @@ export class MemoryCheckStateDyn<T, H> {
     return this.$fproduce;
   }
 
-  read(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, value: any, timestamp: bigint, write_timestamp: bigint)
+  read(ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, value: any, timestamp: bigint, write_timestamp: bigint)
   {
-    const enc_produce = this.encode(__clone(addr), __clone(value), timestamp);
+    const enc_produce = this.encode(ctx, __clone(addr), __clone(value), timestamp);
     ctx.HClass.absorb(this.$fproduce, enc_produce);
-    const enc_consume = this.encode(addr, value, write_timestamp);
+    const enc_consume = this.encode(ctx, addr, value, write_timestamp);
     ctx.HClass.absorb(this.$fconsume, enc_consume);
   }
 
@@ -1700,11 +1700,11 @@ export class MemoryCheckStateDyn<T, H> {
     return ctx.HClass.finalize_eq(this.$fproduce, this.$fconsume);
   }
 
-  write(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, new_value: any, timestamp: bigint, old_value: any, old_timestamp: bigint)
+  write(ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, new_value: any, timestamp: bigint, old_value: any, old_timestamp: bigint)
   {
-    const enc_new = this.encode(__clone(addr), new_value, timestamp);
+    const enc_new = this.encode(ctx, __clone(addr), new_value, timestamp);
     ctx.HClass.absorb(this.$fproduce, enc_new);
-    const enc_old = this.encode(addr, old_value, old_timestamp);
+    const enc_old = this.encode(ctx, addr, old_value, old_timestamp);
     ctx.HClass.absorb(this.$fconsume, enc_old);
   }
 }
@@ -3329,21 +3329,21 @@ export class BatchSelect {
     return this.$fring.decode_messages(result);
   }
 
-  enc1(l1: bigint[], random: any, noise: any): Result<FirstCiphertext, Error>
+  enc1(ctx: { defaultA: () => any }, l1: bigint[], random: any, noise: any): Result<FirstCiphertext, Error>
   {
     const messages = this.$fring.encode_messages(l1);
-    const [random_vector, lenc_ciphertext] = this.lenc_enc(messages, random, noise);
-    const [lhe_state, lhe_ciphertext] = this.lhe_enc1(random_vector, random, noise);
+    const [random_vector, lenc_ciphertext] = this.lenc_enc(ctx, messages, random, noise);
+    const [lhe_state, lhe_ciphertext] = this.lhe_enc1(ctx, random_vector, random, noise);
     return new FirstCiphertext({ $flhe_state: lhe_state, $flhe_ciphertext: lhe_ciphertext, $flenc_ciphertext: lenc_ciphertext });
   }
 
-  enc2(l2: bigint[], random: any, noise: any): Result<SecondCiphertext, Error>
+  enc2(ctx: { defaultA: () => any }, l2: bigint[], random: any, noise: any): Result<SecondCiphertext, Error>
   {
     let messages = this.$fring.encode_messages(l2);
     for (const message of messages)     {
-      this.$fring.add_noise(message, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
+      this.$fring.add_noise(ctx, message, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
     }
-    const [lhe_state, lhe_ciphertext] = this.lhe_enc2(messages, random, noise);
+    const [lhe_state, lhe_ciphertext] = this.lhe_enc2(ctx, messages, random, noise);
     return new SecondCiphertext({ $flhe_state: lhe_state, $flhe_ciphertext: lhe_ciphertext });
   }
 
@@ -3389,7 +3389,7 @@ export class BatchSelect {
     return new Tree({ $ftree: tree, $fdigest: digest });
   }
 
-  lenc_enc(message: Polynomial[], random: any, noise: any): Result<[Vec<Polynomial>, Vec<Polynomial>], Error>
+  lenc_enc(ctx: { defaultA: () => any }, message: Polynomial[], random: any, noise: any): Result<[Vec<Polynomial>, Vec<Polynomial>], Error>
   {
     const p = this.$fring.$fparameters;
     if (!__equals(BigInt(message.length), p.$fwidth))     {
@@ -3424,7 +3424,7 @@ export class BatchSelect {
       }
     }
     for (const value of ciphertext)     {
-      this.$fring.add_noise(value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
+      this.$fring.add_noise(ctx, value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
     }
     return [random_vector, ciphertext];
   }
@@ -3451,7 +3451,7 @@ export class BatchSelect {
     return delta;
   }
 
-  lhe_enc1(messages: Polynomial[], random: any, noise: any): Result<[Vec<Polynomial>, Vec<Polynomial>], Error>
+  lhe_enc1(ctx: { defaultA: () => any }, messages: Polynomial[], random: any, noise: any): Result<[Vec<Polynomial>, Vec<Polynomial>], Error>
   {
     if (!__equals(BigInt(messages.length), this.$fring.$fparameters.$fwidth))     {
       return Error.LengthMismatch;
@@ -3466,14 +3466,14 @@ export class BatchSelect {
       for (let digit = 0n; digit < p.$fgadget_digits; digit += 1n)       {
         let value = this.$fpublic.$flhe_a[Number(index)].product(this.$fring, state[Number(digit)]);
         value.add_assign(this.$fring, message.scaled(this.$fring, p.$fgadget_base, digit));
-        this.$fring.add_noise(value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
+        this.$fring.add_noise(ctx, value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
         (ciphertext).push(value);
       }
     }
     return [state, ciphertext];
   }
 
-  lhe_enc2(messages: Polynomial[], random: any, noise: any): Result<[Polynomial, Vec<Polynomial>], Error>
+  lhe_enc2(ctx: { defaultA: () => any }, messages: Polynomial[], random: any, noise: any): Result<[Polynomial, Vec<Polynomial>], Error>
   {
     if (!__equals(BigInt(messages.length), this.$fring.$fparameters.$fwidth))     {
       return Error.LengthMismatch;
@@ -3483,7 +3483,7 @@ export class BatchSelect {
     for (const [a, message] of this.$fpublic.$flhe_a.map((__a: any, __i: number) => [__a, messages[__i]] as [typeof __a, any]))     {
       let value = a.product(this.$fring, state);
       value.add_assign(this.$fring, message);
-      this.$fring.add_noise(value, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
+      this.$fring.add_noise(ctx, value, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
       (ciphertext).push(value);
     }
     return [state, ciphertext];
@@ -3544,7 +3544,7 @@ export class Ring {
     return new (this.constructor as any)({ $fparameters: __zeroValue(this.$fparameters), $ffirst_ntt: __zeroValue(this.$ffirst_ntt), $fsecond_ntt: __zeroValue(this.$fsecond_ntt), $finverse_plaintext_mod_delta: __zeroValue(this.$finverse_plaintext_mod_delta), $finverse_delta_mod_plaintext: __zeroValue(this.$finverse_delta_mod_plaintext) }) as this;
   }
 
-  add_noise(value: any, noise: any, standard_deviation: bigint, bound: bigint): Result<void, Error>
+  add_noise(ctx: { defaultA: () => any }, value: any, noise: any, standard_deviation: bigint, bound: bigint): Result<void, Error>
   {
     let coefficients = [] as any[];
     noise.sample(coefficients.$fn, standard_deviation, bound, coefficients);
@@ -3681,7 +3681,7 @@ export class Ring {
     return output;
   }
 
-  static new(parameters: any): Result<Ring, Error>
+  static new(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, parameters: any): Result<Ring, Error>
   {
     parameters.validate();
     return new Ring({ $ffirst_ntt: Ntt.new(parameters.$fdegree, parameters.$fplaintext_modulus), $fsecond_ntt: Ntt.new(parameters.$fdegree, parameters.$fdelta), $finverse_plaintext_mod_delta: inverse_mod((parameters.$fplaintext_modulus % parameters.$fdelta), parameters.$fdelta).ok_or(Error.Arithmetic), $finverse_delta_mod_plaintext: inverse_mod((parameters.$fdelta % parameters.$fplaintext_modulus), parameters.$fplaintext_modulus).ok_or(Error.Arithmetic), $fparameters: parameters });
@@ -4009,10 +4009,10 @@ export class GlobalSecretDyn {
 })()), $fn: 0n });
   }
 
-  gen_and_table(ctx: { newD: () => any }, a: GarbleDyn, b: GarbleDyn): GarbleTableDyn
+  gen_and_table(ctx: { newD: () => any, defaultT: () => any }, a: GarbleDyn, b: GarbleDyn): GarbleTableDyn
   {
     const n: bigint = this.$fn;
-    const result_base = a.and_result(b);
+    const result_base = a.and_result(ctx, b);
     let table = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
     for (let i = 0n; i < 4n; i += 1n)     {
       const av = !__equals(fieldBitand(i, 1n), 0n);
@@ -4042,7 +4042,7 @@ export class GlobalSecretDyn {
     return new GarbleDyn({ $fbase: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(a.$fbase[Number(i)], this.$fsecret[Number(i)])), $fn: 0n });
   }
 
-  one_wire_eval(): EvalDyn
+  one_wire_eval(ctx: { defaultT: () => any }): EvalDyn
   {
     const n: bigint = this.$fn;
     return this.encode(GarbleDyn.zero(), true);
@@ -4079,7 +4079,7 @@ export class GarbledCircuitDyn {
     return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fi: __zeroValue(this.$fi), $fa: __zeroValue(this.$fa), $fsecret: __zeroValue(this.$fsecret), $finput_labels: __zeroValue(this.$finput_labels), $ftables: __zeroValue(this.$ftables), $foutput_label: __zeroValue(this.$foutput_label) }) as this;
   }
 
-  encode_inputs(bits: boolean[]): EvalDyn[]
+  encode_inputs(ctx: { defaultT: () => any }, bits: boolean[]): EvalDyn[]
   {
     const n: bigint = this.$fn;
     const i: bigint = this.$fi;
@@ -4087,12 +4087,12 @@ export class GarbledCircuitDyn {
     return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => this.$fsecret.encode(this.$finput_labels[Number(i)], bits[Number(i)]));
   }
 
-  eval_setup(): EvalSetupDyn
+  eval_setup(ctx: { defaultT: () => any }): EvalSetupDyn
   {
     const n: bigint = this.$fn;
     const i: bigint = this.$fi;
     const a: bigint = this.$fa;
-    return new EvalSetupDyn({ $fone_wire: this.$fsecret.one_wire_eval(), $ftables: __clone(this.$ftables), $foutput_label: __clone(this.$foutput_label), $fn: 0n, $fa: 0n });
+    return new EvalSetupDyn({ $fone_wire: this.$fsecret.one_wire_eval(ctx, ), $ftables: __clone(this.$ftables), $foutput_label: __clone(this.$foutput_label), $fn: 0n, $fa: 0n });
   }
 }
 
@@ -4116,7 +4116,7 @@ export class EvalSetupDyn {
     return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fa: __zeroValue(this.$fa), $fone_wire: __zeroValue(this.$fone_wire), $ftables: __zeroValue(this.$ftables), $foutput_label: __zeroValue(this.$foutput_label) }) as this;
   }
 
-  recover_output(result: EvalDyn): boolean
+  recover_output(ctx: { newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, result: EvalDyn): boolean
   {
     const n: bigint = this.$fn;
     const a: bigint = this.$fa;
@@ -6168,7 +6168,7 @@ export function cert_xor(): GateCertificate
 })(), $finterval_true: [1n, 5n] });
 }
 
-export function chall1(mu: bigint[], iv: bigint[], com_bytes: bigint[], lambda_plus_b: bigint, use_shake256: boolean): Vec<bigint>
+export function chall1(ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, mu: bigint[], iv: bigint[], com_bytes: bigint[], lambda_plus_b: bigint, use_shake256: boolean): Vec<bigint>
 {
   let t = (() => { if (use_shake256) {
   return FaestTranscript.new_shake256();
@@ -6181,7 +6181,7 @@ export function chall1(mu: bigint[], iv: bigint[], com_bytes: bigint[], lambda_p
   return t.squeeze(lambda_plus_b);
 }
 
-export function chall2(chall_1: bigint[], u_hat: bigint[], d: bigint[], lambda_plus_b: bigint, use_shake256: boolean): Vec<bigint>
+export function chall2(ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, chall_1: bigint[], u_hat: bigint[], d: bigint[], lambda_plus_b: bigint, use_shake256: boolean): Vec<bigint>
 {
   let t = (() => { if (use_shake256) {
   return FaestTranscript.new_shake256();
@@ -6194,7 +6194,7 @@ export function chall2(chall_1: bigint[], u_hat: bigint[], d: bigint[], lambda_p
   return t.squeeze(lambda_plus_b);
 }
 
-export function chall3(chall_2: bigint[], a_hat: bigint[], b_hat: bigint[], c_hat: bigint[], lambda: bigint, use_shake256: boolean): Vec<bigint>
+export function chall3(ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, chall_2: bigint[], a_hat: bigint[], b_hat: bigint[], c_hat: bigint[], lambda: bigint, use_shake256: boolean): Vec<bigint>
 {
   let t = (() => { if (use_shake256) {
   return FaestTranscript.new_shake256();
@@ -6563,7 +6563,7 @@ export function decode_mpcot_reg(bytes: bigint[]): MpcotRegSenderMsg
   return new MpcotRegSenderMsg({ $fblocks: blocks });
 }
 
-export function decode_plan(bytes: bigint[]): Result<BootstrapPlan, DecodeError>
+export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, bytes: bigint[]): Result<BootstrapPlan, DecodeError>
 {
   let reader = new Reader({ $fbytes: bytes, $foffset: 0n });
   if (!__equals(reader.take(4n), MAGIC))   {
@@ -6850,7 +6850,7 @@ export function encode_mpcot_reg(msg: any): Vec<bigint>
   return buf;
 }
 
-export function encode_plan(plan: any): Result<Vec<bigint>, EncodeError>
+export function encode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, plan: any): Result<Vec<bigint>, EncodeError>
 {
   plan.validate().map_err(EncodeError.InvalidPlan);
   if (((((((BigInt(plan.$fluts.length) > MAX_ITEMS) || (BigInt(plan.$flayers.length) > MAX_ITEMS)) || (BigInt(plan.$foutputs.length) > MAX_ITEMS)) || (BigInt(plan.$fcell_outputs.length) > MAX_ITEMS)) || plan.$flayers.any((layer) => (BigInt(layer.length) > MAX_ITEMS))) || plan.$fluts.any((lut) => (BigInt(lut.$fentries.length) > MAX_ITEMS))))   {
@@ -7705,7 +7705,7 @@ export function gate_witness<S>(k_a: any, k_b: any, k_c: any, delta: any, v_hat:
   return [k_a, k_b, k_c, delta, v_hat, p1, p2];
 }
 
-export function gen_abo<B, D>(ctx: { newD: () => any, BClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, k: bigint, n: bigint, a: bigint[], rand: bigint[]): ABODyn<B, D>
+export function gen_abo<B, D>(ctx: { newD: () => any, BClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, k: bigint, n: bigint, a: bigint[], rand: bigint[]): ABODyn<B, D>
 {
   let h = ctx.newD();
   const per_byte = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_ni: any) => (() => {
@@ -10267,9 +10267,9 @@ export function vole_hash_consistency_check(key: any, hu: any, hq: any, hv: any,
   return (__equals(lhs0, rhs0) && __equals(lhs1, rhs1));
 }
 
-export function vole_mul3_prover_step<T>(n: bigint, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>, vope_d: VopeDyn<T>): VopeDyn<T>
+export function vole_mul3_prover_step<T>(ctx: { defaultT: () => any }, n: bigint, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>, vope_d: VopeDyn<T>): VopeDyn<T>
 {
-  const ab: VopeDyn<T> = vope_a.mul_generalized({ defaultT: () => __zeroValue(((recv: any) => recv.$fu?.[0] ?? 0n)(vope_a)) }, vope_b.$fk, vope_b);
+  const ab: VopeDyn<T> = vope_a.mul_generalized(ctx, vope_b.$fk, vope_b);
   return ab.mul_generalized({ defaultT: () => __zeroValue(((recv: any) => recv.$fu?.[0] ?? 0n)(ab)) }, vope_d.$fk, vope_d);
 }
 
@@ -10299,9 +10299,9 @@ export function vole_rekey_verifier_check<T>(n: bigint, q_wire: QDyn<T>, q_key: 
   return ok;
 }
 
-export function vole_sbox_prover_step<T>(n: bigint, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>): [VopeDyn<T>, VopeDyn<T>]
+export function vole_sbox_prover_step<T>(ctx: { defaultT: () => any }, n: bigint, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>): [VopeDyn<T>, VopeDyn<T>]
 {
-  const k2: VopeDyn<T> = vope_a.mul_generalized({ defaultT: () => __zeroValue(((recv: any) => recv.$fu?.[0] ?? 0n)(vope_a)) }, vope_b.$fk, vope_b);
+  const k2: VopeDyn<T> = vope_a.mul_generalized(ctx, vope_b.$fk, vope_b);
   const k1 = new VopeDyn({ $fu: Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => __clone(k2.$fu[Number(1n)])), $fv: __clone(k2.$fu[Number(0n)]), $fn: 0n, $fk: 1n });
   return [k1, k2];
 }

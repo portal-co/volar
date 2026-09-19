@@ -1679,7 +1679,7 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     let tree_pos = (leaf_count - 1) + leaf_k;
     let r_leaf = tree[tree_pos];
     let tweak = leaf_k as u32;
-    let (sd, com) = commit::<D>(&r_leaf, iv, tweak);
+    let (sd, com) = L::commit(&r_leaf, iv, tweak);
     seeds.push(sd);
     commitments.push(com);
 }
@@ -1782,7 +1782,7 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
 } else {
     let r_leaf = tree[tree_pos]?;
     let tweak = leaf_k as u32;
-    let (sd, com) = commit::<D>(&r_leaf, iv, tweak);
+    let (sd, com) = L::commit(&r_leaf, iv, tweak);
     leaf_seeds.push(sd);
     leaf_coms.push(com);
 }
