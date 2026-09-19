@@ -303,6 +303,50 @@ must precede meaningful semantic-equivalence testing — you can't trust a
 value comparison against output that doesn't typecheck). The Part 1 exit
 criterion is updated accordingly in §2.6.
 
+#### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
+
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776** (and seeded
+components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
+*syntax* errors are fixed; the remainder are semantic. Bug classes fixed:
+
+- **Module-path qualifiers not stripped** (`torus::reduce` → `torus.reduce`,
+  never defined): `TsContext::is_type_head` + leading-module-segment stripping
+  in the Path writer. (Largest single win.)
+- **Associated-fn type head not dyn-renamed** (`Garble::zero()` referencing the
+  un-suffixed name): fixed in `lowering_dyn.rs` to rename `segments[0]`.
+- **`VecDeque<T>`** type/`::new()` unmapped: now `T[]` / `[] as any[]`.
+- **`X::default()`** emitted as undefined `Default.default()`/`default()`: now
+  resolved to a concrete zero via the struct-field registry (or `undefined as
+  any` for untracked stdlib aliases).
+- **Crypto-stub types** (`Sha3_256`/`Shake128`/`Shake256`) were `type X = any`
+  aliases: now `__StubDigest` subclasses so `X::new()`/`.update()`/`.finalize()`
+  type-check; `X::new()` on stubs + alias resolution (`DigestImpl::new()` →
+  `new Sha3_256()`) handled.
+- **Rust primitives with no `PrimitiveType` variant** (`i64`, `str`, …) leaked
+  as bare names: now map to `bigint`/`string`.
+- **Struct-pattern `match` bindings never declared** (`PlanOp::Not { input, ..
+  }`): `ts_emit_pattern_bindings` gained an `IrPattern::Struct` arm.
+- **Function-local `const` items dropped** by `convert_block`'s catch-all:
+  now parsed as `let` bindings.
+
+**Remaining error classes** (each a deeper emitter/lowering feature, not a
+one-line fix):
+
+- **TS2554 arity / overload merging (largest, ~184)**: distinct functions
+  sharing a bare name (e.g. free `commit<D>(msg, rand)` vs trait
+  `LeafCommit::commit(r, iv, tweak)` vs `Bavc::commit(r, iv, tau, n)`)
+  collapse to one emission; and length-witness params aren't threaded
+  consistently between definitions and call sites. The latter is the
+  *documented* `lowering_dyn` call-site length-forwarding limitation
+  (pipeline.md) whose named fix is the deferred "weak type inference pass".
+- **Trait-method resolution in dyn-lowering**: `L::commit(...)` (`L:
+  LeafCommit`) is lowered to a bare `commit::<D>(...)`, losing the trait/impl
+  identity and resolving to the wrong `commit`.
+- **Static-method length witnesses**: `Array.from({length: Number(n)})` inside
+  a `static` method references `n`, which is never in scope there.
+- **Function-local `fn` items** (recursive helpers like bavc's `walk`):
+  dropped by the parser; representing them needs a new `IrStmtKind` variant.
+
 ### 1.4 Current array/length representation (baseline for Part 2)
 
 `TsTypeWriter` (`printer_ts.rs`) always renders `IrType::Array { elem, .. }`
