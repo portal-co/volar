@@ -17,8 +17,9 @@ use volar_mpc::strict::{
 use volar_mpc::strict_cursor::StrictGateCursor;
 use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
 use volar_mpc::{
-    ActionSpec, ExternalBatchFrame, ExternalBoundaryId, ExternalExecutor, ExternalRevealPolicy,
-    Gate, GateSchedule, InputOwner, MpcError,
+    ActionSpec, EvaluatorBatchExecutor, ExternalBatchAction, ExternalBatchActionHost,
+    ExternalBatchFrame, ExternalBoundaryId, ExternalExecutor, ExternalRevealPolicy, Gate,
+    GateSchedule, InputOwner, MpcError,
 };
 use volar_spec::garble::{Eval, Garble, GlobalSecret};
 
@@ -125,6 +126,16 @@ impl StrictActionHost for Host {
     }
 }
 
+impl ExternalBatchActionHost for Host {
+    fn action(
+        &mut self,
+        registration: &ExternalBatchAction,
+        args: &[bool],
+    ) -> Result<Vec<bool>, MpcError> {
+        StrictActionHost::action(self, &registration.name, args)
+    }
+}
+
 fn run_case(inputs: [bool; 4]) -> ([bool; 2], Vec<String>) {
     let schedule = action_schedule();
     let elim = eliminate_nots(&schedule).expect("eliminate");
@@ -221,6 +232,65 @@ fn batch_label_transport_binds_manifest_reveal_and_reinsertion() {
     cursor
         .reinsert_batch_action_result(&manifest, binding, 0, &result, &mut ot)
         .unwrap();
+    assert_eq!(ot.pending(), 0);
+}
+
+#[test]
+fn evaluator_batch_executor_drives_strict_label_reveal_and_reinsertion() {
+    let schedule = action_schedule();
+    let elim = eliminate_nots(&schedule).unwrap();
+    let secret = GlobalSecret::<N>::new(det_bytes(0x41).into());
+    let inputs: Vec<Garble<N>> = (0..4).map(|index| det_label(40 + index)).collect();
+    let full = garble_schedule_strict_dyn_full::<N, D>(&elim, secret, inputs).unwrap();
+    let manifest = volar_mpc::ExternalBatchManifest::from_actions(
+        ExternalBoundaryId(9),
+        &[full.exec.schedule.actions[0].clone()],
+    )
+    .unwrap();
+    let binding = manifest.bind([9; 32], [10; 32]);
+    let mut executor = EvaluatorBatchExecutor::new(
+        manifest.clone(),
+        binding,
+        vec![ExternalBatchAction {
+            request_id: 0,
+            name: "reverse".into(),
+            argument_bits: 4,
+        }],
+    )
+    .unwrap();
+    let clear_inputs = [true, false, true, true];
+    let labels: Vec<Eval<N>> = full
+        .exec
+        .circuit
+        .input_labels
+        .iter()
+        .zip(clear_inputs)
+        .map(|(base, bit)| Eval {
+            target: full.exec.circuit.secret.encode(base, bit).target,
+        })
+        .collect();
+    let mut cursor = StrictGateCursor::new(&elim.schedule, &labels).unwrap();
+    let reveal = cursor.action_batch_reveal(&manifest, binding, 0).unwrap();
+    executor.accept_reveal(&reveal).unwrap();
+    let clear = decode_external_batch_action_reveal(&full, &manifest, binding, 0, &reveal).unwrap();
+    let mut host = Host { calls: Vec::new() };
+    let result = executor.execute_clear_inputs(&clear, &mut host).unwrap();
+    assert_eq!(host.calls, vec!["reverse"]);
+    let mut ot = LoopbackOt::new();
+    offer_external_batch_action_result_labels::<N, D>(
+        &full, &manifest, binding, 0, &result, &mut ot,
+    )
+    .unwrap();
+    cursor
+        .reinsert_batch_action_result(&manifest, binding, 0, &result, &mut ot)
+        .unwrap();
+    executor
+        .accept_reinserted(&ExternalBatchFrame::Reinserted {
+            binding,
+            request_id: 0,
+        })
+        .unwrap();
+    assert!(executor.is_complete());
     assert_eq!(ot.pending(), 0);
 }
 
