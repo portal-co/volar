@@ -39,6 +39,56 @@ pub struct ExternalBatchManifest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExternalBatchBinding(pub [u8; 32]);
 
+/// Maximum public action entries accepted from an external-batch frame.
+///
+/// This is a parser allocation bound, not a scheduling resource policy.
+pub const EXTERNAL_BATCH_MAX_ACTIONS: usize = 4_096;
+/// Maximum label/result entries accepted in one external-batch frame.
+pub const EXTERNAL_BATCH_MAX_VALUES: usize = 65_536;
+/// Maximum bytes in one individual external-batch value.
+pub const EXTERNAL_BATCH_MAX_VALUE_BYTES: usize = 1 << 20;
+
+/// Versioned wire envelope for future strict external boundary batches.
+///
+/// The envelope is intentionally transport-neutral and does not itself reveal
+/// a logical bit or run a host. Every non-manifest phase echoes the manifest
+/// binding and request ID, so a role cannot reinterpret same-shaped material
+/// from another boundary as its own request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExternalBatchFrame {
+    Manifest {
+        binding: ExternalBatchBinding,
+        manifest: ExternalBatchManifest,
+    },
+    Reveal {
+        binding: ExternalBatchBinding,
+        request_id: u64,
+        labels: Vec<Vec<u8>>,
+    },
+    ClearInputs {
+        binding: ExternalBatchBinding,
+        request_id: u64,
+        bits: Vec<bool>,
+    },
+    Result {
+        binding: ExternalBatchBinding,
+        request_id: u64,
+        bits: Vec<bool>,
+    },
+    Reinserted {
+        binding: ExternalBatchBinding,
+        request_id: u64,
+    },
+}
+
+/// Fail-closed external-batch frame parse or local-manifest validation error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalBatchFrameError {
+    Malformed,
+    TooLarge,
+    ManifestMismatch,
+}
+
 impl ExternalBatchManifest {
     /// Construct the canonical action manifest for `actions`.
     ///
@@ -60,6 +110,18 @@ impl ExternalBatchManifest {
             })
             .collect();
         entries.sort_by_key(|entry| entry.action_ordinal);
+        Self::from_entries(boundary, entries).map_err(|_| MpcError::MalformedSchedule)
+    }
+}
+
+impl ExternalBatchManifest {
+    fn from_entries(
+        boundary: ExternalBoundaryId,
+        entries: Vec<ExternalActionManifestEntry>,
+    ) -> Result<Self, ExternalBatchFrameError> {
+        if entries.len() > EXTERNAL_BATCH_MAX_ACTIONS {
+            return Err(ExternalBatchFrameError::TooLarge);
+        }
         let mut ids = BTreeSet::new();
         let first_ordinal = entries.first().map_or(0, |entry| entry.action_ordinal);
         for (offset, entry) in entries.iter().enumerate() {
@@ -67,7 +129,7 @@ impl ExternalBatchManifest {
                 || entry.action_ordinal != first_ordinal + offset as u64
                 || entry.output_bits == 0
             {
-                return Err(MpcError::MalformedSchedule);
+                return Err(ExternalBatchFrameError::Malformed);
             }
         }
         Ok(Self {
@@ -75,9 +137,7 @@ impl ExternalBatchManifest {
             actions: entries,
         })
     }
-}
 
-impl ExternalBatchManifest {
     /// Bind this public manifest to caller-provided session and circuit
     /// digests. The field layout is canonical and length-delimited through the
     /// fixed-width action entries; malformed schedules cannot affect it.
@@ -109,6 +169,258 @@ impl ExternalBatchManifest {
     }
 }
 
+impl ExternalBatchFrame {
+    /// Encode this version-one envelope. Receivers must validate its manifest
+    /// against their independently derived schedule/session binding.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        match self {
+            Self::Manifest { binding, manifest } => {
+                out.push(0);
+                out.extend_from_slice(&binding.0);
+                put_u64(&mut out, manifest.boundary.0);
+                put_u32(&mut out, manifest.actions.len() as u32);
+                for action in &manifest.actions {
+                    put_u64(&mut out, action.request_id);
+                    put_u64(&mut out, action.action_ordinal);
+                    out.push(match action.execution.executor {
+                        crate::ExternalExecutor::Garbler => 0,
+                        crate::ExternalExecutor::Evaluator => 1,
+                    });
+                    out.push(match action.execution.reveal {
+                        crate::ExternalRevealPolicy::ExecutorOnly => 0,
+                        crate::ExternalRevealPolicy::BothRoles => 1,
+                    });
+                    out.extend_from_slice(&action.execution.fingerprint);
+                    put_u64(&mut out, action.output_bits as u64);
+                }
+            }
+            Self::Reveal {
+                binding,
+                request_id,
+                labels,
+            } => {
+                out.push(1);
+                put_binding(&mut out, binding);
+                put_u64(&mut out, *request_id);
+                put_values(&mut out, labels);
+            }
+            Self::ClearInputs {
+                binding,
+                request_id,
+                bits,
+            } => {
+                out.push(2);
+                put_binding(&mut out, binding);
+                put_u64(&mut out, *request_id);
+                put_bits(&mut out, bits);
+            }
+            Self::Result {
+                binding,
+                request_id,
+                bits,
+            } => {
+                out.push(3);
+                put_binding(&mut out, binding);
+                put_u64(&mut out, *request_id);
+                put_bits(&mut out, bits);
+            }
+            Self::Reinserted {
+                binding,
+                request_id,
+            } => {
+                out.push(4);
+                put_binding(&mut out, binding);
+                put_u64(&mut out, *request_id);
+            }
+        }
+        out
+    }
+
+    /// Decode only bounded, exact-length version-one envelopes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ExternalBatchFrameError> {
+        let mut reader = BatchReader { bytes, position: 0 };
+        let frame = match reader.byte()? {
+            0 => {
+                let binding = reader.binding()?;
+                let boundary = ExternalBoundaryId(reader.u64()?);
+                let count = reader.count(EXTERNAL_BATCH_MAX_ACTIONS)?;
+                let mut actions = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let request_id = reader.u64()?;
+                    let action_ordinal = reader.u64()?;
+                    let executor = match reader.byte()? {
+                        0 => crate::ExternalExecutor::Garbler,
+                        1 => crate::ExternalExecutor::Evaluator,
+                        _ => return Err(ExternalBatchFrameError::Malformed),
+                    };
+                    let reveal = match reader.byte()? {
+                        0 => crate::ExternalRevealPolicy::ExecutorOnly,
+                        1 => crate::ExternalRevealPolicy::BothRoles,
+                        _ => return Err(ExternalBatchFrameError::Malformed),
+                    };
+                    let fingerprint = reader.array()?;
+                    let output_bits = usize::try_from(reader.u64()?)
+                        .map_err(|_| ExternalBatchFrameError::TooLarge)?;
+                    actions.push(ExternalActionManifestEntry {
+                        request_id,
+                        action_ordinal,
+                        execution: ActionExecutionPolicy {
+                            executor,
+                            reveal,
+                            fingerprint,
+                        },
+                        output_bits,
+                    });
+                }
+                Self::Manifest {
+                    binding,
+                    manifest: ExternalBatchManifest::from_entries(boundary, actions)?,
+                }
+            }
+            1 => Self::Reveal {
+                binding: reader.binding()?,
+                request_id: reader.u64()?,
+                labels: reader.values()?,
+            },
+            2 => Self::ClearInputs {
+                binding: reader.binding()?,
+                request_id: reader.u64()?,
+                bits: reader.bits()?,
+            },
+            3 => Self::Result {
+                binding: reader.binding()?,
+                request_id: reader.u64()?,
+                bits: reader.bits()?,
+            },
+            4 => Self::Reinserted {
+                binding: reader.binding()?,
+                request_id: reader.u64()?,
+            },
+            _ => return Err(ExternalBatchFrameError::Malformed),
+        };
+        if reader.position == bytes.len() {
+            Ok(frame)
+        } else {
+            Err(ExternalBatchFrameError::Malformed)
+        }
+    }
+
+    /// Ensure a peer-provided manifest frame exactly matches the locally
+    /// derived manifest and session/circuit binding before any reveal phase.
+    pub fn validate_manifest(
+        &self,
+        expected_manifest: &ExternalBatchManifest,
+        expected_binding: ExternalBatchBinding,
+    ) -> Result<(), ExternalBatchFrameError> {
+        match self {
+            Self::Manifest { binding, manifest }
+                if *binding == expected_binding && manifest == expected_manifest =>
+            {
+                Ok(())
+            }
+            _ => Err(ExternalBatchFrameError::ManifestMismatch),
+        }
+    }
+}
+
+fn put_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+fn put_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+fn put_binding(out: &mut Vec<u8>, binding: &ExternalBatchBinding) {
+    out.extend_from_slice(&binding.0);
+}
+fn put_values(out: &mut Vec<u8>, values: &[Vec<u8>]) {
+    put_u32(out, values.len() as u32);
+    for value in values {
+        put_u32(out, value.len() as u32);
+        out.extend_from_slice(value);
+    }
+}
+fn put_bits(out: &mut Vec<u8>, bits: &[bool]) {
+    put_u32(out, bits.len() as u32);
+    out.extend(bits.iter().map(|bit| *bit as u8));
+}
+
+struct BatchReader<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> BatchReader<'a> {
+    fn byte(&mut self) -> Result<u8, ExternalBatchFrameError> {
+        let value = *self
+            .bytes
+            .get(self.position)
+            .ok_or(ExternalBatchFrameError::Malformed)?;
+        self.position += 1;
+        Ok(value)
+    }
+    fn take(&mut self, len: usize) -> Result<&'a [u8], ExternalBatchFrameError> {
+        let end = self
+            .position
+            .checked_add(len)
+            .ok_or(ExternalBatchFrameError::TooLarge)?;
+        let slice = self
+            .bytes
+            .get(self.position..end)
+            .ok_or(ExternalBatchFrameError::Malformed)?;
+        self.position = end;
+        Ok(slice)
+    }
+    fn u32(&mut self) -> Result<u32, ExternalBatchFrameError> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+    fn u64(&mut self) -> Result<u64, ExternalBatchFrameError> {
+        let bytes = self.take(8)?;
+        Ok(u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+    fn array(&mut self) -> Result<[u8; 32], ExternalBatchFrameError> {
+        let bytes = self.take(32)?;
+        let mut out = [0; 32];
+        out.copy_from_slice(bytes);
+        Ok(out)
+    }
+    fn binding(&mut self) -> Result<ExternalBatchBinding, ExternalBatchFrameError> {
+        Ok(ExternalBatchBinding(self.array()?))
+    }
+    fn count(&mut self, maximum: usize) -> Result<usize, ExternalBatchFrameError> {
+        let count = usize::try_from(self.u32()?).map_err(|_| ExternalBatchFrameError::TooLarge)?;
+        if count > maximum {
+            Err(ExternalBatchFrameError::TooLarge)
+        } else {
+            Ok(count)
+        }
+    }
+    fn values(&mut self) -> Result<Vec<Vec<u8>>, ExternalBatchFrameError> {
+        let count = self.count(EXTERNAL_BATCH_MAX_VALUES)?;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            let len = self.count(EXTERNAL_BATCH_MAX_VALUE_BYTES)?;
+            values.push(self.take(len)?.to_vec());
+        }
+        Ok(values)
+    }
+    fn bits(&mut self) -> Result<Vec<bool>, ExternalBatchFrameError> {
+        let count = self.count(EXTERNAL_BATCH_MAX_VALUES)?;
+        let mut bits = Vec::with_capacity(count);
+        for _ in 0..count {
+            match self.byte()? {
+                0 => bits.push(false),
+                1 => bits.push(true),
+                _ => return Err(ExternalBatchFrameError::Malformed),
+            }
+        }
+        Ok(bits)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -134,6 +446,44 @@ mod tests {
             arg_polarity: Vec::new(),
             fallback_polarity: Vec::new(),
         }
+    }
+
+    #[test]
+    fn external_batch_frames_are_exact_bound_and_canonical() {
+        let manifest = ExternalBatchManifest::from_actions(
+            ExternalBoundaryId(9),
+            &[action(12, 3), action(13, 4)],
+        )
+        .unwrap();
+        let binding = manifest.bind([4; 32], [5; 32]);
+        let frame = ExternalBatchFrame::Manifest {
+            binding,
+            manifest: manifest.clone(),
+        };
+        let encoded = frame.encode();
+        let decoded = ExternalBatchFrame::decode(&encoded).unwrap();
+        assert_eq!(decoded, frame);
+        decoded.validate_manifest(&manifest, binding).unwrap();
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert_eq!(
+            ExternalBatchFrame::decode(&trailing),
+            Err(ExternalBatchFrameError::Malformed)
+        );
+        assert_eq!(
+            ExternalBatchFrame::Reveal {
+                binding,
+                request_id: 12,
+                labels: vec![vec![1, 2]],
+            }
+            .encode(),
+            ExternalBatchFrame::Reveal {
+                binding,
+                request_id: 12,
+                labels: vec![vec![1, 2]],
+            }
+            .encode()
+        );
     }
 
     #[test]
