@@ -3018,13 +3018,16 @@ export class LabelBatchDyn {
     if ((!__equals(BigInt(choices.length), BigInt(this.$fpairs.length)) || !__equals(BigInt(output.length), BigInt(this.$fpairs.length))))     {
       return new BatchError_LengthMismatch();
     }
-    for (const [[pair, choice], selected] of this.$fpairs.map((__a: any, __i: number) => [__a, choices[__i]] as [typeof __a, any]).map((__a: any, __i: number) => [__a, output[__i]] as [typeof __a, any]))     {
-      selected = (() => { if (choice) {
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(output.length); __zip_mut_2 += 1n) {
+      const pair = this.$fpairs[Number(__zip_mut_2)];
+      const choice = choices[Number(__zip_mut_2)];
+      {
+        output[Number(__zip_mut_2)] = (() => { if (choice) {
   return pair.$fone;
 } else {
   return pair.$fzero;
 } })();
-    }
+      }}
     return undefined;
   }
 }
@@ -3121,12 +3124,16 @@ export class Polynomial {
 
   add_assign(ring: any, other: any)
   {
-    for (const [left, right] of this.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$ffirst)[__zip_i]]))     {
-      left = add_mod(left, right, ring.$fparameters.$fplaintext_modulus);
-    }
-    for (const [left, right] of this.$fsecond.map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$fsecond)[__zip_i]]))     {
-      left = add_mod(left, right, ring.$fparameters.$fdelta);
-    }
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(this.$ffirst.length); __zip_mut_2 += 1n) {
+      const right = other.$ffirst[Number(__zip_mut_2)];
+      {
+        this.$ffirst[Number(__zip_mut_2)] = add_mod(this.$ffirst[Number(__zip_mut_2)], right, ring.$fparameters.$fplaintext_modulus);
+      }}
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(this.$fsecond.length); __zip_mut_2 += 1n) {
+      const right = other.$fsecond[Number(__zip_mut_2)];
+      {
+        this.$fsecond[Number(__zip_mut_2)] = add_mod(this.$fsecond[Number(__zip_mut_2)], right, ring.$fparameters.$fdelta);
+      }}
   }
 
   degree(): bigint
@@ -3136,27 +3143,35 @@ export class Polynomial {
 
   negate_assign(ring: any)
   {
-    for (const value of this.$ffirst)     {
-      if (!__equals(value, 0n))       {
-        value = fieldSub(ring.$fparameters.$fplaintext_modulus, value);
+    for (let __mut_2 = 0n; __mut_2 < BigInt(this.$ffirst.length); __mut_2 += 1n) {
+    {
+      if (!__equals(this.$ffirst[Number(__mut_2)], 0n))       {
+        this.$ffirst[Number(__mut_2)] = fieldSub(ring.$fparameters.$fplaintext_modulus, this.$ffirst[Number(__mut_2)]);
       }
-    }
-    for (const value of this.$fsecond)     {
-      if (!__equals(value, 0n))       {
-        value = fieldSub(ring.$fparameters.$fdelta, value);
+    }}
+    for (let __mut_2 = 0n; __mut_2 < BigInt(this.$fsecond.length); __mut_2 += 1n) {
+    {
+      if (!__equals(this.$fsecond[Number(__mut_2)], 0n))       {
+        this.$fsecond[Number(__mut_2)] = fieldSub(ring.$fparameters.$fdelta, this.$fsecond[Number(__mut_2)]);
       }
-    }
+    }}
   }
 
   product(ring: any, other: any): Polynomial
   {
     let output = ring.zero();
-    for (const [[output, left], right] of output.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (this.$ffirst)[__zip_i]]).map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$ffirst)[__zip_i]]))     {
-      output = mul_mod(left, right, ring.$fparameters.$fplaintext_modulus);
-    }
-    for (const [[output, left], right] of output.$fsecond.map((__zip_a: any, __zip_i: number) => [__zip_a, (this.$fsecond)[__zip_i]]).map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$fsecond)[__zip_i]]))     {
-      output = mul_mod(left, right, ring.$fparameters.$fdelta);
-    }
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(output.$ffirst.length); __zip_mut_2 += 1n) {
+      const left = this.$ffirst[Number(__zip_mut_2)];
+      const right = other.$ffirst[Number(__zip_mut_2)];
+      {
+        output.$ffirst[Number(__zip_mut_2)] = mul_mod(left, right, ring.$fparameters.$fplaintext_modulus);
+      }}
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(output.$fsecond.length); __zip_mut_2 += 1n) {
+      const left = this.$fsecond[Number(__zip_mut_2)];
+      const right = other.$fsecond[Number(__zip_mut_2)];
+      {
+        output.$fsecond[Number(__zip_mut_2)] = mul_mod(left, right, ring.$fparameters.$fdelta);
+      }}
     return output;
   }
 
@@ -3170,23 +3185,29 @@ export class Polynomial {
     const first = pow_mod((base % ring.$fparameters.$fplaintext_modulus), power, ring.$fparameters.$fplaintext_modulus);
     const second = pow_mod((base % ring.$fparameters.$fdelta), power, ring.$fparameters.$fdelta);
     let output = __clone(this);
-    for (const value of output.$ffirst)     {
-      value = mul_mod(value, first, ring.$fparameters.$fplaintext_modulus);
-    }
-    for (const value of output.$fsecond)     {
-      value = mul_mod(value, second, ring.$fparameters.$fdelta);
-    }
+    for (let __mut_2 = 0n; __mut_2 < BigInt(output.$ffirst.length); __mut_2 += 1n) {
+    {
+      output.$ffirst[Number(__mut_2)] = mul_mod(output.$ffirst[Number(__mut_2)], first, ring.$fparameters.$fplaintext_modulus);
+    }}
+    for (let __mut_2 = 0n; __mut_2 < BigInt(output.$fsecond.length); __mut_2 += 1n) {
+    {
+      output.$fsecond[Number(__mut_2)] = mul_mod(output.$fsecond[Number(__mut_2)], second, ring.$fparameters.$fdelta);
+    }}
     return output;
   }
 
   sub_assign(ring: any, other: any)
   {
-    for (const [left, right] of this.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$ffirst)[__zip_i]]))     {
-      left = sub_mod(left, right, ring.$fparameters.$fplaintext_modulus);
-    }
-    for (const [left, right] of this.$fsecond.map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$fsecond)[__zip_i]]))     {
-      left = sub_mod(left, right, ring.$fparameters.$fdelta);
-    }
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(this.$ffirst.length); __zip_mut_2 += 1n) {
+      const right = other.$ffirst[Number(__zip_mut_2)];
+      {
+        this.$ffirst[Number(__zip_mut_2)] = sub_mod(this.$ffirst[Number(__zip_mut_2)], right, ring.$fparameters.$fplaintext_modulus);
+      }}
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(this.$fsecond.length); __zip_mut_2 += 1n) {
+      const right = other.$fsecond[Number(__zip_mut_2)];
+      {
+        this.$fsecond[Number(__zip_mut_2)] = sub_mod(this.$fsecond[Number(__zip_mut_2)], right, ring.$fparameters.$fdelta);
+      }}
   }
 }
 
@@ -3350,9 +3371,11 @@ export class BatchSelect {
     const __volar_try_8 = this.lenc_eval(first.$flenc_ciphertext, tree);
     if (__volar_try_8 instanceof __VolarError) return __volar_try_8;
     const correction = __volar_try_8;
-    for (const [value, delta] of result.map((__zip_a: any, __zip_i: number) => [__zip_a, (correction)[__zip_i]]))     {
-      value.sub_assign(this.$fring, delta);
-    }
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(result.length); __zip_mut_2 += 1n) {
+      const delta = correction[Number(__zip_mut_2)];
+      {
+        value.sub_assign(this.$fring, delta);
+      }}
     return this.$fring.decode_messages(result);
   }
 
@@ -3375,10 +3398,11 @@ export class BatchSelect {
     const __volar_try_0 = this.$fring.encode_messages(l2);
     if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
     let messages = __volar_try_0;
-    for (const message of messages)     {
+    for (let __mut_2 = 0n; __mut_2 < BigInt(messages.length); __mut_2 += 1n) {
+    {
       const __volar_try_0 = this.$fring.add_noise(ctx, message, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
       if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
-    }
+    }}
     const __volar_try_2 = this.lhe_enc2(ctx, messages, random, noise);
     if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
     const [lhe_state, lhe_ciphertext] = __volar_try_2;
@@ -3477,10 +3501,11 @@ export class BatchSelect {
         }
       }
     }
-    for (const value of ciphertext)     {
+    for (let __mut_2 = 0n; __mut_2 < BigInt(ciphertext.length); __mut_2 += 1n) {
+    {
       const __volar_try_0 = this.$fring.add_noise(ctx, value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
       if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
-    }
+    }}
     return [random_vector, ciphertext];
   }
 
@@ -3627,12 +3652,16 @@ export class Ring {
     }
     this.$ffirst_ntt.forward(first);
     this.$fsecond_ntt.forward(second);
-    for (const [destination, error] of value.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (first)[__zip_i]]))     {
-      destination = add_mod(destination, error, this.$fparameters.$fplaintext_modulus);
-    }
-    for (const [destination, error] of value.$fsecond.map((__zip_a: any, __zip_i: number) => [__zip_a, (second)[__zip_i]]))     {
-      destination = add_mod(destination, error, this.$fparameters.$fdelta);
-    }
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(value.$ffirst.length); __zip_mut_2 += 1n) {
+      const error = first[Number(__zip_mut_2)];
+      {
+        value.$ffirst[Number(__zip_mut_2)] = add_mod(value.$ffirst[Number(__zip_mut_2)], error, this.$fparameters.$fplaintext_modulus);
+      }}
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(value.$fsecond.length); __zip_mut_2 += 1n) {
+      const error = second[Number(__zip_mut_2)];
+      {
+        value.$fsecond[Number(__zip_mut_2)] = add_mod(value.$fsecond[Number(__zip_mut_2)], error, this.$fparameters.$fdelta);
+      }}
     return undefined;
   }
 
@@ -3693,20 +3722,22 @@ export class Ring {
     let digits: Vec<Polynomial> = Array.from({length: Number(this.$fparameters.$fgadget_digits - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => this.zero());
     for (let index = 0n; index < this.$fparameters.$fdegree; index += 1n)     {
       let combined = this.combine(first[Number(index)], second[Number(index)]);
-      for (const digit of digits)       {
+      for (let __mut_3 = 0n; __mut_3 < BigInt(digits.length); __mut_3 += 1n) {
+      {
         const part = BigInt((combined % (this.$fparameters.$fgadget_base as unknown as bigint)));
         digit.$ffirst[Number(index)] = (part % this.$fparameters.$fplaintext_modulus);
         digit.$fsecond[Number(index)] = (part % this.$fparameters.$fdelta);
         combined /= (this.$fparameters.$fgadget_base as unknown as bigint);
-      }
+      }}
       if (!__equals(combined, 0n))       {
         return new Error_Arithmetic();
       }
     }
-    for (const digit of digits)     {
+    for (let __mut_2 = 0n; __mut_2 < BigInt(digits.length); __mut_2 += 1n) {
+    {
       this.$ffirst_ntt.forward(digit.$ffirst);
       this.$fsecond_ntt.forward(digit.$fsecond);
-    }
+    }}
     return digits;
   }
 
@@ -3718,11 +3749,13 @@ export class Ring {
     let output = ([] as any[]);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
       let value = this.zero();
-      for (const [[first, second], choice] of value.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (value.$fsecond)[__zip_i]]).map((__zip_a: any, __zip_i: number) => [__zip_a, (chunk)[__zip_i]]))       {
-        const choice_1 = u64.from(choice);
-        first = choice_1;
-        second = choice_1;
-      }
+      for (let __zip_mut_3 = 0n; __zip_mut_3 < BigInt(value.$ffirst.length); __zip_mut_3 += 1n) {
+        const choice = chunk[Number(__zip_mut_3)];
+        {
+          const choice_1 = u64.from(choice);
+          value.$ffirst[Number(__zip_mut_3)] = choice_1;
+          second = choice_1;
+        }}
       this.$ffirst_ntt.inverse(value.$fsecond);
       this.$fsecond_ntt.forward(value.$fsecond);
       (output).push(value);
@@ -3741,9 +3774,11 @@ export class Ring {
     let output = ([] as any[]);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
       let value = this.zero();
-      for (const [slot, message] of value.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (chunk)[__zip_i]]))       {
-        slot = mul_mod(message, (this.$fparameters.$fdelta % this.$fparameters.$fplaintext_modulus), this.$fparameters.$fplaintext_modulus);
-      }
+      for (let __zip_mut_3 = 0n; __zip_mut_3 < BigInt(value.$ffirst.length); __zip_mut_3 += 1n) {
+        const message = chunk[Number(__zip_mut_3)];
+        {
+          value.$ffirst[Number(__zip_mut_3)] = mul_mod(message, (this.$fparameters.$fdelta % this.$fparameters.$fplaintext_modulus), this.$fparameters.$fplaintext_modulus);
+        }}
       (output).push(value);
     }
     return output;
@@ -5109,9 +5144,10 @@ export class OtStack {
   {
     const m = params.seed_cot_count(false);
     let bits = [] as any[];
-    for (const b of bits)     {
-      b = __equals(fieldBitand(rng_r.next_u32(), 1n), 1n);
-    }
+    for (let __mut_2 = 0n; __mut_2 < BigInt(bits.length); __mut_2 += 1n) {
+    {
+      bits[Number(__mut_2)] = __equals(fieldBitand(rng_r.next_u32(), 1n), 1n);
+    }}
     let delta_msg = Array.from({length: Number(16n)}, () => 0n);
     for (const chunk of __chunks(delta_msg, Number(4n)))     {
       (chunk).splice(0, ([(rng_s.next_u32()) & 0xFFn, ((rng_s.next_u32()) >> 8n) & 0xFFn, ((rng_s.next_u32()) >> 16n) & 0xFFn, ((rng_s.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))).length, ...([(rng_s.next_u32()) & 0xFFn, ((rng_s.next_u32()) >> 8n) & 0xFFn, ((rng_s.next_u32()) >> 16n) & 0xFFn, ((rng_s.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))));
@@ -5298,10 +5334,10 @@ export class Ed25519 {
   static random_scalar<R>(rng: any): bigint[]
   {
     let k = Array.from({length: Number(32n)}, () => 0n);
-    for (let __mut_2 = 0n; __mut_2 < BigInt(k.length); __mut_2 += 1n) {
-    {
-      k[Number(__mut_2)] = rng.next_u8();
-    }}
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(k.length); __zip_mut_2 += 1n) {
+      {
+        k[Number(__zip_mut_2)] = rng.next_u8();
+      }}
     k[Number(31n)] = fieldBitand(k[Number(31n)], 63n);
     return k;
   }
@@ -5799,10 +5835,10 @@ export function binfhe_gen_lwe_secret_key<R>(n: bigint, rng: any): BinfheLweSecr
 export function binfhe_gen_rlwe_secret_key<R>(n: bigint, rng: any): BinfheRlweSecretKeyDyn
 {
   let key = Array.from({length: Number(n)}, () => 0n);
-  for (let __mut_1 = 0n; __mut_1 < BigInt(key.length); __mut_1 += 1n) {
-  {
-    key[Number(__mut_1)] = Number(fieldBitand(rng.next_u32(), 1n));
-  }}
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(key.length); __zip_mut_1 += 1n) {
+    {
+      key[Number(__zip_mut_1)] = Number(fieldBitand(rng.next_u32(), 1n));
+    }}
   return new BinfheRlweSecretKeyDyn({ $fkey: key, $fn: 0n });
 }
 
@@ -5895,10 +5931,10 @@ export function binfhe_lwe_encrypt<R>(n: bigint, log_m: bigint, eta: bigint, m: 
 export function binfhe_lwe_encrypt_raw<R>(n: bigint, log_m: bigint, eta: bigint, msg: bigint, sk: BinfheLweSecretKeyDyn, rng: any): BinfheLweCiphertextDyn
 {
   let a = Array.from({length: Number(n)}, () => 0n);
-  for (let __mut_1 = 0n; __mut_1 < BigInt(a.length); __mut_1 += 1n) {
-  {
-    a[Number(__mut_1)] = reduce(rng.next_u32());
-  }}
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(a.length); __zip_mut_1 += 1n) {
+    {
+      a[Number(__zip_mut_1)] = reduce(rng.next_u32());
+    }}
   let dot = 0n;
   for (let i = 0n; i < n; i += 1n)   {
     dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.$fkey[Number(i)])))), 32);
@@ -5965,10 +6001,10 @@ export function binfhe_poly_mul_neg(n: bigint, log: bigint, a: bigint[], b: bigi
       }
     }
   }
-  for (let __mut_1 = 0n; __mut_1 < BigInt(result.length); __mut_1 += 1n) {
-  {
-    result[Number(__mut_1)] = reduce(result[Number(__mut_1)]);
-  }}
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(result.length); __zip_mut_1 += 1n) {
+    {
+      result[Number(__zip_mut_1)] = reduce(result[Number(__zip_mut_1)]);
+    }}
   return result;
 }
 
@@ -5986,10 +6022,10 @@ export function binfhe_poly_rotate(n: bigint, log: bigint, p: bigint[], exp: big
       result[Number(fieldSub(dest, fieldMul(2n, n)))] = wrappingAdd(result[Number(fieldSub(dest, fieldMul(2n, n)))], coeff, 32);
     }
   }
-  for (let __mut_1 = 0n; __mut_1 < BigInt(result.length); __mut_1 += 1n) {
-  {
-    result[Number(__mut_1)] = reduce(result[Number(__mut_1)]);
-  }}
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(result.length); __zip_mut_1 += 1n) {
+    {
+      result[Number(__zip_mut_1)] = reduce(result[Number(__zip_mut_1)]);
+    }}
   return result;
 }
 
@@ -6169,10 +6205,11 @@ export function build_buckets(seed: bigint[], n: bigint, m: bigint): Vec<Vec<big
       (buckets[Number(j)]).push(x);
     }
   }
-  for (const b of buckets)   {
+  for (let __mut_1 = 0n; __mut_1 < BigInt(buckets.length); __mut_1 += 1n) {
+  {
     b.sort_unstable();
     b.dedup();
-  }
+  }}
   return buckets;
 }
 
@@ -7895,20 +7932,20 @@ export function gen_circuit_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, l
 export function gen_lwe_secret_key<R>(n_lwe: bigint, rng: any): LweSecretKeyDyn
 {
   let key = Array.from({length: Number(n_lwe)}, () => 0n);
-  for (let __mut_1 = 0n; __mut_1 < BigInt(key.length); __mut_1 += 1n) {
-  {
-    key[Number(__mut_1)] = ((fieldBitand(rng.next_u8(), 1n)) & 0xFFn);
-  }}
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(key.length); __zip_mut_1 += 1n) {
+    {
+      key[Number(__zip_mut_1)] = ((fieldBitand(rng.next_u8(), 1n)) & 0xFFn);
+    }}
   return new LweSecretKeyDyn({ $fkey: key, $fn_lwe: 0n });
 }
 
 export function gen_rlwe_secret_key<R>(big_n: bigint, rng: any): RlweSecretKeyDyn
 {
   let key = Array.from({length: Number(big_n)}, () => 0n);
-  for (let __mut_1 = 0n; __mut_1 < BigInt(key.length); __mut_1 += 1n) {
-  {
-    key[Number(__mut_1)] = Number(fieldBitand(rng.next_u8(), 1n));
-  }}
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(key.length); __zip_mut_1 += 1n) {
+    {
+      key[Number(__zip_mut_1)] = Number(fieldBitand(rng.next_u8(), 1n));
+    }}
   return new RlweSecretKeyDyn({ $fkey: key, $fbig_n: 0n });
 }
 
@@ -8495,10 +8532,10 @@ export function key_switch(n_lwe: bigint, big_n: bigint, ks_ell: bigint, ks_bg_l
 export function keygen(rng: any): [FaestSecretKey, FaestPublicKey]
 {
   let sk = Array.from({length: Number(LAMBDA_BYTES)}, () => 0n);
-  for (let __mut_1 = 0n; __mut_1 < BigInt(sk.length); __mut_1 += 1n) {
-  {
-    sk[Number(__mut_1)] = rng.next_u8();
-  }}
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(sk.length); __zip_mut_1 += 1n) {
+    {
+      sk[Number(__zip_mut_1)] = rng.next_u8();
+    }}
   const pk = aes128_encrypt(sk, Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
   return [new FaestSecretKey(sk), new FaestPublicKey(pk)];
 }
@@ -8588,10 +8625,10 @@ export function lwe_decrypt(n_lwe: bigint, ct: LweCiphertextDyn, sk: LweSecretKe
 export function lwe_encrypt<R>(n_lwe: bigint, m: boolean, sk: LweSecretKeyDyn, noise_bits: bigint, rng: any): LweCiphertextDyn
 {
   let a = Array.from({length: Number(n_lwe)}, () => 0n);
-  for (let __mut_1 = 0n; __mut_1 < BigInt(a.length); __mut_1 += 1n) {
-  {
-    a[Number(__mut_1)] = rng.next_u32();
-  }}
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(a.length); __zip_mut_1 += 1n) {
+    {
+      a[Number(__zip_mut_1)] = rng.next_u32();
+    }}
   let dot: bigint = 0n;
   for (let i = 0n; i < n_lwe; i += 1n)   {
     dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.$fkey[Number(i)])))), 32);
@@ -8609,10 +8646,10 @@ export function lwe_encrypt<R>(n_lwe: bigint, m: boolean, sk: LweSecretKeyDyn, n
 export function lwe_encrypt_raw<R>(n_lwe: bigint, msg: bigint, sk: LweSecretKeyDyn, noise_bits: bigint, rng: any): LweCiphertextDyn
 {
   let a = Array.from({length: Number(n_lwe)}, () => 0n);
-  for (let __mut_1 = 0n; __mut_1 < BigInt(a.length); __mut_1 += 1n) {
-  {
-    a[Number(__mut_1)] = rng.next_u32();
-  }}
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(a.length); __zip_mut_1 += 1n) {
+    {
+      a[Number(__zip_mut_1)] = rng.next_u32();
+    }}
   let dot: bigint = 0n;
   for (let i = 0n; i < n_lwe; i += 1n)   {
     dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.$fkey[Number(i)])))), 32);
@@ -9955,9 +9992,10 @@ export function stack_setup_receiver<R, Io>(ctx: { newD: () => any }, rng: any, 
   let delta_msg = Array.from({length: Number(16n)}, () => 0n);
   (delta_msg).splice(0, (delta_raw).length, ...(delta_raw));
   let bits = [] as any[];
-  for (const b of bits)   {
-    b = __equals(fieldBitand(rng.next_u32(), 1n), 1n);
-  }
+  for (let __mut_1 = 0n; __mut_1 < BigInt(bits.length); __mut_1 += 1n) {
+  {
+    bits[Number(__mut_1)] = __equals(fieldBitand(rng.next_u32(), 1n), 1n);
+  }}
   let seeds_0 = Array.from({length: Number(IKNP_KAPPA)}, () => Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n));
   let seeds_1 = Array.from({length: Number(IKNP_KAPPA)}, () => Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n));
   for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {

@@ -1388,6 +1388,79 @@ struct MutRef {
     index_var: String,
 }
 
+/// Flatten a zip-chain into its leaf collection expressions. The bool marks a
+/// leaf originating from `iter_mut()`: that loop variable must be represented as
+/// a `MutRef`, not a copied `const` value, so `*var = rhs` writes through.
+fn zip_leaf_collections<'a>(chain: &'a IrIterChain, out: &mut Vec<(&'a IrExpr, bool)>) {
+    match &chain.source {
+        IterChainSource::Zip { left, right } => {
+            zip_leaf_collections(left, out);
+            zip_leaf_collections(right, out);
+        }
+        IterChainSource::Method { collection, .. } => {
+            if let IrExprKind::MethodCall { receiver, method, args, .. } = &collection.kind {
+                if matches!(method, MethodKind::Other(s) if s == "iter_mut") && args.is_empty() {
+                    out.push((receiver, true));
+                    return;
+                }
+            }
+            out.push((collection, false));
+        }
+        // A Range cannot carry a mutable iterator reference, and should use the
+        // ordinary for-of emission rather than this indexed zip lowering.
+        IterChainSource::Range { .. } => {}
+    }
+}
+
+/// Flatten an all-identifier tuple pattern in the same left-to-right order as
+/// zip_leaf_collections. `None` means a non-identifier pattern we cannot safely
+/// lower with indexed zip write-back.
+fn zip_pattern_names(pat: &IrPattern, out: &mut Vec<String>) -> bool {
+    match pat {
+        IrPattern::Ident { name, .. } => {
+            out.push(name.clone());
+            true
+        }
+        IrPattern::Tuple(parts) => parts.iter().all(|p| zip_pattern_names(p, out)),
+        IrPattern::Ref { pat, .. } => zip_pattern_names(pat, out),
+        _ => false,
+    }
+}
+
+/// Flatten source-level `.zip(..)` method-call trees. Unlike `IterPipeline`,
+/// this is the representation used by ordinary Rust `for` loops before the TS
+/// printer's generic zip-to-`.map()` fallback. The bool marks an `iter_mut`
+/// leaf which must remain a write-through reference.
+fn zip_method_leaves<'a>(expr: &'a IrExpr, out: &mut Vec<(&'a IrExpr, bool)>) -> bool {
+    match &expr.kind {
+        IrExprKind::MethodCall { receiver, method, args, .. } => {
+            if matches!(method, MethodKind::Other(name) if name == "zip") && args.len() == 1 {
+                return zip_method_leaves(receiver, out) && zip_method_leaves(&args[0], out);
+            }
+            if matches!(method, MethodKind::Other(name) if name == "iter_mut") && args.is_empty() {
+                out.push((receiver, true));
+                return true;
+            }
+            if matches!(method, MethodKind::Other(name) if name == "iter") && args.is_empty() {
+                out.push((receiver, false));
+                return true;
+            }
+        }
+        // `chunk.iter()` is stored as an IterPipeline rather than a MethodCall;
+        // its source collection is the indexable leaf.
+        IrExprKind::IterPipeline(chain) if chain.steps.is_empty() => {
+            if let IterChainSource::Method { collection, .. } = &chain.source {
+                out.push((collection, false));
+                return true;
+            }
+        }
+        _ => {}
+    }
+    // A leaf that's already a collection can still be indexed as-is. Do not mark it mutable.
+    out.push((expr, false));
+    true
+}
+
 /// Immutable context passed to every TS writer.
 struct TsContext<'a> {
     /// Per-function witness needs keyed by IrPath (`module_path + name`) for
@@ -3275,6 +3348,227 @@ fn emit_statement_expr(
             collection,
             body,
         } => {
+            // `values.iter_mut().enumerate()` lowers to an IterPipeline. Its
+            // `for (index, value)` pattern needs the second binding to remain a
+            // write-through reference, not a copied `const` pair.
+            if let IrExprKind::IterPipeline(chain) = &collection.kind {
+                if let IterChainSource::Method { collection: source, .. } = &chain.source {
+                    if let IrExprKind::MethodCall {
+                        receiver: mutable_source,
+                        method: MethodKind::Other(iter_mut_method),
+                        args,
+                        ..
+                    } = &source.kind
+                    {
+                        if iter_mut_method == "iter_mut" && args.is_empty()
+                            && chain.steps.iter().any(|s| matches!(s, IterStep::Enumerate))
+                        {
+                            if let IrPattern::Tuple(parts) = pattern {
+                                if parts.len() == 2 {
+                                    if let (
+                                        IrPattern::Ident { name: index_name, .. },
+                                        IrPattern::Ident { name: value_name, .. },
+                                    ) = (&parts[0], &parts[1])
+                                    {
+                                        let idx_var = format!("__mut_{}", indent);
+                                        let arr_str = format!(
+                                            "{}",
+                                            TsFmt(TsExprWriter { expr: mutable_source }, cx)
+                                        );
+                                        let cx_body = cx.with_mut_ref(MutRef {
+                                            var: value_name.clone(),
+                                            array_expr: arr_str.clone(),
+                                            index_var: idx_var.clone(),
+                                        });
+                                        writeln!(
+                                            f,
+                                            "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
+                                            idx_var, idx_var, arr_str, idx_var
+                                        )?;
+                                        let bind_ind = "  ".repeat(indent + 1);
+                                        writeln!(
+                                            f,
+                                            "{}const {} = {};",
+                                            bind_ind, index_name, idx_var
+                                        )?;
+                                        TsBlockWriter { block: body, indent: indent + 1 }
+                                            .ts_fmt(f, &cx_body)?;
+                                        write!(f, "}}")?;
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // A source-level `.iter_mut().zip(..)` is represented as nested
+            // MethodCall nodes (not an IterPipeline). Flatten it and index every
+            // leaf in lockstep so each mutable leaf is a write-through MutRef.
+            let mut method_leaves = Vec::new();
+            if zip_method_leaves(collection, &mut method_leaves) {
+                let mut names = Vec::new();
+                let mutable_leaf = method_leaves.iter().position(|(_, is_mut)| *is_mut);
+                if zip_pattern_names(pattern, &mut names)
+                    && method_leaves.len() == names.len()
+                    && mutable_leaf.is_some()
+                {
+                    let mutable_leaf = mutable_leaf.unwrap();
+                    let idx_var = format!("__zip_mut_{}", indent);
+                    let mut_arr = format!(
+                        "{}",
+                        TsFmt(TsExprWriter { expr: method_leaves[mutable_leaf].0 }, cx)
+                    );
+                    let cx_body = cx.with_mut_ref(MutRef {
+                        var: names[mutable_leaf].clone(),
+                        array_expr: mut_arr.clone(),
+                        index_var: idx_var.clone(),
+                    });
+                    writeln!(
+                        f,
+                        "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
+                        idx_var, idx_var, mut_arr, idx_var
+                    )?;
+                    let bind_ind = "  ".repeat(indent + 1);
+                    for (i, (source, is_mut)) in method_leaves.iter().enumerate() {
+                        if *is_mut {
+                            continue;
+                        }
+                        write!(f, "{}const {} = ", bind_ind, names[i])?;
+                        TsExprWriter { expr: source }.ts_fmt(f, cx)?;
+                        writeln!(f, "[Number({})];", idx_var)?;
+                    }
+                    TsBlockWriter { block: body, indent: indent + 1 }
+                        .ts_fmt(f, &cx_body)?;
+                    write!(f, "}}")?;
+                    return Ok(());
+                }
+            }
+            // A zip chain containing `iter_mut()` needs indexed emission too: a
+            // for-of zip copies its elements into `const` bindings, so `*left =`
+            // both fails to type-check and loses the write. Flatten the zip into
+            // parallel indexed collections, then register the mutable leaf as a
+            // MutRef so assignment dereferences write through to the source array.
+            if let IrExprKind::IterPipeline(chain) = &collection.kind {
+                let mut leaves = Vec::new();
+                zip_leaf_collections(chain, &mut leaves);
+                let mut names = Vec::new();
+                let patterns_ok = zip_pattern_names(pattern, &mut names);
+                let mutable_leaf = leaves.iter().position(|(_, is_mut)| *is_mut);
+                if patterns_ok && leaves.len() == names.len() && mutable_leaf.is_some() {
+                    let mutable_leaf = mutable_leaf.unwrap();
+                    let idx_var = format!("__zip_mut_{}", indent);
+                    let mut_arr = format!("{}", TsFmt(TsExprWriter { expr: leaves[mutable_leaf].0 }, cx));
+                    let mut cx_body = cx.with_mut_ref(MutRef {
+                        var: names[mutable_leaf].clone(),
+                        array_expr: mut_arr.clone(),
+                        index_var: idx_var.clone(),
+                    });
+                    writeln!(
+                        f,
+                        "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
+                        idx_var, idx_var, mut_arr, idx_var
+                    )?;
+                    let bind_ind = "  ".repeat(indent + 1);
+                    for (i, (source, is_mut)) in leaves.iter().enumerate() {
+                        if *is_mut {
+                            continue;
+                        }
+                        write!(f, "{}const {} = ", bind_ind, names[i])?;
+                        TsExprWriter { expr: source }.ts_fmt(f, cx)?;
+                        writeln!(f, "[Number({})];", idx_var)?;
+                    }
+                    TsBlockWriter {
+                        block: body,
+                        indent: indent + 1,
+                    }
+                    .ts_fmt(f, &cx_body)?;
+                    write!(f, "}}")?;
+                    return Ok(());
+                }
+            }
+            // A Rust `for value in &mut array` arrives as a RefMut collection,
+            // not an explicit `iter_mut()` call. Emit it through the same indexed
+            // mutable-reference path so assignment writes back to the array.
+            if let IrExprKind::Unary {
+                op: SpecUnaryOp::RefMut,
+                expr: mutable_source,
+            } = &collection.kind
+            {
+                if let IrPattern::Ident { name, .. } = pattern {
+                    let arr_str = format!("{}", TsFmt(TsExprWriter { expr: mutable_source }, cx));
+                    let idx_var = format!("__mut_{}", indent);
+                    let cx_body = cx.with_mut_ref(MutRef {
+                        var: name.clone(),
+                        array_expr: arr_str.clone(),
+                        index_var: idx_var.clone(),
+                    });
+                    writeln!(
+                        f,
+                        "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
+                        idx_var, idx_var, arr_str, idx_var
+                    )?;
+                    TsBlockWriter { block: body, indent }
+                        .ts_fmt(f, &cx_body)?;
+                    write!(f, "}}")?;
+                    return Ok(());
+                }
+            }
+            // Direct `iter_mut().zip(other.iter())`: preserve the left source's
+            // write-back by indexing both arrays rather than copying a `const` pair.
+            if let IrExprKind::MethodCall {
+                receiver,
+                method: MethodKind::Other(zip_method),
+                args,
+                ..
+            } = &collection.kind
+            {
+                if zip_method == "zip" && args.len() == 1 {
+                    if let IrExprKind::MethodCall {
+                        receiver: mutable_source,
+                        method: MethodKind::Other(iter_mut_method),
+                        args: mutable_args,
+                        ..
+                    } = &receiver.kind
+                    {
+                        if iter_mut_method == "iter_mut" && mutable_args.is_empty() {
+                            if let IrPattern::Tuple(parts) = pattern {
+                                if parts.len() == 2 {
+                                    if let (
+                                        IrPattern::Ident { name: left_name, .. },
+                                        IrPattern::Ident { name: right_name, .. },
+                                    ) = (&parts[0], &parts[1])
+                                    {
+                                        let idx_var = format!("__zip_mut_{}", indent);
+                                        let arr_str = format!(
+                                            "{}",
+                                            TsFmt(TsExprWriter { expr: mutable_source }, cx)
+                                        );
+                                        let cx_body = cx.with_mut_ref(MutRef {
+                                            var: left_name.clone(),
+                                            array_expr: arr_str.clone(),
+                                            index_var: idx_var.clone(),
+                                        });
+                                        writeln!(
+                                            f,
+                                            "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
+                                            idx_var, idx_var, arr_str, idx_var
+                                        )?;
+                                        let bind_ind = "  ".repeat(indent + 1);
+                                        write!(f, "{}const {} = ", bind_ind, right_name)?;
+                                        TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+                                        writeln!(f, "[Number({})];", idx_var)?;
+                                        TsBlockWriter { block: body, indent: indent + 1 }
+                                            .ts_fmt(f, &cx_body)?;
+                                        write!(f, "}}")?;
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // `iter_mut()`: lower to an indexed loop with mutable-reference semantics.
             // The {"*": value} shape is used conceptually; writes go through to the array
             // via index tracking (ad-hoc optimization: direct indexed write, not getter/setter).
@@ -3367,20 +3661,27 @@ fn emit_statement_expr(
             TsBlockWriter { block: b, indent }.ts_fmt(f, cx)?;
         }
         IrExprKind::Assign { left, right } => {
-            // `*byte = expr` where byte is a mutable ref → `arr[Number(i)] = expr`
-            if let IrExprKind::Unary {
-                op: SpecUnaryOp::Deref,
-                expr: inner,
-            } = &left.kind
-            {
-                if let IrExprKind::Var(v) = &inner.kind {
-                    if let Some(r) = cx.find_mut_ref(v) {
-                        let arr = r.array_expr.clone();
-                        let idx = r.index_var.clone();
-                        write!(f, "{}[Number({})] = ", arr, idx)?;
-                        TsExprWriter { expr: right }.ts_fmt(f, cx)?;
-                        return write!(f, ";");
-                    }
+            // `*byte = expr` where byte is a mutable ref → `arr[Number(i)] = expr`.
+            // Dyn lowering may already have erased the deref, leaving `byte = expr`;
+            // a name registered in `mut_refs` is still unambiguously write-through.
+            let mut_ref_name = match &left.kind {
+                IrExprKind::Unary {
+                    op: SpecUnaryOp::Deref,
+                    expr: inner,
+                } => match &inner.kind {
+                    IrExprKind::Var(v) => Some(v.as_str()),
+                    _ => None,
+                },
+                IrExprKind::Var(v) => Some(v.as_str()),
+                _ => None,
+            };
+            if let Some(v) = mut_ref_name {
+                if let Some(r) = cx.find_mut_ref(v) {
+                    let arr = r.array_expr.clone();
+                    let idx = r.index_var.clone();
+                    write!(f, "{}[Number({})] = ", arr, idx)?;
+                    TsExprWriter { expr: right }.ts_fmt(f, cx)?;
+                    return write!(f, ";");
                 }
             }
             TsExprWriter { expr: left }.ts_fmt(f, cx)?;
