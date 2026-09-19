@@ -5648,6 +5648,7 @@ export function binfhe_blind_rotate(n_lwe: bigint, big_n: bigint, log_q: bigint,
 
 export function binfhe_cmux(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, k_max: bigint, sel: BinfheLweCiphertextDyn, a: BinfheLweCiphertextDyn, b: BinfheLweCiphertextDyn, bk: BinfheBootstrappingKeyDyn): BinfheLweCiphertextDyn
 {
+  const TABLE: boolean[] = [false, false, false, true, true, false, true, true];
   return binfhe_lut_read_dyn([sel, a, b], TABLE, k_max, bk);
 }
 
@@ -6491,6 +6492,7 @@ export function decode_iknp_u(bytes: bigint[]): IknpUMsg
 
 export function decode_label_16(elements: bigint[]): Result<bigint[], LabelEncodingError>
 {
+  const WIDTHS: bigint[] = [48n, 48n, 32n];
   const modulus = REFERENCE_PLAINTEXT_MODULUS;
   let label = Array.from({length: Number(16n)}, () => 0n);
   let offset = 0n;
@@ -7366,6 +7368,7 @@ export function fe_sq(a: any): Fe25519
 
 export function fe_sqrt(w: any): (Fe25519 | undefined)
 {
+  const E: bigint[] = [18446744073709551614n, 18446744073709551615n, 18446744073709551615n, 1152921504606846975n];
   const c = fe_pow(w, E);
   const c2 = fe_sq(c);
   return (() => { if (__equals(c2, w)) {
@@ -9749,6 +9752,7 @@ export function split_cot_chunks<T>(flat: T[], heights: bigint[]): Vec<Vec<T>>
 
 export function sqrt_m1(): Fe25519
 {
+  const E: bigint[] = [18446744073709551611n, 18446744073709551615n, 18446744073709551615n, 2305843009213693951n];
   return fe_pow(new Fe25519([2n, 0n, 0n, 0n]), E);
 }
 

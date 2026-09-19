@@ -2209,6 +2209,23 @@ fn convert_block(block: &syn::Block) -> Result<IrBlock> {
                     ));
                 }
             }
+            // Function-local `const X: T = ...;` — semantically an immutable
+            // binding in this position; emit as a `let` so references resolve.
+            // (Previously the catch-all below silently dropped it, leaving
+            // dangling references — a parse-gap.)
+            syn::Stmt::Item(syn::Item::Const(c)) => {
+                let ty = convert_type(&c.ty).ok();
+                let init = convert_expr(&c.expr)?;
+                stmts.push(volar_ir_common::Node::new(
+                    IrStmtKind::Let {
+                        pattern: IrPattern::ident(c.ident.to_string()),
+                        ty,
+                        init: Some(init),
+                    },
+                    (),
+                    None,
+                ));
+            }
             _ => {}
         }
     }

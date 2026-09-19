@@ -6143,6 +6143,7 @@ pub fn binfhe_gate_xor(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut
 
 pub fn binfhe_cmux(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut sel: BinfheLweCiphertextDyn, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
+    let TABLE: [bool; 8] = vec![false, false, false, true, true, false, true, true];
     binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&vec![sel, a, b], &TABLE, k_max, bk)
 }
 
@@ -6595,6 +6596,7 @@ pub fn encode_label_16(mut label: [u8; 16]) -> [u64; 3]
 
 pub fn decode_label_16(mut elements: [u64; 3]) -> Result<[u8; 16], LabelEncodingError>
 {
+    let WIDTHS: [u32; 3] = vec![48, 48, 32];
     let modulus = ring_lwe::REFERENCE_PLAINTEXT_MODULUS;
     let mut label = [0; 16];
     let mut offset = 0;
@@ -9237,11 +9239,13 @@ pub fn fe_pow(mut base: &Fe25519, mut exp: &[u64; 4]) -> Fe25519
 
 pub fn sqrt_m1() -> Fe25519
 {
+    let E: [u64; 4] = vec![18446744073709551611, 18446744073709551615, 18446744073709551615, 2305843009213693951];
     fe_pow(&Fe25519(vec![2, 0, 0, 0]), &E)
 }
 
 pub fn fe_sqrt(mut w: &Fe25519) -> Option<Fe25519>
 {
+    let E: [u64; 4] = vec![18446744073709551614, 18446744073709551615, 18446744073709551615, 1152921504606846975];
     let c = fe_pow(w, &E);
     let c2 = fe_sq(&c);
     if c2 == *w{
