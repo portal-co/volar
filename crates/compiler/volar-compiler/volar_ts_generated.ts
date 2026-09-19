@@ -2511,7 +2511,7 @@ return (() => {
     return new PlanError_BadReference();
   }
   const arity = Math.clz32((() => { const __tz = Number(BigInt(this.$fluts[Number(BigInt(table))].$fentries.length)) | 0; return (__tz & -__tz) | 0; })());
-  if (((!__equals(BigInt(inputs.length), BigInt(arity)) || inputs.any((w) => (w >= wires))) || !__equals(out, wires)))   {
+  if (((!__equals(BigInt(inputs.length), BigInt(arity)) || inputs.some((w) => (w >= wires))) || !__equals(out, wires)))   {
     return new PlanError_BadReference();
   }
   wires = fieldAdd(wires, 1n);
@@ -2534,7 +2534,7 @@ return (() => {
 })(); } })();
       }
     }
-    if ((this.$foutputs.any((w) => (w >= wires)) || this.$fcell_outputs.any((c) => (c >= cells))))     {
+    if ((this.$foutputs.some((w) => (w >= wires)) || this.$fcell_outputs.some((c) => (c >= cells))))     {
       return new PlanError_BadOutput();
     }
     const count = this.bootstrap_op_count();
@@ -2835,7 +2835,7 @@ export class EncodedLabelBatch {
     if (!__equals((BigInt(selected.length) % 3n), 0n))     {
       return new LabelBatchDecodeError_LengthMismatch();
     }
-    return selected.chunks_exact(3n).map((chunk: any) => (() => {
+    return __chunks(selected, Number(3n)).filter((__chunk: any) => __chunk.length === Number(3n)).map((chunk: any) => (() => {
   return decode_label_16([chunk[Number(0n)], chunk[Number(1n)], chunk[Number(2n)]]);
 })());
   }
@@ -3325,7 +3325,7 @@ export class BatchSelect {
   check_first(first: any): Result<void, Error>
   {
     const p = this.$fring.$fparameters;
-    if ((((!__equals(BigInt(first.$flhe_state.length), p.$fgadget_digits) || !__equals(BigInt(first.$flhe_ciphertext.length), fieldMul(p.$fwidth, p.$fgadget_digits))) || !__equals(BigInt(first.$flenc_ciphertext.length), fieldMul(fieldMul(fieldMul(p.levels(), p.$fwidth), 2n), p.$fgadget_digits))) || first.$flhe_state.concat(first.$flhe_ciphertext).concat(first.$flenc_ciphertext).any((poly) => !__equals(poly.degree(), p.$fdegree))))     {
+    if ((((!__equals(BigInt(first.$flhe_state.length), p.$fgadget_digits) || !__equals(BigInt(first.$flhe_ciphertext.length), fieldMul(p.$fwidth, p.$fgadget_digits))) || !__equals(BigInt(first.$flenc_ciphertext.length), fieldMul(fieldMul(fieldMul(p.levels(), p.$fwidth), 2n), p.$fgadget_digits))) || first.$flhe_state.concat(first.$flhe_ciphertext).concat(first.$flenc_ciphertext).some((poly) => !__equals(poly.degree(), p.$fdegree))))     {
       return new Error_LengthMismatch();
     }
     return undefined;
@@ -3334,7 +3334,7 @@ export class BatchSelect {
   check_second(second: any): Result<void, Error>
   {
     const p = this.$fring.$fparameters;
-    if (((!__equals(BigInt(second.$flhe_ciphertext.length), p.$fwidth) || !__equals(second.$flhe_state.degree(), p.$fdegree)) || second.$flhe_ciphertext.any((poly) => !__equals(poly.degree(), p.$fdegree))))     {
+    if (((!__equals(BigInt(second.$flhe_ciphertext.length), p.$fwidth) || !__equals(second.$flhe_state.degree(), p.$fdegree)) || second.$flhe_ciphertext.some((poly) => !__equals(poly.degree(), p.$fdegree))))     {
       return new Error_LengthMismatch();
     }
     return undefined;
@@ -3443,7 +3443,7 @@ export class BatchSelect {
       if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
       const digits = __volar_try_0;
       const base = fieldMul(fieldAdd(fieldSub(p.$fwidth, 1n), index), p.$fgadget_digits);
-      tree.slice(Number(base), Number(fieldAdd(base, p.$fgadget_digits))).clone_from_slice(digits);
+      (() => { const __dst = tree.slice(Number(base), Number(fieldAdd(base, p.$fgadget_digits))); __dst.splice(0, __dst.length, ...(digits)); return __dst; })();
     }
     let digest = this.$fring.zero();
     for (const node of (Array.from({length: Number(fieldSub(p.$fwidth, 1n) - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
@@ -3459,7 +3459,7 @@ export class BatchSelect {
         if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
         const digits = __volar_try_0;
         const base = fieldMul(node, p.$fgadget_digits);
-        tree.slice(Number(base), Number(fieldAdd(base, p.$fgadget_digits))).clone_from_slice(digits);
+        (() => { const __dst = tree.slice(Number(base), Number(fieldAdd(base, p.$fgadget_digits))); __dst.splice(0, __dst.length, ...(digits)); return __dst; })();
       }
     }
     return new Tree({ $ftree: tree, $fdigest: digest });
@@ -3641,7 +3641,7 @@ export class Ring {
     let coefficients = [] as any[];
     const __volar_try_1 = noise.sample(coefficients.$fn, standard_deviation, bound, coefficients);
     if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
-    if (coefficients.any((sample) => (sample.unsigned_abs() > bound)))     {
+    if (coefficients.some((sample) => (((sample) < 0n ? -(sample) : (sample)) > bound)))     {
       return new Error_Noise();
     }
     let first = ([] as any[]);
@@ -3674,7 +3674,7 @@ export class Ring {
 
   decode_messages(values: Polynomial[]): Result<Vec<bigint>, Error>
   {
-    if ((!__equals(BigInt(values.length), this.$fparameters.$fwidth) || values.any((value) => !__equals(value.degree(), this.$fparameters.$fdegree))))     {
+    if ((!__equals(BigInt(values.length), this.$fparameters.$fwidth) || values.some((value) => !__equals(value.degree(), this.$fparameters.$fdegree))))     {
       return new Error_LengthMismatch();
     }
     let output = ([] as any[]);
@@ -3747,7 +3747,7 @@ export class Ring {
       return new Error_LengthMismatch();
     }
     let output = ([] as any[]);
-    for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
+    for (const chunk of __chunks(input, Number(this.$fparameters.$fdegree)).filter((__chunk: any) => __chunk.length === Number(this.$fparameters.$fdegree)))     {
       let value = this.zero();
       for (let __zip_mut_3 = 0n; __zip_mut_3 < BigInt(value.$ffirst.length); __zip_mut_3 += 1n) {
         const choice = chunk[Number(__zip_mut_3)];
@@ -3768,11 +3768,11 @@ export class Ring {
     if (!__equals(BigInt(input.length), this.$fparameters.slots()))     {
       return new Error_LengthMismatch();
     }
-    if (input.any((value) => (value >= this.$fparameters.$fplaintext_modulus)))     {
+    if (input.some((value) => (value >= this.$fparameters.$fplaintext_modulus)))     {
       return new Error_NonCanonicalPlaintext();
     }
     let output = ([] as any[]);
-    for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
+    for (const chunk of __chunks(input, Number(this.$fparameters.$fdegree)).filter((__chunk: any) => __chunk.length === Number(this.$fparameters.$fdegree)))     {
       let value = this.zero();
       for (let __zip_mut_3 = 0n; __zip_mut_3 < BigInt(value.$ffirst.length); __zip_mut_3 += 1n) {
         const message = chunk[Number(__zip_mut_3)];
@@ -6140,7 +6140,7 @@ export function bit_reverse(values: bigint[])
   for (let index = 0n; index < BigInt(values.length); index += 1n)   {
     const reversed = fieldShr(index.reverse_bits(), fieldSub(64n, bits));
     if ((index < reversed))     {
-      values.swap(index, reversed);
+      (() => { const __a = values; const __i = Number(index); const __j = Number(reversed); const __tmp = __a[__i]; __a[__i] = __a[__j]; __a[__j] = __tmp; return __a; })();
     }
   }
 }
@@ -6375,7 +6375,7 @@ export function column_rows(seed: bigint[], k: bigint, j: bigint): bigint[]
     h.update([(BigInt(j)) & 0xFFn, ((BigInt(j)) >> 8n) & 0xFFn, ((BigInt(j)) >> 16n) & 0xFFn, ((BigInt(j)) >> 24n) & 0xFFn]);
     h.update([(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn]);
     const out = [...h.finalize()];
-    for (const chunk of out.chunks_exact(4n))     {
+    for (const chunk of __chunks(out, Number(4n)).filter((__chunk: any) => __chunk.length === Number(4n)))     {
       if ((fill >= LOCALITY))       {
         break;
       }
@@ -6549,7 +6549,7 @@ export function cuckoo_insert(seed: bigint[], n: bigint, t: bigint, points: bigi
 
 export function cuckoo_table_size(t: bigint): bigint
 {
-  return BigInt(Math.max(Number(BigInt(Math.imul(Number(t), Number(3n))).div_ceil(2n)), Number(fieldAdd(t, 1n))));
+  return BigInt(Math.max(Number(((BigInt(Math.imul(Number(t), Number(3n)))) + (2n) - 1n) / (2n)), Number(fieldAdd(t, 1n))));
 }
 
 export function debug_check_pool_written(written: boolean, slot: bigint)
@@ -6705,7 +6705,7 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
     const __volar_try_0 = reader.count();
     if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
     const bit_count = __volar_try_0;
-    const packed_len = bit_count.div_ceil(8n);
+    const packed_len = ((bit_count) + (8n) - 1n) / (8n);
     const __volar_try_2 = reader.take(packed_len);
     if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
     const packed = __volar_try_2;
@@ -6989,7 +6989,7 @@ export function encode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
 {
   const __volar_try_0 = plan.validate();
   if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
-  if (((((((BigInt(plan.$fluts.length) > MAX_ITEMS) || (BigInt(plan.$flayers.length) > MAX_ITEMS)) || (BigInt(plan.$foutputs.length) > MAX_ITEMS)) || (BigInt(plan.$fcell_outputs.length) > MAX_ITEMS)) || plan.$flayers.any((layer) => (BigInt(layer.length) > MAX_ITEMS))) || plan.$fluts.any((lut) => (BigInt(lut.$fentries.length) > MAX_ITEMS))))   {
+  if (((((((BigInt(plan.$fluts.length) > MAX_ITEMS) || (BigInt(plan.$flayers.length) > MAX_ITEMS)) || (BigInt(plan.$foutputs.length) > MAX_ITEMS)) || (BigInt(plan.$fcell_outputs.length) > MAX_ITEMS)) || plan.$flayers.some((layer) => (BigInt(layer.length) > MAX_ITEMS))) || plan.$fluts.some((lut) => (BigInt(lut.$fentries.length) > MAX_ITEMS))))   {
     return new EncodeError_TooLarge();
   }
   let bytes = [] as any[];
@@ -8424,7 +8424,7 @@ export function in_interval_mod(x: bigint, lo: bigint, hi: bigint, q: bigint): b
 
 export function inner_product(ring: any, left: Polynomial[], right: Polynomial[]): Result<Polynomial, Error>
 {
-  if ((!__equals(BigInt(left.length), BigInt(right.length)) || left.concat(right).any((value) => !__equals(value.degree(), ring.$fparameters.$fdegree))))   {
+  if ((!__equals(BigInt(left.length), BigInt(right.length)) || left.concat(right).some((value) => !__equals(value.degree(), ring.$fparameters.$fdegree))))   {
     return new Error_LengthMismatch();
   }
   let output = ring.zero();
@@ -9684,7 +9684,7 @@ export function sign(ctx: { newD: () => any, LClass: { new(...args: any[]): any 
 export function signed_to_mod(value: bigint, modulus: bigint): bigint
 {
   return (() => { if ((value < 0n)) {
-  const magnitude = (value.unsigned_abs() % modulus);
+  const magnitude = (((value) < 0n ? -(value) : (value)) % modulus);
   return (() => { if (__equals(magnitude, 0n)) {
   return 0n;
 } else {
@@ -10265,7 +10265,7 @@ export function true_val(q: bigint): bigint
 
 export function uni_seed_cot_count(hash_seed: bigint[], params: any): bigint
 {
-  return fieldAdd(params.$fk, uni_spcot_heights(hash_seed, params.$fn, params.$ft).sum());
+  return fieldAdd(params.$fk, uni_spcot_heights(hash_seed, params.$fn, params.$ft).reduce((__sum: bigint, __x: bigint) => __sum + __x, 0n));
 }
 
 export function uni_spcot_heights(hash_seed: bigint[], n: bigint, t: bigint): Vec<bigint>

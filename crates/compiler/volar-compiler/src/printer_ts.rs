@@ -5346,14 +5346,76 @@ fn emit_other_method_call(
             }
             return write!(f, "))");
         }
-        // `arr.chunks(n)` / `arr.chunks_mut(n)` → an array of `n`-sized sub-arrays.
-        // (Mutation through the chunks is not modeled; these loops only read.)
-        "chunks" | "chunks_mut" if args.len() == 1 => {
+        // `arr.chunks(n)` / `arr.chunks_mut()` / `arr.chunks_exact(n)` → an
+        // array of `n`-sized sub-arrays. `chunks_exact` deliberately drops a
+        // trailing partial chunk, matching Rust.
+        "chunks" | "chunks_mut" | "chunks_exact" if args.len() == 1 => {
             write!(f, "__chunks(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", Number(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, "))")?;
+            if name == "chunks_exact" {
+                write!(f, ".filter((__chunk: any) => __chunk.length === Number(")?;
+                TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+                write!(f, "))")?;
+            }
+            return Ok(());
+        }
+        // `slice.clone_from_slice(src)` is an in-place replacement. Preserve
+        // both the mutation and the receiver value for expression contexts.
+        "clone_from_slice" if args.len() == 1 => {
+            write!(f, "(() => {{ const __dst = ")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, "; __dst.splice(0, __dst.length, ...(")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, ")); return __dst; }})()")?;
+            return Ok(());
+        }
+        // `iter.any(pred)` → `Array.prototype.some`.
+        "any" if args.len() == 1 => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".some(")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, ")")?;
+            return Ok(());
+        }
+        // `div_ceil` and `unsigned_abs` on bigint values.
+        "div_ceil" if args.len() == 1 => {
+            write!(f, "((")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ") + (")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, ") - 1n) / (")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, ")")?;
+            return Ok(());
+        }
+        "unsigned_abs" if args.is_empty() => {
+            write!(f, "((")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ") < 0n ? -(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ") : (")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, "))")?;
+            return Ok(());
+        }
+        // `arr.swap(i, j)` mutates the receiver in Rust.
+        "swap" if args.len() == 2 => {
+            write!(f, "(() => {{ const __a = ")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, "; const __i = Number(")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, "); const __j = Number(")?;
+            TsExprWriter { expr: &args[1] }.ts_fmt(f, cx)?;
+            write!(f, "); const __tmp = __a[__i]; __a[__i] = __a[__j]; __a[__j] = __tmp; return __a; }})()")?;
+            return Ok(());
+        }
+        // `iter.sum()` on the integer/field-value arrays emitted by this backend.
+        "sum" if args.is_empty() => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".reduce((__sum: bigint, __x: bigint) => __sum + __x, 0n)")?;
             return Ok(());
         }
         // `arr.iter_mut()` outside an IterLoop — treat as a plain iteration source
