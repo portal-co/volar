@@ -3762,6 +3762,16 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             // Both Vec and VecDeque are plain arrays in TS.
                             return write!(f, "[] as any[]");
                         }
+                        // `Vec::with_capacity(n)` reserves capacity but starts empty —
+                        // `[]`, NOT `Array(n)` (which pre-sizes with `n` holes). The
+                        // holes were both a type error (any[] vs Vec<T>) and a
+                        // semantic bug (reads returned undefined).
+                        if segs.len() == 2
+                            && (segs[0] == "Vec" || segs[0] == "VecDeque")
+                            && segs[1] == "with_capacity"
+                        {
+                            return write!(f, "([] as any[])");
+                        }
                         // Enum::Variant(...) → new EnumName_VariantName(...)
                         if segs.len() == 2 && cx.enum_names.contains(segs[0]) {
                             write!(f, "new {}_{}", segs[0], segs[1])?;

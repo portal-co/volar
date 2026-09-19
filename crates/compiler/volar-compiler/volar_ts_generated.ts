@@ -969,8 +969,8 @@ export class BavcDyn<L> {
       tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left[0];
       tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right[0];
     }
-    let seeds = /* Vec::with_capacity */ Array(leaf_count);
-    let commitments = /* Vec::with_capacity */ Array(leaf_count);
+    let seeds = ([] as any[]);
+    let commitments = ([] as any[]);
     for (let i = 0n; i < tau; i += 1n)     {
       for (let j = 0n; j < n; j += 1n)       {
         const leaf_k = fieldAdd(fieldMul(i, n), j);
@@ -982,7 +982,7 @@ export class BavcDyn<L> {
         (commitments).push(com);
       }
     }
-    let vec_hashes: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(tau);
+    let vec_hashes: Vec<Vec<bigint>> = ([] as any[]);
     for (let i = 0n; i < tau; i += 1n)     {
       let h = ctx.newD();
       for (let j = 0n; j < n; j += 1n)       {
@@ -1051,8 +1051,8 @@ return (() => {
 })(); } else { return (() => {
 })(); } })();
     }
-    let leaf_seeds: Vec<bigint[]> = /* Vec::with_capacity */ Array(leaf_count);
-    let leaf_coms: Vec<bigint[]> = /* Vec::with_capacity */ Array(leaf_count);
+    let leaf_seeds: Vec<bigint[]> = ([] as any[]);
+    let leaf_coms: Vec<bigint[]> = ([] as any[]);
     for (let i = 0n; i < tau; i += 1n)     {
       for (let j = 0n; j < n; j += 1n)       {
         const leaf_k = fieldAdd(fieldMul(i, n), j);
@@ -1069,7 +1069,7 @@ return (() => {
         }
       }
     }
-    let vec_hashes: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(tau);
+    let vec_hashes: Vec<Vec<bigint>> = ([] as any[]);
     for (let i = 0n; i < tau; i += 1n)     {
       let h = ctx.newD();
       for (let j = 0n; j < n; j += 1n)       {
@@ -2624,7 +2624,7 @@ export class Reader {
   ids(): Result<Vec<bigint>, DecodeError>
   {
     const count = this.count();
-    let ids = /* Vec::with_capacity */ Array(count);
+    let ids = ([] as any[]);
     for (let _ = 0n; _ < count; _ += 1n)     {
       (ids).push(this.u32());
     }
@@ -2836,7 +2836,7 @@ export class EncodedLabelBatch {
 
   static expanded_choices(choices: boolean[]): Vec<boolean>
   {
-    let out = /* Vec::with_capacity */ Array(fieldMul(BigInt(choices.length), 3n));
+    let out = ([] as any[]);
     for (const choice of choices)     {
       out.push(...(Array.from({length: Number(3n)}, () => choice)));
     }
@@ -2846,8 +2846,8 @@ export class EncodedLabelBatch {
   static from_pairs(pairs: LabelPairDyn[], offset: bigint[]): Result<EncodedLabelBatch, BatchError>
   {
     const batch = LabelBatchDyn.new(pairs, offset);
-    let differences = /* Vec::with_capacity */ Array(fieldMul(BigInt(pairs.length), 3n));
-    let zeroes = /* Vec::with_capacity */ Array(fieldMul(BigInt(pairs.length), 3n));
+    let differences = ([] as any[]);
+    let zeroes = ([] as any[]);
     const modulus = REFERENCE_PLAINTEXT_MODULUS;
     for (const pair of batch.$fpairs)     {
       const zero = encode_label_16(pair.$fzero);
@@ -3315,7 +3315,7 @@ export class BatchSelect {
     const choice = this.$fring.encode_choices(choices);
     const tree = this.lenc_digest(choice);
     const digits = this.$fring.decompose(tree.$fdigest);
-    let result = /* Vec::with_capacity */ Array(this.$fring.$fparameters.$fwidth);
+    let result = ([] as any[]);
     for (let index = 0n; index < this.$fring.$fparameters.$fwidth; index += 1n)     {
       const row = first.$flhe_ciphertext.slice(Number(fieldMul(index, this.$fring.$fparameters.$fgadget_digits)), Number(fieldMul(fieldAdd(index, 1n), this.$fring.$fparameters.$fgadget_digits)));
       let value = inner_product(this.$fring, row, digits);
@@ -3397,11 +3397,11 @@ export class BatchSelect {
       return new Error_LengthMismatch();
     }
     const levels = p.levels();
-    let random_vector = /* Vec::with_capacity */ Array(fieldMul(levels, p.$fwidth));
+    let random_vector = ([] as any[]);
     for (let _ = 0n; _ < fieldMul(levels, p.$fwidth); _ += 1n)     {
       (random_vector).push(this.$fring.uniform(random));
     }
-    let ciphertext = /* Vec::with_capacity */ Array(fieldMul(fieldMul(fieldMul(levels, p.$fwidth), 2n), p.$fgadget_digits));
+    let ciphertext = ([] as any[]);
     for (let level = 0n; level < levels; level += 1n)     {
       for (let row = 0n; row < p.$fwidth; row += 1n)       {
         for (const public_ of this.$fpublic.$flenc_b)         {
@@ -3437,7 +3437,7 @@ export class BatchSelect {
     if ((!__equals(BigInt(ciphertext.length), fieldMul(fieldMul(fieldMul(levels, p.$fwidth), 2n), p.$fgadget_digits)) || !__equals(BigInt(tree.$ftree.length), fieldMul(fieldSub(fieldMul(2n, p.$fwidth), 1n), p.$fgadget_digits))))     {
       return new Error_LengthMismatch();
     }
-    let delta = /* Vec::with_capacity */ Array(p.$fwidth);
+    let delta = ([] as any[]);
     for (let row = 0n; row < p.$fwidth; row += 1n)     {
       let value = inner_product(this.$fring, ciphertext.slice(Number(fieldMul(fieldMul(row, 2n), p.$fgadget_digits)), Number(fieldMul(fieldMul(fieldAdd(row, 1n), 2n), p.$fgadget_digits))), tree.$ftree.slice(Number(p.$fgadget_digits), Number(fieldMul(3n, p.$fgadget_digits))));
       for (let level = 1n; level < levels; level += 1n)       {
@@ -3458,11 +3458,11 @@ export class BatchSelect {
       return new Error_LengthMismatch();
     }
     const p = this.$fring.$fparameters;
-    let state = /* Vec::with_capacity */ Array(p.$fgadget_digits);
+    let state = ([] as any[]);
     for (let _ = 0n; _ < p.$fgadget_digits; _ += 1n)     {
       (state).push(this.$fring.uniform(random));
     }
-    let ciphertext = /* Vec::with_capacity */ Array(fieldMul(p.$fwidth, p.$fgadget_digits));
+    let ciphertext = ([] as any[]);
     for (const [index, message] of messages.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       for (let digit = 0n; digit < p.$fgadget_digits; digit += 1n)       {
         let value = this.$fpublic.$flhe_a[Number(index)].product(this.$fring, state[Number(digit)]);
@@ -3480,7 +3480,7 @@ export class BatchSelect {
       return new Error_LengthMismatch();
     }
     const state = this.$fring.uniform(random);
-    let ciphertext = /* Vec::with_capacity */ Array(this.$fring.$fparameters.$fwidth);
+    let ciphertext = ([] as any[]);
     for (const [a, message] of this.$fpublic.$flhe_a.map((__a: any, __i: number) => [__a, messages[__i]] as [typeof __a, any]))     {
       let value = a.product(this.$fring, state);
       value.add_assign(this.$fring, message);
@@ -3498,11 +3498,11 @@ export class BatchSelect {
   static setup(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, parameters: any, random: any): Result<BatchSelect, Error>
   {
     const ring = Ring.new(ctx, parameters);
-    let lhe_a = /* Vec::with_capacity */ Array(parameters.$fwidth);
+    let lhe_a = ([] as any[]);
     for (let _ = 0n; _ < parameters.$fwidth; _ += 1n)     {
       (lhe_a).push(ring.uniform(random));
     }
-    let lenc_b = /* Vec::with_capacity */ Array(fieldMul(2n, parameters.$fgadget_digits));
+    let lenc_b = ([] as any[]);
     for (let _ = 0n; _ < fieldMul(2n, parameters.$fgadget_digits); _ += 1n)     {
       (lenc_b).push(ring.uniform(random));
     }
@@ -3552,8 +3552,8 @@ export class Ring {
     if (coefficients.any((sample) => (sample.unsigned_abs() > bound)))     {
       return new Error_Noise();
     }
-    let first = /* Vec::with_capacity */ Array(this.$fparameters.$fdegree);
-    let second = /* Vec::with_capacity */ Array(this.$fparameters.$fdegree);
+    let first = ([] as any[]);
+    let second = ([] as any[]);
     for (const sample of coefficients)     {
       (first).push(signed_to_mod(sample, this.$fparameters.$fplaintext_modulus));
       (second).push(signed_to_mod(sample, this.$fparameters.$fdelta));
@@ -3581,11 +3581,11 @@ export class Ring {
     if ((!__equals(BigInt(values.length), this.$fparameters.$fwidth) || values.any((value) => !__equals(value.degree(), this.$fparameters.$fdegree))))     {
       return new Error_LengthMismatch();
     }
-    let output = /* Vec::with_capacity */ Array(this.$fparameters.slots());
+    let output = ([] as any[]);
     for (const value of values)     {
       let noise = __clone(value.$fsecond);
       this.$fsecond_ntt.inverse(noise);
-      let correction = /* Vec::with_capacity */ Array(this.$fparameters.$fdegree);
+      let correction = ([] as any[]);
       for (const error of noise)       {
         const signed = (() => { if ((error > (this.$fparameters.$fdelta / 2n))) {
   const magnitude = fieldSub(this.$fparameters.$fdelta, error);
@@ -3648,7 +3648,7 @@ export class Ring {
     if (!__equals(BigInt(input.length), this.$fparameters.slots()))     {
       return new Error_LengthMismatch();
     }
-    let output = /* Vec::with_capacity */ Array(this.$fparameters.$fwidth);
+    let output = ([] as any[]);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
       let value = this.zero();
       for (const [[first, second], choice] of value.$ffirst.zip(value.$fsecond).zip(chunk))       {
@@ -3671,7 +3671,7 @@ export class Ring {
     if (input.any((value) => (value >= this.$fparameters.$fplaintext_modulus)))     {
       return new Error_NonCanonicalPlaintext();
     }
-    let output = /* Vec::with_capacity */ Array(this.$fparameters.$fwidth);
+    let output = ([] as any[]);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
       let value = this.zero();
       for (const [slot, message] of value.$ffirst.zip(chunk))       {
@@ -3840,7 +3840,7 @@ export class Frame {
 
   encode(): Vec<bigint>
   {
-    let out = /* Vec::with_capacity */ Array(fieldAdd(HEADER_BYTES, BigInt(this.$fpayload.length)));
+    let out = ([] as any[]);
     out.push(...(MAGIC));
     out.push(...([(VERSION) & 0xFFn, ((VERSION) >> 8n) & 0xFFn, ((VERSION) >> 16n) & 0xFFn, ((VERSION) >> 24n) & 0xFFn]));
     (out).push(((this.$fstage) & 0xFFn));
@@ -5006,7 +5006,7 @@ export class OtStack {
   {
     const [r0s, xs, zs] = take_random(rng, this.$fsender, this.$freceiver, BigInt(bits.length));
     const delta = this.$fsender.$fseed.$fdelta;
-    let out = /* Vec::with_capacity */ Array(BigInt(bits.length));
+    let out = ([] as any[]);
     for (let j = 0n; j < BigInt(bits.length); j += 1n)     {
       const [r0, z, _d] = bea95_chosen_bit(delta, r0s[Number(j)], xs[Number(j)], zs[Number(j)], bits[Number(j)]);
       const r0_t = Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => new Galois128(u128_from_le_bytes(r0)));
@@ -5043,8 +5043,8 @@ export class OtStack {
       (chunk).splice(0, ([(rng_s.next_u32()) & 0xFFn, ((rng_s.next_u32()) >> 8n) & 0xFFn, ((rng_s.next_u32()) >> 16n) & 0xFFn, ((rng_s.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))).length, ...([(rng_s.next_u32()) & 0xFFn, ((rng_s.next_u32()) >> 8n) & 0xFFn, ((rng_s.next_u32()) >> 16n) & 0xFFn, ((rng_s.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))));
     }
     const out = softspoken_cot_extend_base(ctx, rng_s, rng_r, bits, delta_msg);
-    let q = /* Vec::with_capacity */ Array(m);
-    let w = /* Vec::with_capacity */ Array(m);
+    let q = ([] as any[]);
+    let w = ([] as any[]);
     for (let j = 0n; j < m; j += 1n)     {
       (q).push(out.$fsender_r0[Number(j)]);
       (w).push(out.$freceiver_v[Number(j)]);
@@ -5582,7 +5582,7 @@ export function aes_ctr_prg(seed: bigint[], iv: bigint[], tweak: bigint, out_byt
   add_to_upper_word(iv_tweaked, tweak);
   const n_full = (out_bytes / BLOCK);
   const rem = (out_bytes % BLOCK);
-  let out = /* Vec::with_capacity */ Array(out_bytes);
+  let out = ([] as any[]);
   for (let i = 0n; i < n_full; i += 1n)   {
     const block_in = add_to_lower_word(iv_tweaked, Number(i));
     const ct = encrypt_block(seed, block_in);
@@ -6104,7 +6104,7 @@ export function build_buckets(seed: bigint[], n: bigint, m: bigint): Vec<Vec<big
 
 export function bytes_to_bits(bytes: bigint[]): Vec<bigint>
 {
-  let bits = /* Vec::with_capacity */ Array(fieldMul(BigInt(bytes.length), 8n));
+  let bits = ([] as any[]);
   for (const b of bytes)   {
     for (let bit = 0n; bit < 8n; bit += 1n)     {
       (bits).push(fieldBitand(fieldShr(b, bit), 1n));
@@ -6296,7 +6296,7 @@ export function concat_small_voles(outs: Vec<ConvertOutput>): BigVoleProver
     }
   }
   const u = __clone(outs[Number(0n)].$fu);
-  let c: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(fieldSub(BigInt(outs.length), 1n));
+  let c: Vec<Vec<bigint>> = ([] as any[]);
   for (const o of outs.slice(Number(1n)))   {
     let ci = __clone(o.$fu);
     xor_in_place(ci, u);
@@ -6337,7 +6337,7 @@ export function convert_to_vole(seeds: (bigint[] | undefined)[], iv: bigint[], t
   const n = BigInt(seeds.length);
   const d = Number(Math.clz32((n) & -((n) | 0)));
   const zero_block = [] as any[];
-  let r: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(n);
+  let r: Vec<Vec<bigint>> = ([] as any[]);
   for (const s of seeds)   {
     return (() => { const __match = s; if (__match !== null && __match !== undefined) { const seed = __match;
 return (r).push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)); } else { return (r).push(__clone(zero_block)); } })();
@@ -6346,7 +6346,7 @@ return (r).push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)); } else { return (r).
   let level: Vec<Vec<bigint>> = r;
   for (let j = 0n; j < d; j += 1n)   {
     const half = (BigInt(level.length) / 2n);
-    let next: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(half);
+    let next: Vec<Vec<bigint>> = ([] as any[]);
     for (let i = 0n; i < half; i += 1n)     {
       xor_in_place(v[Number(j)], level[Number(fieldAdd(fieldMul(2n, i), 1n))]);
       let new_entry = __clone(level[Number(fieldMul(2n, i))]);
@@ -6468,7 +6468,7 @@ export function decode_iknp_corr(bytes: bigint[]): Vec<bigint[]>
 {
   let off = 0n;
   const n = Number(take_u32(bytes, off));
-  let rows = /* Vec::with_capacity */ Array(n);
+  let rows = ([] as any[]);
   for (let _ = 0n; _ < n; _ += 1n)   {
     let r = Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n);
     (r).splice(0, (bytes.slice(Number(off), Number(fieldAdd(off, IKNP_KAPPA_BYTES)))).length, ...(bytes.slice(Number(off), Number(fieldAdd(off, IKNP_KAPPA_BYTES)))));
@@ -6482,7 +6482,7 @@ export function decode_iknp_u(bytes: bigint[]): IknpUMsg
 {
   let off = 0n;
   const n = Number(take_u32(bytes, off));
-  let u_cols = /* Vec::with_capacity */ Array(n);
+  let u_cols = ([] as any[]);
   for (let _ = 0n; _ < n; _ += 1n)   {
     const [col, used] = decode_bools(bytes.slice(Number(off)));
     off = fieldAdd(off, used);
@@ -6554,7 +6554,7 @@ export function decode_mpcot_reg(bytes: bigint[]): MpcotRegSenderMsg
 {
   let off = 0n;
   const n = Number(take_u32(bytes, off));
-  let blocks = /* Vec::with_capacity */ Array(n);
+  let blocks = ([] as any[]);
   for (let _ = 0n; _ < n; _ += 1n)   {
     const len = Number(take_u32(bytes, off));
     const [msg, used] = decode_spcot(bytes.slice(Number(off), Number(fieldAdd(off, len))));
@@ -6579,7 +6579,7 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
   const num_cells = reader.u32();
   const budget = new FailureBudget({ $fper_bootstrap_log2: reader.u32(), $ftotal_log2: reader.u32() });
   const lut_count = reader.count();
-  let luts = /* Vec::with_capacity */ Array(lut_count);
+  let luts = ([] as any[]);
   for (let _ = 0n; _ < lut_count; _ += 1n)   {
     const bit_count = reader.count();
     const packed_len = bit_count.div_ceil(8n);
@@ -6587,17 +6587,17 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
     if ((!__equals((bit_count % 8n), 0n) && packed.last().is_some_and((byte) => !__equals(fieldShr(byte, (bit_count % 8n)), 0n))))     {
       return new DecodeError_UnknownTag();
     }
-    let entries = /* Vec::with_capacity */ Array(bit_count);
+    let entries = ([] as any[]);
     for (let bit = 0n; bit < bit_count; bit += 1n)     {
       (entries).push(!__equals(fieldBitand(fieldShr(packed[Number((bit / 8n))], (bit % 8n)), 1n), 0n));
     }
     (luts).push(new LutSpec({ $fentries: entries }));
   }
   const layer_count = reader.count();
-  let layers = /* Vec::with_capacity */ Array(layer_count);
+  let layers = ([] as any[]);
   for (let _ = 0n; _ < layer_count; _ += 1n)   {
     const op_count = reader.count();
-    let layer = /* Vec::with_capacity */ Array(op_count);
+    let layer = ([] as any[]);
     for (let _ = 0n; _ < op_count; _ += 1n)     {
       (layer).push(read_op(reader));
     }
@@ -6617,7 +6617,7 @@ export function decode_spcot(bytes: bigint[]): [SpcotSenderMsg, bigint]
 {
   let off = 0n;
   const h = Number(take_u32(bytes, off));
-  let ms = /* Vec::with_capacity */ Array(h);
+  let ms = ([] as any[]);
   for (let _ = 0n; _ < h; _ += 1n)   {
     const a = take_block(bytes, off);
     const b = take_block(bytes, off);
@@ -6633,7 +6633,7 @@ export function decode_spcot(bytes: bigint[]): [SpcotSenderMsg, bigint]
 export function decode_zq_vec(bytes: bigint[], off: bigint): Vec<Zq>
 {
   const n = Number(take_u32(bytes, off));
-  let v = /* Vec::with_capacity */ Array(n);
+  let v = ([] as any[]);
   for (let _ = 0n; _ < n; _ += 1n)   {
     (v).push(u32_from_le_bytes((bytes.slice(Number(off), Number(fieldAdd(off, 4n))))!));
     off = fieldAdd(off, 4n);
@@ -6763,7 +6763,7 @@ export function encode_blocks(seed: bigint[], k: bigint, n: bigint, v: Block[]):
 
 export function encode_bools(bits: boolean[]): Vec<bigint>
 {
-  let buf = /* Vec::with_capacity */ Array(fieldAdd(4n, BigInt(bits.length)));
+  let buf = ([] as any[]);
   push_u32(buf, Number(BigInt(bits.length)));
   buf.push(...(bits.map((b: any) => ((b) & 0xFFn))));
   return buf;
@@ -6807,7 +6807,7 @@ export function encode_label_16(label: bigint[]): bigint[]
 
 export function encode_lwe_crs(n: bigint, crs: LweOtCrsDyn): Vec<bigint>
 {
-  let buf = /* Vec::with_capacity */ Array(fieldAdd(4n, fieldMul(4n, fieldAdd(fieldMul(n, n), n))));
+  let buf = ([] as any[]);
   push_u32(buf, Number(n));
   for (let i = 0n; i < n; i += 1n)   {
     for (let j = 0n; j < n; j += 1n)     {
@@ -6832,7 +6832,7 @@ export function encode_lwe_payload(msg: any): Vec<bigint>
 
 export function encode_lwe_recv(n: bigint, msg: LweOtRecvMsgDyn): Vec<bigint>
 {
-  let buf = /* Vec::with_capacity */ Array(fieldMul(4n, n));
+  let buf = ([] as any[]);
   for (let i = 0n; i < n; i += 1n)   {
     buf.push(...([(msg.$fpk0[Number(i)]) & 0xFFn, ((msg.$fpk0[Number(i)]) >> 8n) & 0xFFn, ((msg.$fpk0[Number(i)]) >> 16n) & 0xFFn, ((msg.$fpk0[Number(i)]) >> 24n) & 0xFFn]));
   }
@@ -6935,8 +6935,8 @@ export function encode_receiver_only(receiver: any, prep: any, r: bigint[][]): R
   const m = receiver.$fparams.seed_cot_count(false);
   const x_bits = encode_bits(prep.$flpn_seed, k, n, receiver.$fseed.$fu.slice(0, Number(k)));
   const z_lpn = encode_blocks(prep.$flpn_seed, k, n, receiver.$fseed.$fw.slice(0, Number(k)));
-  let x = /* Vec::with_capacity */ Array(n);
-  let z = /* Vec::with_capacity */ Array(n);
+  let x = ([] as any[]);
+  let z = ([] as any[]);
   for (let j = 0n; j < n; j += 1n)   {
     (x).push(fieldBitxor(x_bits[Number(j)], prep.$fe[Number(j)]));
     (z).push(xor_block(z_lpn[Number(j)], r[Number(j)]));
@@ -6950,7 +6950,7 @@ export function encode_sender_only(sender: any, lpn_seed: bigint[], s: bigint[][
   const n = sender.$fparams.$fn;
   const m = sender.$fparams.seed_cot_count(false);
   const y_lpn = encode_blocks(lpn_seed, k, n, sender.$fseed.$fq.slice(0, Number(k)));
-  let y = /* Vec::with_capacity */ Array(n);
+  let y = ([] as any[]);
   for (let j = 0n; j < n; j += 1n)   {
     (y).push(xor_block(y_lpn[Number(j)], s[Number(j)]));
   }
@@ -7186,9 +7186,9 @@ export function expand_challenge_to_deltas(chall_1: bigint[], tau: bigint, n: bi
 export function expand_full(depth: bigint, seed: any): [Vec<Block>, Vec<Block[]>]
 {
   let level: Vec<Block> = [seed];
-  let sums = /* Vec::with_capacity */ Array(depth);
+  let sums = ([] as any[]);
   for (let _d = 0n; _d < depth; _d += 1n)   {
-    let next = /* Vec::with_capacity */ Array(fieldMul(BigInt(level.length), 2n));
+    let next = ([] as any[]);
     let k0 = Array.from({length: Number(KAPPA_BYTES)}, () => 0n);
     let k1 = Array.from({length: Number(KAPPA_BYTES)}, () => 0n);
     for (const node of level)     {
@@ -7432,9 +7432,9 @@ return (() => {
   const y_lpn = encode_blocks(prep.$flpn_seed, k, n, v_lpn);
   const x_bits = encode_bits(prep.$flpn_seed, k, n, u_lpn);
   const z_lpn = encode_blocks(prep.$flpn_seed, k, n, w_lpn);
-  let y = /* Vec::with_capacity */ Array(n);
-  let x = /* Vec::with_capacity */ Array(n);
-  let z = /* Vec::with_capacity */ Array(n);
+  let y = ([] as any[]);
+  let x = ([] as any[]);
+  let z = ([] as any[]);
   for (let j = 0n; j < n; j += 1n)   {
     (y).push(xor_block(y_lpn[Number(j)], s[Number(j)]));
     (x).push(fieldBitxor(x_bits[Number(j)], prep.$fe[Number(j)]));
@@ -7454,9 +7454,9 @@ export function ferret_finish(params: any, sender_seed: any, receiver_seed: any,
   const y_lpn = encode_blocks(prep.$flpn_seed, k, n, v_lpn);
   const x_bits = encode_bits(prep.$flpn_seed, k, n, u_lpn);
   const z_lpn = encode_blocks(prep.$flpn_seed, k, n, w_lpn);
-  let y = /* Vec::with_capacity */ Array(n);
-  let x = /* Vec::with_capacity */ Array(n);
-  let z = /* Vec::with_capacity */ Array(n);
+  let y = ([] as any[]);
+  let x = ([] as any[]);
+  let z = ([] as any[]);
   for (let j = 0n; j < n; j += 1n)   {
     (y).push(xor_block(y_lpn[Number(j)], s[Number(j)]));
     (x).push(fieldBitxor(x_bits[Number(j)], prep.$fe[Number(j)]));
@@ -7763,7 +7763,7 @@ export function gen_circuit_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, l
   p[Number(0n)] = 1n;
   return p;
 })();
-  let a_col = /* Vec::with_capacity */ Array(big_n);
+  let a_col = ([] as any[]);
   for (let i = 0n; i < big_n; i += 1n)   {
     const msg = (() => { if (__equals(rlwe_sk.$fkey[Number(i)], 1n)) {
   return rlwe_sk.$fkey;
@@ -7774,7 +7774,7 @@ export function gen_circuit_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, l
   return encrypt_scaled_poly(big_n, log_q, eta, msg, l, priv_base_log, rlwe_sk, rng);
 })()));
   }
-  let b_col = /* Vec::with_capacity */ Array(big_n);
+  let b_col = ([] as any[]);
   for (let i = 0n; i < big_n; i += 1n)   {
     const msg = (() => { if (__equals(rlwe_sk.$fkey[Number(i)], 1n)) {
   return neg_one_const;
@@ -8192,7 +8192,7 @@ export function iknp_cot_extend_base<R>(ctx: { newD: () => any, BClass: { new(..
 export function iknp_receiver_finish(ctx: { newD: () => any }, l: bigint, receiver_bits: boolean[], t_cols: Vec<boolean>[], corrections: bigint[][]): Vec<bigint[]>
 {
   const m = BigInt(receiver_bits.length);
-  let receiver_v = /* Vec::with_capacity */ Array(m);
+  let receiver_v = ([] as any[]);
   let t_row = Array.from({length: Number(IKNP_KAPPA)}, () => false);
   for (let j = 0n; j < m; j += 1n)   {
     for (let i = 0n; i < IKNP_KAPPA; i += 1n)     {
@@ -8216,8 +8216,8 @@ export function iknp_receiver_finish(ctx: { newD: () => any }, l: bigint, receiv
 
 export function iknp_receiver_u_cols(ctx: { newD: () => any }, m: bigint, receiver_bits: boolean[], seeds_0: bigint[][], seeds_1: bigint[][]): [Vec<Vec<boolean>>, IknpUMsg]
 {
-  let t_cols = /* Vec::with_capacity */ Array(IKNP_KAPPA);
-  let u_cols = /* Vec::with_capacity */ Array(IKNP_KAPPA);
+  let t_cols = ([] as any[]);
+  let u_cols = ([] as any[]);
   for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
     let t_col = [] as any[];
     prg_to_bools(ctx, seeds_0[Number(i)], t_col);
@@ -8235,7 +8235,7 @@ export function iknp_receiver_u_cols(ctx: { newD: () => any }, m: bigint, receiv
 
 export function iknp_sender_from_u(ctx: { newD: () => any }, l: bigint, m: bigint, delta_msg: bigint[], delta_ot: boolean[], delta_ot_bytes: bigint[], chosen_seeds: bigint[][], u_msg: any): [Vec<bigint[]>, Vec<bigint[]>]
 {
-  let q_cols = /* Vec::with_capacity */ Array(IKNP_KAPPA);
+  let q_cols = ([] as any[]);
   for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
     let prg_chosen = [] as any[];
     prg_to_bools(ctx, chosen_seeds[Number(i)], prg_chosen);
@@ -8249,8 +8249,8 @@ export function iknp_sender_from_u(ctx: { newD: () => any }, l: bigint, m: bigin
     }
     (q_cols).push(q_col);
   }
-  let sender_r0 = /* Vec::with_capacity */ Array(m);
-  let corrections = /* Vec::with_capacity */ Array(m);
+  let sender_r0 = ([] as any[]);
+  let corrections = ([] as any[]);
   let q_row = Array.from({length: Number(IKNP_KAPPA)}, () => false);
   for (let j = 0n; j < m; j += 1n)   {
     for (let i = 0n; i < IKNP_KAPPA; i += 1n)     {
@@ -8719,7 +8719,7 @@ export function mpcot_reg_choice_bits(n: bigint, t: bigint, alphas: bigint[], co
 {
   const splen = (n / t);
   const h = Number(Math.clz32((splen) & -((splen) | 0)));
-  let out = /* Vec::with_capacity */ Array(fieldMul(t, h));
+  let out = ([] as any[]);
   for (let i = 0n; i < t; i += 1n)   {
     const r = cot_r.slice(Number(fieldMul(i, h)), Number(fieldMul(fieldAdd(i, 1n), h)));
     out.push(...(spcot_choice_bits(alphas[Number(i)], h, r)));
@@ -8731,7 +8731,7 @@ export function mpcot_reg_receiver(n: bigint, t: bigint, alphas: bigint[], cot_t
 {
   const splen = (n / t);
   const h = Number(Math.clz32((splen) & -((splen) | 0)));
-  let r = /* Vec::with_capacity */ Array(n);
+  let r = ([] as any[]);
   for (let i = 0n; i < t; i += 1n)   {
     const t_rows = cot_t.slice(Number(fieldMul(i, h)), Number(fieldMul(fieldAdd(i, 1n), h)));
     const w = spcot_receiver_extend(alphas[Number(i)], splen, t_rows, msg.$fblocks[Number(i)]);
@@ -8744,8 +8744,8 @@ export function mpcot_reg_sender<R>(rng: any, delta: any, n: bigint, t: bigint, 
 {
   const splen = (n / t);
   const h = Number(Math.clz32((splen) & -((splen) | 0)));
-  let s = /* Vec::with_capacity */ Array(n);
-  let blocks = /* Vec::with_capacity */ Array(t);
+  let s = ([] as any[]);
+  let blocks = ([] as any[]);
   for (let i = 0n; i < t; i += 1n)   {
     const q = cot_q.slice(Number(fieldMul(i, h)), Number(fieldMul(fieldAdd(i, 1n), h)));
     const ch = choices.slice(Number(fieldMul(i, h)), Number(fieldMul(fieldAdd(i, 1n), h)));
@@ -8761,7 +8761,7 @@ export function mpcot_uni_choice_bits(params: any, hash_seed: bigint[], table: (
   const n = params.$fn;
   const m = cuckoo_table_size(params.$ft);
   const buckets = build_buckets(hash_seed, n, m);
-  let out = /* Vec::with_capacity */ Array(m);
+  let out = ([] as any[]);
   for (let j = 0n; j < m; j += 1n)   {
     const need = fieldAdd(BigInt(buckets[Number(j)].length), 1n);
     const splen = next_pow2(need);
@@ -8778,7 +8778,7 @@ export function mpcot_uni_receiver(params: any, table: (bigint | undefined)[], c
   const n = params.$fn;
   const m = cuckoo_table_size(params.$ft);
   const buckets = build_buckets(msg.$fhash_seed, n, m);
-  let r_bins = /* Vec::with_capacity */ Array(m);
+  let r_bins = ([] as any[]);
   for (let j = 0n; j < m; j += 1n)   {
     const need = fieldAdd(BigInt(buckets[Number(j)].length), 1n);
     const splen = next_pow2(need);
@@ -8806,8 +8806,8 @@ export function mpcot_uni_sender<R>(rng: any, delta: any, params: any, hash_seed
   const n = params.$fn;
   const m = cuckoo_table_size(params.$ft);
   const buckets = build_buckets(hash_seed, n, m);
-  let s_bins = /* Vec::with_capacity */ Array(m);
-  let blocks = /* Vec::with_capacity */ Array(m);
+  let s_bins = ([] as any[]);
+  let blocks = ([] as any[]);
   for (let j = 0n; j < m; j += 1n)   {
     const need = fieldAdd(BigInt(buckets[Number(j)].length), 1n);
     const splen = next_pow2(need);
@@ -9189,7 +9189,7 @@ export function read_op(reader: any): Result<PlanOp, DecodeError>
   return new Const({ $fout: out, $fvalue: value });
 })(); } else if (__match === 1n) { return new Not({ $finput: reader.u32(), $fout: reader.u32() }); } else if (__match === 2n) { return (() => {
   const count = reader.count();
-  let ids = /* Vec::with_capacity */ Array(count);
+  let ids = ([] as any[]);
   for (let _ = 0n; _ < count; _ += 1n)   {
     (ids).push(reader.u32());
   }
@@ -9410,9 +9410,9 @@ export function sample_seed_cots<R>(rng: any, m: bigint): [FerretSenderSeed, Fer
   for (const chunk of __chunks(delta, Number(4n)))   {
     (chunk).splice(0, ([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))).length, ...([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))));
   }
-  let q = /* Vec::with_capacity */ Array(m);
-  let u = /* Vec::with_capacity */ Array(m);
-  let w = /* Vec::with_capacity */ Array(m);
+  let q = ([] as any[]);
+  let u = ([] as any[]);
+  let w = ([] as any[]);
   for (let _ = 0n; _ < m; _ += 1n)   {
     let row = Array.from({length: Number(16n)}, () => 0n);
     for (const chunk of __chunks(row, Number(4n)))     {
@@ -9450,7 +9450,7 @@ export function sample_uniform(random: any, modulus: bigint, output: bigint[]): 
 
 export function sample_uniform_points<R>(rng: any, n: bigint, t: bigint): Vec<bigint>
 {
-  let pts = /* Vec::with_capacity */ Array(t);
+  let pts = ([] as any[]);
   while ((BigInt(pts.length) < t))   {
     const x = (Number(rng.next_u32()) % n);
     if (!pts.includes(x))     {
@@ -9513,7 +9513,7 @@ export function sign(ctx: { newD: () => any, LClass: { new(...args: any[]): any 
   const hidden_commits: Vec<bigint[]> = deltas.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([i, d]: any) => commitment.$fcommitments[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), d))]);
   const opening = new BavcOpeningDyn({ $fhidden_commits: __clone(hidden_commits), $fnodes: __clone(nodes), $fcom_bytes: 0n });
   const _ = opening;
-  let sub_voles = /* Vec::with_capacity */ Array(TAU);
+  let sub_voles = ([] as any[]);
   for (let i = 0n; i < TAU; i += 1n)   {
     const seeds_i: Vec<(bigint[] | undefined)> = Array.from({length: Number(SUB_VOLE_N - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => commitment.$fseeds[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), j))]);
     (sub_voles).push(convert_to_vole(seeds_i, iv, Number(i), L_HAT_BYTES));
@@ -9635,7 +9635,7 @@ export function spcot_consistency_check(delta: any, v: Block[], w: Block[], extr
   let chi = Array.from({length: Number(KAPPA_BYTES)}, () => 0n);
   (chi).splice(0, (seed.slice(0, Number(KAPPA_BYTES))).length, ...(seed.slice(0, Number(KAPPA_BYTES))));
   let chi_pow = field_from_block(chi);
-  let chis = /* Vec::with_capacity */ Array(n);
+  let chis = ([] as any[]);
   for (let _ = 0n; _ < n; _ += 1n)   {
     (chis).push(block_from_field(chi_pow));
     chi_pow = field_mul(chi_pow, field_from_block(chi));
@@ -9667,9 +9667,9 @@ export function spcot_consistency_check(delta: any, v: Block[], w: Block[], extr
 export function spcot_in_process<R>(rng: any, delta: any, n: bigint, alpha: bigint): [Vec<Block>, Vec<Block>]
 {
   const h = Number(Math.clz32((n) & -((n) | 0)));
-  let cot_q = /* Vec::with_capacity */ Array(h);
-  let cot_r = /* Vec::with_capacity */ Array(h);
-  let cot_t = /* Vec::with_capacity */ Array(h);
+  let cot_q = ([] as any[]);
+  let cot_r = ([] as any[]);
+  let cot_t = ([] as any[]);
   for (let _ = 0n; _ < h; _ += 1n)   {
     const q = sample_block(rng);
     const r = __equals(fieldBitand(rng.next_u32(), 1n), 1n);
@@ -9691,7 +9691,7 @@ export function spcot_in_process<R>(rng: any, delta: any, n: bigint, alpha: bigi
 export function spcot_receiver_extend(alpha: bigint, n: bigint, cot_t: Block[], msg: any): Vec<Block>
 {
   const h = Number(Math.clz32((n) & -((n) | 0)));
-  let off_sums = /* Vec::with_capacity */ Array(h);
+  let off_sums = ([] as any[]);
   for (let i = 0n; i < h; i += 1n)   {
     const select = bit_msb(alpha, h, i);
     const t = cot_t[Number(i)];
@@ -9720,7 +9720,7 @@ export function spcot_sender_extend<R>(rng: any, delta: any, n: bigint, cot_q: B
   const h = Number(Math.clz32((n) & -((n) | 0)));
   const seed = sample_block(rng);
   const [leaves, layer_sums] = expand_full(h, seed);
-  let ms = /* Vec::with_capacity */ Array(h);
+  let ms = ([] as any[]);
   for (let i = 0n; i < h; i += 1n)   {
     const b = choices[Number(i)];
     const q = cot_q[Number(i)];
@@ -9742,7 +9742,7 @@ export function spcot_sender_extend<R>(rng: any, delta: any, n: bigint, cot_q: B
 
 export function split_cot_chunks<T>(flat: T[], heights: bigint[]): Vec<Vec<T>>
 {
-  let out = /* Vec::with_capacity */ Array(BigInt(heights.length));
+  let out = ([] as any[]);
   let off = 0n;
   for (const h of heights)   {
     (out).push([...flat.slice(Number(off), Number(fieldAdd(off, h)))]);
@@ -9863,7 +9863,7 @@ export function stack_setup_receiver<R, Io>(ctx: { newD: () => any }, rng: any, 
   const tag_s = io.recv(TAG_SSP_S);
   const tag_r = ssp_receiver_tag(delta_msg, bits, receiver_v);
   io.send(TAG_SSP_R, tag_r);
-  let w = /* Vec::with_capacity */ Array(m);
+  let w = ([] as any[]);
   for (const row of receiver_v)   {
     (w).push(row);
   }
@@ -9896,7 +9896,7 @@ export function stack_setup_sender<R, Io>(ctx: { newD: () => any }, rng: any, pa
   const tag_s = ssp_sender_tag(delta_msg, sender_r0);
   io.send(TAG_SSP_S, tag_s);
   const tag_r = io.recv(TAG_SSP_R);
-  let q = /* Vec::with_capacity */ Array(m);
+  let q = ([] as any[]);
   for (const row of sender_r0)   {
     (q).push(row);
   }
@@ -9949,9 +9949,9 @@ export function take_block(bytes: bigint[], off: bigint): Block
 export function take_random<R>(rng: any, sender: any, receiver: any, need: bigint): [Vec<Block>, Vec<boolean>, Vec<Block>]
 {
   ensure(rng, sender, receiver, need);
-  let r0 = /* Vec::with_capacity */ Array(need);
-  let x = /* Vec::with_capacity */ Array(need);
-  let z = /* Vec::with_capacity */ Array(need);
+  let r0 = ([] as any[]);
+  let x = ([] as any[]);
+  let z = ([] as any[]);
   for (let _ = 0n; _ < need; _ += 1n)   {
     (r0).push((sender.$fout.pop_front())!);
     (x).push((receiver.$fout_x.pop_front())!);
@@ -10124,7 +10124,7 @@ export function uni_spcot_heights(hash_seed: bigint[], n: bigint, t: bigint): Ve
 
 export function unique_bins(seed: bigint[], x: bigint, m: bigint): Vec<bigint>
 {
-  let js = /* Vec::with_capacity */ Array(TAU);
+  let js = ([] as any[]);
   for (let i = 0n; i < TAU; i += 1n)   {
     const j = hash_i(seed, i, x, m);
     if (!js.includes(j))     {
@@ -10148,7 +10148,7 @@ export function verify(ctx: { newD: () => any, LClass: { new(...args: any[]): an
   const reconstructed_seeds_opt = BavcDyn.reconstruct(ctx, sig.$fnodes, sig.$fhidden_commits, deltas, iv, sig.$fbavc_root, TAU, SUB_VOLE_N);
   const reconstructed_seeds = (() => { const __match = reconstructed_seeds_opt; if (__match !== null && __match !== undefined) { const s = __match;
 return s; } else { return false; } })();
-  let sub_voles_v = /* Vec::with_capacity */ Array(TAU);
+  let sub_voles_v = ([] as any[]);
   for (let i = 0n; i < TAU; i += 1n)   {
     const d = deltas[Number(i)];
     const verifier_seeds: Vec<(bigint[] | undefined)> = Array.from({length: Number(SUB_VOLE_N - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
