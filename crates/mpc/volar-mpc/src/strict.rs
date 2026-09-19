@@ -438,7 +438,11 @@ where
             let frame =
                 SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
             let labels = match frame {
-                SessionFrame::ActionArgs { call: c, labels } if c as usize == call => labels,
+                SessionFrame::ActionArgs {
+                    call: c,
+                    request_id,
+                    labels,
+                } if c as usize == call && request_id == spec.request_id => labels,
                 _ => return Err(MpcError::UnexpectedMessage),
             };
             let nwires = 1 + spec.arg_wires.len() + spec.fallback_wires.len();
@@ -475,6 +479,7 @@ where
             transport.send(
                 &SessionFrame::ActionArgsClear {
                     call: call as u32,
+                    request_id: spec.request_id,
                     bits,
                 }
                 .encode(),

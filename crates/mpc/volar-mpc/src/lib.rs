@@ -1242,6 +1242,10 @@ pub enum SessionFrame {
     ActionArgs {
         /// Which action call (indexes `GateSchedule::actions`).
         call: u32,
+        /// Stable schedule/source occurrence identity. This prevents a peer
+        /// with a same-shaped but differently ordered schedule from treating
+        /// a call-table index as the same host invocation.
+        request_id: u64,
         /// The wire labels.
         labels: Vec<Vec<u8>>,
     },
@@ -1252,6 +1256,8 @@ pub enum SessionFrame {
     ActionArgsClear {
         /// Which action call.
         call: u32,
+        /// Must echo the request identity from [`Self::ActionArgs`].
+        request_id: u64,
         /// The decoded logical bits.
         bits: Vec<bool>,
     },
@@ -1333,17 +1339,27 @@ impl SessionFrame {
                 push_u32(&mut out, bits.len() as u32);
                 out.extend(bits.iter().map(|&b| b as u8));
             }
-            SessionFrame::ActionArgs { call, labels } => {
+            SessionFrame::ActionArgs {
+                call,
+                request_id,
+                labels,
+            } => {
                 out.push(7);
                 push_u32(&mut out, *call);
+                push_u64(&mut out, *request_id);
                 push_u32(&mut out, labels.len() as u32);
                 for l in labels {
                     push_bytes(&mut out, l);
                 }
             }
-            SessionFrame::ActionArgsClear { call, bits } => {
+            SessionFrame::ActionArgsClear {
+                call,
+                request_id,
+                bits,
+            } => {
                 out.push(8);
                 push_u32(&mut out, *call);
+                push_u64(&mut out, *request_id);
                 push_u32(&mut out, bits.len() as u32);
                 out.extend(bits.iter().map(|&b| b as u8));
             }
@@ -1362,7 +1378,7 @@ impl SessionFrame {
     /// Decode from bytes; `None` on malformed input.
     pub fn decode(buf: &[u8]) -> Option<SessionFrame> {
         let mut r = Reader { buf, pos: 0 };
-        match r.u8()? {
+        let frame = match r.u8()? {
             0 => {
                 let one_wire = r.bytes()?;
                 let nt = r.u32()? as usize;
@@ -1443,21 +1459,31 @@ impl SessionFrame {
             }
             7 => {
                 let call = r.u32()?;
+                let request_id = r.u64()?;
                 let n = r.u32()? as usize;
                 let mut labels = Vec::with_capacity(n);
                 for _ in 0..n {
                     labels.push(r.bytes()?);
                 }
-                Some(SessionFrame::ActionArgs { call, labels })
+                Some(SessionFrame::ActionArgs {
+                    call,
+                    request_id,
+                    labels,
+                })
             }
             8 => {
                 let call = r.u32()?;
+                let request_id = r.u64()?;
                 let n = r.u32()? as usize;
                 let mut bits = Vec::with_capacity(n);
                 for _ in 0..n {
                     bits.push(r.u8()? != 0);
                 }
-                Some(SessionFrame::ActionArgsClear { call, bits })
+                Some(SessionFrame::ActionArgsClear {
+                    call,
+                    request_id,
+                    bits,
+                })
             }
             14 => {
                 let count = r.u32()? as usize;
@@ -1468,11 +1494,15 @@ impl SessionFrame {
                 Some(SessionFrame::OutputDecodes(decodes))
             }
             _ => None,
-        }
+        }?;
+        r.at_end().then_some(frame)
     }
 }
 
 fn push_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+fn push_u64(out: &mut Vec<u8>, v: u64) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 fn push_bytes(out: &mut Vec<u8>, b: &[u8]) {
@@ -1495,11 +1525,42 @@ impl<'a> Reader<'a> {
         self.pos += 4;
         Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
     }
+    fn u64(&mut self) -> Option<u64> {
+        let s = self.buf.get(self.pos..self.pos + 8)?;
+        self.pos += 8;
+        Some(u64::from_le_bytes([
+            s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
+        ]))
+    }
     fn bytes(&mut self) -> Option<Vec<u8>> {
         let n = self.u32()? as usize;
         let s = self.buf.get(self.pos..self.pos + n)?;
         self.pos += n;
         Some(s.to_vec())
+    }
+    fn at_end(&self) -> bool {
+        self.pos == self.buf.len()
+    }
+}
+
+#[cfg(test)]
+mod session_frame_tests {
+    use alloc::vec;
+
+    use super::*;
+
+    #[test]
+    fn action_frames_bind_request_identity_and_reject_trailing_bytes() {
+        let frame = SessionFrame::ActionArgs {
+            call: 3,
+            request_id: 0x0102_0304_0506_0708,
+            labels: vec![vec![7, 8]],
+        };
+        let encoded = frame.encode();
+        assert_eq!(SessionFrame::decode(&encoded), Some(frame));
+        let mut malformed = encoded;
+        malformed.push(0);
+        assert_eq!(SessionFrame::decode(&malformed), None);
     }
 }
 

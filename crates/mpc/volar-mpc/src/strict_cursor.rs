@@ -160,16 +160,20 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
             transport.send(
                 &SessionFrame::ActionArgs {
                     call: call as u32,
+                    request_id: spec.request_id,
                     labels,
                 }
                 .encode(),
             );
-            let bits = match SessionFrame::decode(&transport.recv())
-                .ok_or(MpcError::UnexpectedMessage)?
-            {
-                SessionFrame::ActionArgsClear { call: got, bits } if got as usize == call => bits,
-                _ => return Err(MpcError::UnexpectedMessage),
-            };
+            let bits =
+                match SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)? {
+                    SessionFrame::ActionArgsClear {
+                        call: got,
+                        request_id,
+                        bits,
+                    } if got as usize == call && request_id == spec.request_id => bits,
+                    _ => return Err(MpcError::UnexpectedMessage),
+                };
             if bits.len() != 1 + spec.arg_wires.len() + spec.fallback_wires.len() {
                 return Err(MpcError::UnexpectedMessage);
             }
