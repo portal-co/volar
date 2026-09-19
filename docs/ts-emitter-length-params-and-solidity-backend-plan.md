@@ -305,7 +305,7 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776** (and seeded
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579** (and seeded
 components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
 *syntax* errors are fixed; the remainder are semantic. Bug classes fixed:
 
@@ -346,6 +346,13 @@ one-line fix):
   a `static` method references `n`, which is never in scope there.
 - **Function-local `fn` items** (recursive helpers like bavc's `walk`):
   dropped by the parser; representing them needs a new `IrStmtKind` variant.
+- **Associated consts on impls** (`impl Fe25519 { pub const ONE: Self = ... }`,
+  referenced as `Fe25519::ONE`): the parser's `convert_impl_item` drops
+  `ImplItem::Const`, so `Type::CONST` references emit as the undefined
+  `Type.CONST`. A proper fix needs an `IrImplItem::AssociatedConst` variant
+  (touches ~15 files) OR lifting to module consts — the latter was prototyped
+  and reverted because the const *value* can reference `Self` and other lifted
+  consts, requiring Self-resolution during the lift. ~10 errors.
 
 #### 1.3.10 The Rust-dyn reference backend is also broken (found during Part 1)
 

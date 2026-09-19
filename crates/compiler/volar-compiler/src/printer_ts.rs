@@ -5800,7 +5800,6 @@ fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
         IrExprKind::Field { base, field } => {
             let base_ty = infer_expr_ir_type(base, cx)?;
             let IrType::Struct { kind, .. } = unwrap_ref(&base_ty) else {
-                #[cfg(feature = "std")] std::eprintln!("INFER field {}: base not struct {:?}", field, base_ty);
                 return None;
             };
             let s = cx.structs_by_name.get(&kind.to_string())?;
