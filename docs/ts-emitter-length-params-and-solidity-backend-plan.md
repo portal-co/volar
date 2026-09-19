@@ -305,7 +305,7 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394** (and seeded
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397** (and seeded
 components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
 *syntax* errors are fixed; the remainder are semantic. Bug classes fixed:
 
@@ -388,6 +388,28 @@ one-line fix):
   Result-typed struct fields used without unwrapping (`bigint | Error_*` used
   as `bigint`), struct-vs-primitive confusions, and `number[]` vs `bigint[]`
   array-element mismatches — each needs a targeted rule, not a broad sweep.
+
+  `Result<T, E>` is now the union `T | E` (commit 61f2162) — the runtime value
+  genuinely is value-or-error — which eliminated TS2740 (error-variant returns,
+  21 → 0). This is *more correct* than the old `= T` erasure and surfaced the two
+  genuine semantic gaps below (previously hidden by the erasure):
+
+  - **`?` (`IrExprKind::Try`) is a no-op in the TS emitter** (~line 4369): it emits
+    the inner expr with no early-return-on-error / unwrap. So `let ring =
+    Ring::new(p)?;` leaves `ring: Result<Ring, Error>` and `ring.uniform(..)` fails
+    (TS2339 `uniform does not exist on Result<..>`). This is a *runtime* bug too —
+    errors are silently dropped, not propagated. A correct desugar needs an error
+    discriminant (`instanceof` against the fn's error enum variant classes) plus an
+    early `return`; ~all `?` sites.
+  - **Deref-assign through `iter_mut().zip(..)` loses write-back** (TS2588, 24):
+    `for (left, right) in self.first.iter_mut().zip(other) { *left = add_mod(*left,
+    *right, ..) }` emits `for (const [left, right] of first.map(zip..)) { left =
+    add_mod(..) }` — a `const` reassignment that ALSO discards the write (never
+    writes back to the array). The existing `iter_mut` indexed-write-back handling
+    (printer_ts.rs ~3231) only fires for a *bare* `arr.iter_mut()` collection, not
+    when `iter_mut()` is nested inside `.zip(..)`. The fix must track the loop index
+    through the zip and emit `first[i] = ..`. Affects correctness (discarded
+    writes), not just types.
 - **Associated consts on impls** (`impl Fe25519 { pub const ONE: Self = ... }`,
   referenced as `Fe25519::ONE`): the parser's `convert_impl_item` drops
   `ImplItem::Const`, so `Type::CONST` references emit as the undefined
