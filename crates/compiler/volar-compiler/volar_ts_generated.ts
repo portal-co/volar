@@ -5287,7 +5287,7 @@ export class EdPoint {
   {
     const x = new Fe25519(BASE_X_LIMBS);
     const y = new Fe25519(BASE_Y_LIMBS);
-    return new EdPoint({ $fx: x, $fy: y, $fz: Fe25519.ONE, $ft: fe_mul(x, y) });
+    return new EdPoint({ $fx: x, $fy: y, $fz: new Fe25519([1n, 0n, 0n, 0n]), $ft: fe_mul(x, y) });
   }
 
   eq(other: any): boolean
@@ -6847,7 +6847,7 @@ export function ed_neg(p: any): EdPoint
 
 export function ed_scalar_mul(p: any, k: bigint[]): EdPoint
 {
-  let acc = EdPoint.IDENTITY;
+  let acc = new EdPoint({ $fx: new Fe25519([0n, 0n, 0n, 0n]), $fy: new Fe25519([1n, 0n, 0n, 0n]), $fz: new Fe25519([1n, 0n, 0n, 0n]), $ft: new Fe25519([0n, 0n, 0n, 0n]) });
   for (const byte_idx of (Array.from({length: Number(32n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
     for (const bit of (Array.from({length: Number(8n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
       acc = ed_double(acc);
@@ -7447,7 +7447,7 @@ export function fe_from_bytes_le(b: bigint[]): Fe25519
 export function fe_invert(a: any): Fe25519
 {
   const exp_limbs: bigint[] = [18446744073709551595n, 18446744073709551615n, 18446744073709551615n, 9223372036854775807n];
-  let acc = Fe25519.ONE;
+  let acc = new Fe25519([1n, 0n, 0n, 0n]);
   for (const limb_idx of (Array.from({length: Number(4n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
     for (const bit of (Array.from({length: Number(64n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
       acc = fe_sq(acc);
@@ -7469,7 +7469,7 @@ export function fe_mul(a: any, b: any): Fe25519
 export function fe_neg(a: any): Fe25519
 {
   return (() => { if (a.is_zero()) {
-  return Fe25519.ZERO;
+  return new Fe25519([0n, 0n, 0n, 0n]);
 } else {
   let neg = Array.from({length: Number(4n)}, () => 0n);
   let borrow: bigint = 0n;
@@ -7485,7 +7485,7 @@ export function fe_neg(a: any): Fe25519
 
 export function fe_pow(base: any, exp: bigint[]): Fe25519
 {
-  let acc = Fe25519.ONE;
+  let acc = new Fe25519([1n, 0n, 0n, 0n]);
   for (const limb_idx of (Array.from({length: Number(4n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
     for (const bit of (Array.from({length: Number(64n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
       acc = fe_sq(acc);
@@ -7952,7 +7952,7 @@ export function gen_rlwe_secret_key<R>(big_n: bigint, rng: any): RlweSecretKeyDy
 export function gf_invert_256(a: any, c: any): U256
 {
   if (a.is_zero())   {
-    return U256.ZERO;
+    return new U256([0n, 0n, 0n, 0n]);
   }
   const e: bigint = 255n;
   const msb: bigint = 7n;
@@ -8056,7 +8056,7 @@ export function gf_mul(a: bigint, b: bigint): bigint
 
 export function gf_mul_256(a: any, b: any, c: any): U256
 {
-  let p = U256.ZERO;
+  let p = new U256([0n, 0n, 0n, 0n]);
   let a_1 = a;
   let b_1 = b;
   for (let _ = 0n; _ < 256n; _ += 1n)   {
@@ -8263,8 +8263,8 @@ export function hash_to_curve(ctx: { DClass: { new(...args: any[]): any } & Reco
     xb[Number(31n)] = fieldBitand(xb[Number(31n)], 127n);
     const x = fe_from_bytes_le(xb);
     const xx = fe_sq(x);
-    const num = fe_add(Fe25519.ONE, xx);
-    const den = fe_sub(Fe25519.ONE, fe_mul(ctx.DClass, xx));
+    const num = fe_add(new Fe25519([1n, 0n, 0n, 0n]), xx);
+    const den = fe_sub(new Fe25519([1n, 0n, 0n, 0n]), fe_mul(ctx.DClass, xx));
     if (den.is_zero())     {
       continue;
     }
@@ -8273,9 +8273,9 @@ export function hash_to_curve(ctx: { DClass: { new(...args: any[]): any } & Reco
     if (!__equals(fieldBitand(y.to_bytes()[Number(0n)], 1n), sign))     {
       y = fe_neg(y);
     }
-    const point = new EdPoint({ $fx: x, $fy: y, $fz: Fe25519.ONE, $ft: fe_mul(x, y) });
+    const point = new EdPoint({ $fx: x, $fy: y, $fz: new Fe25519([1n, 0n, 0n, 0n]), $ft: fe_mul(x, y) });
     const p8 = ed_mul_cofactor(point);
-    if (__equals(p8, EdPoint.IDENTITY))     {
+    if (__equals(p8, new EdPoint({ $fx: new Fe25519([0n, 0n, 0n, 0n]), $fy: new Fe25519([1n, 0n, 0n, 0n]), $fz: new Fe25519([1n, 0n, 0n, 0n]), $ft: new Fe25519([0n, 0n, 0n, 0n]) })))     {
       continue;
     }
     return p8;

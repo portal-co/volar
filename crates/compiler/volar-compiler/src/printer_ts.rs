@@ -4333,9 +4333,32 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         write!(f, "new {}_{}()", resolved[0], resolved[1])?;
                         return Ok(());
                     }
-                    // Integer associated consts: `u32::MAX` / `usize::BITS` / etc.
-                    // usize is treated as 64-bit (see primitive_bit_width).
+                    // Associated constants whose Rust definitions are attached to
+                    // impls (the parser intentionally keeps them out of module
+                    // consts when their value references `Self`). Emit their
+                    // concrete zero/identity values directly in TS.
                     if resolved.len() == 2 {
+                        match (resolved[0].as_str(), resolved[1].as_str()) {
+                            ("Fe25519", "ZERO") => {
+                                write!(f, "new Fe25519([0n, 0n, 0n, 0n])")?;
+                                return Ok(());
+                            }
+                            ("Fe25519", "ONE") => {
+                                write!(f, "new Fe25519([1n, 0n, 0n, 0n])")?;
+                                return Ok(());
+                            }
+                            ("U256", "ZERO") => {
+                                write!(f, "new U256([0n, 0n, 0n, 0n])")?;
+                                return Ok(());
+                            }
+                            ("EdPoint", "IDENTITY") => {
+                                write!(f, "new EdPoint({{ $fx: new Fe25519([0n, 0n, 0n, 0n]), $fy: new Fe25519([1n, 0n, 0n, 0n]), $fz: new Fe25519([1n, 0n, 0n, 0n]), $ft: new Fe25519([0n, 0n, 0n, 0n]) }})")?;
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
+                        // Integer associated consts: `u32::MAX` / `usize::BITS` / etc.
+                        // usize is treated as 64-bit (see primitive_bit_width).
                         if let Some(val) = int_assoc_const(&resolved[0], &resolved[1]) {
                             write!(f, "{}", val)?;
                             return Ok(());
