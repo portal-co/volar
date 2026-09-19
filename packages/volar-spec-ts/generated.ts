@@ -6234,7 +6234,7 @@ export function circuit_bootstrap(n_lwe: bigint, big_n: bigint, log_q: bigint, l
 {
   const delta = wire_delta(log_q_lwe, Number(k_max));
   const centered = binfhe_lwe_add_const(ct, (delta / 2n));
-  const rows = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  const rows = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const test_poly = level_test_poly(big_n, log_q, j, bs_base_log, k_max);
   const acc = binfhe_blind_rotate(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, centered, test_poly, cbk.$fbk.$fbsk);
   const extracted = binfhe_sample_extract(acc);
@@ -7732,13 +7732,13 @@ export function gen_abo<B, D>(ctx: { newD: () => any, BClass: { new(...args: any
 
 export function gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, bs_bg_log: bigint, ks_bg_log: bigint, lwe_sk: LweSecretKeyDyn, rlwe_sk: RlweSecretKeyDyn, bs_noise_bits: bigint, ks_noise_bits: bigint, rng: any): BootstrappingKeyDyn
 {
-  const bsk = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const bsk = Array.from({length: Number(n_lwe - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const bit = !__equals(lwe_sk.$fkey[Number(i)], 0n);
   return rgsw_encrypt(big_n, bs_ell, bs_bg_log, bit, rlwe_sk, bs_noise_bits, rng);
 })());
-  const ksk_array: LweCiphertextDyn[][] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const ksk_array: LweCiphertextDyn[][] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const s_bit = rlwe_sk.$fkey[Number(i)];
-  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  return Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const shift = (32n - (Number(fieldMul(ks_bg_log, fieldAdd(j, 1n)))));
   const msg_val = (((s_bit) << (shift)) & 0xFFFFFFFFn);
   return lwe_encrypt_raw(n_lwe, msg_val, lwe_sk, ks_noise_bits, rng);
@@ -7785,10 +7785,10 @@ export function gen_circuit_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, l
   return encrypt_scaled_poly(big_n, log_q, eta, msg, l, priv_base_log, rlwe_sk, rng);
 })()));
   }
-  const a_body = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  const a_body = Array.from({length: Number(priv_ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
   return encrypt_scaled_poly(big_n, log_q, eta, neg_sk, l, priv_base_log, rlwe_sk, rng);
 })());
-  const b_body = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  const b_body = Array.from({length: Number(priv_ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
   return encrypt_scaled_poly(big_n, log_q, eta, one_const, l, priv_base_log, rlwe_sk, rng);
 })());
   return new CircuitBootstrappingKeyDyn({ $fbk: bk, $fprivksk: new PrivateKeySwitchingKeyDyn({ $fa_col: a_col, $fb_col: b_col, $fa_body: a_body, $fb_body: b_body, $fbig_n: 0n, $fpriv_ell: 0n }), $fn_lwe: 0n, $fbig_n: 0n, $fbs_ell: 0n, $fks_ell: 0n, $fpriv_ell: 0n });
@@ -9299,7 +9299,7 @@ export function rgsw_encrypt<R>(big_n: bigint, bs_ell: bigint, bs_bg_log: bigint
 } else {
   return 0n;
 } })();
-  const rows = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  const rows = Array.from({length: Number(bs_ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const shift = (32n - (Number(fieldMul(bs_bg_log, fieldAdd(j, 1n)))));
   const g_factor = (((1n) << (shift)) & 0xFFFFFFFFn);
   const contrib = BigInt(Math.imul(Number(msg_bit), Number(g_factor)));

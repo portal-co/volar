@@ -6016,10 +6016,10 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
     encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, msg, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>());
 };
-    let a_body = (0..n).map(|l| {
+    let a_body = (0..priv_ell).map(|l| {
     encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, &neg_sk, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>();
-    let b_body = (0..n).map(|l| {
+    let b_body = (0..priv_ell).map(|l| {
     encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, &one_const, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>();
     CircuitBootstrappingKeyDyn { bk: bk, privksk: PrivateKeySwitchingKeyDyn { a_col: a_col, b_col: b_col, a_body: a_body, b_body: b_body, big_n: 0, priv_ell: 0 }, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0, priv_ell: 0 }
@@ -6074,7 +6074,7 @@ pub fn circuit_bootstrap(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, m
 {
     let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, (k_max as usize));
     let centered = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(ct, (delta / 2));
-    let rows = (0..n).map(|j| {
+    let rows = (0..ell).map(|j| {
     let test_poly = level_test_poly::<BIG_N, LOG_Q>(big_n, log_q, j, bs_base_log, k_max);
     let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, &centered, &test_poly, &cbk.bk.bsk);
     let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(&acc);
@@ -6878,13 +6878,13 @@ pub fn gen_rlwe_secret_key<R: SpecRng>(mut big_n: usize, mut rng: &mut R) -> Rlw
 
 pub fn gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut bs_ell: usize, mut ks_ell: usize, mut bs_bg_log: usize, mut ks_bg_log: usize, mut lwe_sk: &LweSecretKeyDyn, mut rlwe_sk: &RlweSecretKeyDyn, mut bs_noise_bits: u32, mut ks_noise_bits: u32, mut rng: &mut R) -> BootstrappingKeyDyn
 {
-    let bsk = (0..n).map(|i| {
+    let bsk = (0..n_lwe).map(|i| {
     let bit = lwe_sk.key[i] != 0;
     rgsw_encrypt::<BIG_N, BS_ELL, BS_BG_LOG, _>(big_n, bs_ell, bs_bg_log, bit, rlwe_sk, bs_noise_bits, rng)
 }).collect::<Vec<_>>();
-    let ksk_array: [[LweCiphertextDyn; KS_ELL]; BIG_N] = (0..n).map(|i| {
+    let ksk_array: [[LweCiphertextDyn; KS_ELL]; BIG_N] = (0..big_n).map(|i| {
     let s_bit = rlwe_sk.key[i];
-    (0..n).map(|j| {
+    (0..big_n).map(|j| {
     let shift = 32.saturating_sub(((ks_bg_log * (j + 1)) as u32));
     let msg_val = s_bit.wrapping_shl(shift);
     lwe_encrypt_raw(n_lwe, msg_val, lwe_sk, ks_noise_bits, rng)
@@ -6919,7 +6919,7 @@ pub fn rgsw_encrypt<R: SpecRng>(mut big_n: usize, mut bs_ell: usize, mut bs_bg_l
 } else {
     0
 };
-    let rows = (0..n).map(|j| {
+    let rows = (0..bs_ell).map(|j| {
     let shift = 32.saturating_sub(((bs_bg_log * (j + 1)) as u32));
     let g_factor = 1.wrapping_shl(shift);
     let contrib = msg_bit.wrapping_mul(g_factor);

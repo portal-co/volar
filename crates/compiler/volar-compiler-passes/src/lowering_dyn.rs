@@ -92,6 +92,10 @@ pub struct LoweringContext {
     /// A generic `Foo` normally becomes `FooDyn`; if the source already
     /// declares a concrete `FooDyn`, use `FooLoweredDyn` instead.
     pub lowered_struct_names: BTreeMap<String, String>,
+    /// Bare struct name → (field name → field type), for resolving a
+    /// struct-expression field's declared array length during placeholder
+    /// length inference (`from_fn` without turbofish). Built once per module.
+    pub struct_field_types: BTreeMap<String, BTreeMap<String, IrType>>,
 }
 
 impl LoweringContext {
@@ -355,11 +359,28 @@ impl LoweringContext {
             }
         }
 
+        // Bare struct name → field name → field type (for placeholder length
+        // inference against struct-expression field types).
+        let struct_field_types: BTreeMap<String, BTreeMap<String, IrType>> = module
+            .structs
+            .iter()
+            .map(|s| {
+                (
+                    s.kind.to_string(),
+                    s.fields
+                        .iter()
+                        .map(|fl| (fl.name.clone(), fl.ty.clone()))
+                        .collect(),
+                )
+            })
+            .collect();
+
         Self {
             struct_info,
             length_aliases,
             fn_length_params,
             lowered_struct_names,
+            struct_field_types,
         }
     }
 }
@@ -856,6 +877,17 @@ fn lower_function_dyn(
             .collect::<Vec<_>>(),
     );
 
+    // Resolve `from_fn`/array placeholders (`let rows = from_fn(...); ...; Struct { rows }`)
+    // to the use-site's declared array length. `bound` = every name in scope (params +
+    // lowered length generics), so a free lowercase var is an unresolved placeholder.
+    {
+        let mut bound: BTreeSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        for g in fn_gen.iter().chain(impl_gen.iter()) {
+            bound.insert(g.name.to_lowercase());
+        }
+        resolve_placeholder_lengths(&mut body, &bound, ctx, &fn_gen);
+    }
+
     // Unpack witnesses in methods
     if f.receiver.is_some() {
         if let Some(sname) = self_struct {
@@ -944,6 +976,338 @@ fn lower_function_dyn(
         where_clause: lower_where_clause_dyn(&f.where_clause, ctx, &combined_gen),
         body,
         external_kind: f.external_kind,
+    }
+}
+
+/// Find the expected array length at the use-site of `name`, by scanning `expr`
+/// for a `StructExpr` field whose value is exactly `Var(name)` and returning that
+/// field's declared array length as a runtime expression. Returns `None` if the
+/// use-site isn't a struct field with a resolvable array length.
+fn find_use_length_of_var(
+    expr: &IrExpr,
+    name: &str,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) -> Option<IrExpr> {
+    match &expr.kind {
+        IrExprKind::StructExpr { kind, fields, rest, .. } => {
+            let lowered_name = kind.to_string();
+            // struct_field_types is keyed by the *source* struct name; a lowered
+            // `FooDyn` reference must look up `Foo`.
+            let sname = ctx
+                .lowered_struct_names
+                .iter()
+                .find(|(_, dyn_name)| **dyn_name == lowered_name)
+                .map(|(src, _)| src.clone())
+                .unwrap_or(lowered_name);
+            for (field_name, val) in fields {
+                // Direct use: `Field { name: <name>, .. }`
+                if let IrExprKind::Var(v) = &val.kind {
+                    if v == name {
+                        if let Some(field_ty) = ctx
+                            .struct_field_types
+                            .get(&sname)
+                            .and_then(|m| m.get(field_name))
+                        {
+                            // Only a statically-known array length can be resolved;
+                            // a Vector's length is runtime-dynamic (not resolvable here).
+                            if let IrType::Array { len, .. } = field_ty {
+                                return Some(array_length_to_expr(len, fn_gen, ctx));
+                            }
+                        }
+                    }
+                }
+                // Recurse into field values (name may be nested).
+                if let Some(found) = find_use_length_of_var(val, name, ctx, fn_gen) {
+                    return Some(found);
+                }
+            }
+            if let Some(r) = rest {
+                return find_use_length_of_var(r, name, ctx, fn_gen);
+            }
+            None
+        }
+        IrExprKind::Binary { left, right, .. } => {
+            find_use_length_of_var(left, name, ctx, fn_gen)
+                .or_else(|| find_use_length_of_var(right, name, ctx, fn_gen))
+        }
+        IrExprKind::Unary { expr: e, .. } => find_use_length_of_var(e, name, ctx, fn_gen),
+        IrExprKind::Call { func, args } => {
+            for a in args {
+                if let Some(found) = find_use_length_of_var(a, name, ctx, fn_gen) {
+                    return Some(found);
+                }
+            }
+            find_use_length_of_var(func, name, ctx, fn_gen)
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            find_use_length_of_var(receiver, name, ctx, fn_gen).or_else(|| {
+                args.iter()
+                    .find_map(|a| find_use_length_of_var(a, name, ctx, fn_gen))
+            })
+        }
+        IrExprKind::Block(b) => find_use_length_of_var_in_block(b, name, ctx, fn_gen),
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => find_use_length_of_var(cond, name, ctx, fn_gen)
+            .or_else(|| find_use_length_of_var_in_block(then_branch, name, ctx, fn_gen))
+            .or_else(|| {
+                else_branch
+                    .as_ref()
+                    .and_then(|eb| find_use_length_of_var(eb, name, ctx, fn_gen))
+            }),
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => es
+            .iter()
+            .find_map(|e| find_use_length_of_var(e, name, ctx, fn_gen)),
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            find_use_length_of_var(e, name, ctx, fn_gen)
+        }
+        IrExprKind::Closure { body, .. } => find_use_length_of_var(body, name, ctx, fn_gen),
+        _ => None,
+    }
+}
+
+fn find_use_length_of_var_in_block(
+    block: &IrBlock,
+    name: &str,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) -> Option<IrExpr> {
+    for s in &block.stmts {
+        match &s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+                if let Some(found) = find_use_length_of_var(e, name, ctx, fn_gen) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    block
+        .expr
+        .as_ref()
+        .and_then(|e| find_use_length_of_var(e, name, ctx, fn_gen))
+}
+
+/// Resolve `from_fn`/array placeholders: for each `let name = init` whose `init`
+/// references a placeholder length var (a bare `N` → `n` that isn't bound to any
+/// in-scope length generic), find the expected array length at `name`'s use-site
+/// (a struct-field assignment with a statically-known array length) and rewrite
+/// the placeholder in `init` to that length's runtime expression.
+///
+/// This is a bounded instance of the "weak type inference" the pipeline doc calls
+/// for: it only fires when the use-site length is unambiguous (a struct field with
+/// an array type), which covers the dominant spec pattern
+/// (`let rows = from_fn(...); ...; RgswCiphertext { rows }`).
+fn resolve_placeholder_lengths(
+    block: &mut IrBlock,
+    bound: &BTreeSet<String>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) {
+    // Collect the let-bound names and their length-position placeholder first.
+    // We only rewrite the *length* of an array-producing init (a from_fn-lowered
+    // IterPipeline's Range end, or an ArrayGenerate len) — never arbitrary free
+    // vars in the element body (those are closure-internal locals).
+    struct PendingFix {
+        /// The let-bound variable whose init holds the placeholder.
+        bound_name: String,
+        /// The placeholder var inside the init's length position to rewrite.
+        placeholder: String,
+        /// The resolved length expression to splice in.
+        resolved: IrExpr,
+    }
+    let mut fixes: Vec<PendingFix> = Vec::new();
+
+    for (i, stmt) in block.stmts.iter().enumerate() {
+        let IrStmtKind::Let { pattern, init: Some(init), .. } = &stmt.kind else {
+            continue;
+        };
+        let IrPattern::Ident { name, .. } = pattern else {
+            continue;
+        };
+        // Only the length-position placeholder of an array producer is a candidate.
+        let mut placeholders = Vec::new();
+        collect_length_placeholder(init, bound, &mut placeholders);
+        for ph in placeholders {
+            // Find this let's variable used downstream (statements after i, plus tail).
+            let mut resolved = None;
+            for later in &block.stmts[i + 1..] {
+                match &later.kind {
+                    IrStmtKind::Let { init: Some(e), .. }
+                    | IrStmtKind::Semi(e)
+                    | IrStmtKind::Expr(e) => {
+                        if let Some(r) = find_use_length_of_var(e, name, ctx, fn_gen) {
+                            resolved = Some(r);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if resolved.is_none() {
+                if let Some(tail) = &block.expr {
+                    resolved = find_use_length_of_var(tail, name, ctx, fn_gen);
+                }
+            }
+            if let Some(resolved) = resolved {
+                fixes.push(PendingFix {
+                    bound_name: name.clone(),
+                    placeholder: ph,
+                    resolved,
+                });
+            }
+        }
+    }
+
+    // Apply the fixes: rewrite the placeholder inside each let's init. The resolved
+    // expr may itself be a complex expression; substitute it for the placeholder Var.
+    for fix in fixes {
+        for stmt in block.stmts.iter_mut() {
+            if let IrStmtKind::Let { pattern, init: Some(init), .. } = &mut stmt.kind {
+                if matches!(&pattern, IrPattern::Ident { name, .. } if name == &fix.bound_name) {
+                    substitute_var_with_expr(init, &fix.placeholder, &fix.resolved);
+                }
+            }
+        }
+    }
+}
+
+/// Replace every free occurrence of `Var(old)` in `expr` with a clone of `replacement`.
+fn substitute_var_with_expr(expr: &mut IrExpr, old: &str, replacement: &IrExpr) {
+    if matches!(&expr.kind, IrExprKind::Var(v) if v == old) {
+        *expr = replacement.clone();
+        return;
+    }
+    // Recurse through the same structure as rename_var_in_expr.
+    match &mut expr.kind {
+        IrExprKind::Binary { left, right, .. } => {
+            substitute_var_with_expr(left, old, replacement);
+            substitute_var_with_expr(right, old, replacement);
+        }
+        IrExprKind::Unary { expr: e, .. } => substitute_var_with_expr(e, old, replacement),
+        IrExprKind::Field { base, .. } => substitute_var_with_expr(base, old, replacement),
+        IrExprKind::Index { base, index } => {
+            substitute_var_with_expr(base, old, replacement);
+            substitute_var_with_expr(index, old, replacement);
+        }
+        IrExprKind::Call { func, args } => {
+            substitute_var_with_expr(func, old, replacement);
+            for a in args {
+                substitute_var_with_expr(a, old, replacement);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            substitute_var_with_expr(receiver, old, replacement);
+            for a in args {
+                substitute_var_with_expr(a, old, replacement);
+            }
+        }
+        IrExprKind::IterPipeline(chain) => substitute_var_in_iter_chain(chain, old, replacement),
+        IrExprKind::ArrayGenerate { body, .. } => substitute_var_with_expr(body, old, replacement),
+        IrExprKind::Block(b) => substitute_var_in_block(b, old, replacement),
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            substitute_var_with_expr(cond, old, replacement);
+            substitute_var_in_block(then_branch, old, replacement);
+            if let Some(eb) = else_branch {
+                substitute_var_with_expr(eb, old, replacement);
+            }
+        }
+        IrExprKind::StructExpr { fields, rest, .. } => {
+            for (_, e) in fields {
+                substitute_var_with_expr(e, old, replacement);
+            }
+            if let Some(r) = rest {
+                substitute_var_with_expr(r, old, replacement);
+            }
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                substitute_var_with_expr(e, old, replacement);
+            }
+        }
+        IrExprKind::Repeat { elem, len } => {
+            substitute_var_with_expr(elem, old, replacement);
+            substitute_var_with_expr(len, old, replacement);
+        }
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            substitute_var_with_expr(e, old, replacement)
+        }
+        IrExprKind::Closure { body, .. } => substitute_var_with_expr(body, old, replacement),
+        IrExprKind::RawMap { receiver, body, .. } => {
+            substitute_var_with_expr(receiver, old, replacement);
+            substitute_var_with_expr(body, old, replacement);
+        }
+        IrExprKind::RawZip {
+            left, right, body, ..
+        } => {
+            substitute_var_with_expr(left, old, replacement);
+            substitute_var_with_expr(right, old, replacement);
+            substitute_var_with_expr(body, old, replacement);
+        }
+        IrExprKind::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
+            substitute_var_with_expr(receiver, old, replacement);
+            substitute_var_with_expr(init, old, replacement);
+            substitute_var_with_expr(body, old, replacement);
+        }
+        _ => {}
+    }
+}
+
+fn substitute_var_in_block(block: &mut IrBlock, old: &str, replacement: &IrExpr) {
+    for s in &mut block.stmts {
+        match &mut s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+                substitute_var_with_expr(e, old, replacement)
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = &mut block.expr {
+        substitute_var_with_expr(e, old, replacement);
+    }
+}
+
+fn substitute_var_in_iter_chain(chain: &mut IrIterChain, old: &str, replacement: &IrExpr) {
+    match &mut chain.source {
+        IterChainSource::Method { collection, .. } => {
+            substitute_var_with_expr(collection, old, replacement)
+        }
+        IterChainSource::Range { start, end, .. } => {
+            substitute_var_with_expr(start, old, replacement);
+            substitute_var_with_expr(end, old, replacement);
+        }
+        IterChainSource::Zip { left, right } => {
+            substitute_var_in_iter_chain(left, old, replacement);
+            substitute_var_in_iter_chain(right, old, replacement);
+        }
+    }
+    for step in &mut chain.steps {
+        match step {
+            IterStep::Map { body, .. }
+            | IterStep::Filter { body, .. }
+            | IterStep::FilterMap { body, .. }
+            | IterStep::FlatMap { body, .. } => substitute_var_with_expr(body, old, replacement),
+            IterStep::Take { count } | IterStep::Skip { count } => {
+                substitute_var_with_expr(count, old, replacement)
+            }
+            _ => {}
+        }
+    }
+    if let IterTerminal::Fold { init, body, .. } = &mut chain.terminal {
+        substitute_var_with_expr(init, old, replacement);
+        substitute_var_with_expr(body, old, replacement);
     }
 }
 
@@ -1427,6 +1791,209 @@ fn rename_var_in_iter_chain(chain: &mut IrIterChain, old: &str, new_name: &str) 
             rename_var_in_expr(body, old, new_name);
         }
         IterTerminal::Collect | IterTerminal::CollectTyped(_) | IterTerminal::Lazy => {}
+    }
+}
+
+/// Extract the length-position placeholder var from an array-producing expr:
+/// a `from_fn`-lowered `IterPipeline` whose source is a `Range` ending in a bare
+/// placeholder var, or an `ArrayGenerate` whose len is one. Only the *length*
+/// expression is examined (never the element body, whose free vars are closure
+/// locals). Recurses through transparent wrappers (blocks, casts, Try, clones).
+fn collect_length_placeholder(expr: &IrExpr, bound: &BTreeSet<String>, out: &mut Vec<String>) {
+    // A var is a length placeholder iff it's lowercase-ish and not bound in scope.
+    let is_ph = |v: &str| {
+        !bound.contains(v)
+            && v.chars().next().map_or(false, |c| c.is_lowercase())
+            && v.chars().all(|c| c.is_lowercase() || c.is_ascii_digit() || c == '_')
+            && v != "self"
+            && v != "ctx"
+    };
+    match &expr.kind {
+        IrExprKind::IterPipeline(chain) => {
+            if let IterChainSource::Range { end, .. } = &chain.source {
+                if let IrExprKind::Var(v) = &end.kind {
+                    if is_ph(v) && !out.contains(v) {
+                        out.push(v.clone());
+                    }
+                }
+            }
+        }
+        IrExprKind::ArrayGenerate { .. } => {
+            // ArrayGenerate carries an ArrayLength, not an IrExpr; its placeholder was
+            // already collapsed to `TypeParam("n")`. We resolve via the use-site and
+            // rewrite at the ArrayGenerate level separately (handled by the caller).
+            // Here, just record the conventional placeholder name if the len is a
+            // bare type-param placeholder.
+        }
+        // Transparent wrappers — recurse.
+        IrExprKind::Block(b) => {
+            if let Some(tail) = &b.expr {
+                collect_length_placeholder(tail, bound, out);
+            }
+        }
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            collect_length_placeholder(e, bound, out)
+        }
+        IrExprKind::MethodCall { receiver, args, .. }
+            if matches!(&receiver.kind, IrExprKind::IterPipeline(_)) =>
+        {
+            collect_length_placeholder(receiver, bound, out);
+            for a in args {
+                collect_length_placeholder(a, bound, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect free lowercase variable references in `expr` that are not in `bound`
+/// and are not known non-length names — candidates for an unresolved `from_fn`
+/// length placeholder (the parser emits bare `N` → `n` when no turbofish is
+/// given). Conservative: only names of the form `n`, `len_*`, `<single lowercase
+/// letter>`, or `<name>_<field>` produced by the placeholder fallback.
+fn collect_placeholder_vars(expr: &IrExpr, bound: &BTreeSet<String>, out: &mut Vec<String>) {
+    match &expr.kind {
+        IrExprKind::Var(v) => {
+            let is_placeholder = !bound.contains(v)
+                && v.chars().next().map_or(false, |c| c.is_lowercase())
+                && v.chars().all(|c| c.is_lowercase() || c.is_ascii_digit() || c == '_')
+                // Exclude obvious non-length locals/keywords that are legitimately free
+                // at this stage (they'd be bound elsewhere or are builtins).
+                && v != "self"
+                && v != "ctx";
+            if is_placeholder && !out.contains(v) {
+                out.push(v.clone());
+            }
+        }
+        IrExprKind::Binary { left, right, .. } => {
+            collect_placeholder_vars(left, bound, out);
+            collect_placeholder_vars(right, bound, out);
+        }
+        IrExprKind::Unary { expr: e, .. } => collect_placeholder_vars(e, bound, out),
+        IrExprKind::Field { base, .. } => collect_placeholder_vars(base, bound, out),
+        IrExprKind::Index { base, index } => {
+            collect_placeholder_vars(base, bound, out);
+            collect_placeholder_vars(index, bound, out);
+        }
+        IrExprKind::Call { func, args } => {
+            collect_placeholder_vars(func, bound, out);
+            for a in args {
+                collect_placeholder_vars(a, bound, out);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            collect_placeholder_vars(receiver, bound, out);
+            for a in args {
+                collect_placeholder_vars(a, bound, out);
+            }
+        }
+        IrExprKind::IterPipeline(chain) => collect_placeholder_vars_chain(chain, bound, out),
+        IrExprKind::ArrayGenerate { body, .. } => collect_placeholder_vars(body, bound, out),
+        IrExprKind::Block(b) => collect_placeholder_vars_block(b, bound, out),
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_placeholder_vars(cond, bound, out);
+            collect_placeholder_vars_block(then_branch, bound, out);
+            if let Some(eb) = else_branch {
+                collect_placeholder_vars(eb, bound, out);
+            }
+        }
+        IrExprKind::StructExpr { fields, rest, .. } => {
+            for (_, e) in fields {
+                collect_placeholder_vars(e, bound, out);
+            }
+            if let Some(r) = rest {
+                collect_placeholder_vars(r, bound, out);
+            }
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                collect_placeholder_vars(e, bound, out);
+            }
+        }
+        IrExprKind::Repeat { elem, len } => {
+            collect_placeholder_vars(elem, bound, out);
+            collect_placeholder_vars(len, bound, out);
+        }
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            collect_placeholder_vars(e, bound, out)
+        }
+        IrExprKind::Closure { body, .. } => collect_placeholder_vars(body, bound, out),
+        IrExprKind::RawMap { receiver, body, .. } => {
+            collect_placeholder_vars(receiver, bound, out);
+            collect_placeholder_vars(body, bound, out);
+        }
+        IrExprKind::RawZip {
+            left, right, body, ..
+        } => {
+            collect_placeholder_vars(left, bound, out);
+            collect_placeholder_vars(right, bound, out);
+            collect_placeholder_vars(body, bound, out);
+        }
+        IrExprKind::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
+            collect_placeholder_vars(receiver, bound, out);
+            collect_placeholder_vars(init, bound, out);
+            collect_placeholder_vars(body, bound, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_placeholder_vars_block(block: &IrBlock, bound: &BTreeSet<String>, out: &mut Vec<String>) {
+    for s in &block.stmts {
+        match &s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+                collect_placeholder_vars(e, bound, out)
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = &block.expr {
+        collect_placeholder_vars(e, bound, out);
+    }
+}
+
+fn collect_placeholder_vars_chain(
+    chain: &IrIterChain,
+    bound: &BTreeSet<String>,
+    out: &mut Vec<String>,
+) {
+    match &chain.source {
+        IterChainSource::Method { collection, .. } => {
+            collect_placeholder_vars(collection, bound, out)
+        }
+        IterChainSource::Range { start, end, .. } => {
+            collect_placeholder_vars(start, bound, out);
+            collect_placeholder_vars(end, bound, out);
+        }
+        IterChainSource::Zip { left, right } => {
+            collect_placeholder_vars_chain(left, bound, out);
+            collect_placeholder_vars_chain(right, bound, out);
+        }
+    }
+    for step in &chain.steps {
+        match step {
+            IterStep::Map { body, .. }
+            | IterStep::Filter { body, .. }
+            | IterStep::FilterMap { body, .. }
+            | IterStep::FlatMap { body, .. } => collect_placeholder_vars(body, bound, out),
+            IterStep::Take { count } | IterStep::Skip { count } => {
+                collect_placeholder_vars(count, bound, out)
+            }
+            _ => {}
+        }
+    }
+    if let IterTerminal::Fold { init, body, .. } = &chain.terminal {
+        collect_placeholder_vars(init, bound, out);
+        collect_placeholder_vars(body, bound, out);
     }
 }
 
