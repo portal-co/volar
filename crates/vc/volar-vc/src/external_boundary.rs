@@ -17,6 +17,8 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use digest::Digest;
+use sha2::Sha256;
 use volar_ir::boolar::{BIrBlocks, BIrStmt, BIrTerminator};
 use volar_ir::ir::{IRBlockTargetId, IRVarId};
 use volar_ir_common::{ActionExecutionPolicy, OracleExecutionKind, OracleExecutionPolicy};
@@ -280,10 +282,11 @@ pub fn plan_external_boundaries(
 ///
 /// Callers must supply policy registries from validated declarations. Unlike
 /// the legacy schedule compiler, this function never invents an evaluator
-/// policy for a missing declaration. It conservatively leaves
-/// `oracle_equivalence` unset: a source adapter needs a declaration/profile
-/// aware canonical argument encoding before it may authorize cross-occurrence
-/// oracle CSE.
+/// policy for a missing declaration. It derives `oracle_equivalence` only
+/// from a non-legacy declaration fingerprint, execution/reveal profile, exact
+/// canonical `IRVarId` argument identity, and declared result geometry. The
+/// zero compatibility fingerprint disables cross-occurrence CSE until
+/// frontend migration provides a real declaration identity.
 ///
 /// Storage requests are linked in their source storage-chain order. Action and
 /// storage receive no artificial cross-chain edge; ordinary value dependencies
@@ -420,7 +423,12 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
                     depends_on: dependencies,
                     demanded: false,
                     action_ordinal: None,
-                    oracle_equivalence: None,
+                    oracle_equivalence: canonical_oracle_equivalence(
+                        name,
+                        policy,
+                        declared_output_bits,
+                        args,
+                    ),
                 });
                 request_index.insert(id, requests.len() - 1);
                 call_requests.insert(produced, (id, *num_bits));
@@ -479,7 +487,12 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
                             depends_on: dependencies,
                             demanded: false,
                             action_ordinal: None,
-                            oracle_equivalence: None,
+                            oracle_equivalence: canonical_oracle_equivalence(
+                                name,
+                                policy,
+                                declared_output_bits,
+                                args,
+                            ),
                         });
                         request_index.insert(id, requests.len() - 1);
                         direct_oracles
@@ -587,6 +600,45 @@ pub fn plan_boolar_external_boundaries<P: Clone>(
 
     let plan = plan_external_boundaries(&requests, limits).map_err(BoolarBoundaryError::Planner)?;
     Ok(BoolarExternalBoundaryPlan { plan, projections })
+}
+
+/// Canonical pure-oracle CSE key for an explicitly fingerprinted declaration.
+///
+/// `IRVarId` is identity-bearing compiler state here, not a source spelling.
+/// The all-zero legacy fingerprint has no declaration identity and is never
+/// used to authorize cross-occurrence sharing.
+fn canonical_oracle_equivalence(
+    name: &str,
+    policy: OracleExecutionPolicy,
+    output_bits: usize,
+    args: &[IRVarId],
+) -> Option<[u8; 32]> {
+    if policy.fingerprint == [0; 32] {
+        return None;
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"volar-vc/external-oracle-equivalence/v1");
+    digest.update(policy.fingerprint);
+    digest.update([match policy.execution {
+        OracleExecutionKind::Assigned => 0,
+        OracleExecutionKind::Replicated => 1,
+    }]);
+    digest.update([match policy.executor {
+        volar_ir_common::ExternalExecutor::Garbler => 0,
+        volar_ir_common::ExternalExecutor::Evaluator => 1,
+    }]);
+    digest.update([match policy.reveal {
+        volar_ir_common::ExternalRevealPolicy::ExecutorOnly => 0,
+        volar_ir_common::ExternalRevealPolicy::BothRoles => 1,
+    }]);
+    digest.update((output_bits as u64).to_le_bytes());
+    digest.update((name.len() as u64).to_le_bytes());
+    digest.update(name.as_bytes());
+    digest.update((args.len() as u64).to_le_bytes());
+    for argument in args {
+        digest.update(argument.0.to_le_bytes());
+    }
+    Some(digest.finalize().into())
 }
 
 fn boolar_statement_inputs(statement: &BIrStmt) -> Vec<IRVarId> {
@@ -761,6 +813,78 @@ mod tests {
                 request: ExternalRequestId(4),
                 bit: 0,
             }
+        );
+    }
+
+    #[test]
+    fn boolar_extraction_cses_explicitly_fingerprinted_oracles_by_ir_identity() {
+        let circuit = BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 1,
+                stmts: vec![
+                    Node::new(
+                        BIrStmt::OracleCall {
+                            name: "pure".into(),
+                            args: vec![IRVarId(0)],
+                            num_bits: 1,
+                        },
+                        (),
+                        None,
+                    ),
+                    Node::new(
+                        BIrStmt::OracleProjectedBit {
+                            call: IRVarId(1),
+                            bit: 0,
+                        },
+                        (),
+                        None,
+                    ),
+                    Node::new(
+                        BIrStmt::OracleCall {
+                            name: "pure".into(),
+                            args: vec![IRVarId(0)],
+                            num_bits: 1,
+                        },
+                        (),
+                        None,
+                    ),
+                    Node::new(
+                        BIrStmt::OracleProjectedBit {
+                            call: IRVarId(3),
+                            bit: 0,
+                        },
+                        (),
+                        None,
+                    ),
+                    Node::new(BIrStmt::Xor(IRVarId(2), IRVarId(4)), (), None),
+                ],
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(5)],
+                }),
+            }],
+            pre_init: vec![],
+        };
+        let policy = OracleExecutionPolicy {
+            execution: OracleExecutionKind::Assigned,
+            executor: ExternalExecutor::Evaluator,
+            reveal: ExternalRevealPolicy::BothRoles,
+            fingerprint: [0x91; 32],
+        };
+        let extracted = plan_boolar_external_boundaries(
+            &circuit,
+            &[],
+            &[("pure".into(), policy, 1)],
+            ExternalBatchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            extracted.plan.representative[&ExternalRequestId(3)],
+            ExternalRequestId(1)
+        );
+        assert_eq!(
+            extracted.plan.batches[0].requests,
+            vec![ExternalRequestId(1)]
         );
     }
 

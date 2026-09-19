@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 volar-mpc.workspace = true
-sha2 = { version = "0.11.0-rc.0", default-features = false, optional = true }
+sha2 = { version = "0.11.0-rc.0", default-features = false }
 volar-spec = { git = "https://github.com/portal-co/volar.git" }
 volar-ir.workspace = true
 volar-ir-common.workspace = true
@@ -45,4 +45,4 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 [features]
 default = []
 # std-only helpers (e.g. cross-process embedding over framed TCP).
-std = ["volar-mpc/std", "dep:sha2"]
+std = ["volar-mpc/std"]
