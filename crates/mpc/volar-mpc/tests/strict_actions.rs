@@ -7,18 +7,20 @@
 
 #![cfg(feature = "std")]
 
-use volar_mpc::ot::SeedRng;
+use volar_mpc::ot::{LoopbackOt, SeedRng};
 use volar_mpc::strict::{
-    StrictActionHost, StrictGarbledFull, eliminate_nots, garble_schedule_strict_dyn_full,
+    StrictActionHost, StrictGarbledFull, decode_external_batch_action_reveal, eliminate_nots,
+    garble_schedule_strict_dyn_full, offer_external_batch_action_result_labels,
     run_evaluator_strict_actions, run_garbler_strict_actions, validate_legacy_action_policy,
     validate_legacy_action_spec,
 };
+use volar_mpc::strict_cursor::StrictGateCursor;
 use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
 use volar_mpc::{
-    ActionSpec, ExternalExecutor, ExternalRevealPolicy, Gate, GateSchedule, InputOwner, MpcError,
+    ActionSpec, ExternalBatchFrame, ExternalBoundaryId, ExternalExecutor, ExternalRevealPolicy,
+    Gate, GateSchedule, InputOwner, MpcError,
 };
-use volar_spec::SpecRng;
-use volar_spec::garble::{Garble, GlobalSecret};
+use volar_spec::garble::{Eval, Garble, GlobalSecret};
 
 type N = hybrid_array::typenum::U16;
 type D = sha2::Sha256;
@@ -172,6 +174,54 @@ fn run_case(inputs: [bool; 4]) -> ([bool; 2], Vec<String>) {
     let garb_out = garbler.join().expect("garbler join").expect("garbler run");
     assert_eq!(eval_out, garb_out, "parties agree on the verdict");
     ([eval_out[0], eval_out[1]], host.calls)
+}
+
+#[test]
+fn batch_label_transport_binds_manifest_reveal_and_reinsertion() {
+    let schedule = action_schedule();
+    let elim = eliminate_nots(&schedule).unwrap();
+    let secret = GlobalSecret::<N>::new(det_bytes(0x55).into());
+    let inputs: Vec<Garble<N>> = (0..4).map(|index| det_label(20 + index)).collect();
+    let full = garble_schedule_strict_dyn_full::<N, D>(&elim, secret, inputs).unwrap();
+    let (manifest, binding) = full
+        .external_action_manifest(ExternalBoundaryId(7), [1; 32], [2; 32])
+        .unwrap();
+    let logical_inputs = [true, false, true, true];
+    let labels: Vec<Eval<N>> = full
+        .exec
+        .circuit
+        .input_labels
+        .iter()
+        .zip(logical_inputs)
+        .map(|(base, bit)| Eval {
+            target: full.exec.circuit.secret.encode(base, bit).target,
+        })
+        .collect();
+    let mut cursor = StrictGateCursor::new(&elim.schedule, &labels).unwrap();
+    let reveal = cursor.action_batch_reveal(&manifest, binding, 0).unwrap();
+    let clear = decode_external_batch_action_reveal(&full, &manifest, binding, 0, &reveal).unwrap();
+    assert_eq!(
+        clear,
+        ExternalBatchFrame::ClearInputs {
+            binding,
+            request_id: 0,
+            bits: vec![true, true, false, true, true, true, false, true, true],
+        }
+    );
+    let mut ot = LoopbackOt::new();
+    let result = ExternalBatchFrame::Result {
+        binding,
+        request_id: 0,
+        bits: vec![true, true, false, true],
+    };
+    offer_external_batch_action_result_labels::<N, D>(
+        &full, &manifest, binding, 0, &result, &mut ot,
+    )
+    .unwrap();
+    cursor
+        .reinsert_batch_action_result(&manifest, binding, 0, &result, &mut ot)
+        .unwrap();
+    assert_eq!(ot.pending(), 0);
 }
 
 #[test]

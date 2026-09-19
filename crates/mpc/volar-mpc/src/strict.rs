@@ -39,8 +39,9 @@ use volar_spec::vole::VoleArray;
 
 use crate::strict_cursor::{CursorState, StrictGateCursor};
 use crate::{
-    DynGarbledCircuit, DynGarbledExec, Eval, Gate, GateSchedule, InputOwner, MpcError, OtChannel,
-    SessionFrame, Transport,
+    DynGarbledCircuit, DynGarbledExec, Eval, ExternalBatchBinding, ExternalBatchFrame,
+    ExternalBatchManifest, Gate, GateSchedule, InputOwner, MpcError, OtChannel, SessionFrame,
+    Transport,
 };
 
 /// The result of [`eliminate_nots`]: a Not/One-free schedule plus the
@@ -299,6 +300,21 @@ pub struct StrictGarbledFull<N: VoleArray<u8>> {
     pub wire_bases: Vec<Garble<N>>,
 }
 
+impl<N: VoleArray<u8>> StrictGarbledFull<N> {
+    /// Construct the canonical action-only external manifest for this strict
+    /// schedule and bind it to caller-owned session/circuit digests.
+    pub fn external_action_manifest(
+        &self,
+        boundary: crate::ExternalBoundaryId,
+        session_digest: [u8; 32],
+        circuit_digest: [u8; 32],
+    ) -> Result<(ExternalBatchManifest, ExternalBatchBinding), MpcError> {
+        let manifest = ExternalBatchManifest::from_actions(boundary, &self.exec.schedule.actions)?;
+        let binding = manifest.bind(session_digest, circuit_digest);
+        Ok((manifest, binding))
+    }
+}
+
 /// The evaluator-hosted extern (action) executor for the strict-actions
 /// session: the evaluator runs the action (e.g. a network socket op) on the
 /// decoded logical argument bits.
@@ -438,6 +454,115 @@ where
         ot.send([&false_label.target, &true_label.target]);
     }
     Ok(())
+}
+
+/// Decode a versioned external-batch reveal into the clear-input frame used by
+/// the explicit evaluator-host executor.
+///
+/// This is the garbler half of batch label transport. It verifies the public
+/// manifest/binding/request before exact-match decoding labels, and only then
+/// emits a request-bound clear-input envelope. It supports the conservative
+/// evaluator + `BothRoles` action profile exclusively.
+pub fn decode_external_batch_action_reveal<N: VoleArray<u8>>(
+    full: &StrictGarbledFull<N>,
+    manifest: &ExternalBatchManifest,
+    binding: ExternalBatchBinding,
+    call: usize,
+    frame: &ExternalBatchFrame,
+) -> Result<ExternalBatchFrame, MpcError> {
+    manifest
+        .validate()
+        .map_err(|_| MpcError::MalformedSchedule)?;
+    frame
+        .validate_request(manifest, binding)
+        .map_err(|_| MpcError::UnexpectedMessage)?;
+    let ExternalBatchFrame::Reveal {
+        binding: received_binding,
+        request_id,
+        labels,
+    } = frame
+    else {
+        return Err(MpcError::UnexpectedMessage);
+    };
+    if *received_binding != binding {
+        return Err(MpcError::UnexpectedMessage);
+    }
+    let spec = full
+        .exec
+        .schedule
+        .actions
+        .get(call)
+        .ok_or(MpcError::MalformedSchedule)?;
+    let entry = manifest
+        .actions
+        .iter()
+        .find(|entry| entry.request_id == spec.request_id)
+        .ok_or(MpcError::UnexpectedMessage)?;
+    if *request_id != spec.request_id
+        || entry.execution != spec.execution
+        || entry.output_bits != spec.num_bits
+    {
+        return Err(MpcError::UnexpectedMessage);
+    }
+    let bits = decode_legacy_action_reveal(full, call, *request_id, labels)?;
+    Ok(ExternalBatchFrame::ClearInputs {
+        binding,
+        request_id: *request_id,
+        bits,
+    })
+}
+
+/// Validate an external-batch result then offer its request-bound label pairs
+/// through OT for evaluator-side reinsertion.
+///
+/// The clear result bits are never used by this garbler role: OT delivers only
+/// the evaluator-selected labels whose bases are derived from this action's
+/// guard/argument bases and output bit positions.
+pub fn offer_external_batch_action_result_labels<N, D>(
+    full: &StrictGarbledFull<N>,
+    manifest: &ExternalBatchManifest,
+    binding: ExternalBatchBinding,
+    call: usize,
+    frame: &ExternalBatchFrame,
+    ot: &mut dyn OtChannel<N>,
+) -> Result<(), MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    manifest
+        .validate()
+        .map_err(|_| MpcError::MalformedSchedule)?;
+    frame
+        .validate_request(manifest, binding)
+        .map_err(|_| MpcError::UnexpectedMessage)?;
+    let ExternalBatchFrame::Result {
+        binding: received_binding,
+        request_id,
+        ..
+    } = frame
+    else {
+        return Err(MpcError::UnexpectedMessage);
+    };
+    let spec = full
+        .exec
+        .schedule
+        .actions
+        .get(call)
+        .ok_or(MpcError::MalformedSchedule)?;
+    let entry = manifest
+        .actions
+        .iter()
+        .find(|entry| entry.request_id == spec.request_id)
+        .ok_or(MpcError::UnexpectedMessage)?;
+    if *received_binding != binding
+        || *request_id != spec.request_id
+        || entry.execution != spec.execution
+        || entry.output_bits != spec.num_bits
+    {
+        return Err(MpcError::UnexpectedMessage);
+    }
+    offer_legacy_action_result_labels::<N, D>(full, call, ot)
 }
 
 /// The strict garbler role for a schedule carrying actions

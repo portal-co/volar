@@ -13,8 +13,9 @@ use volar_spec::vole::VoleArray;
 
 use crate::strict::StrictActionHost;
 use crate::{
-    ActionSpec, Gate, GateSchedule, GramDrive, MpcError, OtChannel, SessionFrame, Transport,
-    arr_to_vec, gram_data_base,
+    ActionSpec, ExternalBatchBinding, ExternalBatchFrame, ExternalBatchManifest, Gate,
+    GateSchedule, GramDrive, MpcError, OtChannel, SessionFrame, Transport, arr_to_vec,
+    gram_data_base,
 };
 
 /// Result of advancing [`StrictGateCursor`] through free/interactive gates.
@@ -154,6 +155,37 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
         Ok((spec.request_id, labels))
     }
 
+    /// Build a versioned batch reveal frame for the next paused action.
+    pub fn action_batch_reveal(
+        &self,
+        manifest: &ExternalBatchManifest,
+        binding: ExternalBatchBinding,
+        call: u32,
+    ) -> Result<ExternalBatchFrame, MpcError> {
+        manifest
+            .validate()
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        let (request_id, labels) = self.action_reveal_labels(call)?;
+        let spec = self
+            .schedule
+            .actions
+            .get(call as usize)
+            .ok_or(MpcError::MalformedSchedule)?;
+        let entry = manifest
+            .actions
+            .iter()
+            .find(|entry| entry.request_id == request_id)
+            .ok_or(MpcError::UnexpectedMessage)?;
+        if entry.execution != spec.execution || entry.output_bits != spec.num_bits {
+            return Err(MpcError::UnexpectedMessage);
+        }
+        Ok(ExternalBatchFrame::Reveal {
+            binding,
+            request_id,
+            labels,
+        })
+    }
+
     /// Reinsert one evaluator-selected action result through OT labels.
     ///
     /// The supplied clear bits are used only as OT choices; the cursor stores
@@ -192,6 +224,51 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
                 .collect(),
         );
         Ok(())
+    }
+
+    /// Reinsert a validated versioned batch result through request-bound OT
+    /// labels. The caller must have received the result label pairs from the
+    /// matching garbler action adapter first.
+    pub fn reinsert_batch_action_result(
+        &mut self,
+        manifest: &ExternalBatchManifest,
+        binding: ExternalBatchBinding,
+        call: u32,
+        frame: &ExternalBatchFrame,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        manifest
+            .validate()
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        frame
+            .validate_request(manifest, binding)
+            .map_err(|_| MpcError::UnexpectedMessage)?;
+        let ExternalBatchFrame::Result {
+            binding: received_binding,
+            request_id,
+            bits,
+        } = frame
+        else {
+            return Err(MpcError::UnexpectedMessage);
+        };
+        let spec = self
+            .schedule
+            .actions
+            .get(call as usize)
+            .ok_or(MpcError::MalformedSchedule)?;
+        let entry = manifest
+            .actions
+            .iter()
+            .find(|entry| entry.request_id == spec.request_id)
+            .ok_or(MpcError::UnexpectedMessage)?;
+        if *received_binding != binding
+            || *request_id != spec.request_id
+            || entry.execution != spec.execution
+            || entry.output_bits != spec.num_bits
+        {
+            return Err(MpcError::UnexpectedMessage);
+        }
+        self.reinsert_action_result(call, bits, ot)
     }
 
     /// Consume exactly one table for the pending AND gate.
