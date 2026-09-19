@@ -142,6 +142,25 @@ decisions where policy requires them. See
     — treat changes to it as cryptographically sensitive. See
     [`docs/agent-context/discipline.md`](docs/agent-context/discipline.md).
 
+15. **High-level printers vs. `LirTarget` backends — pick by target-language
+    shape, not by convenience.** A backend for a *structured, AST-like*
+    target language (no arbitrary `goto`/block-jump control flow — e.g.
+    Rust, TypeScript, Solidity) should be a high-level `IrModule`-consuming
+    printer (`printer.rs`, `printer_ts.rs`, and any future `printer_*.rs`
+    follow the same shape), because `IrModule`'s `If`/`BoundedLoop`/`Match`
+    nodes already carry the structure such a target needs — reconstructing
+    that structure from a lowered CFG would be pure incidental complexity.
+    Reserve the `LirTarget`/SSA-CFG path (`volar-lir-codegen` → `CBackend`,
+    `VaffleTarget`, WASM/LLVM backends) for targets that are themselves
+    SSA/CFG-shaped or that need `volar-lir-codegen`'s monomorphization
+    (`MonoEnv`) and struct-flattening machinery — C (via `goto`), WASM,
+    object code. Do not route a structured-source target through
+    `LirTarget` merely because a lowering pass (e.g. monomorphization)
+    happens to live there already; port or share the specific pass instead
+    of adopting the whole low-level pipeline. See
+    [`docs/ts-emitter-length-params-and-solidity-backend-plan.md`](docs/ts-emitter-length-params-and-solidity-backend-plan.md)
+    §4.3 for the reasoning trail this rule was extracted from.
+
 ## Topic Context Files
 
 Load these when working in the relevant area:
@@ -159,6 +178,7 @@ Load these when working in the relevant area:
 | AST-to-AST weaving (future track) | `docs/agent-context/ast-to-ast-weaving.md` | Considering bypassing LIR lowering entirely for a new target (e.g. ZK-proven FHE) |
 | Higher-K gate degree (future track) | `docs/agent-context/higher-k-gates.md` | Touching `BIrStmt::And`'s degree dispatch, `gate_degree`, or K=3+/FAEST AES pinning |
 | TypeScript class witnesses | `docs/agent-context/ts-class-witnesses.md` | Working on TS codegen: `WitnessKind`, `ctx` parameter, type-param-as-value, static method dispatch |
+| TS emitter hardening, length-parameterized arrays, Solidity backend (plan) | `docs/ts-emitter-length-params-and-solidity-backend-plan.md` | Touching `printer_ts.rs`, `lowering_dyn.rs`, array/length typing, or starting a Solidity backend |
 | ORAM & channel | `docs/agent-context/oram.md` | Working on ORAM crates, channel protocol, ORAM weaver integration |
 | Progress tracking | `PROGRESS.md` | Starting a new session, reviewing status, planning next steps |
 | Top-level doc index | `docs/README.md` | Looking for a specific subsystem reference |
