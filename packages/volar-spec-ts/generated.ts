@@ -2370,12 +2370,12 @@ export class BootstrapPlan {
     let count = 0n;
     for (const layer of this.$flayers)     {
       for (const op of layer)       {
-        return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("table", Ident { mutable: false, name: "table", subpat: None })], rest: true } */) { const table = __match.$ftable;
+        return (() => { const __match = op; if (__match instanceof PlanOp_Lut) { const table = __match.$ftable;
 return (() => {
   if (!table_is_constant(this.$fluts[Number(Number(table))].$fentries))   {
     count = fieldAdd(count, 1n);
   }
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [], rest: true } */) { return count = fieldAdd(count, 1n); } else { return (() => {
+})(); } else if (__match instanceof PlanOp_CircuitBootstrap) { return count = fieldAdd(count, 1n); } else { return (() => {
 })(); } })();
       }
     }
@@ -2389,15 +2389,15 @@ return (() => {
     let cell_arena = [...cells];
     for (const layer of this.$flayers)     {
       for (const op of layer)       {
-        return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None }), ("value", Ident { mutable: false, name: "value", subpat: None })], rest: false } */) { const out = __match.$fout;
+        return (() => { const __match = op; if (__match instanceof PlanOp_Const) { const out = __match.$fout;
 const value = __match.$fvalue;
 return (() => {
   (wires).push(value);
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_Not) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   (wires).push(!wires[Number(Number(input))]);
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const inputs = __match.$finputs;
+})(); } else if (__match instanceof PlanOp_Lut) { const inputs = __match.$finputs;
 const table = __match.$ftable;
 const out = __match.$fout;
 return (() => {
@@ -2406,7 +2406,7 @@ return (() => {
     address = fieldBitor(address, fieldShl(Number(wires[Number(Number(input))]), bit));
   }
   (wires).push(this.$fluts[Number(Number(table))].$fentries[Number(address)]);
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_CircuitBootstrap) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   (rgsws).push(wires[Number(Number(input))]);
@@ -2440,19 +2440,19 @@ return (() => {
     }
     for (const layer of this.$flayers)     {
       for (const op of layer)       {
-        return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None }), ("value", Ident { mutable: false, name: "value", subpat: None })], rest: false } */) { const out = __match.$fout;
+        return (() => { const __match = op; if (__match instanceof PlanOp_Const) { const out = __match.$fout;
 const value = __match.$fvalue;
 return (() => {
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_Not) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const inputs = __match.$finputs;
+})(); } else if (__match instanceof PlanOp_Lut) { const inputs = __match.$finputs;
 const table = __match.$ftable;
 const out = __match.$fout;
 return (() => {
   for (const w of inputs)   {
   }
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_CircuitBootstrap) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
 })(); } else { const sel = __match.$fsel;
@@ -2487,20 +2487,20 @@ return (() => {
     let cells = this.$fnum_cells;
     for (const layer of this.$flayers)     {
       for (const op of layer)       {
-        return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None })], rest: true } */) { const out = __match.$fout;
+        return (() => { const __match = op; if (__match instanceof PlanOp_Const) { const out = __match.$fout;
 return (() => {
   if (!__equals(out, wires))   {
     return new PlanError_BadReference();
   }
   wires = fieldAdd(wires, 1n);
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_Not) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   if (((input >= wires) || !__equals(out, wires)))   {
     return new PlanError_BadReference();
   }
   wires = fieldAdd(wires, 1n);
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const inputs = __match.$finputs;
+})(); } else if (__match instanceof PlanOp_Lut) { const inputs = __match.$finputs;
 const table = __match.$ftable;
 const out = __match.$fout;
 return (() => {
@@ -2512,7 +2512,7 @@ return (() => {
     return new PlanError_BadReference();
   }
   wires = fieldAdd(wires, 1n);
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_CircuitBootstrap) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   if (((input >= wires) || !__equals(out, rgsws)))   {
@@ -6881,19 +6881,19 @@ export function encode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
   for (const layer of plan.$flayers)   {
     put_u32(bytes, Number(BigInt(layer.length)));
     for (const op of layer)     {
-      return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None }), ("value", Ident { mutable: false, name: "value", subpat: None })], rest: false } */) { const out = __match.$fout;
+      return (() => { const __match = op; if (__match instanceof PlanOp_Const) { const out = __match.$fout;
 const value = __match.$fvalue;
 return (() => {
   (bytes).push(0n);
   put_u32(bytes, out);
   (bytes).push(((value) & 0xFFn));
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_Not) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   (bytes).push(1n);
   put_u32(bytes, input);
   put_u32(bytes, out);
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const inputs = __match.$finputs;
+})(); } else if (__match instanceof PlanOp_Lut) { const inputs = __match.$finputs;
 const table = __match.$ftable;
 const out = __match.$fout;
 return (() => {
@@ -6904,7 +6904,7 @@ return (() => {
   }
   put_u32(bytes, table);
   put_u32(bytes, out);
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_CircuitBootstrap) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   (bytes).push(3n);
@@ -7139,15 +7139,15 @@ export function execute_plan(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_
   let cell_arena: Vec<BinfheRlweCiphertextDyn> = [...cells];
   for (const layer of plan.$flayers)   {
     for (const op of layer)     {
-      return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None }), ("value", Ident { mutable: false, name: "value", subpat: None })], rest: false } */) { const out = __match.$fout;
+      return (() => { const __match = op; if (__match instanceof PlanOp_Const) { const out = __match.$fout;
 const value = __match.$fvalue;
 return (() => {
   (wires).push(binfhe_trivial(value, delta));
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_Not) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   (wires).push(binfhe_not(wires[Number(Number(input))], delta));
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const inputs = __match.$finputs;
+})(); } else if (__match instanceof PlanOp_Lut) { const inputs = __match.$finputs;
 const table = __match.$ftable;
 const out = __match.$fout;
 return (() => {
@@ -7158,7 +7158,7 @@ return (() => {
     cts[Number(j)] = wires[Number(Number(w))];
   }
   (wires).push(binfhe_lut_read_dyn(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, cts.slice(0, Number(arity)), spec.$fentries, Number(plan.$fk_max), bk));
-})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
+})(); } else if (__match instanceof PlanOp_CircuitBootstrap) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   (rgsws).push(circuit_bootstrap(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, ks_ell, priv_ell, priv_base_log, wires[Number(Number(input))], cbk, Number(plan.$fk_max)));

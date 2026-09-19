@@ -5695,6 +5695,12 @@ fn ts_pattern_condition(
                 }
             }
         }
+        // `Enum::Variant { .. }` struct pattern → discriminate on the variant class
+        // so TS narrows the union for field access in the arm body.
+        IrPattern::Struct { kind, .. } => {
+            let class_name = kind.to_string().replace("::", "_");
+            write!(f, "{} instanceof {}", match_var, class_name)
+        }
         _ => write!(f, "true /* pattern {:?} */", pat),
     }
 }
