@@ -3990,14 +3990,20 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, " }})")?;
             }
             IrExprKind::Tuple(elems) => {
-                write!(f, "[")?;
-                for (i, e) in elems.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+                // An empty tuple is the Rust unit value `()` — emit `undefined`,
+                // not `[]` (which would be `never[]`, unassignable to `void`).
+                if elems.is_empty() {
+                    write!(f, "undefined")?;
+                } else {
+                    write!(f, "[")?;
+                    for (i, e) in elems.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        TsExprWriter { expr: e }.ts_fmt(f, cx)?;
                     }
-                    TsExprWriter { expr: e }.ts_fmt(f, cx)?;
+                    write!(f, "]")?;
                 }
-                write!(f, "]")?;
             }
             IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
                 write!(f, "[")?;

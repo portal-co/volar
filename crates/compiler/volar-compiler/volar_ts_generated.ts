@@ -2541,7 +2541,7 @@ return (() => {
         return new PlanError_BudgetInconsistent();
       }
     }
-    return [];
+    return undefined;
   }
 }
 
@@ -3012,7 +3012,7 @@ export class LabelBatchDyn {
   return pair.$fzero;
 } })();
     }
-    return [];
+    return undefined;
   }
 }
 
@@ -3070,7 +3070,7 @@ export class Parameters {
     if ((capacity <= modulus))     {
       return new Error_InvalidParameters();
     }
-    return [];
+    return undefined;
   }
 }
 
@@ -3087,7 +3087,7 @@ export class ZeroNoise {
   sample(_standard_deviation: bigint, _bound: bigint, output: bigint[]): Result<void, Error>
   {
     (output).fill(0n);
-    return [];
+    return undefined;
   }
 }
 
@@ -3293,7 +3293,7 @@ export class BatchSelect {
     if ((((!__equals(BigInt(first.$flhe_state.length), p.$fgadget_digits) || !__equals(BigInt(first.$flhe_ciphertext.length), fieldMul(p.$fwidth, p.$fgadget_digits))) || !__equals(BigInt(first.$flenc_ciphertext.length), fieldMul(fieldMul(fieldMul(p.levels(), p.$fwidth), 2n), p.$fgadget_digits))) || first.$flhe_state.concat(first.$flhe_ciphertext).concat(first.$flenc_ciphertext).any((poly) => !__equals(poly.degree(), p.$fdegree))))     {
       return new Error_LengthMismatch();
     }
-    return [];
+    return undefined;
   }
 
   check_second(second: any): Result<void, Error>
@@ -3302,7 +3302,7 @@ export class BatchSelect {
     if (((!__equals(BigInt(second.$flhe_ciphertext.length), p.$fwidth) || !__equals(second.$flhe_state.degree(), p.$fdegree)) || second.$flhe_ciphertext.any((poly) => !__equals(poly.degree(), p.$fdegree))))     {
       return new Error_LengthMismatch();
     }
-    return [];
+    return undefined;
   }
 
   dec(first: any, second: any, key: any, choices: boolean[]): Result<Vec<bigint>, Error>
@@ -3566,7 +3566,7 @@ export class Ring {
     for (const [destination, error] of value.$fsecond.map((__zip_a: any, __zip_i: number) => [__zip_a, (second)[__zip_i]]))     {
       destination = add_mod(destination, error, this.$fparameters.$fdelta);
     }
-    return [];
+    return undefined;
   }
 
   combine(first: bigint, second: bigint): bigint
@@ -9445,7 +9445,7 @@ export function sample_uniform(random: any, modulus: bigint, output: bigint[]): 
       }
     }
   }
-  return [];
+  return undefined;
 }
 
 export function sample_uniform_points<R>(rng: any, n: bigint, t: bigint): Vec<bigint>
