@@ -42,6 +42,10 @@ pub struct ExternalRequest {
     /// A pure oracle is retained only when demanded by a surviving consumer.
     /// Actions and storage are live whenever present in the input.
     pub demanded: bool,
+    /// Source action-chain occurrence. Required for actions and ignored for
+    /// pure oracles/storage. It is intentionally separate from `id`: a stable
+    /// request identifier is not necessarily lexical side-effect order.
+    pub action_ordinal: Option<u64>,
     /// Canonical pure-oracle equivalence key. `None` disables deduplication.
     /// The key must include declaration/profile/fingerprint, argument wire
     /// identity, geometry, and public domain separation.
@@ -87,6 +91,8 @@ pub enum ExternalBoundaryError {
     },
     DependencyCycle,
     OraclePolicyMismatch(ExternalRequestId),
+    MissingActionOrdinal(ExternalRequestId),
+    DuplicateActionOrdinal(u64),
 }
 
 /// Build maximal deterministic batches subject to `limits`.
@@ -111,7 +117,16 @@ pub fn plan_external_boundaries(
             return Err(ExternalBoundaryError::DuplicateRequest(request.id));
         }
     }
+    let mut action_ordinals = BTreeSet::new();
     for request in requests {
+        if matches!(request.kind, ExternalRequestKind::Action(_)) {
+            let ordinal = request
+                .action_ordinal
+                .ok_or(ExternalBoundaryError::MissingActionOrdinal(request.id))?;
+            if !action_ordinals.insert(ordinal) {
+                return Err(ExternalBoundaryError::DuplicateActionOrdinal(ordinal));
+            }
+        }
         for &dependency in &request.depends_on {
             if !by_id.contains_key(&dependency) {
                 return Err(ExternalBoundaryError::UnknownDependency {
@@ -155,11 +170,12 @@ pub fn plan_external_boundaries(
         .iter()
         .filter_map(|(&id, &rep)| (id == rep).then_some(id))
         .collect();
-    let actions: Vec<_> = runnable
+    let mut actions: Vec<_> = runnable
         .iter()
         .copied()
         .filter(|id| matches!(by_id[id].kind, ExternalRequestKind::Action(_)))
         .collect();
+    actions.sort_by_key(|id| by_id[id].action_ordinal.expect("validated action ordinal"));
     let mut next_action = 0usize;
     let mut complete = BTreeSet::new();
     let mut batches = Vec::new();
@@ -246,6 +262,7 @@ mod tests {
             }),
             depends_on: deps,
             demanded: false,
+            action_ordinal: Some(id),
             oracle_equivalence: None,
         }
     }
@@ -261,6 +278,7 @@ mod tests {
             }),
             depends_on: deps,
             demanded,
+            action_ordinal: None,
             oracle_equivalence: Some([key; 32]),
         }
     }
@@ -271,6 +289,7 @@ mod tests {
             kind: ExternalRequestKind::Storage,
             depends_on: deps,
             demanded: true,
+            action_ordinal: None,
             oracle_equivalence: None,
         }
     }
