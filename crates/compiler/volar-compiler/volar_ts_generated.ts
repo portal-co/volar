@@ -7738,7 +7738,7 @@ export function gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, bs_ell: b
 })());
   const ksk_array: LweCiphertextDyn[][] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const s_bit = rlwe_sk.$fkey[Number(i)];
-  return Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  return Array.from({length: Number(ks_ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const shift = (32n - (Number(fieldMul(ks_bg_log, fieldAdd(j, 1n)))));
   const msg_val = (((s_bit) << (shift)) & 0xFFFFFFFFn);
   return lwe_encrypt_raw(n_lwe, msg_val, lwe_sk, ks_noise_bits, rng);

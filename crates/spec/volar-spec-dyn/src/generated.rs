@@ -6884,7 +6884,7 @@ pub fn gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut
 }).collect::<Vec<_>>();
     let ksk_array: [[LweCiphertextDyn; KS_ELL]; BIG_N] = (0..big_n).map(|i| {
     let s_bit = rlwe_sk.key[i];
-    (0..big_n).map(|j| {
+    (0..ks_ell).map(|j| {
     let shift = 32.saturating_sub(((ks_bg_log * (j + 1)) as u32));
     let msg_val = s_bit.wrapping_shl(shift);
     lwe_encrypt_raw(n_lwe, msg_val, lwe_sk, ks_noise_bits, rng)

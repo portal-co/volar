@@ -988,12 +988,14 @@ fn lower_function_dyn(
 /// for a `StructExpr` field whose value is exactly `Var(name)` and returning that
 /// field's declared array length as a runtime expression. Returns `None` if the
 /// use-site isn't a struct field with a resolvable array length.
-fn find_use_length_of_var(
+/// Find the type `name` is bound to at a use-site: when `name` is used as a
+/// struct-field value, return that field's declared `IrType` (resolved through
+/// the source struct name for lowered `FooDyn` references).
+fn find_use_type_of_var(
     expr: &IrExpr,
     name: &str,
     ctx: &LoweringContext,
-    fn_gen: &[IrGenericParam],
-) -> Option<IrExpr> {
+) -> Option<IrType> {
     match &expr.kind {
         IrExprKind::StructExpr { kind, fields, rest, .. } => {
             let lowered_name = kind.to_string();
@@ -1014,76 +1016,71 @@ fn find_use_length_of_var(
                             .get(&sname)
                             .and_then(|m| m.get(field_name))
                         {
-                            // Only a statically-known array length can be resolved;
-                            // a Vector's length is runtime-dynamic (not resolvable here).
-                            if let IrType::Array { len, .. } = field_ty {
-                                return Some(array_length_to_expr(len, fn_gen, ctx));
-                            }
+                            return Some(field_ty.clone());
                         }
                     }
                 }
                 // Recurse into field values (name may be nested).
-                if let Some(found) = find_use_length_of_var(val, name, ctx, fn_gen) {
+                if let Some(found) = find_use_type_of_var(val, name, ctx) {
                     return Some(found);
                 }
             }
             if let Some(r) = rest {
-                return find_use_length_of_var(r, name, ctx, fn_gen);
+                return find_use_type_of_var(r, name, ctx);
             }
             None
         }
         IrExprKind::Binary { left, right, .. } => {
-            find_use_length_of_var(left, name, ctx, fn_gen)
-                .or_else(|| find_use_length_of_var(right, name, ctx, fn_gen))
+            find_use_type_of_var(left, name, ctx)
+                .or_else(|| find_use_type_of_var(right, name, ctx))
         }
-        IrExprKind::Unary { expr: e, .. } => find_use_length_of_var(e, name, ctx, fn_gen),
+        IrExprKind::Unary { expr: e, .. } => find_use_type_of_var(e, name, ctx),
         IrExprKind::Call { func, args } => {
             for a in args {
-                if let Some(found) = find_use_length_of_var(a, name, ctx, fn_gen) {
+                if let Some(found) = find_use_type_of_var(a, name, ctx) {
                     return Some(found);
                 }
             }
-            find_use_length_of_var(func, name, ctx, fn_gen)
+            find_use_type_of_var(func, name, ctx)
         }
         IrExprKind::MethodCall { receiver, args, .. } => {
-            find_use_length_of_var(receiver, name, ctx, fn_gen).or_else(|| {
+            find_use_type_of_var(receiver, name, ctx).or_else(|| {
                 args.iter()
-                    .find_map(|a| find_use_length_of_var(a, name, ctx, fn_gen))
+                    .find_map(|a| find_use_type_of_var(a, name, ctx))
             })
         }
-        IrExprKind::Block(b) => find_use_length_of_var_in_block(b, name, ctx, fn_gen),
+        IrExprKind::Block(b) => find_use_type_of_var_in_block(b, name, ctx),
         IrExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => find_use_length_of_var(cond, name, ctx, fn_gen)
-            .or_else(|| find_use_length_of_var_in_block(then_branch, name, ctx, fn_gen))
+        } => find_use_type_of_var(cond, name, ctx)
+            .or_else(|| find_use_type_of_var_in_block(then_branch, name, ctx))
             .or_else(|| {
                 else_branch
                     .as_ref()
-                    .and_then(|eb| find_use_length_of_var(eb, name, ctx, fn_gen))
+                    .and_then(|eb| find_use_type_of_var(eb, name, ctx))
             }),
         IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => es
             .iter()
-            .find_map(|e| find_use_length_of_var(e, name, ctx, fn_gen)),
+            .find_map(|e| find_use_type_of_var(e, name, ctx)),
         IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
-            find_use_length_of_var(e, name, ctx, fn_gen)
+            find_use_type_of_var(e, name, ctx)
         }
-        IrExprKind::Closure { body, .. } => find_use_length_of_var(body, name, ctx, fn_gen),
+        IrExprKind::Closure { body, .. } => find_use_type_of_var(body, name, ctx),
         _ => None,
     }
 }
 
-fn find_use_length_of_var_in_block(
+fn find_use_type_of_var_in_block(
     block: &IrBlock,
     name: &str,
     ctx: &LoweringContext,
-    fn_gen: &[IrGenericParam],
-) -> Option<IrExpr> {
+) -> Option<IrType> {
     for s in &block.stmts {
         match &s.kind {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
-                if let Some(found) = find_use_length_of_var(e, name, ctx, fn_gen) {
+                if let Some(found) = find_use_type_of_var(e, name, ctx) {
                     return Some(found);
                 }
             }
@@ -1093,7 +1090,101 @@ fn find_use_length_of_var_in_block(
     block
         .expr
         .as_ref()
-        .and_then(|e| find_use_length_of_var(e, name, ctx, fn_gen))
+        .and_then(|e| find_use_type_of_var(e, name, ctx))
+}
+
+/// Recursively align an array producer against an expected array type, rewriting
+/// its length placeholder to the type's length, then recursing into the element
+/// body with the element type (handles nested `from_fn` like
+/// `Vec<[LweCiphertext; KS_ELL]>`). Only rewrites *placeholder* (unbound) vars;
+/// never touches bound in-scope names.
+fn align_producer_to_type(
+    expr: &mut IrExpr,
+    ty: &IrType,
+    bound: &BTreeSet<String>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) {
+    // Unwrap transparent wrappers to reach the producer.
+    match &mut expr.kind {
+        IrExprKind::Block(b) => {
+            if let Some(tail) = &mut b.expr {
+                align_producer_to_type(tail, ty, bound, ctx, fn_gen);
+            }
+            return;
+        }
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            align_producer_to_type(e, ty, bound, ctx, fn_gen);
+            return;
+        }
+        _ => {}
+    }
+    let (elem_ty, len_ty) = match ty {
+        IrType::Array { elem, len, .. } => (Some(elem.as_ref()), Some(len)),
+        IrType::Vector { elem } => (Some(elem.as_ref()), None),
+        _ => (None, None),
+    };
+    // Rewrite this level's length placeholder (if a producer).
+    if let Some(len) = len_ty {
+        let resolved = array_length_to_expr(len, fn_gen, ctx);
+        let mut phs = Vec::new();
+        collect_length_placeholder_shallow(expr, bound, &mut phs);
+        for ph in phs {
+            substitute_var_in_length_position(expr, &ph, &resolved);
+        }
+    }
+    // Recurse into the element body with the element type.
+    if let Some(elem) = elem_ty {
+        if let IrType::Array { .. } | IrType::Vector { .. } = elem {
+            let mut go = |body: &mut IrExpr| align_producer_to_type(body, elem, bound, ctx, fn_gen);
+            for_each_element_body(expr, &mut go);
+        }
+    }
+}
+
+/// Like `collect_length_placeholder` but only looks at THIS producer's length
+/// position (not recursing into the element body, which the caller handles).
+fn collect_length_placeholder_shallow(expr: &IrExpr, bound: &BTreeSet<String>, out: &mut Vec<String>) {
+    let is_ph = |v: &str| {
+        !bound.contains(v)
+            && v.chars().next().map_or(false, |c| c.is_lowercase())
+            && v.chars().all(|c| c.is_lowercase() || c.is_ascii_digit() || c == '_')
+            && v != "self"
+            && v != "ctx"
+    };
+    if let IrExprKind::IterPipeline(chain) = &expr.kind {
+        if let IterChainSource::Range { end, .. } = &chain.source {
+            if let IrExprKind::Var(v) = &end.kind {
+                if is_ph(v) && !out.contains(v) {
+                    out.push(v.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Substitute a placeholder var ONLY in the length position of this producer
+/// (the Range source end), not in the element body.
+fn substitute_var_in_length_position(expr: &mut IrExpr, old: &str, replacement: &IrExpr) {
+    if let IrExprKind::IterPipeline(chain) = &mut expr.kind {
+        if let IterChainSource::Range { end, .. } = &mut chain.source {
+            if matches!(&end.kind, IrExprKind::Var(v) if v == old) {
+                **end = replacement.clone();
+            }
+        }
+    }
+}
+
+/// Run `f` on the element body of an array producer (the closure body of a
+/// from_fn-lowered IterPipeline, i.e. the Map step that follows the Range).
+fn for_each_element_body(expr: &mut IrExpr, f: &mut dyn FnMut(&mut IrExpr)) {
+    if let IrExprKind::IterPipeline(chain) = &mut expr.kind {
+        for step in &mut chain.steps {
+            if let IterStep::Map { body, .. } | IterStep::FlatMap { body, .. } = step {
+                f(body);
+            }
+        }
+    }
 }
 
 /// Resolve `from_fn`/array placeholders: for each `let name = init` whose `init`
@@ -1113,124 +1204,195 @@ fn resolve_placeholder_lengths(
     fn_gen: &[IrGenericParam],
     return_type: Option<&IrType>,
 ) {
-    // Collect the let-bound names and their length-position placeholder first.
-    // We only rewrite the *length* of an array-producing init (a from_fn-lowered
-    // IterPipeline's Range end, or an ArrayGenerate len) — never arbitrary free
-    // vars in the element body (those are closure-internal locals).
-    struct PendingFix {
-        /// The let-bound variable whose init holds the placeholder.
-        bound_name: String,
-        /// The placeholder var inside the init's length position to rewrite.
-        placeholder: String,
-        /// The resolved length expression to splice in.
-        resolved: IrExpr,
-    }
-    let mut fixes: Vec<PendingFix> = Vec::new();
-
-    for (i, stmt) in block.stmts.iter().enumerate() {
-        let IrStmtKind::Let { pattern, init: Some(init), .. } = &stmt.kind else {
-            continue;
-        };
-        let IrPattern::Ident { name, .. } = pattern else {
-            continue;
-        };
-        // Only the length-position placeholder of an array producer is a candidate.
-        let mut placeholders = Vec::new();
-        collect_length_placeholder(init, bound, &mut placeholders);
-        for ph in placeholders {
-            // Find this let's variable used downstream (statements after i, plus tail).
-            let mut resolved = None;
+    // For each `let name = <array producer>`, find the type `name` is bound to at
+    // a downstream use-site (a struct-field assignment) and recursively align the
+    // producer against that type — rewriting this level's length placeholder and
+    // recursing into nested producers (element-of-element) with the element type.
+    let n_stmts = block.stmts.len();
+    for i in 0..n_stmts {
+        let (name, use_ty) = {
+            let IrStmtKind::Let { pattern, init: Some(init), .. } = &block.stmts[i].kind else {
+                continue;
+            };
+            let IrPattern::Ident { name, .. } = pattern else {
+                continue;
+            };
+            // Skip producers with no length placeholder at any level.
+            let mut phs = Vec::new();
+            collect_length_placeholder(init, bound, &mut phs);
+            if phs.is_empty() {
+                continue;
+            }
+            let name = name.clone();
+            let mut use_ty = None;
             for later in &block.stmts[i + 1..] {
                 match &later.kind {
                     IrStmtKind::Let { init: Some(e), .. }
                     | IrStmtKind::Semi(e)
                     | IrStmtKind::Expr(e) => {
-                        if let Some(r) = find_use_length_of_var(e, name, ctx, fn_gen) {
-                            resolved = Some(r);
+                        if let Some(t) = find_use_type_of_var(e, &name, ctx) {
+                            use_ty = Some(t);
                             break;
                         }
                     }
                     _ => {}
                 }
             }
-            if resolved.is_none() {
+            if use_ty.is_none() {
                 if let Some(tail) = &block.expr {
-                    resolved = find_use_length_of_var(tail, name, ctx, fn_gen);
+                    use_ty = find_use_type_of_var(tail, &name, ctx);
                 }
             }
-            if let Some(resolved) = resolved {
-                fixes.push(PendingFix {
-                    bound_name: name.clone(),
-                    placeholder: ph,
-                    resolved,
-                });
+            (name, use_ty)
+        };
+        if let Some(ty) = use_ty {
+            if let IrStmtKind::Let { init: Some(init), .. } = &mut block.stmts[i].kind {
+                align_producer_to_type(init, &ty, bound, ctx, fn_gen);
             }
         }
-    }
-
-    // Apply the fixes: rewrite the placeholder inside each let's init. The resolved
-    // expr may itself be a complex expression; substitute it for the placeholder Var.
-    for fix in fixes {
-        for stmt in block.stmts.iter_mut() {
-            if let IrStmtKind::Let { pattern, init: Some(init), .. } = &mut stmt.kind {
-                if matches!(&pattern, IrPattern::Ident { name, .. } if name == &fix.bound_name) {
-                    substitute_var_with_expr(init, &fix.placeholder, &fix.resolved);
-                }
-            }
-        }
+        let _ = name;
     }
 
     // Return-position array producers: `return [.., from_fn(...), ..]` or a tail
-    // array literal. Resolve each array-producing element's placeholder length
-    // against the function's array-return element length.
+    // array literal. Align the whole returned expression against the original
+    // (pre-lowering) return type, so projections like `D::OutputSize` survive.
     if let Some(ret_ty) = return_type {
-        if let Some(elem_len) = array_elem_length(ret_ty) {
-            let resolved = array_length_to_expr(elem_len, fn_gen, ctx);
-            resolve_placeholders_in_position(&mut block.expr, bound, &resolved);
-            for s in block.stmts.iter_mut() {
-                if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &mut s.kind {
-                    if matches!(e.kind, IrExprKind::Return(_)) {
-                        resolve_placeholders_in_position_expr(e, bound, &resolved);
+        if let Some(tail) = &mut block.expr {
+            align_producer_to_type(tail, ret_ty, bound, ctx, fn_gen);
+            // A bare `[a, b]` return literal's *elements* are the producers; align
+            // each element against the return type's element type.
+            if let IrExprKind::Array(es) | IrExprKind::FixedArray(es) | IrExprKind::Tuple(es) =
+                &mut tail.kind
+            {
+                if let IrType::Array { elem, .. } | IrType::Vector { elem } = ret_ty {
+                    for e in es {
+                        align_producer_to_type(e, elem, bound, ctx, fn_gen);
                     }
                 }
             }
         }
+        for s in block.stmts.iter_mut() {
+            if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &mut s.kind {
+                if let IrExprKind::Return(Some(ret)) = &mut e.kind {
+                    align_producer_to_type(ret, ret_ty, bound, ctx, fn_gen);
+                }
+            }
+        }
+    }
+
+    // Producers written directly as struct-field values (not through a let):
+    // `BinfheKeySwitchingKey { ksk: (0..BIG_N).map(|i| from_fn(..)).collect() }`.
+    // Align each field value against its declared field type (recursing into
+    // nested producers inside closures).
+    for s in block.stmts.iter_mut() {
+        match &mut s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+                align_struct_field_producers(e, bound, ctx, fn_gen);
+            }
+            _ => {}
+        }
+    }
+    if let Some(tail) = &mut block.expr {
+        align_struct_field_producers(tail, bound, ctx, fn_gen);
     }
 }
 
-/// If `ty` is `[E; N]`/`[E]`/`Vec<E>` where `E` is itself an array `[T; M]`,
-/// return `Some(M)` (the element array's length). Otherwise `None`.
-fn array_elem_length(ty: &IrType) -> Option<&ArrayLength> {
-    match ty {
-        IrType::Array { elem, .. } | IrType::Vector { elem } => match elem.as_ref() {
-            IrType::Array { len, .. } => Some(len),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Rewrite the length placeholder of any array producer found in tail position.
-fn resolve_placeholders_in_position(
-    tail: &mut Option<Box<IrExpr>>,
-    bound: &BTreeSet<String>,
-    resolved: &IrExpr,
-) {
-    if let Some(e) = tail {
-        resolve_placeholders_in_position_expr(e, bound, resolved);
-    }
-}
-
-fn resolve_placeholders_in_position_expr(
+/// Walk an expression; for every `StructExpr`, align each field value (which may
+/// be or contain an array producer) against that field's declared type, so
+/// inline nested producers get their lengths from the field type.
+fn align_struct_field_producers(
     expr: &mut IrExpr,
     bound: &BTreeSet<String>,
-    resolved: &IrExpr,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
 ) {
-    // Collect length placeholders in this expression; if any, substitute them.
-    let mut phs = Vec::new();
-    collect_length_placeholder(expr, bound, &mut phs);
-    for ph in phs {
-        substitute_var_with_expr(expr, &ph, resolved);
+    // First handle this node if it's a struct expr.
+    if let IrExprKind::StructExpr { kind, fields, rest, .. } = &mut expr.kind {
+        let lowered_name = kind.to_string();
+        let sname = ctx
+            .lowered_struct_names
+            .iter()
+            .find(|(_, dyn_name)| **dyn_name == lowered_name)
+            .map(|(src, _)| src.clone())
+            .unwrap_or(lowered_name);
+        if let Some(field_map) = ctx.struct_field_types.get(&sname) {
+            for (field_name, val) in fields.iter_mut() {
+                if let Some(field_ty) = field_map.get(field_name).cloned() {
+                    align_producer_to_type(val, &field_ty, bound, ctx, fn_gen);
+                }
+            }
+        }
+        // Keep recursing into field values (they may contain nested struct exprs).
+        for (_, val) in fields.iter_mut() {
+            align_struct_field_producers(val, bound, ctx, fn_gen);
+        }
+        if let Some(r) = rest {
+            align_struct_field_producers(r, bound, ctx, fn_gen);
+        }
+        return;
+    }
+    // Generic recursion into children.
+    match &mut expr.kind {
+        IrExprKind::Binary { left, right, .. } => {
+            align_struct_field_producers(left, bound, ctx, fn_gen);
+            align_struct_field_producers(right, bound, ctx, fn_gen);
+        }
+        IrExprKind::Unary { expr: e, .. }
+        | IrExprKind::Cast { expr: e, .. }
+        | IrExprKind::Try(e) => align_struct_field_producers(e, bound, ctx, fn_gen),
+        IrExprKind::Call { func, args } => {
+            align_struct_field_producers(func, bound, ctx, fn_gen);
+            for a in args {
+                align_struct_field_producers(a, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            align_struct_field_producers(receiver, bound, ctx, fn_gen);
+            for a in args {
+                align_struct_field_producers(a, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                align_struct_field_producers(e, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::Block(b) => {
+            for st in &mut b.stmts {
+                match &mut st.kind {
+                    IrStmtKind::Let { init: Some(e), .. }
+                    | IrStmtKind::Semi(e)
+                    | IrStmtKind::Expr(e) => align_struct_field_producers(e, bound, ctx, fn_gen),
+                    _ => {}
+                }
+            }
+            if let Some(t) = &mut b.expr {
+                align_struct_field_producers(t, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::If { cond, then_branch, else_branch } => {
+            align_struct_field_producers(cond, bound, ctx, fn_gen);
+            for st in &mut then_branch.stmts {
+                if let IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &mut st.kind {
+                    align_struct_field_producers(e, bound, ctx, fn_gen);
+                }
+            }
+            if let Some(t) = &mut then_branch.expr {
+                align_struct_field_producers(t, bound, ctx, fn_gen);
+            }
+            if let Some(eb) = else_branch {
+                align_struct_field_producers(eb, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::IterPipeline(chain) => {
+            for step in &mut chain.steps {
+                if let IterStep::Map { body, .. } | IterStep::FlatMap { body, .. } = step {
+                    align_struct_field_producers(body, bound, ctx, fn_gen);
+                }
+            }
+        }
+        IrExprKind::Closure { body, .. } => align_struct_field_producers(body, bound, ctx, fn_gen),
+        _ => {}
     }
 }
 
