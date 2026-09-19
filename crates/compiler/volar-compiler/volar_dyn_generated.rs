@@ -2413,7 +2413,7 @@ impl <T: Clone + Add<Output = T> + Mul<Output = T> + Default> CotSource<N, T> fo
     fn cot<R: SpecRng>(&mut self, mut rng: &mut R, mut sample_t: impl Fn, mut bit: bool) -> (Vec<T>, Vec<T>)
     {
         let n: usize = self.n;
-        IdealCot::cot(self, rng, sample_t, bit)
+        IdealCotDyn::cot(self, rng, sample_t, bit)
     }
 }
 
@@ -3152,7 +3152,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
 impl  EncodedLabelBatch {
     pub fn from_pairs(mut pairs: &[LabelPairDyn], mut offset: [u8; 16]) -> Result<Self, BatchError>
     {
-        let batch = LabelBatch::new(pairs, offset)?;
+        let batch = LabelBatchDyn::new(pairs, offset)?;
         let mut differences = alloc::vec::Vec::with_capacity((pairs.len() * 3));
         let mut zeroes = alloc::vec::Vec::with_capacity((pairs.len() * 3));
         let modulus = ring_lwe::REFERENCE_PLAINTEXT_MODULUS;
@@ -4010,7 +4010,7 @@ impl  GlobalSecretDyn {
     pub fn one_wire_eval(&self) -> EvalDyn
     {
         let n: usize = self.n;
-        self.encode(&Garble::zero(), true)
+        self.encode(&GarbleDyn::zero(), true)
     }
     pub fn not_garble(&self, mut a: &GarbleDyn) -> GarbleDyn
     {
@@ -4227,7 +4227,7 @@ impl  BaseOt<L> for LweBaseOtDyn {
     type PayloadMsg = LweOtSenderMsgDyn;
     fn sender_setup<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R) -> (Self::SenderState, Self::SetupMsg)
     {
-        let crs = LweOtCrs::<N>::sample(rng);
+        let crs = LweOtCrsDyn::<N>::sample(rng);
         (crs.clone(), crs)
     }
     fn recv_start<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut setup: &Self::SetupMsg, mut c: bool) -> (Self::ReceiverState, Self::RecvMsg)
@@ -5126,7 +5126,7 @@ pub fn sign(mut sk: &FaestSecretKey, mut pk: &FaestPublicKey, mut message: &[u8]
 {
     let iv: [u8; LAMBDA_BYTES] = aes128_encrypt(&iv_seed, &[0; LAMBDA_BYTES]);
     let r: [u8; LAMBDA_BYTES] = aes128_encrypt(&sk.0, &iv);
-    let commitment: BavcCommitmentDyn = Bavc::<EmLeafCommit, COM_BYTES, Sha3_256>::commit(r, &iv, TAU, SUB_VOLE_N);
+    let commitment: BavcCommitmentDyn = BavcDyn::<EmLeafCommit, COM_BYTES, Sha3_256>::commit(r, &iv, TAU, SUB_VOLE_N);
     let mu: Vec<u8> = {
     let mut h = Sha3_256::new();
     DigestUpdate::update(&mut h, &pk.0);
@@ -5135,7 +5135,7 @@ pub fn sign(mut sk: &FaestSecretKey, mut pk: &FaestPublicKey, mut message: &[u8]
 };
     let chall_1 = chall1(&mu, &iv, &commitment.root, (LAMBDA_BYTES + 8), false);
     let deltas = expand_challenge_to_deltas(&chall_1, TAU, SUB_VOLE_N);
-    let nodes = Bavc::<EmLeafCommit, COM_BYTES>::collect_open_nodes(&deltas, &recompute_tree(r, (TAU * SUB_VOLE_N)), TAU, SUB_VOLE_N);
+    let nodes = BavcDyn::<EmLeafCommit, COM_BYTES>::collect_open_nodes(&deltas, &recompute_tree(r, (TAU * SUB_VOLE_N)), TAU, SUB_VOLE_N);
     let hidden_commits: Vec<[u8; COM_BYTES]> = deltas.iter().enumerate().map(|(i, d)| commitment.commitments[(i * SUB_VOLE_N) + d]).collect::<Vec<_>>();
     let opening = BavcOpeningDyn { hidden_commits: hidden_commits.clone(), nodes: nodes.clone(), com_bytes: 0 };
     let _ = opening;
@@ -5166,7 +5166,7 @@ pub fn verify(mut pk: &FaestPublicKey, mut message: &[u8], mut sig: &FaestSignat
 };
     let chall_1 = chall1(&mu, iv, &sig.bavc_root, (LAMBDA_BYTES + 8), false);
     let deltas = expand_challenge_to_deltas(&chall_1, TAU, SUB_VOLE_N);
-    let reconstructed_seeds_opt = Bavc::<EmLeafCommit, COM_BYTES, Sha3_256>::reconstruct(&sig.nodes, &sig.hidden_commits, &deltas, iv, &sig.bavc_root, TAU, SUB_VOLE_N);
+    let reconstructed_seeds_opt = BavcDyn::<EmLeafCommit, COM_BYTES, Sha3_256>::reconstruct(&sig.nodes, &sig.hidden_commits, &deltas, iv, &sig.bavc_root, TAU, SUB_VOLE_N);
     let reconstructed_seeds = match reconstructed_seeds_opt {
     Some(s) => s,
     None => return false,
@@ -5414,8 +5414,8 @@ pub fn assert_one_check<N, T>(mut n: usize, mut q: &QDyn<T>, mut opening: &Vec<T
 pub fn memory_check_per_lane<N, T>(mut n: usize, mut challenges: Vec<T>) -> Vec<MemoryCheckStateDyn<T, AdditiveHasher>> where T: Clone + Default + Add<Output = T> + Mul<Output = T> + PartialEq
 {
     (0..n).map(|i| {
-    let key = ChallengeKey::from_challenge(challenges[i].clone());
-    MemoryCheckState::new(key)
+    let key = ChallengeKeyDyn::from_challenge(challenges[i].clone());
+    MemoryCheckStateDyn::new(key)
 }).collect::<Vec<_>>()
 }
 

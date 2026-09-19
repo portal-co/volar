@@ -1886,6 +1886,25 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 }
             }
 
+            // Rename the type head of an associated-function call
+            // (`Garble::zero()` → `GarbleDyn::zero()`) when the head names a
+            // generic struct that was dyn-renamed. Without this, the printed
+            // call references the un-suffixed name, which doesn't exist in the
+            // dyn-lowered output. Distinct from the constructor rename below,
+            // which targets the *last* segment (the constructor name itself).
+            if let IrExprKind::Path { segments, .. } = &mut func.kind {
+                if segments.len() >= 2 {
+                    let head = segments[0].clone();
+                    if let Some(info) = ctx.get_struct_info(&head) {
+                        let has_generics =
+                            !info.length_witnesses.is_empty() || !info.type_params.is_empty();
+                        if has_generics {
+                            segments[0] = ctx.lowered_struct_name(&head);
+                        }
+                    }
+                }
+            }
+
             // Rename tuple struct constructors (e.g., CommitmentCore → CommitmentCoreDyn)
             // and append PhantomData if the struct needs it
             let func_name = match &func.kind {

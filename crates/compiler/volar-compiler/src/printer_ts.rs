@@ -640,6 +640,17 @@ fn build_structs_by_name(module: &IrModule<IrFunction>) -> BTreeMap<String, IrSt
         .collect()
 }
 
+/// Build an alias-name → target-type registry for the module, used to resolve
+/// alias heads of paths (`DigestImpl::new()` → `new Sha3_256()`). Keyed by the
+/// bare alias name (aliases are emitted into the flat TS scope by bare name).
+fn build_type_aliases(module: &IrModule<IrFunction>) -> BTreeMap<String, IrType> {
+    module
+        .type_aliases
+        .iter()
+        .map(|ta| (ta.name.clone(), ta.target.clone()))
+        .collect()
+}
+
 /// Build a map from bare method name → the TS field name of the first field on the
 /// receiver struct that carries the generic-T element type. Used at call sites to
 /// construct the `ctx` witness inline without threading it through callers.
@@ -916,6 +927,7 @@ pub fn print_module_ts_with_imports(
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map = build_method_t_fields(&module);
     let structs_by_name = build_structs_by_name(&module);
+    let type_aliases = build_type_aliases(&module);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -932,6 +944,7 @@ pub fn print_module_ts_with_imports(
         async_fns: BTreeSet::new(),
         oracle_fn_names: BTreeSet::new(),
         structs_by_name: &structs_by_name,
+        type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
     };
     let local_names: std::collections::HashSet<String> =
@@ -1006,6 +1019,7 @@ fn print_module_ts_with_emit_flags(
     let method_t_fields_map = build_method_t_fields(&module);
     let (oracle_fns, async_fns) = compute_async_fns(&module);
     let structs_by_name = build_structs_by_name(&module);
+    let type_aliases = build_type_aliases(&module);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -1022,6 +1036,7 @@ fn print_module_ts_with_emit_flags(
         async_fns,
         oracle_fn_names: oracle_fns,
         structs_by_name: &structs_by_name,
+        type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
     };
     let local_names: std::collections::HashSet<String> =
@@ -1077,6 +1092,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map2 = build_method_t_fields(&module);
     let structs_by_name = build_structs_by_name(&module);
+    let type_aliases = build_type_aliases(&module);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -1093,6 +1109,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         async_fns: BTreeSet::new(),
         oracle_fn_names: BTreeSet::new(),
         structs_by_name: &structs_by_name,
+        type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
     };
     let local_names: std::collections::HashSet<String> =
@@ -1196,6 +1213,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         flat.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map3 = build_method_t_fields(&flat);
     let structs_by_name = build_structs_by_name(&flat);
+    let type_aliases = build_type_aliases(&flat);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions_flat,
@@ -1212,6 +1230,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         async_fns: BTreeSet::new(),
         oracle_fn_names: BTreeSet::new(),
         structs_by_name: &structs_by_name,
+        type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
     };
 
@@ -1346,6 +1365,10 @@ struct TsContext<'a> {
     /// `wrapping_sub` — see `infer_wrapping_bit_width`). Built once per
     /// module print via `build_structs_by_name`.
     structs_by_name: &'a BTreeMap<String, IrStruct>,
+    /// Module-level type-alias registry (alias name → target type), used to
+    /// resolve alias heads of paths (`DigestImpl::new()` → `new Sha3_256()`).
+    /// Built once per module print.
+    type_aliases: &'a BTreeMap<String, IrType>,
     /// Declared `IrType` for parameters (and any other statically-typed
     /// locals) of the function/method currently being printed. Reset per
     /// function/method body via `with_local_var_types` — unlike `var_types`
@@ -1398,6 +1421,7 @@ impl<'a> TsContext<'a> {
             async_fns: self.async_fns.clone(),
             oracle_fn_names: self.oracle_fn_names.clone(),
             structs_by_name: self.structs_by_name,
+            type_aliases: self.type_aliases,
             local_var_types: self.local_var_types.clone(),
         }
     }
@@ -1419,6 +1443,7 @@ impl<'a> TsContext<'a> {
             async_fns: self.async_fns.clone(),
             oracle_fn_names: self.oracle_fn_names.clone(),
             structs_by_name: self.structs_by_name,
+            type_aliases: self.type_aliases,
             local_var_types: self.local_var_types.clone(),
         }
     }
@@ -1442,6 +1467,7 @@ impl<'a> TsContext<'a> {
             async_fns: self.async_fns.clone(),
             oracle_fn_names: self.oracle_fn_names.clone(),
             structs_by_name: self.structs_by_name,
+            type_aliases: self.type_aliases,
             local_var_types: self.local_var_types.clone(),
         }
     }
@@ -1468,8 +1494,37 @@ impl<'a> TsContext<'a> {
             async_fns: self.async_fns.clone(),
             oracle_fn_names: self.oracle_fn_names.clone(),
             structs_by_name: self.structs_by_name,
+            type_aliases: self.type_aliases,
             local_var_types: types,
         }
+    }
+
+    /// True if `name` is a known type-like head of a path (struct, enum, tuple
+    /// struct, or class witness / crypto type param) — i.e. something whose
+    /// `Name::assoc` should keep the `Name.` qualifier in TS. Anything else
+    /// (a Rust module qualifier like `torus::` or `gadget::`) is stripped.
+    fn is_type_head(&self, name: &str) -> bool {
+        // Std library / well-known container + option type heads that must keep
+        // their qualifier (`Vec::new`, `VecDeque::new`, `Option::Some`, ...)
+        // so `emit_path`'s `KnownCallPath` handling can see them.
+        const STD_TYPE_HEADS: &[&str] = &[
+            "Vec", "VecDeque", "Option", "Result", "Box", "Rc", "Arc", "Cell", "RefCell",
+            "PhantomData",
+            // Primitive int type paths (`u32::from_le_bytes`, ...) — the head must be
+            // kept so `emit_path`'s `KnownCallPath::FromLeBytes` can see the width.
+            "u8", "u16", "u32", "u64", "u128", "usize", "i32", "i64", "i128",
+            // Trait-path qualifiers handled by `KnownCallPath`/trait-namespace arms.
+            "AsRef", "Digest", "DigestUpdate", "Into", "From", "Default",
+            // Crypto-stub classes emitted by the preamble (see TsPreambleWriter).
+            "Shake128", "Shake256", "Sha3_256",
+        ];
+        self.structs_by_name.contains_key(name)
+            || self.enum_names.contains(name)
+            || self.is_tuple_struct(name)
+            || self.class_witnesses.iter().any(|w| w == name)
+            || is_crypto_type_param(name)
+            || is_primitive_class(name)
+            || STD_TYPE_HEADS.contains(&name)
     }
 
     fn register_var_type(&self, name: &str, type_param: &str) {
@@ -1832,10 +1887,19 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "  u128_from_le_bytes,")?;
         writeln!(f, "}} from \"./index\";")?;
         writeln!(f)?;
-        // Stub types for external sha3/digest types referenced from generated code.
+        // Stub classes for external sha3/digest types referenced from generated
+        // code. They must be real classes (not `type X = any` aliases) so that
+        // `X::new()` → `new X()` and `.update()/.finalize()` type-check. These are
+        // unimplemented crypto stubs — the TS backend's hashing is a placeholder
+        // pending a real sha3 binding; the Digest shape keeps generated code
+        // well-typed in the meantime.
         writeln!(
             f,
-            "type Shake128 = any; type Shake256 = any; type Sha3_256 = any;"
+            "class __StubDigest {{ readonly outputSize = 32; update(_data: Uint8Array | readonly number[]): void {{}} finalize(): Uint8Array {{ return new Uint8Array(this.outputSize); }} }}"
+        )?;
+        writeln!(
+            f,
+            "class Shake128 extends __StubDigest {{}} class Shake256 extends __StubDigest {{}} class Sha3_256 extends __StubDigest {{}}"
         )?;
         writeln!(f, "type DigestUpdate = any;")?;
         // Function aliases (re-exports from other modules in the spec).
@@ -2300,6 +2364,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     async_fns: cx.async_fns.clone(),
                     oracle_fn_names: cx.oracle_fn_names.clone(),
                     structs_by_name: cx.structs_by_name,
+                    type_aliases: cx.type_aliases,
                     local_var_types: cx.local_var_types.clone(),
                 };
                 &cx_static
@@ -2901,6 +2966,25 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                 // `digest::Output<D>` / `Output<D>` — a fixed-length byte array.
                 if name == "Output" {
                     return write!(f, "bigint[]");
+                }
+                // std `VecDeque<T>` — no TS class; emit as a plain growable
+                // array `T[]` (same representation as `Vec<T>`/`Vector`).
+                if name == "VecDeque" && type_args.len() == 1 {
+                    TsTypeWriter { ty: &type_args[0] }.ts_fmt(f, cx)?;
+                    return write!(f, "[]");
+                }
+                // Rust integer primitives that have no `PrimitiveType` variant in
+                // the IR (i8/i16/i32/i64/u16/isize/…) parse as a custom struct
+                // named after the primitive. Map them to a TS numeric type rather
+                // than emitting the bare Rust name (which is undefined in TS).
+                if matches!(
+                    name.as_str(),
+                    "i8" | "i16" | "i32" | "i64" | "u16" | "isize" | "u128" | "i128" | "f32" | "f64"
+                ) {
+                    return write!(f, "bigint");
+                }
+                if name == "str" || name == "String" {
+                    return write!(f, "string");
                 }
                 write!(f, "{}", name)?;
                 if !type_args.is_empty() {
@@ -3588,10 +3672,11 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             .filter(|s| !is_namespace_prefix(s))
                             .collect();
                         if segs.len() == 2
-                            && segs[0] == "Vec"
+                            && (segs[0] == "Vec" || segs[0] == "VecDeque")
                             && segs[1] == "new"
                             && args.is_empty()
                         {
+                            // Both Vec and VecDeque are plain arrays in TS.
                             return write!(f, "[] as any[]");
                         }
                         // Enum::Variant(...) → new EnumName_VariantName(...)
@@ -3607,6 +3692,43 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                                 TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
                             }
                             return write!(f, ")");
+                        }
+                        // `X::new(args)` on a crypto-stub class (`Sha3_256`,
+                        // `Shake128`, `Shake256`) or an alias resolving to one
+                        // (`DigestImpl`) → `new X(args)`. Type params are handled
+                        // earlier via ctx.newT; real structs construct via
+                        // `new StructName({...})` (StructExpr), not `::new()`.
+                        if segs.len() == 2 && segs[1] == "new"
+                            && !is_crypto_type_param(segs[0])
+                            && !cx.class_witnesses.iter().any(|w| w == segs[0])
+                        {
+                            let head = resolve_alias_name(segs[0], cx);
+                            if matches!(head.as_str(), "Shake128" | "Shake256" | "Sha3_256") {
+                                write!(f, "new {}(", head)?;
+                                let mut first = true;
+                                for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                                    if !first {
+                                        write!(f, ", ")?;
+                                    }
+                                    first = false;
+                                    TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                                }
+                                return write!(f, ")");
+                            }
+                        }
+                        // `X::default()` on a concrete (non-type-param) struct → its
+                        // zero value. For types we don't track (stdlib aliases like
+                        // `Shake128 = any`), emit `undefined as any` — these are
+                        // crypto stubs whose default has no TS representation.
+                        if segs.len() == 2 && segs[1] == "default" && args.is_empty() {
+                            let ty = IrType::Struct {
+                                kind: StructKind::Custom(segs[0].to_string()),
+                                type_args: Vec::new(),
+                            };
+                            if cx.structs_by_name.contains_key(segs[0]) {
+                                return ts_default_value(&ty, f, cx);
+                            }
+                            return write!(f, "undefined as any /* {}::default() */", segs[0]);
                         }
                     }
                 }
@@ -3695,6 +3817,21 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             }
                         })
                         .collect();
+                    // Strip leading Rust module qualifiers (`torus::reduce` →
+                    // `reduce`): anything before the last segment that isn't a
+                    // known type head is a module path, and the generated TS is
+                    // flat (all functions/types share one scope).
+                    let first_type = resolved.iter().position(|s| cx.is_type_head(s));
+                    let mut resolved = match first_type {
+                        Some(0) | None => resolved,
+                        Some(i) => resolved[i..].to_vec(),
+                    };
+                    if resolved.len() > 1 && !cx.is_type_head(&resolved[0]) {
+                        // No recognized type head at all → keep only the last segment.
+                        let last = resolved.last().unwrap().clone();
+                        resolved.clear();
+                        resolved.push(last);
+                    }
                     emit_path(&resolved, f)?;
                 }
             }
@@ -3712,12 +3849,35 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     .iter()
                     .filter(|(n, v)| !n.starts_with("_phantom") && !is_phantom_arg(v))
                     .collect();
+                // Field types, for resolving `Default::default()` field values to a
+                // concrete zero of the field's declared type (the dyn-lowered struct
+                // registry is keyed by the same bare name `name` is derived from).
+                let struct_fields: Option<&IrStruct> = cx.structs_by_name.get(&name);
                 write!(f, "new {}({{ ", name)?;
                 for (i, (field_name, val)) in real_fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
                     write!(f, "$f{}: ", field_name)?;
+                    // `field: Default::default()` → the field type's zero value.
+                    let is_default_call = matches!(
+                        &val.kind,
+                        IrExprKind::Call { func, args }
+                            if args.is_empty()
+                                && matches!(&func.kind, IrExprKind::Path { segments, .. }
+                                    if segments.len() == 2
+                                        && segments[0] == "Default"
+                                        && segments[1] == "default")
+                    );
+                    if is_default_call {
+                        if let Some(field_ty) = struct_fields
+                            .and_then(|s| s.fields.iter().find(|fl| &fl.name == field_name))
+                            .map(|fl| &fl.ty)
+                        {
+                            ts_default_value(field_ty, f, cx)?;
+                            continue;
+                        }
+                    }
                     TsExprWriter { expr: val }.ts_fmt(f, cx)?;
                 }
                 write!(f, " }})")?;
@@ -4735,6 +4895,9 @@ impl<'a> KnownCallPath<'a> {
     fn from_segs(segs: &[&'a str]) -> Option<Self> {
         match segs {
             ["Vec", "new"] | ["Vec", "new", ..] if segs.len() == 2 => Some(Self::VecNew),
+            // VecDeque is represented as a plain array, like Vec.
+            ["VecDeque", "new"] => Some(Self::VecNew),
+            ["VecDeque", "with_capacity"] => Some(Self::VecWithCapacity),
             ["Vec", "with_capacity"] => Some(Self::VecWithCapacity),
             [int, "from_le_bytes"] if matches!(*int, "u32" | "u64" | "u128") => {
                 Some(Self::FromLeBytes(int))
@@ -5335,6 +5498,18 @@ fn ts_emit_pattern_bindings(
             }
             Ok(())
         }
+        // `Point { x, y }` / `PlanOp::Not { input, out }` — bind each named field
+        // from the matched class instance's `.$f<field>` property. Without this the
+        // field bindings are referenced in the arm body but never declared.
+        IrPattern::Struct { fields, .. } => {
+            for (field_name, sub) in fields {
+                let access = format!("{}{}", match_var, ts_field_access(field_name));
+                ts_emit_pattern_bindings(sub, &access, f)?;
+            }
+            Ok(())
+        }
+        // `&pat` — the matched value is transparent (references erased in TS).
+        IrPattern::Ref { pat, .. } => ts_emit_pattern_bindings(pat, match_var, f),
         _ => Ok(()),
     }
 }
@@ -5445,6 +5620,30 @@ fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
 /// registry never keys on nested/qualified forms.
 fn bare_struct_name(name: &str) -> &str {
     name.split('<').next().unwrap_or(name)
+}
+
+/// Resolve a path head through the type-alias registry to a concrete class
+/// name. `DigestImpl` (alias for `Sha3_256`) → `Sha3_256`; a non-alias name is
+/// returned unchanged. Only struct-kind targets are resolved; other alias
+/// targets (e.g. primitive aliases like `type Zq = u32`) have no class to
+/// construct and are returned unchanged.
+fn resolve_alias_name<'n>(name: &'n str, cx: &TsContext<'_>) -> String {
+    let mut cur = name.to_string();
+    // Follow at most a few hops to avoid infinite loops on cyclic aliases.
+    for _ in 0..8 {
+        let next = match cx.type_aliases.get(&cur) {
+            Some(IrType::Struct { kind, .. }) => bare_struct_name(&kind.to_string()).to_string(),
+            // A bare-type alias target (`type DigestImpl = Sha3_256`) parses as
+            // a TypeParam for the (external) target name.
+            Some(IrType::TypeParam(tp)) => tp.clone(),
+            _ => break,
+        };
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
 }
 
 /// Convert a known-width `PrimitiveType` to its bit width. Returns `None` for
