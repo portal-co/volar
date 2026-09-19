@@ -107,6 +107,7 @@ where applicable.
 | Document | Status |
 |---|---|
 | [external-primitives-plan.md](external-primitives-plan.md) | Oracles, Actions, and Native RNG — partial implementation; ActionCall is in use |
+| [mpc-external-actions-oracles-plan.md](mpc-external-actions-oracles-plan.md) | Proposed cross-MPC action executor, deferred pure-oracle, external-boundary batching, and generic optimizer plan |
 | [fhe/README.md](fhe/README.md) | FHE / TFHE plans, evidence records, reviews, and generic-weaver material |
 | [fhe/tfhe-steady-state-evidence.md](fhe/tfhe-steady-state-evidence.md) | Authoritative Track-S speculative legacy corpus and evidence ledger |
 | [spec-static-shapes-plan.md](spec-static-shapes-plan.md) | Static TFHE shapes landed; dynamic and LIR/C validation gaps are recorded |
