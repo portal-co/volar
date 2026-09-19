@@ -71,9 +71,14 @@ impl VcExternalRegistry {
             if registry.actions.contains_key(&action.name) {
                 return Err(ExternalRegistryError::DuplicateAction(action.name));
             }
-            if fingerprints
-                .insert(action.execution.fingerprint, ())
-                .is_some()
+            // The explicit legacy evaluator compatibility constructor uses a
+            // zero placeholder until frontend declarations carry a real
+            // fingerprint. Do not make multiple migrated legacy declarations
+            // impossible to register solely for sharing that sentinel.
+            if action.execution.fingerprint != [0; 32]
+                && fingerprints
+                    .insert(action.execution.fingerprint, ())
+                    .is_some()
             {
                 return Err(ExternalRegistryError::DuplicateFingerprint(
                     action.execution.fingerprint,
@@ -86,9 +91,10 @@ impl VcExternalRegistry {
             if registry.oracles.contains_key(&oracle.name) {
                 return Err(ExternalRegistryError::DuplicateOracle(oracle.name));
             }
-            if fingerprints
-                .insert(oracle.execution.fingerprint, ())
-                .is_some()
+            if oracle.execution.fingerprint != [0; 32]
+                && fingerprints
+                    .insert(oracle.execution.fingerprint, ())
+                    .is_some()
             {
                 return Err(ExternalRegistryError::DuplicateFingerprint(
                     oracle.execution.fingerprint,
@@ -206,6 +212,23 @@ mod tests {
             }],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn compatibility_fingerprint_sentinel_does_not_block_distinct_legacy_declarations() {
+        let actions = [
+            ActionExternalRegistration {
+                name: "one".into(),
+                output_bits: 1,
+                execution: ActionExecutionPolicy::legacy_evaluator(),
+            },
+            ActionExternalRegistration {
+                name: "two".into(),
+                output_bits: 1,
+                execution: ActionExecutionPolicy::legacy_evaluator(),
+            },
+        ];
+        assert!(VcExternalRegistry::new(actions, []).is_ok());
     }
 
     #[test]
