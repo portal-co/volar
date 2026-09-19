@@ -749,6 +749,13 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
             if let IrExprKind::Path { segments, .. } = &func.kind {
                 if segments.len() == 1 {
                     targets.push(segments[0].clone());
+                } else if segments.len() == 2 {
+                    // `Type::assoc_fn(...)` / `Trait::method(...)` — collect the
+                    // qualified `Type.method` key so the witness map (which keys
+                    // methods as `ClassName.method`) can match. We do NOT collect the
+                    // bare method name (e.g. `new`) — that would over-match every
+                    // same-named method across all structs.
+                    targets.push(format!("{}.{}", segments[0], segments[1]));
                 }
             }
             collect_call_targets_expr(func, targets);
@@ -3666,6 +3673,21 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                                     }
                                     return write!(f, ")");
                                 }
+                            }
+                        }
+                        // Static method on a concrete struct whose method carries witness
+                        // needs → forward the caller's `ctx` as the first arg.
+                        // (`Ring.new(parameters)` → `Ring.new(ctx, parameters)`.)
+                        if !is_type_param && type_name != "Self" && cx.has_ctx_param {
+                            let struct_name = bare_struct_name(type_name);
+                            let key = format!("{}.{}", struct_name, method);
+                            if cx.get_witness_needs(&key).is_some() {
+                                write!(f, "{}.{}(ctx", struct_name, method)?;
+                                for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                                    write!(f, ", ")?;
+                                    TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                                }
+                                return write!(f, ")");
                             }
                         }
                     }

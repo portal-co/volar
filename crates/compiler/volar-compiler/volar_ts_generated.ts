@@ -3494,9 +3494,9 @@ export class BatchSelect {
     return this.$fpublic;
   }
 
-  static setup(parameters: any, random: any): Result<BatchSelect, Error>
+  static setup(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, parameters: any, random: any): Result<BatchSelect, Error>
   {
-    const ring = Ring.new(parameters);
+    const ring = Ring.new(ctx, parameters);
     let lhe_a = /* Vec::with_capacity */ Array(parameters.$fwidth);
     for (let _ = 0n; _ < parameters.$fwidth; _ += 1n)     {
       (lhe_a).push(ring.uniform(random));
@@ -8670,11 +8670,11 @@ export function mem_drain_open<T>(n: bigint, prod: VopeDyn<T>, cons: VopeDyn<T>)
   return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldAdd(__clone(prod.$fv[Number(i)]), __clone(cons.$fv[Number(i)])));
 }
 
-export function memory_check_per_lane<T>(n: bigint, challenges: T[]): MemoryCheckStateDyn<T, AdditiveHasher>[]
+export function memory_check_per_lane<T>(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, n: bigint, challenges: T[]): MemoryCheckStateDyn<T, AdditiveHasher>[]
 {
   return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const key = ChallengeKeyDyn.from_challenge(__clone(challenges[Number(i)]));
-  return MemoryCheckStateDyn.new(key);
+  return MemoryCheckStateDyn.new(ctx, key);
 })());
 }
 
@@ -9495,11 +9495,11 @@ export function shift_rows(state: bigint[])
   state[Number(3n)] = t_3;
 }
 
-export function sign(sk: any, pk: any, message: bigint[], iv_seed: bigint[], prover: any): FaestSignature
+export function sign(ctx: { newD: () => any, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, sk: any, pk: any, message: bigint[], iv_seed: bigint[], prover: any): FaestSignature
 {
   const iv: bigint[] = aes128_encrypt(iv_seed, Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
   const r: bigint[] = aes128_encrypt(sk[0], iv);
-  const commitment: BavcCommitmentDyn = BavcDyn.commit(r, iv, TAU, SUB_VOLE_N);
+  const commitment: BavcCommitmentDyn = BavcDyn.commit(ctx, r, iv, TAU, SUB_VOLE_N);
   const mu: Vec<bigint> = (() => {
   let h = new Sha3_256();
   h.update(pk[0]);
@@ -10133,7 +10133,7 @@ export function unique_bins(seed: bigint[], x: bigint, m: bigint): Vec<bigint>
   return js;
 }
 
-export function verify(pk: any, message: bigint[], sig: any): boolean
+export function verify(ctx: { newD: () => any, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, pk: any, message: bigint[], sig: any): boolean
 {
   const iv = sig.$fiv;
   const mu: Vec<bigint> = (() => {
@@ -10144,7 +10144,7 @@ export function verify(pk: any, message: bigint[], sig: any): boolean
 })();
   const chall_1 = chall1(mu, iv, sig.$fbavc_root, fieldAdd(LAMBDA_BYTES, 8n), false);
   const deltas = expand_challenge_to_deltas(chall_1, TAU, SUB_VOLE_N);
-  const reconstructed_seeds_opt = BavcDyn.reconstruct(sig.$fnodes, sig.$fhidden_commits, deltas, iv, sig.$fbavc_root, TAU, SUB_VOLE_N);
+  const reconstructed_seeds_opt = BavcDyn.reconstruct(ctx, sig.$fnodes, sig.$fhidden_commits, deltas, iv, sig.$fbavc_root, TAU, SUB_VOLE_N);
   const reconstructed_seeds = (() => { const __match = reconstructed_seeds_opt; if (__match !== null && __match !== undefined) { const s = __match;
 return s; } else { return false; } })();
   let sub_voles_v = /* Vec::with_capacity */ Array(TAU);
