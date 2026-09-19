@@ -37,6 +37,8 @@ use volar_mpc::{
 use volar_spec::garble::{Garble, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
+use crate::external_boundary::ExternalBatchLimits;
+use crate::external_registry::VcExternalRegistry;
 use crate::schedule::ScheduleError;
 
 /// vc-spec argument / memory visibility.
@@ -108,6 +110,26 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> VcEmbedder<N, I, A> {
         crate::compile_schedule(circuit).map_err(VcOutcome::Error)
     }
 
+    /// Validate a guest against the explicit external declaration registry
+    /// before compiling it. A malformed/missing registry entry, or any
+    /// currently unimplemented external batch, is a session **abort** rather
+    /// than a schedule fallback that silently hosts an extern at the evaluator.
+    ///
+    /// Pure Boolean guests remain admissible through this path. Executable
+    /// action/oracle support requires the future batch/reinsertion adapter.
+    pub fn compile_with_external_registry<P: Clone>(
+        circuit: &BIrBlocks<P>,
+        registry: &VcExternalRegistry,
+    ) -> Result<GateSchedule, VcOutcome> {
+        let plan = registry
+            .plan_boolar(circuit, ExternalBatchLimits::default())
+            .map_err(|_| VcOutcome::Abort(MpcError::UnsupportedExternalPolicy))?;
+        if !plan.plan.batches.is_empty() {
+            return Err(VcOutcome::Abort(MpcError::UnsupportedExternalPolicy));
+        }
+        Self::compile(circuit)
+    }
+
     /// `invoke`: run the two-party computation over a guest circuit.
     ///
     /// `circuit` is the lowered, circuit-fused guest (single block, single
@@ -121,6 +143,30 @@ impl<N: VoleArray<u8>, const I: usize, const A: usize> VcEmbedder<N, I, A> {
     /// Returns [`VcOutcome::Value`] with the single revealed output bit on
     /// success, [`VcOutcome::Abort`] on a session/protocol failure, and
     /// [`VcOutcome::Error`] if the circuit cannot be scheduled.
+    pub fn invoke_with_external_registry<D: Digest, P: Clone>(
+        &self,
+        circuit: &BIrBlocks<P>,
+        registry: &VcExternalRegistry,
+        partition: &[InputOwner],
+        public_bits: &[bool],
+        private_bits: &[bool],
+        blind_bits: &[bool],
+        ot: &mut dyn OtChannel<N>,
+    ) -> VcOutcome {
+        let schedule = match Self::compile_with_external_registry(circuit, registry) {
+            Ok(schedule) => schedule,
+            Err(outcome) => return outcome,
+        };
+        self.invoke_schedule::<D>(
+            &schedule,
+            partition,
+            public_bits,
+            private_bits,
+            blind_bits,
+            ot,
+        )
+    }
+
     pub fn invoke<D: Digest, P: Clone>(
         &self,
         circuit: &BIrBlocks<P>,

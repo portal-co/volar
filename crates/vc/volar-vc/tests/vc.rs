@@ -18,7 +18,9 @@ use volar_mpc::InputOwner;
 use volar_mpc::ot::LoopbackOt;
 use volar_side::SideId;
 use volar_spec::garble::{Garble, GlobalSecret};
-use volar_vc::{VcEmbedder, VcOutcome, partition_from_sides};
+use volar_vc::{
+    ActionExternalRegistration, VcEmbedder, VcExternalRegistry, VcOutcome, partition_from_sides,
+};
 
 type N = U16;
 type D = Sha256;
@@ -61,6 +63,57 @@ fn embedder() -> VcEmbedder<N, 3, 1> {
     let secret = GlobalSecret::<N>::new(det_bytes(13));
     let labels = [det_label(7), det_label(91), det_label(33)];
     VcEmbedder::with_secret(secret, labels)
+}
+
+fn unsupported_external_circuit() -> BIrBlocks {
+    BIrBlocks {
+        blocks: vec![BIrBlock {
+            params: 1,
+            stmts: vec![Node::new(
+                BIrStmt::ActionCall {
+                    name: "host".into(),
+                    guard: IRVarId(0),
+                    args: vec![],
+                    fallback: vec![IRVarId(0)],
+                    num_bits: 1,
+                },
+                (),
+                None,
+            )],
+            terminator: BIrTerminator::Jmp(BIrTarget {
+                block: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)],
+            }),
+        }],
+        pre_init: vec![],
+    }
+}
+
+#[test]
+fn external_registry_maps_unimplemented_execution_to_abort() {
+    use volar_ir_common::{ActionExecutionPolicy, ExternalExecutor, ExternalRevealPolicy};
+    use volar_mpc::MpcError;
+
+    let registry = VcExternalRegistry::new(
+        [ActionExternalRegistration {
+            name: "host".into(),
+            output_bits: 1,
+            execution: ActionExecutionPolicy {
+                executor: ExternalExecutor::Evaluator,
+                reveal: ExternalRevealPolicy::BothRoles,
+                fingerprint: [0x55; 32],
+            },
+        }],
+        [],
+    )
+    .unwrap();
+    assert!(matches!(
+        VcEmbedder::<N, 1, 0>::compile_with_external_registry(
+            &unsupported_external_circuit(),
+            &registry,
+        ),
+        Err(VcOutcome::Abort(MpcError::UnsupportedExternalPolicy))
+    ));
 }
 
 /// The schedule compiler produces the right gate structure.

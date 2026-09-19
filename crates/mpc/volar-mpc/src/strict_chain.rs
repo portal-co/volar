@@ -36,7 +36,8 @@ use crate::strict::{
     garble_schedule_strict_dyn_full,
 };
 use crate::{
-    Eval, GateSchedule, MpcError, OtChannel, SessionFrame, Transport, arr_to_vec, vec_to_arr,
+    Eval, ExternalBatchManifest, GateSchedule, MpcError, OtChannel, SessionFrame, Transport,
+    arr_to_vec, vec_to_arr,
 };
 
 /// A chain input feed, per circuit-input bit. The feed script is shared by
@@ -194,6 +195,44 @@ pub trait ChainStoragePhase<N: VoleArray<u8>> {
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<(), MpcError>;
+}
+
+/// One explicit strict-chain boundary script.
+///
+/// Storage and external sections remain distinct: planner ordering decides
+/// their relation, while this value only gives the chain one atomic admission
+/// point before any role-local storage transaction begins.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChainBoundaryScript {
+    pub storage: Vec<StorageOperation>,
+    pub external: Vec<ExternalBatchManifest>,
+}
+
+/// Execute an admitted chain boundary before an ordinary strict round.
+///
+/// Current chain drivers accept storage-only scripts. Any external manifest is
+/// rejected *before* a storage prefetch/store executes, so an unavailable
+/// action/oracle adapter cannot advance durable material state and then abort.
+pub trait ChainBoundaryPhase<N: VoleArray<u8>>: ChainStoragePhase<N> {
+    fn run_boundary_phase<D: Digest>(
+        &mut self,
+        script: &ChainBoundaryScript,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError>;
+}
+
+/// Admit a boundary script before it can mutate role-local durable state.
+///
+/// TODO(mpc-external-ledger: MPC-EXT-CHAIN-01): replace this storage-only
+/// admission with the reviewed external batch executor. Until then, rejecting
+/// before the storage phase preserves retry/epoch safety.
+pub fn validate_chain_boundary_script(script: &ChainBoundaryScript) -> Result<(), MpcError> {
+    if script.external.is_empty() {
+        Ok(())
+    } else {
+        Err(MpcError::UnsupportedExternalPolicy)
+    }
 }
 
 /// One public, fixed-shape storage operation. The role-local material is
@@ -511,6 +550,20 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainStoragePhase<N>
     }
 }
 
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainBoundaryPhase<N>
+    for ChainGarbler<N, S>
+{
+    fn run_boundary_phase<D: Digest>(
+        &mut self,
+        script: &ChainBoundaryScript,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        validate_chain_boundary_script(script)?;
+        self.run_storage_phase::<D>(&script.storage, transport, ot)
+    }
+}
+
 impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainParty<N> for ChainGarbler<N, S> {
     fn run_round<D: Digest, T: Transport>(
         &mut self,
@@ -772,7 +825,27 @@ impl<N: VoleArray<u8>> Default for ChainEvaluator<N> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
+
+    #[test]
+    fn external_boundary_is_rejected_before_storage_admission() {
+        let script = ChainBoundaryScript {
+            storage: vec![StorageOperation::Prefetch {
+                slot: 9,
+                owner: MaterialRole::Both,
+            }],
+            external: vec![ExternalBatchManifest {
+                boundary: crate::ExternalBoundaryId(0),
+                actions: vec![],
+            }],
+        };
+        assert_eq!(
+            validate_chain_boundary_script(&script),
+            Err(MpcError::UnsupportedExternalPolicy)
+        );
+    }
 
     #[test]
     fn held_slots_are_contiguous_and_scriptable_at_scale() {
@@ -820,6 +893,20 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainStoragePhase<N>
             }
         }
         Ok(())
+    }
+}
+
+impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainBoundaryPhase<N>
+    for ChainEvaluator<N, S>
+{
+    fn run_boundary_phase<D: Digest>(
+        &mut self,
+        script: &ChainBoundaryScript,
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(), MpcError> {
+        validate_chain_boundary_script(script)?;
+        self.run_storage_phase::<D>(&script.storage, transport, ot)
     }
 }
 
