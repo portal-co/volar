@@ -4639,7 +4639,10 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             }
             IrExprKind::Cast { expr, ty } => match ty.as_ref() {
                 IrType::Primitive(PrimitiveType::U32) => {
-                    write!(f, "Number(")?;
+                    // The TS target represents Rust integer primitives as bigint;
+                    // preserve that representation through `as u32` rather than
+                    // narrowing to JS number (which breaks subsequent bit ops).
+                    write!(f, "BigInt(")?;
                     TsExprWriter { expr }.ts_fmt(f, cx)?;
                     write!(f, ")")?;
                 }
