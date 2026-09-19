@@ -1931,6 +1931,7 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "  wrappingAdd,")?;
         writeln!(f, "  wrappingSub,")?;
         writeln!(f, "  wrappingNeg,")?;
+        writeln!(f, "  __chunks,")?;
         writeln!(f, "  asRefU8,")?;
         writeln!(f, "  u32_from_le_bytes,")?;
         writeln!(f, "  u64_from_le_bytes,")?;
@@ -4890,6 +4891,87 @@ fn emit_other_method_call(
                 TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
             }
             return write!(f, "))");
+        }
+        // `arr.chunks(n)` / `arr.chunks_mut(n)` → an array of `n`-sized sub-arrays.
+        // (Mutation through the chunks is not modeled; these loops only read.)
+        "chunks" | "chunks_mut" if args.len() == 1 => {
+            write!(f, "__chunks(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", Number(")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, "))")?;
+            return Ok(());
+        }
+        // `arr.iter_mut()` outside an IterLoop — treat as a plain iteration source
+        // (the IterLoop path handles the mutable-write case separately).
+        "iter_mut" | "iter" if args.is_empty() => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return Ok(());
+        }
+        // `iter.copied()` / `iter.cloned()` — identity in TS (arrays hold values).
+        "copied" if args.is_empty() => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return Ok(());
+        }
+        // Integer predicate: is_power_of_two() → (x > 0 && (x & (x-1)) === 0)
+        "is_power_of_two" if args.is_empty() => {
+            write!(f, "((")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ") > 0n && ((")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ") & ((")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ") - 1n)) === 0n)")?;
+            return Ok(());
+        }
+        // Checked integer ops: TS bigint is unbounded (never overflows), so the
+        // checked result is always `Some(product)` — emit the plain product wrapped
+        // so a following `.ok_or(...)`/`.unwrap_or(...)` sees a defined value.
+        "checked_mul" | "checked_add" | "checked_sub" if args.len() == 1 => {
+            let op = match name {
+                "checked_mul" => "*",
+                "checked_add" => "+",
+                _ => "-",
+            };
+            write!(f, "((")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ") {} (", op)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, "))")?;
+            return Ok(());
+        }
+        // Option::ok_or(err) — Result<T,E> is erased to `T` in this backend and
+        // error returns carry the error value directly, so `opt.ok_or(err)` is
+        // `(opt ?? err)` under that model.
+        "ok_or" | "ok_or_else" if args.len() == 1 => {
+            write!(f, "((")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ") ?? (")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, "))")?;
+            return Ok(());
+        }
+        // Result::map_err(f) — Result is erased to T; the error channel is not
+        // represented, so map_err is a no-op on the value.
+        "map_err" if args.len() == 1 => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return Ok(());
+        }
+        // `<[T]>::try_into()` slice→array coercion is identity in TS (arrays are
+        // already concrete). `TryInto::try_into` on an array → the array.
+        "try_into" | "try_from" if args.is_empty() => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return Ok(());
+        }
+        // Vec/slice::position(pred) → findIndex. Rust returns Option<usize>;
+        // findIndex returns -1 when absent, which the surrounding `!`/unwrap
+        // treats as the found index. Emit a bigint index for consistency.
+        "position" | "find" if args.len() == 1 => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".findIndex(")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, ")")?;
+            return Ok(());
         }
         // PartialEq trait methods → __equals
         "eq" if args.len() == 1 => {

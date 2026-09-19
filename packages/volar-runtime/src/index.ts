@@ -24,6 +24,7 @@ export {
   wrappingAdd,
   wrappingSub,
   wrappingNeg,
+  __chunks,
   fieldAdd,
   fieldSub,
   fieldMul,

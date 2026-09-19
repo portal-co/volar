@@ -51,6 +51,17 @@ export function wrappingNeg(a: bigint | number, bits: number): bigint {
 }
 
 // ============================================================================
+// Array helpers
+// ============================================================================
+
+/** Split an array into `size`-element chunks (Rust `slice::chunks`). */
+export function __chunks<T>(arr: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i + size <= arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// ============================================================================
 // Field-element–aware binary operators
 // ============================================================================
 

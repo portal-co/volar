@@ -22,6 +22,7 @@ import {
   wrappingAdd,
   wrappingSub,
   wrappingNeg,
+  __chunks,
   asRefU8,
   u32_from_le_bytes,
   u64_from_le_bytes,
@@ -2429,7 +2430,7 @@ return (() => {
   {
     let h = 14695981039346656037n;
     for (const spec of this.$fluts)     {
-      for (const [i, chunk] of spec.$fentries.chunks(8n).enumerate())       {
+      for (const [i, chunk] of __chunks(spec.$fentries, Number(8n)).enumerate())       {
         let byte = 0n;
         for (const [j, e] of chunk.map((val: any, i: number) => [i, val] as [number, typeof val]))         {
           byte = fieldBitor(byte, fieldShl(((e) & 0xFFn), j));
@@ -2473,7 +2474,7 @@ return (() => {
   {
     for (const [i, spec] of this.$fluts.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       const len = BigInt(spec.$fentries.length);
-      if ((__equals(len, 0n) || !len.is_power_of_two()))       {
+      if ((__equals(len, 0n) || !((len) > 0n && ((len) & ((len) - 1n)) === 0n)))       {
         return new BadTableShape({ $ftable: Number(i) });
       }
       const arity = Number(Math.clz32((len) & -((len) | 0)));
@@ -2632,15 +2633,15 @@ export class Reader {
 
   take(count: bigint): Result<bigint[], DecodeError>
   {
-    const end = (this.$foffset + (count)).ok_or(new DecodeError_Truncated());
-    const bytes = this.$fbytes?.[Array.from({length: Number(end - this.$foffset)}, (_, __i) => BigInt(__i) + this.$foffset)].ok_or(new DecodeError_Truncated());
+    const end = (((this.$foffset + (count))) ?? (new DecodeError_Truncated()));
+    const bytes = ((this.$fbytes?.[Array.from({length: Number(end - this.$foffset)}, (_, __i) => BigInt(__i) + this.$foffset)]) ?? (new DecodeError_Truncated()));
     this.$foffset = end;
     return bytes;
   }
 
   u32(): Result<bigint, DecodeError>
   {
-    const bytes: bigint[] = this.take(4n).try_into().map_err((_) => new DecodeError_Truncated());
+    const bytes: bigint[] = this.take(4n);
     return u32_from_le_bytes(bytes);
   }
 }
@@ -2824,7 +2825,7 @@ export class EncodedLabelBatch {
       return new LabelBatchDecodeError_LengthMismatch();
     }
     return selected.chunks_exact(3n).map((chunk: any) => (() => {
-  return decode_label_16([chunk[Number(0n)], chunk[Number(1n)], chunk[Number(2n)]]).map_err(new LabelBatchDecodeError_NonCanonicalLabel());
+  return decode_label_16([chunk[Number(0n)], chunk[Number(1n)], chunk[Number(2n)]]);
 })());
   }
 
@@ -3004,7 +3005,7 @@ export class LabelBatchDyn {
     if ((!__equals(BigInt(choices.length), BigInt(this.$fpairs.length)) || !__equals(BigInt(output.length), BigInt(this.$fpairs.length))))     {
       return new BatchError_LengthMismatch();
     }
-    for (const [[pair, choice], selected] of this.$fpairs.map((__a: any, __i: number) => [__a, choices.copied()[__i]] as [typeof __a, any]).map((__a: any, __i: number) => [__a, output.iter_mut()[__i]] as [typeof __a, any]))     {
+    for (const [[pair, choice], selected] of this.$fpairs.map((__a: any, __i: number) => [__a, choices[__i]] as [typeof __a, any]).map((__a: any, __i: number) => [__a, output[__i]] as [typeof __a, any]))     {
       selected = (() => { if (choice) {
   return pair.$fone;
 } else {
@@ -3039,7 +3040,7 @@ export class Parameters {
 
   levels(): Result<bigint, Error>
   {
-    if (((this.$fwidth < 2n) || !this.$fwidth.is_power_of_two()))     {
+    if (((this.$fwidth < 2n) || !((this.$fwidth) > 0n && ((this.$fwidth) & ((this.$fwidth) - 1n)) === 0n)))     {
       return new Error_InvalidParameters();
     }
     return Number(ilog2(this.$fwidth));
@@ -3052,19 +3053,19 @@ export class Parameters {
 
   slots(): Result<bigint, Error>
   {
-    return this.$fdegree.checked_mul(this.$fwidth).ok_or(new Error_InvalidParameters());
+    return ((((this.$fdegree) * (this.$fwidth))) ?? (new Error_InvalidParameters()));
   }
 
   validate(): Result<void, Error>
   {
-    if (((((((((((this.$fdegree < 2n) || !this.$fdegree.is_power_of_two()) || (this.$fwidth < 2n)) || !this.$fwidth.is_power_of_two()) || (this.$fplaintext_modulus < 3n)) || (this.$fdelta < 3n)) || (this.$fgadget_base < 2n)) || __equals(this.$fgadget_digits, 0n)) || !__equals((fieldSub(this.$fplaintext_modulus, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)) || !__equals((fieldSub(this.$fdelta, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)))     {
+    if (((((((((((this.$fdegree < 2n) || !((this.$fdegree) > 0n && ((this.$fdegree) & ((this.$fdegree) - 1n)) === 0n)) || (this.$fwidth < 2n)) || !((this.$fwidth) > 0n && ((this.$fwidth) & ((this.$fwidth) - 1n)) === 0n)) || (this.$fplaintext_modulus < 3n)) || (this.$fdelta < 3n)) || (this.$fgadget_base < 2n)) || __equals(this.$fgadget_digits, 0n)) || !__equals((fieldSub(this.$fplaintext_modulus, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)) || !__equals((fieldSub(this.$fdelta, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)))     {
       return new Error_InvalidParameters();
     }
     this.slots();
     const modulus = fieldMul((this.$fplaintext_modulus as unknown as bigint), (this.$fdelta as unknown as bigint));
     let capacity = 1n;
     for (let _ = 0n; _ < this.$fgadget_digits; _ += 1n)     {
-      capacity = capacity.checked_mul((this.$fgadget_base as unknown as bigint)).ok_or(new Error_InvalidParameters());
+      capacity = ((((capacity) * ((this.$fgadget_base as unknown as bigint)))) ?? (new Error_InvalidParameters()));
     }
     if ((capacity <= modulus))     {
       return new Error_InvalidParameters();
@@ -3106,10 +3107,10 @@ export class Polynomial {
 
   add_assign(ring: any, other: any)
   {
-    for (const [left, right] of this.$ffirst.iter_mut().zip(other.$ffirst))     {
+    for (const [left, right] of this.$ffirst.zip(other.$ffirst))     {
       left = add_mod(left, right, ring.$fparameters.$fplaintext_modulus);
     }
-    for (const [left, right] of this.$fsecond.iter_mut().zip(other.$fsecond))     {
+    for (const [left, right] of this.$fsecond.zip(other.$fsecond))     {
       left = add_mod(left, right, ring.$fparameters.$fdelta);
     }
   }
@@ -3136,10 +3137,10 @@ export class Polynomial {
   product(ring: any, other: any): Polynomial
   {
     let output = ring.zero();
-    for (const [[output, left], right] of output.$ffirst.iter_mut().zip(this.$ffirst).zip(other.$ffirst))     {
+    for (const [[output, left], right] of output.$ffirst.zip(this.$ffirst).zip(other.$ffirst))     {
       output = mul_mod(left, right, ring.$fparameters.$fplaintext_modulus);
     }
-    for (const [[output, left], right] of output.$fsecond.iter_mut().zip(this.$fsecond).zip(other.$fsecond))     {
+    for (const [[output, left], right] of output.$fsecond.zip(this.$fsecond).zip(other.$fsecond))     {
       output = mul_mod(left, right, ring.$fparameters.$fdelta);
     }
     return output;
@@ -3166,10 +3167,10 @@ export class Polynomial {
 
   sub_assign(ring: any, other: any)
   {
-    for (const [left, right] of this.$ffirst.iter_mut().zip(other.$ffirst))     {
+    for (const [left, right] of this.$ffirst.zip(other.$ffirst))     {
       left = sub_mod(left, right, ring.$fparameters.$fplaintext_modulus);
     }
-    for (const [left, right] of this.$fsecond.iter_mut().zip(other.$fsecond))     {
+    for (const [left, right] of this.$fsecond.zip(other.$fsecond))     {
       left = sub_mod(left, right, ring.$fparameters.$fdelta);
     }
   }
@@ -3323,7 +3324,7 @@ export class BatchSelect {
       (result).push(value);
     }
     const correction = this.lenc_eval(first.$flenc_ciphertext, tree);
-    for (const [value, delta] of result.iter_mut().zip(correction))     {
+    for (const [value, delta] of result.zip(correction))     {
       value.sub_assign(this.$fring, delta);
     }
     return this.$fring.decode_messages(result);
@@ -3559,10 +3560,10 @@ export class Ring {
     }
     this.$ffirst_ntt.forward(first);
     this.$fsecond_ntt.forward(second);
-    for (const [destination, error] of value.$ffirst.iter_mut().zip(first))     {
+    for (const [destination, error] of value.$ffirst.zip(first))     {
       destination = add_mod(destination, error, this.$fparameters.$fplaintext_modulus);
     }
-    for (const [destination, error] of value.$fsecond.iter_mut().zip(second))     {
+    for (const [destination, error] of value.$fsecond.zip(second))     {
       destination = add_mod(destination, error, this.$fparameters.$fdelta);
     }
     return [];
@@ -3650,7 +3651,7 @@ export class Ring {
     let output = /* Vec::with_capacity */ Array(this.$fparameters.$fwidth);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
       let value = this.zero();
-      for (const [[first, second], choice] of value.$ffirst.iter_mut().zip(value.$fsecond.iter_mut()).zip(chunk))       {
+      for (const [[first, second], choice] of value.$ffirst.zip(value.$fsecond).zip(chunk))       {
         const choice_1 = u64.from(choice);
         first = choice_1;
         second = choice_1;
@@ -3673,7 +3674,7 @@ export class Ring {
     let output = /* Vec::with_capacity */ Array(this.$fparameters.$fwidth);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
       let value = this.zero();
-      for (const [slot, message] of value.$ffirst.iter_mut().zip(chunk))       {
+      for (const [slot, message] of value.$ffirst.zip(chunk))       {
         slot = mul_mod(message, (this.$fparameters.$fdelta % this.$fparameters.$fplaintext_modulus), this.$fparameters.$fplaintext_modulus);
       }
       (output).push(value);
@@ -3684,7 +3685,7 @@ export class Ring {
   static new(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, parameters: any): Result<Ring, Error>
   {
     parameters.validate();
-    return new Ring({ $ffirst_ntt: Ntt.new(parameters.$fdegree, parameters.$fplaintext_modulus), $fsecond_ntt: Ntt.new(parameters.$fdegree, parameters.$fdelta), $finverse_plaintext_mod_delta: inverse_mod((parameters.$fplaintext_modulus % parameters.$fdelta), parameters.$fdelta).ok_or(new Error_Arithmetic()), $finverse_delta_mod_plaintext: inverse_mod((parameters.$fdelta % parameters.$fplaintext_modulus), parameters.$fplaintext_modulus).ok_or(new Error_Arithmetic()), $fparameters: parameters });
+    return new Ring({ $ffirst_ntt: Ntt.new(parameters.$fdegree, parameters.$fplaintext_modulus), $fsecond_ntt: Ntt.new(parameters.$fdegree, parameters.$fdelta), $finverse_plaintext_mod_delta: ((inverse_mod((parameters.$fplaintext_modulus % parameters.$fdelta), parameters.$fdelta)) ?? (new Error_Arithmetic())), $finverse_delta_mod_plaintext: ((inverse_mod((parameters.$fdelta % parameters.$fplaintext_modulus), parameters.$fplaintext_modulus)) ?? (new Error_Arithmetic())), $fparameters: parameters });
   }
 
   uniform(random: any): Result<Polynomial, Error>
@@ -3747,7 +3748,7 @@ export class Ntt {
 
   forward(values: bigint[])
   {
-    for (const [index, value] of values.iter_mut().enumerate())     {
+    for (const [index, value] of values.enumerate())     {
       value = mul_mod(value, pow_mod(this.$fpsi, index, this.$fmodulus), this.$fmodulus);
     }
     this.cyclic(values, this.$fomega);
@@ -3756,7 +3757,7 @@ export class Ntt {
   inverse(values: bigint[])
   {
     this.cyclic(values, this.$finverse_omega);
-    for (const [index, value] of values.iter_mut().enumerate())     {
+    for (const [index, value] of values.enumerate())     {
       value = mul_mod(value, this.$finverse_degree, this.$fmodulus);
       value = mul_mod(value, pow_mod(this.$finverse_psi, index, this.$fmodulus), this.$fmodulus);
     }
@@ -3764,9 +3765,9 @@ export class Ntt {
 
   static new(degree: bigint, modulus: bigint): Result<Ntt, Error>
   {
-    const psi = find_negacyclic_root(degree, modulus).ok_or(new Error_Arithmetic());
+    const psi = ((find_negacyclic_root(degree, modulus)) ?? (new Error_Arithmetic()));
     const omega = mul_mod(psi, psi, modulus);
-    return new Ntt({ $fmodulus: modulus, $fdegree: degree, $fpsi: psi, $fomega: omega, $finverse_psi: inverse_mod(psi, modulus).ok_or(new Error_Arithmetic()), $finverse_omega: inverse_mod(omega, modulus).ok_or(new Error_Arithmetic()), $finverse_degree: inverse_mod(BigInt(degree), modulus).ok_or(new Error_Arithmetic()) });
+    return new Ntt({ $fmodulus: modulus, $fdegree: degree, $fpsi: psi, $fomega: omega, $finverse_psi: ((inverse_mod(psi, modulus)) ?? (new Error_Arithmetic())), $finverse_omega: ((inverse_mod(omega, modulus)) ?? (new Error_Arithmetic())), $finverse_degree: ((inverse_mod(BigInt(degree), modulus)) ?? (new Error_Arithmetic())) });
   }
 }
 
@@ -3824,9 +3825,9 @@ export class Frame {
     const parameter_fingerprint = take_32();
     const session_id = take_32();
     const manifest_digest = take_32();
-    const use_counter = u64_from_le_bytes((input.slice(Number(offset), Number(fieldAdd(offset, 8n))).try_into())!);
+    const use_counter = u64_from_le_bytes((input.slice(Number(offset), Number(fieldAdd(offset, 8n))))!);
     offset = fieldAdd(offset, 8n);
-    const payload_len = Number(u32_from_le_bytes((input.slice(Number(offset), Number(fieldAdd(offset, 4n))).try_into())!));
+    const payload_len = Number(u32_from_le_bytes((input.slice(Number(offset), Number(fieldAdd(offset, 4n))))!));
     offset = fieldAdd(offset, 4n);
     if ((payload_len > max_payload))     {
       return new FrameError_PayloadTooLarge();
@@ -4313,9 +4314,9 @@ export class TfheBootstrapTableDyn {
     if (!__equals(table_len, domain))     {
       return new TfheBootstrapTableError_TableLengthMismatch();
     }
-    const capacity = (() => { const __match = big_n.checked_mul(2n); if (__match !== null && __match !== undefined) { const capacity = __match;
+    const capacity = (() => { const __match = ((big_n) * (2n)); if (__match !== null && __match !== undefined) { const capacity = __match;
 return capacity; } else { return new TfheBootstrapTableError_RingCapacityExceeded(); } })();
-    if ((((table_len > capacity) || __equals(big_n, 0n)) || !big_n.is_power_of_two()))     {
+    if ((((table_len > capacity) || __equals(big_n, 0n)) || !((big_n) > 0n && ((big_n) & ((big_n) - 1n)) === 0n)))     {
       return new TfheBootstrapTableError_RingCapacityExceeded();
     }
     let is_constant = true;
@@ -5038,7 +5039,7 @@ export class OtStack {
       b = __equals(fieldBitand(rng_r.next_u32(), 1n), 1n);
     }
     let delta_msg = Array.from({length: Number(16n)}, () => 0n);
-    for (const chunk of delta_msg.chunks_mut(4n))     {
+    for (const chunk of __chunks(delta_msg, Number(4n)))     {
       (chunk).splice(0, ([(rng_s.next_u32()) & 0xFFn, ((rng_s.next_u32()) >> 8n) & 0xFFn, ((rng_s.next_u32()) >> 16n) & 0xFFn, ((rng_s.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))).length, ...([(rng_s.next_u32()) & 0xFFn, ((rng_s.next_u32()) >> 8n) & 0xFFn, ((rng_s.next_u32()) >> 16n) & 0xFFn, ((rng_s.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))));
     }
     const out = softspoken_cot_extend_base(ctx, rng_s, rng_r, bits, delta_msg);
@@ -6219,7 +6220,7 @@ export function check_lut_shape(addr_bits: bigint, table_len: bigint, big_n: big
   if ((addr_bits > k_max))   {
     return new LutError_ArityExceedsCircuitMax();
   }
-  if (((((((fieldAdd(Number(k_max), 2n) > log_q_lwe) || !big_n.is_power_of_two()) || (fieldShl(1n, k_max) > big_n)) || !__equals(fieldShl(1n, log_q_lwe), fieldMul(2n, big_n))) || (log_q_lwe > log_q)) || (log_q > 32n)))   {
+  if (((((((fieldAdd(Number(k_max), 2n) > log_q_lwe) || !((big_n) > 0n && ((big_n) & ((big_n) - 1n)) === 0n)) || (fieldShl(1n, k_max) > big_n)) || !__equals(fieldShl(1n, log_q_lwe), fieldMul(2n, big_n))) || (log_q_lwe > log_q)) || (log_q > 32n)))   {
     return new LutError_ShapeUnsupported();
   }
   return fieldShr(big_n, k_max);
@@ -6267,7 +6268,7 @@ export function column_rows(seed: bigint[], k: bigint, j: bigint): bigint[]
       if ((fill >= LOCALITY))       {
         break;
       }
-      const raw = Number(u32_from_le_bytes((chunk.try_into())!));
+      const raw = Number(u32_from_le_bytes((chunk)!));
       const row = (raw % k);
       if (!rows.slice(0, Number(fill)).includes(row))       {
         rows[Number(fill)] = row;
@@ -6518,13 +6519,13 @@ export function decode_lwe_crs(n: bigint, bytes: bigint[]): LweOtCrsDyn
   let a = Array.from({length: Number(n_1)}, () => Array.from({length: Number(n_1)}, () => 0n));
   for (let i = 0n; i < n_1; i += 1n)   {
     for (let j = 0n; j < n_1; j += 1n)     {
-      a[Number(i)][Number(j)] = u32_from_le_bytes((bytes.slice(Number(off), Number(fieldAdd(off, 4n))).try_into())!);
+      a[Number(i)][Number(j)] = u32_from_le_bytes((bytes.slice(Number(off), Number(fieldAdd(off, 4n))))!);
       off = fieldAdd(off, 4n);
     }
   }
   let h = Array.from({length: Number(n_1)}, () => 0n);
   for (let i = 0n; i < n_1; i += 1n)   {
-    h[Number(i)] = u32_from_le_bytes((bytes.slice(Number(off), Number(fieldAdd(off, 4n))).try_into())!);
+    h[Number(i)] = u32_from_le_bytes((bytes.slice(Number(off), Number(fieldAdd(off, 4n))))!);
     off = fieldAdd(off, 4n);
   }
   return new LweOtCrsDyn({ $fa: a, $fh: h, $fn: 0n });
@@ -6544,7 +6545,7 @@ export function decode_lwe_recv(n: bigint, bytes: bigint[]): LweOtRecvMsgDyn
 {
   let pk0 = Array.from({length: Number(n)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
-    pk0[Number(i)] = u32_from_le_bytes((bytes.slice(Number(fieldMul(i, 4n)), Number(fieldAdd(fieldMul(i, 4n), 4n))).try_into())!);
+    pk0[Number(i)] = u32_from_le_bytes((bytes.slice(Number(fieldMul(i, 4n)), Number(fieldAdd(fieldMul(i, 4n), 4n))))!);
   }
   return new LweOtRecvMsgDyn({ $fpk0: pk0, $fn: 0n });
 }
@@ -6608,7 +6609,7 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
     return new DecodeError_TrailingBytes();
   }
   const plan = new BootstrapPlan({ $fprofile: profile, $fk_max: k_max, $fluts: luts, $flayers: layers, $fnum_inputs: num_inputs, $fnum_cells: num_cells, $foutputs: outputs, $fcell_outputs: cell_outputs, $fbudget: budget });
-  plan.validate().map_err(new DecodeError_InvalidPlan());
+  plan.validate();
   return plan;
 }
 
@@ -6634,7 +6635,7 @@ export function decode_zq_vec(bytes: bigint[], off: bigint): Vec<Zq>
   const n = Number(take_u32(bytes, off));
   let v = /* Vec::with_capacity */ Array(n);
   for (let _ = 0n; _ < n; _ += 1n)   {
-    (v).push(u32_from_le_bytes((bytes.slice(Number(off), Number(fieldAdd(off, 4n))).try_into())!));
+    (v).push(u32_from_le_bytes((bytes.slice(Number(off), Number(fieldAdd(off, 4n))))!));
     off = fieldAdd(off, 4n);
   }
   return v;
@@ -6852,7 +6853,7 @@ export function encode_mpcot_reg(msg: any): Vec<bigint>
 
 export function encode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, plan: any): Result<Vec<bigint>, EncodeError>
 {
-  plan.validate().map_err(new EncodeError_InvalidPlan());
+  plan.validate();
   if (((((((BigInt(plan.$fluts.length) > MAX_ITEMS) || (BigInt(plan.$flayers.length) > MAX_ITEMS)) || (BigInt(plan.$foutputs.length) > MAX_ITEMS)) || (BigInt(plan.$fcell_outputs.length) > MAX_ITEMS)) || plan.$flayers.any((layer) => (BigInt(layer.length) > MAX_ITEMS))) || plan.$fluts.any((lut) => (BigInt(lut.$fentries.length) > MAX_ITEMS))))   {
     return new EncodeError_TooLarge();
   }
@@ -6868,7 +6869,7 @@ export function encode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
   put_u32(bytes, Number(BigInt(plan.$fluts.length)));
   for (const lut of plan.$fluts)   {
     put_u32(bytes, Number(BigInt(lut.$fentries.length)));
-    for (const chunk of lut.$fentries.chunks(8n))     {
+    for (const chunk of __chunks(lut.$fentries, Number(8n)))     {
       let packed = 0n;
       for (const [bit, entry] of chunk.map((val: any, i: number) => [i, val] as [number, typeof val]))       {
         packed = fieldBitor(packed, fieldShl(((entry) & 0xFFn), bit));
@@ -6953,7 +6954,7 @@ export function encode_sender_only(sender: any, lpn_seed: bigint[], s: bigint[][
   for (let j = 0n; j < n; j += 1n)   {
     (y).push(xor_block(y_lpn[Number(j)], s[Number(j)]));
   }
-  return new SenderLpn({ $fseed_q: [...y.slice(0, Number(m))], $femit: y.slice(Number(m)).copied() });
+  return new SenderLpn({ $fseed_q: [...y.slice(0, Number(m))], $femit: y.slice(Number(m)) });
 }
 
 export function encode_spcot(msg: any): Vec<bigint>
@@ -7673,7 +7674,7 @@ export function g_double(seed: any): [Block, Block]
 export function gadget_decompose(log: bigint, ell: bigint, base_log: bigint, x: bigint): bigint[]
 {
   let digits = Array.from({length: Number(ell)}, () => 0n);
-  for (const [j, d] of digits.iter_mut().enumerate())   {
+  for (const [j, d] of digits.enumerate())   {
     const shift = level_shift(log, base_log, j);
     const bits = level_bits(log, base_log, j);
     const m = (() => { if ((bits >= 32n)) {
@@ -8086,7 +8087,7 @@ export function hash_i(seed: bigint[], i: bigint, x: bigint, m: bigint): bigint
   h.update([(BigInt(i)) & 0xFFn, ((BigInt(i)) >> 8n) & 0xFFn, ((BigInt(i)) >> 16n) & 0xFFn, ((BigInt(i)) >> 24n) & 0xFFn]);
   h.update([(BigInt(x)) & 0xFFn, ((BigInt(x)) >> 8n) & 0xFFn, ((BigInt(x)) >> 16n) & 0xFFn, ((BigInt(x)) >> 24n) & 0xFFn]);
   const out = [...h.finalize()];
-  const raw = u64_from_le_bytes((out.slice(0, Number(8n)).try_into())!);
+  const raw = u64_from_le_bytes((out.slice(0, Number(8n)))!);
   return (Number(raw) % m);
 }
 
@@ -8766,7 +8767,7 @@ export function mpcot_uni_choice_bits(params: any, hash_seed: bigint[], table: (
     const splen = next_pow2(need);
     const h = Number(Math.clz32((splen) & -((splen) | 0)));
     const p = (() => { const __match = table[Number(j)]; if (true) { return BigInt(buckets[Number(j)].length); } else { const val = __match;
-return (buckets[Number(j)].position((y) => __equals(y, val)))!; } })();
+return (buckets[Number(j)].findIndex((y) => __equals(y, val)))!; } })();
     (out).push(spcot_choice_bits(p, h, cot_r_chunks[Number(j)]));
   }
   return out;
@@ -8782,7 +8783,7 @@ export function mpcot_uni_receiver(params: any, table: (bigint | undefined)[], c
     const need = fieldAdd(BigInt(buckets[Number(j)].length), 1n);
     const splen = next_pow2(need);
     const p = (() => { const __match = table[Number(j)]; if (true) { return BigInt(buckets[Number(j)].length); } else { const val = __match;
-return (buckets[Number(j)].position((y) => __equals(y, val)))!; } })();
+return (buckets[Number(j)].findIndex((y) => __equals(y, val)))!; } })();
     const w = spcot_receiver_extend(p, splen, cot_t_chunks[Number(j)], msg.$fblocks[Number(j)]);
     (r_bins).push(w);
   }
@@ -8790,7 +8791,7 @@ return (buckets[Number(j)].position((y) => __equals(y, val)))!; } })();
   for (let x = 0n; x < n; x += 1n)   {
     let acc = Array.from({length: Number(16n)}, () => 0n);
     for (const j of unique_bins(msg.$fhash_seed, x, m))     {
-      const pos = (buckets[Number(j)].position((y) => __equals(y, x)))!;
+      const pos = (buckets[Number(j)].findIndex((y) => __equals(y, x)))!;
       for (let b = 0n; b < 16n; b += 1n)       {
         acc[Number(b)] = fieldBitxor(acc[Number(b)], r_bins[Number(j)][Number(pos)][Number(b)]);
       }
@@ -8818,7 +8819,7 @@ export function mpcot_uni_sender<R>(rng: any, delta: any, params: any, hash_seed
   for (let x = 0n; x < n; x += 1n)   {
     let acc = Array.from({length: Number(16n)}, () => 0n);
     for (const j of unique_bins(hash_seed, x, m))     {
-      const pos = (buckets[Number(j)].position((y) => __equals(y, x)))!;
+      const pos = (buckets[Number(j)].findIndex((y) => __equals(y, x)))!;
       for (let b = 0n; b < 16n; b += 1n)       {
         acc[Number(b)] = fieldBitxor(acc[Number(b)], s_bins[Number(j)][Number(pos)][Number(b)]);
       }
@@ -9346,7 +9347,7 @@ export function rlwe_sub(big_n: bigint, a: RlweCiphertextDyn, b: RlweCiphertextD
 export function sample_block<R>(rng: any): Block
 {
   let b = Array.from({length: Number(KAPPA_BYTES)}, () => 0n);
-  for (const chunk of b.chunks_mut(4n))   {
+  for (const chunk of __chunks(b, Number(4n)))   {
     const x = [(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn];
     (chunk).splice(0, (x.slice(0, Number(BigInt(chunk.length)))).length, ...(x.slice(0, Number(BigInt(chunk.length)))));
   }
@@ -9356,7 +9357,7 @@ export function sample_block<R>(rng: any): Block
 export function sample_bytes<R>(l: bigint, rng: any): bigint[]
 {
   let b = Array.from({length: Number(l)}, () => 0n);
-  for (const chunk of b.chunks_mut(4n))   {
+  for (const chunk of __chunks(b, Number(4n)))   {
     (chunk).splice(0, ([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))).length, ...([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))));
   }
   return b;
@@ -9397,7 +9398,7 @@ export function sample_regular_noise<R>(rng: any, n: bigint, t: bigint): Vec<big
 export function sample_seed<R>(rng: any): bigint[]
 {
   let s = Array.from({length: Number(16n)}, () => 0n);
-  for (const chunk of s.chunks_mut(4n))   {
+  for (const chunk of __chunks(s, Number(4n)))   {
     (chunk).splice(0, ([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))).length, ...([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))));
   }
   return s;
@@ -9406,7 +9407,7 @@ export function sample_seed<R>(rng: any): bigint[]
 export function sample_seed_cots<R>(rng: any, m: bigint): [FerretSenderSeed, FerretReceiverSeed]
 {
   let delta = Array.from({length: Number(16n)}, () => 0n);
-  for (const chunk of delta.chunks_mut(4n))   {
+  for (const chunk of __chunks(delta, Number(4n)))   {
     (chunk).splice(0, ([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))).length, ...([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))));
   }
   let q = /* Vec::with_capacity */ Array(m);
@@ -9414,7 +9415,7 @@ export function sample_seed_cots<R>(rng: any, m: bigint): [FerretSenderSeed, Fer
   let w = /* Vec::with_capacity */ Array(m);
   for (let _ = 0n; _ < m; _ += 1n)   {
     let row = Array.from({length: Number(16n)}, () => 0n);
-    for (const chunk of row.chunks_mut(4n))     {
+    for (const chunk of __chunks(row, Number(4n)))     {
       (chunk).splice(0, ([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))).length, ...([(rng.next_u32()) & 0xFFn, ((rng.next_u32()) >> 8n) & 0xFFn, ((rng.next_u32()) >> 16n) & 0xFFn, ((rng.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))));
     }
     const bit = __equals(fieldBitand(rng.next_u32(), 1n), 1n);
@@ -9961,7 +9962,7 @@ export function take_random<R>(rng: any, sender: any, receiver: any, need: bigin
 
 export function take_u32(bytes: bigint[], off: bigint): bigint
 {
-  const x = u32_from_le_bytes((bytes.slice(Number(off), Number(fieldAdd(off, 4n))).try_into())!);
+  const x = u32_from_le_bytes((bytes.slice(Number(off), Number(fieldAdd(off, 4n))))!);
   off = fieldAdd(off, 4n);
   return x;
 }
@@ -10111,7 +10112,7 @@ export function true_val(q: bigint): bigint
 
 export function uni_seed_cot_count(hash_seed: bigint[], params: any): bigint
 {
-  return fieldAdd(params.$fk, uni_spcot_heights(hash_seed, params.$fn, params.$ft).copied().sum());
+  return fieldAdd(params.$fk, uni_spcot_heights(hash_seed, params.$fn, params.$ft).sum());
 }
 
 export function uni_spcot_heights(hash_seed: bigint[], n: bigint, t: bigint): Vec<bigint>
