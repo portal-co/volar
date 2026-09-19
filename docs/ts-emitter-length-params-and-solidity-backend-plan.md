@@ -305,7 +305,7 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469** (and seeded
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394** (and seeded
 components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
 *syntax* errors are fixed; the remainder are semantic. Bug classes fixed:
 
@@ -376,7 +376,18 @@ one-line fix):
   and regressed 469 → 483 by forwarding a param the caller cannot produce).
   What's needed is real call-site const/type inference (read the argument types,
   infer `N = 16`, emit the literal) — the genuinely hard, deferred part of the
-  "weak type inference" work. Until then these ~90 TS2554 remain.
+  "weak type inference" work. Until then these ~90 TS2554 remain. **Written up
+  as a self-contained task for later pickup:**
+  `docs/handoffs/const-generic-inference-call-sites.md`.
+
+  Further TS2322/TS2345 reductions (469 → 394): the digest-stub `update()` now
+  accepts bigint bytes (commit 9665159); unit `()` emits `undefined` not `[]`
+  (commit 0164467, fixes `never[]` vs `void`); and `as usize` casts emit
+  `BigInt(...)` not `Number(...)` since `usize` is `bigint` in this target
+  (commit 15d72c5). Remaining TS2322/TS2345 are increasingly per-case semantic:
+  Result-typed struct fields used without unwrapping (`bigint | Error_*` used
+  as `bigint`), struct-vs-primitive confusions, and `number[]` vs `bigint[]`
+  array-element mismatches — each needs a targeted rule, not a broad sweep.
 - **Associated consts on impls** (`impl Fe25519 { pub const ONE: Self = ... }`,
   referenced as `Fe25519::ONE`): the parser's `convert_impl_item` drops
   `ImplItem::Const`, so `Type::CONST` references emit as the undefined
