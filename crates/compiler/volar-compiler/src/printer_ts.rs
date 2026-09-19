@@ -1971,7 +1971,9 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         )?;
         writeln!(f, "type Vec<T> = T[];")?;
         writeln!(f, "type Option<T> = T | undefined;")?;
-        writeln!(f, "type Result<T, E = unknown> = T;")?;
+        // Generated code represents Result as the raw union (Ok value or error),
+        // with `?`/match discriminating — not the Ok/Err wrapper classes above.
+        writeln!(f, "type Result<T, E = unknown> = T | E;")?;
         // Minimal-runtime clone: spread arrays, shallow-copy objects with prototype.
         writeln!(f, "function __clone<T>(x: T): T {{")?;
         writeln!(

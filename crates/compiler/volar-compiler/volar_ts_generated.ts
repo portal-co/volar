@@ -39,7 +39,7 @@ class Ok<T> { constructor(public _0: T) {} }
 class Err<E = unknown> { constructor(public _0: E) {} }
 type Vec<T> = T[];
 type Option<T> = T | undefined;
-type Result<T, E = unknown> = T;
+type Result<T, E = unknown> = T | E;
 function __clone<T>(x: T): T {
   if (Array.isArray(x)) return ([...x] as unknown) as T;
   if (x !== null && typeof x === 'object') return Object.assign(Object.create(Object.getPrototypeOf(x)), x) as T;
