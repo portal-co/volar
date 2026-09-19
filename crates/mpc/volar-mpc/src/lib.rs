@@ -62,7 +62,9 @@ use volar_spec::vole::VoleArray;
 
 pub mod cut_and_choose;
 pub mod external_batch;
-pub use external_batch::{ExternalActionManifestEntry, ExternalBatchManifest, ExternalBoundaryId};
+pub use external_batch::{
+    ExternalActionManifestEntry, ExternalBatchBinding, ExternalBatchManifest, ExternalBoundaryId,
+};
 pub mod input_labels;
 #[cfg(feature = "std")]
 pub mod net;

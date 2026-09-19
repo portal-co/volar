@@ -7,6 +7,9 @@
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
+use digest::Digest;
+use sha2::Sha256;
+
 use crate::{ActionExecutionPolicy, ActionSpec, MpcError};
 
 /// Public identity of a boundary within one circuit/session execution.
@@ -28,6 +31,13 @@ pub struct ExternalBatchManifest {
     pub boundary: ExternalBoundaryId,
     pub actions: Vec<ExternalActionManifestEntry>,
 }
+
+/// Session- and circuit-bound digest of one public external boundary manifest.
+///
+/// This is a compact domain-separated binding record, not a claim that the
+/// legacy action transport has become a replay-safe batch protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExternalBatchBinding(pub [u8; 32]);
 
 impl ExternalBatchManifest {
     /// Construct the canonical action manifest for `actions`.
@@ -63,6 +73,38 @@ impl ExternalBatchManifest {
             boundary,
             actions: entries,
         })
+    }
+}
+
+impl ExternalBatchManifest {
+    /// Bind this public manifest to caller-provided session and circuit
+    /// digests. The field layout is canonical and length-delimited through the
+    /// fixed-width action entries; malformed schedules cannot affect it.
+    pub fn bind(&self, session_digest: [u8; 32], circuit_digest: [u8; 32]) -> ExternalBatchBinding {
+        let mut bytes = Vec::with_capacity(8 + 32 + 32 + self.actions.len() * 80);
+        bytes.extend_from_slice(b"volar.external-boundary.v1");
+        bytes.extend_from_slice(&self.boundary.0.to_le_bytes());
+        bytes.extend_from_slice(&session_digest);
+        bytes.extend_from_slice(&circuit_digest);
+        bytes.extend_from_slice(&(self.actions.len() as u64).to_le_bytes());
+        for action in &self.actions {
+            bytes.extend_from_slice(&action.request_id.to_le_bytes());
+            bytes.extend_from_slice(&action.action_ordinal.to_le_bytes());
+            bytes.push(match action.execution.executor {
+                crate::ExternalExecutor::Garbler => 0,
+                crate::ExternalExecutor::Evaluator => 1,
+            });
+            bytes.push(match action.execution.reveal {
+                crate::ExternalRevealPolicy::ExecutorOnly => 0,
+                crate::ExternalRevealPolicy::BothRoles => 1,
+            });
+            bytes.extend_from_slice(&action.execution.fingerprint);
+            bytes.extend_from_slice(&(action.output_bits as u64).to_le_bytes());
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"volar.external-boundary.binding");
+        digest.update(bytes);
+        ExternalBatchBinding(digest.finalize().into())
     }
 }
 
@@ -102,6 +144,10 @@ mod tests {
         .unwrap();
         assert_eq!(manifest.actions[0].request_id, 42);
         assert_eq!(manifest.actions[1].request_id, 99);
+        assert_ne!(
+            manifest.bind([1; 32], [2; 32]),
+            manifest.bind([1; 32], [3; 32])
+        );
         assert!(
             ExternalBatchManifest::from_actions(
                 ExternalBoundaryId(4),
