@@ -4,8 +4,8 @@
 //! `volar-codegen ts` binary), runs `print_module_typescript`, writes output to a
 //! temp file, and checks it with `tsc --strict --noEmit`.
 //!
-//! The test is expected to fail until all type errors are resolved.  It logs the
-//! full error list and the count so progress can be tracked with `--nocapture`.
+//! The test requires a working `tsc` process and fails on any strict-mode
+//! diagnostic. It logs the full error list and count with `--nocapture`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -220,6 +220,18 @@ fn test_ts_backend_no_errors() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stdout}{stderr}");
+
+    // A missing or otherwise broken TypeScript executable must not be
+    // misreported as “0 TypeScript errors” merely because its diagnostic does
+    // not have a `TSxxxx` code. Ordinary type errors are handled below so they
+    // retain their grouped diagnostic report.
+    if !output.status.success() && !combined.contains("error TS") {
+        panic!(
+            "tsc failed without TypeScript diagnostics (status {:?}):\n{}",
+            output.status.code(),
+            combined
+        );
+    }
 
     // Count and group errors by code.
     let mut by_code: BTreeMap<String, Vec<String>> = BTreeMap::new();

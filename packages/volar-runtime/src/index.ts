@@ -23,6 +23,7 @@ export {
   ilog2,
   wrappingAdd,
   wrappingSub,
+  wrappingNeg,
   fieldAdd,
   fieldSub,
   fieldMul,

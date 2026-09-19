@@ -18,7 +18,8 @@
     "type": "module",
     "scripts": {
         "generate": "cd ../.. && cargo generate-ts",
-        "build": "npx zshy --project ../../tsconfig.json"
+        "build": "npx zshy --project ../../tsconfig.json",
+        "test": "npm run build && node scripts/wrapping-smoke.mjs"
     },
     "main": "./dist/index.cjs",
     "module": "./dist/index.js",

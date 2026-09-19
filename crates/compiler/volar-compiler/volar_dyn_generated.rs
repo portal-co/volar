@@ -254,6 +254,152 @@ pub struct VopeDyn<T> {
     pub v: Vec<T>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct BinfheKeySwitchingKeyRefDyn {
+    pub n_lwe: usize,
+    pub big_n: usize,
+    pub ks_ell: usize,
+    pub ksk: Vec<[BinfheLweCiphertextDyn; KS_ELL]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BinfheBootstrappingKeyRefDyn {
+    pub n_lwe: usize,
+    pub big_n: usize,
+    pub bs_ell: usize,
+    pub ks_ell: usize,
+    pub bsk: Vec<BinfheRgswCiphertextDyn>,
+    pub ksk: BinfheKeySwitchingKeyRefDyn,
+}
+
+#[derive(Clone, Debug)]
+pub struct BinfheKeySwitchingKeyDyn {
+    pub n_lwe: usize,
+    pub big_n: usize,
+    pub ks_ell: usize,
+    pub ksk: Vec<[BinfheLweCiphertextDyn; KS_ELL]>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BinfheBootstrappingKeyDyn {
+    pub n_lwe: usize,
+    pub big_n: usize,
+    pub bs_ell: usize,
+    pub ks_ell: usize,
+    pub bsk: Vec<BinfheRgswCiphertextDyn>,
+    pub ksk: BinfheKeySwitchingKeyDyn,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BinfheRgswRowDyn {
+    pub n: usize,
+    pub rlwe0: BinfheRlweCiphertextDyn,
+    pub rlwe1: BinfheRlweCiphertextDyn,
+}
+
+#[derive(Clone, Debug)]
+pub struct BinfheRgswCiphertextDyn {
+    pub n: usize,
+    pub ell: usize,
+    pub rows: [BinfheRgswRowDyn; ELL],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinfheRlweSecretKeyDyn {
+    pub n: usize,
+    pub key: [u32; N],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinfheRlweCiphertextDyn {
+    pub n: usize,
+    pub a: [u32; N],
+    pub b: [u32; N],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinfheLweSecretKeyDyn {
+    pub n: usize,
+    pub key: [u8; N],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinfheLweCiphertextDyn {
+    pub n: usize,
+    pub a: [u32; N],
+    pub b: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LutInputs {
+    pub ids: [u32; MAX_LUT_ARITY],
+    pub len: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LutSpec {
+    pub entries: Vec<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FailureBudget {
+    pub per_bootstrap_log2: u32,
+    pub total_log2: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BootstrapPlan {
+    pub profile: ProfileId,
+    pub k_max: u32,
+    pub luts: Vec<LutSpec>,
+    pub layers: Vec<Vec<PlanOp>>,
+    pub num_inputs: u32,
+    pub num_cells: u32,
+    pub outputs: Vec<u32>,
+    pub cell_outputs: Vec<u32>,
+    pub budget: FailureBudget,
+}
+
+#[derive(Clone, Debug)]
+pub struct PrivateKeySwitchingKeyDyn {
+    pub big_n: usize,
+    pub priv_ell: usize,
+    pub a_col: Vec<[BinfheRlweCiphertextDyn; PRIV_ELL]>,
+    pub b_col: Vec<[BinfheRlweCiphertextDyn; PRIV_ELL]>,
+    pub a_body: [BinfheRlweCiphertextDyn; PRIV_ELL],
+    pub b_body: [BinfheRlweCiphertextDyn; PRIV_ELL],
+}
+
+#[derive(Clone, Debug)]
+pub struct CircuitBootstrappingKeyDyn {
+    pub n_lwe: usize,
+    pub big_n: usize,
+    pub bs_ell: usize,
+    pub ks_ell: usize,
+    pub priv_ell: usize,
+    pub bk: BinfheBootstrappingKeyDyn,
+    pub privksk: PrivateKeySwitchingKeyDyn,
+}
+
+#[derive(Debug, Default)]
+pub struct Reader<'a> {
+    pub bytes: &[u8],
+    pub offset: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LutDyn {
+    pub addr_bits: usize,
+    pub table_len: usize,
+    pub big_n: usize,
+    pub log_q: usize,
+    pub log_q_lwe: usize,
+    pub k_max: usize,
+    pub logical: [bool; TABLE_LEN],
+    pub test_poly: [u32; BIG_N],
+    pub is_constant: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct LweSampleDyn<T, U> {
     pub n: usize,
@@ -268,6 +414,132 @@ pub struct GateCertificate {
     pub arity: usize,
     pub prepare: _,
     pub interval_true: (u64, u64),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PaperProfile {
+    pub security_bits: usize,
+    pub ring_degree: usize,
+    pub modulus_bits: usize,
+    pub batch_messages: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncodedLabelBatch {
+    pub differences: Vec<u64>,
+    pub zeroes: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaddedLabelBatch {
+    pub label_count: usize,
+    pub differences: Vec<u64>,
+    pub zeroes: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LabelPairDyn {
+    pub n: usize,
+    pub zero: [u8; N],
+    pub one: [u8; N],
+}
+
+#[derive(Debug, Default)]
+pub struct LabelBatchDyn {
+    pub n: usize,
+    pub pairs: Vec<LabelPairDyn>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Parameters {
+    pub degree: usize,
+    pub width: usize,
+    pub plaintext_modulus: u64,
+    pub delta: u64,
+    pub gadget_base: u64,
+    pub gadget_digits: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ZeroNoise {
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Polynomial {
+    pub first: Vec<u64>,
+    pub second: Vec<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PublicParameters {
+    pub parameters: Parameters,
+    pub lhe_a: Vec<Polynomial>,
+    pub lenc_b: Vec<Polynomial>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FirstCiphertext {
+    pub lhe_state: Vec<Polynomial>,
+    pub lhe_ciphertext: Vec<Polynomial>,
+    pub lenc_ciphertext: Vec<Polynomial>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SecondCiphertext {
+    pub lhe_state: Polynomial,
+    pub lhe_ciphertext: Vec<Polynomial>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SelectionKey {
+    pub key: Polynomial,
+}
+
+#[derive(Clone, Debug)]
+pub struct BatchSelect {
+    pub ring: Ring,
+    pub public: PublicParameters,
+}
+
+#[derive(Clone, Debug)]
+pub struct Tree {
+    pub tree: Vec<Polynomial>,
+    pub digest: Polynomial,
+}
+
+#[derive(Clone, Debug)]
+pub struct Ring {
+    pub parameters: Parameters,
+    pub first_ntt: Ntt,
+    pub second_ntt: Ntt,
+    pub inverse_plaintext_mod_delta: u64,
+    pub inverse_delta_mod_plaintext: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Ntt {
+    pub modulus: u64,
+    pub degree: usize,
+    pub psi: u64,
+    pub omega: u64,
+    pub inverse_psi: u64,
+    pub inverse_omega: u64,
+    pub inverse_degree: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameBinding {
+    pub parameter_fingerprint: [u8; 32],
+    pub session_id: [u8; 32],
+    pub manifest_digest: [u8; 32],
+    pub use_counter: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Frame {
+    pub stage: Stage,
+    pub binding: FrameBinding,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -628,6 +900,144 @@ pub enum Sponge {
     Shake256(Shake256),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlanOp {
+    Const {
+        out: u32,
+        value: bool,
+    },
+    Not {
+        input: u32,
+        out: u32,
+    },
+    Lut {
+        inputs: LutInputs,
+        table: u32,
+        out: u32,
+    },
+    CircuitBootstrap {
+        input: u32,
+        out: u32,
+    },
+    RgswMux {
+        sel: u32,
+        then_cell: u32,
+        else_cell: u32,
+        out: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileId {
+    Toy,
+    ToyNoisy,
+    Std128,
+    Custom,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlanError {
+    BadTableShape {
+        table: u32,
+    },
+    ArityExceedsKMax {
+        table: u32,
+    },
+    BadReference,
+    BadOutput,
+    BudgetInconsistent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EncodeError {
+    InvalidPlan(PlanError),
+    TooLarge,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DecodeError {
+    BadMagic,
+    UnsupportedVersion,
+    UnknownTag,
+    Truncated,
+    TooLarge,
+    TrailingBytes,
+    InvalidPlan(PlanError),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LutError {
+    AddressShapeInvalid,
+    ArityExceedsCircuitMax,
+    ShapeUnsupported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabelEncodingError {
+    FieldElementOutOfRange {
+        index: usize,
+    },
+    NonCanonicalElement {
+        index: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabelBatchPaddingError {
+    TooFewSlots {
+        slots: usize,
+        used: usize,
+    },
+    ChoiceLengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabelBatchDecodeError {
+    LengthMismatch,
+    NonCanonicalLabel(LabelEncodingError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BatchError {
+    EvenOffset,
+    MismatchedPair {
+        index: usize,
+    },
+    LengthMismatch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    InvalidParameters,
+    LengthMismatch,
+    NonCanonicalPlaintext,
+    Randomness,
+    Noise,
+    Arithmetic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Stage {
+    PublicParameters,
+    ReusableCiphertext,
+    PerUseCiphertext,
+    SelectionKey,
+    Complete,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameError {
+    Truncated,
+    UnsupportedFormat,
+    UnknownStage,
+    PayloadTooLarge,
+    LengthMismatch,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TfheBootstrapTableError {
     AddressWidthOutOfRange,
@@ -671,9 +1081,26 @@ pub trait CotSource<T> {
     fn cot<R: SpecRng>(&mut self, rng: &mut R, sample_t: impl Fn, bit: bool) -> (Vec<T>, Vec<T>);
 }
 
+pub trait AsKeySwitchingKey {
+    fn ksk_rows(&self) -> &[[BinfheLweCiphertextDyn; KS_ELL]];
+}
+
+pub trait AsBootstrappingKey {
+    fn bsk_rows(&self) -> &[BinfheRgswCiphertextDyn];
+    fn ksk_ref(&self) -> BinfheKeySwitchingKeyRefDyn;
+}
+
 pub trait SpecRng {
     fn next_u32(&mut self) -> u32;
     fn next_u8(&mut self) -> u8;
+}
+
+pub trait RandomSource {
+    fn fill_bytes(&mut self, output: &mut [u8]) -> Result<(), Error>;
+}
+
+pub trait NoiseSource {
+    fn sample(&mut self, standard_deviation: u64, bound: u64, output: &mut [i64]) -> Result<(), Error>;
 }
 
 pub trait StackIo {
@@ -2102,6 +2529,407 @@ impl  VopeDyn<Bit> {
     }
 }
 
+impl  AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> for BinfheKeySwitchingKeyDyn {
+    fn ksk_rows(&self) -> &[[BinfheLweCiphertextDyn; KS_ELL]]
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let ks_ell: usize = self.ks_ell;
+        &self.ksk
+    }
+}
+
+impl  AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> for BinfheKeySwitchingKeyRefDyn {
+    fn ksk_rows(&self) -> &[[BinfheLweCiphertextDyn; KS_ELL]]
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let ks_ell: usize = self.ks_ell;
+        self.ksk
+    }
+}
+
+impl  AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> for BinfheBootstrappingKeyDyn {
+    fn bsk_rows(&self) -> &[BinfheRgswCiphertextDyn]
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        &self.bsk
+    }
+    fn ksk_ref(&self) -> BinfheKeySwitchingKeyRefDyn
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        BinfheKeySwitchingKeyRefDyn { ksk: &self.ksk.ksk, n_lwe: 0, big_n: 0, ks_ell: 0 }
+    }
+}
+
+impl  AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> for BinfheBootstrappingKeyRefDyn {
+    fn bsk_rows(&self) -> &[BinfheRgswCiphertextDyn]
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        self.bsk
+    }
+    fn ksk_ref(&self) -> BinfheKeySwitchingKeyRefDyn
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        self.ksk
+    }
+}
+
+impl  BinfheBootstrappingKeyDyn {
+    pub fn as_ref(&self) -> BinfheBootstrappingKeyRefDyn
+    {
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        let ks_ell: usize = self.ks_ell;
+        BinfheBootstrappingKeyRefDyn { bsk: &self.bsk, ksk: BinfheKeySwitchingKeyRefDyn { ksk: &self.ksk.ksk, n_lwe: 0, big_n: 0, ks_ell: 0 }, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0 }
+    }
+}
+
+impl  LutInputs {
+    pub fn new() -> Self
+    {
+        LutInputs { ids: [0; MAX_LUT_ARITY], len: 0 }
+    }
+    pub fn from_slice(mut ids: &[u32]) -> Self
+    {
+        let mut out = Self::new();
+        let take = ids.len().min(MAX_LUT_ARITY);
+        out.ids[..take].copy_from_slice(&ids[..take]);
+        out.len = (take as u8);
+        out
+    }
+    pub fn as_slice(&self) -> &[u32]
+    {
+        &self.ids[..(self.len as usize)]
+    }
+    pub fn len(&self) -> usize
+    {
+        self.len as usize
+    }
+    pub fn is_empty(&self) -> bool
+    {
+        self.len == 0
+    }
+}
+
+impl  Default for LutInputs {
+    fn default() -> Self
+    {
+        Self::new()
+    }
+}
+
+impl  AsRef<[u32]> for LutInputs {
+    fn as_ref(&self) -> &[u32]
+    {
+        self.as_slice()
+    }
+}
+
+impl  From<&[u32]> for LutInputs {
+    fn from(mut ids: &[u32]) -> Self
+    {
+        Self::from_slice(ids)
+    }
+}
+
+impl  From<[u32; N]> for LutInputs {
+    fn from(mut n: usize, mut ids: [u32; N]) -> Self
+    {
+        Self::from_slice(&ids)
+    }
+}
+
+impl  From<Vec<u32>> for LutInputs {
+    fn from(mut ids: Vec<u32>) -> Self
+    {
+        Self::from_slice(&ids)
+    }
+}
+
+impl  From<&Vec<u32>> for LutInputs {
+    fn from(mut ids: &Vec<u32>) -> Self
+    {
+        Self::from_slice(ids)
+    }
+}
+
+impl  BootstrapPlan {
+    pub fn execute_clear(&self, mut inputs: &[bool], mut cells: &[bool]) -> (Vec<bool>, Vec<bool>)
+    {
+        let mut wires = inputs.to_vec();
+        let mut rgsws = Vec::new();
+        let mut cell_arena = cells.to_vec();
+        for layer in &self.layers{
+    for op in layer{
+    match op {
+    PlanOp::Const { out: out, value: value } => {
+    wires.push(*value);
+},
+    PlanOp::Not { input: input, out: out } => {
+    wires.push(!wires[*input as usize]);
+},
+    PlanOp::Lut { inputs: inputs, table: table, out: out } => {
+    let mut address = 0;
+    for (bit, input) in inputs.as_slice().iter().enumerate(){
+    address |= ((wires[*input as usize] as usize) << bit);
+};
+    wires.push(self.luts[*table as usize].entries[address]);
+},
+    PlanOp::CircuitBootstrap { input: input, out: out } => {
+    rgsws.push(wires[*input as usize]);
+},
+    PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
+    cell_arena.push(if rgsws[*sel as usize]{
+    cell_arena[*then_cell as usize]
+} else {
+    cell_arena[*else_cell as usize]
+});
+},
+}
+}
+};
+        (wires, cell_arena)
+    }
+    pub fn bootstrap_op_count(&self) -> u64
+    {
+        let mut count = 0;
+        for layer in &self.layers{
+    for op in layer{
+    match op {
+    PlanOp::Lut { table: table, .. } => {
+    if !table_is_constant(&self.luts[*table as usize].entries){
+    count += 1;
+}
+},
+    PlanOp::CircuitBootstrap { .. } => count += 1,
+    _ => {
+},
+}
+}
+};
+        count
+    }
+    pub fn validate(&self) -> Result<(), PlanError>
+    {
+        for (i, spec) in self.luts.iter().enumerate(){
+    let len = spec.entries.len();
+    if (len == 0) || !len.is_power_of_two(){
+    return Err(PlanError::BadTableShape { table: (i as u32) });
+};
+    let arity = len.trailing_zeros() as usize;
+    if arity > (self.k_max as usize){
+    return Err(PlanError::ArityExceedsKMax { table: (i as u32) });
+}
+};
+        let mut wires = self.num_inputs;
+        let mut rgsws = 0;
+        let mut cells = self.num_cells;
+        for layer in &self.layers{
+    for op in layer{
+    match op {
+    PlanOp::Const { out: out, .. } => {
+    if *out != wires{
+    return Err(PlanError::BadReference);
+};
+    wires += 1;
+},
+    PlanOp::Not { input: input, out: out } => {
+    if (*input >= wires) || (*out != wires){
+    return Err(PlanError::BadReference);
+};
+    wires += 1;
+},
+    PlanOp::Lut { inputs: inputs, table: table, out: out } => {
+    if (*table as usize) >= self.luts.len(){
+    return Err(PlanError::BadReference);
+};
+    let arity = self.luts[*table as usize].entries.len().trailing_zeros();
+    if (inputs.len() != (arity as usize)) || inputs.as_slice().iter().any(|w| (*w >= wires)) || (*out != wires){
+    return Err(PlanError::BadReference);
+};
+    wires += 1;
+},
+    PlanOp::CircuitBootstrap { input: input, out: out } => {
+    if (*input >= wires) || (*out != rgsws){
+    return Err(PlanError::BadReference);
+};
+    rgsws += 1;
+},
+    PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
+    if (*sel >= rgsws) || (*then_cell >= cells) || (*else_cell >= cells) || (*out != cells){
+    return Err(PlanError::BadReference);
+};
+    cells += 1;
+},
+}
+}
+};
+        if self.outputs.iter().any(|w| (*w >= wires)) || self.cell_outputs.iter().any(|c| (*c >= cells)){
+    return Err(PlanError::BadOutput);
+};
+        let count = self.bootstrap_op_count();
+        if count > 0{
+    let log2_count = 64 - count.leading_zeros();
+    if (self.budget.total_log2 < self.budget.per_bootstrap_log2) || (((self.budget.total_log2 - self.budget.per_bootstrap_log2) + 1) < log2_count){
+    return Err(PlanError::BudgetInconsistent);
+}
+};
+        Ok(())
+    }
+    pub fn plan_hash(&self) -> u64
+    {
+        let mut h = 14695981039346656037;
+        for spec in &self.luts{
+    for (i, chunk) in spec.entries.chunks(8).enumerate(){
+    let mut byte = 0;
+    for (j, ..) in chunk.iter().enumerate(){
+    byte |= ((e as u8) << j);
+};
+    let _ = i;
+}
+};
+        for layer in &self.layers{
+    for op in layer{
+    match op {
+    PlanOp::Const { out: out, value: value } => {
+},
+    PlanOp::Not { input: input, out: out } => {
+},
+    PlanOp::Lut { inputs: inputs, table: table, out: out } => {
+    for w in inputs.as_slice(){
+};
+},
+    PlanOp::CircuitBootstrap { input: input, out: out } => {
+},
+    PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
+},
+}
+}
+};
+        for w in &self.outputs{
+};
+        for c in &self.cell_outputs{
+};
+        h
+    }
+}
+
+impl  Reader {
+    pub fn take(&mut self, mut count: usize) -> Result<&[u8], DecodeError>
+    {
+        let end = self.offset.checked_add(count).ok_or(DecodeError::Truncated)?;
+        let bytes = self.bytes.get(self.offset..end).ok_or(DecodeError::Truncated)?;
+        self.offset = end;
+        Ok(bytes)
+    }
+    pub fn byte(&mut self) -> Result<u8, DecodeError>
+    {
+        Ok(self.take(1)?[0])
+    }
+    pub fn u32(&mut self) -> Result<u32, DecodeError>
+    {
+        let bytes: [u8; 4] = self.take(4)?.try_into().map_err(|_| DecodeError::Truncated)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+    pub fn count(&mut self) -> Result<usize, DecodeError>
+    {
+        let count = self.u32()? as usize;
+        if count > MAX_ITEMS{
+    return Err(DecodeError::TooLarge);
+};
+        Ok(count)
+    }
+    pub fn ids(&mut self) -> Result<Vec<u32>, DecodeError>
+    {
+        let count = self.count()?;
+        let mut ids = Vec::with_capacity(count);
+        for _ in 0.. count{
+    ids.push(self.u32()?);
+};
+        Ok(ids)
+    }
+}
+
+impl  LutDyn {
+    pub fn new(mut addr_bits: usize, mut table_len: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut k_max: usize, mut logical: [bool; TABLE_LEN]) -> Result<Self, LutError>
+    {
+        match check_lut_shape(addr_bits, table_len, big_n, log_q, log_q_lwe, k_max) {
+    Err(e) => Err(e),
+    Ok(_) => Ok(Self { logical: logical, test_poly: fill_test_poly::<BIG_N>(&logical, addr_bits, k_max, log_q, log_q_lwe), is_constant: table_is_constant(&logical) }),
+}
+    }
+    pub fn entries(&self) -> &[bool; TABLE_LEN]
+    {
+        let addr_bits: usize = self.addr_bits;
+        let table_len: usize = self.table_len;
+        let big_n: usize = self.big_n;
+        let log_q: usize = self.log_q;
+        let log_q_lwe: usize = self.log_q_lwe;
+        let k_max: usize = self.k_max;
+        &self.logical
+    }
+    pub fn test_polynomial(&self) -> &[u32; BIG_N]
+    {
+        let addr_bits: usize = self.addr_bits;
+        let table_len: usize = self.table_len;
+        let big_n: usize = self.big_n;
+        let log_q: usize = self.log_q;
+        let log_q_lwe: usize = self.log_q_lwe;
+        let k_max: usize = self.k_max;
+        &self.test_poly
+    }
+    pub fn is_constant(&self) -> bool
+    {
+        let addr_bits: usize = self.addr_bits;
+        let table_len: usize = self.table_len;
+        let big_n: usize = self.big_n;
+        let log_q: usize = self.log_q;
+        let log_q_lwe: usize = self.log_q_lwe;
+        let k_max: usize = self.k_max;
+        self.is_constant
+    }
+    pub fn constant_value(&self) -> bool
+    {
+        let addr_bits: usize = self.addr_bits;
+        let table_len: usize = self.table_len;
+        let big_n: usize = self.big_n;
+        let log_q: usize = self.log_q;
+        let log_q_lwe: usize = self.log_q_lwe;
+        let k_max: usize = self.k_max;
+        self.logical[0]
+    }
+    pub fn output_delta(&self) -> u32
+    {
+        let addr_bits: usize = self.addr_bits;
+        let table_len: usize = self.table_len;
+        let big_n: usize = self.big_n;
+        let log_q: usize = self.log_q;
+        let log_q_lwe: usize = self.log_q_lwe;
+        let k_max: usize = self.k_max;
+        1 << ((log_q_lwe - 1) - (k_max as u32))
+    }
+}
+
+impl  LutDyn {
+}
+
+impl  LutDyn {
+}
+
 impl <T: Clone, U: Clone> LweSampleDyn<T, U> {
     pub fn new(mut n: usize, mut m: usize, mut matrix: Vec<Vec<T>>, mut b: Vec<U>) -> Self
     {
@@ -2318,6 +3146,765 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
 }).collect::<Vec<_>>()
 }).collect::<Vec<[Vec<u8>; 2]>>(), _phantom: PhantomData }
 }).collect::<Vec<BSplitDyn<B, D>>>()
+    }
+}
+
+impl  EncodedLabelBatch {
+    pub fn from_pairs(mut pairs: &[LabelPairDyn], mut offset: [u8; 16]) -> Result<Self, BatchError>
+    {
+        let batch = LabelBatch::new(pairs, offset)?;
+        let mut differences = alloc::vec::Vec::with_capacity((pairs.len() * 3));
+        let mut zeroes = alloc::vec::Vec::with_capacity((pairs.len() * 3));
+        let modulus = ring_lwe::REFERENCE_PLAINTEXT_MODULUS;
+        for pair in batch.pairs{
+    let zero = encode_label_16(pair.zero);
+    let one = encode_label_16(pair.one);
+    for (one, zero) in one.into_iter().zip(zero.into_iter()){
+    differences.push(if one >= zero{
+    one - zero
+} else {
+    modulus - (zero - one)
+});
+    zeroes.push(zero);
+}
+};
+        Ok(Self { differences: differences, zeroes: zeroes })
+    }
+    pub fn differences(&self) -> &[u64]
+    {
+        &self.differences
+    }
+    pub fn zeroes(&self) -> &[u64]
+    {
+        &self.zeroes
+    }
+    pub fn label_count(&self) -> usize
+    {
+        self.zeroes.len() / 3
+    }
+    pub fn pad_to_slots(&self, mut slots: usize) -> Result<PaddedLabelBatch, LabelBatchPaddingError>
+    {
+        let used = self.zeroes.len();
+        if slots < used{
+    return Err(LabelBatchPaddingError::TooFewSlots { slots: slots, used: used });
+};
+        let mut differences = self.differences.clone();
+        let mut zeroes = self.zeroes.clone();
+        differences.resize(slots, 0);
+        zeroes.resize(slots, 0);
+        Ok(PaddedLabelBatch { label_count: self.label_count(), differences: differences, zeroes: zeroes })
+    }
+    pub fn expanded_choices(mut choices: &[bool]) -> Vec<bool>
+    {
+        let mut out = alloc::vec::Vec::with_capacity((choices.len() * 3));
+        for .. in choices{
+    out.extend_from_slice(&[choice; 3]);
+};
+        out
+    }
+    pub fn decode_selected(mut selected: &[u64]) -> Result<Vec<[u8; 16]>, LabelBatchDecodeError>
+    {
+        if (selected.len() % 3) != 0{
+    return Err(LabelBatchDecodeError::LengthMismatch);
+};
+        selected.chunks_exact(3).into_iter().map(|chunk| {
+    decode_label_16(vec![chunk[0], chunk[1], chunk[2]]).map_err(LabelBatchDecodeError::NonCanonicalLabel)
+}).collect::<Vec<_>>().collect()
+    }
+}
+
+impl  PaddedLabelBatch {
+    pub fn slots(&self) -> usize
+    {
+        self.zeroes.len()
+    }
+    pub fn label_count(&self) -> usize
+    {
+        self.label_count
+    }
+    pub fn differences(&self) -> &[u64]
+    {
+        &self.differences
+    }
+    pub fn zeroes(&self) -> &[u64]
+    {
+        &self.zeroes
+    }
+    pub fn expanded_choices(&self, mut choices: &[bool]) -> Result<Vec<bool>, LabelBatchPaddingError>
+    {
+        if choices.len() != self.label_count{
+    return Err(LabelBatchPaddingError::ChoiceLengthMismatch { expected: self.label_count, actual: choices.len() });
+};
+        let mut out = EncodedLabelBatch::expanded_choices(choices);
+        out.resize(self.slots(), false);
+        Ok(out)
+    }
+    pub fn decode_selected(&self, mut selected: &[u64]) -> Result<Vec<[u8; 16]>, LabelBatchDecodeError>
+    {
+        if selected.len() != self.slots(){
+    return Err(LabelBatchDecodeError::LengthMismatch);
+};
+        EncodedLabelBatch::decode_selected(&selected[..(self.label_count * 3)])
+    }
+}
+
+impl  LabelBatchDyn {
+    pub fn new(mut n: usize, mut pairs: &[LabelPairDyn], mut offset: [u8; N]) -> Result<Self, BatchError>
+    {
+        if (n == 0) || ((offset[0] & 1) == 0){
+    return Err(BatchError::EvenOffset);
+};
+        for (index, pair) in pairs.iter().enumerate(){
+    if pair.one != (0..n).map(|byte| (pair.zero[byte] ^ offset[byte])).collect::<Vec<_>>(){
+    return Err(BatchError::MismatchedPair { index: index });
+}
+};
+        Ok(Self { pairs: pairs })
+    }
+    pub fn len(&self) -> usize
+    {
+        let n: usize = self.n;
+        self.pairs.len()
+    }
+    pub fn is_empty(&self) -> bool
+    {
+        let n: usize = self.n;
+        self.pairs.is_empty()
+    }
+    pub fn select(&self, mut choices: &[bool], mut output: &mut [[u8; N]]) -> Result<(), BatchError>
+    {
+        let n: usize = self.n;
+        if (choices.len() != self.pairs.len()) || (output.len() != self.pairs.len()){
+    return Err(BatchError::LengthMismatch);
+};
+        for ((pair, choice), selected) in self.pairs.iter().zip(choices.iter().copied().into_iter()).zip(output.iter_mut().into_iter()){
+    *selected = if choice{
+    pair.one
+} else {
+    pair.zero
+};
+};
+        Ok(())
+    }
+}
+
+impl  Parameters {
+    pub fn scaled_reference(mut degree: usize, mut width: usize) -> Self
+    {
+        Self { degree: degree, width: width }
+    }
+    pub fn slots(self) -> Result<usize, Error>
+    {
+        self.degree.checked_mul(self.width).ok_or(Error::InvalidParameters)
+    }
+    pub fn levels(self) -> Result<usize, Error>
+    {
+        if (self.width < 2) || !self.width.is_power_of_two(){
+    return Err(Error::InvalidParameters);
+};
+        Ok((self.width.ilog2() as usize))
+    }
+    pub fn validate(self) -> Result<(), Error>
+    {
+        if (self.degree < 2) || !self.degree.is_power_of_two() || (self.width < 2) || !self.width.is_power_of_two() || (self.plaintext_modulus < 3) || (self.delta < 3) || (self.gadget_base < 2) || (self.gadget_digits == 0) || (((self.plaintext_modulus - 1) % (2 * (self.degree as u64))) != 0) || (((self.delta - 1) % (2 * (self.degree as u64))) != 0){
+    return Err(Error::InvalidParameters);
+};
+        self.slots()?;
+        let modulus = (self.plaintext_modulus as u128) * (self.delta as u128);
+        let mut capacity = 1;
+        for _ in 0.. self.gadget_digits{
+    capacity = capacity.checked_mul((self.gadget_base as u128)).ok_or(Error::InvalidParameters)?;
+};
+        if capacity <= modulus{
+    return Err(Error::InvalidParameters);
+};
+        Ok(())
+    }
+}
+
+impl  NoiseSource for ZeroNoise {
+    fn sample(&mut self, mut _standard_deviation: u64, mut _bound: u64, mut output: &mut [i64]) -> Result<(), Error>
+    {
+        output.fill(0);
+        Ok(())
+    }
+}
+
+impl  Polynomial {
+    pub fn degree(&self) -> usize
+    {
+        self.first.len()
+    }
+    pub fn rns_limbs(&self) -> (&[u64], &[u64])
+    {
+        (&self.first, &self.second)
+    }
+}
+
+impl  PublicParameters {
+    pub fn parameters(&self) -> Parameters
+    {
+        self.parameters
+    }
+    pub fn lhe_polynomials(&self) -> impl ExactSizeIterator<Item = &Polynomial>
+    {
+        self.lhe_a.iter()
+    }
+    pub fn lenc_polynomials(&self) -> impl ExactSizeIterator<Item = &Polynomial>
+    {
+        self.lenc_b.iter()
+    }
+}
+
+impl  FirstCiphertext {
+    pub fn lhe_polynomials(&self) -> impl ExactSizeIterator<Item = &Polynomial>
+    {
+        self.lhe_ciphertext.iter()
+    }
+    pub fn lenc_polynomials(&self) -> impl ExactSizeIterator<Item = &Polynomial>
+    {
+        self.lenc_ciphertext.iter()
+    }
+}
+
+impl  SecondCiphertext {
+    pub fn polynomials(&self) -> impl ExactSizeIterator<Item = &Polynomial>
+    {
+        self.lhe_ciphertext.iter()
+    }
+}
+
+impl  SelectionKey {
+    pub fn polynomial(&self) -> &Polynomial
+    {
+        &self.key
+    }
+}
+
+impl  BatchSelect {
+    pub fn setup(mut parameters: Parameters, mut random: &mut impl RandomSource) -> Result<Self, Error>
+    {
+        let ring = Ring::new(parameters)?;
+        let mut lhe_a = Vec::with_capacity(parameters.width);
+        for _ in 0.. parameters.width{
+    lhe_a.push(ring.uniform(random)?);
+};
+        let mut lenc_b = Vec::with_capacity((2 * parameters.gadget_digits));
+        for _ in 0.. 2 * parameters.gadget_digits{
+    lenc_b.push(ring.uniform(random)?);
+};
+        Ok(Self { ring: ring, public: PublicParameters { parameters: parameters, lhe_a: lhe_a, lenc_b: lenc_b } })
+    }
+    pub fn public_parameters(&self) -> &PublicParameters
+    {
+        &self.public
+    }
+    pub fn enc1(&self, mut l1: &[u64], mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<FirstCiphertext, Error>
+    {
+        let messages = self.ring.encode_messages(l1)?;
+        let (random_vector, lenc_ciphertext) = self.lenc_enc(&messages, random, noise)?;
+        let (lhe_state, lhe_ciphertext) = self.lhe_enc1(&random_vector, random, noise)?;
+        Ok(FirstCiphertext { lhe_state: lhe_state, lhe_ciphertext: lhe_ciphertext, lenc_ciphertext: lenc_ciphertext })
+    }
+    pub fn enc2(&self, mut l2: &[u64], mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<SecondCiphertext, Error>
+    {
+        let mut messages = self.ring.encode_messages(l2)?;
+        for message in &mut messages{
+    self.ring.add_noise(message, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION)?;
+};
+        let (lhe_state, lhe_ciphertext) = self.lhe_enc2(&messages, random, noise)?;
+        Ok(SecondCiphertext { lhe_state: lhe_state, lhe_ciphertext: lhe_ciphertext })
+    }
+    pub fn keygen(&self, mut first: &FirstCiphertext, mut second: &SecondCiphertext, mut choices: &[bool]) -> Result<SelectionKey, Error>
+    {
+        self.check_first(first)?;
+        self.check_second(second)?;
+        let choice = self.ring.encode_choices(choices)?;
+        let tree = self.lenc_digest(&choice)?;
+        let digits = self.ring.decompose(&tree.digest)?;
+        let mut key = second.lhe_state.clone();
+        for (state, digit) in first.lhe_state.iter().zip(digits.iter()){
+    key.add_assign(&self.ring, &state.product(&self.ring, digit));
+};
+        Ok(SelectionKey { key: key })
+    }
+    pub fn dec(&self, mut first: &FirstCiphertext, mut second: &SecondCiphertext, mut key: &SelectionKey, mut choices: &[bool]) -> Result<Vec<u64>, Error>
+    {
+        self.check_first(first)?;
+        self.check_second(second)?;
+        if key.key.degree() != self.ring.parameters.degree{
+    return Err(Error::LengthMismatch);
+};
+        let choice = self.ring.encode_choices(choices)?;
+        let tree = self.lenc_digest(&choice)?;
+        let digits = self.ring.decompose(&tree.digest)?;
+        let mut result = Vec::with_capacity(self.ring.parameters.width);
+        for index in 0.. self.ring.parameters.width{
+    let row = &first.lhe_ciphertext[(index * self.ring.parameters.gadget_digits)..((index + 1) * self.ring.parameters.gadget_digits)];
+    let mut value = inner_product(&self.ring, row, &digits)?;
+    value.add_assign(&self.ring, &second.lhe_ciphertext[index]);
+    value.sub_assign(&self.ring, &self.public.lhe_a[index].product(&self.ring, &key.key));
+    result.push(value);
+};
+        let correction = self.lenc_eval(&first.lenc_ciphertext, &tree)?;
+        for (value, delta) in result.iter_mut().zip(correction.iter()){
+    value.sub_assign(&self.ring, delta);
+};
+        self.ring.decode_messages(&result)
+    }
+    pub fn check_first(&self, mut first: &FirstCiphertext) -> Result<(), Error>
+    {
+        let p = self.ring.parameters;
+        if (first.lhe_state.len() != p.gadget_digits) || (first.lhe_ciphertext.len() != (p.width * p.gadget_digits)) || (first.lenc_ciphertext.len() != (((p.levels()? * p.width) * 2) * p.gadget_digits)) || first.lhe_state.iter().chain(first.lhe_ciphertext.iter()).chain(first.lenc_ciphertext.iter()).any(|poly| (poly.degree() != p.degree)){
+    return Err(Error::LengthMismatch);
+};
+        Ok(())
+    }
+    pub fn check_second(&self, mut second: &SecondCiphertext) -> Result<(), Error>
+    {
+        let p = self.ring.parameters;
+        if (second.lhe_ciphertext.len() != p.width) || (second.lhe_state.degree() != p.degree) || second.lhe_ciphertext.iter().any(|poly| (poly.degree() != p.degree)){
+    return Err(Error::LengthMismatch);
+};
+        Ok(())
+    }
+    pub fn lhe_enc1(&self, mut messages: &[Polynomial], mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<(Vec<Polynomial>, Vec<Polynomial>), Error>
+    {
+        if messages.len() != self.ring.parameters.width{
+    return Err(Error::LengthMismatch);
+};
+        let p = self.ring.parameters;
+        let mut state = Vec::with_capacity(p.gadget_digits);
+        for _ in 0.. p.gadget_digits{
+    state.push(self.ring.uniform(random)?);
+};
+        let mut ciphertext = Vec::with_capacity((p.width * p.gadget_digits));
+        for (index, message) in messages.iter().enumerate(){
+    for digit in 0.. p.gadget_digits{
+    let mut value = self.public.lhe_a[index].product(&self.ring, &state[digit]);
+    value.add_assign(&self.ring, &message.scaled(&self.ring, p.gadget_base, digit));
+    self.ring.add_noise(&mut value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION)?;
+    ciphertext.push(value);
+}
+};
+        Ok((state, ciphertext))
+    }
+    pub fn lhe_enc2(&self, mut messages: &[Polynomial], mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<(Polynomial, Vec<Polynomial>), Error>
+    {
+        if messages.len() != self.ring.parameters.width{
+    return Err(Error::LengthMismatch);
+};
+        let state = self.ring.uniform(random)?;
+        let mut ciphertext = Vec::with_capacity(self.ring.parameters.width);
+        for (a, message) in self.public.lhe_a.iter().zip(messages.iter()){
+    let mut value = a.product(&self.ring, &state);
+    value.add_assign(&self.ring, message);
+    self.ring.add_noise(&mut value, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION)?;
+    ciphertext.push(value);
+};
+        Ok((state, ciphertext))
+    }
+    pub fn lenc_enc(&self, mut message: &[Polynomial], mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<(Vec<Polynomial>, Vec<Polynomial>), Error>
+    {
+        let p = self.ring.parameters;
+        if message.len() != p.width{
+    return Err(Error::LengthMismatch);
+};
+        let levels = p.levels()?;
+        let mut random_vector = Vec::with_capacity((levels * p.width));
+        for _ in 0.. levels * p.width{
+    random_vector.push(self.ring.uniform(random)?);
+};
+        let mut ciphertext = Vec::with_capacity((((levels * p.width) * 2) * p.gadget_digits));
+        for level in 0.. levels{
+    for row in 0.. p.width{
+    for public in &self.public.lenc_b{
+    ciphertext.push(random_vector[(level * p.width) + row].product(&self.ring, public));
+};
+    let half = if (row & (1 << ((levels - level) - 1))) == 0{
+    0
+} else {
+    p.gadget_digits
+};
+    let next = if (level + 1) == levels{
+    &message[row]
+} else {
+    &random_vector[((level + 1) * p.width) + row]
+};
+    let base = ((((level * p.width) + row) * 2) * p.gadget_digits) + half;
+    for digit in 0.. p.gadget_digits{
+    let extra = next.scaled(&self.ring, p.gadget_base, digit);
+    ciphertext[base + digit].add_assign(&self.ring, &extra);
+}
+}
+};
+        for value in &mut ciphertext{
+    self.ring.add_noise(value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION)?;
+};
+        Ok((random_vector, ciphertext))
+    }
+    pub fn lenc_digest(&self, mut choice: &[Polynomial]) -> Result<Tree, Error>
+    {
+        let p = self.ring.parameters;
+        if choice.len() != p.width{
+    return Err(Error::LengthMismatch);
+};
+        let mut tree = vec![];
+        for (index, value) in choice.iter().enumerate(){
+    let digits = self.ring.decompose(value)?;
+    let base = ((p.width - 1) + index) * p.gadget_digits;
+    tree[base..(base + p.gadget_digits)].clone_from_slice(&digits);
+};
+        let mut digest = self.ring.zero();
+        for node in 0..(p.width - 1).rev(){
+    let children = ((2 * node) + 1) * p.gadget_digits;
+    let mut parent = inner_product(&self.ring, &self.public.lenc_b, &tree[children..(children + (2 * p.gadget_digits))])?;
+    parent.negate_assign(&self.ring);
+    if node == 0{
+    digest = parent;
+} else {
+    let digits = self.ring.decompose(&parent)?;
+    let base = node * p.gadget_digits;
+    tree[base..(base + p.gadget_digits)].clone_from_slice(&digits);
+}
+};
+        Ok(Tree { tree: tree, digest: digest })
+    }
+    pub fn lenc_eval(&self, mut ciphertext: &[Polynomial], mut tree: &Tree) -> Result<Vec<Polynomial>, Error>
+    {
+        let p = self.ring.parameters;
+        let levels = p.levels()?;
+        if (ciphertext.len() != (((levels * p.width) * 2) * p.gadget_digits)) || (tree.tree.len() != (((2 * p.width) - 1) * p.gadget_digits)){
+    return Err(Error::LengthMismatch);
+};
+        let mut delta = Vec::with_capacity(p.width);
+        for row in 0.. p.width{
+    let mut value = inner_product(&self.ring, &ciphertext[((row * 2) * p.gadget_digits)..(((row + 1) * 2) * p.gadget_digits)], &tree.tree[p.gadget_digits..(3 * p.gadget_digits)])?;
+    for level in 1.. levels{
+    let ciphertext_base = ((level * p.width) + row) * 2 * p.gadget_digits;
+    let tree_base = (((((row >> (levels - level)) + (1 << level)) - 1) * 2) + 1) * p.gadget_digits;
+    let term = inner_product(&self.ring, &ciphertext[ciphertext_base..(ciphertext_base + (2 * p.gadget_digits))], &tree.tree[tree_base..(tree_base + (2 * p.gadget_digits))])?;
+    value.add_assign(&self.ring, &term);
+};
+    value.negate_assign(&self.ring);
+    delta.push(value);
+};
+        Ok(delta)
+    }
+}
+
+impl  Ring {
+    pub fn new(mut parameters: Parameters) -> Result<Self, Error>
+    {
+        parameters.validate()?;
+        Ok(Self { first_ntt: Ntt::new(parameters.degree, parameters.plaintext_modulus)?, second_ntt: Ntt::new(parameters.degree, parameters.delta)?, inverse_plaintext_mod_delta: inverse_mod((parameters.plaintext_modulus % parameters.delta), parameters.delta).ok_or(Error::Arithmetic)?, inverse_delta_mod_plaintext: inverse_mod((parameters.delta % parameters.plaintext_modulus), parameters.plaintext_modulus).ok_or(Error::Arithmetic)?, parameters: parameters })
+    }
+    pub fn zero(&self) -> Polynomial
+    {
+        Polynomial { first: vec![], second: vec![] }
+    }
+    pub fn uniform(&self, mut random: &mut impl RandomSource) -> Result<Polynomial, Error>
+    {
+        let mut value = self.zero();
+        sample_uniform(random, self.parameters.plaintext_modulus, &mut value.first)?;
+        sample_uniform(random, self.parameters.delta, &mut value.second)?;
+        Ok(value)
+    }
+    pub fn encode_messages(&self, mut input: &[u64]) -> Result<Vec<Polynomial>, Error>
+    {
+        if input.len() != self.parameters.slots()?{
+    return Err(Error::LengthMismatch);
+};
+        if input.iter().any(|..| (value >= self.parameters.plaintext_modulus)){
+    return Err(Error::NonCanonicalPlaintext);
+};
+        let mut output = Vec::with_capacity(self.parameters.width);
+        for chunk in input.chunks_exact(self.parameters.degree){
+    let mut value = self.zero();
+    for (slot, ..) in value.first.iter_mut().zip(chunk.iter()){
+    *slot = mul_mod(message, (self.parameters.delta % self.parameters.plaintext_modulus), self.parameters.plaintext_modulus);
+};
+    output.push(value);
+};
+        Ok(output)
+    }
+    pub fn encode_choices(&self, mut input: &[bool]) -> Result<Vec<Polynomial>, Error>
+    {
+        if input.len() != self.parameters.slots()?{
+    return Err(Error::LengthMismatch);
+};
+        let mut output = Vec::with_capacity(self.parameters.width);
+        for chunk in input.chunks_exact(self.parameters.degree){
+    let mut value = self.zero();
+    for ((first, second), ..) in value.first.iter_mut().zip(value.second.iter_mut()).zip(chunk.iter()){
+    let choice = u64::from(choice);
+    *first = choice;
+    *second = choice;
+};
+    self.first_ntt.inverse(&mut value.second);
+    self.second_ntt.forward(&mut value.second);
+    output.push(value);
+};
+        Ok(output)
+    }
+    pub fn add_noise(&self, mut value: &mut Polynomial, mut noise: &mut impl NoiseSource, mut standard_deviation: u64, mut bound: u64) -> Result<(), Error>
+    {
+        let mut coefficients = vec![];
+        noise.sample(&mut coefficients.n, standard_deviation, bound, &mut coefficients)?;
+        if coefficients.iter().any(|sample| (sample.unsigned_abs() > bound)){
+    return Err(Error::Noise);
+};
+        let mut first = Vec::with_capacity(self.parameters.degree);
+        let mut second = Vec::with_capacity(self.parameters.degree);
+        for sample in coefficients{
+    first.push(signed_to_mod(sample, self.parameters.plaintext_modulus));
+    second.push(signed_to_mod(sample, self.parameters.delta));
+};
+        self.first_ntt.forward(&mut first);
+        self.second_ntt.forward(&mut second);
+        for (destination, error) in value.first.iter_mut().zip(first){
+    *destination = add_mod(*destination, error, self.parameters.plaintext_modulus);
+};
+        for (destination, error) in value.second.iter_mut().zip(second){
+    *destination = add_mod(*destination, error, self.parameters.delta);
+};
+        Ok(())
+    }
+    pub fn decompose(&self, mut value: &Polynomial) -> Result<Vec<Polynomial>, Error>
+    {
+        if value.degree() != self.parameters.degree{
+    return Err(Error::LengthMismatch);
+};
+        let mut first = value.first.clone();
+        let mut second = value.second.clone();
+        self.first_ntt.inverse(&mut first);
+        self.second_ntt.inverse(&mut second);
+        let mut digits: Vec<Polynomial> = (0..self.parameters.gadget_digits).map(|_| self.zero()).collect::<Vec<_>>();
+        for index in 0.. self.parameters.degree{
+    let mut combined = self.combine(first[index], second[index]);
+    for digit in &mut digits{
+    let part = (combined % (self.parameters.gadget_base as u128)) as u64;
+    digit.first[index] = (part % self.parameters.plaintext_modulus);
+    digit.second[index] = (part % self.parameters.delta);
+    combined /= (self.parameters.gadget_base as u128);
+};
+    if combined != 0{
+    return Err(Error::Arithmetic);
+}
+};
+        for digit in &mut digits{
+    self.first_ntt.forward(&mut digit.first);
+    self.second_ntt.forward(&mut digit.second);
+};
+        Ok(digits)
+    }
+    pub fn decode_messages(&self, mut values: &[Polynomial]) -> Result<Vec<u64>, Error>
+    {
+        if (values.len() != self.parameters.width) || values.iter().any(|value| (value.degree() != self.parameters.degree)){
+    return Err(Error::LengthMismatch);
+};
+        let mut output = Vec::with_capacity(self.parameters.slots()?);
+        for value in values{
+    let mut noise = value.second.clone();
+    self.second_ntt.inverse(&mut noise);
+    let mut correction = Vec::with_capacity(self.parameters.degree);
+    for error in noise{
+    let signed = if error > (self.parameters.delta / 2){
+    let magnitude = self.parameters.delta - error;
+    if magnitude >= self.parameters.plaintext_modulus{
+    return Err(Error::Noise);
+};
+    if magnitude == 0{
+    0
+} else {
+    self.parameters.plaintext_modulus - magnitude
+}
+} else {
+    if error >= self.parameters.plaintext_modulus{
+    return Err(Error::Noise);
+};
+    error
+};
+    correction.push(signed);
+};
+    self.first_ntt.forward(&mut correction);
+    for (message, correction) in value.first.iter().zip(correction.into_iter()){
+    let no_error = sub_mod(*message, correction, self.parameters.plaintext_modulus);
+    output.push(mul_mod(no_error, self.inverse_delta_mod_plaintext, self.parameters.plaintext_modulus));
+}
+};
+        Ok(output)
+    }
+    pub fn combine(&self, mut first: u64, mut second: u64) -> u128
+    {
+        let first_mod_delta = first % self.parameters.delta;
+        let offset = mul_mod(sub_mod(second, first_mod_delta, self.parameters.delta), self.inverse_plaintext_mod_delta, self.parameters.delta);
+        (first as u128) + ((self.parameters.plaintext_modulus as u128) * (offset as u128))
+    }
+}
+
+impl  Polynomial {
+    pub fn product(&self, mut ring: &Ring, mut other: &Self) -> Self
+    {
+        let mut output = ring.zero();
+        for ((output, left), right) in output.first.iter_mut().zip(self.first.iter()).zip(other.first.iter()){
+    *output = mul_mod(*left, *right, ring.parameters.plaintext_modulus);
+};
+        for ((output, left), right) in output.second.iter_mut().zip(self.second.iter()).zip(other.second.iter()){
+    *output = mul_mod(*left, *right, ring.parameters.delta);
+};
+        output
+    }
+    pub fn add_assign(&mut self, mut ring: &Ring, mut other: &Self)
+    {
+        for (left, right) in self.first.iter_mut().zip(other.first.iter()){
+    *left = add_mod(*left, *right, ring.parameters.plaintext_modulus);
+};
+        for (left, right) in self.second.iter_mut().zip(other.second.iter()){
+    *left = add_mod(*left, *right, ring.parameters.delta);
+}
+    }
+    pub fn sub_assign(&mut self, mut ring: &Ring, mut other: &Self)
+    {
+        for (left, right) in self.first.iter_mut().zip(other.first.iter()){
+    *left = sub_mod(*left, *right, ring.parameters.plaintext_modulus);
+};
+        for (left, right) in self.second.iter_mut().zip(other.second.iter()){
+    *left = sub_mod(*left, *right, ring.parameters.delta);
+}
+    }
+    pub fn negate_assign(&mut self, mut ring: &Ring)
+    {
+        for value in &mut self.first{
+    if *value != 0{
+    *value = (ring.parameters.plaintext_modulus - *value);
+}
+};
+        for value in &mut self.second{
+    if *value != 0{
+    *value = (ring.parameters.delta - *value);
+}
+}
+    }
+    pub fn scaled(&self, mut ring: &Ring, mut base: u64, mut power: usize) -> Self
+    {
+        let first = pow_mod((base % ring.parameters.plaintext_modulus), power, ring.parameters.plaintext_modulus);
+        let second = pow_mod((base % ring.parameters.delta), power, ring.parameters.delta);
+        let mut output = self.clone();
+        for value in &mut output.first{
+    *value = mul_mod(*value, first, ring.parameters.plaintext_modulus);
+};
+        for value in &mut output.second{
+    *value = mul_mod(*value, second, ring.parameters.delta);
+};
+        output
+    }
+}
+
+impl  Ntt {
+    pub fn new(mut degree: usize, mut modulus: u64) -> Result<Self, Error>
+    {
+        let psi = find_negacyclic_root(degree, modulus).ok_or(Error::Arithmetic)?;
+        let omega = mul_mod(psi, psi, modulus);
+        Ok(Self { modulus: modulus, degree: degree, psi: psi, omega: omega, inverse_psi: inverse_mod(psi, modulus).ok_or(Error::Arithmetic)?, inverse_omega: inverse_mod(omega, modulus).ok_or(Error::Arithmetic)?, inverse_degree: inverse_mod((degree as u64), modulus).ok_or(Error::Arithmetic)? })
+    }
+    pub fn forward(&self, mut values: &mut [u64])
+    {
+        for (index, value) in values.iter_mut().enumerate(){
+    *value = mul_mod(*value, pow_mod(self.psi, index, self.modulus), self.modulus);
+};
+        self.cyclic(values, self.omega);
+    }
+    pub fn inverse(&self, mut values: &mut [u64])
+    {
+        self.cyclic(values, self.inverse_omega);
+        for (index, value) in values.iter_mut().enumerate(){
+    *value = mul_mod(*value, self.inverse_degree, self.modulus);
+    *value = mul_mod(*value, pow_mod(self.inverse_psi, index, self.modulus), self.modulus);
+}
+    }
+    pub fn cyclic(&self, mut values: &mut [u64], mut root: u64)
+    {
+        bit_reverse(values);
+        let mut length = 2;
+        while (length <= self.degree){
+    let step = pow_mod(root, (self.degree / length), self.modulus);
+    for start in 0..self.degree.step_by(length){
+    let mut twiddle = 1;
+    for offset in 0.. length / 2{
+    let left = values[start + offset];
+    let right = mul_mod(values[start + offset + (length / 2)], twiddle, self.modulus);
+    values[start + offset] = add_mod(left, right, self.modulus);
+    values[start + offset + (length / 2)] = sub_mod(left, right, self.modulus);
+    twiddle = mul_mod(twiddle, step, self.modulus);
+}
+};
+    length *= 2;
+}
+    }
+}
+
+impl  TryFrom<u8> for Stage {
+    type Error = FrameError;
+    fn try_from(mut value: u8) -> Result<Self, FrameError>
+    {
+        match value {
+    .. => Ok(Self::PublicParameters),
+    .. => Ok(Self::ReusableCiphertext),
+    .. => Ok(Self::PerUseCiphertext),
+    .. => Ok(Self::SelectionKey),
+    .. => Ok(Self::Complete),
+    .. => Ok(Self::Error),
+    _ => Err(FrameError::UnknownStage),
+}
+    }
+}
+
+impl  Frame {
+    pub fn encode(&self) -> Vec<u8>
+    {
+        let mut out = Vec::with_capacity((HEADER_BYTES + self.payload.len()));
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&VERSION.to_le_bytes());
+        out.push((self.stage as u8));
+        out.extend_from_slice(&self.binding.parameter_fingerprint);
+        out.extend_from_slice(&self.binding.session_id);
+        out.extend_from_slice(&self.binding.manifest_digest);
+        out.extend_from_slice(&self.binding.use_counter.to_le_bytes());
+        out.extend_from_slice(&(self.payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&self.payload);
+        out
+    }
+    pub fn decode(mut input: &[u8], mut max_payload: usize) -> Result<Self, FrameError>
+    {
+        if input.len() < HEADER_BYTES{
+    return Err(FrameError::Truncated);
+};
+        if (&input[..8] != MAGIC) || (u16::from_le_bytes(vec![input[8], input[9]]) != VERSION){
+    return Err(FrameError::UnsupportedFormat);
+};
+        let stage = Stage::try_from(input[10])?;
+        let mut offset = 11;
+        let mut take_32 = || {
+    let mut value = [0; 32];
+    value.copy_from_slice(&input[offset..(offset + 32)]);
+    offset += 32;
+    value
+};
+        let parameter_fingerprint = take_32();
+        let session_id = take_32();
+        let manifest_digest = take_32();
+        let use_counter = u64::from_le_bytes(input[offset..(offset + 8)].try_into().unwrap());
+        offset += 8;
+        let payload_len = u32::from_le_bytes(input[offset..(offset + 4)].try_into().unwrap()) as usize;
+        offset += 4;
+        if payload_len > max_payload{
+    return Err(FrameError::PayloadTooLarge);
+};
+        if input.len() != offset.saturating_add(payload_len){
+    return Err(FrameError::LengthMismatch);
+};
+        Ok(Self { stage: stage, binding: FrameBinding { parameter_fingerprint: parameter_fingerprint, session_id: session_id, manifest_digest: manifest_digest, use_counter: use_counter }, payload: input[offset..].to_vec() })
     }
 }
 
@@ -3939,6 +5526,967 @@ pub fn derive_and_q<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut q_a: &QDyn<
 }).collect::<Vec<T>>(), n: 0 }
 }
 
+pub fn binfhe_gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut eta: usize, mut lwe_sk: &BinfheLweSecretKeyDyn, mut rlwe_sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheBootstrappingKeyDyn
+{
+    let bsk = (0..n_lwe).map(|i| {
+    binfhe_rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>((lwe_sk.key[i] != 0), rlwe_sk, rng)
+}).collect::<Vec<_>>();
+    let ksk = BinfheKeySwitchingKeyDyn { ksk: (0..big_n).map(|i| {
+    (0..n).map(|j| {
+    let msg = rlwe_sk.key[i].wrapping_mul(gadget::<LOG_MOD_KS>::level_factor(ks_base_log, j));
+    binfhe_lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(torus::<LOG_MOD_KS>::reduce(msg), lwe_sk, rng)
+}).collect::<Vec<_>>()
+}).collect::<Vec<_>>(), n_lwe: 0, big_n: 0, ks_ell: 0 };
+    BinfheBootstrappingKeyDyn { bsk: bsk, ksk: ksk, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0 }
+}
+
+pub fn binfhe_key_switch<K: AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> + Sized>(mut n_lwe: usize, mut big_n: usize, mut log_mod_ks: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut ksk: &K) -> BinfheLweCiphertextDyn
+{
+    let ksk_rows = ksk.ksk_rows();
+    let mut out_a = [0; n_lwe];
+    let mut out_b = ct.b;
+    for i in 0.. big_n{
+    let digits = gadget::<LOG_MOD_KS, KS_ELL, KS_BASE_LOG>::gadget_decompose(ct.a[i]);
+    for j in 0.. ks_ell{
+    let d = digits[j];
+    if d == 0{
+    continue;
+};
+    let entry = &ksk_rows[i][j];
+    for k in 0.. n_lwe{
+    out_a[k] = out_a[k].wrapping_sub(d.wrapping_mul(entry.a[k]));
+};
+    out_b = out_b.wrapping_sub(d.wrapping_mul(entry.b));
+}
+};
+    for k in 0.. n_lwe{
+    out_a[k] = torus::<LOG_MOD_KS>::reduce(out_a[k]);
+};
+    BinfheLweCiphertextDyn { a: out_a, b: torus::<LOG_MOD_KS>::reduce(out_b), n: 0 }
+}
+
+pub fn binfhe_rgsw_encrypt<R: SpecRng>(mut n: usize, mut log: usize, mut ell: usize, mut base_log: usize, mut eta: usize, mut m: bool, mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRgswCiphertextDyn
+{
+    let rows = (0..n).map(|j| {
+    let g = gadget::<LOG>::level_factor(base_log, j);
+    let contrib = if m{
+    g
+} else {
+    0
+};
+    let mut rlwe0 = binfhe_rlwe_encrypt_scalar::<N, LOG, ETA, R>(0, sk, rng);
+    rlwe0.a[0] = torus::<LOG>::torus_add(rlwe0.a[0], contrib);
+    let rlwe1 = binfhe_rlwe_encrypt_scalar::<N, LOG, ETA, R>(contrib, sk, rng);
+    BinfheRgswRowDyn { rlwe0: rlwe0, rlwe1: rlwe1, n: 0 }
+}).collect::<Vec<_>>();
+    BinfheRgswCiphertextDyn { rows: rows, n: 0, ell: 0 }
+}
+
+pub fn binfhe_external_product(mut n: usize, mut log: usize, mut ell: usize, mut base_log: usize, mut c: &BinfheRgswCiphertextDyn, mut ct: &BinfheRlweCiphertextDyn) -> BinfheRlweCiphertextDyn
+{
+    let a_dec = gadget::<N, LOG, ELL, BASE_LOG>::gadget_poly_decompose(&ct.a);
+    let b_dec = gadget::<N, LOG, ELL, BASE_LOG>::gadget_poly_decompose(&ct.b);
+    let mut out_a = [0; n];
+    let mut out_b = [0; n];
+    for j in 0.. ell{
+    let row = &c.rows[j];
+    let a0 = binfhe_poly_mul_neg::<N, LOG>(&a_dec[j], &row.rlwe0.a);
+    let a1 = binfhe_poly_mul_neg::<N, LOG>(&a_dec[j], &row.rlwe0.b);
+    let b0 = binfhe_poly_mul_neg::<N, LOG>(&b_dec[j], &row.rlwe1.a);
+    let b1 = binfhe_poly_mul_neg::<N, LOG>(&b_dec[j], &row.rlwe1.b);
+    for k in 0.. n{
+    out_a[k] = out_a[k].wrapping_add(a0[k]).wrapping_add(b0[k]);
+    out_b[k] = out_b[k].wrapping_add(a1[k]).wrapping_add(b1[k]);
+}
+};
+    for k in 0.. n{
+    out_a[k] = torus::<LOG>::reduce(out_a[k]);
+    out_b[k] = torus::<LOG>::reduce(out_b[k]);
+};
+    BinfheRlweCiphertextDyn { a: out_a, b: out_b, n: 0 }
+}
+
+pub fn binfhe_rgsw_cmux(mut n: usize, mut log: usize, mut ell: usize, mut base_log: usize, mut c: &BinfheRgswCiphertextDyn, mut d1: &BinfheRlweCiphertextDyn, mut d0: &BinfheRlweCiphertextDyn) -> BinfheRlweCiphertextDyn
+{
+    let diff = binfhe_rlwe_sub::<N, LOG>(d1, d0);
+    let prod = binfhe_external_product::<N, LOG, ELL, BASE_LOG>(c, &diff);
+    binfhe_rlwe_add::<N, LOG>(d0, &prod)
+}
+
+pub fn binfhe_gen_rlwe_secret_key<R: SpecRng>(mut n: usize, mut rng: &mut R) -> BinfheRlweSecretKeyDyn
+{
+    let mut key = [0; n];
+    for k in key.iter_mut(){
+    *k = ((rng.next_u32() & 1) as u32);
+};
+    BinfheRlweSecretKeyDyn { key: key, n: 0 }
+}
+
+pub fn binfhe_poly_mul_neg(mut n: usize, mut log: usize, mut a: &[u32; N], mut b: &[u32; N]) -> [u32; N]
+{
+    let mut result = [0; n];
+    for i in 0.. n{
+    for j in 0.. n{
+    let deg = i + j;
+    let term = a[i].wrapping_mul(b[j]);
+    if deg < n{
+    result[deg] = result[deg].wrapping_add(term);
+} else {
+    result[deg - n] = result[deg - n].wrapping_sub(term);
+}
+}
+};
+    for r in result.iter_mut(){
+    *r = torus::<LOG>::reduce(*r);
+};
+    result
+}
+
+pub fn binfhe_poly_rotate(mut n: usize, mut log: usize, mut p: &[u32; N], mut exp: usize) -> [u32; N]
+{
+    let exp = exp % (2 * n);
+    let mut result = [0; n];
+    for (i, ..) in p.iter().enumerate(){
+    let dest = i + exp;
+    if dest < n{
+    result[dest] = result[dest].wrapping_add(coeff);
+} else if dest < (2 * n){
+    result[dest - n] = result[dest - n].wrapping_sub(coeff);
+} else {
+    result[dest - (2 * n)] = result[dest - (2 * n)].wrapping_add(coeff);
+}
+};
+    for r in result.iter_mut(){
+    *r = torus::<LOG>::reduce(*r);
+};
+    result
+}
+
+pub fn binfhe_rlwe_encrypt_poly<R: SpecRng>(mut n: usize, mut log: usize, mut eta: usize, mut msg: &[u32; N], mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRlweCiphertextDyn
+{
+    let a: [u32; N] = (0..n).map(|_| torus::<LOG>::reduce(rng.next_u32())).collect::<Vec<_>>();
+    let mut b = binfhe_poly_mul_neg::<N, LOG>(&a, &sk.key);
+    for i in 0.. n{
+    b[i] = torus::<LOG>::reduce(b[i].wrapping_add(sampler::<LOG, ETA, R>::sample_error(rng)).wrapping_add(msg[i]));
+};
+    BinfheRlweCiphertextDyn { a: a, b: b, n: 0 }
+}
+
+pub fn binfhe_rlwe_encrypt_scalar<R: SpecRng>(mut n: usize, mut log: usize, mut eta: usize, mut m: u32, mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRlweCiphertextDyn
+{
+    let mut msg = [0; n];
+    msg[0] = m;
+    binfhe_rlwe_encrypt_poly::<N, LOG, ETA, R>(&msg, sk, rng)
+}
+
+pub fn binfhe_rlwe_phase(mut n: usize, mut log: usize, mut ct: &BinfheRlweCiphertextDyn, mut sk: &BinfheRlweSecretKeyDyn) -> [u32; N]
+{
+    let product = binfhe_poly_mul_neg::<N, LOG>(&ct.a, &sk.key);
+    let mut phase = [0; n];
+    for i in 0.. n{
+    phase[i] = torus::<LOG>::torus_sub(ct.b[i], product[i]);
+};
+    phase
+}
+
+pub fn binfhe_sample_extract(mut n: usize, mut log: usize, mut ct: &BinfheRlweCiphertextDyn) -> BinfheLweCiphertextDyn
+{
+    let mut a_lwe = [0; n];
+    a_lwe[0] = ct.a[0];
+    for i in 1.. n{
+    a_lwe[i] = torus::<LOG>::torus_neg(ct.a[n - i]);
+};
+    BinfheLweCiphertextDyn { a: a_lwe, b: ct.b[0], n: 0 }
+}
+
+pub fn binfhe_rlwe_add(mut n: usize, mut log: usize, mut x: &BinfheRlweCiphertextDyn, mut y: &BinfheRlweCiphertextDyn) -> BinfheRlweCiphertextDyn
+{
+    let mut out = *x;
+    for i in 0.. n{
+    out.a[i] = torus::<LOG>::torus_add(out.a[i], y.a[i]);
+    out.b[i] = torus::<LOG>::torus_add(out.b[i], y.b[i]);
+};
+    out
+}
+
+pub fn binfhe_rlwe_sub(mut n: usize, mut log: usize, mut x: &BinfheRlweCiphertextDyn, mut y: &BinfheRlweCiphertextDyn) -> BinfheRlweCiphertextDyn
+{
+    let mut out = *x;
+    for i in 0.. n{
+    out.a[i] = torus::<LOG>::torus_sub(out.a[i], y.a[i]);
+    out.b[i] = torus::<LOG>::torus_sub(out.b[i], y.b[i]);
+};
+    out
+}
+
+pub fn binfhe_rlwe_rotate(mut n: usize, mut log: usize, mut ct: &BinfheRlweCiphertextDyn, mut exp: usize) -> BinfheRlweCiphertextDyn
+{
+    BinfheRlweCiphertextDyn { a: binfhe_poly_rotate::<N, LOG>(&ct.a, exp), b: binfhe_poly_rotate::<N, LOG>(&ct.b, exp), n: 0 }
+}
+
+pub fn binfhe_rlwe_trivial(mut n: usize, mut log: usize, mut msg: &[u32; N]) -> BinfheRlweCiphertextDyn
+{
+    BinfheRlweCiphertextDyn { a: [0; n], b: *msg, n: 0 }
+}
+
+pub fn mask(mut log: usize) -> u32
+{
+    if log >= 32{
+    u32::MAX
+} else {
+    (1 << log) - 1
+}
+}
+
+pub fn reduce(mut log: usize, mut x: u32) -> u32
+{
+    x & mask::<LOG>()
+}
+
+pub fn torus_add(mut log: usize, mut a: u32, mut b: u32) -> u32
+{
+    reduce::<LOG>(a.wrapping_add(b))
+}
+
+pub fn torus_sub(mut log: usize, mut a: u32, mut b: u32) -> u32
+{
+    reduce::<LOG>(a.wrapping_sub(b))
+}
+
+pub fn torus_neg(mut log: usize, mut a: u32) -> u32
+{
+    reduce::<LOG>(a.wrapping_neg())
+}
+
+pub fn mul_exact(mut log: usize, mut a: u32, mut c: u32) -> u32
+{
+    reduce::<LOG>(a.wrapping_mul(c))
+}
+
+pub fn embed_up(mut from: usize, mut to: usize, mut x: u32) -> u32
+{
+    reduce::<TO>((x << (to - from)))
+}
+
+pub fn exponent(mut log_q_lwe: usize, mut big_n: usize, mut x: u32) -> usize
+{
+    (x as usize) & ((2 * big_n) - 1)
+}
+
+pub fn binfhe_blind_rotate(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut test_poly: &[u32; BIG_N], mut bsk: &[BinfheRgswCiphertextDyn]) -> BinfheRlweCiphertextDyn
+{
+    let two_n = 2 * big_n;
+    let b_exp = exponent::<LOG_Q_LWE, BIG_N>(ct.b);
+    let mut acc = binfhe_rlwe_trivial::<BIG_N, LOG_Q>(test_poly);
+    if b_exp != 0{
+    acc = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(&acc, (two_n - b_exp));
+};
+    for (i, row) in bsk.iter().enumerate(){
+    let a_exp = exponent::<LOG_Q_LWE, BIG_N>(ct.a[i]);
+    if a_exp != 0{
+    let rotated = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(&acc, a_exp);
+    acc = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(row, &rotated, &acc);
+}
+};
+    acc
+}
+
+pub fn wire_delta(mut log_q_lwe: usize, mut k_max: usize) -> u32
+{
+    1 << ((log_q_lwe - 1) - (k_max as u32))
+}
+
+pub fn binfhe_gen_lwe_secret_key<R: SpecRng>(mut n: usize, mut rng: &mut R) -> BinfheLweSecretKeyDyn
+{
+    let mut key = [0; n];
+    let mut i = 0;
+    while (i < n){
+    let mut word = rng.next_u32();
+    let take = (n - i).min(32);
+    for _ in 0.. take{
+    key[i] = ((word & 1) as u8);
+    word >>= 1;
+    i += 1;
+}
+};
+    BinfheLweSecretKeyDyn { key: key, n: 0 }
+}
+
+pub fn binfhe_lwe_encrypt<R: SpecRng>(mut n: usize, mut log_m: usize, mut eta: usize, mut m: bool, mut delta: u32, mut sk: &BinfheLweSecretKeyDyn, mut rng: &mut R) -> BinfheLweCiphertextDyn
+{
+    let msg = if m{
+    delta
+} else {
+    0
+};
+    binfhe_lwe_encrypt_raw::<N, LOG_M, ETA, R>(msg, sk, rng)
+}
+
+pub fn binfhe_lwe_encrypt_raw<R: SpecRng>(mut n: usize, mut log_m: usize, mut eta: usize, mut msg: u32, mut sk: &BinfheLweSecretKeyDyn, mut rng: &mut R) -> BinfheLweCiphertextDyn
+{
+    let mut a = [0; n];
+    for ai in a.iter_mut(){
+    *ai = torus::<LOG_M>::reduce(rng.next_u32());
+};
+    let mut dot = 0;
+    for i in 0.. n{
+    dot = dot.wrapping_add(a[i].wrapping_mul((sk.key[i] as u32)));
+};
+    let e = sampler::<LOG_M, ETA, R>::sample_error(rng);
+    let b = torus::<LOG_M>::reduce(dot.wrapping_add(e).wrapping_add(msg));
+    BinfheLweCiphertextDyn { a: a, b: b, n: 0 }
+}
+
+pub fn lwe_phase(mut n: usize, mut log_m: usize, mut ct: &BinfheLweCiphertextDyn, mut sk: &BinfheLweSecretKeyDyn) -> u32
+{
+    let mut dot = 0;
+    for i in 0.. n{
+    dot = dot.wrapping_add(ct.a[i].wrapping_mul((sk.key[i] as u32)));
+};
+    torus::<LOG_M>::reduce(ct.b.wrapping_sub(dot))
+}
+
+pub fn lwe_decode(mut log_m: usize, mut phase: u32, mut delta: u32) -> bool
+{
+    torus::<LOG_M>::reduce(phase.wrapping_sub((delta / 2))) < delta
+}
+
+pub fn binfhe_lwe_decrypt(mut n: usize, mut log_m: usize, mut ct: &BinfheLweCiphertextDyn, mut sk: &BinfheLweSecretKeyDyn, mut delta: u32) -> bool
+{
+    lwe_decode::<LOG_M>(lwe_phase::<N, LOG_M>(ct, sk), delta)
+}
+
+pub fn binfhe_lwe_add(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut y: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
+{
+    let mut a = [0; n];
+    for i in 0.. n{
+    a[i] = torus::<LOG_M>::torus_add(x.a[i], y.a[i]);
+};
+    BinfheLweCiphertextDyn { a: a, b: torus::<LOG_M>::torus_add(x.b, y.b), n: 0 }
+}
+
+pub fn binfhe_lwe_sub(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut y: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
+{
+    let mut a = [0; n];
+    for i in 0.. n{
+    a[i] = torus::<LOG_M>::torus_sub(x.a[i], y.a[i]);
+};
+    BinfheLweCiphertextDyn { a: a, b: torus::<LOG_M>::torus_sub(x.b, y.b), n: 0 }
+}
+
+pub fn binfhe_lwe_neg(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
+{
+    let mut a = [0; n];
+    for i in 0.. n{
+    a[i] = torus::<LOG_M>::torus_neg(x.a[i]);
+};
+    BinfheLweCiphertextDyn { a: a, b: torus::<LOG_M>::torus_neg(x.b), n: 0 }
+}
+
+pub fn binfhe_lwe_scale(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut c: u32) -> BinfheLweCiphertextDyn
+{
+    let mut a = [0; n];
+    for i in 0.. n{
+    a[i] = torus::<LOG_M>::mul_exact(x.a[i], c);
+};
+    BinfheLweCiphertextDyn { a: a, b: torus::<LOG_M>::mul_exact(x.b, c), n: 0 }
+}
+
+pub fn binfhe_lwe_add_const(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut c: u32) -> BinfheLweCiphertextDyn
+{
+    BinfheLweCiphertextDyn { a: x.a, b: torus::<LOG_M>::torus_add(x.b, c), n: 0 }
+}
+
+pub fn binfhe_not(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut delta: u32) -> BinfheLweCiphertextDyn
+{
+    let mut out = binfhe_lwe_neg::<N, LOG_M>(x);
+    out.b = torus::<LOG_M>::torus_add(out.b, delta);
+    out
+}
+
+pub fn binfhe_trivial(mut n: usize, mut log_m: usize, mut m: bool, mut delta: u32) -> BinfheLweCiphertextDyn
+{
+    BinfheLweCiphertextDyn { a: [0; n], b: if m{
+    delta
+} else {
+    0
+}, n: 0 }
+}
+
+pub fn max_lut_arity(mut log_q_lwe: u32) -> u32
+{
+    log_q_lwe.saturating_sub(2)
+}
+
+pub fn selector_margin(mut log_q_lwe: u32, mut k: usize, mut input_noise_bound: u32) -> bool
+{
+    if ((k as u32) + 2) >= log_q_lwe{
+    return false;
+};
+    let margin = 1 << ((log_q_lwe - (k as u32)) - 2);
+    let weight = ((1 << k) - 1) as u32;
+    weight.saturating_mul(input_noise_bound) < margin
+}
+
+pub fn check_profile(mut n_lwe: usize, mut big_n: usize, mut log_q: u32, mut log_q_lwe: u32, mut log_mod_ks: u32, mut bs_base_log: u32, mut bs_ell: usize, mut ks_base_log: u32, mut ks_ell: usize, mut priv_base_log: u32, mut priv_ell: usize)
+{
+}
+
+pub fn execute_plan(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut plan: &BootstrapPlan, mut inputs: &[BinfheLweCiphertextDyn], mut cells: &[BinfheRlweCiphertextDyn], mut bk: &BinfheBootstrappingKeyDyn, mut cbk: &CircuitBootstrappingKeyDyn) -> (Vec<BinfheLweCiphertextDyn>, Vec<BinfheRlweCiphertextDyn>)
+{
+    let delta = wire_delta::<LOG_Q_LWE>((plan.k_max as usize));
+    let mut wires: Vec<BinfheLweCiphertextDyn> = inputs.to_vec();
+    let mut rgsws: Vec<BinfheRgswCiphertextDyn> = Vec::new();
+    let mut cell_arena: Vec<BinfheRlweCiphertextDyn> = cells.to_vec();
+    for layer in &plan.layers{
+    for op in layer{
+    match op {
+    PlanOp::Const { out: out, value: value } => {
+    wires.push(binfhe_trivial::<N_LWE, LOG_Q_LWE>(*value, delta));
+},
+    PlanOp::Not { input: input, out: out } => {
+    wires.push(binfhe_not::<N_LWE, LOG_Q_LWE>(&wires[*input as usize], delta));
+},
+    PlanOp::Lut { inputs: inputs, table: table, out: out } => {
+    let spec = &plan.luts[*table as usize];
+    let arity = spec.entries.len().trailing_zeros() as usize;
+    let mut cts: [BinfheLweCiphertextDyn; MAX_LUT_ARITY] = [binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0); MAX_LUT_ARITY];
+    for (j, w) in inputs.as_slice().iter().enumerate(){
+    cts[j] = wires[*w as usize];
+};
+    wires.push(binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&cts[..arity], &spec.entries, (plan.k_max as usize), bk));
+},
+    PlanOp::CircuitBootstrap { input: input, out: out } => {
+    rgsws.push(circuit_bootstrap::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG, KS_ELL, PRIV_ELL, PRIV_BASE_LOG>(&wires[*input as usize], cbk, (plan.k_max as usize)));
+},
+    PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
+    let out_cell = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(&rgsws[*sel as usize], &cell_arena[*then_cell as usize], &cell_arena[*else_cell as usize]);
+    cell_arena.push(out_cell);
+},
+}
+}
+};
+    (wires, cell_arena)
+}
+
+pub fn encrypt_scaled_poly<R: SpecRng>(mut big_n: usize, mut log_q: usize, mut eta: usize, mut msg: &[u32; BIG_N], mut level: usize, mut base_log: u32, mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRlweCiphertextDyn
+{
+    let g = gadget::<LOG_Q>::level_factor(base_log, level);
+    let mut scaled = [0; big_n];
+    for i in 0.. big_n{
+    scaled[i] = torus::<LOG_Q>::mul_exact(msg[i], g);
+};
+    binfhe_rlwe_encrypt_poly::<BIG_N, LOG_Q, ETA, R>(&scaled, sk, rng)
+}
+
+pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut eta: usize, mut lwe_sk: &BinfheLweSecretKeyDyn, mut rlwe_sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> CircuitBootstrappingKeyDyn
+{
+    let bk = binfhe_gen_bootstrapping_key::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, ETA, R>(lwe_sk, rlwe_sk, rng);
+    let zero = [0; big_n];
+    let neg_one_const: [u32; BIG_N] = {
+    let mut p = [0; big_n];
+    p[0] = torus::<LOG_Q>::torus_neg(1);
+    p
+};
+    let neg_sk: [u32; BIG_N] = (0..n).map(|i| torus::<LOG_Q>::torus_neg(rlwe_sk.key[i])).collect::<Vec<_>>();
+    let one_const: [u32; BIG_N] = {
+    let mut p = [0; big_n];
+    p[0] = 1;
+    p
+};
+    let mut a_col = alloc::vec::Vec::with_capacity(big_n);
+    for i in 0.. big_n{
+    let msg = if rlwe_sk.key[i] == 1{
+    &rlwe_sk.key
+} else {
+    &zero
+};
+    a_col.push((0..n).map(|l| {
+    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, priv_base_log, rlwe_sk, rng)
+}).collect::<Vec<_>>());
+};
+    let mut b_col = alloc::vec::Vec::with_capacity(big_n);
+    for i in 0.. big_n{
+    let msg = if rlwe_sk.key[i] == 1{
+    &neg_one_const
+} else {
+    &zero
+};
+    b_col.push((0..n).map(|l| {
+    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, priv_base_log, rlwe_sk, rng)
+}).collect::<Vec<_>>());
+};
+    let a_body = (0..n).map(|l| {
+    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(&neg_sk, l, priv_base_log, rlwe_sk, rng)
+}).collect::<Vec<_>>();
+    let b_body = (0..n).map(|l| {
+    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(&one_const, l, priv_base_log, rlwe_sk, rng)
+}).collect::<Vec<_>>();
+    CircuitBootstrappingKeyDyn { bk: bk, privksk: PrivateKeySwitchingKeyDyn { a_col: a_col, b_col: b_col, a_body: a_body, b_body: b_body, big_n: 0, priv_ell: 0 }, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0, priv_ell: 0 }
+}
+
+pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv_base_log: usize, mut src: &BinfheLweCiphertextDyn, mut col: &[[BinfheRlweCiphertextDyn; PRIV_ELL]], mut body: &[BinfheRlweCiphertextDyn; PRIV_ELL]) -> BinfheRlweCiphertextDyn
+{
+    let mut out = BinfheRlweCiphertextDyn { a: [0; big_n], b: [0; big_n], n: 0 };
+    for i in 0.. big_n{
+    let digits = gadget::<LOG_Q, PRIV_ELL, PRIV_BASE_LOG>::gadget_decompose(src.a[i]);
+    for (l, ..) in digits.iter().enumerate(){
+    if d == 0{
+    continue;
+};
+    let entry = &col[i][l];
+    for k in 0.. big_n{
+    out.a[k] = out.a[k].wrapping_add(d.wrapping_mul(entry.a[k]));
+    out.b[k] = out.b[k].wrapping_add(d.wrapping_mul(entry.b[k]));
+}
+}
+};
+    let digits = gadget::<LOG_Q, PRIV_ELL, PRIV_BASE_LOG>::gadget_decompose(src.b);
+    for (l, ..) in digits.iter().enumerate(){
+    if d == 0{
+    continue;
+};
+    let entry = &body[l];
+    for k in 0.. big_n{
+    out.a[k] = out.a[k].wrapping_add(d.wrapping_mul(entry.a[k]));
+    out.b[k] = out.b[k].wrapping_add(d.wrapping_mul(entry.b[k]));
+}
+};
+    for k in 0.. big_n{
+    out.a[k] = torus::<LOG_Q>::reduce(out.a[k]);
+    out.b[k] = torus::<LOG_Q>::reduce(out.b[k]);
+};
+    out
+}
+
+pub fn level_test_poly(mut big_n: usize, mut log_q: usize, mut level: usize, mut bs_base_log: u32, mut k_max: usize) -> [u32; BIG_N]
+{
+    let width = big_n >> k_max;
+    let g = gadget::<LOG_Q>::level_factor(bs_base_log, level);
+    let mut poly = [0; big_n];
+    for p in width.. 2 * width{
+    poly[p] = g;
+};
+    poly
+}
+
+pub fn circuit_bootstrap(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut priv_ell: usize, mut priv_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut cbk: &CircuitBootstrappingKeyDyn, mut k_max: usize) -> BinfheRgswCiphertextDyn
+{
+    let delta = wire_delta::<LOG_Q_LWE>((k_max as usize));
+    let centered = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(ct, (delta / 2));
+    let rows = (0..n).map(|j| {
+    let test_poly = level_test_poly::<BIG_N, LOG_Q>(j, bs_base_log, k_max);
+    let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(&centered, &test_poly, &cbk.bk.bsk);
+    let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(&acc);
+    let rlwe0 = priv_ks::<BIG_N, LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(&extracted, &cbk.privksk.a_col, &cbk.privksk.a_body);
+    let rlwe1 = priv_ks::<BIG_N, LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(&extracted, &cbk.privksk.b_col, &cbk.privksk.b_body);
+    BinfheRgswRowDyn { rlwe0: rlwe0, rlwe1: rlwe1, n: 0 }
+}).collect::<Vec<_>>();
+    BinfheRgswCiphertextDyn { rows: rows, n: 0, ell: 0 }
+}
+
+pub fn binfhe_pbs_core<BK: crate::binfhe::keys::AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + Sized>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut test_poly: &[u32; BIG_N], mut bk: &BK) -> BinfheLweCiphertextDyn
+{
+    let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(ct, test_poly, bk.bsk_rows());
+    let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(&acc);
+    let at_ks = mod_switch_lwe::<BIG_N, LOG_Q, LOG_MOD_KS>(&extracted);
+    let switched = binfhe_key_switch::<N_LWE, BIG_N, LOG_MOD_KS, KS_ELL, KS_BASE_LOG, _>(&at_ks, &bk.ksk_ref());
+    mod_switch_lwe::<N_LWE, LOG_MOD_KS, LOG_Q_LWE>(&switched)
+}
+
+pub fn binfhe_lut_read(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut addr_bits: usize, mut table_len: usize, mut k_max: usize, mut addr: &[BinfheLweCiphertextDyn; ADDR_BITS], mut lut: &LutDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
+{
+    let delta = wire_delta::<LOG_Q_LWE>(k_max);
+    if lut.is_constant(){
+    return binfhe_trivial::<N_LWE, LOG_Q_LWE>(lut.constant_value(), delta);
+};
+    let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0);
+    for (j, bit) in addr.iter().enumerate(){
+    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(bit, (1 << j));
+    combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
+};
+    combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, (delta / 2));
+    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(&combined, lut.test_polynomial(), bk)
+}
+
+pub fn binfhe_lut_read_dyn(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut inputs: &[BinfheLweCiphertextDyn], mut table: &[bool], mut k_max: usize, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
+{
+    let delta = wire_delta::<LOG_Q_LWE>((k_max as usize));
+    if table_is_constant(table){
+    return binfhe_trivial::<N_LWE, LOG_Q_LWE>(table[0], delta);
+};
+    let arity = table.len().trailing_zeros() as usize;
+    let test_poly = fill_test_poly::<BIG_N>(table, arity, (k_max as usize), log_q, log_q_lwe);
+    let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0);
+    for (j, bit) in inputs.iter().enumerate(){
+    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(bit, (1 << j));
+    combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
+};
+    combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, (delta / 2));
+    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(&combined, &test_poly, bk)
+}
+
+pub fn binfhe_gate_and(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
+{
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&vec![a, b], &vec![false, false, false, true], k_max, bk)
+}
+
+pub fn binfhe_gate_or(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
+{
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&vec![a, b], &vec![false, true, true, true], k_max, bk)
+}
+
+pub fn binfhe_gate_xor(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
+{
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&vec![a, b], &vec![false, true, true, false], k_max, bk)
+}
+
+pub fn binfhe_cmux(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut sel: BinfheLweCiphertextDyn, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
+{
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&vec![sel, a, b], &TABLE, k_max, bk)
+}
+
+pub fn mod_switch(mut from: usize, mut to: usize, mut x: u32) -> u32
+{
+    if to >= from{
+    super::torus::<FROM, TO>::embed_up(x)
+} else {
+    let shift = from - to;
+    let half = 1 << (shift - 1);
+    let rounded = (((x as u64) + (half as u64)) >> shift) as u32;
+    super::torus::<TO>::reduce(rounded)
+}
+}
+
+pub fn mod_switch_lwe(mut n: usize, mut from: usize, mut to: usize, mut ct: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
+{
+    let mut a = [0; n];
+    for i in 0.. n{
+    a[i] = mod_switch::<FROM, TO>(ct.a[i]);
+};
+    super::lwe::BinfheLweCiphertext { a: a, b: mod_switch::<FROM, TO>(ct.b) }
+}
+
+pub fn encode_plan(mut plan: &BootstrapPlan) -> Result<Vec<u8>, EncodeError>
+{
+    plan.validate().map_err(EncodeError::InvalidPlan)?;
+    if (plan.luts.len() > MAX_ITEMS) || (plan.layers.len() > MAX_ITEMS) || (plan.outputs.len() > MAX_ITEMS) || (plan.cell_outputs.len() > MAX_ITEMS) || plan.layers.iter().any(|layer| (layer.len() > MAX_ITEMS)) || plan.luts.iter().any(|lut| (lut.entries.len() > MAX_ITEMS)){
+    return Err(EncodeError::TooLarge);
+};
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(MAGIC);
+    bytes.push(VERSION);
+    bytes.push(profile_tag(plan.profile));
+    put_u32(&mut bytes, plan.k_max);
+    put_u32(&mut bytes, plan.num_inputs);
+    put_u32(&mut bytes, plan.num_cells);
+    put_u32(&mut bytes, plan.budget.per_bootstrap_log2);
+    put_u32(&mut bytes, plan.budget.total_log2);
+    put_u32(&mut bytes, (plan.luts.len() as u32));
+    for lut in &plan.luts{
+    put_u32(&mut bytes, (lut.entries.len() as u32));
+    for chunk in lut.entries.chunks(8){
+    let mut packed = 0;
+    for (bit, entry) in chunk.iter().enumerate(){
+    packed |= ((*entry as u8) << bit);
+};
+    bytes.push(packed);
+}
+};
+    put_u32(&mut bytes, (plan.layers.len() as u32));
+    for layer in &plan.layers{
+    put_u32(&mut bytes, (layer.len() as u32));
+    for op in layer{
+    match op {
+    PlanOp::Const { out: out, value: value } => {
+    bytes.push(0);
+    put_u32(&mut bytes, *out);
+    bytes.push((*value as u8));
+},
+    PlanOp::Not { input: input, out: out } => {
+    bytes.push(1);
+    put_u32(&mut bytes, *input);
+    put_u32(&mut bytes, *out);
+},
+    PlanOp::Lut { inputs: inputs, table: table, out: out } => {
+    bytes.push(2);
+    put_u32(&mut bytes, (inputs.len() as u32));
+    for input in inputs.as_slice(){
+    put_u32(&mut bytes, *input);
+};
+    put_u32(&mut bytes, *table);
+    put_u32(&mut bytes, *out);
+},
+    PlanOp::CircuitBootstrap { input: input, out: out } => {
+    bytes.push(3);
+    put_u32(&mut bytes, *input);
+    put_u32(&mut bytes, *out);
+},
+    PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
+    bytes.push(4);
+    put_u32(&mut bytes, *sel);
+    put_u32(&mut bytes, *then_cell);
+    put_u32(&mut bytes, *else_cell);
+    put_u32(&mut bytes, *out);
+},
+}
+}
+};
+    put_ids(&mut bytes, &plan.outputs);
+    put_ids(&mut bytes, &plan.cell_outputs);
+    Ok(bytes)
+}
+
+pub fn decode_plan(mut bytes: &[u8]) -> Result<BootstrapPlan, DecodeError>
+{
+    let mut reader = Reader { bytes: bytes, offset: 0 };
+    if reader.take(4)? != MAGIC{
+    return Err(DecodeError::BadMagic);
+};
+    if reader.byte()? != VERSION{
+    return Err(DecodeError::UnsupportedVersion);
+};
+    let profile = parse_profile(reader.byte()?)?;
+    let k_max = reader.u32()?;
+    let num_inputs = reader.u32()?;
+    let num_cells = reader.u32()?;
+    let budget = FailureBudget { per_bootstrap_log2: reader.u32()?, total_log2: reader.u32()? };
+    let lut_count = reader.count()?;
+    let mut luts = Vec::with_capacity(lut_count);
+    for _ in 0.. lut_count{
+    let bit_count = reader.count()?;
+    let packed_len = bit_count.div_ceil(8);
+    let packed = reader.take(packed_len)?;
+    if ((bit_count % 8) != 0) && packed.last().is_some_and(|byte| ((*byte >> (bit_count % 8)) != 0)){
+    return Err(DecodeError::UnknownTag);
+};
+    let mut entries = Vec::with_capacity(bit_count);
+    for bit in 0.. bit_count{
+    entries.push((((packed[bit / 8] >> (bit % 8)) & 1) != 0));
+};
+    luts.push(LutSpec { entries: entries });
+};
+    let layer_count = reader.count()?;
+    let mut layers = Vec::with_capacity(layer_count);
+    for _ in 0.. layer_count{
+    let op_count = reader.count()?;
+    let mut layer = Vec::with_capacity(op_count);
+    for _ in 0.. op_count{
+    layer.push(read_op(&mut reader)?);
+};
+    layers.push(layer);
+};
+    let outputs = reader.ids()?;
+    let cell_outputs = reader.ids()?;
+    if reader.offset != bytes.len(){
+    return Err(DecodeError::TrailingBytes);
+};
+    let plan = BootstrapPlan { profile: profile, k_max: k_max, luts: luts, layers: layers, num_inputs: num_inputs, num_cells: num_cells, outputs: outputs, cell_outputs: cell_outputs, budget: budget };
+    plan.validate().map_err(DecodeError::InvalidPlan)?;
+    Ok(plan)
+}
+
+pub fn profile_tag(mut profile: ProfileId) -> u8
+{
+    match profile {
+    _ => 0,
+    _ => 1,
+    _ => 2,
+    _ => 3,
+}
+}
+
+pub fn parse_profile(mut tag: u8) -> Result<ProfileId, DecodeError>
+{
+    match tag {
+    .. => Ok(ProfileId::Toy),
+    .. => Ok(ProfileId::ToyNoisy),
+    .. => Ok(ProfileId::Std128),
+    .. => Ok(ProfileId::Custom),
+    _ => Err(DecodeError::UnknownTag),
+}
+}
+
+pub fn put_u32(mut bytes: &mut Vec<u8>, mut value: u32)
+{
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+pub fn put_ids(mut bytes: &mut Vec<u8>, mut ids: &[u32])
+{
+    put_u32(bytes, (ids.len() as u32));
+    for id in ids{
+    put_u32(bytes, *id);
+}
+}
+
+pub fn read_op(mut reader: &mut Reader) -> Result<PlanOp, DecodeError>
+{
+    match reader.byte()? {
+    .. => {
+    let out = reader.u32()?;
+    let value = match reader.byte()? {
+    .. => false,
+    .. => true,
+    _ => return Err(DecodeError::UnknownTag),
+};
+    Ok(PlanOp::Const { out: out, value: value })
+},
+    .. => Ok(PlanOp::Not { input: reader.u32()?, out: reader.u32()? }),
+    .. => {
+    let count = reader.count()?;
+    let mut ids = alloc::vec::Vec::with_capacity(count);
+    for _ in 0.. count{
+    ids.push(reader.u32()?);
+};
+    let inputs = crate::binfhe::plan::LutInputs::from_slice(&ids);
+    let table: LutId = reader.u32()?;
+    let out: WireId = reader.u32()?;
+    Ok(PlanOp::Lut { inputs: inputs, table: table, out: out })
+},
+    .. => Ok(PlanOp::CircuitBootstrap { input: reader.u32()?, out: reader.u32()? }),
+    .. => {
+    let sel: RgswId = reader.u32()?;
+    let then_cell = reader.u32()?;
+    let else_cell = reader.u32()?;
+    let out = reader.u32()?;
+    Ok(PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out })
+},
+    _ => Err(DecodeError::UnknownTag),
+}
+}
+
+pub fn cbd<R: SpecRng>(mut eta: usize, mut rng: &mut R) -> i32
+{
+    if eta == 0{
+    return 0;
+};
+    let mask = if eta >= 32{
+    u32::MAX
+} else {
+    (1 << eta) - 1
+};
+    let a = (rng.next_u32() & mask).count_ones() as i32;
+    let b = (rng.next_u32() & mask).count_ones() as i32;
+    a - b
+}
+
+pub fn sample_error<R: SpecRng>(mut log: usize, mut eta: usize, mut rng: &mut R) -> u32
+{
+    super::torus::<LOG>::reduce((cbd::<ETA, R>(rng) as u32))
+}
+
+pub fn level_shift(mut log: u32, mut base_log: u32, mut j: usize) -> u32
+{
+    log.saturating_sub((base_log * ((j as u32) + 1)))
+}
+
+pub fn level_bits(mut log: u32, mut base_log: u32, mut j: usize) -> u32
+{
+    let remaining = log.saturating_sub((base_log * (j as u32)));
+    if remaining < base_log{
+    remaining
+} else {
+    base_log
+}
+}
+
+pub fn level_factor(mut log: usize, mut base_log: u32, mut j: usize) -> u32
+{
+    torus::<LOG>::reduce((1 << level_shift(log, base_log, j)))
+}
+
+pub fn gadget_decompose(mut log: usize, mut ell: usize, mut base_log: usize, mut x: u32) -> [u32; ELL]
+{
+    let mut digits = [0; ell];
+    for (j, d) in digits.iter_mut().enumerate(){
+    let shift = level_shift(log, base_log, j);
+    let bits = level_bits(log, base_log, j);
+    let m = if bits >= 32{
+    u32::MAX
+} else {
+    (1 << bits) - 1
+};
+    *d = ((x >> shift) & m);
+};
+    digits
+}
+
+pub fn gadget_poly_decompose(mut n: usize, mut log: usize, mut ell: usize, mut base_log: usize, mut p: &[u32; N]) -> [[u32; N]; ELL]
+{
+    let mut out = [[0; n]; ell];
+    for i in 0.. n{
+    let digits = gadget_decompose::<LOG, ELL, BASE_LOG>(p[i]);
+    for j in 0.. ell{
+    out[j][i] = digits[j];
+}
+};
+    out
+}
+
+pub fn check_lut_shape(mut addr_bits: usize, mut table_len: usize, mut big_n: usize, mut log_q: u32, mut log_q_lwe: u32, mut k_max: usize) -> Result<usize, LutError>
+{
+    if (addr_bits == 0) || (addr_bits >= (usize::BITS as usize)){
+    return Err(LutError::AddressShapeInvalid);
+};
+    if table_len != (1 << addr_bits){
+    return Err(LutError::AddressShapeInvalid);
+};
+    if addr_bits > k_max{
+    return Err(LutError::ArityExceedsCircuitMax);
+};
+    if (((k_max as u32) + 2) > log_q_lwe) || !big_n.is_power_of_two() || ((1 << k_max) > big_n) || ((1 << log_q_lwe) != (2 * big_n)) || (log_q_lwe > log_q) || (log_q > 32){
+    return Err(LutError::ShapeUnsupported);
+};
+    Ok((big_n >> k_max))
+}
+
+pub fn table_is_constant(mut logical: &[bool]) -> bool
+{
+    let mut i = 1;
+    while (i < logical.len()){
+    if logical[i] != logical[0]{
+    return false;
+};
+    i += 1;
+};
+    true
+}
+
+pub fn fill_test_poly(mut big_n: usize, mut logical: &[bool], mut addr_bits: usize, mut k_max: usize, mut log_q: u32, mut log_q_lwe: u32) -> [u32; BIG_N]
+{
+    let table_len = 1 << addr_bits;
+    let is_constant = table_is_constant(logical);
+    let delta_shift = (log_q_lwe - 1) - (k_max as u32);
+    let value = if log_q >= 32{
+    delta_out_full_width(delta_shift, (log_q - log_q_lwe))
+} else {
+    (1 << (delta_shift + (log_q - log_q_lwe))) & ((1 << log_q) - 1)
+};
+    let width = big_n >> k_max;
+    let used = if is_constant{
+    0
+} else {
+    table_len * width
+};
+    let mut test_poly = [0; big_n];
+    let mut p = 0;
+    while (p < used){
+    test_poly[p] = if logical[p / width]{
+    value
+} else {
+    0
+};
+    p += 1;
+};
+    test_poly
+}
+
+pub fn delta_out_full_width(mut delta_shift: u32, mut upscale: u32) -> u32
+{
+    1 << (delta_shift + upscale)
+}
+
 pub fn in_interval_mod(mut x: u64, mut lo: u64, mut hi: u64, mut q: u64) -> bool
 {
     let x = x % q;
@@ -4035,6 +6583,157 @@ pub fn from_bool(mut b: bool, mut q: u64) -> u64
 } else {
     FALSE
 }
+}
+
+pub fn encode_label_16(mut label: [u8; 16]) -> [u64; 3]
+{
+    let first = u64::from_le_bytes(vec![label[0], label[1], label[2], label[3], label[4], label[5], 0, 0]);
+    let second = u64::from_le_bytes(vec![label[6], label[7], label[8], label[9], label[10], label[11], 0, 0]);
+    let third = u32::from_le_bytes(vec![label[12], label[13], label[14], label[15]]) as u64;
+    vec![first, second, third]
+}
+
+pub fn decode_label_16(mut elements: [u64; 3]) -> Result<[u8; 16], LabelEncodingError>
+{
+    let modulus = ring_lwe::REFERENCE_PLAINTEXT_MODULUS;
+    let mut label = [0; 16];
+    let mut offset = 0;
+    for (index, (.., ..)) in elements.iter().zip(WIDTHS.iter()).enumerate(){
+    if element >= modulus{
+    return Err(LabelEncodingError::FieldElementOutOfRange { index: index });
+};
+    if element >= (1 << width){
+    return Err(LabelEncodingError::NonCanonicalElement { index: index });
+};
+    let bytes = element.to_le_bytes();
+    let count = (width / 8) as usize;
+    label[offset..(offset + count)].copy_from_slice(&bytes[..count]);
+    offset += count;
+};
+    Ok(label)
+}
+
+pub fn inner_product(mut ring: &Ring, mut left: &[Polynomial], mut right: &[Polynomial]) -> Result<Polynomial, Error>
+{
+    if (left.len() != right.len()) || left.iter().chain(right.iter()).any(|value| (value.degree() != ring.parameters.degree)){
+    return Err(Error::LengthMismatch);
+};
+    let mut output = ring.zero();
+    for (left, right) in left.iter().zip(right.iter()){
+    output.add_assign(ring, &left.product(ring, right));
+};
+    Ok(output)
+}
+
+pub fn bit_reverse(mut values: &mut [u64])
+{
+    let bits = values.len().ilog2();
+    for index in 0.. values.len(){
+    let reversed = index.reverse_bits() >> (usize::BITS - bits);
+    if index < reversed{
+    values.swap(index, reversed);
+}
+}
+}
+
+pub fn find_negacyclic_root(mut degree: usize, mut modulus: u64) -> Option<u64>
+{
+    let exponent = (modulus - 1) / (2 * (degree as u64));
+    for candidate in 2.. modulus{
+    let root = pow_mod(candidate, (exponent as usize), modulus);
+    if pow_mod(root, degree, modulus) == (modulus - 1){
+    return Some(root);
+}
+};
+    None
+}
+
+pub fn sample_uniform(mut random: &mut impl RandomSource, mut modulus: u64, mut output: &mut [u64]) -> Result<(), Error>
+{
+    let threshold = u64::MAX - (u64::MAX % modulus);
+    for value in output{
+    while true{
+    let mut bytes = [0; 8];
+    random.fill_bytes(&mut bytes)?;
+    let candidate = u64::from_le_bytes(bytes);
+    if candidate < threshold{
+    *value = (candidate % modulus);
+    break;
+}
+}
+};
+    Ok(())
+}
+
+pub fn signed_to_mod(mut value: i64, mut modulus: u64) -> u64
+{
+    if value < 0{
+    let magnitude = value.unsigned_abs() % modulus;
+    if magnitude == 0{
+    0
+} else {
+    modulus - magnitude
+}
+} else {
+    (value as u64) % modulus
+}
+}
+
+pub fn add_mod(mut left: u64, mut right: u64, mut modulus: u64) -> u64
+{
+    let sum = left + right;
+    if sum >= modulus{
+    sum - modulus
+} else {
+    sum
+}
+}
+
+pub fn sub_mod(mut left: u64, mut right: u64, mut modulus: u64) -> u64
+{
+    if left >= right{
+    left - right
+} else {
+    modulus - (right - left)
+}
+}
+
+pub fn mul_mod(mut left: u64, mut right: u64, mut modulus: u64) -> u64
+{
+    (((left as u128) * (right as u128)) % (modulus as u128)) as u64
+}
+
+pub fn pow_mod(mut value: u64, mut exponent: usize, mut modulus: u64) -> u64
+{
+    let mut result = 1;
+    while (exponent != 0){
+    if (exponent & 1) != 0{
+    result = mul_mod(result, value, modulus);
+};
+    value = mul_mod(value, value, modulus);
+    exponent >>= 1;
+};
+    result
+}
+
+pub fn inverse_mod(mut value: u64, mut modulus: u64) -> Option<u64>
+{
+    if (value == 0) || (modulus < 2){
+    return None;
+};
+    let mut old_r = value as i128;
+    let mut r = modulus as i128;
+    let mut old_s = 1;
+    let mut s = 0;
+    while (r != 0){
+    let quotient = old_r / r;
+    (old_r, r) = (r, (old_r - (quotient * r)));
+    (old_s, s) = (s, (old_s - (quotient * s)));
+};
+    if old_r != 1{
+    return None;
+};
+    Some((old_s.rem_euclid((modulus as i128)) as u64))
 }
 
 pub fn tfhe_trivial_zero(mut n_lwe: usize) -> LweCiphertextDyn

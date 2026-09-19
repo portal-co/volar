@@ -627,6 +627,19 @@ fn field_elem_type_is_param(ty: &IrType, param: &str) -> bool {
     }
 }
 
+/// Build a bare-struct-name → definition registry for the module, used to resolve
+/// field primitive types for width-aware codegen (`infer_expr_ir_type`,
+/// `infer_wrapping_bit_width`). Keyed the same way `TsTypeWriter` names
+/// `IrType::Struct { kind, .. }` (`kind.to_string()`), so a struct-typed
+/// expression's declared type name looks itself up directly.
+fn build_structs_by_name(module: &IrModule<IrFunction>) -> BTreeMap<String, IrStruct> {
+    module
+        .structs
+        .iter()
+        .map(|s| (s.kind.to_string(), s.clone()))
+        .collect()
+}
+
 /// Build a map from bare method name → the TS field name of the first field on the
 /// receiver struct that carries the generic-T element type. Used at call sites to
 /// construct the `ctx` witness inline without threading it through callers.
@@ -902,6 +915,7 @@ pub fn print_module_ts_with_imports(
     let enum_names: std::collections::HashSet<String> =
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map = build_method_t_fields(&module);
+    let structs_by_name = build_structs_by_name(&module);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -917,6 +931,8 @@ pub fn print_module_ts_with_imports(
         emit_generator: false,
         async_fns: BTreeSet::new(),
         oracle_fn_names: BTreeSet::new(),
+        structs_by_name: &structs_by_name,
+        local_var_types: BTreeMap::new(),
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -989,6 +1005,7 @@ fn print_module_ts_with_emit_flags(
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map = build_method_t_fields(&module);
     let (oracle_fns, async_fns) = compute_async_fns(&module);
+    let structs_by_name = build_structs_by_name(&module);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -1004,6 +1021,8 @@ fn print_module_ts_with_emit_flags(
         emit_generator,
         async_fns,
         oracle_fn_names: oracle_fns,
+        structs_by_name: &structs_by_name,
+        local_var_types: BTreeMap::new(),
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1057,6 +1076,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
     let enum_names: std::collections::HashSet<String> =
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map2 = build_method_t_fields(&module);
+    let structs_by_name = build_structs_by_name(&module);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -1072,6 +1092,8 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         emit_generator: false,
         async_fns: BTreeSet::new(),
         oracle_fn_names: BTreeSet::new(),
+        structs_by_name: &structs_by_name,
+        local_var_types: BTreeMap::new(),
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1173,6 +1195,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
     let enum_names_flat: std::collections::HashSet<String> =
         flat.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map3 = build_method_t_fields(&flat);
+    let structs_by_name = build_structs_by_name(&flat);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions_flat,
@@ -1188,6 +1211,8 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         emit_generator: false,
         async_fns: BTreeSet::new(),
         oracle_fn_names: BTreeSet::new(),
+        structs_by_name: &structs_by_name,
+        local_var_types: BTreeMap::new(),
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
@@ -1316,6 +1341,17 @@ struct TsContext<'a> {
     async_fns: BTreeSet<String>,
     /// Leaf oracle/action/rng names — call sites get `await`/`yield*`.
     oracle_fn_names: BTreeSet<String>,
+    /// Module-level struct registry (bare name → definition), used to resolve
+    /// field primitive types for width-aware codegen (e.g. `wrapping_add`/
+    /// `wrapping_sub` — see `infer_wrapping_bit_width`). Built once per
+    /// module print via `build_structs_by_name`.
+    structs_by_name: &'a BTreeMap<String, IrStruct>,
+    /// Declared `IrType` for parameters (and any other statically-typed
+    /// locals) of the function/method currently being printed. Reset per
+    /// function/method body via `with_local_var_types` — unlike `var_types`
+    /// (type-*param* names for witness resolution), this carries full
+    /// `IrType`s for primitive-width inference.
+    local_var_types: BTreeMap<String, IrType>,
 }
 
 impl<'a> TsContext<'a> {
@@ -1361,6 +1397,8 @@ impl<'a> TsContext<'a> {
             emit_generator: self.emit_generator,
             async_fns: self.async_fns.clone(),
             oracle_fn_names: self.oracle_fn_names.clone(),
+            structs_by_name: self.structs_by_name,
+            local_var_types: self.local_var_types.clone(),
         }
     }
 
@@ -1380,6 +1418,8 @@ impl<'a> TsContext<'a> {
             emit_generator: self.emit_generator,
             async_fns: self.async_fns.clone(),
             oracle_fn_names: self.oracle_fn_names.clone(),
+            structs_by_name: self.structs_by_name,
+            local_var_types: self.local_var_types.clone(),
         }
     }
 
@@ -1401,6 +1441,34 @@ impl<'a> TsContext<'a> {
             emit_generator: self.emit_generator,
             async_fns: self.async_fns.clone(),
             oracle_fn_names: self.oracle_fn_names.clone(),
+            structs_by_name: self.structs_by_name,
+            local_var_types: self.local_var_types.clone(),
+        }
+    }
+
+    /// Return a context scoped to a function/method body, with `local_var_types`
+    /// seeded from that function's parameters (and, for methods, `self`'s
+    /// fields are resolved separately via `self_type` + `structs_by_name` —
+    /// see `infer_expr_ir_type`). Used for width-aware codegen
+    /// (`wrapping_add`/`wrapping_sub` — `infer_wrapping_bit_width`).
+    fn with_local_var_types(&self, types: BTreeMap<String, IrType>) -> TsContext<'a> {
+        TsContext {
+            witness_map: self.witness_map,
+            name_collisions: self.name_collisions,
+            erased_type_params: self.erased_type_params.clone(),
+            self_type: self.self_type.clone(),
+            tuple_structs: self.tuple_structs,
+            class_witnesses: self.class_witnesses.clone(),
+            mut_refs: self.mut_refs.clone(),
+            enum_names: self.enum_names,
+            var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
+            method_t_fields: self.method_t_fields.clone(),
+            emit_async: self.emit_async,
+            emit_generator: self.emit_generator,
+            async_fns: self.async_fns.clone(),
+            oracle_fn_names: self.oracle_fn_names.clone(),
+            structs_by_name: self.structs_by_name,
+            local_var_types: types,
         }
     }
 
@@ -1757,6 +1825,7 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "  ilog2,")?;
         writeln!(f, "  wrappingAdd,")?;
         writeln!(f, "  wrappingSub,")?;
+        writeln!(f, "  wrappingNeg,")?;
         writeln!(f, "  asRefU8,")?;
         writeln!(f, "  u32_from_le_bytes,")?;
         writeln!(f, "  u64_from_le_bytes,")?;
@@ -2230,6 +2299,8 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     emit_generator: cx.emit_generator,
                     async_fns: cx.async_fns.clone(),
                     oracle_fn_names: cx.oracle_fn_names.clone(),
+                    structs_by_name: cx.structs_by_name,
+                    local_var_types: cx.local_var_types.clone(),
                 };
                 &cx_static
             } else {
@@ -2397,7 +2468,18 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         } else {
             Some(cx.with_class_witnesses(class_wit_names))
         };
-        let cx_body = cx_fn.as_ref().map(|c| c as &TsContext<'_>).unwrap_or(cx);
+        let cx_after_witnesses = cx_fn.as_ref().map(|c| c as &TsContext<'_>).unwrap_or(cx);
+        // Seed local_var_types from this method's declared parameter types; `self`'s
+        // fields are resolved separately via self_type + structs_by_name (see
+        // infer_expr_ir_type) so no explicit "self" entry is needed here.
+        let param_types: BTreeMap<String, IrType> = self
+            .func
+            .params
+            .iter()
+            .map(|p| (p.name.clone(), p.ty.clone()))
+            .collect();
+        let cx_local = cx_after_witnesses.with_local_var_types(param_types);
+        let cx_body = &cx_local;
         TsBlockWriter {
             block: &self.func.body,
             indent: self.indent,
@@ -2624,7 +2706,18 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
         } else {
             Some(cx.with_class_witnesses(class_wit_names))
         };
-        let cx_body = cx_fn.as_ref().map(|c| c as &TsContext<'_>).unwrap_or(cx);
+        let cx_after_witnesses = cx_fn.as_ref().map(|c| c as &TsContext<'_>).unwrap_or(cx);
+        // Seed local_var_types from this function's declared parameter types so
+        // width-aware codegen (wrapping_add/wrapping_sub — infer_wrapping_bit_width)
+        // can resolve `paramName`/`paramName.field`/`paramName[i]` receivers.
+        let param_types: BTreeMap<String, IrType> = self
+            .func
+            .params
+            .iter()
+            .map(|p| (p.name.clone(), p.ty.clone()))
+            .collect();
+        let cx_local = cx_after_witnesses.with_local_var_types(param_types);
+        let cx_body = &cx_local;
         TsBlockWriter {
             block: &self.func.body,
             indent: self.indent,
@@ -2744,7 +2837,14 @@ impl<'a> TsBackend for TsMergedFunctionWriter<'a> {
             } else {
                 Some(cx.with_class_witnesses(class_wit_names))
             };
-            let cx_body = cx_fn.as_ref().map(|c| c as &TsContext<'_>).unwrap_or(cx);
+            let cx_after_witnesses = cx_fn.as_ref().map(|c| c as &TsContext<'_>).unwrap_or(cx);
+            let param_types: BTreeMap<String, IrType> = variant
+                .params
+                .iter()
+                .map(|p| (p.name.clone(), p.ty.clone()))
+                .collect();
+            let cx_local = cx_after_witnesses.with_local_var_types(param_types);
+            let cx_body = &cx_local;
             write!(f, "    return (() => ")?;
             TsBlockWriter {
                 block: &variant.body,
@@ -4073,18 +4173,20 @@ fn emit_known_method_call(
 ) -> fmt::Result {
     match method {
         StdMethod::WrappingAdd if args.len() == 1 => {
+            let bits = infer_wrapping_bit_width(receiver, cx);
             write!(f, "wrappingAdd(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", ")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")")
+            write!(f, ", {})", bits)
         }
         StdMethod::WrappingSub if args.len() == 1 => {
+            let bits = infer_wrapping_bit_width(receiver, cx);
             write!(f, "wrappingSub(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", ")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")")
+            write!(f, ", {})", bits)
         }
         StdMethod::Ilog2 if args.is_empty() => {
             write!(f, "ilog2(")?;
@@ -4255,23 +4357,28 @@ fn emit_known_method_call(
             write!(f, ")))")
         }
         StdMethod::WrappingNeg if args.is_empty() => {
-            write!(f, "((-((")?;
+            // Same width-blind bug class as WrappingAdd/WrappingSub used to be
+            // (hardcoded 32-bit mask) — fixed alongside them.
+            let bits = infer_wrapping_bit_width(receiver, cx);
+            write!(f, "wrappingNeg(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ")) & 0xFFFFFFFFn))")
+            write!(f, ", {})", bits)
         }
         StdMethod::OverflowingAdd if args.len() == 1 => {
+            let bits = infer_wrapping_bit_width(receiver, cx);
             write!(f, "[wrappingAdd(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", ")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, "), false]")
+            write!(f, ", {}), false]", bits)
         }
         StdMethod::OverflowingSub if args.len() == 1 => {
+            let bits = infer_wrapping_bit_width(receiver, cx);
             write!(f, "[wrappingSub(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", ")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, "), false]")
+            write!(f, ", {}), false]", bits)
         }
         // Vec/slice operations → array equivalents
         StdMethod::CopyFromSlice if args.len() == 1 => {
@@ -4361,7 +4468,7 @@ fn emit_known_method_call(
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(
                 f,
-                ", _c = 0; while (_n) {{ _c += _n & 1; _n >>>= 1; }} return _c; }})()"
+                ", _c = 0; while (_n) {{ _c += _n & 1; _n >>>= 1; }} return _c; }})())"
             )
         }
         StdMethod::LeadingZeros if args.is_empty() => {
@@ -5280,6 +5387,126 @@ fn unwrap_ref_expr(e: &IrExpr) -> &IrExpr {
         _ => e,
     }
 }
+
+/// Best-effort static-type inference for an expression, scoped narrowly to
+/// what width-aware codegen needs (`infer_wrapping_bit_width`) — this is not
+/// a general type checker. Resolves `Var`, `self.field`/`var.field`, `expr[i]`,
+/// chained `.wrapping_add()`/`.wrapping_sub()`, and `expr as T` casts using
+/// `cx.local_var_types` (function/method parameters) and `cx.structs_by_name`
+/// (struct field declarations). Returns `None` when the type can't be
+/// determined from this local information alone.
+fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
+    let expr = unwrap_ref_expr(expr);
+    match &expr.kind {
+        IrExprKind::Var(name) if name == "self" => {
+            let self_name = cx.self_type.as_ref()?;
+            // self_type carries the full TS class name for Self references,
+            // which may include type parameters ("FooDyn<T>"); the registry is
+            // keyed by the bare struct name, so normalize before looking up.
+            let bare = bare_struct_name(self_name);
+            cx.structs_by_name.contains_key(bare).then(|| IrType::Struct {
+                kind: StructKind::Custom(bare.to_string()),
+                type_args: Vec::new(),
+            })
+        }
+        IrExprKind::Var(name) => cx.local_var_types.get(name).cloned(),
+        IrExprKind::Field { base, field } => {
+            let base_ty = infer_expr_ir_type(base, cx)?;
+            let IrType::Struct { kind, .. } = unwrap_ref(&base_ty) else {
+                return None;
+            };
+            let s = cx.structs_by_name.get(&kind.to_string())?;
+            s.fields.iter().find(|f| &f.name == field).map(|f| f.ty.clone())
+        }
+        IrExprKind::Index { base, .. } => {
+            let base_ty = infer_expr_ir_type(base, cx)?;
+            match unwrap_ref(&base_ty) {
+                IrType::Array { elem, .. } | IrType::Vector { elem } => Some((**elem).clone()),
+                _ => None,
+            }
+        }
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Known(StdMethod::WrappingAdd | StdMethod::WrappingSub),
+            ..
+        } => {
+            // Chained wrapping ops (`x.wrapping_add(a).wrapping_add(b)`) preserve
+            // the receiver's type — same rule Rust's own type checker applies.
+            infer_expr_ir_type(receiver, cx)
+        }
+        IrExprKind::Cast { ty, .. } => Some((**ty).clone()),
+        _ => None,
+    }
+}
+
+/// Strip type arguments from a TS class name ("FooDyn<T>" → "FooDyn"), for
+/// looking a `self_type` up in the bare-name struct registry
+/// (`build_structs_by_name`). Only the outermost arguments are stripped — the
+/// registry never keys on nested/qualified forms.
+fn bare_struct_name(name: &str) -> &str {
+    name.split('<').next().unwrap_or(name)
+}
+
+/// Convert a known-width `PrimitiveType` to its bit width. Returns `None` for
+/// non-integer or field-element primitives, which don't have Rust
+/// `wrapping_add`/`wrapping_sub` methods to begin with.
+fn primitive_bit_width(p: PrimitiveType) -> Option<u32> {
+    match p {
+        PrimitiveType::U8 => Some(8),
+        PrimitiveType::U32 => Some(32),
+        PrimitiveType::U64 => Some(64),
+        // Treated as 64-bit: there is no native "word size" in the TS/bigint
+        // runtime target, and 64-bit is the common case for the platforms this
+        // spec targets. See docs/ts-emitter-length-params-and-solidity-backend-plan.md §1.3.2.
+        PrimitiveType::Usize => Some(64),
+        PrimitiveType::I128 | PrimitiveType::U128 => Some(128),
+        PrimitiveType::Bool
+        | PrimitiveType::Bit
+        | PrimitiveType::Galois
+        | PrimitiveType::Galois64
+        | PrimitiveType::Galois128
+        | PrimitiveType::Galois256
+        | PrimitiveType::BitsInBytes
+        | PrimitiveType::BitsInBytes64
+        | PrimitiveType::Z3 => None,
+    }
+}
+
+/// Infer the bit width of a `.wrapping_add`/`.wrapping_sub` receiver so the
+/// emitted `wrappingAdd`/`wrappingSub` call masks at the correct width
+/// instead of always truncating to 32 bits (the previous, silently-wrong
+/// default for u64/u128 operands — see
+/// docs/ts-emitter-length-params-and-solidity-backend-plan.md §1.3.2).
+/// Falls back to 32 with a diagnostic when the width can't be determined
+/// locally, matching this file's existing best-effort-with-warning pattern
+/// (see the `[lowering_dyn] warning: ...` precedent in lowering_dyn.rs).
+fn infer_wrapping_bit_width(receiver: &IrExpr, cx: &TsContext<'_>) -> u32 {
+    match infer_expr_ir_type(receiver, cx)
+        .map(|ty| unwrap_ref(&ty).clone())
+        .and_then(|ty| match ty {
+            IrType::Primitive(p) => primitive_bit_width(p),
+            _ => None,
+        }) {
+        Some(width) => width,
+        None => {
+            warn_wrapping_width_unresolved();
+            32
+        }
+    }
+}
+
+/// `printer_ts.rs` compiles under `#![no_std]` without the `std` feature, so
+/// `eprintln!` (which needs `std`) is gated behind a tiny wrapper instead of
+/// used inline — a no-op when `std` isn't linked.
+#[cfg(feature = "std")]
+fn warn_wrapping_width_unresolved() {
+    std::eprintln!(
+        "[printer_ts] warning: could not infer operand width for wrapping_add/wrapping_sub; defaulting to 32-bit (may be wrong for u64/u128 operands)"
+    );
+}
+
+#[cfg(not(feature = "std"))]
+fn warn_wrapping_width_unresolved() {}
 
 fn write_param_type(
     p: &IrParam,

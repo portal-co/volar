@@ -73,30 +73,57 @@ decisions folded into the plan (§8).
 - `crates/compiler/volar-lir-codegen/src/{lib.rs,mono.rs,structs.rs}` — a **separate**, lower-level pipeline: lowers `IrModule` directly to `LirTarget` (the C/WASM/LLVM backends, which live in the sibling `volar-ir` repo). Crucially, this path does **not** go through `lower_module_dyn` at all — it consumes the generic module directly and substitutes concrete const/type values per call site via `mono::MonoEnv` ("monomorphized IR", see `lib.rs` doc comment: *"Works best on monomorphized IR — run `monomorphize_module` first"*). This is the existing precedent for "optional dyn lowering" the ask wants for Solidity — it already exists for C/WASM/LLVM, just not documented as a reusable pattern and not exposed to a high-level source-text backend.
 - Codegen entry points: `cargo xtask gen-specs`/`check-specs` (writes `packages/volar-spec-ts/generated.ts`, `crates/compiler/volar-compiler/volar_ts_generated.ts`, `volar_dyn_generated.rs`, `volar-spec-dyn/src/generated.rs`) and the separate `.cargo/config.toml` aliases `cargo generate-ts` / `cargo generate-spec`, which invoke a *different* binary (`volar-codegen`, in `volar-compiler-passes`) with different output paths (`packages/volar-runtime/src/generated.ts` per the alias comment, `packages/volar-spec-ts/generated.ts` per the binary's actual current default). These two generation paths have drifted from each other (see §1.3.6).
 
-### 1.2 What's already tested and currently green
+### 1.2 What's already tested — and the false-green discovery
 
-This is more built-out than the ask implied — worth knowing before adding new
-test scaffolding:
+> **Corrected during Part 1 implementation.** The original draft of this
+> section asserted the tsc-strict suites "currently pass with 0 errors." That
+> was wrong — those greens were **false positives** produced by a broken local
+> toolchain and two masking bugs in the harness, not by a clean emitter. The
+> true strict-mode baseline, measured after fixing the harness, is
+> **~848 errors on the full module** (and 14–53 per seeded component). The
+> emitter is *not* strict-clean; closing that is now explicit Part 1 scope.
+
+The infrastructure, as it existed at research time:
 
 - `crates/compiler/volar-compiler-passes/tests/ts_backend.rs` — parses all of
   `volar-primitives` + `volar-common` + `volar-spec`, runs
   `print_module_typescript`, strips `// @ts-nocheck`, and shells out to
-  `tsc --strict --noEmit`. **Currently passes with 0 errors** (verified by
-  running it: `cargo test -p volar-compiler-passes --features parsing --test ts_backend` → `ok`).
+  `tsc --strict --noEmit`.
 - `crates/compiler/volar-compiler-passes/tests/ts_backend_components.rs` — the
   same idea, seeded per-component (`vole_prover`, `vole_verifier`,
   `vole_setup`, `tfhe`, `faest_core`) so one broken component doesn't block
-  the others. **All 5 currently pass.**
+  the others.
 - `packages/volar-spec-ts/scripts/typecheck-strict.sh` (+ `npm run
-  typecheck:count`) — same tsc-strict check, run against the checked-in
-  `generated.ts` rather than a fresh parse. **Currently reports 0 errors.**
-- The `docs/archive/compiler/TS_BACKEND_PROGRESS.md` error inventory (6
-  strict-mode errors as of 2026-02-06: math-trait return-type resolution,
-  `Uint8Array` coercion, a `never`-narrowing case) **has been fully resolved** —
-  none of those errors reproduce today. That inventory is stale as a to-do
-  list but still useful as a map of *why* those failure classes existed.
+  typecheck:count`) — same tsc-strict check against the checked-in
+  `generated.ts`.
 
-So: **typechecking is solid today.** The real gap is one level down — see 1.3.
+**Why the greens were false (three stacked masking bugs, all fixed in Part 1):**
+
+1. **Broken local `tsc`/`zshy` shims fail open.** `node_modules/.bin/tsc` was a
+   stale *copied* wrapper (from an old install) containing
+   `require('../lib/tsc.js')`, which resolves relative to `.bin/` and crashes
+   with `MODULE_NOT_FOUND`. Neither the Rust tests nor the shell script checked
+   the process's exit status when the output contained no `error TS` lines —
+   they counted 0 TypeScript diagnostics and passed. So a *non-functional* tsc
+   reported "0 errors."
+2. **`typecheck-strict.sh` passed an unsupported flag.** It invoked `npx tsc
+   --ignoreConfig`, which tsc 5.x rejects with `error TS5023: Unknown compiler
+   option` — which the script then *counted* as the strict-mode error total
+   ("1 error") or, with `|| true` swallowing the status, misread as success.
+   `--ignoreConfig` is a TypeScript-7-native-only flag; it needs a capability
+   probe (the Rust tests already had one; the shell script didn't).
+3. **An early syntax error aborts semantic checking.** The generated output
+   contained an unbalanced-paren bug in the `count_ones` emission
+   (`printer_ts.rs`'s `StdMethod::CountOnes` printed `((() => {...})()` — one
+   `(` short). `tsc` reports `error TS1005: ')' expected` and then **abandons
+   semantic analysis of the file**, so the hundreds of real type errors
+   downstream were never reported. Fixing the paren unmasked them.
+
+With all three fixed, `ts_backend.rs` reports the real number. This is the
+*true* starting point for "make the emitter work": the existing typecheck
+signal was measuring nothing. `TS_BACKEND_PROGRESS.md`'s resolved-error
+inventory should be re-read in that light — those errors may be *resolved*,
+but the suite that would've shown it wasn't actually running.
 
 ### 1.3 Known-gaps inventory (evidenced)
 
@@ -246,7 +273,35 @@ Solidity generator the same way later.
 the executable bit, so `npm run typecheck:count` fails with `Permission
 denied` until `chmod +x` is run once locally. Small, but it's the literal
 entry point for measuring TS-backend strictness, so it should be fixed in
-Part 1.
+Part 1. **(Fixed in Part 1a — executable bit set.)**
+
+#### 1.3.8 The strict-mode error surface is real and large (found during Part 1)
+
+Once the three masking bugs in §1.2 were fixed, the true strict-mode baseline
+surfaced. Measured on the freshly-generated `packages/volar-spec-ts/generated.ts`
+with a working tsc 5.9.3, `--strict --noEmit --moduleResolution bundler
+--target esnext --module esnext`:
+
+- **Full module: 848 errors.** Top categories: TS2304 (cannot find name, 206),
+  TS2554 (arity mismatch, 127), TS2339 (property does not exist, 126), TS2345
+  (argument not assignable, 87), TS2693 (value used as type, 79), TS2322 (72),
+  TS2365 (52), TS2588 (24), plus smaller tails.
+- **Seeded components: vole_prover 14, vole_verifier 14, tfhe 35, faest_core
+  49, vole_setup 53.**
+
+None of these are at the wrapping-arithmetic call sites — the width fix's
+emitted `wrappingAdd(a, b, 32)` calls type-check cleanly. The errors are
+pre-existing emitter bugs now visible for the first time, e.g. method calls
+on `self.field` receivers that drop the receiver (`Cannot find name 'torus'`
+/ `'sampler'`), witness variables referenced but never declared (`Cannot find
+name 'n'` / `'table'` / `'value'`), and generic types referenced without their
+dyn-suffixed emitted name (`LweBaseOt` vs `LweBaseOtDyn`).
+
+**Implication for scope:** "the emitter typechecks cleanly" is not the
+starting state. Closing this strict-error surface is now part of Part 1 (it
+must precede meaningful semantic-equivalence testing — you can't trust a
+value comparison against output that doesn't typecheck). The Part 1 exit
+criterion is updated accordingly in §2.6.
 
 ### 1.4 Current array/length representation (baseline for Part 2)
 
@@ -366,17 +421,41 @@ coverage, since they compose out of already-tested pieces.
 
 In roughly this order (independent of each other, can be parallelized):
 
-1. **Wrapping arithmetic width bug (1.3.2).** Thread the operand's
-   `PrimitiveType` width through to `wrappingAdd`/`wrappingSub` call-site
-   emission (e.g. `wrappingAdd(a, b, 32n)` or width-specific helpers
-   `wrappingAddU32`/`wrappingAddU64`/`wrappingAddU128`) and fix
-   `helpers.ts` to mask at the correct width instead of hardcoding 32 bits.
-   Add a unit test per width.
-2. **Silent unsupported-expr fallback (1.3.3).** Replace the wildcard arm
+1. **Wrapping arithmetic width bug (1.3.2). — DONE.** Threaded the operand's
+   bit width through to the emitted call sites as an explicit third argument
+   (`wrappingAdd(a, b, 32)`), inferred via a new function-scoped
+   primitive-width inference (`infer_wrapping_bit_width` in `printer_ts.rs`,
+   resolving receivers from parameter types, struct-field types via a new
+   module-level struct registry, array element types, casts, and chained
+   wrapping ops). Rewrote `wrappingAdd`/`wrappingSub` in `helpers.ts` to do
+   pure `bigint` masking (`(x op y) & ((1n << bits) - 1n)`) and added a new
+   `wrappingNeg`. The previously hardcoded-32-bit `WrappingNeg` site was fixed
+   in the same pass; the `OverflowingAdd`/`OverflowingSub` always-`false`
+   overflow flag was deliberately left out of scope. On unresolved width it
+   warns and defaults to 32. Runtime semantics pinned by
+   `packages/volar-runtime/scripts/wrapping-smoke.mjs` (u8/u32/u64/u128
+   wraparound cases).
+2. **`count_ones` unbalanced-paren syntax bug (found in §1.2). — DONE.**
+   `StdMethod::CountOnes` emitted `((() => {...})()` (one `(` short), which
+   both broke the output and—worse—made tsc abort semantic checking, masking
+   the ~848 pre-existing strict errors (§1.2). Fixed the paren; the real error
+   surface is now visible and is Part 1 scope (§2.6).
+3. **Harness fail-open bugs (§1.2). — DONE.** `ts_backend.rs`,
+   `ts_backend_components.rs`, and `typecheck-strict.sh` now fail closed when
+   tsc exits non-zero without producing `error TS` diagnostics (broken
+   launcher, bad flags), and `typecheck-strict.sh` probes for `--ignoreConfig`
+   support instead of unconditionally passing it. Added a `wrapping-smoke`
+   npm test wired into CI and the `volar-spec-ts` test script. Stale
+   `.bin/tsc`/`zshy` copied-shim problem repaired locally via reinstall.
+4. **Silent unsupported-expr fallback (1.3.3). — TODO.** Replace the wildcard arm
    with an explicit, fully-enumerated match (or a loud `unreachable!`/test-time
    exhaustiveness check) so a new `IrExprKind` variant becomes a build or test
    failure for the TS backend, not silent `undefined` output.
-3. **`ring_lwe.rs` totality gap (1.3.4) — add `loop` support to the parser.**
+5. **Strict-error surface closure (§1.3.8). — TODO, now explicit scope.**
+   Drive the full-module strict count from 848 → 0 and the five seeded
+   components to 0, fixing the underlying emitter bugs (receiver-less method
+   calls, undeclared witness vars, dyn-name resolution, arity mismatches).
+6. **`ring_lwe.rs` totality gap (1.3.4) — add `loop` support to the parser. — DONE.**
    Since (per 1.3.4's sharper finding) `while` is already accepted with no
    real boundedness proof beyond "it parsed," the minimal, non-regressive fix
    is to give `loop { .. }` exactly the same treatment: parse
@@ -414,12 +493,18 @@ verifiable definition of done rather than being asserted informally.
 
 ### 2.6 Deliverables
 
-- Green CI that actually runs `tsc` from a clean checkout.
+- Green CI that actually runs `tsc` from a clean checkout — **and that now
+  fails closed** when tsc is missing/broken rather than reporting a false
+  green (§1.2).
+- **A strict-clean emitter**: full-module `tsc --strict` at 0 errors (from the
+  §1.3.8 baseline of 848) and all seeded components at 0. This is a
+  prerequisite for the semantic-equivalence harness to be meaningful.
 - A semantic-equivalence test harness with **full spec-tree coverage**, not
   an initial/partial component set — see §2.3, §2.5.
-- Fixes for the wrapping-arithmetic bug, the silent-fallback risk, and the
-  `ring_lwe.rs` gap (via first-class `loop` parser support, §2.4 item 3 — not
-  left as an open gap).
+- Fixes for the wrapping-arithmetic bug (**done**), the `count_ones`
+  syntax bug (**done**), the harness fail-open bugs (**done**), the
+  silent-fallback risk, and the `ring_lwe.rs` gap (via first-class `loop`
+  parser support, §2.4 item 6 — **done**, not left as an open gap).
 - Updated `docs/compiler.md` totality section (both the `loop`/`while`
   inaccuracy and the "only total (bounded) loops are allowed" overstatement
   from 1.3.4).

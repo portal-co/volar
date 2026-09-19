@@ -37,6 +37,10 @@ jobs:
       # backend's strict-mode typecheck — see
       # docs/ts-emitter-length-params-and-solidity-backend-plan.md §1.3.5.
       - run: npm ci
+      # Runtime smoke test for the width-aware wrapping helpers (part of the
+      # npm-side test surface alongside the tsc-strict checks; keeps
+      # helpers.ts runtime semantics gated, not just typechecked).
+      - run: npm test --workspace @portal-solutions/volar-runtime
       - run: cargo test --workspace --exclude xtask
 
   # ── Generated-file freshness check ─────────────────────────────────────────

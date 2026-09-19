@@ -21,6 +21,7 @@ import {
   ilog2,
   wrappingAdd,
   wrappingSub,
+  wrappingNeg,
   asRefU8,
   u32_from_le_bytes,
   u64_from_le_bytes,
@@ -51,6 +52,10 @@ function __zeroValue<T>(val: T): T {
 function __take<T>(val: T, setter: (v: T) => void): T { setter(__zeroValue(val)); return val; }
 function __equals(a: any, b: any): boolean { return fieldEq(a, b); }
 
+export type WireId = bigint;
+export type RgswId = bigint;
+export type CellId = bigint;
+export type LutId = bigint;
 export type DigestImpl = Sha3_256;
 export type Base = LweBaseOt<LWE_N>;
 export type Zq = bigint;
@@ -504,13 +509,13 @@ export class DeltaDyn<T> {
   rotate_left(n_param: bigint)
   {
     const n: bigint = this.$fn;
-    return this.remap(this.$fn, (a) => wrappingSub(a, n_param));
+    return this.remap(this.$fn, (a) => wrappingSub(a, n_param, 32));
   }
 
   rotate_right(n_param: bigint)
   {
     const n: bigint = this.$fn;
-    return this.remap(this.$fn, (a) => wrappingAdd(a, n_param));
+    return this.remap(this.$fn, (a) => wrappingAdd(a, n_param, 32));
   }
 
   static_<U, O>(val: any[]): QDyn<any>
@@ -630,13 +635,13 @@ export class QDyn<T> {
   rotate_left(n_param: bigint)
   {
     const n: bigint = this.$fn;
-    return this.remap(this.$fn, (a) => wrappingSub(a, n_param));
+    return this.remap(this.$fn, (a) => wrappingSub(a, n_param, 32));
   }
 
   rotate_right(n_param: bigint)
   {
     const n: bigint = this.$fn;
-    return this.remap(this.$fn, (a) => wrappingAdd(a, n_param));
+    return this.remap(this.$fn, (a) => wrappingAdd(a, n_param, 32));
   }
 
   bit(n_param: bigint): QDyn<Bit>
@@ -1872,14 +1877,14 @@ export class VopeDyn<T> {
   {
     const n: bigint = this.$fn;
     const k: bigint = this.$fk;
-    return this.remap(this.$fn, (a) => wrappingSub(a, n_param));
+    return this.remap(this.$fn, (a) => wrappingSub(a, n_param, 32));
   }
 
   rotate_right(n_param: bigint)
   {
     const n: bigint = this.$fn;
     const k: bigint = this.$fk;
-    return this.remap(this.$fn, (a) => wrappingAdd(a, n_param));
+    return this.remap(this.$fn, (a) => wrappingAdd(a, n_param, 32));
   }
 
   scale<T>(f: (arg: boolean) => T): VopeDyn<T>
@@ -2000,6 +2005,696 @@ export class VopeDyn<T> {
   }
 }
 
+export class BinfheKeySwitchingKeyRefDyn {
+  $fn_lwe!: bigint;
+  $fbig_n!: bigint;
+  $fks_ell!: bigint;
+  $fksk!: BinfheLweCiphertextDyn[][];
+
+  constructor(init: {
+    $fn_lwe: bigint,
+    $fbig_n: bigint,
+    $fks_ell: bigint,
+    $fksk: BinfheLweCiphertextDyn[][]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn_lwe: __zeroValue(this.$fn_lwe), $fbig_n: __zeroValue(this.$fbig_n), $fks_ell: __zeroValue(this.$fks_ell), $fksk: __zeroValue(this.$fksk) }) as this;
+  }
+
+  ksk_rows(): BinfheLweCiphertextDyn[][]
+  {
+    const n_lwe: bigint = this.$fn_lwe;
+    const big_n: bigint = this.$fbig_n;
+    const ks_ell: bigint = this.$fks_ell;
+    return this.$fksk;
+  }
+}
+
+export class BinfheBootstrappingKeyRefDyn {
+  $fn_lwe!: bigint;
+  $fbig_n!: bigint;
+  $fbs_ell!: bigint;
+  $fks_ell!: bigint;
+  $fbsk!: BinfheRgswCiphertextDyn[];
+  $fksk!: BinfheKeySwitchingKeyRefDyn;
+
+  constructor(init: {
+    $fn_lwe: bigint,
+    $fbig_n: bigint,
+    $fbs_ell: bigint,
+    $fks_ell: bigint,
+    $fbsk: BinfheRgswCiphertextDyn[],
+    $fksk: BinfheKeySwitchingKeyRefDyn
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn_lwe: __zeroValue(this.$fn_lwe), $fbig_n: __zeroValue(this.$fbig_n), $fbs_ell: __zeroValue(this.$fbs_ell), $fks_ell: __zeroValue(this.$fks_ell), $fbsk: __zeroValue(this.$fbsk), $fksk: __zeroValue(this.$fksk) }) as this;
+  }
+
+  bsk_rows(): BinfheRgswCiphertextDyn[]
+  {
+    const n_lwe: bigint = this.$fn_lwe;
+    const big_n: bigint = this.$fbig_n;
+    const bs_ell: bigint = this.$fbs_ell;
+    const ks_ell: bigint = this.$fks_ell;
+    return this.$fbsk;
+  }
+
+  ksk_ref(): BinfheKeySwitchingKeyRefDyn
+  {
+    const n_lwe: bigint = this.$fn_lwe;
+    const big_n: bigint = this.$fbig_n;
+    const bs_ell: bigint = this.$fbs_ell;
+    const ks_ell: bigint = this.$fks_ell;
+    return this.$fksk;
+  }
+}
+
+export class BinfheKeySwitchingKeyDyn {
+  $fn_lwe!: bigint;
+  $fbig_n!: bigint;
+  $fks_ell!: bigint;
+  $fksk!: Vec<BinfheLweCiphertextDyn[]>;
+
+  constructor(init: {
+    $fn_lwe: bigint,
+    $fbig_n: bigint,
+    $fks_ell: bigint,
+    $fksk: Vec<BinfheLweCiphertextDyn[]>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn_lwe: __zeroValue(this.$fn_lwe), $fbig_n: __zeroValue(this.$fbig_n), $fks_ell: __zeroValue(this.$fks_ell), $fksk: __zeroValue(this.$fksk) }) as this;
+  }
+
+  ksk_rows(): BinfheLweCiphertextDyn[][]
+  {
+    const n_lwe: bigint = this.$fn_lwe;
+    const big_n: bigint = this.$fbig_n;
+    const ks_ell: bigint = this.$fks_ell;
+    return this.$fksk;
+  }
+}
+
+export class BinfheBootstrappingKeyDyn {
+  $fn_lwe!: bigint;
+  $fbig_n!: bigint;
+  $fbs_ell!: bigint;
+  $fks_ell!: bigint;
+  $fbsk!: Vec<BinfheRgswCiphertextDyn>;
+  $fksk!: BinfheKeySwitchingKeyDyn;
+
+  constructor(init: {
+    $fn_lwe: bigint,
+    $fbig_n: bigint,
+    $fbs_ell: bigint,
+    $fks_ell: bigint,
+    $fbsk: Vec<BinfheRgswCiphertextDyn>,
+    $fksk: BinfheKeySwitchingKeyDyn
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn_lwe: __zeroValue(this.$fn_lwe), $fbig_n: __zeroValue(this.$fbig_n), $fbs_ell: __zeroValue(this.$fbs_ell), $fks_ell: __zeroValue(this.$fks_ell), $fbsk: __zeroValue(this.$fbsk), $fksk: __zeroValue(this.$fksk) }) as this;
+  }
+
+  as_ref(): BinfheBootstrappingKeyRefDyn
+  {
+    const n_lwe: bigint = this.$fn_lwe;
+    const big_n: bigint = this.$fbig_n;
+    const bs_ell: bigint = this.$fbs_ell;
+    const ks_ell: bigint = this.$fks_ell;
+    return new BinfheBootstrappingKeyRefDyn({ $fbsk: this.$fbsk, $fksk: new BinfheKeySwitchingKeyRefDyn({ $fksk: this.$fksk.$fksk, $fn_lwe: 0n, $fbig_n: 0n, $fks_ell: 0n }), $fn_lwe: 0n, $fbig_n: 0n, $fbs_ell: 0n, $fks_ell: 0n });
+  }
+
+  bsk_rows(): BinfheRgswCiphertextDyn[]
+  {
+    const n_lwe: bigint = this.$fn_lwe;
+    const big_n: bigint = this.$fbig_n;
+    const bs_ell: bigint = this.$fbs_ell;
+    const ks_ell: bigint = this.$fks_ell;
+    return this.$fbsk;
+  }
+
+  ksk_ref(): BinfheKeySwitchingKeyRefDyn
+  {
+    const n_lwe: bigint = this.$fn_lwe;
+    const big_n: bigint = this.$fbig_n;
+    const bs_ell: bigint = this.$fbs_ell;
+    const ks_ell: bigint = this.$fks_ell;
+    return new BinfheKeySwitchingKeyRefDyn({ $fksk: this.$fksk.$fksk, $fn_lwe: 0n, $fbig_n: 0n, $fks_ell: 0n });
+  }
+}
+
+export class BinfheRgswRowDyn {
+  $fn!: bigint;
+  $frlwe0!: BinfheRlweCiphertextDyn;
+  $frlwe1!: BinfheRlweCiphertextDyn;
+
+  constructor(init: {
+    $fn: bigint,
+    $frlwe0: BinfheRlweCiphertextDyn,
+    $frlwe1: BinfheRlweCiphertextDyn
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $frlwe0: __zeroValue(this.$frlwe0), $frlwe1: __zeroValue(this.$frlwe1) }) as this;
+  }
+}
+
+export class BinfheRgswCiphertextDyn {
+  $fn!: bigint;
+  $fell!: bigint;
+  $frows!: BinfheRgswRowDyn[];
+
+  constructor(init: {
+    $fn: bigint,
+    $fell: bigint,
+    $frows: BinfheRgswRowDyn[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fell: __zeroValue(this.$fell), $frows: __zeroValue(this.$frows) }) as this;
+  }
+}
+
+export class BinfheRlweSecretKeyDyn {
+  $fn!: bigint;
+  $fkey!: bigint[];
+
+  constructor(init: {
+    $fn: bigint,
+    $fkey: bigint[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fkey: __zeroValue(this.$fkey) }) as this;
+  }
+}
+
+export class BinfheRlweCiphertextDyn {
+  $fn!: bigint;
+  $fa!: bigint[];
+  $fb!: bigint[];
+
+  constructor(init: {
+    $fn: bigint,
+    $fa: bigint[],
+    $fb: bigint[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fa: __zeroValue(this.$fa), $fb: __zeroValue(this.$fb) }) as this;
+  }
+}
+
+export class BinfheLweSecretKeyDyn {
+  $fn!: bigint;
+  $fkey!: bigint[];
+
+  constructor(init: {
+    $fn: bigint,
+    $fkey: bigint[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fkey: __zeroValue(this.$fkey) }) as this;
+  }
+}
+
+export class BinfheLweCiphertextDyn {
+  $fn!: bigint;
+  $fa!: bigint[];
+  $fb!: bigint;
+
+  constructor(init: {
+    $fn: bigint,
+    $fa: bigint[],
+    $fb: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fa: __zeroValue(this.$fa), $fb: __zeroValue(this.$fb) }) as this;
+  }
+}
+
+export class LutInputs {
+  $fids!: bigint[];
+  $flen!: bigint;
+
+  constructor(init: {
+    $fids: bigint[],
+    $flen: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fids: __zeroValue(this.$fids), $flen: __zeroValue(this.$flen) }) as this;
+  }
+
+  as_ref(): bigint[]
+  {
+    return this;
+  }
+
+  as_slice(): bigint[]
+  {
+    return this.$fids.slice(0, Number(Number(this.$flen)));
+  }
+
+  static default(): LutInputs
+  {
+    return LutInputs.new();
+  }
+
+  static from(ids: bigint[]): LutInputs
+  {
+    return LutInputs.from_slice(ids);
+  }
+
+  static from_slice(ids: bigint[]): LutInputs
+  {
+    let out = LutInputs.new();
+    const take = BigInt(Math.min(Number(BigInt(ids.length)), Number(MAX_LUT_ARITY)));
+    (out.$fids.slice(0, Number(take))).splice(0, (ids.slice(0, Number(take))).length, ...(ids.slice(0, Number(take))));
+    out.$flen = ((take) & 0xFFn);
+    return out;
+  }
+
+  is_empty(): boolean
+  {
+    return __equals(this.$flen, 0n);
+  }
+
+  len(): bigint
+  {
+    return Number(this.$flen);
+  }
+
+  static new(): LutInputs
+  {
+    return new LutInputs({ $fids: Array.from({length: Number(MAX_LUT_ARITY)}, () => 0n), $flen: 0n });
+  }
+}
+
+export class LutSpec {
+  $fentries!: Vec<boolean>;
+
+  constructor(init: {
+    $fentries: Vec<boolean>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fentries: __zeroValue(this.$fentries) }) as this;
+  }
+}
+
+export class FailureBudget {
+  $fper_bootstrap_log2!: bigint;
+  $ftotal_log2!: bigint;
+
+  constructor(init: {
+    $fper_bootstrap_log2: bigint,
+    $ftotal_log2: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fper_bootstrap_log2: __zeroValue(this.$fper_bootstrap_log2), $ftotal_log2: __zeroValue(this.$ftotal_log2) }) as this;
+  }
+}
+
+export class BootstrapPlan {
+  $fprofile!: ProfileId;
+  $fk_max!: bigint;
+  $fluts!: Vec<LutSpec>;
+  $flayers!: Vec<Vec<PlanOp>>;
+  $fnum_inputs!: bigint;
+  $fnum_cells!: bigint;
+  $foutputs!: Vec<bigint>;
+  $fcell_outputs!: Vec<bigint>;
+  $fbudget!: FailureBudget;
+
+  constructor(init: {
+    $fprofile: ProfileId,
+    $fk_max: bigint,
+    $fluts: Vec<LutSpec>,
+    $flayers: Vec<Vec<PlanOp>>,
+    $fnum_inputs: bigint,
+    $fnum_cells: bigint,
+    $foutputs: Vec<bigint>,
+    $fcell_outputs: Vec<bigint>,
+    $fbudget: FailureBudget
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fprofile: __zeroValue(this.$fprofile), $fk_max: __zeroValue(this.$fk_max), $fluts: __zeroValue(this.$fluts), $flayers: __zeroValue(this.$flayers), $fnum_inputs: __zeroValue(this.$fnum_inputs), $fnum_cells: __zeroValue(this.$fnum_cells), $foutputs: __zeroValue(this.$foutputs), $fcell_outputs: __zeroValue(this.$fcell_outputs), $fbudget: __zeroValue(this.$fbudget) }) as this;
+  }
+
+  bootstrap_op_count(): bigint
+  {
+    let count = 0n;
+    for (const layer of this.$flayers)     {
+      for (const op of layer)       {
+        return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("table", Ident { mutable: false, name: "table", subpat: None })], rest: true } */) { return (() => {
+  if (!table_is_constant(this.$fluts[Number(Number(table))].$fentries))   {
+    count = fieldAdd(count, 1n);
+  }
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [], rest: true } */) { return count = fieldAdd(count, 1n); } else { return (() => {
+})(); } })();
+      }
+    }
+    return count;
+  }
+
+  execute_clear(inputs: boolean[], cells: boolean[]): [Vec<boolean>, Vec<boolean>]
+  {
+    let wires = [...inputs];
+    let rgsws = [] as any[];
+    let cell_arena = [...cells];
+    for (const layer of this.$flayers)     {
+      for (const op of layer)       {
+        return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None }), ("value", Ident { mutable: false, name: "value", subpat: None })], rest: false } */) { return (() => {
+  (wires).push(value);
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  (wires).push(!wires[Number(Number(input))]);
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  let address = 0n;
+  for (const [bit, input] of inputs.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
+    address = fieldBitor(address, fieldShl(Number(wires[Number(Number(input))]), bit));
+  }
+  (wires).push(this.$fluts[Number(Number(table))].$fentries[Number(address)]);
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  (rgsws).push(wires[Number(Number(input))]);
+})(); } else { return (() => {
+  (cell_arena).push((() => { if (rgsws[Number(Number(sel))]) {
+  return cell_arena[Number(Number(then_cell))];
+} else {
+  return cell_arena[Number(Number(else_cell))];
+} })());
+})(); } })();
+      }
+    }
+    return [wires, cell_arena];
+  }
+
+  plan_hash(): bigint
+  {
+    let h = 14695981039346656037n;
+    for (const spec of this.$fluts)     {
+      for (const [i, chunk] of spec.$fentries.chunks(8n).enumerate())       {
+        let byte = 0n;
+        for (const [j, e] of chunk.map((val: any, i: number) => [i, val] as [number, typeof val]))         {
+          byte = fieldBitor(byte, fieldShl(((e) & 0xFFn), j));
+        }
+        const _ = i;
+      }
+    }
+    for (const layer of this.$flayers)     {
+      for (const op of layer)       {
+        return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None }), ("value", Ident { mutable: false, name: "value", subpat: None })], rest: false } */) { return (() => {
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  for (const w of inputs)   {
+  }
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+})(); } else { return (() => {
+})(); } })();
+      }
+    }
+    for (const w of this.$foutputs)     {
+    }
+    for (const c of this.$fcell_outputs)     {
+    }
+    return h;
+  }
+
+  validate(): Result<void, PlanError>
+  {
+    for (const [i, spec] of this.$fluts.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
+      const len = BigInt(spec.$fentries.length);
+      if ((__equals(len, 0n) || !len.is_power_of_two()))       {
+        return new BadTableShape({ $ftable: Number(i) });
+      }
+      const arity = Number(Math.clz32((len) & -((len) | 0)));
+      if ((arity > Number(this.$fk_max)))       {
+        return new ArityExceedsKMax({ $ftable: Number(i) });
+      }
+    }
+    let wires = this.$fnum_inputs;
+    let rgsws = 0n;
+    let cells = this.$fnum_cells;
+    for (const layer of this.$flayers)     {
+      for (const op of layer)       {
+        return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None })], rest: true } */) { return (() => {
+  if (!__equals(out, wires))   {
+    return PlanError.BadReference;
+  }
+  wires = fieldAdd(wires, 1n);
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  if (((input >= wires) || !__equals(out, wires)))   {
+    return PlanError.BadReference;
+  }
+  wires = fieldAdd(wires, 1n);
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  if ((Number(table) >= BigInt(this.$fluts.length)))   {
+    return PlanError.BadReference;
+  }
+  const arity = Math.clz32((BigInt(this.$fluts[Number(Number(table))].$fentries.length)) & -((BigInt(this.$fluts[Number(Number(table))].$fentries.length)) | 0));
+  if (((!__equals(BigInt(inputs.length), Number(arity)) || inputs.any((w) => (w >= wires))) || !__equals(out, wires)))   {
+    return PlanError.BadReference;
+  }
+  wires = fieldAdd(wires, 1n);
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  if (((input >= wires) || !__equals(out, rgsws)))   {
+    return PlanError.BadReference;
+  }
+  rgsws = fieldAdd(rgsws, 1n);
+})(); } else { return (() => {
+  if (((((sel >= rgsws) || (then_cell >= cells)) || (else_cell >= cells)) || !__equals(out, cells)))   {
+    return PlanError.BadReference;
+  }
+  cells = fieldAdd(cells, 1n);
+})(); } })();
+      }
+    }
+    if ((this.$foutputs.any((w) => (w >= wires)) || this.$fcell_outputs.any((c) => (c >= cells))))     {
+      return PlanError.BadOutput;
+    }
+    const count = this.bootstrap_op_count();
+    if ((count > 0n))     {
+      const log2_count = fieldSub(64n, Math.clz32(count));
+      if (((this.$fbudget.$ftotal_log2 < this.$fbudget.$fper_bootstrap_log2) || (fieldAdd(fieldSub(this.$fbudget.$ftotal_log2, this.$fbudget.$fper_bootstrap_log2), 1n) < log2_count)))       {
+        return PlanError.BudgetInconsistent;
+      }
+    }
+    return [];
+  }
+}
+
+export class PrivateKeySwitchingKeyDyn {
+  $fbig_n!: bigint;
+  $fpriv_ell!: bigint;
+  $fa_col!: Vec<BinfheRlweCiphertextDyn[]>;
+  $fb_col!: Vec<BinfheRlweCiphertextDyn[]>;
+  $fa_body!: BinfheRlweCiphertextDyn[];
+  $fb_body!: BinfheRlweCiphertextDyn[];
+
+  constructor(init: {
+    $fbig_n: bigint,
+    $fpriv_ell: bigint,
+    $fa_col: Vec<BinfheRlweCiphertextDyn[]>,
+    $fb_col: Vec<BinfheRlweCiphertextDyn[]>,
+    $fa_body: BinfheRlweCiphertextDyn[],
+    $fb_body: BinfheRlweCiphertextDyn[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fbig_n: __zeroValue(this.$fbig_n), $fpriv_ell: __zeroValue(this.$fpriv_ell), $fa_col: __zeroValue(this.$fa_col), $fb_col: __zeroValue(this.$fb_col), $fa_body: __zeroValue(this.$fa_body), $fb_body: __zeroValue(this.$fb_body) }) as this;
+  }
+}
+
+export class CircuitBootstrappingKeyDyn {
+  $fn_lwe!: bigint;
+  $fbig_n!: bigint;
+  $fbs_ell!: bigint;
+  $fks_ell!: bigint;
+  $fpriv_ell!: bigint;
+  $fbk!: BinfheBootstrappingKeyDyn;
+  $fprivksk!: PrivateKeySwitchingKeyDyn;
+
+  constructor(init: {
+    $fn_lwe: bigint,
+    $fbig_n: bigint,
+    $fbs_ell: bigint,
+    $fks_ell: bigint,
+    $fpriv_ell: bigint,
+    $fbk: BinfheBootstrappingKeyDyn,
+    $fprivksk: PrivateKeySwitchingKeyDyn
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn_lwe: __zeroValue(this.$fn_lwe), $fbig_n: __zeroValue(this.$fbig_n), $fbs_ell: __zeroValue(this.$fbs_ell), $fks_ell: __zeroValue(this.$fks_ell), $fpriv_ell: __zeroValue(this.$fpriv_ell), $fbk: __zeroValue(this.$fbk), $fprivksk: __zeroValue(this.$fprivksk) }) as this;
+  }
+}
+
+export class Reader {
+  $fbytes!: bigint[];
+  $foffset!: bigint;
+
+  constructor(init: {
+    $fbytes: bigint[],
+    $foffset: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fbytes: __zeroValue(this.$fbytes), $foffset: __zeroValue(this.$foffset) }) as this;
+  }
+
+  byte(): Result<bigint, DecodeError>
+  {
+    return this.take(1n)[Number(0n)];
+  }
+
+  count(): Result<bigint, DecodeError>
+  {
+    const count = Number(this.u32());
+    if ((count > MAX_ITEMS))     {
+      return DecodeError.TooLarge;
+    }
+    return count;
+  }
+
+  ids(): Result<Vec<bigint>, DecodeError>
+  {
+    const count = this.count();
+    let ids = /* Vec::with_capacity */ Array(count);
+    for (let _ = 0n; _ < count; _ += 1n)     {
+      (ids).push(this.u32());
+    }
+    return ids;
+  }
+
+  take(count: bigint): Result<bigint[], DecodeError>
+  {
+    const end = (this.$foffset + (count)).ok_or(DecodeError.Truncated);
+    const bytes = this.$fbytes?.[Array.from({length: Number(end - this.$foffset)}, (_, __i) => BigInt(__i) + this.$foffset)].ok_or(DecodeError.Truncated);
+    this.$foffset = end;
+    return bytes;
+  }
+
+  u32(): Result<bigint, DecodeError>
+  {
+    const bytes: bigint[] = this.take(4n).try_into().map_err((_) => DecodeError.Truncated);
+    return u32_from_le_bytes(bytes);
+  }
+}
+
+export class LutDyn {
+  $faddr_bits!: bigint;
+  $ftable_len!: bigint;
+  $fbig_n!: bigint;
+  $flog_q!: bigint;
+  $flog_q_lwe!: bigint;
+  $fk_max!: bigint;
+  $flogical!: boolean[];
+  $ftest_poly!: bigint[];
+  $fis_constant!: boolean;
+
+  constructor(init: {
+    $faddr_bits: bigint,
+    $ftable_len: bigint,
+    $fbig_n: bigint,
+    $flog_q: bigint,
+    $flog_q_lwe: bigint,
+    $fk_max: bigint,
+    $flogical: boolean[],
+    $ftest_poly: bigint[],
+    $fis_constant: boolean
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $faddr_bits: __zeroValue(this.$faddr_bits), $ftable_len: __zeroValue(this.$ftable_len), $fbig_n: __zeroValue(this.$fbig_n), $flog_q: __zeroValue(this.$flog_q), $flog_q_lwe: __zeroValue(this.$flog_q_lwe), $fk_max: __zeroValue(this.$fk_max), $flogical: __zeroValue(this.$flogical), $ftest_poly: __zeroValue(this.$ftest_poly), $fis_constant: __zeroValue(this.$fis_constant) }) as this;
+  }
+
+  constant_value(): boolean
+  {
+    const addr_bits: bigint = this.$faddr_bits;
+    const table_len: bigint = this.$ftable_len;
+    const big_n: bigint = this.$fbig_n;
+    const log_q: bigint = this.$flog_q;
+    const log_q_lwe: bigint = this.$flog_q_lwe;
+    const k_max: bigint = this.$fk_max;
+    return this.$flogical[Number(0n)];
+  }
+
+  entries(): boolean[]
+  {
+    const addr_bits: bigint = this.$faddr_bits;
+    const table_len: bigint = this.$ftable_len;
+    const big_n: bigint = this.$fbig_n;
+    const log_q: bigint = this.$flog_q;
+    const log_q_lwe: bigint = this.$flog_q_lwe;
+    const k_max: bigint = this.$fk_max;
+    return this.$flogical;
+  }
+
+  is_constant(): boolean
+  {
+    const addr_bits: bigint = this.$faddr_bits;
+    const table_len: bigint = this.$ftable_len;
+    const big_n: bigint = this.$fbig_n;
+    const log_q: bigint = this.$flog_q;
+    const log_q_lwe: bigint = this.$flog_q_lwe;
+    const k_max: bigint = this.$fk_max;
+    return this.$fis_constant;
+  }
+
+  static new(addr_bits: bigint, table_len: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, k_max: bigint, logical: boolean[]): Result<LutDyn, LutError>
+  {
+    return (() => { const __match = check_lut_shape(addr_bits, table_len, big_n, log_q, log_q_lwe, k_max); if (__match === null || __match === undefined) { const e = __match;
+return e; } else { return new LutDyn({ $flogical: logical, $ftest_poly: fill_test_poly(logical, addr_bits, k_max, log_q, log_q_lwe), $fis_constant: table_is_constant(logical) }); } })();
+  }
+
+  output_delta(): bigint
+  {
+    const addr_bits: bigint = this.$faddr_bits;
+    const table_len: bigint = this.$ftable_len;
+    const big_n: bigint = this.$fbig_n;
+    const log_q: bigint = this.$flog_q;
+    const log_q_lwe: bigint = this.$flog_q_lwe;
+    const k_max: bigint = this.$fk_max;
+    return fieldShl(1n, fieldSub(fieldSub(log_q_lwe, 1n), Number(k_max)));
+  }
+
+  test_polynomial(): bigint[]
+  {
+    const addr_bits: bigint = this.$faddr_bits;
+    const table_len: bigint = this.$ftable_len;
+    const big_n: bigint = this.$fbig_n;
+    const log_q: bigint = this.$flog_q;
+    const log_q_lwe: bigint = this.$flog_q_lwe;
+    const k_max: bigint = this.$fk_max;
+    return this.$ftest_poly;
+  }
+}
+
 export class LweSampleDyn<T, U> {
   $fn!: bigint;
   $fm!: bigint;
@@ -2047,6 +2742,1074 @@ export class GateCertificate {
   }
   __zero(): this {
     return new (this.constructor as any)({ $fname: __zeroValue(this.$fname), $farity: __zeroValue(this.$farity), $fprepare: __zeroValue(this.$fprepare), $finterval_true: __zeroValue(this.$finterval_true) }) as this;
+  }
+}
+
+export class PaperProfile {
+  $fsecurity_bits!: bigint;
+  $fring_degree!: bigint;
+  $fmodulus_bits!: bigint;
+  $fbatch_messages!: bigint;
+
+  constructor(init: {
+    $fsecurity_bits: bigint,
+    $fring_degree: bigint,
+    $fmodulus_bits: bigint,
+    $fbatch_messages: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fsecurity_bits: __zeroValue(this.$fsecurity_bits), $fring_degree: __zeroValue(this.$fring_degree), $fmodulus_bits: __zeroValue(this.$fmodulus_bits), $fbatch_messages: __zeroValue(this.$fbatch_messages) }) as this;
+  }
+}
+
+export class EncodedLabelBatch {
+  $fdifferences!: Vec<bigint>;
+  $fzeroes!: Vec<bigint>;
+
+  constructor(init: {
+    $fdifferences: Vec<bigint>,
+    $fzeroes: Vec<bigint>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fdifferences: __zeroValue(this.$fdifferences), $fzeroes: __zeroValue(this.$fzeroes) }) as this;
+  }
+
+  static decode_selected(selected: bigint[]): Result<Vec<bigint[]>, LabelBatchDecodeError>
+  {
+    if (!__equals((BigInt(selected.length) % 3n), 0n))     {
+      return LabelBatchDecodeError.LengthMismatch;
+    }
+    return selected.chunks_exact(3n).map((chunk: any) => (() => {
+  return decode_label_16([chunk[Number(0n)], chunk[Number(1n)], chunk[Number(2n)]]).map_err(LabelBatchDecodeError.NonCanonicalLabel);
+})());
+  }
+
+  differences(): bigint[]
+  {
+    return this.$fdifferences;
+  }
+
+  static expanded_choices(choices: boolean[]): Vec<boolean>
+  {
+    let out = /* Vec::with_capacity */ Array(fieldMul(BigInt(choices.length), 3n));
+    for (const choice of choices)     {
+      out.push(...(Array.from({length: Number(3n)}, () => choice)));
+    }
+    return out;
+  }
+
+  static from_pairs(pairs: LabelPairDyn[], offset: bigint[]): Result<EncodedLabelBatch, BatchError>
+  {
+    const batch = LabelBatch.new(pairs, offset);
+    let differences = /* Vec::with_capacity */ Array(fieldMul(BigInt(pairs.length), 3n));
+    let zeroes = /* Vec::with_capacity */ Array(fieldMul(BigInt(pairs.length), 3n));
+    const modulus = ring_lwe.REFERENCE_PLAINTEXT_MODULUS;
+    for (const pair of batch.$fpairs)     {
+      const zero = encode_label_16(pair.$fzero);
+      const one = encode_label_16(pair.$fone);
+      for (const [one, zero] of one.map((__a: any, __i: number) => [__a, zero[__i]] as [typeof __a, any]))       {
+        (differences).push((() => { if ((one >= zero)) {
+  return fieldSub(one, zero);
+} else {
+  return fieldSub(modulus, fieldSub(zero, one));
+} })());
+        (zeroes).push(zero);
+      }
+    }
+    return new EncodedLabelBatch({ $fdifferences: differences, $fzeroes: zeroes });
+  }
+
+  label_count(): bigint
+  {
+    return (BigInt(this.$fzeroes.length) / 3n);
+  }
+
+  pad_to_slots(slots: bigint): Result<PaddedLabelBatch, LabelBatchPaddingError>
+  {
+    const used = BigInt(this.$fzeroes.length);
+    if ((slots < used))     {
+      return new TooFewSlots({ $fslots: slots, $fused: used });
+    }
+    let differences = __clone(this.$fdifferences);
+    let zeroes = __clone(this.$fzeroes);
+    differences.resize(slots, 0n);
+    zeroes.resize(slots, 0n);
+    return new PaddedLabelBatch({ $flabel_count: this.label_count(), $fdifferences: differences, $fzeroes: zeroes });
+  }
+
+  zeroes(): bigint[]
+  {
+    return this.$fzeroes;
+  }
+}
+
+export class PaddedLabelBatch {
+  $flabel_count!: bigint;
+  $fdifferences!: Vec<bigint>;
+  $fzeroes!: Vec<bigint>;
+
+  constructor(init: {
+    $flabel_count: bigint,
+    $fdifferences: Vec<bigint>,
+    $fzeroes: Vec<bigint>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $flabel_count: __zeroValue(this.$flabel_count), $fdifferences: __zeroValue(this.$fdifferences), $fzeroes: __zeroValue(this.$fzeroes) }) as this;
+  }
+
+  decode_selected(selected: bigint[]): Result<Vec<bigint[]>, LabelBatchDecodeError>
+  {
+    if (!__equals(BigInt(selected.length), this.slots()))     {
+      return LabelBatchDecodeError.LengthMismatch;
+    }
+    return EncodedLabelBatch.decode_selected(selected.slice(0, Number(fieldMul(this.$flabel_count, 3n))));
+  }
+
+  differences(): bigint[]
+  {
+    return this.$fdifferences;
+  }
+
+  expanded_choices(choices: boolean[]): Result<Vec<boolean>, LabelBatchPaddingError>
+  {
+    if (!__equals(BigInt(choices.length), this.$flabel_count))     {
+      return new ChoiceLengthMismatch({ $fexpected: this.$flabel_count, $factual: BigInt(choices.length) });
+    }
+    let out = EncodedLabelBatch.expanded_choices(choices);
+    out.resize(this.slots(), false);
+    return out;
+  }
+
+  label_count(): bigint
+  {
+    return this.$flabel_count;
+  }
+
+  slots(): bigint
+  {
+    return BigInt(this.$fzeroes.length);
+  }
+
+  zeroes(): bigint[]
+  {
+    return this.$fzeroes;
+  }
+}
+
+export class LabelPairDyn {
+  $fn!: bigint;
+  $fzero!: bigint[];
+  $fone!: bigint[];
+
+  constructor(init: {
+    $fn: bigint,
+    $fzero: bigint[],
+    $fone: bigint[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fzero: __zeroValue(this.$fzero), $fone: __zeroValue(this.$fone) }) as this;
+  }
+}
+
+export class LabelBatchDyn {
+  $fn!: bigint;
+  $fpairs!: LabelPairDyn[];
+
+  constructor(init: {
+    $fn: bigint,
+    $fpairs: LabelPairDyn[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fpairs: __zeroValue(this.$fpairs) }) as this;
+  }
+
+  is_empty(): boolean
+  {
+    const n: bigint = this.$fn;
+    return (this.$fpairs.length === 0);
+  }
+
+  len(): bigint
+  {
+    const n: bigint = this.$fn;
+    return BigInt(this.$fpairs.length);
+  }
+
+  static new(n: bigint, pairs: LabelPairDyn[], offset: bigint[]): Result<LabelBatchDyn, BatchError>
+  {
+    if ((__equals(n, 0n) || __equals(fieldBitand(offset[Number(0n)], 1n), 0n)))     {
+      return BatchError.EvenOffset;
+    }
+    for (const [index, pair] of pairs.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
+      if (!__equals(pair.$fone, Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((byte: any) => fieldBitxor(pair.$fzero[Number(byte)], offset[Number(byte)]))))       {
+        return new MismatchedPair({ $findex: index });
+      }
+    }
+    return new LabelBatchDyn({ $fpairs: pairs });
+  }
+
+  select(choices: boolean[], output: bigint[][]): Result<void, BatchError>
+  {
+    const n: bigint = this.$fn;
+    if ((!__equals(BigInt(choices.length), BigInt(this.$fpairs.length)) || !__equals(BigInt(output.length), BigInt(this.$fpairs.length))))     {
+      return BatchError.LengthMismatch;
+    }
+    for (const [[pair, choice], selected] of this.$fpairs.map((__a: any, __i: number) => [__a, choices.copied()[__i]] as [typeof __a, any]).map((__a: any, __i: number) => [__a, output.iter_mut()[__i]] as [typeof __a, any]))     {
+      selected = (() => { if (choice) {
+  return pair.$fone;
+} else {
+  return pair.$fzero;
+} })();
+    }
+    return [];
+  }
+}
+
+export class Parameters {
+  $fdegree!: bigint;
+  $fwidth!: bigint;
+  $fplaintext_modulus!: bigint;
+  $fdelta!: bigint;
+  $fgadget_base!: bigint;
+  $fgadget_digits!: bigint;
+
+  constructor(init: {
+    $fdegree: bigint,
+    $fwidth: bigint,
+    $fplaintext_modulus: bigint,
+    $fdelta: bigint,
+    $fgadget_base: bigint,
+    $fgadget_digits: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fdegree: __zeroValue(this.$fdegree), $fwidth: __zeroValue(this.$fwidth), $fplaintext_modulus: __zeroValue(this.$fplaintext_modulus), $fdelta: __zeroValue(this.$fdelta), $fgadget_base: __zeroValue(this.$fgadget_base), $fgadget_digits: __zeroValue(this.$fgadget_digits) }) as this;
+  }
+
+  levels(): Result<bigint, Error>
+  {
+    if (((this.$fwidth < 2n) || !this.$fwidth.is_power_of_two()))     {
+      return Error.InvalidParameters;
+    }
+    return Number(ilog2(this.$fwidth));
+  }
+
+  static scaled_reference(degree: bigint, width: bigint): Parameters
+  {
+    return new Parameters({ $fdegree: degree, $fwidth: width });
+  }
+
+  slots(): Result<bigint, Error>
+  {
+    return this.$fdegree.checked_mul(this.$fwidth).ok_or(Error.InvalidParameters);
+  }
+
+  validate(): Result<void, Error>
+  {
+    if (((((((((((this.$fdegree < 2n) || !this.$fdegree.is_power_of_two()) || (this.$fwidth < 2n)) || !this.$fwidth.is_power_of_two()) || (this.$fplaintext_modulus < 3n)) || (this.$fdelta < 3n)) || (this.$fgadget_base < 2n)) || __equals(this.$fgadget_digits, 0n)) || !__equals((fieldSub(this.$fplaintext_modulus, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)) || !__equals((fieldSub(this.$fdelta, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)))     {
+      return Error.InvalidParameters;
+    }
+    this.slots();
+    const modulus = fieldMul((this.$fplaintext_modulus as unknown as bigint), (this.$fdelta as unknown as bigint));
+    let capacity = 1n;
+    for (let _ = 0n; _ < this.$fgadget_digits; _ += 1n)     {
+      capacity = capacity.checked_mul((this.$fgadget_base as unknown as bigint)).ok_or(Error.InvalidParameters);
+    }
+    if ((capacity <= modulus))     {
+      return Error.InvalidParameters;
+    }
+    return [];
+  }
+}
+
+export class ZeroNoise {
+
+  constructor(init: {
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({  }) as this;
+  }
+
+  sample(_standard_deviation: bigint, _bound: bigint, output: i64[]): Result<void, Error>
+  {
+    (output).fill(0n);
+    return [];
+  }
+}
+
+export class Polynomial {
+  $ffirst!: Vec<bigint>;
+  $fsecond!: Vec<bigint>;
+
+  constructor(init: {
+    $ffirst: Vec<bigint>,
+    $fsecond: Vec<bigint>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $ffirst: __zeroValue(this.$ffirst), $fsecond: __zeroValue(this.$fsecond) }) as this;
+  }
+
+  add_assign(ring: any, other: any)
+  {
+    for (const [left, right] of this.$ffirst.iter_mut().zip(other.$ffirst))     {
+      left = add_mod(left, right, ring.$fparameters.$fplaintext_modulus);
+    }
+    for (const [left, right] of this.$fsecond.iter_mut().zip(other.$fsecond))     {
+      left = add_mod(left, right, ring.$fparameters.$fdelta);
+    }
+  }
+
+  degree(): bigint
+  {
+    return BigInt(this.$ffirst.length);
+  }
+
+  negate_assign(ring: any)
+  {
+    for (const value of this.$ffirst)     {
+      if (!__equals(value, 0n))       {
+        value = fieldSub(ring.$fparameters.$fplaintext_modulus, value);
+      }
+    }
+    for (const value of this.$fsecond)     {
+      if (!__equals(value, 0n))       {
+        value = fieldSub(ring.$fparameters.$fdelta, value);
+      }
+    }
+  }
+
+  product(ring: any, other: any): Polynomial
+  {
+    let output = ring.zero();
+    for (const [[output, left], right] of output.$ffirst.iter_mut().zip(this.$ffirst).zip(other.$ffirst))     {
+      output = mul_mod(left, right, ring.$fparameters.$fplaintext_modulus);
+    }
+    for (const [[output, left], right] of output.$fsecond.iter_mut().zip(this.$fsecond).zip(other.$fsecond))     {
+      output = mul_mod(left, right, ring.$fparameters.$fdelta);
+    }
+    return output;
+  }
+
+  rns_limbs(): [bigint[], bigint[]]
+  {
+    return [this.$ffirst, this.$fsecond];
+  }
+
+  scaled(ring: any, base: bigint, power: bigint): Polynomial
+  {
+    const first = pow_mod((base % ring.$fparameters.$fplaintext_modulus), power, ring.$fparameters.$fplaintext_modulus);
+    const second = pow_mod((base % ring.$fparameters.$fdelta), power, ring.$fparameters.$fdelta);
+    let output = __clone(this);
+    for (const value of output.$ffirst)     {
+      value = mul_mod(value, first, ring.$fparameters.$fplaintext_modulus);
+    }
+    for (const value of output.$fsecond)     {
+      value = mul_mod(value, second, ring.$fparameters.$fdelta);
+    }
+    return output;
+  }
+
+  sub_assign(ring: any, other: any)
+  {
+    for (const [left, right] of this.$ffirst.iter_mut().zip(other.$ffirst))     {
+      left = sub_mod(left, right, ring.$fparameters.$fplaintext_modulus);
+    }
+    for (const [left, right] of this.$fsecond.iter_mut().zip(other.$fsecond))     {
+      left = sub_mod(left, right, ring.$fparameters.$fdelta);
+    }
+  }
+}
+
+export class PublicParameters {
+  $fparameters!: Parameters;
+  $flhe_a!: Vec<Polynomial>;
+  $flenc_b!: Vec<Polynomial>;
+
+  constructor(init: {
+    $fparameters: Parameters,
+    $flhe_a: Vec<Polynomial>,
+    $flenc_b: Vec<Polynomial>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fparameters: __zeroValue(this.$fparameters), $flhe_a: __zeroValue(this.$flhe_a), $flenc_b: __zeroValue(this.$flenc_b) }) as this;
+  }
+
+  lenc_polynomials(): unknown /* impl ExactSizeIterator<Item = &Polynomial> */
+  {
+    return this.$flenc_b;
+  }
+
+  lhe_polynomials(): unknown /* impl ExactSizeIterator<Item = &Polynomial> */
+  {
+    return this.$flhe_a;
+  }
+
+  parameters(): Parameters
+  {
+    return this.$fparameters;
+  }
+}
+
+export class FirstCiphertext {
+  $flhe_state!: Vec<Polynomial>;
+  $flhe_ciphertext!: Vec<Polynomial>;
+  $flenc_ciphertext!: Vec<Polynomial>;
+
+  constructor(init: {
+    $flhe_state: Vec<Polynomial>,
+    $flhe_ciphertext: Vec<Polynomial>,
+    $flenc_ciphertext: Vec<Polynomial>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $flhe_state: __zeroValue(this.$flhe_state), $flhe_ciphertext: __zeroValue(this.$flhe_ciphertext), $flenc_ciphertext: __zeroValue(this.$flenc_ciphertext) }) as this;
+  }
+
+  lenc_polynomials(): unknown /* impl ExactSizeIterator<Item = &Polynomial> */
+  {
+    return this.$flenc_ciphertext;
+  }
+
+  lhe_polynomials(): unknown /* impl ExactSizeIterator<Item = &Polynomial> */
+  {
+    return this.$flhe_ciphertext;
+  }
+}
+
+export class SecondCiphertext {
+  $flhe_state!: Polynomial;
+  $flhe_ciphertext!: Vec<Polynomial>;
+
+  constructor(init: {
+    $flhe_state: Polynomial,
+    $flhe_ciphertext: Vec<Polynomial>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $flhe_state: __zeroValue(this.$flhe_state), $flhe_ciphertext: __zeroValue(this.$flhe_ciphertext) }) as this;
+  }
+
+  polynomials(): unknown /* impl ExactSizeIterator<Item = &Polynomial> */
+  {
+    return this.$flhe_ciphertext;
+  }
+}
+
+export class SelectionKey {
+  $fkey!: Polynomial;
+
+  constructor(init: {
+    $fkey: Polynomial
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fkey: __zeroValue(this.$fkey) }) as this;
+  }
+
+  polynomial(): Polynomial
+  {
+    return this.$fkey;
+  }
+}
+
+export class BatchSelect {
+  $fring!: Ring;
+  $fpublic!: PublicParameters;
+
+  constructor(init: {
+    $fring: Ring,
+    $fpublic: PublicParameters
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fring: __zeroValue(this.$fring), $fpublic: __zeroValue(this.$fpublic) }) as this;
+  }
+
+  check_first(first: any): Result<void, Error>
+  {
+    const p = this.$fring.$fparameters;
+    if ((((!__equals(BigInt(first.$flhe_state.length), p.$fgadget_digits) || !__equals(BigInt(first.$flhe_ciphertext.length), fieldMul(p.$fwidth, p.$fgadget_digits))) || !__equals(BigInt(first.$flenc_ciphertext.length), fieldMul(fieldMul(fieldMul(p.levels(), p.$fwidth), 2n), p.$fgadget_digits))) || first.$flhe_state.concat(first.$flhe_ciphertext).concat(first.$flenc_ciphertext).any((poly) => !__equals(poly.degree(), p.$fdegree))))     {
+      return Error.LengthMismatch;
+    }
+    return [];
+  }
+
+  check_second(second: any): Result<void, Error>
+  {
+    const p = this.$fring.$fparameters;
+    if (((!__equals(BigInt(second.$flhe_ciphertext.length), p.$fwidth) || !__equals(second.$flhe_state.degree(), p.$fdegree)) || second.$flhe_ciphertext.any((poly) => !__equals(poly.degree(), p.$fdegree))))     {
+      return Error.LengthMismatch;
+    }
+    return [];
+  }
+
+  dec(first: any, second: any, key: any, choices: boolean[]): Result<Vec<bigint>, Error>
+  {
+    this.check_first(first);
+    this.check_second(second);
+    if (!__equals(key.$fkey.degree(), this.$fring.$fparameters.$fdegree))     {
+      return Error.LengthMismatch;
+    }
+    const choice = this.$fring.encode_choices(choices);
+    const tree = this.lenc_digest(choice);
+    const digits = this.$fring.decompose(tree.$fdigest);
+    let result = /* Vec::with_capacity */ Array(this.$fring.$fparameters.$fwidth);
+    for (let index = 0n; index < this.$fring.$fparameters.$fwidth; index += 1n)     {
+      const row = first.$flhe_ciphertext.slice(Number(fieldMul(index, this.$fring.$fparameters.$fgadget_digits)), Number(fieldMul(fieldAdd(index, 1n), this.$fring.$fparameters.$fgadget_digits)));
+      let value = inner_product(this.$fring, row, digits);
+      value.add_assign(this.$fring, second.$flhe_ciphertext[Number(index)]);
+      value.sub_assign(this.$fring, this.$fpublic.$flhe_a[Number(index)].product(this.$fring, key.$fkey));
+      (result).push(value);
+    }
+    const correction = this.lenc_eval(first.$flenc_ciphertext, tree);
+    for (const [value, delta] of result.iter_mut().zip(correction))     {
+      value.sub_assign(this.$fring, delta);
+    }
+    return this.$fring.decode_messages(result);
+  }
+
+  enc1(l1: bigint[], random: any, noise: any): Result<FirstCiphertext, Error>
+  {
+    const messages = this.$fring.encode_messages(l1);
+    const [random_vector, lenc_ciphertext] = this.lenc_enc(messages, random, noise);
+    const [lhe_state, lhe_ciphertext] = this.lhe_enc1(random_vector, random, noise);
+    return new FirstCiphertext({ $flhe_state: lhe_state, $flhe_ciphertext: lhe_ciphertext, $flenc_ciphertext: lenc_ciphertext });
+  }
+
+  enc2(l2: bigint[], random: any, noise: any): Result<SecondCiphertext, Error>
+  {
+    let messages = this.$fring.encode_messages(l2);
+    for (const message of messages)     {
+      this.$fring.add_noise(message, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
+    }
+    const [lhe_state, lhe_ciphertext] = this.lhe_enc2(messages, random, noise);
+    return new SecondCiphertext({ $flhe_state: lhe_state, $flhe_ciphertext: lhe_ciphertext });
+  }
+
+  keygen(first: any, second: any, choices: boolean[]): Result<SelectionKey, Error>
+  {
+    this.check_first(first);
+    this.check_second(second);
+    const choice = this.$fring.encode_choices(choices);
+    const tree = this.lenc_digest(choice);
+    const digits = this.$fring.decompose(tree.$fdigest);
+    let key = __clone(second.$flhe_state);
+    for (const [state, digit] of first.$flhe_state.map((__a: any, __i: number) => [__a, digits[__i]] as [typeof __a, any]))     {
+      key.add_assign(this.$fring, state.product(this.$fring, digit));
+    }
+    return new SelectionKey({ $fkey: key });
+  }
+
+  lenc_digest(choice: Polynomial[]): Result<Tree, Error>
+  {
+    const p = this.$fring.$fparameters;
+    if (!__equals(BigInt(choice.length), p.$fwidth))     {
+      return Error.LengthMismatch;
+    }
+    let tree = [] as any[];
+    for (const [index, value] of choice.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
+      const digits = this.$fring.decompose(value);
+      const base = fieldMul(fieldAdd(fieldSub(p.$fwidth, 1n), index), p.$fgadget_digits);
+      tree.slice(Number(base), Number(fieldAdd(base, p.$fgadget_digits))).clone_from_slice(digits);
+    }
+    let digest = this.$fring.zero();
+    for (const node of (Array.from({length: Number(fieldSub(p.$fwidth, 1n) - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
+      const children = fieldMul(fieldAdd(fieldMul(2n, node), 1n), p.$fgadget_digits);
+      let parent = inner_product(this.$fring, this.$fpublic.$flenc_b, tree.slice(Number(children), Number(fieldAdd(children, fieldMul(2n, p.$fgadget_digits)))));
+      parent.negate_assign(this.$fring);
+      if (__equals(node, 0n))       {
+        digest = parent;
+      } else       {
+        const digits = this.$fring.decompose(parent);
+        const base = fieldMul(node, p.$fgadget_digits);
+        tree.slice(Number(base), Number(fieldAdd(base, p.$fgadget_digits))).clone_from_slice(digits);
+      }
+    }
+    return new Tree({ $ftree: tree, $fdigest: digest });
+  }
+
+  lenc_enc(message: Polynomial[], random: any, noise: any): Result<[Vec<Polynomial>, Vec<Polynomial>], Error>
+  {
+    const p = this.$fring.$fparameters;
+    if (!__equals(BigInt(message.length), p.$fwidth))     {
+      return Error.LengthMismatch;
+    }
+    const levels = p.levels();
+    let random_vector = /* Vec::with_capacity */ Array(fieldMul(levels, p.$fwidth));
+    for (let _ = 0n; _ < fieldMul(levels, p.$fwidth); _ += 1n)     {
+      (random_vector).push(this.$fring.uniform(random));
+    }
+    let ciphertext = /* Vec::with_capacity */ Array(fieldMul(fieldMul(fieldMul(levels, p.$fwidth), 2n), p.$fgadget_digits));
+    for (let level = 0n; level < levels; level += 1n)     {
+      for (let row = 0n; row < p.$fwidth; row += 1n)       {
+        for (const public_ of this.$fpublic.$flenc_b)         {
+          (ciphertext).push(random_vector[Number(fieldAdd(fieldMul(level, p.$fwidth), row))].product(this.$fring, public_));
+        }
+        const half = (() => { if (__equals(fieldBitand(row, fieldShl(1n, fieldSub(fieldSub(levels, level), 1n))), 0n)) {
+  return 0n;
+} else {
+  return p.$fgadget_digits;
+} })();
+        const next = (() => { if (__equals(fieldAdd(level, 1n), levels)) {
+  return message[Number(row)];
+} else {
+  return random_vector[Number(fieldAdd(fieldMul(fieldAdd(level, 1n), p.$fwidth), row))];
+} })();
+        const base = fieldAdd(fieldMul(fieldMul(fieldAdd(fieldMul(level, p.$fwidth), row), 2n), p.$fgadget_digits), half);
+        for (let digit = 0n; digit < p.$fgadget_digits; digit += 1n)         {
+          const extra = next.scaled(this.$fring, p.$fgadget_base, digit);
+          ciphertext[Number(fieldAdd(base, digit))].add_assign(this.$fring, extra);
+        }
+      }
+    }
+    for (const value of ciphertext)     {
+      this.$fring.add_noise(value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
+    }
+    return [random_vector, ciphertext];
+  }
+
+  lenc_eval(ciphertext: Polynomial[], tree: any): Result<Vec<Polynomial>, Error>
+  {
+    const p = this.$fring.$fparameters;
+    const levels = p.levels();
+    if ((!__equals(BigInt(ciphertext.length), fieldMul(fieldMul(fieldMul(levels, p.$fwidth), 2n), p.$fgadget_digits)) || !__equals(BigInt(tree.$ftree.length), fieldMul(fieldSub(fieldMul(2n, p.$fwidth), 1n), p.$fgadget_digits))))     {
+      return Error.LengthMismatch;
+    }
+    let delta = /* Vec::with_capacity */ Array(p.$fwidth);
+    for (let row = 0n; row < p.$fwidth; row += 1n)     {
+      let value = inner_product(this.$fring, ciphertext.slice(Number(fieldMul(fieldMul(row, 2n), p.$fgadget_digits)), Number(fieldMul(fieldMul(fieldAdd(row, 1n), 2n), p.$fgadget_digits))), tree.$ftree.slice(Number(p.$fgadget_digits), Number(fieldMul(3n, p.$fgadget_digits))));
+      for (let level = 1n; level < levels; level += 1n)       {
+        const ciphertext_base = fieldMul(fieldMul(fieldAdd(fieldMul(level, p.$fwidth), row), 2n), p.$fgadget_digits);
+        const tree_base = fieldMul(fieldAdd(fieldMul(fieldSub(fieldAdd(fieldShr(row, fieldSub(levels, level)), fieldShl(1n, level)), 1n), 2n), 1n), p.$fgadget_digits);
+        const term = inner_product(this.$fring, ciphertext.slice(Number(ciphertext_base), Number(fieldAdd(ciphertext_base, fieldMul(2n, p.$fgadget_digits)))), tree.$ftree.slice(Number(tree_base), Number(fieldAdd(tree_base, fieldMul(2n, p.$fgadget_digits)))));
+        value.add_assign(this.$fring, term);
+      }
+      value.negate_assign(this.$fring);
+      (delta).push(value);
+    }
+    return delta;
+  }
+
+  lhe_enc1(messages: Polynomial[], random: any, noise: any): Result<[Vec<Polynomial>, Vec<Polynomial>], Error>
+  {
+    if (!__equals(BigInt(messages.length), this.$fring.$fparameters.$fwidth))     {
+      return Error.LengthMismatch;
+    }
+    const p = this.$fring.$fparameters;
+    let state = /* Vec::with_capacity */ Array(p.$fgadget_digits);
+    for (let _ = 0n; _ < p.$fgadget_digits; _ += 1n)     {
+      (state).push(this.$fring.uniform(random));
+    }
+    let ciphertext = /* Vec::with_capacity */ Array(fieldMul(p.$fwidth, p.$fgadget_digits));
+    for (const [index, message] of messages.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
+      for (let digit = 0n; digit < p.$fgadget_digits; digit += 1n)       {
+        let value = this.$fpublic.$flhe_a[Number(index)].product(this.$fring, state[Number(digit)]);
+        value.add_assign(this.$fring, message.scaled(this.$fring, p.$fgadget_base, digit));
+        this.$fring.add_noise(value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
+        (ciphertext).push(value);
+      }
+    }
+    return [state, ciphertext];
+  }
+
+  lhe_enc2(messages: Polynomial[], random: any, noise: any): Result<[Polynomial, Vec<Polynomial>], Error>
+  {
+    if (!__equals(BigInt(messages.length), this.$fring.$fparameters.$fwidth))     {
+      return Error.LengthMismatch;
+    }
+    const state = this.$fring.uniform(random);
+    let ciphertext = /* Vec::with_capacity */ Array(this.$fring.$fparameters.$fwidth);
+    for (const [a, message] of this.$fpublic.$flhe_a.map((__a: any, __i: number) => [__a, messages[__i]] as [typeof __a, any]))     {
+      let value = a.product(this.$fring, state);
+      value.add_assign(this.$fring, message);
+      this.$fring.add_noise(value, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
+      (ciphertext).push(value);
+    }
+    return [state, ciphertext];
+  }
+
+  public_parameters(): PublicParameters
+  {
+    return this.$fpublic;
+  }
+
+  static setup(parameters: any, random: any): Result<BatchSelect, Error>
+  {
+    const ring = Ring.new(parameters);
+    let lhe_a = /* Vec::with_capacity */ Array(parameters.$fwidth);
+    for (let _ = 0n; _ < parameters.$fwidth; _ += 1n)     {
+      (lhe_a).push(ring.uniform(random));
+    }
+    let lenc_b = /* Vec::with_capacity */ Array(fieldMul(2n, parameters.$fgadget_digits));
+    for (let _ = 0n; _ < fieldMul(2n, parameters.$fgadget_digits); _ += 1n)     {
+      (lenc_b).push(ring.uniform(random));
+    }
+    return new BatchSelect({ $fring: ring, $fpublic: new PublicParameters({ $fparameters: parameters, $flhe_a: lhe_a, $flenc_b: lenc_b }) });
+  }
+}
+
+export class Tree {
+  $ftree!: Vec<Polynomial>;
+  $fdigest!: Polynomial;
+
+  constructor(init: {
+    $ftree: Vec<Polynomial>,
+    $fdigest: Polynomial
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $ftree: __zeroValue(this.$ftree), $fdigest: __zeroValue(this.$fdigest) }) as this;
+  }
+}
+
+export class Ring {
+  $fparameters!: Parameters;
+  $ffirst_ntt!: Ntt;
+  $fsecond_ntt!: Ntt;
+  $finverse_plaintext_mod_delta!: bigint;
+  $finverse_delta_mod_plaintext!: bigint;
+
+  constructor(init: {
+    $fparameters: Parameters,
+    $ffirst_ntt: Ntt,
+    $fsecond_ntt: Ntt,
+    $finverse_plaintext_mod_delta: bigint,
+    $finverse_delta_mod_plaintext: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fparameters: __zeroValue(this.$fparameters), $ffirst_ntt: __zeroValue(this.$ffirst_ntt), $fsecond_ntt: __zeroValue(this.$fsecond_ntt), $finverse_plaintext_mod_delta: __zeroValue(this.$finverse_plaintext_mod_delta), $finverse_delta_mod_plaintext: __zeroValue(this.$finverse_delta_mod_plaintext) }) as this;
+  }
+
+  add_noise(value: any, noise: any, standard_deviation: bigint, bound: bigint): Result<void, Error>
+  {
+    let coefficients = [] as any[];
+    noise.sample(coefficients.$fn, standard_deviation, bound, coefficients);
+    if (coefficients.any((sample) => (sample.unsigned_abs() > bound)))     {
+      return Error.Noise;
+    }
+    let first = /* Vec::with_capacity */ Array(this.$fparameters.$fdegree);
+    let second = /* Vec::with_capacity */ Array(this.$fparameters.$fdegree);
+    for (const sample of coefficients)     {
+      (first).push(signed_to_mod(sample, this.$fparameters.$fplaintext_modulus));
+      (second).push(signed_to_mod(sample, this.$fparameters.$fdelta));
+    }
+    this.$ffirst_ntt.forward(first);
+    this.$fsecond_ntt.forward(second);
+    for (const [destination, error] of value.$ffirst.iter_mut().zip(first))     {
+      destination = add_mod(destination, error, this.$fparameters.$fplaintext_modulus);
+    }
+    for (const [destination, error] of value.$fsecond.iter_mut().zip(second))     {
+      destination = add_mod(destination, error, this.$fparameters.$fdelta);
+    }
+    return [];
+  }
+
+  combine(first: bigint, second: bigint): bigint
+  {
+    const first_mod_delta = (first % this.$fparameters.$fdelta);
+    const offset = mul_mod(sub_mod(second, first_mod_delta, this.$fparameters.$fdelta), this.$finverse_plaintext_mod_delta, this.$fparameters.$fdelta);
+    return fieldAdd((first as unknown as bigint), fieldMul((this.$fparameters.$fplaintext_modulus as unknown as bigint), (offset as unknown as bigint)));
+  }
+
+  decode_messages(values: Polynomial[]): Result<Vec<bigint>, Error>
+  {
+    if ((!__equals(BigInt(values.length), this.$fparameters.$fwidth) || values.any((value) => !__equals(value.degree(), this.$fparameters.$fdegree))))     {
+      return Error.LengthMismatch;
+    }
+    let output = /* Vec::with_capacity */ Array(this.$fparameters.slots());
+    for (const value of values)     {
+      let noise = __clone(value.$fsecond);
+      this.$fsecond_ntt.inverse(noise);
+      let correction = /* Vec::with_capacity */ Array(this.$fparameters.$fdegree);
+      for (const error of noise)       {
+        const signed = (() => { if ((error > (this.$fparameters.$fdelta / 2n))) {
+  const magnitude = fieldSub(this.$fparameters.$fdelta, error);
+  if ((magnitude >= this.$fparameters.$fplaintext_modulus))   {
+    return Error.Noise;
+  }
+  return (() => { if (__equals(magnitude, 0n)) {
+  return 0n;
+} else {
+  return fieldSub(this.$fparameters.$fplaintext_modulus, magnitude);
+} })();
+} else {
+  if ((error >= this.$fparameters.$fplaintext_modulus))   {
+    return Error.Noise;
+  }
+  return error;
+} })();
+        (correction).push(signed);
+      }
+      this.$ffirst_ntt.forward(correction);
+      for (const [message, correction] of value.$ffirst.map((__a: any, __i: number) => [__a, correction[__i]] as [typeof __a, any]))       {
+        const no_error = sub_mod(message, correction, this.$fparameters.$fplaintext_modulus);
+        (output).push(mul_mod(no_error, this.$finverse_delta_mod_plaintext, this.$fparameters.$fplaintext_modulus));
+      }
+    }
+    return output;
+  }
+
+  decompose(value: any): Result<Vec<Polynomial>, Error>
+  {
+    if (!__equals(value.degree(), this.$fparameters.$fdegree))     {
+      return Error.LengthMismatch;
+    }
+    let first = __clone(value.$ffirst);
+    let second = __clone(value.$fsecond);
+    this.$ffirst_ntt.inverse(first);
+    this.$fsecond_ntt.inverse(second);
+    let digits: Vec<Polynomial> = Array.from({length: Number(this.$fparameters.$fgadget_digits - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => this.zero());
+    for (let index = 0n; index < this.$fparameters.$fdegree; index += 1n)     {
+      let combined = this.combine(first[Number(index)], second[Number(index)]);
+      for (const digit of digits)       {
+        const part = BigInt((combined % (this.$fparameters.$fgadget_base as unknown as bigint)));
+        digit.$ffirst[Number(index)] = (part % this.$fparameters.$fplaintext_modulus);
+        digit.$fsecond[Number(index)] = (part % this.$fparameters.$fdelta);
+        combined /= (this.$fparameters.$fgadget_base as unknown as bigint);
+      }
+      if (!__equals(combined, 0n))       {
+        return Error.Arithmetic;
+      }
+    }
+    for (const digit of digits)     {
+      this.$ffirst_ntt.forward(digit.$ffirst);
+      this.$fsecond_ntt.forward(digit.$fsecond);
+    }
+    return digits;
+  }
+
+  encode_choices(input: boolean[]): Result<Vec<Polynomial>, Error>
+  {
+    if (!__equals(BigInt(input.length), this.$fparameters.slots()))     {
+      return Error.LengthMismatch;
+    }
+    let output = /* Vec::with_capacity */ Array(this.$fparameters.$fwidth);
+    for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
+      let value = this.zero();
+      for (const [[first, second], choice] of value.$ffirst.iter_mut().zip(value.$fsecond.iter_mut()).zip(chunk))       {
+        const choice_1 = u64.from(choice);
+        first = choice_1;
+        second = choice_1;
+      }
+      this.$ffirst_ntt.inverse(value.$fsecond);
+      this.$fsecond_ntt.forward(value.$fsecond);
+      (output).push(value);
+    }
+    return output;
+  }
+
+  encode_messages(input: bigint[]): Result<Vec<Polynomial>, Error>
+  {
+    if (!__equals(BigInt(input.length), this.$fparameters.slots()))     {
+      return Error.LengthMismatch;
+    }
+    if (input.any((value) => (value >= this.$fparameters.$fplaintext_modulus)))     {
+      return Error.NonCanonicalPlaintext;
+    }
+    let output = /* Vec::with_capacity */ Array(this.$fparameters.$fwidth);
+    for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
+      let value = this.zero();
+      for (const [slot, message] of value.$ffirst.iter_mut().zip(chunk))       {
+        slot = mul_mod(message, (this.$fparameters.$fdelta % this.$fparameters.$fplaintext_modulus), this.$fparameters.$fplaintext_modulus);
+      }
+      (output).push(value);
+    }
+    return output;
+  }
+
+  static new(parameters: any): Result<Ring, Error>
+  {
+    parameters.validate();
+    return new Ring({ $ffirst_ntt: Ntt.new(parameters.$fdegree, parameters.$fplaintext_modulus), $fsecond_ntt: Ntt.new(parameters.$fdegree, parameters.$fdelta), $finverse_plaintext_mod_delta: inverse_mod((parameters.$fplaintext_modulus % parameters.$fdelta), parameters.$fdelta).ok_or(Error.Arithmetic), $finverse_delta_mod_plaintext: inverse_mod((parameters.$fdelta % parameters.$fplaintext_modulus), parameters.$fplaintext_modulus).ok_or(Error.Arithmetic), $fparameters: parameters });
+  }
+
+  uniform(random: any): Result<Polynomial, Error>
+  {
+    let value = this.zero();
+    sample_uniform(random, this.$fparameters.$fplaintext_modulus, value.$ffirst);
+    sample_uniform(random, this.$fparameters.$fdelta, value.$fsecond);
+    return value;
+  }
+
+  zero(): Polynomial
+  {
+    return new Polynomial({ $ffirst: [] as any[], $fsecond: [] as any[] });
+  }
+}
+
+export class Ntt {
+  $fmodulus!: bigint;
+  $fdegree!: bigint;
+  $fpsi!: bigint;
+  $fomega!: bigint;
+  $finverse_psi!: bigint;
+  $finverse_omega!: bigint;
+  $finverse_degree!: bigint;
+
+  constructor(init: {
+    $fmodulus: bigint,
+    $fdegree: bigint,
+    $fpsi: bigint,
+    $fomega: bigint,
+    $finverse_psi: bigint,
+    $finverse_omega: bigint,
+    $finverse_degree: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fmodulus: __zeroValue(this.$fmodulus), $fdegree: __zeroValue(this.$fdegree), $fpsi: __zeroValue(this.$fpsi), $fomega: __zeroValue(this.$fomega), $finverse_psi: __zeroValue(this.$finverse_psi), $finverse_omega: __zeroValue(this.$finverse_omega), $finverse_degree: __zeroValue(this.$finverse_degree) }) as this;
+  }
+
+  cyclic(values: bigint[], root: bigint)
+  {
+    bit_reverse(values);
+    let length = 2n;
+    while ((length <= this.$fdegree))     {
+      const step = pow_mod(root, (this.$fdegree / length), this.$fmodulus);
+      for (const start of Array.from({length: Number(this.$fdegree - 0n)}, (_, __i) => BigInt(__i) + 0n).step_by(length))       {
+        let twiddle = 1n;
+        for (let offset = 0n; offset < (length / 2n); offset += 1n)         {
+          const left = values[Number(fieldAdd(start, offset))];
+          const right = mul_mod(values[Number(fieldAdd(fieldAdd(start, offset), (length / 2n)))], twiddle, this.$fmodulus);
+          values[Number(fieldAdd(start, offset))] = add_mod(left, right, this.$fmodulus);
+          values[Number(fieldAdd(fieldAdd(start, offset), (length / 2n)))] = sub_mod(left, right, this.$fmodulus);
+          twiddle = mul_mod(twiddle, step, this.$fmodulus);
+        }
+      }
+      length = fieldMul(length, 2n);
+    }
+  }
+
+  forward(values: bigint[])
+  {
+    for (const [index, value] of values.iter_mut().enumerate())     {
+      value = mul_mod(value, pow_mod(this.$fpsi, index, this.$fmodulus), this.$fmodulus);
+    }
+    this.cyclic(values, this.$fomega);
+  }
+
+  inverse(values: bigint[])
+  {
+    this.cyclic(values, this.$finverse_omega);
+    for (const [index, value] of values.iter_mut().enumerate())     {
+      value = mul_mod(value, this.$finverse_degree, this.$fmodulus);
+      value = mul_mod(value, pow_mod(this.$finverse_psi, index, this.$fmodulus), this.$fmodulus);
+    }
+  }
+
+  static new(degree: bigint, modulus: bigint): Result<Ntt, Error>
+  {
+    const psi = find_negacyclic_root(degree, modulus).ok_or(Error.Arithmetic);
+    const omega = mul_mod(psi, psi, modulus);
+    return new Ntt({ $fmodulus: modulus, $fdegree: degree, $fpsi: psi, $fomega: omega, $finverse_psi: inverse_mod(psi, modulus).ok_or(Error.Arithmetic), $finverse_omega: inverse_mod(omega, modulus).ok_or(Error.Arithmetic), $finverse_degree: inverse_mod(BigInt(degree), modulus).ok_or(Error.Arithmetic) });
+  }
+}
+
+export class FrameBinding {
+  $fparameter_fingerprint!: bigint[];
+  $fsession_id!: bigint[];
+  $fmanifest_digest!: bigint[];
+  $fuse_counter!: bigint;
+
+  constructor(init: {
+    $fparameter_fingerprint: bigint[],
+    $fsession_id: bigint[],
+    $fmanifest_digest: bigint[],
+    $fuse_counter: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fparameter_fingerprint: __zeroValue(this.$fparameter_fingerprint), $fsession_id: __zeroValue(this.$fsession_id), $fmanifest_digest: __zeroValue(this.$fmanifest_digest), $fuse_counter: __zeroValue(this.$fuse_counter) }) as this;
+  }
+}
+
+export class Frame {
+  $fstage!: Stage;
+  $fbinding!: FrameBinding;
+  $fpayload!: Vec<bigint>;
+
+  constructor(init: {
+    $fstage: Stage,
+    $fbinding: FrameBinding,
+    $fpayload: Vec<bigint>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fstage: __zeroValue(this.$fstage), $fbinding: __zeroValue(this.$fbinding), $fpayload: __zeroValue(this.$fpayload) }) as this;
+  }
+
+  static decode(input: bigint[], max_payload: bigint): Result<Frame, FrameError>
+  {
+    if ((BigInt(input.length) < HEADER_BYTES))     {
+      return FrameError.Truncated;
+    }
+    if ((!__equals(input.slice(0, Number(8n)), MAGIC) || !__equals(u16.from_le_bytes([input[Number(8n)], input[Number(9n)]]), VERSION)))     {
+      return FrameError.UnsupportedFormat;
+    }
+    const stage = new Stage_try_from(input[Number(10n)]);
+    let offset = 11n;
+    let take_32 = () => (() => {
+  let value = Array.from({length: Number(32n)}, () => 0n);
+  (value).splice(0, (input.slice(Number(offset), Number(fieldAdd(offset, 32n)))).length, ...(input.slice(Number(offset), Number(fieldAdd(offset, 32n)))));
+  offset = fieldAdd(offset, 32n);
+  return value;
+})();
+    const parameter_fingerprint = take_32();
+    const session_id = take_32();
+    const manifest_digest = take_32();
+    const use_counter = u64_from_le_bytes((input.slice(Number(offset), Number(fieldAdd(offset, 8n))).try_into())!);
+    offset = fieldAdd(offset, 8n);
+    const payload_len = Number(u32_from_le_bytes((input.slice(Number(offset), Number(fieldAdd(offset, 4n))).try_into())!));
+    offset = fieldAdd(offset, 4n);
+    if ((payload_len > max_payload))     {
+      return FrameError.PayloadTooLarge;
+    }
+    if (!__equals(BigInt(input.length), (offset + (payload_len))))     {
+      return FrameError.LengthMismatch;
+    }
+    return new Frame({ $fstage: stage, $fbinding: new FrameBinding({ $fparameter_fingerprint: parameter_fingerprint, $fsession_id: session_id, $fmanifest_digest: manifest_digest, $fuse_counter: use_counter }), $fpayload: [...input.slice(Number(offset))] });
+  }
+
+  encode(): Vec<bigint>
+  {
+    let out = /* Vec::with_capacity */ Array(fieldAdd(HEADER_BYTES, BigInt(this.$fpayload.length)));
+    out.push(...(MAGIC));
+    out.push(...([(VERSION) & 0xFFn, ((VERSION) >> 8n) & 0xFFn, ((VERSION) >> 16n) & 0xFFn, ((VERSION) >> 24n) & 0xFFn]));
+    (out).push(((this.$fstage) & 0xFFn));
+    out.push(...(this.$fbinding.$fparameter_fingerprint));
+    out.push(...(this.$fbinding.$fsession_id));
+    out.push(...(this.$fbinding.$fmanifest_digest));
+    out.push(...([(this.$fbinding.$fuse_counter) & 0xFFn, ((this.$fbinding.$fuse_counter) >> 8n) & 0xFFn, ((this.$fbinding.$fuse_counter) >> 16n) & 0xFFn, ((this.$fbinding.$fuse_counter) >> 24n) & 0xFFn]));
+    out.push(...([(Number(BigInt(this.$fpayload.length))) & 0xFFn, ((Number(BigInt(this.$fpayload.length))) >> 8n) & 0xFFn, ((Number(BigInt(this.$fpayload.length))) >> 16n) & 0xFFn, ((Number(BigInt(this.$fpayload.length))) >> 24n) & 0xFFn]));
+    out.push(...(this.$fpayload));
+    return out;
   }
 }
 
@@ -2543,7 +4306,7 @@ return capacity; } else { return TfheBootstrapTableError.RingCapacityExceeded; }
       test_poly[Number(index)] = (() => { if (logical[Number(entry)]) {
   return half_q4;
 } else {
-  return ((-((half_q4)) & 0xFFFFFFFFn));
+  return wrappingNeg(half_q4, 32);
 } })();
       index = fieldAdd(index, 1n);
     }
@@ -3449,6 +5212,188 @@ export class Sponge_Shake256 { constructor(public _0: Shake256) {}
 }
 export type Sponge = Sponge_Shake128 | Sponge_Shake256;
 
+export class PlanOp_Const { constructor(public $fout: bigint, public $fvalue: boolean) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fout), __zeroValue(this.$fvalue)) as this; }
+}
+export class PlanOp_Not { constructor(public $finput: bigint, public $fout: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$finput), __zeroValue(this.$fout)) as this; }
+}
+export class PlanOp_Lut { constructor(public $finputs: LutInputs, public $ftable: bigint, public $fout: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$finputs), __zeroValue(this.$ftable), __zeroValue(this.$fout)) as this; }
+}
+export class PlanOp_CircuitBootstrap { constructor(public $finput: bigint, public $fout: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$finput), __zeroValue(this.$fout)) as this; }
+}
+export class PlanOp_RgswMux { constructor(public $fsel: bigint, public $fthen_cell: bigint, public $felse_cell: bigint, public $fout: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fsel), __zeroValue(this.$fthen_cell), __zeroValue(this.$felse_cell), __zeroValue(this.$fout)) as this; }
+}
+export type PlanOp = PlanOp_Const | PlanOp_Not | PlanOp_Lut | PlanOp_CircuitBootstrap | PlanOp_RgswMux;
+
+export class ProfileId_Toy {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class ProfileId_ToyNoisy {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class ProfileId_Std128 {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class ProfileId_Custom {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type ProfileId = ProfileId_Toy | ProfileId_ToyNoisy | ProfileId_Std128 | ProfileId_Custom;
+
+export class PlanError_BadTableShape { constructor(public $ftable: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$ftable)) as this; }
+}
+export class PlanError_ArityExceedsKMax { constructor(public $ftable: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$ftable)) as this; }
+}
+export class PlanError_BadReference {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class PlanError_BadOutput {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class PlanError_BudgetInconsistent {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type PlanError = PlanError_BadTableShape | PlanError_ArityExceedsKMax | PlanError_BadReference | PlanError_BadOutput | PlanError_BudgetInconsistent;
+
+export class EncodeError_InvalidPlan { constructor(public _0: PlanError) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export class EncodeError_TooLarge {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type EncodeError = EncodeError_InvalidPlan | EncodeError_TooLarge;
+
+export class DecodeError_BadMagic {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class DecodeError_UnsupportedVersion {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class DecodeError_UnknownTag {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class DecodeError_Truncated {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class DecodeError_TooLarge {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class DecodeError_TrailingBytes {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class DecodeError_InvalidPlan { constructor(public _0: PlanError) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export type DecodeError = DecodeError_BadMagic | DecodeError_UnsupportedVersion | DecodeError_UnknownTag | DecodeError_Truncated | DecodeError_TooLarge | DecodeError_TrailingBytes | DecodeError_InvalidPlan;
+
+export class LutError_AddressShapeInvalid {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class LutError_ArityExceedsCircuitMax {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class LutError_ShapeUnsupported {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type LutError = LutError_AddressShapeInvalid | LutError_ArityExceedsCircuitMax | LutError_ShapeUnsupported;
+
+export class LabelEncodingError_FieldElementOutOfRange { constructor(public $findex: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$findex)) as this; }
+}
+export class LabelEncodingError_NonCanonicalElement { constructor(public $findex: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$findex)) as this; }
+}
+export type LabelEncodingError = LabelEncodingError_FieldElementOutOfRange | LabelEncodingError_NonCanonicalElement;
+
+export class LabelBatchPaddingError_TooFewSlots { constructor(public $fslots: bigint, public $fused: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fslots), __zeroValue(this.$fused)) as this; }
+}
+export class LabelBatchPaddingError_ChoiceLengthMismatch { constructor(public $fexpected: bigint, public $factual: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fexpected), __zeroValue(this.$factual)) as this; }
+}
+export type LabelBatchPaddingError = LabelBatchPaddingError_TooFewSlots | LabelBatchPaddingError_ChoiceLengthMismatch;
+
+export class LabelBatchDecodeError_LengthMismatch {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class LabelBatchDecodeError_NonCanonicalLabel { constructor(public _0: LabelEncodingError) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export type LabelBatchDecodeError = LabelBatchDecodeError_LengthMismatch | LabelBatchDecodeError_NonCanonicalLabel;
+
+export class BatchError_EvenOffset {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class BatchError_MismatchedPair { constructor(public $findex: bigint) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$findex)) as this; }
+}
+export class BatchError_LengthMismatch {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type BatchError = BatchError_EvenOffset | BatchError_MismatchedPair | BatchError_LengthMismatch;
+
+export class Error_InvalidParameters {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_LengthMismatch {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_NonCanonicalPlaintext {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_Randomness {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_Noise {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_Arithmetic {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type Error = Error_InvalidParameters | Error_LengthMismatch | Error_NonCanonicalPlaintext | Error_Randomness | Error_Noise | Error_Arithmetic;
+
+export class Stage_PublicParameters {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Stage_ReusableCiphertext {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Stage_PerUseCiphertext {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Stage_SelectionKey {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Stage_Complete {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Stage_Error {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type Stage = Stage_PublicParameters | Stage_ReusableCiphertext | Stage_PerUseCiphertext | Stage_SelectionKey | Stage_Complete | Stage_Error;
+
+export class FrameError_Truncated {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class FrameError_UnsupportedFormat {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class FrameError_UnknownStage {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class FrameError_PayloadTooLarge {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class FrameError_LengthMismatch {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type FrameError = FrameError_Truncated | FrameError_UnsupportedFormat | FrameError_UnknownStage | FrameError_PayloadTooLarge | FrameError_LengthMismatch;
+
 export class TfheBootstrapTableError_AddressWidthOutOfRange {
   __zero(): this { return new (this.constructor as any)() as this; }
 }
@@ -3483,7 +5428,21 @@ export const SUB_VOLE_K = 3n;
 export const L_HAT_BYTES = 16n;
 export const W_GRIND = 4n;
 export const COM_BYTES = 32n;
+export const MAX_LUT_ARITY = 32n;
+export const MAGIC = new Uint8Array([/* byte string */]);
+export const VERSION = 1n;
+export const MAX_ITEMS = fieldShl(1n, 20n);
 export const FALSE = 0n;
+export const SECURITY_BITS = 128n;
+export const PAPER_PROFILE = new PaperProfile({ $fsecurity_bits: SECURITY_BITS, $fring_degree: 4096n, $fmodulus_bits: 109n, $fbatch_messages: 699050n });
+export const REFERENCE_PLAINTEXT_MODULUS = 1125899906826241n;
+export const REFERENCE_DELTA = 576460752303415297n;
+export const SMALL_NOISE_STANDARD_DEVIATION = 4n;
+export const SMALL_NOISE_MAX_DEVIATION = 512n;
+export const LARGE_NOISE_STANDARD_DEVIATION = 1000n;
+export const LARGE_NOISE_MAX_DEVIATION = 128000n;
+export const REFERENCE_PARAMETERS = new Parameters({ $fdegree: 4096n, $fwidth: 512n, $fplaintext_modulus: REFERENCE_PLAINTEXT_MODULUS, $fdelta: REFERENCE_DELTA, $fgadget_base: fieldShl(1n, 28n), $fgadget_digits: 4n });
+export const HEADER_BYTES = fieldAdd(fieldAdd(fieldAdd(fieldAdd(fieldAdd(fieldAdd(fieldAdd(8n, 2n), 1n), 32n), 32n), 32n), 8n), 4n);
 export const Q4 = fieldShl(1n, 30n);
 export const AND_VARS = 7n;
 export const AND_CONS = 3n;
@@ -3535,6 +5494,16 @@ export const D2 = fe_const(D2_LIMBS);
 export const BASE_X_LIMBS = [14507833142362363162n, 7578651490590762930n, 13881468655802702940n, 2407515759118799870n];
 export const BASE_Y_LIMBS = [7378697629483820632n, 7378697629483820646n, 7378697629483820646n, 7378697629483820646n];
 
+export function add_mod(left: bigint, right: bigint, modulus: bigint): bigint
+{
+  const sum = fieldAdd(left, right);
+  return (() => { if ((sum >= modulus)) {
+  return fieldSub(sum, modulus);
+} else {
+  return sum;
+} })();
+}
+
 export function add_round_key(state: bigint[], round_key: bigint[])
 {
   for (let i = 0n; i < BLOCK; i += 1n)   {
@@ -3546,7 +5515,7 @@ export function add_to_lower_word(iv: bigint[], counter: bigint): bigint[]
 {
   let out = iv;
   const lower = u32_from_le_bytes([out[Number(0n)], out[Number(1n)], out[Number(2n)], out[Number(3n)]]);
-  const new_ = wrappingAdd(lower, counter);
+  const new_ = wrappingAdd(lower, counter, 32);
   const bytes = [(new_) & 0xFFn, ((new_) >> 8n) & 0xFFn, ((new_) >> 16n) & 0xFFn, ((new_) >> 24n) & 0xFFn];
   out[Number(0n)] = bytes[Number(0n)];
   out[Number(1n)] = bytes[Number(1n)];
@@ -3558,7 +5527,7 @@ export function add_to_lower_word(iv: bigint[], counter: bigint): bigint[]
 export function add_to_upper_word(iv: bigint[], tweak: bigint)
 {
   const upper = u32_from_le_bytes([iv[Number(12n)], iv[Number(13n)], iv[Number(14n)], iv[Number(15n)]]);
-  const new_ = wrappingAdd(upper, tweak);
+  const new_ = wrappingAdd(upper, tweak, 32);
   const bytes = [(new_) & 0xFFn, ((new_) >> 8n) & 0xFFn, ((new_) >> 16n) & 0xFFn, ((new_) >> 24n) & 0xFFn];
   iv[Number(12n)] = bytes[Number(0n)];
   iv[Number(13n)] = bytes[Number(1n)];
@@ -3591,7 +5560,7 @@ export function and_test_poly(big_n: bigint): bigint[]
   let v = Array.from({length: Number(big_n)}, () => 0n);
   const half_q4 = fieldShr(Q4, 1n);
   for (let k = 0n; k < (big_n / 2n); k += 1n)   {
-    v[Number(k)] = ((-((half_q4)) & 0xFFFFFFFFn));
+    v[Number(k)] = wrappingNeg(half_q4, 32);
   }
   for (let k = (big_n / 2n); k < big_n; k += 1n)   {
     v[Number(k)] = half_q4;
@@ -3619,9 +5588,409 @@ export function bea95_chosen_bit(delta: any, r0: any, x: boolean, z: any, b: boo
   return [r0_chosen, z, d];
 }
 
+export function binfhe_blind_rotate(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, bs_ell: bigint, bs_base_log: bigint, ct: BinfheLweCiphertextDyn, test_poly: bigint[], bsk: BinfheRgswCiphertextDyn[]): BinfheRlweCiphertextDyn
+{
+  const two_n = fieldMul(2n, big_n);
+  const b_exp = exponent(ct.$fb);
+  let acc = binfhe_rlwe_trivial(test_poly);
+  if (!__equals(b_exp, 0n))   {
+    acc = binfhe_rlwe_rotate(acc, fieldSub(two_n, b_exp));
+  }
+  for (const [i, row] of bsk.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
+    const a_exp = exponent(ct.$fa[Number(i)]);
+    if (!__equals(a_exp, 0n))     {
+      const rotated = binfhe_rlwe_rotate(acc, a_exp);
+      acc = binfhe_rgsw_cmux(row, rotated, acc);
+    }
+  }
+  return acc;
+}
+
+export function binfhe_cmux(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, k_max: bigint, sel: BinfheLweCiphertextDyn, a: BinfheLweCiphertextDyn, b: BinfheLweCiphertextDyn, bk: BinfheBootstrappingKeyDyn): BinfheLweCiphertextDyn
+{
+  return binfhe_lut_read_dyn([sel, a, b], TABLE, k_max, bk);
+}
+
+export function binfhe_external_product(n: bigint, log: bigint, ell: bigint, base_log: bigint, c: BinfheRgswCiphertextDyn, ct: BinfheRlweCiphertextDyn): BinfheRlweCiphertextDyn
+{
+  const a_dec = gadget.gadget_poly_decompose(ct.$fa);
+  const b_dec = gadget.gadget_poly_decompose(ct.$fb);
+  let out_a = Array.from({length: Number(n)}, () => 0n);
+  let out_b = Array.from({length: Number(n)}, () => 0n);
+  for (let j = 0n; j < ell; j += 1n)   {
+    const row = c.$frows[Number(j)];
+    const a0 = binfhe_poly_mul_neg(a_dec[Number(j)], row.$frlwe0.$fa);
+    const a1 = binfhe_poly_mul_neg(a_dec[Number(j)], row.$frlwe0.$fb);
+    const b0 = binfhe_poly_mul_neg(b_dec[Number(j)], row.$frlwe1.$fa);
+    const b1 = binfhe_poly_mul_neg(b_dec[Number(j)], row.$frlwe1.$fb);
+    for (let k = 0n; k < n; k += 1n)     {
+      out_a[Number(k)] = wrappingAdd(wrappingAdd(out_a[Number(k)], a0[Number(k)], 32), b0[Number(k)], 32);
+      out_b[Number(k)] = wrappingAdd(wrappingAdd(out_b[Number(k)], a1[Number(k)], 32), b1[Number(k)], 32);
+    }
+  }
+  for (let k = 0n; k < n; k += 1n)   {
+    out_a[Number(k)] = torus.reduce(out_a[Number(k)]);
+    out_b[Number(k)] = torus.reduce(out_b[Number(k)]);
+  }
+  return new BinfheRlweCiphertextDyn({ $fa: out_a, $fb: out_b, $fn: 0n });
+}
+
+export function binfhe_gate_and(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, k_max: bigint, a: BinfheLweCiphertextDyn, b: BinfheLweCiphertextDyn, bk: BinfheBootstrappingKeyDyn): BinfheLweCiphertextDyn
+{
+  return binfhe_lut_read_dyn([a, b], [false, false, false, true], k_max, bk);
+}
+
+export function binfhe_gate_or(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, k_max: bigint, a: BinfheLweCiphertextDyn, b: BinfheLweCiphertextDyn, bk: BinfheBootstrappingKeyDyn): BinfheLweCiphertextDyn
+{
+  return binfhe_lut_read_dyn([a, b], [false, true, true, true], k_max, bk);
+}
+
+export function binfhe_gate_xor(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, k_max: bigint, a: BinfheLweCiphertextDyn, b: BinfheLweCiphertextDyn, bk: BinfheBootstrappingKeyDyn): BinfheLweCiphertextDyn
+{
+  return binfhe_lut_read_dyn([a, b], [false, true, true, false], k_max, bk);
+}
+
+export function binfhe_gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, eta: bigint, lwe_sk: BinfheLweSecretKeyDyn, rlwe_sk: BinfheRlweSecretKeyDyn, rng: any): BinfheBootstrappingKeyDyn
+{
+  const bsk = Array.from({length: Number(n_lwe - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return binfhe_rgsw_encrypt(!__equals(lwe_sk.$fkey[Number(i)], 0n), rlwe_sk, rng);
+})());
+  const ksk = new BinfheKeySwitchingKeyDyn({ $fksk: Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  const msg = BigInt(Math.imul(Number(rlwe_sk.$fkey[Number(i)]), Number(gadget.level_factor(ks_base_log, j))));
+  return binfhe_lwe_encrypt_raw(torus.reduce(msg), lwe_sk, rng);
+})());
+})()), $fn_lwe: 0n, $fbig_n: 0n, $fks_ell: 0n });
+  return new BinfheBootstrappingKeyDyn({ $fbsk: bsk, $fksk: ksk, $fn_lwe: 0n, $fbig_n: 0n, $fbs_ell: 0n, $fks_ell: 0n });
+}
+
+export function binfhe_gen_lwe_secret_key<R>(n: bigint, rng: any): BinfheLweSecretKeyDyn
+{
+  let key = Array.from({length: Number(n)}, () => 0n);
+  let i = 0n;
+  while ((i < n))   {
+    let word = rng.next_u32();
+    const take = BigInt(Math.min(Number(fieldSub(n, i)), Number(32n)));
+    for (let _ = 0n; _ < take; _ += 1n)     {
+      key[Number(i)] = ((fieldBitand(word, 1n)) & 0xFFn);
+      word = fieldShr(word, 1n);
+      i = fieldAdd(i, 1n);
+    }
+  }
+  return new BinfheLweSecretKeyDyn({ $fkey: key, $fn: 0n });
+}
+
+export function binfhe_gen_rlwe_secret_key<R>(n: bigint, rng: any): BinfheRlweSecretKeyDyn
+{
+  let key = Array.from({length: Number(n)}, () => 0n);
+  for (let __mut_1 = 0n; __mut_1 < BigInt(key.length); __mut_1 += 1n) {
+  {
+    key[Number(__mut_1)] = Number(fieldBitand(rng.next_u32(), 1n));
+  }}
+  return new BinfheRlweSecretKeyDyn({ $fkey: key, $fn: 0n });
+}
+
+export function binfhe_key_switch<K>(n_lwe: bigint, big_n: bigint, log_mod_ks: bigint, ks_ell: bigint, ks_base_log: bigint, ct: BinfheLweCiphertextDyn, ksk: any): BinfheLweCiphertextDyn
+{
+  const ksk_rows = ksk.ksk_rows();
+  let out_a = Array.from({length: Number(n_lwe)}, () => 0n);
+  let out_b = ct.$fb;
+  for (let i = 0n; i < big_n; i += 1n)   {
+    const digits = gadget.gadget_decompose(ct.$fa[Number(i)]);
+    for (let j = 0n; j < ks_ell; j += 1n)     {
+      const d = digits[Number(j)];
+      if (__equals(d, 0n))       {
+        continue;
+      }
+      const entry = ksk_rows[Number(i)][Number(j)];
+      for (let k = 0n; k < n_lwe; k += 1n)       {
+        out_a[Number(k)] = wrappingSub(out_a[Number(k)], BigInt(Math.imul(Number(d), Number(entry.$fa[Number(k)]))), 32);
+      }
+      out_b = wrappingSub(out_b, BigInt(Math.imul(Number(d), Number(entry.$fb))), 32);
+    }
+  }
+  for (let k = 0n; k < n_lwe; k += 1n)   {
+    out_a[Number(k)] = torus.reduce(out_a[Number(k)]);
+  }
+  return new BinfheLweCiphertextDyn({ $fa: out_a, $fb: torus.reduce(out_b), $fn: 0n });
+}
+
+export function binfhe_lut_read(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, addr_bits: bigint, table_len: bigint, k_max: bigint, addr: BinfheLweCiphertextDyn[], lut: LutDyn, bk: BinfheBootstrappingKeyDyn): BinfheLweCiphertextDyn
+{
+  const delta = wire_delta(k_max);
+  if (lut.is_constant())   {
+    return binfhe_trivial(lut.constant_value(), delta);
+  }
+  let combined = binfhe_trivial(false, 0n);
+  for (const [j, bit] of addr.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
+    const scaled = binfhe_lwe_scale(bit, fieldShl(1n, j));
+    combined = binfhe_lwe_add(combined, scaled);
+  }
+  combined = binfhe_lwe_add_const(combined, (delta / 2n));
+  return binfhe_pbs_core(combined, lut.test_polynomial(), bk);
+}
+
+export function binfhe_lut_read_dyn(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, inputs: BinfheLweCiphertextDyn[], table: boolean[], k_max: bigint, bk: BinfheBootstrappingKeyDyn): BinfheLweCiphertextDyn
+{
+  const delta = wire_delta(Number(k_max));
+  if (table_is_constant(table))   {
+    return binfhe_trivial(table[Number(0n)], delta);
+  }
+  const arity = Number(Math.clz32((BigInt(table.length)) & -((BigInt(table.length)) | 0)));
+  const test_poly = fill_test_poly(table, arity, Number(k_max), log_q, log_q_lwe);
+  let combined = binfhe_trivial(false, 0n);
+  for (const [j, bit] of inputs.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
+    const scaled = binfhe_lwe_scale(bit, fieldShl(1n, j));
+    combined = binfhe_lwe_add(combined, scaled);
+  }
+  combined = binfhe_lwe_add_const(combined, (delta / 2n));
+  return binfhe_pbs_core(combined, test_poly, bk);
+}
+
+export function binfhe_lwe_add(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, y: BinfheLweCiphertextDyn): BinfheLweCiphertextDyn
+{
+  let a = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    a[Number(i)] = torus.torus_add(x.$fa[Number(i)], y.$fa[Number(i)]);
+  }
+  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus.torus_add(x.$fb, y.$fb), $fn: 0n });
+}
+
+export function binfhe_lwe_add_const(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, c: bigint): BinfheLweCiphertextDyn
+{
+  return new BinfheLweCiphertextDyn({ $fa: x.$fa, $fb: torus.torus_add(x.$fb, c), $fn: 0n });
+}
+
+export function binfhe_lwe_decrypt(n: bigint, log_m: bigint, ct: BinfheLweCiphertextDyn, sk: BinfheLweSecretKeyDyn, delta: bigint): boolean
+{
+  return lwe_decode(lwe_phase(ct, sk), delta);
+}
+
+export function binfhe_lwe_encrypt<R>(n: bigint, log_m: bigint, eta: bigint, m: boolean, delta: bigint, sk: BinfheLweSecretKeyDyn, rng: any): BinfheLweCiphertextDyn
+{
+  const msg = (() => { if (m) {
+  return delta;
+} else {
+  return 0n;
+} })();
+  return binfhe_lwe_encrypt_raw(msg, sk, rng);
+}
+
+export function binfhe_lwe_encrypt_raw<R>(n: bigint, log_m: bigint, eta: bigint, msg: bigint, sk: BinfheLweSecretKeyDyn, rng: any): BinfheLweCiphertextDyn
+{
+  let a = Array.from({length: Number(n)}, () => 0n);
+  for (let __mut_1 = 0n; __mut_1 < BigInt(a.length); __mut_1 += 1n) {
+  {
+    a[Number(__mut_1)] = torus.reduce(rng.next_u32());
+  }}
+  let dot = 0n;
+  for (let i = 0n; i < n; i += 1n)   {
+    dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.$fkey[Number(i)])))), 32);
+  }
+  const e = sampler.sample_error(rng);
+  const b = torus.reduce(wrappingAdd(wrappingAdd(dot, e, 32), msg, 32));
+  return new BinfheLweCiphertextDyn({ $fa: a, $fb: b, $fn: 0n });
+}
+
+export function binfhe_lwe_neg(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn): BinfheLweCiphertextDyn
+{
+  let a = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    a[Number(i)] = torus.torus_neg(x.$fa[Number(i)]);
+  }
+  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus.torus_neg(x.$fb), $fn: 0n });
+}
+
+export function binfhe_lwe_scale(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, c: bigint): BinfheLweCiphertextDyn
+{
+  let a = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    a[Number(i)] = torus.mul_exact(x.$fa[Number(i)], c);
+  }
+  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus.mul_exact(x.$fb, c), $fn: 0n });
+}
+
+export function binfhe_lwe_sub(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, y: BinfheLweCiphertextDyn): BinfheLweCiphertextDyn
+{
+  let a = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    a[Number(i)] = torus.torus_sub(x.$fa[Number(i)], y.$fa[Number(i)]);
+  }
+  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus.torus_sub(x.$fb, y.$fb), $fn: 0n });
+}
+
+export function binfhe_not(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, delta: bigint): BinfheLweCiphertextDyn
+{
+  let out = binfhe_lwe_neg(x);
+  out.$fb = torus.torus_add(out.$fb, delta);
+  return out;
+}
+
+export function binfhe_pbs_core<BK>(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, ct: BinfheLweCiphertextDyn, test_poly: bigint[], bk: any): BinfheLweCiphertextDyn
+{
+  const acc = binfhe_blind_rotate(ct, test_poly, bk.bsk_rows());
+  const extracted = binfhe_sample_extract(acc);
+  const at_ks = mod_switch_lwe(extracted);
+  const switched = binfhe_key_switch(at_ks, bk.ksk_ref());
+  return mod_switch_lwe(switched);
+}
+
+export function binfhe_poly_mul_neg(n: bigint, log: bigint, a: bigint[], b: bigint[]): bigint[]
+{
+  let result = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    for (let j = 0n; j < n; j += 1n)     {
+      const deg = fieldAdd(i, j);
+      const term = BigInt(Math.imul(Number(a[Number(i)]), Number(b[Number(j)])));
+      if ((deg < n))       {
+        result[Number(deg)] = wrappingAdd(result[Number(deg)], term, 32);
+      } else       {
+        result[Number(fieldSub(deg, n))] = wrappingSub(result[Number(fieldSub(deg, n))], term, 32);
+      }
+    }
+  }
+  for (let __mut_1 = 0n; __mut_1 < BigInt(result.length); __mut_1 += 1n) {
+  {
+    result[Number(__mut_1)] = torus.reduce(result[Number(__mut_1)]);
+  }}
+  return result;
+}
+
+export function binfhe_poly_rotate(n: bigint, log: bigint, p: bigint[], exp: bigint): bigint[]
+{
+  const exp_1 = (exp % fieldMul(2n, n));
+  let result = Array.from({length: Number(n)}, () => 0n);
+  for (const [i, coeff] of p.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
+    const dest = fieldAdd(i, exp_1);
+    if ((dest < n))     {
+      result[Number(dest)] = wrappingAdd(result[Number(dest)], coeff, 32);
+    } else if ((dest < fieldMul(2n, n)))     {
+      result[Number(fieldSub(dest, n))] = wrappingSub(result[Number(fieldSub(dest, n))], coeff, 32);
+    } else     {
+      result[Number(fieldSub(dest, fieldMul(2n, n)))] = wrappingAdd(result[Number(fieldSub(dest, fieldMul(2n, n)))], coeff, 32);
+    }
+  }
+  for (let __mut_1 = 0n; __mut_1 < BigInt(result.length); __mut_1 += 1n) {
+  {
+    result[Number(__mut_1)] = torus.reduce(result[Number(__mut_1)]);
+  }}
+  return result;
+}
+
+export function binfhe_rgsw_cmux(n: bigint, log: bigint, ell: bigint, base_log: bigint, c: BinfheRgswCiphertextDyn, d1: BinfheRlweCiphertextDyn, d0: BinfheRlweCiphertextDyn): BinfheRlweCiphertextDyn
+{
+  const diff = binfhe_rlwe_sub(d1, d0);
+  const prod = binfhe_external_product(c, diff);
+  return binfhe_rlwe_add(d0, prod);
+}
+
+export function binfhe_rgsw_encrypt<R>(n: bigint, log: bigint, ell: bigint, base_log: bigint, eta: bigint, m: boolean, sk: BinfheRlweSecretKeyDyn, rng: any): BinfheRgswCiphertextDyn
+{
+  const rows = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  const g = gadget.level_factor(base_log, j);
+  const contrib = (() => { if (m) {
+  return g;
+} else {
+  return 0n;
+} })();
+  let rlwe0 = binfhe_rlwe_encrypt_scalar(0n, sk, rng);
+  rlwe0.$fa[Number(0n)] = torus.torus_add(rlwe0.$fa[Number(0n)], contrib);
+  const rlwe1 = binfhe_rlwe_encrypt_scalar(contrib, sk, rng);
+  return new BinfheRgswRowDyn({ $frlwe0: rlwe0, $frlwe1: rlwe1, $fn: 0n });
+})());
+  return new BinfheRgswCiphertextDyn({ $frows: rows, $fn: 0n, $fell: 0n });
+}
+
+export function binfhe_rlwe_add(n: bigint, log: bigint, x: BinfheRlweCiphertextDyn, y: BinfheRlweCiphertextDyn): BinfheRlweCiphertextDyn
+{
+  let out = x;
+  for (let i = 0n; i < n; i += 1n)   {
+    out.$fa[Number(i)] = torus.torus_add(out.$fa[Number(i)], y.$fa[Number(i)]);
+    out.$fb[Number(i)] = torus.torus_add(out.$fb[Number(i)], y.$fb[Number(i)]);
+  }
+  return out;
+}
+
+export function binfhe_rlwe_encrypt_poly<R>(n: bigint, log: bigint, eta: bigint, msg: bigint[], sk: BinfheRlweSecretKeyDyn, rng: any): BinfheRlweCiphertextDyn
+{
+  const a: bigint[] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => torus.reduce(rng.next_u32()));
+  let b = binfhe_poly_mul_neg(a, sk.$fkey);
+  for (let i = 0n; i < n; i += 1n)   {
+    b[Number(i)] = torus.reduce(wrappingAdd(wrappingAdd(b[Number(i)], sampler.sample_error(rng), 32), msg[Number(i)], 32));
+  }
+  return new BinfheRlweCiphertextDyn({ $fa: a, $fb: b, $fn: 0n });
+}
+
+export function binfhe_rlwe_encrypt_scalar<R>(n: bigint, log: bigint, eta: bigint, m: bigint, sk: BinfheRlweSecretKeyDyn, rng: any): BinfheRlweCiphertextDyn
+{
+  let msg = Array.from({length: Number(n)}, () => 0n);
+  msg[Number(0n)] = m;
+  return binfhe_rlwe_encrypt_poly(msg, sk, rng);
+}
+
+export function binfhe_rlwe_phase(n: bigint, log: bigint, ct: BinfheRlweCiphertextDyn, sk: BinfheRlweSecretKeyDyn): bigint[]
+{
+  const product = binfhe_poly_mul_neg(ct.$fa, sk.$fkey);
+  let phase = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    phase[Number(i)] = torus.torus_sub(ct.$fb[Number(i)], product[Number(i)]);
+  }
+  return phase;
+}
+
+export function binfhe_rlwe_rotate(n: bigint, log: bigint, ct: BinfheRlweCiphertextDyn, exp: bigint): BinfheRlweCiphertextDyn
+{
+  return new BinfheRlweCiphertextDyn({ $fa: binfhe_poly_rotate(ct.$fa, exp), $fb: binfhe_poly_rotate(ct.$fb, exp), $fn: 0n });
+}
+
+export function binfhe_rlwe_sub(n: bigint, log: bigint, x: BinfheRlweCiphertextDyn, y: BinfheRlweCiphertextDyn): BinfheRlweCiphertextDyn
+{
+  let out = x;
+  for (let i = 0n; i < n; i += 1n)   {
+    out.$fa[Number(i)] = torus.torus_sub(out.$fa[Number(i)], y.$fa[Number(i)]);
+    out.$fb[Number(i)] = torus.torus_sub(out.$fb[Number(i)], y.$fb[Number(i)]);
+  }
+  return out;
+}
+
+export function binfhe_rlwe_trivial(n: bigint, log: bigint, msg: bigint[]): BinfheRlweCiphertextDyn
+{
+  return new BinfheRlweCiphertextDyn({ $fa: Array.from({length: Number(n)}, () => 0n), $fb: msg, $fn: 0n });
+}
+
+export function binfhe_sample_extract(n: bigint, log: bigint, ct: BinfheRlweCiphertextDyn): BinfheLweCiphertextDyn
+{
+  let a_lwe = Array.from({length: Number(n)}, () => 0n);
+  a_lwe[Number(0n)] = ct.$fa[Number(0n)];
+  for (let i = 1n; i < n; i += 1n)   {
+    a_lwe[Number(i)] = torus.torus_neg(ct.$fa[Number(fieldSub(n, i))]);
+  }
+  return new BinfheLweCiphertextDyn({ $fa: a_lwe, $fb: ct.$fb[Number(0n)], $fn: 0n });
+}
+
+export function binfhe_trivial(n: bigint, log_m: bigint, m: boolean, delta: bigint): BinfheLweCiphertextDyn
+{
+  return new BinfheLweCiphertextDyn({ $fa: Array.from({length: Number(n)}, () => 0n), $fb: (() => { if (m) {
+  return delta;
+} else {
+  return 0n;
+} })(), $fn: 0n });
+}
+
 export function bit_msb(alpha: bigint, h: bigint, i: bigint): boolean
 {
   return __equals(fieldBitand(fieldShr(alpha, fieldSub(fieldSub(h, 1n), i)), 1n), 1n);
+}
+
+export function bit_reverse(values: bigint[])
+{
+  const bits = ilog2(BigInt(values.length));
+  for (let index = 0n; index < BigInt(values.length); index += 1n)   {
+    const reversed = fieldShr(index.reverse_bits(), fieldSub(usize.BITS, bits));
+    if ((index < reversed))     {
+      values.swap(index, reversed);
+    }
+  }
 }
 
 export function bit_to_g128(b: boolean): Galois128
@@ -3700,6 +6069,21 @@ export function bytes_to_bits(bytes: bigint[]): Vec<bigint>
     }
   }
   return bits;
+}
+
+export function cbd<R>(eta: bigint, rng: any): i32
+{
+  if (__equals(eta, 0n))   {
+    return 0n;
+  }
+  const mask = (() => { if ((eta >= 32n)) {
+  return u32.MAX;
+} else {
+  return fieldSub(fieldShl(1n, eta), 1n);
+} })();
+  const a = (/* count_ones */ ((() => { let _n = fieldBitand(rng.next_u32(), mask), _c = 0; while (_n) { _c += _n & 1; _n >>>= 1; } return _c; })()) as unknown as i32);
+  const b = (/* count_ones */ ((() => { let _n = fieldBitand(rng.next_u32(), mask), _c = 0; while (_n) { _c += _n & 1; _n >>>= 1; } return _c; })()) as unknown as i32);
+  return fieldSub(a, b);
 }
 
 export function cert_and(): GateCertificate
@@ -3781,6 +6165,42 @@ export function chall3(chall_2: bigint[], a_hat: bigint[], b_hat: bigint[], c_ha
   t.absorb(b_hat);
   t.absorb(c_hat);
   return t.squeeze(lambda);
+}
+
+export function check_lut_shape(addr_bits: bigint, table_len: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, k_max: bigint): Result<bigint, LutError>
+{
+  if ((__equals(addr_bits, 0n) || (addr_bits >= Number(usize.BITS))))   {
+    return LutError.AddressShapeInvalid;
+  }
+  if (!__equals(table_len, fieldShl(1n, addr_bits)))   {
+    return LutError.AddressShapeInvalid;
+  }
+  if ((addr_bits > k_max))   {
+    return LutError.ArityExceedsCircuitMax;
+  }
+  if (((((((fieldAdd(Number(k_max), 2n) > log_q_lwe) || !big_n.is_power_of_two()) || (fieldShl(1n, k_max) > big_n)) || !__equals(fieldShl(1n, log_q_lwe), fieldMul(2n, big_n))) || (log_q_lwe > log_q)) || (log_q > 32n)))   {
+    return LutError.ShapeUnsupported;
+  }
+  return fieldShr(big_n, k_max);
+}
+
+export function check_profile(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_base_log: bigint, bs_ell: bigint, ks_base_log: bigint, ks_ell: bigint, priv_base_log: bigint, priv_ell: bigint)
+{
+}
+
+export function circuit_bootstrap(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, priv_ell: bigint, priv_base_log: bigint, ct: BinfheLweCiphertextDyn, cbk: CircuitBootstrappingKeyDyn, k_max: bigint): BinfheRgswCiphertextDyn
+{
+  const delta = wire_delta(Number(k_max));
+  const centered = binfhe_lwe_add_const(ct, (delta / 2n));
+  const rows = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  const test_poly = level_test_poly(j, bs_base_log, k_max);
+  const acc = binfhe_blind_rotate(centered, test_poly, cbk.$fbk.$fbsk);
+  const extracted = binfhe_sample_extract(acc);
+  const rlwe0 = priv_ks(extracted, cbk.$fprivksk.$fa_col, cbk.$fprivksk.$fa_body);
+  const rlwe1 = priv_ks(extracted, cbk.$fprivksk.$fb_col, cbk.$fprivksk.$fb_body);
+  return new BinfheRgswRowDyn({ $frlwe0: rlwe0, $frlwe1: rlwe1, $fn: 0n });
+})());
+  return new BinfheRgswCiphertextDyn({ $frows: rows, $fn: 0n, $fell: 0n });
 }
 
 export function cmux(big_n: bigint, bs_ell: bigint, bs_bg_log: bigint, c: RgswCiphertextDyn, d1: RlweCiphertextDyn, d0: RlweCiphertextDyn): RlweCiphertextDyn
@@ -4029,6 +6449,26 @@ export function decode_iknp_u(bytes: bigint[]): IknpUMsg
   return new IknpUMsg({ $fu_cols: u_cols });
 }
 
+export function decode_label_16(elements: bigint[]): Result<bigint[], LabelEncodingError>
+{
+  const modulus = ring_lwe.REFERENCE_PLAINTEXT_MODULUS;
+  let label = Array.from({length: Number(16n)}, () => 0n);
+  let offset = 0n;
+  for (const [index, [element, width]] of elements.map((__a: any, __i: number) => [__a, WIDTHS[__i]] as [typeof __a, any]).map((val: any, i: number) => [i, val] as [number, typeof val]))   {
+    if ((element >= modulus))     {
+      return new FieldElementOutOfRange({ $findex: index });
+    }
+    if ((element >= fieldShl(1n, width)))     {
+      return new NonCanonicalElement({ $findex: index });
+    }
+    const bytes = [(element) & 0xFFn, ((element) >> 8n) & 0xFFn, ((element) >> 16n) & 0xFFn, ((element) >> 24n) & 0xFFn];
+    const count = Number((width / 8n));
+    (label.slice(Number(offset), Number(fieldAdd(offset, count)))).splice(0, (bytes.slice(0, Number(count))).length, ...(bytes.slice(0, Number(count))));
+    offset = fieldAdd(offset, count);
+  }
+  return label;
+}
+
 export function decode_lwe_crs(n: bigint, bytes: bigint[]): LweOtCrsDyn
 {
   let off = 0n;
@@ -4081,6 +6521,55 @@ export function decode_mpcot_reg(bytes: bigint[]): MpcotRegSenderMsg
   return new MpcotRegSenderMsg({ $fblocks: blocks });
 }
 
+export function decode_plan(bytes: bigint[]): Result<BootstrapPlan, DecodeError>
+{
+  let reader = new Reader({ $fbytes: bytes, $foffset: 0n });
+  if (!__equals(reader.take(4n), MAGIC))   {
+    return DecodeError.BadMagic;
+  }
+  if (!__equals(reader.byte(), VERSION))   {
+    return DecodeError.UnsupportedVersion;
+  }
+  const profile = parse_profile(reader.byte());
+  const k_max = reader.u32();
+  const num_inputs = reader.u32();
+  const num_cells = reader.u32();
+  const budget = new FailureBudget({ $fper_bootstrap_log2: reader.u32(), $ftotal_log2: reader.u32() });
+  const lut_count = reader.count();
+  let luts = /* Vec::with_capacity */ Array(lut_count);
+  for (let _ = 0n; _ < lut_count; _ += 1n)   {
+    const bit_count = reader.count();
+    const packed_len = bit_count.div_ceil(8n);
+    const packed = reader.take(packed_len);
+    if ((!__equals((bit_count % 8n), 0n) && packed.last().is_some_and((byte) => !__equals(fieldShr(byte, (bit_count % 8n)), 0n))))     {
+      return DecodeError.UnknownTag;
+    }
+    let entries = /* Vec::with_capacity */ Array(bit_count);
+    for (let bit = 0n; bit < bit_count; bit += 1n)     {
+      (entries).push(!__equals(fieldBitand(fieldShr(packed[Number((bit / 8n))], (bit % 8n)), 1n), 0n));
+    }
+    (luts).push(new LutSpec({ $fentries: entries }));
+  }
+  const layer_count = reader.count();
+  let layers = /* Vec::with_capacity */ Array(layer_count);
+  for (let _ = 0n; _ < layer_count; _ += 1n)   {
+    const op_count = reader.count();
+    let layer = /* Vec::with_capacity */ Array(op_count);
+    for (let _ = 0n; _ < op_count; _ += 1n)     {
+      (layer).push(read_op(reader));
+    }
+    (layers).push(layer);
+  }
+  const outputs = reader.ids();
+  const cell_outputs = reader.ids();
+  if (!__equals(reader.$foffset, BigInt(bytes.length)))   {
+    return DecodeError.TrailingBytes;
+  }
+  const plan = new BootstrapPlan({ $fprofile: profile, $fk_max: k_max, $fluts: luts, $flayers: layers, $fnum_inputs: num_inputs, $fnum_cells: num_cells, $foutputs: outputs, $fcell_outputs: cell_outputs, $fbudget: budget });
+  plan.validate().map_err(DecodeError.InvalidPlan);
+  return plan;
+}
+
 export function decode_spcot(bytes: bigint[]): [SpcotSenderMsg, bigint]
 {
   let off = 0n;
@@ -4127,6 +6616,11 @@ export function decrypt_coords(n: bigint, l: bigint, receiver: LweOtReceiverDyn,
 } })();
   }
   return out;
+}
+
+export function delta_out_full_width(delta_shift: bigint, upscale: bigint): bigint
+{
+  return fieldShl(1n, fieldAdd(delta_shift, upscale));
 }
 
 export function derive_and_q<T>(n: bigint, delta: DeltaDyn<T>, q_a: QDyn<T>, q_b: QDyn<T>, hat: T[]): QDyn<T>
@@ -4187,6 +6681,11 @@ export function ed_scalar_mul(p: any, k: bigint[]): EdPoint
     }
   }
   return acc;
+}
+
+export function embed_up(from: bigint, to: bigint, x: bigint): bigint
+{
+  return reduce(fieldShl(x, fieldSub(to, from_)));
 }
 
 export function encode_bits(seed: bigint[], k: bigint, n: bigint, u: boolean[]): Vec<boolean>
@@ -4255,6 +6754,14 @@ export function encode_iknp_u(msg: any): Vec<bigint>
   return buf;
 }
 
+export function encode_label_16(label: bigint[]): bigint[]
+{
+  const first = u64_from_le_bytes([label[Number(0n)], label[Number(1n)], label[Number(2n)], label[Number(3n)], label[Number(4n)], label[Number(5n)], 0n, 0n]);
+  const second = u64_from_le_bytes([label[Number(6n)], label[Number(7n)], label[Number(8n)], label[Number(9n)], label[Number(10n)], label[Number(11n)], 0n, 0n]);
+  const third = BigInt(u32_from_le_bytes([label[Number(12n)], label[Number(13n)], label[Number(14n)], label[Number(15n)]]));
+  return [first, second, third];
+}
+
 export function encode_lwe_crs(n: bigint, crs: LweOtCrsDyn): Vec<bigint>
 {
   let buf = /* Vec::with_capacity */ Array(fieldAdd(4n, fieldMul(4n, fieldAdd(fieldMul(n, n), n))));
@@ -4299,6 +6806,70 @@ export function encode_mpcot_reg(msg: any): Vec<bigint>
     buf.push(...(inner));
   }
   return buf;
+}
+
+export function encode_plan(plan: any): Result<Vec<bigint>, EncodeError>
+{
+  plan.validate().map_err(EncodeError.InvalidPlan);
+  if (((((((BigInt(plan.$fluts.length) > MAX_ITEMS) || (BigInt(plan.$flayers.length) > MAX_ITEMS)) || (BigInt(plan.$foutputs.length) > MAX_ITEMS)) || (BigInt(plan.$fcell_outputs.length) > MAX_ITEMS)) || plan.$flayers.any((layer) => (BigInt(layer.length) > MAX_ITEMS))) || plan.$fluts.any((lut) => (BigInt(lut.$fentries.length) > MAX_ITEMS))))   {
+    return EncodeError.TooLarge;
+  }
+  let bytes = [] as any[];
+  bytes.push(...(MAGIC));
+  (bytes).push(VERSION);
+  (bytes).push(profile_tag(plan.$fprofile));
+  put_u32(bytes, plan.$fk_max);
+  put_u32(bytes, plan.$fnum_inputs);
+  put_u32(bytes, plan.$fnum_cells);
+  put_u32(bytes, plan.$fbudget.$fper_bootstrap_log2);
+  put_u32(bytes, plan.$fbudget.$ftotal_log2);
+  put_u32(bytes, Number(BigInt(plan.$fluts.length)));
+  for (const lut of plan.$fluts)   {
+    put_u32(bytes, Number(BigInt(lut.$fentries.length)));
+    for (const chunk of lut.$fentries.chunks(8n))     {
+      let packed = 0n;
+      for (const [bit, entry] of chunk.map((val: any, i: number) => [i, val] as [number, typeof val]))       {
+        packed = fieldBitor(packed, fieldShl(((entry) & 0xFFn), bit));
+      }
+      (bytes).push(packed);
+    }
+  }
+  put_u32(bytes, Number(BigInt(plan.$flayers.length)));
+  for (const layer of plan.$flayers)   {
+    put_u32(bytes, Number(BigInt(layer.length)));
+    for (const op of layer)     {
+      return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None }), ("value", Ident { mutable: false, name: "value", subpat: None })], rest: false } */) { return (() => {
+  (bytes).push(0n);
+  put_u32(bytes, out);
+  (bytes).push(((value) & 0xFFn));
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  (bytes).push(1n);
+  put_u32(bytes, input);
+  put_u32(bytes, out);
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  (bytes).push(2n);
+  put_u32(bytes, Number(BigInt(inputs.length)));
+  for (const input of inputs)   {
+    put_u32(bytes, input);
+  }
+  put_u32(bytes, table);
+  put_u32(bytes, out);
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  (bytes).push(3n);
+  put_u32(bytes, input);
+  put_u32(bytes, out);
+})(); } else { return (() => {
+  (bytes).push(4n);
+  put_u32(bytes, sel);
+  put_u32(bytes, then_cell);
+  put_u32(bytes, else_cell);
+  put_u32(bytes, out);
+})(); } })();
+    }
+  }
+  put_ids(bytes, plan.$foutputs);
+  put_ids(bytes, plan.$fcell_outputs);
+  return bytes;
 }
 
 export function encode_receiver_only(receiver: any, prep: any, r: bigint[][]): RecvLpn
@@ -4435,6 +7006,16 @@ export function encrypt_branch_dyn<R>(n: bigint, rng: any, crs: LweOtCrsDyn, pk:
   return [u, v];
 }
 
+export function encrypt_scaled_poly<R>(big_n: bigint, log_q: bigint, eta: bigint, msg: bigint[], level: bigint, base_log: bigint, sk: BinfheRlweSecretKeyDyn, rng: any): BinfheRlweCiphertextDyn
+{
+  const g = gadget.level_factor(base_log, level);
+  let scaled = Array.from({length: Number(big_n)}, () => 0n);
+  for (let i = 0n; i < big_n; i += 1n)   {
+    scaled[Number(i)] = torus.mul_exact(msg[Number(i)], g);
+  }
+  return binfhe_rlwe_encrypt_poly(scaled, sk, rng);
+}
+
 export function ensure<R>(rng: any, sender: any, receiver: any, need: bigint)
 {
   const watermark = sender.$fparams.seed_cot_count(false);
@@ -4494,6 +7075,37 @@ export function evaluate_gate(cert_eighths: any, inputs: bigint[], q: bigint): b
   return evaluate_certificate(scaled, inputs, q);
 }
 
+export function execute_plan(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, priv_ell: bigint, priv_base_log: bigint, plan: any, inputs: BinfheLweCiphertextDyn[], cells: BinfheRlweCiphertextDyn[], bk: BinfheBootstrappingKeyDyn, cbk: CircuitBootstrappingKeyDyn): [Vec<BinfheLweCiphertextDyn>, Vec<BinfheRlweCiphertextDyn>]
+{
+  const delta = wire_delta(Number(plan.$fk_max));
+  let wires: Vec<BinfheLweCiphertextDyn> = [...inputs];
+  let rgsws: Vec<BinfheRgswCiphertextDyn> = [] as any[];
+  let cell_arena: Vec<BinfheRlweCiphertextDyn> = [...cells];
+  for (const layer of plan.$flayers)   {
+    for (const op of layer)     {
+      return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None }), ("value", Ident { mutable: false, name: "value", subpat: None })], rest: false } */) { return (() => {
+  (wires).push(binfhe_trivial(value, delta));
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  (wires).push(binfhe_not(wires[Number(Number(input))], delta));
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  const spec = plan.$fluts[Number(Number(table))];
+  const arity = Number(Math.clz32((BigInt(spec.$fentries.length)) & -((BigInt(spec.$fentries.length)) | 0)));
+  let cts: BinfheLweCiphertextDyn[] = Array.from({length: Number(MAX_LUT_ARITY)}, () => binfhe_trivial(false, 0n));
+  for (const [j, w] of inputs.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
+    cts[Number(j)] = wires[Number(Number(w))];
+  }
+  (wires).push(binfhe_lut_read_dyn(cts.slice(0, Number(arity)), spec.$fentries, Number(plan.$fk_max), bk));
+})(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { return (() => {
+  (rgsws).push(circuit_bootstrap(wires[Number(Number(input))], cbk, Number(plan.$fk_max)));
+})(); } else { return (() => {
+  const out_cell = binfhe_rgsw_cmux(rgsws[Number(Number(sel))], cell_arena[Number(Number(then_cell))], cell_arena[Number(Number(else_cell))]);
+  (cell_arena).push(out_cell);
+})(); } })();
+    }
+  }
+  return [wires, cell_arena];
+}
+
 export function expand_challenge_to_deltas(chall_1: bigint[], tau: bigint, n: bigint): Vec<bigint>
 {
   return Array.from({length: Number(tau - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
@@ -4548,6 +7160,11 @@ export function expand_partial(depth: bigint, sums: Block[], alpha: bigint): Vec
   return level;
 }
 
+export function exponent(log_q_lwe: bigint, big_n: bigint, x: bigint): bigint
+{
+  return fieldBitand(Number(x), fieldSub(fieldMul(2n, big_n), 1n));
+}
+
 export function external_product(big_n: bigint, bs_ell: bigint, bs_bg_log: bigint, rgsw: RgswCiphertextDyn, rlwe: RlweCiphertextDyn): RlweCiphertextDyn
 {
   const a_decomp = poly_decompose(rlwe.$fa);
@@ -4561,8 +7178,8 @@ export function external_product(big_n: bigint, bs_ell: bigint, bs_bg_log: bigin
     const prod_b0 = poly_mul_neg(b_decomp[Number(j)], row.$frlwe1.$fa);
     const prod_b1 = poly_mul_neg(b_decomp[Number(j)], row.$frlwe1.$fb);
     for (let k = 0n; k < big_n; k += 1n)     {
-      out_a[Number(k)] = wrappingAdd(wrappingAdd(out_a[Number(k)], prod_a0[Number(k)]), prod_b0[Number(k)]);
-      out_b[Number(k)] = wrappingAdd(wrappingAdd(out_b[Number(k)], prod_a1[Number(k)]), prod_b1[Number(k)]);
+      out_a[Number(k)] = wrappingAdd(wrappingAdd(out_a[Number(k)], prod_a0[Number(k)], 32), prod_b0[Number(k)], 32);
+      out_b[Number(k)] = wrappingAdd(wrappingAdd(out_b[Number(k)], prod_a1[Number(k)], 32), prod_b1[Number(k)], 32);
     }
   }
   return new RlweCiphertextDyn({ $fa: out_a, $fb: out_b, $fbig_n: 0n });
@@ -4595,8 +7212,8 @@ export function fe_canonicalize(a: bigint[]): Fe25519
     let tmp = Array.from({length: Number(4n)}, () => 0n);
     let borrow: bigint = 0n;
     for (let i = 0n; i < 4n; i += 1n)     {
-      const [r1, b1] = [wrappingSub(x[Number(i)], P_LIMBS[Number(i)]), false];
-      const [r2, b2] = [wrappingSub(r1, borrow), false];
+      const [r1, b1] = [wrappingSub(x[Number(i)], P_LIMBS[Number(i)], 32), false];
+      const [r2, b2] = [wrappingSub(r1, borrow, 32), false];
       tmp[Number(i)] = r2;
       borrow = fieldBitor(BigInt(b1), BigInt(b2));
     }
@@ -4653,8 +7270,8 @@ export function fe_neg(a: any): Fe25519
   let neg = Array.from({length: Number(4n)}, () => 0n);
   let borrow: bigint = 0n;
   for (let i = 0n; i < 4n; i += 1n)   {
-    const [r1, br1] = [wrappingSub(P_LIMBS[Number(i)], a[0][Number(i)]), false];
-    const [r2, br2] = [wrappingSub(r1, borrow), false];
+    const [r1, br1] = [wrappingSub(P_LIMBS[Number(i)], a[0][Number(i)], 32), false];
+    const [r2, br2] = [wrappingSub(r1, borrow, 32), false];
     neg[Number(i)] = r2;
     borrow = fieldBitor(BigInt(br1), BigInt(br2));
   }
@@ -4699,8 +7316,8 @@ export function fe_sub(a: any, b: any): Fe25519
   let neg_b = Array.from({length: Number(4n)}, () => 0n);
   let borrow: bigint = 0n;
   for (let i = 0n; i < 4n; i += 1n)   {
-    const [r1, br1] = [wrappingSub(P_LIMBS[Number(i)], b[0][Number(i)]), false];
-    const [r2, br2] = [wrappingSub(r1, borrow), false];
+    const [r1, br1] = [wrappingSub(P_LIMBS[Number(i)], b[0][Number(i)], 32), false];
+    const [r2, br2] = [wrappingSub(r1, borrow, 32), false];
     neg_b[Number(i)] = r2;
     borrow = fieldBitor(BigInt(br1), BigInt(br2));
   }
@@ -4883,6 +7500,47 @@ export function field_square<T>(a: any, c: any): T
   return field_mul(__clone(a), a, c);
 }
 
+export function fill_test_poly(big_n: bigint, logical: boolean[], addr_bits: bigint, k_max: bigint, log_q: bigint, log_q_lwe: bigint): bigint[]
+{
+  const table_len = fieldShl(1n, addr_bits);
+  const is_constant = table_is_constant(logical);
+  const delta_shift = fieldSub(fieldSub(log_q_lwe, 1n), Number(k_max));
+  const value = (() => { if ((log_q >= 32n)) {
+  return delta_out_full_width(delta_shift, fieldSub(log_q, log_q_lwe));
+} else {
+  return fieldBitand(fieldShl(1n, fieldAdd(delta_shift, fieldSub(log_q, log_q_lwe))), fieldSub(fieldShl(1n, log_q), 1n));
+} })();
+  const width = fieldShr(big_n, k_max);
+  const used = (() => { if (is_constant) {
+  return 0n;
+} else {
+  return fieldMul(table_len, width);
+} })();
+  let test_poly = Array.from({length: Number(big_n)}, () => 0n);
+  let p = 0n;
+  while ((p < used))   {
+    test_poly[Number(p)] = (() => { if (logical[Number((p / width))]) {
+  return value;
+} else {
+  return 0n;
+} })();
+    p = fieldAdd(p, 1n);
+  }
+  return test_poly;
+}
+
+export function find_negacyclic_root(degree: bigint, modulus: bigint): (bigint | undefined)
+{
+  const exponent = (fieldSub(modulus, 1n) / fieldMul(2n, BigInt(degree)));
+  for (let candidate = 2n; candidate < modulus; candidate += 1n)   {
+    const root = pow_mod(candidate, Number(exponent), modulus);
+    if (__equals(pow_mod(root, degree, modulus), fieldSub(modulus, 1n)))     {
+      return root;
+    }
+  }
+  return undefined;
+}
+
 export function fold_blinder<S>(rho1: any, rho2: any, r: any): S
 {
   return fieldAdd(__clone(rho1), fieldMul(__clone(r), __clone(rho2)));
@@ -4943,6 +7601,34 @@ export function g_double(seed: any): [Block, Block]
   return [left[0], right[0]];
 }
 
+export function gadget_decompose(log: bigint, ell: bigint, base_log: bigint, x: bigint): bigint[]
+{
+  let digits = Array.from({length: Number(ell)}, () => 0n);
+  for (const [j, d] of digits.iter_mut().enumerate())   {
+    const shift = level_shift(log, base_log, j);
+    const bits = level_bits(log, base_log, j);
+    const m = (() => { if ((bits >= 32n)) {
+  return u32.MAX;
+} else {
+  return fieldSub(fieldShl(1n, bits), 1n);
+} })();
+    d = fieldBitand(fieldShr(x, shift), m);
+  }
+  return digits;
+}
+
+export function gadget_poly_decompose(n: bigint, log: bigint, ell: bigint, base_log: bigint, p: bigint[]): bigint[][]
+{
+  let out = Array.from({length: Number(ell)}, () => Array.from({length: Number(n)}, () => 0n));
+  for (let i = 0n; i < n; i += 1n)   {
+    const digits = gadget_decompose(p[Number(i)]);
+    for (let j = 0n; j < ell; j += 1n)     {
+      out[Number(j)][Number(i)] = digits[Number(j)];
+    }
+  }
+  return out;
+}
+
 export function gate_witness<S>(k_a: any, k_b: any, k_c: any, delta: any, v_hat: any): S[]
 {
   const p1 = fieldMul(__clone(k_a), __clone(k_b));
@@ -4990,6 +7676,52 @@ export function gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, bs_ell: b
 })());
   const ksk = new KeySwitchingKeyDyn({ $fksk: ksk_array, $fn_lwe: 0n, $fbig_n: 0n, $fks_ell: 0n, $fks_bg_log: 0n });
   return new BootstrappingKeyDyn({ $fbsk: bsk, $fksk: ksk, $fn_lwe: 0n, $fbig_n: 0n, $fbs_ell: 0n, $fks_ell: 0n, $fbs_bg_log: 0n, $fks_bg_log: 0n });
+}
+
+export function gen_circuit_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, priv_ell: bigint, priv_base_log: bigint, eta: bigint, lwe_sk: BinfheLweSecretKeyDyn, rlwe_sk: BinfheRlweSecretKeyDyn, rng: any): CircuitBootstrappingKeyDyn
+{
+  const bk = binfhe_gen_bootstrapping_key(lwe_sk, rlwe_sk, rng);
+  const zero = Array.from({length: Number(big_n)}, () => 0n);
+  const neg_one_const: bigint[] = (() => {
+  let p = Array.from({length: Number(big_n)}, () => 0n);
+  p[Number(0n)] = torus.torus_neg(1n);
+  return p;
+})();
+  const neg_sk: bigint[] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => torus.torus_neg(rlwe_sk.$fkey[Number(i)]));
+  const one_const: bigint[] = (() => {
+  let p = Array.from({length: Number(big_n)}, () => 0n);
+  p[Number(0n)] = 1n;
+  return p;
+})();
+  let a_col = /* Vec::with_capacity */ Array(big_n);
+  for (let i = 0n; i < big_n; i += 1n)   {
+    const msg = (() => { if (__equals(rlwe_sk.$fkey[Number(i)], 1n)) {
+  return rlwe_sk.$fkey;
+} else {
+  return zero;
+} })();
+    (a_col).push(Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return encrypt_scaled_poly(msg, l, priv_base_log, rlwe_sk, rng);
+})()));
+  }
+  let b_col = /* Vec::with_capacity */ Array(big_n);
+  for (let i = 0n; i < big_n; i += 1n)   {
+    const msg = (() => { if (__equals(rlwe_sk.$fkey[Number(i)], 1n)) {
+  return neg_one_const;
+} else {
+  return zero;
+} })();
+    (b_col).push(Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return encrypt_scaled_poly(msg, l, priv_base_log, rlwe_sk, rng);
+})()));
+  }
+  const a_body = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return encrypt_scaled_poly(neg_sk, l, priv_base_log, rlwe_sk, rng);
+})());
+  const b_body = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return encrypt_scaled_poly(one_const, l, priv_base_log, rlwe_sk, rng);
+})());
+  return new CircuitBootstrappingKeyDyn({ $fbk: bk, $fprivksk: new PrivateKeySwitchingKeyDyn({ $fa_col: a_col, $fb_col: b_col, $fa_body: a_body, $fb_body: b_body, $fbig_n: 0n, $fpriv_ell: 0n }), $fn_lwe: 0n, $fbig_n: 0n, $fbs_ell: 0n, $fks_ell: 0n, $fpriv_ell: 0n });
 }
 
 export function gen_lwe_secret_key<R>(n_lwe: bigint, rng: any): LweSecretKeyDyn
@@ -5485,6 +8217,38 @@ export function in_interval_mod(x: bigint, lo: bigint, hi: bigint, q: bigint): b
 } })();
 }
 
+export function inner_product(ring: any, left: Polynomial[], right: Polynomial[]): Result<Polynomial, Error>
+{
+  if ((!__equals(BigInt(left.length), BigInt(right.length)) || left.concat(right).any((value) => !__equals(value.degree(), ring.$fparameters.$fdegree))))   {
+    return Error.LengthMismatch;
+  }
+  let output = ring.zero();
+  for (const [left, right] of left.map((__a: any, __i: number) => [__a, right[__i]] as [typeof __a, any]))   {
+    output.add_assign(ring, left.product(ring, right));
+  }
+  return output;
+}
+
+export function inverse_mod(value: bigint, modulus: bigint): (bigint | undefined)
+{
+  if ((__equals(value, 0n) || (modulus < 2n)))   {
+    return undefined;
+  }
+  let old_r = (value as unknown as bigint);
+  let r = (modulus as unknown as bigint);
+  let old_s = 1n;
+  let s = 0n;
+  while (!__equals(r, 0n))   {
+    const quotient = (old_r / r);
+    [old_r, r] = [r, fieldSub(old_r, fieldMul(quotient, r))];
+    [old_s, s] = [s, fieldSub(old_s, fieldMul(quotient, s))];
+  }
+  if (!__equals(old_r, 1n))   {
+    return undefined;
+  }
+  return BigInt(old_s.rem_euclid((modulus as unknown as bigint)));
+}
+
 export function is_satisfied_relaxed<S>(w: S[], e: S[], u: any): boolean
 {
   const z = full_z(w, u);
@@ -5552,9 +8316,9 @@ export function key_switch(n_lwe: bigint, big_n: bigint, ks_ell: bigint, ks_bg_l
       }
       const ksk_ct = ksk.$fksk[Number(i)][Number(j)];
       for (let k = 0n; k < n_lwe; k += 1n)       {
-        out_a[Number(k)] = wrappingSub(out_a[Number(k)], BigInt(Math.imul(Number(d), Number(ksk_ct.$fa[Number(k)]))));
+        out_a[Number(k)] = wrappingSub(out_a[Number(k)], BigInt(Math.imul(Number(d), Number(ksk_ct.$fa[Number(k)]))), 32);
       }
-      out_b = wrappingSub(out_b, BigInt(Math.imul(Number(d), Number(ksk_ct.$fb))));
+      out_b = wrappingSub(out_b, BigInt(Math.imul(Number(d), Number(ksk_ct.$fb))), 32);
     }
   }
   return new LweCiphertextDyn({ $fa: out_a, $fb: out_b, $fn_lwe: 0n });
@@ -5579,7 +8343,7 @@ export function ks_decompose(ks_ell: bigint, ks_bg_log: bigint, x: bigint): bigi
   const tail_shift = (32n - (Number(fieldMul(ks_bg_log, ks_ell))));
   if (((tail_shift > 0n) && (tail_shift < 32n)))   {
     const half_tail = fieldShl(1n, fieldSub(tail_shift, 1n));
-    rem = wrappingAdd(rem, half_tail);
+    rem = wrappingAdd(rem, half_tail, 32);
   }
   let digits = Array.from({length: Number(ks_ell)}, () => 0n);
   for (const j of (Array.from({length: Number(ks_ell - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
@@ -5591,6 +8355,37 @@ export function ks_decompose(ks_ell: bigint, ks_bg_log: bigint, x: bigint): bigi
   return digits;
 }
 
+export function level_bits(log: bigint, base_log: bigint, j: bigint): bigint
+{
+  const remaining = (log - (fieldMul(base_log, Number(j))));
+  return (() => { if ((remaining < base_log)) {
+  return remaining;
+} else {
+  return base_log;
+} })();
+}
+
+export function level_factor(log: bigint, base_log: bigint, j: bigint): bigint
+{
+  return torus.reduce(fieldShl(1n, level_shift(log, base_log, j)));
+}
+
+export function level_shift(log: bigint, base_log: bigint, j: bigint): bigint
+{
+  return (log - (fieldMul(base_log, fieldAdd(Number(j), 1n))));
+}
+
+export function level_test_poly(big_n: bigint, log_q: bigint, level: bigint, bs_base_log: bigint, k_max: bigint): bigint[]
+{
+  const width = fieldShr(big_n, k_max);
+  const g = gadget.level_factor(bs_base_log, level);
+  let poly = Array.from({length: Number(big_n)}, () => 0n);
+  for (let p = width; p < fieldMul(2n, width); p += 1n)   {
+    poly[Number(p)] = g;
+  }
+  return poly;
+}
+
 export function lift_bit<T>(n: bigint, bit_t: any): T[]
 {
   return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => __clone(bit_t));
@@ -5600,20 +8395,25 @@ export function lwe_add(n_lwe: bigint, a: LweCiphertextDyn, b: LweCiphertextDyn)
 {
   let out_a = Array.from({length: Number(n_lwe)}, () => 0n);
   for (let i = 0n; i < n_lwe; i += 1n)   {
-    out_a[Number(i)] = wrappingAdd(a.$fa[Number(i)], b.$fa[Number(i)]);
+    out_a[Number(i)] = wrappingAdd(a.$fa[Number(i)], b.$fa[Number(i)], 32);
   }
-  return new LweCiphertextDyn({ $fa: out_a, $fb: wrappingAdd(a.$fb, b.$fb), $fn_lwe: 0n });
+  return new LweCiphertextDyn({ $fa: out_a, $fb: wrappingAdd(a.$fb, b.$fb, 32), $fn_lwe: 0n });
+}
+
+export function lwe_decode(log_m: bigint, phase: bigint, delta: bigint): boolean
+{
+  return (torus.reduce(wrappingSub(phase, (delta / 2n), 32)) < delta);
 }
 
 export function lwe_decrypt(n_lwe: bigint, ct: LweCiphertextDyn, sk: LweSecretKeyDyn): boolean
 {
   let dot: bigint = 0n;
   for (let i = 0n; i < n_lwe; i += 1n)   {
-    dot = wrappingAdd(dot, BigInt(Math.imul(Number(ct.$fa[Number(i)]), Number(Number(sk.$fkey[Number(i)])))));
+    dot = wrappingAdd(dot, BigInt(Math.imul(Number(ct.$fa[Number(i)]), Number(Number(sk.$fkey[Number(i)])))), 32);
   }
-  const phase = wrappingSub(ct.$fb, dot);
+  const phase = wrappingSub(ct.$fb, dot, 32);
   const half = fieldShr(Q4, 1n);
-  const shifted = wrappingSub(phase, half);
+  const shifted = wrappingSub(phase, half, 32);
   return (shifted < Q4);
 }
 
@@ -5626,7 +8426,7 @@ export function lwe_encrypt<R>(n_lwe: bigint, m: boolean, sk: LweSecretKeyDyn, n
   }}
   let dot: bigint = 0n;
   for (let i = 0n; i < n_lwe; i += 1n)   {
-    dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.$fkey[Number(i)])))));
+    dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.$fkey[Number(i)])))), 32);
   }
   const e: bigint = small_noise(noise_bits, rng);
   const msg = (() => { if (m) {
@@ -5634,7 +8434,7 @@ export function lwe_encrypt<R>(n_lwe: bigint, m: boolean, sk: LweSecretKeyDyn, n
 } else {
   return 0n;
 } })();
-  const b = wrappingAdd(wrappingAdd(dot, e), msg);
+  const b = wrappingAdd(wrappingAdd(dot, e, 32), msg, 32);
   return new LweCiphertextDyn({ $fa: a, $fb: b, $fn_lwe: 0n });
 }
 
@@ -5647,10 +8447,10 @@ export function lwe_encrypt_raw<R>(n_lwe: bigint, msg: bigint, sk: LweSecretKeyD
   }}
   let dot: bigint = 0n;
   for (let i = 0n; i < n_lwe; i += 1n)   {
-    dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.$fkey[Number(i)])))));
+    dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.$fkey[Number(i)])))), 32);
   }
   const e = small_noise(noise_bits, rng);
-  const b = wrappingAdd(wrappingAdd(dot, e), msg);
+  const b = wrappingAdd(wrappingAdd(dot, e, 32), msg, 32);
   return new LweCiphertextDyn({ $fa: a, $fb: b, $fn_lwe: 0n });
 }
 
@@ -5742,6 +8542,29 @@ export function lwe_ot_send_bytes<R>(n: bigint, rng: any, crs: LweOtCrsDyn, recv
   return new LweOtSenderMsgDyn({ $fu0: u0, $fv0: v0, $fu1: u1, $fv1: v1 });
 }
 
+export function lwe_phase(n: bigint, log_m: bigint, ct: BinfheLweCiphertextDyn, sk: BinfheLweSecretKeyDyn): bigint
+{
+  let dot = 0n;
+  for (let i = 0n; i < n; i += 1n)   {
+    dot = wrappingAdd(dot, BigInt(Math.imul(Number(ct.$fa[Number(i)]), Number(Number(sk.$fkey[Number(i)])))), 32);
+  }
+  return torus.reduce(wrappingSub(ct.$fb, dot, 32));
+}
+
+export function mask(log: bigint): bigint
+{
+  return (() => { if ((log >= 32n)) {
+  return u32.MAX;
+} else {
+  return fieldSub(fieldShl(1n, log), 1n);
+} })();
+}
+
+export function max_lut_arity(log_q_lwe: bigint): bigint
+{
+  return (log_q_lwe - (2n));
+}
+
 export function mem_acc_absorb<T>(acc: any, r0: any, r1: any, r2: any, r3: any, addr: any, value: any, ts: any): T
 {
   return fieldAdd(fieldAdd(fieldAdd(fieldAdd(acc, r0), fieldMul(addr, r1)), fieldMul(value, r2)), fieldMul(ts, r3));
@@ -5799,6 +8622,27 @@ export function mix_columns(state: bigint[])
     state[Number(fieldAdd(i, 2n))] = fieldBitxor(fieldBitxor(fieldBitxor(s0, s1), gf_mul(s2, 2n)), gf_mul(s3, 3n));
     state[Number(fieldAdd(i, 3n))] = fieldBitxor(fieldBitxor(fieldBitxor(gf_mul(s0, 3n), s1), s2), gf_mul(s3, 2n));
   }
+}
+
+export function mod_switch(from: bigint, to: bigint, x: bigint): bigint
+{
+  return (() => { if ((to >= from_)) {
+  return torus.embed_up(x);
+} else {
+  const shift = fieldSub(from_, to);
+  const half = fieldShl(1n, fieldSub(shift, 1n));
+  const rounded = Number(fieldShr(fieldAdd(BigInt(x), BigInt(half)), shift));
+  return torus.reduce(rounded);
+} })();
+}
+
+export function mod_switch_lwe(n: bigint, from: bigint, to: bigint, ct: BinfheLweCiphertextDyn): BinfheLweCiphertextDyn
+{
+  let a = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    a[Number(i)] = mod_switch(ct.$fa[Number(i)]);
+  }
+  return new BinfheLweCiphertext({ $fa: a, $fb: mod_switch(ct.$fb) });
 }
 
 export function mpcot_reg_choice_bits(n: bigint, t: bigint, alphas: bigint[], cot_r: boolean[]): Vec<boolean>
@@ -5930,6 +8774,16 @@ export function mul_4x4(a: bigint[], b: bigint[]): bigint[]
   return r;
 }
 
+export function mul_exact(log: bigint, a: bigint, c: bigint): bigint
+{
+  return reduce(BigInt(Math.imul(Number(a), Number(c))));
+}
+
+export function mul_mod(left: bigint, right: bigint, modulus: bigint): bigint
+{
+  return BigInt((fieldMul((left as unknown as bigint), (right as unknown as bigint)) % (modulus as unknown as bigint)));
+}
+
 export function new_pool<R>(rng: any, params: any): [CotPoolSender, CotPoolReceiver]
 {
   const m = params.seed_cot_count(false);
@@ -6018,6 +8872,11 @@ export function pack_kappa(bits: boolean[]): bigint[]
   return out;
 }
 
+export function parse_profile(tag: bigint): Result<ProfileId, DecodeError>
+{
+  return (() => { const __match = tag; if (__match === 0n) { return ProfileId.Toy; } else if (__match === 1n) { return ProfileId.ToyNoisy; } else if (__match === 2n) { return ProfileId.Std128; } else if (__match === 3n) { return ProfileId.Custom; } else { return DecodeError.UnknownTag; } })();
+}
+
 export function pedersen_commit(gens: EdPoint[], h: any, x: bigint[][], blind: bigint[]): EdPoint
 {
   let acc = ed_scalar_mul(h, blind);
@@ -6033,7 +8892,7 @@ export function poly_add_neg(n: bigint, a: bigint[], b: bigint[]): bigint[]
 {
   let result = Array.from({length: Number(n)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
-    result[Number(i)] = wrappingAdd(a[Number(i)], b[Number(i)]);
+    result[Number(i)] = wrappingAdd(a[Number(i)], b[Number(i)], 32);
   }
   return result;
 }
@@ -6047,7 +8906,7 @@ export function poly_decompose(big_n: bigint, bs_ell: bigint, bs_bg_log: bigint,
     const x = p[Number(i)];
     const tail_bits = (32n - (Number(fieldMul(bs_bg_log, bs_ell))));
     const rounded = (() => { if (((tail_bits > 0n) && (tail_bits < 32n))) {
-  return wrappingAdd(x, fieldShl(1n, fieldSub(tail_bits, 1n)));
+  return wrappingAdd(x, fieldShl(1n, fieldSub(tail_bits, 1n)), 32);
 } else {
   return x;
 } })();
@@ -6070,9 +8929,9 @@ export function poly_mul_neg(n: bigint, a: bigint[], b: bigint[]): bigint[]
     for (let j = 0n; j < n; j += 1n)     {
       const deg = fieldAdd(i, j);
       if ((deg < n))       {
-        result[Number(deg)] = wrappingAdd(result[Number(deg)], BigInt(Math.imul(Number(a[Number(i)]), Number(b[Number(j)]))));
+        result[Number(deg)] = wrappingAdd(result[Number(deg)], BigInt(Math.imul(Number(a[Number(i)]), Number(b[Number(j)]))), 32);
       } else       {
-        result[Number(fieldSub(deg, n))] = wrappingSub(result[Number(fieldSub(deg, n))], BigInt(Math.imul(Number(a[Number(i)]), Number(b[Number(j)]))));
+        result[Number(fieldSub(deg, n))] = wrappingSub(result[Number(fieldSub(deg, n))], BigInt(Math.imul(Number(a[Number(i)]), Number(b[Number(j)]))), 32);
       }
     }
   }
@@ -6089,11 +8948,11 @@ export function poly_rotate(n: bigint, p: bigint[], exp: bigint): bigint[]
   for (let i = 0n; i < n; i += 1n)   {
     const new_pos = fieldAdd(i, exp_1);
     if ((new_pos < n))     {
-      result[Number(new_pos)] = wrappingAdd(result[Number(new_pos)], p[Number(i)]);
+      result[Number(new_pos)] = wrappingAdd(result[Number(new_pos)], p[Number(i)], 32);
     } else if ((new_pos < fieldMul(2n, n)))     {
-      result[Number(fieldSub(new_pos, n))] = wrappingSub(result[Number(fieldSub(new_pos, n))], p[Number(i)]);
+      result[Number(fieldSub(new_pos, n))] = wrappingSub(result[Number(fieldSub(new_pos, n))], p[Number(i)], 32);
     } else     {
-      result[Number(fieldSub(new_pos, fieldMul(2n, n)))] = wrappingAdd(result[Number(fieldSub(new_pos, fieldMul(2n, n)))], p[Number(i)]);
+      result[Number(fieldSub(new_pos, fieldMul(2n, n)))] = wrappingAdd(result[Number(fieldSub(new_pos, fieldMul(2n, n)))], p[Number(i)], 32);
     }
   }
   return result;
@@ -6103,7 +8962,20 @@ export function poly_sub_neg(n: bigint, a: bigint[], b: bigint[]): bigint[]
 {
   let result = Array.from({length: Number(n)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
-    result[Number(i)] = wrappingSub(a[Number(i)], b[Number(i)]);
+    result[Number(i)] = wrappingSub(a[Number(i)], b[Number(i)], 32);
+  }
+  return result;
+}
+
+export function pow_mod(value: bigint, exponent: bigint, modulus: bigint): bigint
+{
+  let result = 1n;
+  while (!__equals(exponent, 0n))   {
+    if (!__equals(fieldBitand(exponent, 1n), 0n))     {
+      result = mul_mod(result, value, modulus);
+    }
+    value = mul_mod(value, value, modulus);
+    exponent = fieldShr(exponent, 1n);
   }
   return result;
 }
@@ -6149,6 +9021,45 @@ export function prg_with_index(ctx: { newD: () => any }, seed: bigint[], idx: bi
   }
 }
 
+export function priv_ks(big_n: bigint, log_q: bigint, priv_ell: bigint, priv_base_log: bigint, src: BinfheLweCiphertextDyn, col: BinfheRlweCiphertextDyn[][], body: BinfheRlweCiphertextDyn[]): BinfheRlweCiphertextDyn
+{
+  let out = new BinfheRlweCiphertextDyn({ $fa: Array.from({length: Number(big_n)}, () => 0n), $fb: Array.from({length: Number(big_n)}, () => 0n), $fn: 0n });
+  for (let i = 0n; i < big_n; i += 1n)   {
+    const digits = gadget.gadget_decompose(src.$fa[Number(i)]);
+    for (const [l, d] of digits.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
+      if (__equals(d, 0n))       {
+        continue;
+      }
+      const entry = col[Number(i)][Number(l)];
+      for (let k = 0n; k < big_n; k += 1n)       {
+        out.$fa[Number(k)] = wrappingAdd(out.$fa[Number(k)], BigInt(Math.imul(Number(d), Number(entry.$fa[Number(k)]))), 32);
+        out.$fb[Number(k)] = wrappingAdd(out.$fb[Number(k)], BigInt(Math.imul(Number(d), Number(entry.$fb[Number(k)]))), 32);
+      }
+    }
+  }
+  const digits = gadget.gadget_decompose(src.$fb);
+  for (const [l, d] of digits.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
+    if (__equals(d, 0n))     {
+      continue;
+    }
+    const entry = body[Number(l)];
+    for (let k = 0n; k < big_n; k += 1n)     {
+      out.$fa[Number(k)] = wrappingAdd(out.$fa[Number(k)], BigInt(Math.imul(Number(d), Number(entry.$fa[Number(k)]))), 32);
+      out.$fb[Number(k)] = wrappingAdd(out.$fb[Number(k)], BigInt(Math.imul(Number(d), Number(entry.$fb[Number(k)]))), 32);
+    }
+  }
+  for (let k = 0n; k < big_n; k += 1n)   {
+    out.$fa[Number(k)] = torus.reduce(out.$fa[Number(k)]);
+    out.$fb[Number(k)] = torus.reduce(out.$fb[Number(k)]);
+  }
+  return out;
+}
+
+export function profile_tag(profile: any): bigint
+{
+  return (() => { const __match = profile; if (true) { return 0n; } else if (true) { return 1n; } else if (true) { return 2n; } else { return 3n; } })();
+}
+
 export function push_block(buf: Vec<bigint>, b: any)
 {
   buf.push(...(b));
@@ -6157,6 +9068,19 @@ export function push_block(buf: Vec<bigint>, b: any)
 export function push_u32(buf: Vec<bigint>, x: bigint)
 {
   buf.push(...([(x) & 0xFFn, ((x) >> 8n) & 0xFFn, ((x) >> 16n) & 0xFFn, ((x) >> 24n) & 0xFFn]));
+}
+
+export function put_ids(bytes: Vec<bigint>, ids: bigint[])
+{
+  put_u32(bytes, Number(BigInt(ids.length)));
+  for (const id of ids)   {
+    put_u32(bytes, id);
+  }
+}
+
+export function put_u32(bytes: Vec<bigint>, value: bigint)
+{
+  bytes.push(...([(value) & 0xFFn, ((value) >> 8n) & 0xFFn, ((value) >> 16n) & 0xFFn, ((value) >> 24n) & 0xFFn]));
 }
 
 export function q_bitpack<T>(ctx: { defaultT: () => any }, bits: bigint, n: bigint, bit_values: QDyn<T>[], pow2: T[]): QDyn<T>
@@ -6185,6 +9109,31 @@ export function random_nonzero_delta<T, R>(n: bigint, rng: any, sample_t: any, i
   }
   return x;
 })()), $fn: 0n });
+}
+
+export function read_op(reader: any): Result<PlanOp, DecodeError>
+{
+  return (() => { const __match = reader.byte(); if (__match === 0n) { return (() => {
+  const out = reader.u32();
+  const value = (() => { const __match = reader.byte(); if (__match === 0n) { return false; } else if (__match === 1n) { return true; } else { return DecodeError.UnknownTag; } })();
+  return new Const({ $fout: out, $fvalue: value });
+})(); } else if (__match === 1n) { return new Not({ $finput: reader.u32(), $fout: reader.u32() }); } else if (__match === 2n) { return (() => {
+  const count = reader.count();
+  let ids = /* Vec::with_capacity */ Array(count);
+  for (let _ = 0n; _ < count; _ += 1n)   {
+    (ids).push(reader.u32());
+  }
+  const inputs = binfhe.plan.LutInputs.from_slice(ids);
+  const table: LutId = reader.u32();
+  const out: WireId = reader.u32();
+  return new Lut({ $finputs: inputs, $ftable: table, $fout: out });
+})(); } else if (__match === 3n) { return new CircuitBootstrap({ $finput: reader.u32(), $fout: reader.u32() }); } else if (__match === 4n) { return (() => {
+  const sel: RgswId = reader.u32();
+  const then_cell = reader.u32();
+  const else_cell = reader.u32();
+  const out = reader.u32();
+  return new RgswMux({ $fsel: sel, $fthen_cell: then_cell, $felse_cell: else_cell, $fout: out });
+})(); } else { return DecodeError.UnknownTag; } })();
 }
 
 export function recompute_tree(r: bigint[], total_leaves: bigint): Vec<bigint[]>
@@ -6218,6 +9167,11 @@ export function recover_sibling(layer: Block[], sum: any, offset: bigint, select
     i = fieldAdd(i, 2n);
   }
   layer[Number(off)] = value;
+}
+
+export function reduce(log: bigint, x: bigint): bigint
+{
+  return fieldBitand(x, mask());
 }
 
 export function reduce_wide(t: bigint[]): Fe25519
@@ -6280,7 +9234,7 @@ export function rgsw_encrypt<R>(big_n: bigint, bs_ell: bigint, bs_bg_log: bigint
   const g_factor = (((1n) << (shift)) & 0xFFFFFFFFn);
   const contrib = BigInt(Math.imul(Number(msg_bit), Number(g_factor)));
   let rlwe0 = rlwe_encrypt_scalar(big_n, 0n, sk, noise_bits, rng);
-  rlwe0.$fa[Number(0n)] = wrappingAdd(rlwe0.$fa[Number(0n)], contrib);
+  rlwe0.$fa[Number(0n)] = wrappingAdd(rlwe0.$fa[Number(0n)], contrib, 32);
   const rlwe1 = rlwe_encrypt_scalar(big_n, contrib, sk, noise_bits, rng);
   return new RgswRowDyn({ $frlwe0: rlwe0, $frlwe1: rlwe1, $fbig_n: 0n });
 })());
@@ -6297,7 +9251,7 @@ export function rlwe_encrypt_poly<R>(big_n: bigint, msg_poly: bigint[], sk: Rlwe
   const a: bigint[] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => rng.next_u32());
   let b = poly_mul_neg(a, sk.$fkey);
   for (let i = 0n; i < big_n; i += 1n)   {
-    b[Number(i)] = wrappingAdd(wrappingAdd(b[Number(i)], small_noise(noise_bits, rng)), msg_poly[Number(i)]);
+    b[Number(i)] = wrappingAdd(wrappingAdd(b[Number(i)], small_noise(noise_bits, rng), 32), msg_poly[Number(i)], 32);
   }
   return new RlweCiphertextDyn({ $fa: a, $fb: b, $fbig_n: 0n });
 }
@@ -6306,7 +9260,7 @@ export function rlwe_encrypt_scalar<R>(big_n: bigint, m: bigint, sk: RlweSecretK
 {
   const a: bigint[] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => rng.next_u32());
   let b = poly_mul_neg(a, sk.$fkey);
-  b[Number(0n)] = wrappingAdd(wrappingAdd(b[Number(0n)], small_noise(noise_bits, rng)), m);
+  b[Number(0n)] = wrappingAdd(wrappingAdd(b[Number(0n)], small_noise(noise_bits, rng), 32), m, 32);
   return new RlweCiphertextDyn({ $fa: a, $fb: b, $fbig_n: 0n });
 }
 
@@ -6339,12 +9293,17 @@ export function sample_bytes<R>(l: bigint, rng: any): bigint[]
   return b;
 }
 
+export function sample_error<R>(log: bigint, eta: bigint, rng: any): bigint
+{
+  return torus.reduce(Number(cbd(rng)));
+}
+
 export function sample_extract(big_n: bigint, rlwe: RlweCiphertextDyn): LweCiphertextDyn
 {
   let a_lwe = Array.from({length: Number(big_n)}, () => 0n);
   a_lwe[Number(0n)] = rlwe.$fa[Number(0n)];
   for (let i = 1n; i < big_n; i += 1n)   {
-    a_lwe[Number(i)] = ((-((rlwe.$fa[Number(fieldSub(big_n, i))])) & 0xFFFFFFFFn));
+    a_lwe[Number(i)] = wrappingNeg(rlwe.$fa[Number(fieldSub(big_n, i))], 32);
   }
   return new LweCiphertextDyn({ $fa: a_lwe, $fb: rlwe.$fb[Number(0n)], $fn_lwe: 0n });
 }
@@ -6402,6 +9361,23 @@ export function sample_seed_cots<R>(rng: any, m: bigint): [FerretSenderSeed, Fer
   return [new FerretSenderSeed({ $fdelta: delta, $fq: q }), new FerretReceiverSeed({ $fu: u, $fw: w })];
 }
 
+export function sample_uniform(random: any, modulus: bigint, output: bigint[]): Result<void, Error>
+{
+  const threshold = fieldSub(u64.MAX, (u64.MAX % modulus));
+  for (const value of output)   {
+    while (true)     {
+      let bytes = Array.from({length: Number(8n)}, () => 0n);
+      random.fill_bytes(bytes);
+      const candidate = u64_from_le_bytes(bytes);
+      if ((candidate < threshold))       {
+        value = (candidate % modulus);
+        break;
+      }
+    }
+  }
+  return [];
+}
+
 export function sample_uniform_points<R>(rng: any, n: bigint, t: bigint): Vec<bigint>
 {
   let pts = /* Vec::with_capacity */ Array(t);
@@ -6418,6 +9394,16 @@ export function sample_uniform_points<R>(rng: any, n: bigint, t: bigint): Vec<bi
 export function sample_zq<R>(rng: any): Zq
 {
   return fieldBitand(rng.next_u32(), LWE_Q_MASK);
+}
+
+export function selector_margin(log_q_lwe: bigint, k: bigint, input_noise_bound: bigint): boolean
+{
+  if ((fieldAdd(Number(k), 2n) >= log_q_lwe))   {
+    return false;
+  }
+  const margin = fieldShl(1n, fieldSub(fieldSub(log_q_lwe, Number(k)), 2n));
+  const weight = Number(fieldSub(fieldShl(1n, k), 1n));
+  return (BigInt(Math.imul(Number(weight), Number(input_noise_bound))) < margin);
 }
 
 export function shift_rows(state: bigint[])
@@ -6473,13 +9459,27 @@ export function sign(sk: any, pk: any, message: bigint[], iv_seed: bigint[], pro
   return new FaestSignature({ $fiv: iv, $fbavc_root: __clone(commitment.$froot), $fhidden_commits: hidden_commits, $fnodes: nodes, $fcorrections: __clone(big_vole.$fc), $fvole_u: __clone(big_vole.$fu), $fqs_proof: qs_proof, $fc_hat_with_counter: c_hat_with_counter, $fchall_3: chall_3, $fcounter: counter });
 }
 
+export function signed_to_mod(value: i64, modulus: bigint): bigint
+{
+  return (() => { if ((value < 0n)) {
+  const magnitude = (value.unsigned_abs() % modulus);
+  return (() => { if (__equals(magnitude, 0n)) {
+  return 0n;
+} else {
+  return fieldSub(modulus, magnitude);
+} })();
+} else {
+  return (BigInt(value) % modulus);
+} })();
+}
+
 export function small_noise<R>(noise_bits: bigint, rng: any): bigint
 {
   if ((noise_bits >= 32n))   {
     return rng.next_u32();
   }
   const raw: bigint = rng.next_u32();
-  const mask = wrappingSub(fieldShl(1n, noise_bits), 1n);
+  const mask = wrappingSub(fieldShl(1n, noise_bits), 1n, 32);
   const small = fieldBitand(raw, mask);
   return (() => { if (((noise_bits > 0n) && !__equals(fieldShr(small, fieldSub(noise_bits, 1n)), 0n))) {
   return fieldBitor(small, !mask);
@@ -6846,6 +9846,27 @@ export function sub_bytes(state: bigint[])
   }
 }
 
+export function sub_mod(left: bigint, right: bigint, modulus: bigint): bigint
+{
+  return (() => { if ((left >= right)) {
+  return fieldSub(left, right);
+} else {
+  return fieldSub(modulus, fieldSub(right, left));
+} })();
+}
+
+export function table_is_constant(logical: boolean[]): boolean
+{
+  let i = 1n;
+  while ((i < BigInt(logical.length)))   {
+    if (!__equals(logical[Number(i)], logical[Number(0n)]))     {
+      return false;
+    }
+    i = fieldAdd(i, 1n);
+  }
+  return true;
+}
+
 export function take_block(bytes: bigint[], off: bigint): Block
 {
   let b = Array.from({length: Number(16n)}, () => 0n);
@@ -6886,22 +9907,22 @@ export function tfhe_cmux(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: 
 export function tfhe_gate_bootstrapping_and(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, bs_bg_log: bigint, ks_bg_log: bigint, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
   let ct = lwe_add(n_lwe, ct_a, ct_b);
-  ct.$fb = wrappingSub(ct.$fb, fieldShr(Q4, 1n));
+  ct.$fb = wrappingSub(ct.$fb, fieldShr(Q4, 1n), 32);
   const acc = blind_rotate(n_lwe, big_n, bs_ell, ks_ell, bs_bg_log, ks_bg_log, ct, bk);
   const lwe_big = sample_extract(big_n, acc);
   let ct_out = key_switch(n_lwe, big_n, ks_ell, ks_bg_log, lwe_big, bk.$fksk);
-  ct_out.$fb = wrappingAdd(ct_out.$fb, fieldShr(Q4, 1n));
+  ct_out.$fb = wrappingAdd(ct_out.$fb, fieldShr(Q4, 1n), 32);
   return ct_out;
 }
 
 export function tfhe_gate_bootstrapping_or(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, bs_bg_log: bigint, ks_bg_log: bigint, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
   let ct = lwe_add(n_lwe, ct_a, ct_b);
-  ct.$fb = wrappingAdd(ct.$fb, fieldShr(Q4, 1n));
+  ct.$fb = wrappingAdd(ct.$fb, fieldShr(Q4, 1n), 32);
   const acc = blind_rotate(n_lwe, big_n, bs_ell, ks_ell, bs_bg_log, ks_bg_log, ct, bk);
   const lwe_big = sample_extract(big_n, acc);
   let ct_out = key_switch(n_lwe, big_n, ks_ell, ks_bg_log, lwe_big, bk.$fksk);
-  ct_out.$fb = wrappingAdd(ct_out.$fb, fieldShr(Q4, 1n));
+  ct_out.$fb = wrappingAdd(ct_out.$fb, fieldShr(Q4, 1n), 32);
   return ct_out;
 }
 
@@ -6917,14 +9938,14 @@ export function tfhe_lut_read(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_e
     const target = fieldMul(fieldShl(1n, j), delta);
     for (let i = 0n; i < n_lwe; i += 1n)     {
       const scaled = (BigInt(Math.imul(Number(BigInt(addr_ct.$fa[Number(i)])), Number(target))) / BigInt(Q4));
-      combined.$fa[Number(i)] = wrappingAdd(combined.$fa[Number(i)], Number(scaled));
+      combined.$fa[Number(i)] = wrappingAdd(combined.$fa[Number(i)], Number(scaled), 32);
     }
     const scaled_b = (BigInt(Math.imul(Number(BigInt(addr_ct.$fb)), Number(target))) / BigInt(Q4));
-    combined.$fb = wrappingAdd(combined.$fb, Number(scaled_b));
+    combined.$fb = wrappingAdd(combined.$fb, Number(scaled_b), 32);
   }
-  combined.$fb = wrappingAdd(combined.$fb, Number((delta / 2n)));
+  combined.$fb = wrappingAdd(combined.$fb, Number((delta / 2n)), 32);
   let ct_out = tfhe_programmable_bootstrap(n_lwe, big_n, bs_ell, ks_ell, bs_bg_log, ks_bg_log, combined, table.$ftest_poly, bk);
-  ct_out.$fb = wrappingAdd(ct_out.$fb, fieldShr(Q4, 1n));
+  ct_out.$fb = wrappingAdd(ct_out.$fb, fieldShr(Q4, 1n), 32);
   return ct_out;
 }
 
@@ -6932,9 +9953,9 @@ export function tfhe_not(n_lwe: bigint, a: LweCiphertextDyn): LweCiphertextDyn
 {
   let out_a = Array.from({length: Number(n_lwe)}, () => 0n);
   for (let i = 0n; i < n_lwe; i += 1n)   {
-    out_a[Number(i)] = ((-((a.$fa[Number(i)])) & 0xFFFFFFFFn));
+    out_a[Number(i)] = wrappingNeg(a.$fa[Number(i)], 32);
   }
-  return new LweCiphertextDyn({ $fa: out_a, $fb: wrappingSub(Q4, a.$fb), $fn_lwe: 0n });
+  return new LweCiphertextDyn({ $fa: out_a, $fb: wrappingSub(Q4, a.$fb, 32), $fn_lwe: 0n });
 }
 
 export function tfhe_programmable_bootstrap(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, bs_bg_log: bigint, ks_bg_log: bigint, ct: LweCiphertextDyn, test_poly: bigint[], bk: BootstrappingKeyDyn): LweCiphertextDyn
@@ -6968,6 +9989,21 @@ export function to_bool(phase: bigint, q: bigint): boolean
   return __equals(phase, (q / 4n));
 }
 
+export function torus_add(log: bigint, a: bigint, b: bigint): bigint
+{
+  return reduce(wrappingAdd(a, b, 32));
+}
+
+export function torus_neg(log: bigint, a: bigint): bigint
+{
+  return reduce(wrappingNeg(a, 32));
+}
+
+export function torus_sub(log: bigint, a: bigint, b: bigint): bigint
+{
+  return reduce(wrappingSub(a, b, 32));
+}
+
 export function torus_to_exp(x: bigint, scale_shift: bigint, two_n: bigint): bigint
 {
   const half = (() => { if ((scale_shift > 0n)) {
@@ -6975,7 +10011,7 @@ export function torus_to_exp(x: bigint, scale_shift: bigint, two_n: bigint): big
 } else {
   return 0n;
 } })();
-  const exp = Number(fieldShr(wrappingAdd(x, half), scale_shift));
+  const exp = Number(fieldShr(wrappingAdd(x, half, 32), scale_shift));
   return fieldBitand(exp, fieldSub(two_n, 1n));
 }
 
@@ -7231,6 +10267,11 @@ export function vope_scale_const<T>(n: bigint, w: VopeDyn<T>, c: any): VopeDyn<T
 })()), $fv: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldMul(__clone(w.$fv[Number(i)]), __clone(c))), $fn: 0n, $fk: 1n });
 }
 
+export function wire_delta(log_q_lwe: bigint, k_max: bigint): bigint
+{
+  return fieldShl(1n, fieldSub(fieldSub(log_q_lwe, 1n), Number(k_max)));
+}
+
 export function xor_block(...__args: any[]): any {
   if (__args.length === 2) {
     const a = __args[0];
@@ -7304,7 +10345,7 @@ export function zk_hash(key: any, elements: Galois128[]): UniversalHashOutput
 
 export function zq_add(a: any, b: any): Zq
 {
-  return fieldBitand(wrappingAdd(a, b), LWE_Q_MASK);
+  return fieldBitand(wrappingAdd(a, b, 32), LWE_Q_MASK);
 }
 
 export function zq_mul(a: any, b: any): Zq
@@ -7314,12 +10355,12 @@ export function zq_mul(a: any, b: any): Zq
 
 export function zq_neg(a: any): Zq
 {
-  return fieldBitand(wrappingSub(LWE_Q, a), LWE_Q_MASK);
+  return fieldBitand(wrappingSub(LWE_Q, a, 32), LWE_Q_MASK);
 }
 
 export function zq_sub(a: any, b: any): Zq
 {
-  return fieldBitand(wrappingSub(a, b), LWE_Q_MASK);
+  return fieldBitand(wrappingSub(a, b, 32), LWE_Q_MASK);
 }
 
 export function absorb(data: bigint[])
@@ -7359,5 +10400,10 @@ return (() => {
   r.read(out);
 })(); } })();
   return out;
+}
+
+export function try_from(value: bigint): Result<any, FrameError>
+{
+  return (() => { const __match = value; if (__match === 1n) { return Self.PublicParameters; } else if (__match === 2n) { return Self.ReusableCiphertext; } else if (__match === 3n) { return Self.PerUseCiphertext; } else if (__match === 4n) { return Self.SelectionKey; } else if (__match === 5n) { return Self.Complete; } else if (__match === 6n) { return Self.Error; } else { return FrameError.UnknownStage; } })();
 }
 

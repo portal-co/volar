@@ -1,5 +1,7 @@
 
 .DS_Store
-**/.DS_Storetarget
+**/.DS_Store
 node_modules
 target
+# npm build output (zshy) — publish artifacts, built on demand via `npm run build`
+packages/*/dist

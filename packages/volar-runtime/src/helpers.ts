@@ -13,19 +13,41 @@ export function ilog2(x: bigint | number): bigint {
 }
 
 // ============================================================================
-// Wrapping arithmetic (u32 range)
+// Wrapping arithmetic (width-aware — see the `bits` parameter)
 // ============================================================================
+//
+// `bits` is the operand's Rust integer width (8/32/64/128/…), threaded
+// through from the compiler's `infer_wrapping_bit_width` (printer_ts.rs).
+// Masking is done in pure `bigint` arithmetic — never via `Number(...)`,
+// which silently loses precision above 2^53 and would be wrong for u64/u128
+// regardless of the mask width. A prior version of this file always masked
+// at 32 bits and round-tripped through `Number`, which was silently wrong
+// for any u64/u128 `.wrapping_add()`/`.wrapping_sub()` call. See
+// docs/ts-emitter-length-params-and-solidity-backend-plan.md §1.3.2.
 
-export function wrappingAdd(a: bigint | number, b: bigint | number): bigint {
-  const x = typeof a === "bigint" ? a : BigInt(a);
-  const y = typeof b === "bigint" ? b : BigInt(b);
-  return BigInt((Number(x + y)) >>> 0);
+function wrappingMask(bits: number): bigint {
+  return (1n << BigInt(bits)) - 1n;
 }
 
-export function wrappingSub(a: bigint | number, b: bigint | number): bigint {
-  const x = typeof a === "bigint" ? Number(a) : a;
-  const y = typeof b === "bigint" ? Number(b) : b;
-  return BigInt((x - y + 0x100000000) >>> 0);
+export function wrappingAdd(a: bigint | number, b: bigint | number, bits: number): bigint {
+  const x = typeof a === "bigint" ? a : BigInt(a);
+  const y = typeof b === "bigint" ? b : BigInt(b);
+  // BigInt `&` uses an infinite two's-complement representation, so this
+  // correctly wraps negative intermediate results too (not reachable for
+  // `wrappingAdd` on non-negative unsigned operands, but kept symmetric
+  // with wrappingSub/wrappingNeg below).
+  return (x + y) & wrappingMask(bits);
+}
+
+export function wrappingSub(a: bigint | number, b: bigint | number, bits: number): bigint {
+  const x = typeof a === "bigint" ? a : BigInt(a);
+  const y = typeof b === "bigint" ? b : BigInt(b);
+  return (x - y) & wrappingMask(bits);
+}
+
+export function wrappingNeg(a: bigint | number, bits: number): bigint {
+  const x = typeof a === "bigint" ? a : BigInt(a);
+  return (-x) & wrappingMask(bits);
 }
 
 // ============================================================================
