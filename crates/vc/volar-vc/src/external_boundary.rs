@@ -13,8 +13,12 @@
 //! edge.
 
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
+use volar_ir::boolar::{BIrBlocks, BIrStmt, BIrTerminator};
+use volar_ir::ir::{IRBlockTargetId, IRVarId};
 use volar_ir_common::{ActionExecutionPolicy, OracleExecutionKind, OracleExecutionPolicy};
 
 /// Stable public identity of one external request occurrence.
@@ -65,6 +69,41 @@ pub struct ExternalBoundaryPlan {
     /// Every deduplicated oracle occurrence maps to its retained
     /// representative. Non-oracle requests and representatives map to self.
     pub representative: BTreeMap<ExternalRequestId, ExternalRequestId>,
+}
+
+/// Exact source projection that will receive one request result bit.
+///
+/// This is public planning metadata only. A strict/VC adapter must still bind
+/// it to authenticated session/circuit/boundary material before reinsertion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExternalResultProjection {
+    pub request: ExternalRequestId,
+    pub bit: usize,
+}
+
+/// Boundary plan extracted from one fused Boolar circuit.
+///
+/// `projections` is keyed by the exact `IRVarId` produced by an external
+/// projection/read. It is intentionally not keyed by source spelling: the
+/// latter is not stable enough for result reinsertion bookkeeping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoolarExternalBoundaryPlan {
+    pub plan: ExternalBoundaryPlan,
+    pub projections: BTreeMap<IRVarId, ExternalResultProjection>,
+}
+
+/// Fail-closed errors while extracting external requests from fused Boolar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BoolarBoundaryError {
+    NotACircuit,
+    MissingActionPolicy(String),
+    MissingOraclePolicy(String),
+    InvalidOutputBit {
+        request: ExternalRequestId,
+        bit: usize,
+    },
+    InconsistentOracleOccurrence(u64),
+    Planner(ExternalBoundaryError),
 }
 
 /// Limits that split a ready set into multiple deterministic batches. They
@@ -229,6 +268,332 @@ pub fn plan_external_boundaries(
     })
 }
 
+/// Extract and plan external requests from a single fused Boolar circuit.
+///
+/// Callers must supply policy registries from validated declarations. Unlike
+/// the legacy schedule compiler, this function never invents an evaluator
+/// policy for a missing declaration. It conservatively leaves
+/// `oracle_equivalence` unset: a source adapter needs a declaration/profile
+/// aware canonical argument encoding before it may authorize cross-occurrence
+/// oracle CSE.
+///
+/// Storage requests are linked in their source storage-chain order. Action and
+/// storage receive no artificial cross-chain edge; ordinary value dependencies
+/// remain explicit. The returned projection map provides the exact source wire
+/// identity a later reinsertion adapter must satisfy.
+pub fn plan_boolar_external_boundaries<P: Clone>(
+    circuit: &BIrBlocks<P>,
+    action_policies: &[(String, ActionExecutionPolicy)],
+    oracle_policies: &[(String, OracleExecutionPolicy)],
+    limits: ExternalBatchLimits,
+) -> Result<BoolarExternalBoundaryPlan, BoolarBoundaryError> {
+    if !circuit.is_circuit() || circuit.blocks.len() != 1 {
+        return Err(BoolarBoundaryError::NotACircuit);
+    }
+    let block = &circuit.blocks[0];
+    let BIrTerminator::Jmp(target) = &block.terminator else {
+        return Err(BoolarBoundaryError::NotACircuit);
+    };
+    if target.block != IRBlockTargetId::Return {
+        return Err(BoolarBoundaryError::NotACircuit);
+    }
+
+    let raw_id = |ordinal: usize| IRVarId((block.params as usize + ordinal) as u32);
+    let request_id = |ordinal: usize| ExternalRequestId(raw_id(ordinal).0 as u64);
+    let mut requests = Vec::<ExternalRequest>::new();
+    let mut request_index = BTreeMap::<ExternalRequestId, usize>::new();
+    let mut projections = BTreeMap::<IRVarId, ExternalResultProjection>::new();
+    let mut call_requests = BTreeMap::<IRVarId, (ExternalRequestId, usize)>::new();
+    let mut direct_oracles = BTreeMap::<
+        u64,
+        (
+            ExternalRequestId,
+            String,
+            Vec<IRVarId>,
+            OracleExecutionPolicy,
+        ),
+    >::new();
+    let mut next_action_ordinal = 0u64;
+    let mut previous_storage = None;
+
+    let dependencies_for =
+        |vars: &[IRVarId], projections: &BTreeMap<IRVarId, ExternalResultProjection>| {
+            vars.iter()
+                .filter_map(|var| projections.get(var).map(|projection| projection.request))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+    let action_policy = |name: &str| {
+        action_policies
+            .iter()
+            .find(|(candidate, _)| candidate == name)
+            .map(|(_, policy)| *policy)
+            .ok_or_else(|| BoolarBoundaryError::MissingActionPolicy(name.into()))
+    };
+    let oracle_policy = |name: &str| {
+        oracle_policies
+            .iter()
+            .find(|(candidate, _)| candidate == name)
+            .map(|(_, policy)| *policy)
+            .ok_or_else(|| BoolarBoundaryError::MissingOraclePolicy(name.into()))
+    };
+
+    for (ordinal, statement) in block.stmts.iter().enumerate() {
+        let produced = raw_id(ordinal);
+        let id = request_id(ordinal);
+        match &statement.kind {
+            BIrStmt::ActionCall {
+                name,
+                guard,
+                args,
+                fallback,
+                num_bits,
+            } => {
+                let policy = action_policy(name)?;
+                let mut inputs = Vec::with_capacity(1 + args.len() + fallback.len());
+                inputs.push(*guard);
+                inputs.extend(args.iter().copied());
+                inputs.extend(fallback.iter().copied());
+                let dependencies = dependencies_for(&inputs, &projections);
+                requests.push(ExternalRequest {
+                    id,
+                    kind: ExternalRequestKind::Action(policy),
+                    depends_on: dependencies,
+                    demanded: true,
+                    action_ordinal: Some(next_action_ordinal),
+                    oracle_equivalence: None,
+                });
+                request_index.insert(id, requests.len() - 1);
+                call_requests.insert(produced, (id, *num_bits));
+                next_action_ordinal += 1;
+            }
+            BIrStmt::ActionBit { call, bit } => {
+                let Some(&(call_id, num_bits)) = call_requests.get(call) else {
+                    return Err(BoolarBoundaryError::InvalidOutputBit {
+                        request: id,
+                        bit: *bit,
+                    });
+                };
+                if *bit >= num_bits {
+                    return Err(BoolarBoundaryError::InvalidOutputBit {
+                        request: call_id,
+                        bit: *bit,
+                    });
+                }
+                projections.insert(
+                    produced,
+                    ExternalResultProjection {
+                        request: call_id,
+                        bit: *bit,
+                    },
+                );
+            }
+            BIrStmt::OracleCall {
+                name,
+                args,
+                num_bits,
+            } => {
+                let policy = oracle_policy(name)?;
+                let dependencies = dependencies_for(args, &projections);
+                requests.push(ExternalRequest {
+                    id,
+                    kind: ExternalRequestKind::Oracle(policy),
+                    depends_on: dependencies,
+                    demanded: false,
+                    action_ordinal: None,
+                    oracle_equivalence: None,
+                });
+                request_index.insert(id, requests.len() - 1);
+                call_requests.insert(produced, (id, *num_bits));
+            }
+            BIrStmt::OracleProjectedBit { call, bit } => {
+                let Some(&(call_id, num_bits)) = call_requests.get(call) else {
+                    return Err(BoolarBoundaryError::InvalidOutputBit {
+                        request: id,
+                        bit: *bit,
+                    });
+                };
+                if *bit >= num_bits {
+                    return Err(BoolarBoundaryError::InvalidOutputBit {
+                        request: call_id,
+                        bit: *bit,
+                    });
+                }
+                projections.insert(
+                    produced,
+                    ExternalResultProjection {
+                        request: call_id,
+                        bit: *bit,
+                    },
+                );
+            }
+            BIrStmt::OracleBit {
+                name,
+                args,
+                bit,
+                occurrence,
+            } => {
+                let policy = oracle_policy(name)?;
+                let call_id = match direct_oracles.get(occurrence) {
+                    Some((existing, existing_name, existing_args, existing_policy)) => {
+                        if existing_name != name
+                            || existing_args != args
+                            || existing_policy != &policy
+                        {
+                            return Err(BoolarBoundaryError::InconsistentOracleOccurrence(
+                                *occurrence,
+                            ));
+                        }
+                        *existing
+                    }
+                    None => {
+                        let dependencies = dependencies_for(args, &projections);
+                        requests.push(ExternalRequest {
+                            id,
+                            kind: ExternalRequestKind::Oracle(policy),
+                            depends_on: dependencies,
+                            demanded: false,
+                            action_ordinal: None,
+                            oracle_equivalence: None,
+                        });
+                        request_index.insert(id, requests.len() - 1);
+                        direct_oracles
+                            .insert(*occurrence, (id, name.clone(), args.clone(), policy));
+                        id
+                    }
+                };
+                projections.insert(
+                    produced,
+                    ExternalResultProjection {
+                        request: call_id,
+                        bit: *bit,
+                    },
+                );
+            }
+            BIrStmt::StorageRead { addr, .. } => {
+                let mut dependencies = dependencies_for(addr, &projections);
+                if let Some(previous) = previous_storage {
+                    dependencies.push(previous);
+                }
+                dependencies.sort();
+                dependencies.dedup();
+                requests.push(ExternalRequest {
+                    id,
+                    kind: ExternalRequestKind::Storage,
+                    depends_on: dependencies,
+                    demanded: true,
+                    action_ordinal: None,
+                    oracle_equivalence: None,
+                });
+                request_index.insert(id, requests.len() - 1);
+                previous_storage = Some(id);
+                projections.insert(
+                    produced,
+                    ExternalResultProjection {
+                        request: id,
+                        bit: 0,
+                    },
+                );
+            }
+            BIrStmt::StorageWrite { src, addr, .. } => {
+                let mut inputs = addr.clone();
+                inputs.push(*src);
+                let mut dependencies = dependencies_for(&inputs, &projections);
+                if let Some(previous) = previous_storage {
+                    dependencies.push(previous);
+                }
+                dependencies.sort();
+                dependencies.dedup();
+                requests.push(ExternalRequest {
+                    id,
+                    kind: ExternalRequestKind::Storage,
+                    depends_on: dependencies,
+                    demanded: true,
+                    action_ordinal: None,
+                    oracle_equivalence: None,
+                });
+                request_index.insert(id, requests.len() - 1);
+                previous_storage = Some(id);
+            }
+            _ => {}
+        }
+    }
+
+    // A projection used by an ordinary boolean gate, an external argument, or
+    // the returned circuit result is a real demand. Mark it before computing
+    // transitive oracle demand through request dependency edges.
+    let mut demanded = BTreeSet::new();
+    for statement in &block.stmts {
+        for var in boolar_statement_inputs(&statement.kind) {
+            if let Some(projection) = projections.get(&var) {
+                demanded.insert(projection.request);
+            }
+        }
+    }
+    for &var in &target.args {
+        if let Some(projection) = projections.get(&var) {
+            demanded.insert(projection.request);
+        }
+    }
+    loop {
+        let mut changed = false;
+        for request in &requests {
+            let live = request.demanded || demanded.contains(&request.id);
+            if live {
+                for dependency in &request.depends_on {
+                    if let Some(&index) = request_index.get(dependency)
+                        && matches!(requests[index].kind, ExternalRequestKind::Oracle(_))
+                        && demanded.insert(*dependency)
+                    {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for request in &mut requests {
+        if matches!(request.kind, ExternalRequestKind::Oracle(_)) {
+            request.demanded = demanded.contains(&request.id);
+        }
+    }
+
+    let plan = plan_external_boundaries(&requests, limits).map_err(BoolarBoundaryError::Planner)?;
+    Ok(BoolarExternalBoundaryPlan { plan, projections })
+}
+
+fn boolar_statement_inputs(statement: &BIrStmt) -> Vec<IRVarId> {
+    match statement {
+        BIrStmt::And(left, right) | BIrStmt::Or(left, right) | BIrStmt::Xor(left, right) => {
+            vec![*left, *right]
+        }
+        BIrStmt::Not(value) => vec![*value],
+        BIrStmt::OracleCall { args, .. } | BIrStmt::OracleBit { args, .. } => args.clone(),
+        BIrStmt::ActionCall {
+            guard,
+            args,
+            fallback,
+            ..
+        } => {
+            let mut inputs = Vec::with_capacity(1 + args.len() + fallback.len());
+            inputs.push(*guard);
+            inputs.extend(args.iter().copied());
+            inputs.extend(fallback.iter().copied());
+            inputs
+        }
+        BIrStmt::StorageRead { addr, .. } => addr.clone(),
+        BIrStmt::StorageWrite { src, addr, .. } => {
+            let mut inputs = addr.clone();
+            inputs.push(*src);
+            inputs
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn dependencies_complete(
     request: &ExternalRequest,
     representative: &BTreeMap<ExternalRequestId, ExternalRequestId>,
@@ -250,7 +615,8 @@ mod tests {
     use alloc::vec;
 
     use super::*;
-    use volar_ir_common::{ExternalExecutor, ExternalRevealPolicy};
+    use volar_ir::boolar::{BIrBlock, BIrTarget};
+    use volar_ir_common::{ExternalExecutor, ExternalRevealPolicy, Node};
 
     fn action(id: u64, deps: Vec<ExternalRequestId>) -> ExternalRequest {
         ExternalRequest {
@@ -292,6 +658,86 @@ mod tests {
             action_ordinal: None,
             oracle_equivalence: None,
         }
+    }
+
+    #[test]
+    fn boolar_extraction_tracks_exact_projections_and_value_dependencies() {
+        let circuit = BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 2,
+                stmts: vec![
+                    Node::new(
+                        BIrStmt::ActionCall {
+                            name: "act".into(),
+                            guard: IRVarId(0),
+                            args: vec![IRVarId(1)],
+                            fallback: vec![IRVarId(1)],
+                            num_bits: 1,
+                        },
+                        (),
+                        None,
+                    ),
+                    Node::new(
+                        BIrStmt::ActionBit {
+                            call: IRVarId(2),
+                            bit: 0,
+                        },
+                        (),
+                        None,
+                    ),
+                    Node::new(
+                        BIrStmt::OracleBit {
+                            name: "pure".into(),
+                            args: vec![IRVarId(3)],
+                            bit: 0,
+                            occurrence: 7,
+                        },
+                        (),
+                        None,
+                    ),
+                    Node::new(BIrStmt::Xor(IRVarId(3), IRVarId(4)), (), None),
+                ],
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(5)],
+                }),
+            }],
+            pre_init: vec![],
+        };
+        let actions = [("act".into(), ActionExecutionPolicy::legacy_evaluator())];
+        let oracles = [("pure".into(), OracleExecutionPolicy::legacy_evaluator())];
+        let extracted = plan_boolar_external_boundaries(
+            &circuit,
+            &actions,
+            &oracles,
+            ExternalBatchLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            extracted.plan.batches,
+            vec![
+                ExternalBatch {
+                    requests: vec![ExternalRequestId(2)]
+                },
+                ExternalBatch {
+                    requests: vec![ExternalRequestId(4)]
+                },
+            ]
+        );
+        assert_eq!(
+            extracted.projections[&IRVarId(3)],
+            ExternalResultProjection {
+                request: ExternalRequestId(2),
+                bit: 0,
+            }
+        );
+        assert_eq!(
+            extracted.projections[&IRVarId(4)],
+            ExternalResultProjection {
+                request: ExternalRequestId(4),
+                bit: 0,
+            }
+        );
     }
 
     #[test]

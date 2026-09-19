@@ -124,8 +124,10 @@ pub use circuit_provider_storage::{
 };
 pub use embedder::{VcEmbedder, VcOutcome, VcVisibility};
 pub use external_boundary::{
-    ExternalBatch, ExternalBatchLimits, ExternalBoundaryError, ExternalBoundaryPlan,
-    ExternalRequest, ExternalRequestId, ExternalRequestKind, plan_external_boundaries,
+    BoolarBoundaryError, BoolarExternalBoundaryPlan, ExternalBatch, ExternalBatchLimits,
+    ExternalBoundaryError, ExternalBoundaryPlan, ExternalRequest, ExternalRequestId,
+    ExternalRequestKind, ExternalResultProjection, plan_boolar_external_boundaries,
+    plan_external_boundaries,
 };
 pub use fhe_transition::{FheTransitionError, fuse_after, isolate_stateless_module};
 pub use hybrid_storage::{
@@ -137,4 +139,7 @@ pub use hybrid_storage::{
 };
 pub use oram_host::{GramEvalDrive, OramHost, OramHostError, OramHostShim};
 pub use partition::partition_from_sides;
-pub use schedule::{ScheduleError, compile_schedule, compile_schedule_optimized};
+pub use schedule::{
+    ScheduleError, compile_schedule, compile_schedule_optimized,
+    compile_schedule_with_action_policies,
+};
