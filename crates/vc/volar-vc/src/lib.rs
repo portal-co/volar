@@ -79,6 +79,8 @@ pub mod embedder;
 /// Dependency-aware batching for deferred actions, pure oracles, and storage
 /// requests at MPC circuit boundaries.
 pub mod external_boundary;
+/// Ordered storage/action/oracle executor over an admitted boundary plan.
+pub mod external_executor;
 /// Validated VC declaration registry used by external-boundary planning.
 pub mod external_registry;
 pub mod faest_owf;
@@ -130,6 +132,10 @@ pub use external_boundary::{
     ExternalBoundaryError, ExternalBoundaryPlan, ExternalRequest, ExternalRequestId,
     ExternalRequestKind, ExternalResultProjection, plan_boolar_external_boundaries,
     plan_external_boundaries,
+};
+pub use external_executor::{
+    ExternalBoundaryExecution, ExternalBoundaryHost, ExternalExecutionError,
+    ExternalExecutionRequest, execute_external_boundary_plan,
 };
 pub use external_registry::{
     ActionExternalRegistration, ExternalRegistryError, OracleExternalRegistration,
