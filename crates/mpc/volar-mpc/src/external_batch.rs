@@ -4,7 +4,8 @@
 //! request identity/order/executor/output geometry that a future strict batch
 //! transport will authenticate before revealing inputs or reinserting labels.
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use digest::Digest;
@@ -116,6 +117,178 @@ pub struct ExternalBatchTranscript {
     binding: ExternalBatchBinding,
     next_action: usize,
     phase: ExternalBatchPhase,
+}
+
+/// Local host-registration metadata for one manifest action.
+///
+/// The name never identifies a transcript request: `request_id` and the
+/// manifest policy/fingerprint do. It is passed only to the local host after
+/// the manifest action has been admitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalBatchAction {
+    pub request_id: u64,
+    pub name: String,
+    /// Number of clear action argument bits. Fallback/result width comes from
+    /// the admitted manifest entry, not this local registration.
+    pub argument_bits: usize,
+}
+
+/// Local action callback for the conservative assigned-evaluator executor.
+///
+/// Implementations receive logical argument bits only after the caller has
+/// completed the transcript's reveal and clear-input phases. A host cannot
+/// select an action by name alone because registration is bound to request ID.
+pub trait ExternalBatchActionHost {
+    fn action(
+        &mut self,
+        registration: &ExternalBatchAction,
+        args: &[bool],
+    ) -> Result<Vec<bool>, MpcError>;
+}
+
+/// Evaluator-executor implementation for the explicit legacy `BothRoles`
+/// disclosure profile.
+///
+/// It consumes the framed batch state machine, invokes an assigned local host
+/// exactly once for guard-true actions, returns declared fallback bits without
+/// a host call for guard-false actions, and validates the width before creating
+/// the result frame. Reinsertion remains a separate role adapter: callers must
+/// present `Reinserted` only after they have installed result material.
+pub struct EvaluatorBatchExecutor {
+    transcript: ExternalBatchTranscript,
+    registrations: BTreeMap<u64, ExternalBatchAction>,
+}
+
+impl EvaluatorBatchExecutor {
+    /// Build an executor only for the one legacy strict profile currently
+    /// implemented. Garbler execution and executor-only disclosure are rejected
+    /// before any host can receive input material.
+    pub fn new(
+        manifest: ExternalBatchManifest,
+        binding: ExternalBatchBinding,
+        registrations: Vec<ExternalBatchAction>,
+    ) -> Result<Self, MpcError> {
+        manifest
+            .validate()
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        let mut by_request = BTreeMap::new();
+        for registration in registrations {
+            if registration.name.is_empty()
+                || by_request
+                    .insert(registration.request_id, registration)
+                    .is_some()
+            {
+                return Err(MpcError::MalformedSchedule);
+            }
+        }
+        if by_request.len() != manifest.actions.len() {
+            return Err(MpcError::MalformedSchedule);
+        }
+        for action in &manifest.actions {
+            if action.execution.executor != crate::ExternalExecutor::Evaluator
+                || action.execution.reveal != crate::ExternalRevealPolicy::BothRoles
+            {
+                return Err(MpcError::UnsupportedExternalPolicy);
+            }
+            if !by_request.contains_key(&action.request_id) {
+                return Err(MpcError::MalformedSchedule);
+            }
+        }
+        Ok(Self {
+            transcript: ExternalBatchTranscript::new(manifest, binding),
+            registrations: by_request,
+        })
+    }
+
+    pub const fn phase(&self) -> ExternalBatchPhase {
+        self.transcript.phase()
+    }
+
+    pub const fn is_complete(&self) -> bool {
+        self.transcript.is_complete()
+    }
+
+    /// Admit the evaluator label/reveal phase for the next request.
+    pub fn accept_reveal(&mut self, frame: &ExternalBatchFrame) -> Result<(), MpcError> {
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)
+    }
+
+    /// Execute one admitted clear-input action and return its width-validated
+    /// result frame. The returned frame has already advanced local transcript
+    /// state; the peer still has to verify/reinsert it before acknowledgement.
+    pub fn execute_clear_inputs<H: ExternalBatchActionHost>(
+        &mut self,
+        frame: &ExternalBatchFrame,
+        host: &mut H,
+    ) -> Result<ExternalBatchFrame, MpcError> {
+        let ExternalBatchFrame::ClearInputs {
+            binding,
+            request_id,
+            bits,
+        } = frame
+        else {
+            return Err(MpcError::UnexpectedMessage);
+        };
+        let (expected_request_id, output_bits) = self
+            .transcript
+            .manifest
+            .actions
+            .get(self.transcript.next_action)
+            .map(|action| (action.request_id, action.output_bits))
+            .ok_or(MpcError::MalformedSchedule)?;
+        if *request_id != expected_request_id {
+            return Err(MpcError::UnexpectedMessage);
+        }
+        let registration = self
+            .registrations
+            .get(request_id)
+            .ok_or(MpcError::MalformedSchedule)?;
+        let expected = 1usize
+            .checked_add(registration.argument_bits)
+            .and_then(|size| size.checked_add(output_bits))
+            .ok_or(MpcError::MalformedSchedule)?;
+        if bits.len() != expected {
+            return Err(MpcError::UnexpectedMessage);
+        }
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)?;
+        let args_start = 1;
+        let fallback_start = args_start + registration.argument_bits;
+        let result_bits = if bits[0] {
+            let output = host.action(registration, &bits[args_start..fallback_start])?;
+            if output.len() != output_bits {
+                return Err(MpcError::ActionHost);
+            }
+            output
+        } else {
+            bits[fallback_start..].to_vec()
+        };
+        let result = ExternalBatchFrame::Result {
+            binding: *binding,
+            request_id: *request_id,
+            bits: result_bits,
+        };
+        self.transcript
+            .accept(&result)
+            .map_err(frame_error_to_mpc)?;
+        Ok(result)
+    }
+
+    /// Acknowledge that the result has been reinserted by the separate label
+    /// adapter. The next action cannot begin until this succeeds.
+    pub fn accept_reinserted(&mut self, frame: &ExternalBatchFrame) -> Result<(), MpcError> {
+        self.transcript.accept(frame).map_err(frame_error_to_mpc)
+    }
+}
+
+fn frame_error_to_mpc(error: ExternalBatchFrameError) -> MpcError {
+    match error {
+        ExternalBatchFrameError::ManifestMismatch => MpcError::UnexpectedMessage,
+        ExternalBatchFrameError::Malformed
+        | ExternalBatchFrameError::TooLarge
+        | ExternalBatchFrameError::RequestMismatch
+        | ExternalBatchFrameError::ResultWidthMismatch
+        | ExternalBatchFrameError::UnexpectedPhase => MpcError::UnexpectedMessage,
+    }
 }
 
 impl ExternalBatchTranscript {
@@ -663,6 +836,117 @@ mod tests {
             }
             .encode()
         );
+    }
+
+    struct RecordingHost {
+        calls: Vec<(u64, Vec<bool>)>,
+    }
+
+    impl ExternalBatchActionHost for RecordingHost {
+        fn action(
+            &mut self,
+            registration: &ExternalBatchAction,
+            args: &[bool],
+        ) -> Result<Vec<bool>, MpcError> {
+            self.calls.push((registration.request_id, args.to_vec()));
+            Ok(args.iter().map(|bit| !bit).collect())
+        }
+    }
+
+    #[test]
+    fn evaluator_executor_runs_guarded_action_then_requires_reinsertion() {
+        let manifest =
+            ExternalBatchManifest::from_actions(ExternalBoundaryId(12), &[action(44, 0)]).unwrap();
+        let binding = manifest.bind([3; 32], [4; 32]);
+        let mut executor = EvaluatorBatchExecutor::new(
+            manifest,
+            binding,
+            vec![ExternalBatchAction {
+                request_id: 44,
+                name: "negate".into(),
+                argument_bits: 1,
+            }],
+        )
+        .unwrap();
+        executor
+            .accept_reveal(&ExternalBatchFrame::Reveal {
+                binding,
+                request_id: 44,
+                labels: vec![],
+            })
+            .unwrap();
+        let mut host = RecordingHost { calls: vec![] };
+        let result = executor
+            .execute_clear_inputs(
+                &ExternalBatchFrame::ClearInputs {
+                    binding,
+                    request_id: 44,
+                    bits: vec![true, false, true],
+                },
+                &mut host,
+            )
+            .unwrap();
+        assert_eq!(
+            result,
+            ExternalBatchFrame::Result {
+                binding,
+                request_id: 44,
+                bits: vec![true],
+            }
+        );
+        assert_eq!(host.calls, vec![(44, vec![false])]);
+        assert_eq!(executor.phase(), ExternalBatchPhase::Reinserted);
+        executor
+            .accept_reinserted(&ExternalBatchFrame::Reinserted {
+                binding,
+                request_id: 44,
+            })
+            .unwrap();
+        assert!(executor.is_complete());
+    }
+
+    #[test]
+    fn evaluator_executor_guard_false_does_not_invoke_host() {
+        let manifest =
+            ExternalBatchManifest::from_actions(ExternalBoundaryId(13), &[action(45, 0)]).unwrap();
+        let binding = manifest.bind([3; 32], [5; 32]);
+        let mut executor = EvaluatorBatchExecutor::new(
+            manifest,
+            binding,
+            vec![ExternalBatchAction {
+                request_id: 45,
+                name: "not-called".into(),
+                argument_bits: 1,
+            }],
+        )
+        .unwrap();
+        executor
+            .accept_reveal(&ExternalBatchFrame::Reveal {
+                binding,
+                request_id: 45,
+                labels: vec![],
+            })
+            .unwrap();
+        let mut host = RecordingHost { calls: vec![] };
+        let result = executor
+            .execute_clear_inputs(
+                &ExternalBatchFrame::ClearInputs {
+                    binding,
+                    request_id: 45,
+                    bits: vec![false, true, false],
+                },
+                &mut host,
+            )
+            .unwrap();
+        assert_eq!(
+            result,
+            ExternalBatchFrame::Result {
+                binding,
+                request_id: 45,
+                bits: vec![false],
+            }
+        );
+        assert!(host.calls.is_empty());
     }
 
     #[test]
