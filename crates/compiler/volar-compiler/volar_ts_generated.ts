@@ -3837,7 +3837,7 @@ export class Ntt {
     let length = 2n;
     while ((length <= this.$fdegree))     {
       const step = pow_mod(root, (this.$fdegree / length), this.$fmodulus);
-      for (const start of Array.from({length: Number(this.$fdegree - 0n)}, (_, __i) => BigInt(__i) + 0n).step_by(length))       {
+      for (const start of Array.from({length: Number(this.$fdegree - 0n)}, (_, __i) => BigInt(__i) + 0n).filter((_: any, __step_i: number) => BigInt(__step_i) % (length) === 0n))       {
         let twiddle = 1n;
         for (let offset = 0n; offset < (length / 2n); offset += 1n)         {
           const left = values[Number(fieldAdd(start, offset))];
@@ -6138,7 +6138,7 @@ export function bit_reverse(values: bigint[])
 {
   const bits = ilog2(BigInt(values.length));
   for (let index = 0n; index < BigInt(values.length); index += 1n)   {
-    const reversed = fieldShr(index.reverse_bits(), fieldSub(64n, bits));
+    const reversed = fieldShr((() => { let __r = index; let __o = 0n; for (let __i = 0n; __i < 64n; __i += 1n) { __o = (__o << 1n) | (__r & 1n); __r >>= 1n; } return __o; })(), fieldSub(64n, bits));
     if ((index < reversed))     {
       (() => { const __a = values; const __i = Number(index); const __j = Number(reversed); const __tmp = __a[__i]; __a[__i] = __a[__j]; __a[__j] = __tmp; return __a; })();
     }
@@ -6207,7 +6207,7 @@ export function build_buckets(seed: bigint[], n: bigint, m: bigint): Vec<Vec<big
   }
   for (let __mut_1 = 0n; __mut_1 < BigInt(buckets.length); __mut_1 += 1n) {
   {
-    b.sort_unstable();
+    b.sort((__a: any, __b: any) => (__a < __b ? -1 : (__a > __b ? 1 : 0)));
     b.dedup();
   }}
   return buckets;
@@ -6267,7 +6267,7 @@ export function cert_or(): GateCertificate
 export function cert_xnor(): GateCertificate
 {
   return new GateCertificate({ $fname: "XNOR", $farity: 2n, $fprepare: (c, q) => (() => {
-  const diff = BigInt(fieldSub((c[Number(0n)] as unknown as bigint), (c[Number(1n)] as unknown as bigint)).rem_euclid((q as unknown as bigint)));
+  const diff = BigInt((((fieldSub((c[Number(0n)] as unknown as bigint), (c[Number(1n)] as unknown as bigint))) % ((q as unknown as bigint)) + ((q as unknown as bigint))) % ((q as unknown as bigint))));
   return (fieldMul(2n, diff) % q);
 })(), $finterval_true: [5n, 1n] });
 }
@@ -6275,7 +6275,7 @@ export function cert_xnor(): GateCertificate
 export function cert_xor(): GateCertificate
 {
   return new GateCertificate({ $fname: "XOR", $farity: 2n, $fprepare: (c, q) => (() => {
-  const diff = BigInt(fieldSub((c[Number(0n)] as unknown as bigint), (c[Number(1n)] as unknown as bigint)).rem_euclid((q as unknown as bigint)));
+  const diff = BigInt((((fieldSub((c[Number(0n)] as unknown as bigint), (c[Number(1n)] as unknown as bigint))) % ((q as unknown as bigint)) + ((q as unknown as bigint))) % ((q as unknown as bigint))));
   return (fieldMul(2n, diff) % q);
 })(), $finterval_true: [1n, 5n] });
 }
@@ -6466,7 +6466,7 @@ return (r).push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)); } else { return (r).
     }
     level = next;
   }
-  const u = (level.next())!;
+  const u = (level.shift())!;
   return new ConvertOutput({ $fu: u, $fv: v });
 }
 
@@ -6709,7 +6709,7 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
     const __volar_try_2 = reader.take(packed_len);
     if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
     const packed = __volar_try_2;
-    if ((!__equals((bit_count % 8n), 0n) && packed.last().is_some_and((byte) => !__equals(fieldShr(byte, (bit_count % 8n)), 0n))))     {
+    if ((!__equals((bit_count % 8n), 0n) && packed.at(-1).is_some_and((byte) => !__equals(fieldShr(byte, (bit_count % 8n)), 0n))))     {
       return new DecodeError_UnknownTag();
     }
     let entries = ([] as any[]);
@@ -7243,7 +7243,7 @@ export function eval_abc<S>(ctx: { defaultS: () => any, UClass: { new(...args: a
 export function eval_not(c: bigint, q: bigint): bigint
 {
   const true_v = (q / 4n);
-  return BigInt(fieldSub((true_v as unknown as bigint), (c as unknown as bigint)).rem_euclid((q as unknown as bigint)));
+  return BigInt((((fieldSub((true_v as unknown as bigint), (c as unknown as bigint))) % ((q as unknown as bigint)) + ((q as unknown as bigint))) % ((q as unknown as bigint))));
 }
 
 export function evaluate_certificate(cert: any, inputs: bigint[], q: bigint): bigint
@@ -7256,7 +7256,7 @@ export function evaluate_certificate(cert: any, inputs: bigint[], q: bigint): bi
   return -((q / 8n) as unknown as bigint);
 } })();
   const restored = fieldAdd(signed_eighth, ((q / 8n) as unknown as bigint));
-  return BigInt(restored.rem_euclid((q as unknown as bigint)));
+  return BigInt((((restored) % ((q as unknown as bigint)) + ((q as unknown as bigint))) % ((q as unknown as bigint))));
 }
 
 export function evaluate_gate(cert_eighths: any, inputs: bigint[], q: bigint): bigint
@@ -8451,7 +8451,7 @@ export function inverse_mod(value: bigint, modulus: bigint): (bigint | undefined
   if (!__equals(old_r, 1n))   {
     return undefined;
   }
-  return BigInt(old_s.rem_euclid((modulus as unknown as bigint)));
+  return BigInt((((old_s) % ((modulus as unknown as bigint)) + ((modulus as unknown as bigint))) % ((modulus as unknown as bigint))));
 }
 
 export function is_satisfied_relaxed<S>(w: S[], e: S[], u: any): boolean
@@ -9609,7 +9609,7 @@ export function sample_uniform_points<R>(rng: any, n: bigint, t: bigint): Vec<bi
       (pts).push(x);
     }
   }
-  pts.sort_unstable();
+  pts.sort((__a: any, __b: any) => (__a < __b ? -1 : (__a > __b ? 1 : 0)));
   return pts;
 }
 

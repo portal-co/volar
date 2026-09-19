@@ -5418,6 +5418,40 @@ fn emit_other_method_call(
             write!(f, ".reduce((__sum: bigint, __x: bigint) => __sum + __x, 0n)")?;
             return Ok(());
         }
+        // `range.step_by(n)` → every nth range value. Ranges in generated TS are
+        // concrete arrays from the range printer, so filter by the array index.
+        "step_by" if args.len() == 1 => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".filter((_: any, __step_i: number) => BigInt(__step_i) % (")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, ") === 0n)")?;
+            return Ok(());
+        }
+        "reverse_bits" if args.is_empty() => {
+            write!(f, "(() => {{ let __r = ")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, "; let __o = 0n; for (let __i = 0n; __i < 64n; __i += 1n) {{ __o = (__o << 1n) | (__r & 1n); __r >>= 1n; }} return __o; }})()")?;
+            return Ok(());
+        }
+        "rem_euclid" if args.len() == 1 => {
+            write!(f, "((({}) % ({}) + ({})) % ({}))", TsFmt(TsExprWriter { expr: receiver }, cx), TsFmt(TsExprWriter { expr: &args[0] }, cx), TsFmt(TsExprWriter { expr: &args[0] }, cx), TsFmt(TsExprWriter { expr: &args[0] }, cx))?;
+            return Ok(());
+        }
+        "last" if args.is_empty() => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".at(-1)")?;
+            return Ok(());
+        }
+        "next" if args.is_empty() => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".shift()")?;
+            return Ok(());
+        }
+        "sort_unstable" if args.is_empty() => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".sort((__a: any, __b: any) => (__a < __b ? -1 : (__a > __b ? 1 : 0)))")?;
+            return Ok(());
+        }
         // `arr.iter_mut()` outside an IterLoop — treat as a plain iteration source
         // (the IterLoop path handles the mutable-write case separately).
         "iter_mut" | "iter" if args.is_empty() => {
