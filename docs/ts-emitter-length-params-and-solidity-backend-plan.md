@@ -305,7 +305,7 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509** (and seeded
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → 503 → 502** (and seeded
 components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
 *syntax* errors are fixed; the remainder are semantic. Bug classes fixed:
 
@@ -346,13 +346,19 @@ one-line fix):
   a `static` method references `n`, which is never in scope there.
 - **Function-local `fn` items** (recursive helpers like bavc's `walk`):
   dropped by the parser; representing them needs a new `IrStmtKind` variant.
-- **Projection length witnesses in static methods** (`Array<u8, D::OutputSize>`
-  in a `static fn`): the value `D::OutputSize` is a runtime length but the
-  lowering has no `self` to source it from and adds no leading length param for
-  it, so the body's `Array::from_fn`/`(0..n)` references an unbound `n`. Needs
-  the lowering to detect projection-typed array lengths in a static method's
-  signature and inject a leading `usize` param (the concrete piece of the
-  "weak type inference pass"). ~12 errors; also present in Rust-dyn output.
+- **`from_fn` length placeholders without turbofish** (the parser emits a bare
+  `N` → `n` when `core::array::from_fn(|i| ..)` has no explicit length): the
+  lowering must infer the intended length. **Partially fixed** (commit
+  bed080b, 3444997): a bounded use-site inference pass resolves the placeholder
+  from a struct-field assignment use-site (the dominant `let rows = from_fn(..);
+  ..; Struct { rows }` pattern) and from return-position array literals against
+  the original return type (e.g. `double` → `ctx.D_OutputSize`). This took the
+  `n`-placeholder errors from 12 → 4. The remaining 4 are *nested* producers
+  (an inner `from_fn` inside an outer `from_fn`'s closure, e.g. the KSK's
+  `Vec<[LweCiphertext; KS_ELL]>`), which need multi-level element-of-element
+  length inference — a further extension of the same pass. This whole area is
+  the concrete, now-partially-built instance of the pipeline's deferred "weak
+  type inference pass".
 - **Associated consts on impls** (`impl Fe25519 { pub const ONE: Self = ... }`,
   referenced as `Fe25519::ONE`): the parser's `convert_impl_item` drops
   `ImplItem::Const`, so `Type::CONST` references emit as the undefined
