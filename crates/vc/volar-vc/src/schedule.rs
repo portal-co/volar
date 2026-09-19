@@ -324,6 +324,7 @@ fn compile_schedule_inner<P: Clone>(
                 let wargs = wargs?;
                 let wfb = wfb?;
                 let idx = actions.len() as u32;
+                let request_id = (num_inputs + stmt_ord) as u64;
                 action_calls.insert((num_inputs + stmt_ord) as u32, idx);
                 let execution = policies
                     .iter()
@@ -332,6 +333,8 @@ fn compile_schedule_inner<P: Clone>(
                     .unwrap_or_else(ActionExecutionPolicy::legacy_evaluator);
                 actions.push(volar_mpc::ActionSpec {
                     name: name.clone(),
+                    request_id,
+                    action_ordinal: idx as u64,
                     execution,
                     guard: wg,
                     arg_wires: wargs,

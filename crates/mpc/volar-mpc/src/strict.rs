@@ -195,6 +195,8 @@ pub fn eliminate_nots(schedule: &GateSchedule) -> Result<EliminatedNots, MpcErro
             .collect::<Result<_, MpcError>>()?;
         actions.push(crate::ActionSpec {
             name: spec.name.clone(),
+            request_id: spec.request_id,
+            action_ordinal: spec.action_ordinal,
             execution: spec.execution,
             guard,
             arg_wires: arg_pairs.iter().map(|p| p.0).collect(),

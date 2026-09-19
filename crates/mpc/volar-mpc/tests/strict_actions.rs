@@ -57,6 +57,8 @@ fn action_schedule() -> GateSchedule {
         actions: vec![
             ActionSpec {
                 name: "reverse".into(),
+                request_id: 0,
+                action_ordinal: 0,
                 execution: volar_mpc::ActionExecutionPolicy::legacy_evaluator(),
                 guard: 0,
                 arg_wires: vec![0, 1, 2, 3],
@@ -68,6 +70,8 @@ fn action_schedule() -> GateSchedule {
             },
             ActionSpec {
                 name: "pair".into(),
+                request_id: 1,
+                action_ordinal: 1,
                 execution: volar_mpc::ActionExecutionPolicy::legacy_evaluator(),
                 guard: 4,
                 arg_wires: vec![0],

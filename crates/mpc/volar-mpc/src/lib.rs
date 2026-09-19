@@ -61,6 +61,8 @@ use volar_spec::garble::{Eval, EvalSetup, Garble, GarbleTable, GarbledCircuit, G
 use volar_spec::vole::VoleArray;
 
 pub mod cut_and_choose;
+pub mod external_batch;
+pub use external_batch::{ExternalActionManifestEntry, ExternalBatchManifest, ExternalBoundaryId};
 pub mod input_labels;
 #[cfg(feature = "std")]
 pub mod net;
@@ -338,6 +340,12 @@ impl ActionExecutionPolicy {
 pub struct ActionSpec {
     /// The extern's name (matched against the host's registry).
     pub name: String,
+    /// Stable public source occurrence identity, bound by future boundary
+    /// manifests. It is distinct from `call` table position.
+    pub request_id: u64,
+    /// Total source action-chain position. Schedulers must preserve this order
+    /// even when unrelated storage/oracle requests batch beside an action.
+    pub action_ordinal: u64,
     /// Explicit host executor and disclosure policy.
     pub execution: ActionExecutionPolicy,
     /// Wire carrying the guard (1 = invoke, 0 = use the fallback bits).

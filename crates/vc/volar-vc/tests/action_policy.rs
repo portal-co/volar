@@ -47,11 +47,13 @@ fn compiler_carries_explicit_action_executor_policy() {
         reveal: ExternalRevealPolicy::ExecutorOnly,
         fingerprint: [0xA5; 32],
     };
-    let schedule = compile_schedule_with_action_policies(
-        &action_circuit(),
-        &[("host_action".into(), policy)],
-    )
-    .unwrap();
+    let schedule =
+        compile_schedule_with_action_policies(&action_circuit(), &[("host_action".into(), policy)])
+            .unwrap();
     assert_eq!(schedule.actions.len(), 1);
     assert_eq!(schedule.actions[0].execution, policy);
+    // Params 0..1, ActionCall is source statement 0, so its stable source
+    // occurrence is raw SSA id 2; the action chain starts at zero.
+    assert_eq!(schedule.actions[0].request_id, 2);
+    assert_eq!(schedule.actions[0].action_ordinal, 0);
 }
