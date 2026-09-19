@@ -236,6 +236,13 @@ impl ExternalBatchManifest {
         })
     }
 
+    /// Validate a manifest received through an in-memory planning seam before
+    /// allocating held result material. Wire decoders already invoke this
+    /// canonical validation through `from_entries`.
+    pub fn validate(&self) -> Result<(), ExternalBatchFrameError> {
+        Self::from_entries(self.boundary, self.actions.clone()).map(|_| ())
+    }
+
     /// Bind this public manifest to caller-provided session and circuit
     /// digests. The field layout is canonical and length-delimited through the
     /// fixed-width action entries; malformed schedules cannot affect it.

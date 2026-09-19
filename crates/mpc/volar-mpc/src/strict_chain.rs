@@ -208,6 +208,39 @@ pub struct ChainBoundaryScript {
     pub external: Vec<ExternalBatchManifest>,
 }
 
+/// Opaque held-slot allocation reserved for one future external request's
+/// reinserted result bits. It is public script geometry only: the garbler and
+/// evaluator keep their respective opaque bases/labels in the allocated range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExternalHeldResult {
+    pub request_id: u64,
+    pub slots: HeldRange,
+}
+
+/// Reserve result material for validated manifests without decoding any value.
+///
+/// Callers must run this while constructing the public chain script, before a
+/// round begins. A malformed manifest allocates nothing; result slots are
+/// contiguous in canonical manifest/action/output order.
+pub fn reserve_external_held_results(
+    slots: &mut HeldSlots,
+    manifests: &[ExternalBatchManifest],
+) -> Result<Vec<ExternalHeldResult>, MpcError> {
+    let mut results = Vec::new();
+    for manifest in manifests {
+        manifest
+            .validate()
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        for action in &manifest.actions {
+            results.push(ExternalHeldResult {
+                request_id: action.request_id,
+                slots: slots.reserve(action.output_bits),
+            });
+        }
+    }
+    Ok(results)
+}
+
 /// Execute an admitted chain boundary before an ordinary strict round.
 ///
 /// Current chain drivers accept storage-only scripts. Any external manifest is
@@ -828,6 +861,51 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::ActionSpec;
+
+    #[test]
+    fn external_results_reserve_contiguous_opaque_held_slots() {
+        let mut slots = HeldSlots::new();
+        let manifest = ExternalBatchManifest::from_actions(
+            crate::ExternalBoundaryId(8),
+            &[
+                ActionSpec {
+                    name: "one".into(),
+                    request_id: 10,
+                    action_ordinal: 0,
+                    execution: crate::ActionExecutionPolicy::legacy_evaluator(),
+                    guard: 0,
+                    arg_wires: Vec::new(),
+                    fallback_wires: vec![0],
+                    num_bits: 1,
+                    guard_polarity: false,
+                    arg_polarity: Vec::new(),
+                    fallback_polarity: Vec::new(),
+                },
+                ActionSpec {
+                    name: "two".into(),
+                    request_id: 11,
+                    action_ordinal: 1,
+                    execution: crate::ActionExecutionPolicy::legacy_evaluator(),
+                    guard: 0,
+                    arg_wires: Vec::new(),
+                    fallback_wires: vec![0, 0],
+                    num_bits: 2,
+                    guard_polarity: false,
+                    arg_polarity: Vec::new(),
+                    fallback_polarity: Vec::new(),
+                },
+            ],
+        )
+        .unwrap();
+        let results = reserve_external_held_results(&mut slots, &[manifest]).unwrap();
+        assert_eq!(results[0].request_id, 10);
+        assert_eq!(results[0].slots.slot(0), Some(0));
+        assert_eq!(results[1].request_id, 11);
+        assert_eq!(results[1].slots.slot(0), Some(1));
+        assert_eq!(results[1].slots.slot(1), Some(2));
+        assert_eq!(slots.len(), 3);
+    }
 
     #[test]
     fn external_boundary_is_rejected_before_storage_admission() {
