@@ -173,6 +173,10 @@ pub enum MpcError {
     ActionRequiresHost,
     /// An action host returned an error or a wrong-width result.
     ActionHost,
+    /// The schedule selected an executor/reveal policy unavailable in this
+    /// session adapter. Adapters must fail closed, never silently fall back to
+    /// evaluator execution.
+    UnsupportedExternalPolicy,
 }
 
 /// The evaluator-side Garbled-RAM storage driver: one ORAM host per storage
@@ -286,6 +290,43 @@ pub enum Gate {
     },
 }
 
+/// Public party selected to run an external action/oracle host implementation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExternalExecutor {
+    Garbler,
+    Evaluator,
+}
+
+/// Public clear-input disclosure authorization for one external request.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExternalRevealPolicy {
+    /// Only the assigned executor may receive clear external inputs. A strict
+    /// adapter must explicitly implement this mode before accepting it.
+    ExecutorOnly,
+    /// Compatibility disclosure: both roles receive the decoded inputs.
+    BothRoles,
+}
+
+/// Schedule-level action execution policy.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ActionExecutionPolicy {
+    pub executor: ExternalExecutor,
+    pub reveal: ExternalRevealPolicy,
+    /// Declaration/profile fingerprint bound by a future batch manifest.
+    pub fingerprint: [u8; 32],
+}
+
+impl ActionExecutionPolicy {
+    /// Explicit legacy policy for the existing evaluator-hosted strict path.
+    pub const fn legacy_evaluator() -> Self {
+        Self {
+            executor: ExternalExecutor::Evaluator,
+            reveal: ExternalRevealPolicy::BothRoles,
+            fingerprint: [0; 32],
+        }
+    }
+}
+
 /// One action call carried by a schedule: the extern's name plus the wires
 /// holding its guard, arguments, and fallback bits (the value used for each
 /// output bit when `guard = 0` and the action is not invoked).
@@ -297,6 +338,8 @@ pub enum Gate {
 pub struct ActionSpec {
     /// The extern's name (matched against the host's registry).
     pub name: String,
+    /// Explicit host executor and disclosure policy.
+    pub execution: ActionExecutionPolicy,
     /// Wire carrying the guard (1 = invoke, 0 = use the fallback bits).
     pub guard: usize,
     /// Argument wires, in order.

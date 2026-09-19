@@ -17,12 +17,13 @@
 //! are expanded to `Not`/`And` by De Morgan (`a | b = !(!a & !b)`), matching
 //! `volar_weaver`'s `expand_ors`.
 
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use volar_ir::boolar::{BIrBlocks, BIrStmt, BIrTerminator};
 use volar_ir::ir::{IRBlockTargetId, IRVarId, StorageId};
-use volar_mpc::{Gate, GateSchedule, GramStorageSpec};
+use volar_mpc::{ActionExecutionPolicy, Gate, GateSchedule, GramStorageSpec};
 
 /// Why a [`BIrBlocks`] could not be compiled to a [`GateSchedule`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,7 +98,26 @@ pub fn compile_schedule_optimized<P: Clone>(
     compile_schedule(&c)
 }
 
+/// Compile with explicit executor policy for every action name.
+///
+/// Missing names use the explicit legacy evaluator policy only through the
+/// compatibility `compile_schedule` wrapper; new callers should supply this
+/// registry so action executor selection is visible at the schedule seam.
+pub fn compile_schedule_with_action_policies<P: Clone>(
+    circuit: &BIrBlocks<P>,
+    policies: &[(String, ActionExecutionPolicy)],
+) -> Result<GateSchedule, ScheduleError> {
+    compile_schedule_inner(circuit, policies)
+}
+
 pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule, ScheduleError> {
+    compile_schedule_inner(circuit, &[])
+}
+
+fn compile_schedule_inner<P: Clone>(
+    circuit: &BIrBlocks<P>,
+    policies: &[(String, ActionExecutionPolicy)],
+) -> Result<GateSchedule, ScheduleError> {
     if !circuit.is_circuit() || circuit.blocks.len() != 1 {
         return Err(ScheduleError::NotACircuit);
     }
@@ -305,8 +325,14 @@ pub fn compile_schedule<P: Clone>(circuit: &BIrBlocks<P>) -> Result<GateSchedule
                 let wfb = wfb?;
                 let idx = actions.len() as u32;
                 action_calls.insert((num_inputs + stmt_ord) as u32, idx);
+                let execution = policies
+                    .iter()
+                    .find(|(configured, _)| configured == name)
+                    .map(|(_, policy)| *policy)
+                    .unwrap_or_else(ActionExecutionPolicy::legacy_evaluator);
                 actions.push(volar_mpc::ActionSpec {
                     name: name.clone(),
+                    execution,
                     guard: wg,
                     arg_wires: wargs,
                     fallback_wires: wfb,

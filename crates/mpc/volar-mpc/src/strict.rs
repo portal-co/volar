@@ -195,6 +195,7 @@ pub fn eliminate_nots(schedule: &GateSchedule) -> Result<EliminatedNots, MpcErro
             .collect::<Result<_, MpcError>>()?;
         actions.push(crate::ActionSpec {
             name: spec.name.clone(),
+            execution: spec.execution,
             guard,
             arg_wires: arg_pairs.iter().map(|p| p.0).collect(),
             fallback_wires: fb_pairs.iter().map(|p| p.0).collect(),
@@ -329,6 +330,12 @@ where
 {
     let exec = &full.exec;
     let schedule = &exec.schedule;
+    if schedule.actions.iter().any(|spec| {
+        spec.execution.executor != crate::ExternalExecutor::Evaluator
+            || spec.execution.reveal != crate::ExternalRevealPolicy::BothRoles
+    }) {
+        return Err(MpcError::UnsupportedExternalPolicy);
+    }
     if partition.len() != schedule.num_inputs {
         return Err(MpcError::BadPartition);
     }
@@ -886,6 +893,12 @@ where
     N: VoleArray<u8>,
     D: Digest,
 {
+    if schedule.actions.iter().any(|spec| {
+        spec.execution.executor != crate::ExternalExecutor::Evaluator
+            || spec.execution.reveal != crate::ExternalRevealPolicy::BothRoles
+    }) {
+        return Err(MpcError::UnsupportedExternalPolicy);
+    }
     if partition.len() != schedule.num_inputs {
         return Err(MpcError::BadPartition);
     }
