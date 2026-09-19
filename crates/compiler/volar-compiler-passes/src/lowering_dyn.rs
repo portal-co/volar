@@ -1121,8 +1121,7 @@ fn align_producer_to_type(
     }
     let (elem_ty, len_ty) = match ty {
         IrType::Array { elem, len, .. } => (Some(elem.as_ref()), Some(len)),
-        IrType::Vector { elem } => (Some(elem.as_ref()), None),
-        _ => (None, None),
+        _ => (array_like_elem(ty), None),
     };
     // Rewrite this level's length placeholder (if a producer).
     if let Some(len) = len_ty {
@@ -1211,7 +1210,7 @@ fn resolve_placeholder_lengths(
     let n_stmts = block.stmts.len();
     for i in 0..n_stmts {
         let (name, use_ty) = {
-            let IrStmtKind::Let { pattern, init: Some(init), .. } = &block.stmts[i].kind else {
+            let IrStmtKind::Let { pattern, ty: let_ty, init: Some(init) } = &block.stmts[i].kind else {
                 continue;
             };
             let IrPattern::Ident { name, .. } = pattern else {
@@ -1224,18 +1223,24 @@ fn resolve_placeholder_lengths(
                 continue;
             }
             let name = name.clone();
-            let mut use_ty = None;
-            for later in &block.stmts[i + 1..] {
-                match &later.kind {
-                    IrStmtKind::Let { init: Some(e), .. }
-                    | IrStmtKind::Semi(e)
-                    | IrStmtKind::Expr(e) => {
-                        if let Some(t) = find_use_type_of_var(e, &name, ctx) {
-                            use_ty = Some(t);
-                            break;
+            // Prefer the let's own type annotation when it carries an array length
+            // (e.g. `let neg_sk: [u32; BIG_N] = from_fn(..)`); otherwise fall back to
+            // the use-site (struct-field) type.
+            let annotation_is_array = matches!(let_ty, Some(IrType::Array { .. } | IrType::Vector { .. }));
+            let mut use_ty = if annotation_is_array { let_ty.clone() } else { None };
+            if use_ty.is_none() {
+                for later in &block.stmts[i + 1..] {
+                    match &later.kind {
+                        IrStmtKind::Let { init: Some(e), .. }
+                        | IrStmtKind::Semi(e)
+                        | IrStmtKind::Expr(e) => {
+                            if let Some(t) = find_use_type_of_var(e, &name, ctx) {
+                                use_ty = Some(t);
+                                break;
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
             if use_ty.is_none() {
@@ -1294,6 +1299,210 @@ fn resolve_placeholder_lengths(
     }
     if let Some(tail) = &mut block.expr {
         align_struct_field_producers(tail, bound, ctx, fn_gen);
+    }
+
+    // Imperative push-into-vec: `let mut v = Vec::with_capacity(N); for .. {
+    // v.push(from_fn(..)) }`, then `v` used as a struct field. Build a map from
+    // the vec var name to its field element type, then align each pushed producer
+    // against that element type.
+    let mut vec_elem: BTreeMap<String, IrType> = BTreeMap::new();
+    collect_vec_field_elems(block, ctx, &mut vec_elem);
+    if !vec_elem.is_empty() {
+        for s in block.stmts.iter_mut() {
+            align_push_producers_in_stmt(s, &vec_elem, bound, ctx, fn_gen);
+        }
+        if let Some(tail) = &mut block.expr {
+            align_push_producers_in_expr(tail, &vec_elem, bound, ctx, fn_gen);
+        }
+    }
+}
+
+/// Extract the element type of an array-like type: `Vector`, `Array`, or a
+/// `Vec<E>`/`VecDeque<E>` parsed as `Struct{Custom("Vec"), [E]}`.
+fn array_like_elem(ty: &IrType) -> Option<&IrType> {
+    match ty {
+        IrType::Vector { elem } | IrType::Array { elem, .. } => Some(elem.as_ref()),
+        IrType::Struct { kind, type_args, .. }
+            if matches!(kind, StructKind::Custom(n) if n == "Vec" || n == "VecDeque")
+                && type_args.len() == 1 =>
+        {
+            Some(&type_args[0])
+        }
+        _ => None,
+    }
+}
+
+/// Collect, for each variable used as a struct field whose type is an array/vector
+/// of arrays, the element type — so `v.push(producer)` can align the producer.
+fn collect_vec_field_elems(block: &IrBlock, ctx: &LoweringContext, out: &mut BTreeMap<String, IrType>) {
+    let mut scan = |e: &IrExpr| collect_vec_field_elems_expr(e, ctx, out);
+    for s in &block.stmts {
+        match &s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => scan(e),
+            _ => {}
+        }
+    }
+    if let Some(t) = &block.expr {
+        scan(t);
+    }
+}
+
+fn collect_vec_field_elems_expr(expr: &IrExpr, ctx: &LoweringContext, out: &mut BTreeMap<String, IrType>) {
+    if let IrExprKind::StructExpr { kind, fields, rest, .. } = &expr.kind {
+        let lowered_name = kind.to_string();
+        let sname = ctx
+            .lowered_struct_names
+            .iter()
+            .find(|(_, dyn_name)| **dyn_name == lowered_name)
+            .map(|(src, _)| src.clone())
+            .unwrap_or(lowered_name);
+        if let Some(field_map) = ctx.struct_field_types.get(&sname) {
+            for (field_name, val) in fields.iter() {
+                if let IrExprKind::Var(v) = &val.kind {
+                    if let Some(elem) = field_map.get(field_name).and_then(array_like_elem) {
+                        out.insert(v.clone(), elem.clone());
+                    }
+                }
+            }
+        }
+        for (_, val) in fields.iter() {
+            collect_vec_field_elems_expr(val, ctx, out);
+        }
+        if let Some(r) = rest {
+            collect_vec_field_elems_expr(r, ctx, out);
+        }
+        return;
+    }
+    match &expr.kind {
+        IrExprKind::Binary { left, right, .. } => {
+            collect_vec_field_elems_expr(left, ctx, out);
+            collect_vec_field_elems_expr(right, ctx, out);
+        }
+        IrExprKind::Unary { expr: e, .. } | IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            collect_vec_field_elems_expr(e, ctx, out)
+        }
+        IrExprKind::Call { func, args } => {
+            collect_vec_field_elems_expr(func, ctx, out);
+            for a in args {
+                collect_vec_field_elems_expr(a, ctx, out);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            collect_vec_field_elems_expr(receiver, ctx, out);
+            for a in args {
+                collect_vec_field_elems_expr(a, ctx, out);
+            }
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                collect_vec_field_elems_expr(e, ctx, out);
+            }
+        }
+        IrExprKind::Block(b) => collect_vec_field_elems(b, ctx, out),
+        _ => {}
+    }
+}
+
+/// For any `v.push(producer)` where `v` maps to an array element type, align the
+/// producer against that element type.
+fn align_push_producers_in_stmt(
+    stmt: &mut IrStmt,
+    vec_elem: &BTreeMap<String, IrType>,
+    bound: &BTreeSet<String>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) {
+    match &mut stmt.kind {
+        IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+            align_push_producers_in_expr(e, vec_elem, bound, ctx, fn_gen);
+        }
+        _ => {}
+    }
+}
+
+fn align_push_producers_in_expr(
+    expr: &mut IrExpr,
+    vec_elem: &BTreeMap<String, IrType>,
+    bound: &BTreeSet<String>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) {
+    // `v.push(arg)` — arg aligned against vec_elem[v].
+    if let IrExprKind::MethodCall { receiver, method, args, .. } = &mut expr.kind {
+        if matches!(method, volar_compiler::MethodKind::Known(StdMethod::Push)) {
+            // Unwrap references/derefs to reach the pushed-onto variable.
+            let mut recv: &IrExpr = receiver;
+            loop {
+                match &recv.kind {
+                    IrExprKind::Unary { expr: e, .. }
+                    | IrExprKind::Cast { expr: e, .. } => recv = e,
+                    _ => break,
+                }
+            }
+            if let IrExprKind::Var(v) = &recv.kind {
+                if let Some(elem_ty) = vec_elem.get(v).cloned() {
+                    for a in args.iter_mut() {
+                        align_producer_to_type(a, &elem_ty, bound, ctx, fn_gen);
+                    }
+                }
+            }
+        }
+    }
+    // Recurse (a push may be inside a loop body block).
+    match &mut expr.kind {
+        IrExprKind::Block(b) => {
+            for st in &mut b.stmts {
+                align_push_producers_in_stmt(st, vec_elem, bound, ctx, fn_gen);
+            }
+            if let Some(t) = &mut b.expr {
+                align_push_producers_in_expr(t, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            align_push_producers_in_expr(receiver, vec_elem, bound, ctx, fn_gen);
+            for a in args {
+                align_push_producers_in_expr(a, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::Call { func, args } => {
+            align_push_producers_in_expr(func, vec_elem, bound, ctx, fn_gen);
+            for a in args {
+                align_push_producers_in_expr(a, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::Binary { left, right, .. } => {
+            align_push_producers_in_expr(left, vec_elem, bound, ctx, fn_gen);
+            align_push_producers_in_expr(right, vec_elem, bound, ctx, fn_gen);
+        }
+        IrExprKind::Unary { expr: e, .. } | IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            align_push_producers_in_expr(e, vec_elem, bound, ctx, fn_gen)
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                align_push_producers_in_expr(e, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        // Loop bodies: a BoundedLoop/WhileLoop/IterLoop body is a block.
+        IrExprKind::BoundedLoop { body, .. }
+        | IrExprKind::WhileLoop { body, .. }
+        | IrExprKind::IterLoop { body, .. } => {
+            for st in &mut body.stmts {
+                align_push_producers_in_stmt(st, vec_elem, bound, ctx, fn_gen);
+            }
+            if let Some(t) = &mut body.expr {
+                align_push_producers_in_expr(t, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::If { cond, then_branch, else_branch } => {
+            align_push_producers_in_expr(cond, vec_elem, bound, ctx, fn_gen);
+            for st in &mut then_branch.stmts {
+                align_push_producers_in_stmt(st, vec_elem, bound, ctx, fn_gen);
+            }
+            if let Some(eb) = else_branch {
+                align_push_producers_in_expr(eb, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        _ => {}
     }
 }
 

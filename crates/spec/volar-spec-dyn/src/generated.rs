@@ -5532,7 +5532,7 @@ pub fn binfhe_gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usi
     binfhe_rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>(eta, (lwe_sk.key[i] != 0), rlwe_sk, rng)
 }).collect::<Vec<_>>();
     let ksk = BinfheKeySwitchingKeyDyn { ksk: (0..big_n).map(|i| {
-    (0..n).map(|j| {
+    (0..ks_ell).map(|j| {
     let msg = rlwe_sk.key[i].wrapping_mul(gadget::<LOG_MOD_KS>::level_factor(ks_base_log, j));
     binfhe_lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(eta, torus::<LOG_MOD_KS>::reduce(msg), lwe_sk, rng)
 }).collect::<Vec<_>>()
@@ -5988,7 +5988,7 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
     p[0] = torus::<LOG_Q>::torus_neg(1);
     p
 };
-    let neg_sk: [u32; BIG_N] = (0..n).map(|i| torus::<LOG_Q>::torus_neg(rlwe_sk.key[i])).collect::<Vec<_>>();
+    let neg_sk: [u32; BIG_N] = (0..big_n).map(|i| torus::<LOG_Q>::torus_neg(rlwe_sk.key[i])).collect::<Vec<_>>();
     let one_const: [u32; BIG_N] = {
     let mut p = [0; big_n];
     p[0] = 1;
@@ -6001,7 +6001,7 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
 } else {
     &zero
 };
-    a_col.push((0..n).map(|l| {
+    a_col.push((0..priv_ell).map(|l| {
     encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, msg, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>());
 };
@@ -6012,7 +6012,7 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
 } else {
     &zero
 };
-    b_col.push((0..n).map(|l| {
+    b_col.push((0..priv_ell).map(|l| {
     encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, msg, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>());
 };

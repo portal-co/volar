@@ -5698,7 +5698,7 @@ export function binfhe_gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, lo
   return binfhe_rgsw_encrypt(eta, !__equals(lwe_sk.$fkey[Number(i)], 0n), rlwe_sk, rng);
 })());
   const ksk = new BinfheKeySwitchingKeyDyn({ $fksk: Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
-  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  return Array.from({length: Number(ks_ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const msg = BigInt(Math.imul(Number(rlwe_sk.$fkey[Number(i)]), Number(level_factor(ks_base_log, j))));
   return binfhe_lwe_encrypt_raw(eta, reduce(msg), lwe_sk, rng);
 })());
@@ -7757,7 +7757,7 @@ export function gen_circuit_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, l
   p[Number(0n)] = torus_neg(1n);
   return p;
 })();
-  const neg_sk: bigint[] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => torus_neg(rlwe_sk.$fkey[Number(i)]));
+  const neg_sk: bigint[] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => torus_neg(rlwe_sk.$fkey[Number(i)]));
   const one_const: bigint[] = (() => {
   let p = Array.from({length: Number(big_n)}, () => 0n);
   p[Number(0n)] = 1n;
@@ -7770,7 +7770,7 @@ export function gen_circuit_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, l
 } else {
   return zero;
 } })();
-    (a_col).push(Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+    (a_col).push(Array.from({length: Number(priv_ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
   return encrypt_scaled_poly(big_n, log_q, eta, msg, l, priv_base_log, rlwe_sk, rng);
 })()));
   }
@@ -7781,7 +7781,7 @@ export function gen_circuit_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, l
 } else {
   return zero;
 } })();
-    (b_col).push(Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+    (b_col).push(Array.from({length: Number(priv_ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
   return encrypt_scaled_poly(big_n, log_q, eta, msg, l, priv_base_log, rlwe_sk, rng);
 })()));
   }
