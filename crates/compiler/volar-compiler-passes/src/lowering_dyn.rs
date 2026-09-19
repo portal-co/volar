@@ -1853,11 +1853,17 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             // erased length generic. Call sites inside generic functions have those
             // params in scope (from their own lowered signature) and must forward them.
             {
-                // Only inject for bare Var references (top-level function calls).
-                // Path expressions like ["D", "new"] are type-param qualified calls
-                // handled by class witnesses in the TS printer — don't touch them.
+                // Inject for bare function references: either a `Var` or a
+                // single-segment `Path` (`fill_test_poly::<BIG_N>(...)` parses the
+                // callee as `Path["fill_test_poly"]` with turbofish type args, not a
+                // `Var`). Multi-segment paths like ["D", "new"] are type-param
+                // qualified calls handled by class witnesses in the TS printer —
+                // don't touch them.
                 let callee_name = match &func.kind {
                     IrExprKind::Var(name) => Some(name.as_str()),
+                    IrExprKind::Path { segments, .. } if segments.len() == 1 => {
+                        Some(segments[0].as_str())
+                    }
                     _ => None,
                 };
                 // Never inject into constructors (uppercase first letter).

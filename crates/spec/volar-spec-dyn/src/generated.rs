@@ -2869,7 +2869,7 @@ impl  LutDyn {
     {
         match check_lut_shape(addr_bits, table_len, big_n, log_q, log_q_lwe, k_max) {
     Err(e) => Err(e),
-    Ok(_) => Ok(Self { logical: logical, test_poly: fill_test_poly::<BIG_N>(&logical, addr_bits, k_max, log_q, log_q_lwe), is_constant: table_is_constant(&logical) }),
+    Ok(_) => Ok(Self { logical: logical, test_poly: fill_test_poly::<BIG_N>(big_n, &logical, addr_bits, k_max, log_q, log_q_lwe), is_constant: table_is_constant(&logical) }),
 }
     }
     pub fn entries(&self) -> &[bool; TABLE_LEN]
@@ -5529,12 +5529,12 @@ pub fn derive_and_q<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut q_a: &QDyn<
 pub fn binfhe_gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut eta: usize, mut lwe_sk: &BinfheLweSecretKeyDyn, mut rlwe_sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheBootstrappingKeyDyn
 {
     let bsk = (0..n_lwe).map(|i| {
-    binfhe_rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>((lwe_sk.key[i] != 0), rlwe_sk, rng)
+    binfhe_rgsw_encrypt::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG, ETA, R>(eta, (lwe_sk.key[i] != 0), rlwe_sk, rng)
 }).collect::<Vec<_>>();
     let ksk = BinfheKeySwitchingKeyDyn { ksk: (0..big_n).map(|i| {
     (0..n).map(|j| {
     let msg = rlwe_sk.key[i].wrapping_mul(gadget::<LOG_MOD_KS>::level_factor(ks_base_log, j));
-    binfhe_lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(torus::<LOG_MOD_KS>::reduce(msg), lwe_sk, rng)
+    binfhe_lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(eta, torus::<LOG_MOD_KS>::reduce(msg), lwe_sk, rng)
 }).collect::<Vec<_>>()
 }).collect::<Vec<_>>(), n_lwe: 0, big_n: 0, ks_ell: 0 };
     BinfheBootstrappingKeyDyn { bsk: bsk, ksk: ksk, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0 }
@@ -5574,9 +5574,9 @@ pub fn binfhe_rgsw_encrypt<R: SpecRng>(mut n: usize, mut log: usize, mut ell: us
 } else {
     0
 };
-    let mut rlwe0 = binfhe_rlwe_encrypt_scalar::<N, LOG, ETA, R>(0, sk, rng);
+    let mut rlwe0 = binfhe_rlwe_encrypt_scalar::<N, LOG, ETA, R>(n, log, eta, 0, sk, rng);
     rlwe0.a[0] = torus::<LOG>::torus_add(rlwe0.a[0], contrib);
-    let rlwe1 = binfhe_rlwe_encrypt_scalar::<N, LOG, ETA, R>(contrib, sk, rng);
+    let rlwe1 = binfhe_rlwe_encrypt_scalar::<N, LOG, ETA, R>(n, log, eta, contrib, sk, rng);
     BinfheRgswRowDyn { rlwe0: rlwe0, rlwe1: rlwe1, n: 0 }
 }).collect::<Vec<_>>();
     BinfheRgswCiphertextDyn { rows: rows, n: 0, ell: 0 }
@@ -5590,10 +5590,10 @@ pub fn binfhe_external_product(mut n: usize, mut log: usize, mut ell: usize, mut
     let mut out_b = [0; n];
     for j in 0.. ell{
     let row = &c.rows[j];
-    let a0 = binfhe_poly_mul_neg::<N, LOG>(&a_dec[j], &row.rlwe0.a);
-    let a1 = binfhe_poly_mul_neg::<N, LOG>(&a_dec[j], &row.rlwe0.b);
-    let b0 = binfhe_poly_mul_neg::<N, LOG>(&b_dec[j], &row.rlwe1.a);
-    let b1 = binfhe_poly_mul_neg::<N, LOG>(&b_dec[j], &row.rlwe1.b);
+    let a0 = binfhe_poly_mul_neg::<N, LOG>(n, log, &a_dec[j], &row.rlwe0.a);
+    let a1 = binfhe_poly_mul_neg::<N, LOG>(n, log, &a_dec[j], &row.rlwe0.b);
+    let b0 = binfhe_poly_mul_neg::<N, LOG>(n, log, &b_dec[j], &row.rlwe1.a);
+    let b1 = binfhe_poly_mul_neg::<N, LOG>(n, log, &b_dec[j], &row.rlwe1.b);
     for k in 0.. n{
     out_a[k] = out_a[k].wrapping_add(a0[k]).wrapping_add(b0[k]);
     out_b[k] = out_b[k].wrapping_add(a1[k]).wrapping_add(b1[k]);
@@ -5608,9 +5608,9 @@ pub fn binfhe_external_product(mut n: usize, mut log: usize, mut ell: usize, mut
 
 pub fn binfhe_rgsw_cmux(mut n: usize, mut log: usize, mut ell: usize, mut base_log: usize, mut c: &BinfheRgswCiphertextDyn, mut d1: &BinfheRlweCiphertextDyn, mut d0: &BinfheRlweCiphertextDyn) -> BinfheRlweCiphertextDyn
 {
-    let diff = binfhe_rlwe_sub::<N, LOG>(d1, d0);
-    let prod = binfhe_external_product::<N, LOG, ELL, BASE_LOG>(c, &diff);
-    binfhe_rlwe_add::<N, LOG>(d0, &prod)
+    let diff = binfhe_rlwe_sub::<N, LOG>(n, log, d1, d0);
+    let prod = binfhe_external_product::<N, LOG, ELL, BASE_LOG>(n, log, ell, base_log, c, &diff);
+    binfhe_rlwe_add::<N, LOG>(n, log, d0, &prod)
 }
 
 pub fn binfhe_gen_rlwe_secret_key<R: SpecRng>(mut n: usize, mut rng: &mut R) -> BinfheRlweSecretKeyDyn
@@ -5665,7 +5665,7 @@ pub fn binfhe_poly_rotate(mut n: usize, mut log: usize, mut p: &[u32; N], mut ex
 pub fn binfhe_rlwe_encrypt_poly<R: SpecRng>(mut n: usize, mut log: usize, mut eta: usize, mut msg: &[u32; N], mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRlweCiphertextDyn
 {
     let a: [u32; N] = (0..n).map(|_| torus::<LOG>::reduce(rng.next_u32())).collect::<Vec<_>>();
-    let mut b = binfhe_poly_mul_neg::<N, LOG>(&a, &sk.key);
+    let mut b = binfhe_poly_mul_neg::<N, LOG>(n, log, &a, &sk.key);
     for i in 0.. n{
     b[i] = torus::<LOG>::reduce(b[i].wrapping_add(sampler::<LOG, ETA, R>::sample_error(rng)).wrapping_add(msg[i]));
 };
@@ -5676,12 +5676,12 @@ pub fn binfhe_rlwe_encrypt_scalar<R: SpecRng>(mut n: usize, mut log: usize, mut 
 {
     let mut msg = [0; n];
     msg[0] = m;
-    binfhe_rlwe_encrypt_poly::<N, LOG, ETA, R>(&msg, sk, rng)
+    binfhe_rlwe_encrypt_poly::<N, LOG, ETA, R>(n, log, eta, &msg, sk, rng)
 }
 
 pub fn binfhe_rlwe_phase(mut n: usize, mut log: usize, mut ct: &BinfheRlweCiphertextDyn, mut sk: &BinfheRlweSecretKeyDyn) -> [u32; N]
 {
-    let product = binfhe_poly_mul_neg::<N, LOG>(&ct.a, &sk.key);
+    let product = binfhe_poly_mul_neg::<N, LOG>(n, log, &ct.a, &sk.key);
     let mut phase = [0; n];
     for i in 0.. n{
     phase[i] = torus::<LOG>::torus_sub(ct.b[i], product[i]);
@@ -5721,7 +5721,7 @@ pub fn binfhe_rlwe_sub(mut n: usize, mut log: usize, mut x: &BinfheRlweCiphertex
 
 pub fn binfhe_rlwe_rotate(mut n: usize, mut log: usize, mut ct: &BinfheRlweCiphertextDyn, mut exp: usize) -> BinfheRlweCiphertextDyn
 {
-    BinfheRlweCiphertextDyn { a: binfhe_poly_rotate::<N, LOG>(&ct.a, exp), b: binfhe_poly_rotate::<N, LOG>(&ct.b, exp), n: 0 }
+    BinfheRlweCiphertextDyn { a: binfhe_poly_rotate::<N, LOG>(n, log, &ct.a, exp), b: binfhe_poly_rotate::<N, LOG>(n, log, &ct.b, exp), n: 0 }
 }
 
 pub fn binfhe_rlwe_trivial(mut n: usize, mut log: usize, mut msg: &[u32; N]) -> BinfheRlweCiphertextDyn
@@ -5740,27 +5740,27 @@ pub fn mask(mut log: usize) -> u32
 
 pub fn reduce(mut log: usize, mut x: u32) -> u32
 {
-    x & mask::<LOG>()
+    x & mask::<LOG>(log)
 }
 
 pub fn torus_add(mut log: usize, mut a: u32, mut b: u32) -> u32
 {
-    reduce::<LOG>(a.wrapping_add(b))
+    reduce::<LOG>(log, a.wrapping_add(b))
 }
 
 pub fn torus_sub(mut log: usize, mut a: u32, mut b: u32) -> u32
 {
-    reduce::<LOG>(a.wrapping_sub(b))
+    reduce::<LOG>(log, a.wrapping_sub(b))
 }
 
 pub fn torus_neg(mut log: usize, mut a: u32) -> u32
 {
-    reduce::<LOG>(a.wrapping_neg())
+    reduce::<LOG>(log, a.wrapping_neg())
 }
 
 pub fn mul_exact(mut log: usize, mut a: u32, mut c: u32) -> u32
 {
-    reduce::<LOG>(a.wrapping_mul(c))
+    reduce::<LOG>(log, a.wrapping_mul(c))
 }
 
 pub fn embed_up(mut from: usize, mut to: usize, mut x: u32) -> u32
@@ -5776,13 +5776,13 @@ pub fn exponent(mut log_q_lwe: usize, mut big_n: usize, mut x: u32) -> usize
 pub fn binfhe_blind_rotate(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut test_poly: &[u32; BIG_N], mut bsk: &[BinfheRgswCiphertextDyn]) -> BinfheRlweCiphertextDyn
 {
     let two_n = 2 * big_n;
-    let b_exp = exponent::<LOG_Q_LWE, BIG_N>(ct.b);
+    let b_exp = exponent::<LOG_Q_LWE, BIG_N>(log_q_lwe, big_n, ct.b);
     let mut acc = binfhe_rlwe_trivial::<BIG_N, LOG_Q>(test_poly);
     if b_exp != 0{
     acc = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(&acc, (two_n - b_exp));
 };
     for (i, row) in bsk.iter().enumerate(){
-    let a_exp = exponent::<LOG_Q_LWE, BIG_N>(ct.a[i]);
+    let a_exp = exponent::<LOG_Q_LWE, BIG_N>(log_q_lwe, big_n, ct.a[i]);
     if a_exp != 0{
     let rotated = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(&acc, a_exp);
     acc = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(row, &rotated, &acc);
@@ -5819,7 +5819,7 @@ pub fn binfhe_lwe_encrypt<R: SpecRng>(mut n: usize, mut log_m: usize, mut eta: u
 } else {
     0
 };
-    binfhe_lwe_encrypt_raw::<N, LOG_M, ETA, R>(msg, sk, rng)
+    binfhe_lwe_encrypt_raw::<N, LOG_M, ETA, R>(n, log_m, eta, msg, sk, rng)
 }
 
 pub fn binfhe_lwe_encrypt_raw<R: SpecRng>(mut n: usize, mut log_m: usize, mut eta: usize, mut msg: u32, mut sk: &BinfheLweSecretKeyDyn, mut rng: &mut R) -> BinfheLweCiphertextDyn
@@ -5853,7 +5853,7 @@ pub fn lwe_decode(mut log_m: usize, mut phase: u32, mut delta: u32) -> bool
 
 pub fn binfhe_lwe_decrypt(mut n: usize, mut log_m: usize, mut ct: &BinfheLweCiphertextDyn, mut sk: &BinfheLweSecretKeyDyn, mut delta: u32) -> bool
 {
-    lwe_decode::<LOG_M>(lwe_phase::<N, LOG_M>(ct, sk), delta)
+    lwe_decode::<LOG_M>(log_m, lwe_phase::<N, LOG_M>(n, log_m, ct, sk), delta)
 }
 
 pub fn binfhe_lwe_add(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut y: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
@@ -5899,7 +5899,7 @@ pub fn binfhe_lwe_add_const(mut n: usize, mut log_m: usize, mut x: &BinfheLweCip
 
 pub fn binfhe_not(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut delta: u32) -> BinfheLweCiphertextDyn
 {
-    let mut out = binfhe_lwe_neg::<N, LOG_M>(x);
+    let mut out = binfhe_lwe_neg::<N, LOG_M>(n, log_m, x);
     out.b = torus::<LOG_M>::torus_add(out.b, delta);
     out
 }
@@ -5934,7 +5934,7 @@ pub fn check_profile(mut n_lwe: usize, mut big_n: usize, mut log_q: u32, mut log
 
 pub fn execute_plan(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut plan: &BootstrapPlan, mut inputs: &[BinfheLweCiphertextDyn], mut cells: &[BinfheRlweCiphertextDyn], mut bk: &BinfheBootstrappingKeyDyn, mut cbk: &CircuitBootstrappingKeyDyn) -> (Vec<BinfheLweCiphertextDyn>, Vec<BinfheRlweCiphertextDyn>)
 {
-    let delta = wire_delta::<LOG_Q_LWE>((plan.k_max as usize));
+    let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, (plan.k_max as usize));
     let mut wires: Vec<BinfheLweCiphertextDyn> = inputs.to_vec();
     let mut rgsws: Vec<BinfheRgswCiphertextDyn> = Vec::new();
     let mut cell_arena: Vec<BinfheRlweCiphertextDyn> = cells.to_vec();
@@ -5954,10 +5954,10 @@ pub fn execute_plan(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut lo
     for (j, w) in inputs.as_slice().iter().enumerate(){
     cts[j] = wires[*w as usize];
 };
-    wires.push(binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&cts[..arity], &spec.entries, (plan.k_max as usize), bk));
+    wires.push(binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &cts[..arity], &spec.entries, (plan.k_max as usize), bk));
 },
     PlanOp::CircuitBootstrap { input: input, out: out } => {
-    rgsws.push(circuit_bootstrap::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG, KS_ELL, PRIV_ELL, PRIV_BASE_LOG>(&wires[*input as usize], cbk, (plan.k_max as usize)));
+    rgsws.push(circuit_bootstrap::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG, KS_ELL, PRIV_ELL, PRIV_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, ks_ell, priv_ell, priv_base_log, &wires[*input as usize], cbk, (plan.k_max as usize)));
 },
     PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
     let out_cell = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(&rgsws[*sel as usize], &cell_arena[*then_cell as usize], &cell_arena[*else_cell as usize]);
@@ -5976,12 +5976,12 @@ pub fn encrypt_scaled_poly<R: SpecRng>(mut big_n: usize, mut log_q: usize, mut e
     for i in 0.. big_n{
     scaled[i] = torus::<LOG_Q>::mul_exact(msg[i], g);
 };
-    binfhe_rlwe_encrypt_poly::<BIG_N, LOG_Q, ETA, R>(&scaled, sk, rng)
+    binfhe_rlwe_encrypt_poly::<BIG_N, LOG_Q, ETA, R>(eta, &scaled, sk, rng)
 }
 
 pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut eta: usize, mut lwe_sk: &BinfheLweSecretKeyDyn, mut rlwe_sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> CircuitBootstrappingKeyDyn
 {
-    let bk = binfhe_gen_bootstrapping_key::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, ETA, R>(lwe_sk, rlwe_sk, rng);
+    let bk = binfhe_gen_bootstrapping_key::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, ETA, R>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, eta, lwe_sk, rlwe_sk, rng);
     let zero = [0; big_n];
     let neg_one_const: [u32; BIG_N] = {
     let mut p = [0; big_n];
@@ -6002,7 +6002,7 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
     &zero
 };
     a_col.push((0..n).map(|l| {
-    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, priv_base_log, rlwe_sk, rng)
+    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, msg, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>());
 };
     let mut b_col = alloc::vec::Vec::with_capacity(big_n);
@@ -6013,14 +6013,14 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
     &zero
 };
     b_col.push((0..n).map(|l| {
-    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, priv_base_log, rlwe_sk, rng)
+    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, msg, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>());
 };
     let a_body = (0..n).map(|l| {
-    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(&neg_sk, l, priv_base_log, rlwe_sk, rng)
+    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, &neg_sk, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>();
     let b_body = (0..n).map(|l| {
-    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(&one_const, l, priv_base_log, rlwe_sk, rng)
+    encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, &one_const, l, priv_base_log, rlwe_sk, rng)
 }).collect::<Vec<_>>();
     CircuitBootstrappingKeyDyn { bk: bk, privksk: PrivateKeySwitchingKeyDyn { a_col: a_col, b_col: b_col, a_body: a_body, b_body: b_body, big_n: 0, priv_ell: 0 }, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0, priv_ell: 0 }
 }
@@ -6072,14 +6072,14 @@ pub fn level_test_poly(mut big_n: usize, mut log_q: usize, mut level: usize, mut
 
 pub fn circuit_bootstrap(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut priv_ell: usize, mut priv_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut cbk: &CircuitBootstrappingKeyDyn, mut k_max: usize) -> BinfheRgswCiphertextDyn
 {
-    let delta = wire_delta::<LOG_Q_LWE>((k_max as usize));
+    let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, (k_max as usize));
     let centered = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(ct, (delta / 2));
     let rows = (0..n).map(|j| {
-    let test_poly = level_test_poly::<BIG_N, LOG_Q>(j, bs_base_log, k_max);
-    let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(&centered, &test_poly, &cbk.bk.bsk);
+    let test_poly = level_test_poly::<BIG_N, LOG_Q>(big_n, log_q, j, bs_base_log, k_max);
+    let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, &centered, &test_poly, &cbk.bk.bsk);
     let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(&acc);
-    let rlwe0 = priv_ks::<BIG_N, LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(&extracted, &cbk.privksk.a_col, &cbk.privksk.a_body);
-    let rlwe1 = priv_ks::<BIG_N, LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(&extracted, &cbk.privksk.b_col, &cbk.privksk.b_body);
+    let rlwe0 = priv_ks::<BIG_N, LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(big_n, log_q, priv_ell, priv_base_log, &extracted, &cbk.privksk.a_col, &cbk.privksk.a_body);
+    let rlwe1 = priv_ks::<BIG_N, LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(big_n, log_q, priv_ell, priv_base_log, &extracted, &cbk.privksk.b_col, &cbk.privksk.b_body);
     BinfheRgswRowDyn { rlwe0: rlwe0, rlwe1: rlwe1, n: 0 }
 }).collect::<Vec<_>>();
     BinfheRgswCiphertextDyn { rows: rows, n: 0, ell: 0 }
@@ -6087,16 +6087,16 @@ pub fn circuit_bootstrap(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, m
 
 pub fn binfhe_pbs_core<BK: crate::binfhe::keys::AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + Sized>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut test_poly: &[u32; BIG_N], mut bk: &BK) -> BinfheLweCiphertextDyn
 {
-    let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(ct, test_poly, bk.bsk_rows());
+    let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, ct, test_poly, bk.bsk_rows());
     let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(&acc);
     let at_ks = mod_switch_lwe::<BIG_N, LOG_Q, LOG_MOD_KS>(&extracted);
-    let switched = binfhe_key_switch::<N_LWE, BIG_N, LOG_MOD_KS, KS_ELL, KS_BASE_LOG, _>(&at_ks, &bk.ksk_ref());
+    let switched = binfhe_key_switch::<N_LWE, BIG_N, LOG_MOD_KS, KS_ELL, KS_BASE_LOG, _>(n_lwe, big_n, log_mod_ks, ks_ell, ks_base_log, &at_ks, &bk.ksk_ref());
     mod_switch_lwe::<N_LWE, LOG_MOD_KS, LOG_Q_LWE>(&switched)
 }
 
 pub fn binfhe_lut_read(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut addr_bits: usize, mut table_len: usize, mut k_max: usize, mut addr: &[BinfheLweCiphertextDyn; ADDR_BITS], mut lut: &LutDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
-    let delta = wire_delta::<LOG_Q_LWE>(k_max);
+    let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, k_max);
     if lut.is_constant(){
     return binfhe_trivial::<N_LWE, LOG_Q_LWE>(lut.constant_value(), delta);
 };
@@ -6106,45 +6106,45 @@ pub fn binfhe_lut_read(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut
     combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
 };
     combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, (delta / 2));
-    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(&combined, lut.test_polynomial(), bk)
+    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &combined, lut.test_polynomial(), bk)
 }
 
 pub fn binfhe_lut_read_dyn(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut inputs: &[BinfheLweCiphertextDyn], mut table: &[bool], mut k_max: usize, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
-    let delta = wire_delta::<LOG_Q_LWE>((k_max as usize));
+    let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, (k_max as usize));
     if table_is_constant(table){
     return binfhe_trivial::<N_LWE, LOG_Q_LWE>(table[0], delta);
 };
     let arity = table.len().trailing_zeros() as usize;
-    let test_poly = fill_test_poly::<BIG_N>(table, arity, (k_max as usize), log_q, log_q_lwe);
+    let test_poly = fill_test_poly::<BIG_N>(big_n, table, arity, (k_max as usize), log_q, log_q_lwe);
     let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0);
     for (j, bit) in inputs.iter().enumerate(){
     let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(bit, (1 << j));
     combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(&combined, &scaled);
 };
     combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, (delta / 2));
-    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(&combined, &test_poly, bk)
+    binfhe_pbs_core::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &combined, &test_poly, bk)
 }
 
 pub fn binfhe_gate_and(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
-    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&vec![a, b], &vec![false, false, false, true], k_max, bk)
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![a, b], &vec![false, false, false, true], k_max, bk)
 }
 
 pub fn binfhe_gate_or(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
-    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&vec![a, b], &vec![false, true, true, true], k_max, bk)
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![a, b], &vec![false, true, true, true], k_max, bk)
 }
 
 pub fn binfhe_gate_xor(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
-    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&vec![a, b], &vec![false, true, true, false], k_max, bk)
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![a, b], &vec![false, true, true, false], k_max, bk)
 }
 
 pub fn binfhe_cmux(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut sel: BinfheLweCiphertextDyn, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
     let TABLE: [bool; 8] = vec![false, false, false, true, true, false, true, true];
-    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(&vec![sel, a, b], &TABLE, k_max, bk)
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![sel, a, b], &TABLE, k_max, bk)
 }
 
 pub fn mod_switch(mut from: usize, mut to: usize, mut x: u32) -> u32
@@ -6163,9 +6163,9 @@ pub fn mod_switch_lwe(mut n: usize, mut from: usize, mut to: usize, mut ct: &Bin
 {
     let mut a = [0; n];
     for i in 0.. n{
-    a[i] = mod_switch::<FROM, TO>(ct.a[i]);
+    a[i] = mod_switch::<FROM, TO>(from, to, ct.a[i]);
 };
-    super::lwe::BinfheLweCiphertext { a: a, b: mod_switch::<FROM, TO>(ct.b) }
+    super::lwe::BinfheLweCiphertext { a: a, b: mod_switch::<FROM, TO>(from, to, ct.b) }
 }
 
 pub fn encode_plan(mut plan: &BootstrapPlan) -> Result<Vec<u8>, EncodeError>
@@ -6374,7 +6374,7 @@ pub fn cbd<R: SpecRng>(mut eta: usize, mut rng: &mut R) -> i32
 
 pub fn sample_error<R: SpecRng>(mut log: usize, mut eta: usize, mut rng: &mut R) -> u32
 {
-    super::torus::<LOG>::reduce((cbd::<ETA, R>(rng) as u32))
+    super::torus::<LOG>::reduce((cbd::<ETA, R>(eta, rng) as u32))
 }
 
 pub fn level_shift(mut log: u32, mut base_log: u32, mut j: usize) -> u32
@@ -6417,7 +6417,7 @@ pub fn gadget_poly_decompose(mut n: usize, mut log: usize, mut ell: usize, mut b
 {
     let mut out = [[0; n]; ell];
     for i in 0.. n{
-    let digits = gadget_decompose::<LOG, ELL, BASE_LOG>(p[i]);
+    let digits = gadget_decompose::<LOG, ELL, BASE_LOG>(log, ell, base_log, p[i]);
     for j in 0.. ell{
     out[j][i] = digits[j];
 }
@@ -6880,7 +6880,7 @@ pub fn gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut
 {
     let bsk = (0..n).map(|i| {
     let bit = lwe_sk.key[i] != 0;
-    rgsw_encrypt::<BIG_N, BS_ELL, BS_BG_LOG, _>(bit, rlwe_sk, bs_noise_bits, rng)
+    rgsw_encrypt::<BIG_N, BS_ELL, BS_BG_LOG, _>(big_n, bs_ell, bs_bg_log, bit, rlwe_sk, bs_noise_bits, rng)
 }).collect::<Vec<_>>();
     let ksk_array: [[LweCiphertextDyn; KS_ELL]; BIG_N] = (0..n).map(|i| {
     let s_bit = rlwe_sk.key[i];
@@ -6945,7 +6945,7 @@ pub fn blind_rotate_with_poly(mut n_lwe: usize, mut big_n: usize, mut bs_ell: us
     let a_exp = torus_to_exp(ct.a[i], scale_shift, two_n);
     if a_exp != 0{
     let acc_rotated = rlwe_rotate(big_n, &acc, a_exp);
-    acc = cmux::<BIG_N, BS_ELL, BS_BG_LOG>(&bk.bsk[i], &acc_rotated, &acc);
+    acc = cmux::<BIG_N, BS_ELL, BS_BG_LOG>(big_n, bs_ell, bs_bg_log, &bk.bsk[i], &acc_rotated, &acc);
 }
 };
     acc
@@ -6995,7 +6995,7 @@ pub fn key_switch(mut n_lwe: usize, mut big_n: usize, mut ks_ell: usize, mut ks_
     let mut out_a = [0; n_lwe];
     let mut out_b = ct_big.b;
     for i in 0.. big_n{
-    let digits = ks_decompose::<KS_ELL, KS_BG_LOG>(ct_big.a[i]);
+    let digits = ks_decompose::<KS_ELL, KS_BG_LOG>(ks_ell, ks_bg_log, ct_big.a[i]);
     for j in 0.. ks_ell{
     let d = digits[j] as u32;
     if d == 0{
@@ -7034,14 +7034,14 @@ pub fn ks_decompose(mut ks_ell: usize, mut ks_bg_log: usize, mut x: u32) -> [u32
 pub fn cmux(mut big_n: usize, mut bs_ell: usize, mut bs_bg_log: usize, mut c: &RgswCiphertextDyn, mut d1: &RlweCiphertextDyn, mut d0: &RlweCiphertextDyn) -> RlweCiphertextDyn
 {
     let diff = rlwe_sub(big_n, d1, d0);
-    let prod = external_product::<BIG_N, BS_ELL, BS_BG_LOG>(c, &diff);
+    let prod = external_product::<BIG_N, BS_ELL, BS_BG_LOG>(big_n, bs_ell, bs_bg_log, c, &diff);
     rlwe_add(big_n, d0, &prod)
 }
 
 pub fn external_product(mut big_n: usize, mut bs_ell: usize, mut bs_bg_log: usize, mut rgsw: &RgswCiphertextDyn, mut rlwe: &RlweCiphertextDyn) -> RlweCiphertextDyn
 {
-    let a_decomp = poly_decompose::<BIG_N, BS_ELL, BS_BG_LOG>(&rlwe.a);
-    let b_decomp = poly_decompose::<BIG_N, BS_ELL, BS_BG_LOG>(&rlwe.b);
+    let a_decomp = poly_decompose::<BIG_N, BS_ELL, BS_BG_LOG>(big_n, bs_ell, bs_bg_log, &rlwe.a);
+    let b_decomp = poly_decompose::<BIG_N, BS_ELL, BS_BG_LOG>(big_n, bs_ell, bs_bg_log, &rlwe.b);
     let mut out_a = [0; big_n];
     let mut out_b = [0; big_n];
     for j in 0.. bs_ell{
@@ -7344,7 +7344,7 @@ pub fn pack_kappa(mut bits: &[bool; IKNP_KAPPA]) -> [u8; IKNP_KAPPA_BYTES]
 
 pub fn iknp_cot_extend<G, D, R>(mut m: usize, mut l: usize, mut rng_s: &mut R, mut rng_r: &mut R, mut receiver_bits: &[bool; M], mut delta_msg: &[u8; L]) -> ([[u8; L]; M], [[u8; L]; M]) where D: Digest
 {
-    let (r0, v) = iknp_cot_extend_base::<ChouOrlandiDyn<G, D>, D, R, L>(rng_s, rng_r, receiver_bits.as_slice(), delta_msg);
+    let (r0, v) = iknp_cot_extend_base::<ChouOrlandiDyn<G, D>, D, R, L>(l, rng_s, rng_r, receiver_bits.as_slice(), delta_msg);
     let mut sender_r0 = [[0; l]; m];
     let mut receiver_v = [[0; l]; m];
     for j in 0.. m{
@@ -7378,8 +7378,8 @@ pub fn iknp_cot_extend_base<B, D, R>(mut l: usize, mut rng_s: &mut R, mut rng_r:
     chosen_seeds[i] = B::recv_finish(&r_state, &payload);
 };
     let (t_cols, u_msg) = iknp_receiver_u_cols::<D>(m, receiver_bits, &seeds_0, &seeds_1);
-    let (sender_r0, corrections) = iknp_sender_from_u::<D, L>(m, delta_msg, &delta_ot, &delta_ot_bytes, &chosen_seeds, &u_msg);
-    let receiver_v = iknp_receiver_finish::<D, L>(receiver_bits, &t_cols, &corrections);
+    let (sender_r0, corrections) = iknp_sender_from_u::<D, L>(l, m, delta_msg, &delta_ot, &delta_ot_bytes, &chosen_seeds, &u_msg);
+    let receiver_v = iknp_receiver_finish::<D, L>(l, receiver_bits, &t_cols, &corrections);
     (sender_r0, receiver_v)
 }
 
@@ -7682,7 +7682,7 @@ pub fn stack_bea95_receiver<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut receiv
 
 pub fn softspoken_cot_extend<G, D, R>(mut k: usize, mut m: usize, mut l: usize, mut rng_s: &mut R, mut rng_r: &mut R, mut receiver_bits: &[bool; M], mut delta_msg: &[u8; L]) -> SoftSpokenOutLoweredDyn<D> where D: Digest
 {
-    let (sender_r0, receiver_v) = iknp_cot_extend::<G, D, _, M, L>(rng_s, rng_r, receiver_bits, delta_msg);
+    let (sender_r0, receiver_v) = iknp_cot_extend::<G, D, _, M, L>(m, l, rng_s, rng_r, receiver_bits, delta_msg);
     let mut hs = D::new();
     hs.update(TAG_DOMAIN);
     hs.update(delta_msg);
@@ -7710,7 +7710,7 @@ pub fn softspoken_cot_extend<G, D, R>(mut k: usize, mut m: usize, mut l: usize, 
 
 pub fn softspoken_cot_extend_base<B, D, R>(mut l: usize, mut rng_s: &mut R, mut rng_r: &mut R, mut receiver_bits: &[bool], mut delta_msg: &[u8; L]) -> SoftSpokenOutDynDyn<D> where B: BaseOt, D: Digest
 {
-    let (sender_r0, receiver_v) = iknp_cot_extend_base::<B, D, R, L>(rng_s, rng_r, receiver_bits, delta_msg);
+    let (sender_r0, receiver_v) = iknp_cot_extend_base::<B, D, R, L>(l, rng_s, rng_r, receiver_bits, delta_msg);
     let mut hs = D::new();
     hs.update(TAG_DOMAIN);
     hs.update(delta_msg);
@@ -7738,7 +7738,7 @@ pub fn softspoken_cot_extend_base<B, D, R>(mut l: usize, mut rng_s: &mut R, mut 
 
 pub fn softspoken_cot_extend_dyn<G, D, R>(mut l: usize, mut rng_s: &mut R, mut rng_r: &mut R, mut receiver_bits: &[bool], mut delta_msg: &[u8; L]) -> SoftSpokenOutDynDyn<D> where D: Digest
 {
-    softspoken_cot_extend_base::<ChouOrlandiDyn<G, D>, D, R, L>(rng_s, rng_r, receiver_bits, delta_msg)
+    softspoken_cot_extend_base::<ChouOrlandiDyn<G, D>, D, R, L>(l, rng_s, rng_r, receiver_bits, delta_msg)
 }
 
 pub fn zq_add(mut a: Zq, mut b: Zq) -> Zq
@@ -7875,8 +7875,8 @@ pub fn lwe_ot_send<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut 
     for i in 0.. n{
     pk1[i] = zq_sub(crs.h[i], pk0[i]);
 };
-    let (u0, v0) = encrypt_branch::<R, N, L>(rng, crs, &pk0, m0);
-    let (u1, v1) = encrypt_branch::<R, N, L>(rng, crs, &pk1, m1);
+    let (u0, v0) = encrypt_branch::<R, N, L>(n, l, rng, crs, &pk0, m0);
+    let (u1, v1) = encrypt_branch::<R, N, L>(n, l, rng, crs, &pk1, m1);
     LweOtSenderMsgLoweredDyn { u0: u0, v0: v0, u1: u1, v1: v1, n: 0, l: 0 }
 }
 
@@ -7928,7 +7928,7 @@ pub fn lwe_ot_recv_decrypt(mut n: usize, mut l: usize, mut receiver: &LweOtRecei
 } else {
     (&sender_msg.u0[..], &sender_msg.v0[..])
 };
-    decrypt_coords::<N, L>(receiver, u, v)
+    decrypt_coords::<N, L>(n, l, receiver, u, v)
 }
 
 pub fn decrypt_coords(mut n: usize, mut l: usize, mut receiver: &LweOtReceiverDyn, mut u: &[Zq], mut v: &[Zq]) -> [u8; L]
