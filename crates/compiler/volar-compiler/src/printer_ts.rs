@@ -3914,6 +3914,12 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         resolved.clear();
                         resolved.push(last);
                     }
+                    // `Enum::Variant` in value position → an instance of the variant
+                    // class (`new Enum_Variant()`). Unit variants take no fields.
+                    if resolved.len() == 2 && cx.enum_names.contains(&resolved[0]) {
+                        write!(f, "new {}_{}()", resolved[0], resolved[1])?;
+                        return Ok(());
+                    }
                     emit_path(&resolved, f)?;
                 }
             }

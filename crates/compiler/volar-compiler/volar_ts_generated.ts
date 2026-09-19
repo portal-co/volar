@@ -2489,14 +2489,14 @@ return (() => {
         return (() => { const __match = op; if (true /* pattern Struct { kind: Custom("PlanOp::Const"), fields: [("out", Ident { mutable: false, name: "out", subpat: None })], rest: true } */) { const out = __match.$fout;
 return (() => {
   if (!__equals(out, wires))   {
-    return PlanError.BadReference;
+    return new PlanError_BadReference();
   }
   wires = fieldAdd(wires, 1n);
 })(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Not"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   if (((input >= wires) || !__equals(out, wires)))   {
-    return PlanError.BadReference;
+    return new PlanError_BadReference();
   }
   wires = fieldAdd(wires, 1n);
 })(); } else if (true /* pattern Struct { kind: Custom("PlanOp::Lut"), fields: [("inputs", Ident { mutable: false, name: "inputs", subpat: None }), ("table", Ident { mutable: false, name: "table", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const inputs = __match.$finputs;
@@ -2504,18 +2504,18 @@ const table = __match.$ftable;
 const out = __match.$fout;
 return (() => {
   if ((Number(table) >= BigInt(this.$fluts.length)))   {
-    return PlanError.BadReference;
+    return new PlanError_BadReference();
   }
   const arity = Math.clz32((BigInt(this.$fluts[Number(Number(table))].$fentries.length)) & -((BigInt(this.$fluts[Number(Number(table))].$fentries.length)) | 0));
   if (((!__equals(BigInt(inputs.length), Number(arity)) || inputs.any((w) => (w >= wires))) || !__equals(out, wires)))   {
-    return PlanError.BadReference;
+    return new PlanError_BadReference();
   }
   wires = fieldAdd(wires, 1n);
 })(); } else if (true /* pattern Struct { kind: Custom("PlanOp::CircuitBootstrap"), fields: [("input", Ident { mutable: false, name: "input", subpat: None }), ("out", Ident { mutable: false, name: "out", subpat: None })], rest: false } */) { const input = __match.$finput;
 const out = __match.$fout;
 return (() => {
   if (((input >= wires) || !__equals(out, rgsws)))   {
-    return PlanError.BadReference;
+    return new PlanError_BadReference();
   }
   rgsws = fieldAdd(rgsws, 1n);
 })(); } else { const sel = __match.$fsel;
@@ -2524,20 +2524,20 @@ const else_cell = __match.$felse_cell;
 const out = __match.$fout;
 return (() => {
   if (((((sel >= rgsws) || (then_cell >= cells)) || (else_cell >= cells)) || !__equals(out, cells)))   {
-    return PlanError.BadReference;
+    return new PlanError_BadReference();
   }
   cells = fieldAdd(cells, 1n);
 })(); } })();
       }
     }
     if ((this.$foutputs.any((w) => (w >= wires)) || this.$fcell_outputs.any((c) => (c >= cells))))     {
-      return PlanError.BadOutput;
+      return new PlanError_BadOutput();
     }
     const count = this.bootstrap_op_count();
     if ((count > 0n))     {
       const log2_count = fieldSub(64n, Math.clz32(count));
       if (((this.$fbudget.$ftotal_log2 < this.$fbudget.$fper_bootstrap_log2) || (fieldAdd(fieldSub(this.$fbudget.$ftotal_log2, this.$fbudget.$fper_bootstrap_log2), 1n) < log2_count)))       {
-        return PlanError.BudgetInconsistent;
+        return new PlanError_BudgetInconsistent();
       }
     }
     return [];
@@ -2615,7 +2615,7 @@ export class Reader {
   {
     const count = Number(this.u32());
     if ((count > MAX_ITEMS))     {
-      return DecodeError.TooLarge;
+      return new DecodeError_TooLarge();
     }
     return count;
   }
@@ -2632,15 +2632,15 @@ export class Reader {
 
   take(count: bigint): Result<bigint[], DecodeError>
   {
-    const end = (this.$foffset + (count)).ok_or(DecodeError.Truncated);
-    const bytes = this.$fbytes?.[Array.from({length: Number(end - this.$foffset)}, (_, __i) => BigInt(__i) + this.$foffset)].ok_or(DecodeError.Truncated);
+    const end = (this.$foffset + (count)).ok_or(new DecodeError_Truncated());
+    const bytes = this.$fbytes?.[Array.from({length: Number(end - this.$foffset)}, (_, __i) => BigInt(__i) + this.$foffset)].ok_or(new DecodeError_Truncated());
     this.$foffset = end;
     return bytes;
   }
 
   u32(): Result<bigint, DecodeError>
   {
-    const bytes: bigint[] = this.take(4n).try_into().map_err((_) => DecodeError.Truncated);
+    const bytes: bigint[] = this.take(4n).try_into().map_err((_) => new DecodeError_Truncated());
     return u32_from_le_bytes(bytes);
   }
 }
@@ -2821,10 +2821,10 @@ export class EncodedLabelBatch {
   static decode_selected(selected: bigint[]): Result<Vec<bigint[]>, LabelBatchDecodeError>
   {
     if (!__equals((BigInt(selected.length) % 3n), 0n))     {
-      return LabelBatchDecodeError.LengthMismatch;
+      return new LabelBatchDecodeError_LengthMismatch();
     }
     return selected.chunks_exact(3n).map((chunk: any) => (() => {
-  return decode_label_16([chunk[Number(0n)], chunk[Number(1n)], chunk[Number(2n)]]).map_err(LabelBatchDecodeError.NonCanonicalLabel);
+  return decode_label_16([chunk[Number(0n)], chunk[Number(1n)], chunk[Number(2n)]]).map_err(new LabelBatchDecodeError_NonCanonicalLabel());
 })());
   }
 
@@ -2906,7 +2906,7 @@ export class PaddedLabelBatch {
   decode_selected(selected: bigint[]): Result<Vec<bigint[]>, LabelBatchDecodeError>
   {
     if (!__equals(BigInt(selected.length), this.slots()))     {
-      return LabelBatchDecodeError.LengthMismatch;
+      return new LabelBatchDecodeError_LengthMismatch();
     }
     return EncodedLabelBatch.decode_selected(selected.slice(0, Number(fieldMul(this.$flabel_count, 3n))));
   }
@@ -2988,7 +2988,7 @@ export class LabelBatchDyn {
   static new(n: bigint, pairs: LabelPairDyn[], offset: bigint[]): Result<LabelBatchDyn, BatchError>
   {
     if ((__equals(n, 0n) || __equals(fieldBitand(offset[Number(0n)], 1n), 0n)))     {
-      return BatchError.EvenOffset;
+      return new BatchError_EvenOffset();
     }
     for (const [index, pair] of pairs.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       if (!__equals(pair.$fone, Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((byte: any) => fieldBitxor(pair.$fzero[Number(byte)], offset[Number(byte)]))))       {
@@ -3002,7 +3002,7 @@ export class LabelBatchDyn {
   {
     const n: bigint = this.$fn;
     if ((!__equals(BigInt(choices.length), BigInt(this.$fpairs.length)) || !__equals(BigInt(output.length), BigInt(this.$fpairs.length))))     {
-      return BatchError.LengthMismatch;
+      return new BatchError_LengthMismatch();
     }
     for (const [[pair, choice], selected] of this.$fpairs.map((__a: any, __i: number) => [__a, choices.copied()[__i]] as [typeof __a, any]).map((__a: any, __i: number) => [__a, output.iter_mut()[__i]] as [typeof __a, any]))     {
       selected = (() => { if (choice) {
@@ -3040,7 +3040,7 @@ export class Parameters {
   levels(): Result<bigint, Error>
   {
     if (((this.$fwidth < 2n) || !this.$fwidth.is_power_of_two()))     {
-      return Error.InvalidParameters;
+      return new Error_InvalidParameters();
     }
     return Number(ilog2(this.$fwidth));
   }
@@ -3052,22 +3052,22 @@ export class Parameters {
 
   slots(): Result<bigint, Error>
   {
-    return this.$fdegree.checked_mul(this.$fwidth).ok_or(Error.InvalidParameters);
+    return this.$fdegree.checked_mul(this.$fwidth).ok_or(new Error_InvalidParameters());
   }
 
   validate(): Result<void, Error>
   {
     if (((((((((((this.$fdegree < 2n) || !this.$fdegree.is_power_of_two()) || (this.$fwidth < 2n)) || !this.$fwidth.is_power_of_two()) || (this.$fplaintext_modulus < 3n)) || (this.$fdelta < 3n)) || (this.$fgadget_base < 2n)) || __equals(this.$fgadget_digits, 0n)) || !__equals((fieldSub(this.$fplaintext_modulus, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)) || !__equals((fieldSub(this.$fdelta, 1n) % fieldMul(2n, BigInt(this.$fdegree))), 0n)))     {
-      return Error.InvalidParameters;
+      return new Error_InvalidParameters();
     }
     this.slots();
     const modulus = fieldMul((this.$fplaintext_modulus as unknown as bigint), (this.$fdelta as unknown as bigint));
     let capacity = 1n;
     for (let _ = 0n; _ < this.$fgadget_digits; _ += 1n)     {
-      capacity = capacity.checked_mul((this.$fgadget_base as unknown as bigint)).ok_or(Error.InvalidParameters);
+      capacity = capacity.checked_mul((this.$fgadget_base as unknown as bigint)).ok_or(new Error_InvalidParameters());
     }
     if ((capacity <= modulus))     {
-      return Error.InvalidParameters;
+      return new Error_InvalidParameters();
     }
     return [];
   }
@@ -3290,7 +3290,7 @@ export class BatchSelect {
   {
     const p = this.$fring.$fparameters;
     if ((((!__equals(BigInt(first.$flhe_state.length), p.$fgadget_digits) || !__equals(BigInt(first.$flhe_ciphertext.length), fieldMul(p.$fwidth, p.$fgadget_digits))) || !__equals(BigInt(first.$flenc_ciphertext.length), fieldMul(fieldMul(fieldMul(p.levels(), p.$fwidth), 2n), p.$fgadget_digits))) || first.$flhe_state.concat(first.$flhe_ciphertext).concat(first.$flenc_ciphertext).any((poly) => !__equals(poly.degree(), p.$fdegree))))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     return [];
   }
@@ -3299,7 +3299,7 @@ export class BatchSelect {
   {
     const p = this.$fring.$fparameters;
     if (((!__equals(BigInt(second.$flhe_ciphertext.length), p.$fwidth) || !__equals(second.$flhe_state.degree(), p.$fdegree)) || second.$flhe_ciphertext.any((poly) => !__equals(poly.degree(), p.$fdegree))))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     return [];
   }
@@ -3309,7 +3309,7 @@ export class BatchSelect {
     this.check_first(first);
     this.check_second(second);
     if (!__equals(key.$fkey.degree(), this.$fring.$fparameters.$fdegree))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     const choice = this.$fring.encode_choices(choices);
     const tree = this.lenc_digest(choice);
@@ -3365,7 +3365,7 @@ export class BatchSelect {
   {
     const p = this.$fring.$fparameters;
     if (!__equals(BigInt(choice.length), p.$fwidth))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     let tree = [] as any[];
     for (const [index, value] of choice.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
@@ -3393,7 +3393,7 @@ export class BatchSelect {
   {
     const p = this.$fring.$fparameters;
     if (!__equals(BigInt(message.length), p.$fwidth))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     const levels = p.levels();
     let random_vector = /* Vec::with_capacity */ Array(fieldMul(levels, p.$fwidth));
@@ -3434,7 +3434,7 @@ export class BatchSelect {
     const p = this.$fring.$fparameters;
     const levels = p.levels();
     if ((!__equals(BigInt(ciphertext.length), fieldMul(fieldMul(fieldMul(levels, p.$fwidth), 2n), p.$fgadget_digits)) || !__equals(BigInt(tree.$ftree.length), fieldMul(fieldSub(fieldMul(2n, p.$fwidth), 1n), p.$fgadget_digits))))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     let delta = /* Vec::with_capacity */ Array(p.$fwidth);
     for (let row = 0n; row < p.$fwidth; row += 1n)     {
@@ -3454,7 +3454,7 @@ export class BatchSelect {
   lhe_enc1(ctx: { defaultA: () => any }, messages: Polynomial[], random: any, noise: any): Result<[Vec<Polynomial>, Vec<Polynomial>], Error>
   {
     if (!__equals(BigInt(messages.length), this.$fring.$fparameters.$fwidth))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     const p = this.$fring.$fparameters;
     let state = /* Vec::with_capacity */ Array(p.$fgadget_digits);
@@ -3476,7 +3476,7 @@ export class BatchSelect {
   lhe_enc2(ctx: { defaultA: () => any }, messages: Polynomial[], random: any, noise: any): Result<[Polynomial, Vec<Polynomial>], Error>
   {
     if (!__equals(BigInt(messages.length), this.$fring.$fparameters.$fwidth))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     const state = this.$fring.uniform(random);
     let ciphertext = /* Vec::with_capacity */ Array(this.$fring.$fparameters.$fwidth);
@@ -3549,7 +3549,7 @@ export class Ring {
     let coefficients = [] as any[];
     noise.sample(coefficients.$fn, standard_deviation, bound, coefficients);
     if (coefficients.any((sample) => (sample.unsigned_abs() > bound)))     {
-      return Error.Noise;
+      return new Error_Noise();
     }
     let first = /* Vec::with_capacity */ Array(this.$fparameters.$fdegree);
     let second = /* Vec::with_capacity */ Array(this.$fparameters.$fdegree);
@@ -3578,7 +3578,7 @@ export class Ring {
   decode_messages(values: Polynomial[]): Result<Vec<bigint>, Error>
   {
     if ((!__equals(BigInt(values.length), this.$fparameters.$fwidth) || values.any((value) => !__equals(value.degree(), this.$fparameters.$fdegree))))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     let output = /* Vec::with_capacity */ Array(this.$fparameters.slots());
     for (const value of values)     {
@@ -3589,7 +3589,7 @@ export class Ring {
         const signed = (() => { if ((error > (this.$fparameters.$fdelta / 2n))) {
   const magnitude = fieldSub(this.$fparameters.$fdelta, error);
   if ((magnitude >= this.$fparameters.$fplaintext_modulus))   {
-    return Error.Noise;
+    return new Error_Noise();
   }
   return (() => { if (__equals(magnitude, 0n)) {
   return 0n;
@@ -3598,7 +3598,7 @@ export class Ring {
 } })();
 } else {
   if ((error >= this.$fparameters.$fplaintext_modulus))   {
-    return Error.Noise;
+    return new Error_Noise();
   }
   return error;
 } })();
@@ -3616,7 +3616,7 @@ export class Ring {
   decompose(value: any): Result<Vec<Polynomial>, Error>
   {
     if (!__equals(value.degree(), this.$fparameters.$fdegree))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     let first = __clone(value.$ffirst);
     let second = __clone(value.$fsecond);
@@ -3632,7 +3632,7 @@ export class Ring {
         combined /= (this.$fparameters.$fgadget_base as unknown as bigint);
       }
       if (!__equals(combined, 0n))       {
-        return Error.Arithmetic;
+        return new Error_Arithmetic();
       }
     }
     for (const digit of digits)     {
@@ -3645,7 +3645,7 @@ export class Ring {
   encode_choices(input: boolean[]): Result<Vec<Polynomial>, Error>
   {
     if (!__equals(BigInt(input.length), this.$fparameters.slots()))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     let output = /* Vec::with_capacity */ Array(this.$fparameters.$fwidth);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
@@ -3665,10 +3665,10 @@ export class Ring {
   encode_messages(input: bigint[]): Result<Vec<Polynomial>, Error>
   {
     if (!__equals(BigInt(input.length), this.$fparameters.slots()))     {
-      return Error.LengthMismatch;
+      return new Error_LengthMismatch();
     }
     if (input.any((value) => (value >= this.$fparameters.$fplaintext_modulus)))     {
-      return Error.NonCanonicalPlaintext;
+      return new Error_NonCanonicalPlaintext();
     }
     let output = /* Vec::with_capacity */ Array(this.$fparameters.$fwidth);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
@@ -3684,7 +3684,7 @@ export class Ring {
   static new(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, parameters: any): Result<Ring, Error>
   {
     parameters.validate();
-    return new Ring({ $ffirst_ntt: Ntt.new(parameters.$fdegree, parameters.$fplaintext_modulus), $fsecond_ntt: Ntt.new(parameters.$fdegree, parameters.$fdelta), $finverse_plaintext_mod_delta: inverse_mod((parameters.$fplaintext_modulus % parameters.$fdelta), parameters.$fdelta).ok_or(Error.Arithmetic), $finverse_delta_mod_plaintext: inverse_mod((parameters.$fdelta % parameters.$fplaintext_modulus), parameters.$fplaintext_modulus).ok_or(Error.Arithmetic), $fparameters: parameters });
+    return new Ring({ $ffirst_ntt: Ntt.new(parameters.$fdegree, parameters.$fplaintext_modulus), $fsecond_ntt: Ntt.new(parameters.$fdegree, parameters.$fdelta), $finverse_plaintext_mod_delta: inverse_mod((parameters.$fplaintext_modulus % parameters.$fdelta), parameters.$fdelta).ok_or(new Error_Arithmetic()), $finverse_delta_mod_plaintext: inverse_mod((parameters.$fdelta % parameters.$fplaintext_modulus), parameters.$fplaintext_modulus).ok_or(new Error_Arithmetic()), $fparameters: parameters });
   }
 
   uniform(random: any): Result<Polynomial, Error>
@@ -3764,9 +3764,9 @@ export class Ntt {
 
   static new(degree: bigint, modulus: bigint): Result<Ntt, Error>
   {
-    const psi = find_negacyclic_root(degree, modulus).ok_or(Error.Arithmetic);
+    const psi = find_negacyclic_root(degree, modulus).ok_or(new Error_Arithmetic());
     const omega = mul_mod(psi, psi, modulus);
-    return new Ntt({ $fmodulus: modulus, $fdegree: degree, $fpsi: psi, $fomega: omega, $finverse_psi: inverse_mod(psi, modulus).ok_or(Error.Arithmetic), $finverse_omega: inverse_mod(omega, modulus).ok_or(Error.Arithmetic), $finverse_degree: inverse_mod(BigInt(degree), modulus).ok_or(Error.Arithmetic) });
+    return new Ntt({ $fmodulus: modulus, $fdegree: degree, $fpsi: psi, $fomega: omega, $finverse_psi: inverse_mod(psi, modulus).ok_or(new Error_Arithmetic()), $finverse_omega: inverse_mod(omega, modulus).ok_or(new Error_Arithmetic()), $finverse_degree: inverse_mod(BigInt(degree), modulus).ok_or(new Error_Arithmetic()) });
   }
 }
 
@@ -3808,10 +3808,10 @@ export class Frame {
   static decode(input: bigint[], max_payload: bigint): Result<Frame, FrameError>
   {
     if ((BigInt(input.length) < HEADER_BYTES))     {
-      return FrameError.Truncated;
+      return new FrameError_Truncated();
     }
     if ((!__equals(input.slice(0, Number(8n)), MAGIC) || !__equals(u16.from_le_bytes([input[Number(8n)], input[Number(9n)]]), VERSION)))     {
-      return FrameError.UnsupportedFormat;
+      return new FrameError_UnsupportedFormat();
     }
     const stage = new Stage_try_from(input[Number(10n)]);
     let offset = 11n;
@@ -3829,10 +3829,10 @@ export class Frame {
     const payload_len = Number(u32_from_le_bytes((input.slice(Number(offset), Number(fieldAdd(offset, 4n))).try_into())!));
     offset = fieldAdd(offset, 4n);
     if ((payload_len > max_payload))     {
-      return FrameError.PayloadTooLarge;
+      return new FrameError_PayloadTooLarge();
     }
     if (!__equals(BigInt(input.length), (offset + (payload_len))))     {
-      return FrameError.LengthMismatch;
+      return new FrameError_LengthMismatch();
     }
     return new Frame({ $fstage: stage, $fbinding: new FrameBinding({ $fparameter_fingerprint: parameter_fingerprint, $fsession_id: session_id, $fmanifest_digest: manifest_digest, $fuse_counter: use_counter }), $fpayload: [...input.slice(Number(offset))] });
   }
@@ -4304,19 +4304,19 @@ export class TfheBootstrapTableDyn {
   {
     const max_addr_bits = fieldSub(Number(usize.BITS), 1n);
     if ((__equals(addr_bits, 0n) || (addr_bits > max_addr_bits)))     {
-      return TfheBootstrapTableError.AddressWidthOutOfRange;
+      return new TfheBootstrapTableError_AddressWidthOutOfRange();
     }
     if ((addr_bits > 2n))     {
-      return TfheBootstrapTableError.InputEncodingUnsupported;
+      return new TfheBootstrapTableError_InputEncodingUnsupported();
     }
     const domain = fieldShl(1n, addr_bits);
     if (!__equals(table_len, domain))     {
-      return TfheBootstrapTableError.TableLengthMismatch;
+      return new TfheBootstrapTableError_TableLengthMismatch();
     }
     const capacity = (() => { const __match = big_n.checked_mul(2n); if (__match !== null && __match !== undefined) { const capacity = __match;
-return capacity; } else { return TfheBootstrapTableError.RingCapacityExceeded; } })();
+return capacity; } else { return new TfheBootstrapTableError_RingCapacityExceeded(); } })();
     if ((((table_len > capacity) || __equals(big_n, 0n)) || !big_n.is_power_of_two()))     {
-      return TfheBootstrapTableError.RingCapacityExceeded;
+      return new TfheBootstrapTableError_RingCapacityExceeded();
     }
     let is_constant = true;
     let index = 1n;
@@ -4332,7 +4332,7 @@ return capacity; } else { return TfheBootstrapTableError.RingCapacityExceeded; }
       index = 0n;
       while ((index < half))       {
         if (__equals(logical[Number(index)], logical[Number(fieldAdd(index, half))]))         {
-          return TfheBootstrapTableError.NegacyclicIncompatible;
+          return new TfheBootstrapTableError_NegacyclicIncompatible();
         }
         index = fieldAdd(index, 1n);
       }
@@ -6211,16 +6211,16 @@ export function chall3(ctx: { defaultT: () => any, HClass: { new(...args: any[])
 export function check_lut_shape(addr_bits: bigint, table_len: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, k_max: bigint): Result<bigint, LutError>
 {
   if ((__equals(addr_bits, 0n) || (addr_bits >= Number(usize.BITS))))   {
-    return LutError.AddressShapeInvalid;
+    return new LutError_AddressShapeInvalid();
   }
   if (!__equals(table_len, fieldShl(1n, addr_bits)))   {
-    return LutError.AddressShapeInvalid;
+    return new LutError_AddressShapeInvalid();
   }
   if ((addr_bits > k_max))   {
-    return LutError.ArityExceedsCircuitMax;
+    return new LutError_ArityExceedsCircuitMax();
   }
   if (((((((fieldAdd(Number(k_max), 2n) > log_q_lwe) || !big_n.is_power_of_two()) || (fieldShl(1n, k_max) > big_n)) || !__equals(fieldShl(1n, log_q_lwe), fieldMul(2n, big_n))) || (log_q_lwe > log_q)) || (log_q > 32n)))   {
-    return LutError.ShapeUnsupported;
+    return new LutError_ShapeUnsupported();
   }
   return fieldShr(big_n, k_max);
 }
@@ -6567,10 +6567,10 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
 {
   let reader = new Reader({ $fbytes: bytes, $foffset: 0n });
   if (!__equals(reader.take(4n), MAGIC))   {
-    return DecodeError.BadMagic;
+    return new DecodeError_BadMagic();
   }
   if (!__equals(reader.byte(), VERSION))   {
-    return DecodeError.UnsupportedVersion;
+    return new DecodeError_UnsupportedVersion();
   }
   const profile = parse_profile(reader.byte());
   const k_max = reader.u32();
@@ -6584,7 +6584,7 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
     const packed_len = bit_count.div_ceil(8n);
     const packed = reader.take(packed_len);
     if ((!__equals((bit_count % 8n), 0n) && packed.last().is_some_and((byte) => !__equals(fieldShr(byte, (bit_count % 8n)), 0n))))     {
-      return DecodeError.UnknownTag;
+      return new DecodeError_UnknownTag();
     }
     let entries = /* Vec::with_capacity */ Array(bit_count);
     for (let bit = 0n; bit < bit_count; bit += 1n)     {
@@ -6605,10 +6605,10 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
   const outputs = reader.ids();
   const cell_outputs = reader.ids();
   if (!__equals(reader.$foffset, BigInt(bytes.length)))   {
-    return DecodeError.TrailingBytes;
+    return new DecodeError_TrailingBytes();
   }
   const plan = new BootstrapPlan({ $fprofile: profile, $fk_max: k_max, $fluts: luts, $flayers: layers, $fnum_inputs: num_inputs, $fnum_cells: num_cells, $foutputs: outputs, $fcell_outputs: cell_outputs, $fbudget: budget });
-  plan.validate().map_err(DecodeError.InvalidPlan);
+  plan.validate().map_err(new DecodeError_InvalidPlan());
   return plan;
 }
 
@@ -6852,9 +6852,9 @@ export function encode_mpcot_reg(msg: any): Vec<bigint>
 
 export function encode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, plan: any): Result<Vec<bigint>, EncodeError>
 {
-  plan.validate().map_err(EncodeError.InvalidPlan);
+  plan.validate().map_err(new EncodeError_InvalidPlan());
   if (((((((BigInt(plan.$fluts.length) > MAX_ITEMS) || (BigInt(plan.$flayers.length) > MAX_ITEMS)) || (BigInt(plan.$foutputs.length) > MAX_ITEMS)) || (BigInt(plan.$fcell_outputs.length) > MAX_ITEMS)) || plan.$flayers.any((layer) => (BigInt(layer.length) > MAX_ITEMS))) || plan.$fluts.any((lut) => (BigInt(lut.$fentries.length) > MAX_ITEMS))))   {
-    return EncodeError.TooLarge;
+    return new EncodeError_TooLarge();
   }
   let bytes = [] as any[];
   bytes.push(...(MAGIC));
@@ -8289,7 +8289,7 @@ export function in_interval_mod(x: bigint, lo: bigint, hi: bigint, q: bigint): b
 export function inner_product(ring: any, left: Polynomial[], right: Polynomial[]): Result<Polynomial, Error>
 {
   if ((!__equals(BigInt(left.length), BigInt(right.length)) || left.concat(right).any((value) => !__equals(value.degree(), ring.$fparameters.$fdegree))))   {
-    return Error.LengthMismatch;
+    return new Error_LengthMismatch();
   }
   let output = ring.zero();
   for (const [left, right] of left.map((__a: any, __i: number) => [__a, right[__i]] as [typeof __a, any]))   {
@@ -8943,7 +8943,7 @@ export function pack_kappa(bits: boolean[]): bigint[]
 
 export function parse_profile(tag: bigint): Result<ProfileId, DecodeError>
 {
-  return (() => { const __match = tag; if (__match === 0n) { return ProfileId.Toy; } else if (__match === 1n) { return ProfileId.ToyNoisy; } else if (__match === 2n) { return ProfileId.Std128; } else if (__match === 3n) { return ProfileId.Custom; } else { return DecodeError.UnknownTag; } })();
+  return (() => { const __match = tag; if (__match === 0n) { return new ProfileId_Toy(); } else if (__match === 1n) { return new ProfileId_ToyNoisy(); } else if (__match === 2n) { return new ProfileId_Std128(); } else if (__match === 3n) { return new ProfileId_Custom(); } else { return new DecodeError_UnknownTag(); } })();
 }
 
 export function pedersen_commit(gens: EdPoint[], h: any, x: bigint[][], blind: bigint[]): EdPoint
@@ -9184,7 +9184,7 @@ export function read_op(reader: any): Result<PlanOp, DecodeError>
 {
   return (() => { const __match = reader.byte(); if (__match === 0n) { return (() => {
   const out = reader.u32();
-  const value = (() => { const __match = reader.byte(); if (__match === 0n) { return false; } else if (__match === 1n) { return true; } else { return DecodeError.UnknownTag; } })();
+  const value = (() => { const __match = reader.byte(); if (__match === 0n) { return false; } else if (__match === 1n) { return true; } else { return new DecodeError_UnknownTag(); } })();
   return new Const({ $fout: out, $fvalue: value });
 })(); } else if (__match === 1n) { return new Not({ $finput: reader.u32(), $fout: reader.u32() }); } else if (__match === 2n) { return (() => {
   const count = reader.count();
@@ -9202,7 +9202,7 @@ export function read_op(reader: any): Result<PlanOp, DecodeError>
   const else_cell = reader.u32();
   const out = reader.u32();
   return new RgswMux({ $fsel: sel, $fthen_cell: then_cell, $felse_cell: else_cell, $fout: out });
-})(); } else { return DecodeError.UnknownTag; } })();
+})(); } else { return new DecodeError_UnknownTag(); } })();
 }
 
 export function recompute_tree(r: bigint[], total_leaves: bigint): Vec<bigint[]>
@@ -10474,6 +10474,6 @@ return (() => {
 
 export function try_from(value: bigint): Result<any, FrameError>
 {
-  return (() => { const __match = value; if (__match === 1n) { return PublicParameters; } else if (__match === 2n) { return ReusableCiphertext; } else if (__match === 3n) { return PerUseCiphertext; } else if (__match === 4n) { return SelectionKey; } else if (__match === 5n) { return Complete; } else if (__match === 6n) { return Error; } else { return FrameError.UnknownStage; } })();
+  return (() => { const __match = value; if (__match === 1n) { return PublicParameters; } else if (__match === 2n) { return ReusableCiphertext; } else if (__match === 3n) { return PerUseCiphertext; } else if (__match === 4n) { return SelectionKey; } else if (__match === 5n) { return Complete; } else if (__match === 6n) { return Error; } else { return new FrameError_UnknownStage(); } })();
 }
 
