@@ -348,17 +348,35 @@ one-line fix):
   dropped by the parser; representing them needs a new `IrStmtKind` variant.
 - **`from_fn` length placeholders without turbofish** (the parser emits a bare
   `N` → `n` when `core::array::from_fn(|i| ..)` has no explicit length): the
-  lowering must infer the intended length. **Partially fixed** (commit
-  bed080b, 3444997): a bounded use-site inference pass resolves the placeholder
-  from a struct-field assignment use-site (the dominant `let rows = from_fn(..);
-  ..; Struct { rows }` pattern) and from return-position array literals against
-  the original return type (e.g. `double` → `ctx.D_OutputSize`). This took the
-  `n`-placeholder errors from 12 → 4. The remaining 4 are *nested* producers
-  (an inner `from_fn` inside an outer `from_fn`'s closure, e.g. the KSK's
-  `Vec<[LweCiphertext; KS_ELL]>`), which need multi-level element-of-element
-  length inference — a further extension of the same pass. This whole area is
-  the concrete, now-partially-built instance of the pipeline's deferred "weak
-  type inference pass".
+  lowering must infer the intended length. **Fully fixed** (commits bed080b →
+  7da5ff2): a bounded use-site inference pass resolves the placeholder across
+  all five use-site shapes — let-annotation (`let x: [u32; BIG_N]`), struct-field
+  (`Struct { x }`), return-position array literals (against the original return
+  type, keeping projections like `D::OutputSize` alive → `ctx.D_OutputSize`),
+  nested element-of-element producers (KSK's `Vec<[LweCiphertext; KS_ELL]>` →
+  `ks_ell`), and push-into-vec (`a_col.push(from_fn(..))` → `priv_ell`). It also
+  recognizes `Vec` parsed as `Struct{Custom("Vec")}` and `.push` as
+  `MethodKind::Known(StdMethod::Push)`. This took the `n`-placeholder errors from
+  12 → **0** — the concrete, now-built instance of the deferred "weak type
+  inference pass".
+
+  Separately, call-site length-witness forwarding was extended (commit 87b59e4)
+  to use turbofish type args positionally (fixing the `reduce::<LOG_Q>` →
+  `reduce(log_q, x)` name mismatch) and to 2-segment static method calls
+  (`Garble::zero()` → `GarbleDyn.zero(n)`). TS2554 arity dropped 118 → 91.
+  **Remaining TS2554 root cause:** the dominant case is a static method whose
+  const/length generic is *not* present in the caller at all — e.g.
+  `EncodedLabelBatch::from_pairs` (an `EncodedLabelBatch` method with no `N`)
+  calls `LabelBatch::<N>::new`, where `N` is fixed to the concrete `16` by the
+  argument types (`&[LabelPair<16>]`), not propagated from the caller. The
+  correct value is a **compile-time constant** (16), so the fix is const-value
+  resolution at the call site (emit `n = 16`), *not* runtime-param forwarding.
+  A naive call-graph length-need dataflow (propagate `n` as a param to callers)
+  was prototyped and **reverted** (it mis-models this case as param propagation
+  and regressed 469 → 483 by forwarding a param the caller cannot produce).
+  What's needed is real call-site const/type inference (read the argument types,
+  infer `N = 16`, emit the literal) — the genuinely hard, deferred part of the
+  "weak type inference" work. Until then these ~90 TS2554 remain.
 - **Associated consts on impls** (`impl Fe25519 { pub const ONE: Self = ... }`,
   referenced as `Fe25519::ONE`): the parser's `convert_impl_item` drops
   `ImplItem::Const`, so `Type::CONST` references emit as the undefined
