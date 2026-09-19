@@ -2477,7 +2477,7 @@ return (() => {
       if ((__equals(len, 0n) || !((len) > 0n && ((len) & ((len) - 1n)) === 0n)))       {
         return new BadTableShape({ $ftable: Number(i) });
       }
-      const arity = Number(Math.clz32((len) & -((len) | 0)));
+      const arity = Number(Math.clz32((() => { const __tz = Number(len) | 0; return (__tz & -__tz) | 0; })()));
       if ((arity > Number(this.$fk_max)))       {
         return new ArityExceedsKMax({ $ftable: Number(i) });
       }
@@ -2507,7 +2507,7 @@ return (() => {
   if ((Number(table) >= BigInt(this.$fluts.length)))   {
     return new PlanError_BadReference();
   }
-  const arity = Math.clz32((BigInt(this.$fluts[Number(Number(table))].$fentries.length)) & -((BigInt(this.$fluts[Number(Number(table))].$fentries.length)) | 0));
+  const arity = Math.clz32((() => { const __tz = Number(BigInt(this.$fluts[Number(Number(table))].$fentries.length)) | 0; return (__tz & -__tz) | 0; })());
   if (((!__equals(BigInt(inputs.length), Number(arity)) || inputs.any((w) => (w >= wires))) || !__equals(out, wires)))   {
     return new PlanError_BadReference();
   }
@@ -4743,7 +4743,7 @@ export class FerretParams {
   log_splen(): bigint
   {
     const s = this.splen();
-    return Number(Math.clz32((s) & -((s) | 0)));
+    return Number(Math.clz32((() => { const __tz = Number(s) | 0; return (__tz & -__tz) | 0; })()));
   }
 
   output_cot_count(malicious: boolean): bigint
@@ -5778,7 +5778,7 @@ export function binfhe_lut_read_dyn(n_lwe: bigint, big_n: bigint, log_q: bigint,
   if (table_is_constant(table))   {
     return binfhe_trivial(table[Number(0n)], delta);
   }
-  const arity = Number(Math.clz32((BigInt(table.length)) & -((BigInt(table.length)) | 0)));
+  const arity = Number(Math.clz32((() => { const __tz = Number(BigInt(table.length)) | 0; return (__tz & -__tz) | 0; })()));
   const test_poly = fill_test_poly(big_n, table, arity, Number(k_max), log_q, log_q_lwe);
   let combined = binfhe_trivial(false, 0n);
   for (const [j, bit] of inputs.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
@@ -6065,7 +6065,7 @@ export function blind_rotate_with_poly(n_lwe: bigint, big_n: bigint, bs_ell: big
 {
   let acc = new RlweCiphertextDyn({ $fa: Array.from({length: Number(big_n)}, () => 0n), $fb: test_poly, $fbig_n: 0n });
   const two_n = fieldMul(2n, big_n);
-  const log2_two_n = Math.clz32((two_n) & -((two_n) | 0));
+  const log2_two_n = Math.clz32((() => { const __tz = Number(two_n) | 0; return (__tz & -__tz) | 0; })());
   const scale_shift = (32n - (log2_two_n));
   const b_exp = torus_to_exp(ct.$fb, scale_shift, two_n);
   if (!__equals(b_exp, 0n))   {
@@ -6335,7 +6335,7 @@ export function concat_small_voles_verifier(outs: Vec<ConvertOutput>, deltas: bi
 export function convert_to_vole(seeds: (bigint[] | undefined)[], iv: bigint[], tweak: bigint, l_hat_bytes: bigint): ConvertOutput
 {
   const n = BigInt(seeds.length);
-  const d = Number(Math.clz32((n) & -((n) | 0)));
+  const d = Number(Math.clz32((() => { const __tz = Number(n) | 0; return (__tz & -__tz) | 0; })()));
   const zero_block = [] as any[];
   let r: Vec<Vec<bigint>> = ([] as any[]);
   for (const s of seeds)   {
@@ -7152,7 +7152,7 @@ const table = __match.$ftable;
 const out = __match.$fout;
 return (() => {
   const spec = plan.$fluts[Number(Number(table))];
-  const arity = Number(Math.clz32((BigInt(spec.$fentries.length)) & -((BigInt(spec.$fentries.length)) | 0)));
+  const arity = Number(Math.clz32((() => { const __tz = Number(BigInt(spec.$fentries.length)) | 0; return (__tz & -__tz) | 0; })()));
   let cts: BinfheLweCiphertextDyn[] = Array.from({length: Number(MAX_LUT_ARITY)}, () => binfhe_trivial(false, 0n));
   for (const [j, w] of inputs.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
     cts[Number(j)] = wires[Number(Number(w))];
@@ -8718,7 +8718,7 @@ export function mod_switch_lwe(n: bigint, from: bigint, to: bigint, ct: BinfheLw
 export function mpcot_reg_choice_bits(n: bigint, t: bigint, alphas: bigint[], cot_r: boolean[]): Vec<boolean>
 {
   const splen = (n / t);
-  const h = Number(Math.clz32((splen) & -((splen) | 0)));
+  const h = Number(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
   let out = ([] as any[]);
   for (let i = 0n; i < t; i += 1n)   {
     const r = cot_r.slice(Number(fieldMul(i, h)), Number(fieldMul(fieldAdd(i, 1n), h)));
@@ -8730,7 +8730,7 @@ export function mpcot_reg_choice_bits(n: bigint, t: bigint, alphas: bigint[], co
 export function mpcot_reg_receiver(n: bigint, t: bigint, alphas: bigint[], cot_t: Block[], msg: any): Vec<Block>
 {
   const splen = (n / t);
-  const h = Number(Math.clz32((splen) & -((splen) | 0)));
+  const h = Number(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
   let r = ([] as any[]);
   for (let i = 0n; i < t; i += 1n)   {
     const t_rows = cot_t.slice(Number(fieldMul(i, h)), Number(fieldMul(fieldAdd(i, 1n), h)));
@@ -8743,7 +8743,7 @@ export function mpcot_reg_receiver(n: bigint, t: bigint, alphas: bigint[], cot_t
 export function mpcot_reg_sender<R>(rng: any, delta: any, n: bigint, t: bigint, cot_q: Block[], choices: boolean[]): [Vec<Block>, MpcotRegSenderMsg]
 {
   const splen = (n / t);
-  const h = Number(Math.clz32((splen) & -((splen) | 0)));
+  const h = Number(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
   let s = ([] as any[]);
   let blocks = ([] as any[]);
   for (let i = 0n; i < t; i += 1n)   {
@@ -8765,7 +8765,7 @@ export function mpcot_uni_choice_bits(params: any, hash_seed: bigint[], table: (
   for (let j = 0n; j < m; j += 1n)   {
     const need = fieldAdd(BigInt(buckets[Number(j)].length), 1n);
     const splen = next_pow2(need);
-    const h = Number(Math.clz32((splen) & -((splen) | 0)));
+    const h = Number(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
     const p = (() => { const __match = table[Number(j)]; if (true) { return BigInt(buckets[Number(j)].length); } else { const val = __match;
 return (buckets[Number(j)].findIndex((y) => __equals(y, val)))!; } })();
     (out).push(spcot_choice_bits(p, h, cot_r_chunks[Number(j)]));
@@ -9666,7 +9666,7 @@ export function spcot_consistency_check(delta: any, v: Block[], w: Block[], extr
 
 export function spcot_in_process<R>(rng: any, delta: any, n: bigint, alpha: bigint): [Vec<Block>, Vec<Block>]
 {
-  const h = Number(Math.clz32((n) & -((n) | 0)));
+  const h = Number(Math.clz32((() => { const __tz = Number(n) | 0; return (__tz & -__tz) | 0; })()));
   let cot_q = ([] as any[]);
   let cot_r = ([] as any[]);
   let cot_t = ([] as any[]);
@@ -9690,7 +9690,7 @@ export function spcot_in_process<R>(rng: any, delta: any, n: bigint, alpha: bigi
 
 export function spcot_receiver_extend(alpha: bigint, n: bigint, cot_t: Block[], msg: any): Vec<Block>
 {
-  const h = Number(Math.clz32((n) & -((n) | 0)));
+  const h = Number(Math.clz32((() => { const __tz = Number(n) | 0; return (__tz & -__tz) | 0; })()));
   let off_sums = ([] as any[]);
   for (let i = 0n; i < h; i += 1n)   {
     const select = bit_msb(alpha, h, i);
@@ -9717,7 +9717,7 @@ export function spcot_receiver_extend(alpha: bigint, n: bigint, cot_t: Block[], 
 
 export function spcot_sender_extend<R>(rng: any, delta: any, n: bigint, cot_q: Block[], choices: boolean[]): [Vec<Block>, SpcotSenderMsg]
 {
-  const h = Number(Math.clz32((n) & -((n) | 0)));
+  const h = Number(Math.clz32((() => { const __tz = Number(n) | 0; return (__tz & -__tz) | 0; })()));
   const seed = sample_block(rng);
   const [leaves, layer_sums] = expand_full(h, seed);
   let ms = ([] as any[]);
@@ -10119,7 +10119,7 @@ export function uni_spcot_heights(hash_seed: bigint[], n: bigint, t: bigint): Ve
 {
   const m = cuckoo_table_size(t);
   const buckets = build_buckets(hash_seed, n, m);
-  return buckets.map((b: any) => Number(Math.clz32((next_pow2(fieldAdd(BigInt(b.length), 1n))) & -((next_pow2(fieldAdd(BigInt(b.length), 1n))) | 0))));
+  return buckets.map((b: any) => Number(Math.clz32((() => { const __tz = Number(next_pow2(fieldAdd(BigInt(b.length), 1n))) | 0; return (__tz & -__tz) | 0; })())));
 }
 
 export function unique_bins(seed: bigint[], x: bigint, m: bigint): Vec<bigint>

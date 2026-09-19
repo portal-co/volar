@@ -4736,12 +4736,12 @@ fn emit_known_method_call(
             write!(f, ")")
         }
         StdMethod::TrailingZeros if args.is_empty() => {
-            // Negate to isolate lowest set bit, then leading_zeros gives trailing count
-            write!(f, "Math.clz32((")?;
+            // Isolate the lowest set bit, then clz32 gives the trailing-zero count.
+            // Math.clz32 and the bitwise ops are number-domain, so convert the
+            // (bigint) operand once up front instead of mixing bigint and number.
+            write!(f, "Math.clz32((() => {{ const __tz = Number(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") & -((")?;
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") | 0))")
+            write!(f, ") | 0; return (__tz & -__tz) | 0; }})())")
         }
         StdMethod::FromLeBytes if args.len() == 1 => {
             // u32::from_le_bytes([b0, b1, b2, b3]) — all bigint
