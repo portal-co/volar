@@ -315,13 +315,22 @@ pub trait StrictActionHost {
 /// executor before opening a transport or allocating an OT. Garbler execution
 /// and executor-only disclosure require the future batch/reinsertion protocol.
 pub fn validate_legacy_action_policy(schedule: &GateSchedule) -> Result<(), MpcError> {
-    if schedule.actions.iter().any(|spec| {
-        spec.execution.executor != crate::ExternalExecutor::Evaluator
-            || spec.execution.reveal != crate::ExternalRevealPolicy::BothRoles
-    }) {
-        Err(MpcError::UnsupportedExternalPolicy)
-    } else {
+    for action in &schedule.actions {
+        validate_legacy_action_spec(action)?;
+    }
+    Ok(())
+}
+
+/// Validate one action before the legacy evaluator-hosted adapter exposes any
+/// label-derived input material. `StrictGateCursor` calls this too, so users
+/// of its public pause/resume API cannot bypass schedule-entry validation.
+pub fn validate_legacy_action_spec(action: &crate::ActionSpec) -> Result<(), MpcError> {
+    if action.execution.executor == crate::ExternalExecutor::Evaluator
+        && action.execution.reveal == crate::ExternalRevealPolicy::BothRoles
+    {
         Ok(())
+    } else {
+        Err(MpcError::UnsupportedExternalPolicy)
     }
 }
 

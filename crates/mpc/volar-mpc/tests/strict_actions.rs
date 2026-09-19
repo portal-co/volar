@@ -11,6 +11,7 @@ use volar_mpc::ot::SeedRng;
 use volar_mpc::strict::{
     StrictActionHost, StrictGarbledFull, eliminate_nots, garble_schedule_strict_dyn_full,
     run_evaluator_strict_actions, run_garbler_strict_actions, validate_legacy_action_policy,
+    validate_legacy_action_spec,
 };
 use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
 use volar_mpc::{
@@ -179,6 +180,10 @@ fn strict_actions_reject_unimplemented_executor_or_reveal_policy() {
     schedule.actions[0].execution.executor = ExternalExecutor::Garbler;
     assert_eq!(
         validate_legacy_action_policy(&schedule),
+        Err(MpcError::UnsupportedExternalPolicy)
+    );
+    assert_eq!(
+        validate_legacy_action_spec(&schedule.actions[0]),
         Err(MpcError::UnsupportedExternalPolicy)
     );
     schedule.actions[0].execution.executor = ExternalExecutor::Evaluator;

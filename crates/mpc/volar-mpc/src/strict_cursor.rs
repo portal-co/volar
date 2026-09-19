@@ -181,6 +181,7 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
                 .actions
                 .get(call)
                 .ok_or(MpcError::MalformedSchedule)?;
+            crate::strict::validate_legacy_action_spec(spec)?;
             let mut labels =
                 Vec::with_capacity(1 + spec.arg_wires.len() + spec.fallback_wires.len());
             labels.push(arr_to_vec(&self.wire(spec.guard)?.target));
