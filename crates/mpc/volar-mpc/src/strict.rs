@@ -338,6 +338,10 @@ where
     }) {
         return Err(MpcError::UnsupportedExternalPolicy);
     }
+    // Legacy frames remain per-call, but their schedule is first checked as a
+    // canonical boundary manifest. This binds source action identity/order now
+    // and lets a future batched frame replace only the transport loop.
+    crate::ExternalBatchManifest::from_actions(crate::ExternalBoundaryId(0), &schedule.actions)?;
     if partition.len() != schedule.num_inputs {
         return Err(MpcError::BadPartition);
     }
@@ -901,6 +905,7 @@ where
     }) {
         return Err(MpcError::UnsupportedExternalPolicy);
     }
+    crate::ExternalBatchManifest::from_actions(crate::ExternalBoundaryId(0), &schedule.actions)?;
     if partition.len() != schedule.num_inputs {
         return Err(MpcError::BadPartition);
     }
