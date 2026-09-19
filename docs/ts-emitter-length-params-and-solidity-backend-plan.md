@@ -347,6 +347,30 @@ one-line fix):
 - **Function-local `fn` items** (recursive helpers like bavc's `walk`):
   dropped by the parser; representing them needs a new `IrStmtKind` variant.
 
+#### 1.3.10 The Rust-dyn reference backend is also broken (found during Part 1)
+
+The semantic-equivalence harness (§2.3) compares generated TS against the
+Rust-dyn reference (`volar-spec-dyn`). But that reference is itself broken:
+`volar-spec-dyn/src/generated.rs` is gated behind `#[cfg(feature =
+"generated")]` (off by default), so `cargo build -p volar-spec-dyn` never
+compiles it. Building with `--features generated` surfaces **1474 errors** —
+the same dyn-lowering witness/length-threading gaps as the TS surface (unbound
+length witness `n`, `_` used as an identifier, etc.), plus more. So the
+dyn-lowering is broken for *both* high-level backends, not just TS; the TS
+surface was simply the only one with a (previously-masking) test wired up.
+
+**Implication for §2.3:** the dual-backend harness cannot assume the Rust-dyn
+reference is correct. Two options: (a) fix the shared `lowering_dyn`
+witness/length threading first so both backends are sound (this is the real
+dependency — it is the same root cause as most of the remaining TS2554/TS2339
+errors), or (b) have the harness compare TS against the *non-dyn* Rust spec
+(`volar-spec`, which compiles and is the actual reference) rather than
+Rust-dyn. Option (b) is more faithful (volar-spec is the source of truth) and
+sidesteps the broken middle layer; it requires the TS output to be driven by
+the same inputs as a native `volar-spec` test harness. Recommend (b) as the
+harness reference and treating the `lowering_dyn` soundness fix as its own
+tracked work item (it gates both backends and Part 3's Solidity path).
+
 ### 1.4 Current array/length representation (baseline for Part 2)
 
 `TsTypeWriter` (`printer_ts.rs`) always renders `IrType::Array { elem, .. }`
