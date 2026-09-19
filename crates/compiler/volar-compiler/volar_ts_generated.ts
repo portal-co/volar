@@ -2430,7 +2430,7 @@ return (() => {
   {
     let h = 14695981039346656037n;
     for (const spec of this.$fluts)     {
-      for (const [i, chunk] of __chunks(spec.$fentries, Number(8n)).enumerate())       {
+      for (const [i, chunk] of __chunks(spec.$fentries, Number(8n)).map((__enum_a: any, __enum_i: number) => [__enum_i, __enum_a]))       {
         let byte = 0n;
         for (const [j, e] of chunk.map((val: any, i: number) => [i, val] as [number, typeof val]))         {
           byte = fieldBitor(byte, fieldShl(((e) & 0xFFn), j));
@@ -2877,8 +2877,8 @@ export class EncodedLabelBatch {
     }
     let differences = __clone(this.$fdifferences);
     let zeroes = __clone(this.$fzeroes);
-    differences.resize(slots, 0n);
-    zeroes.resize(slots, 0n);
+    (() => { let __r = differences; for (let __i = __r.length; __i < Number(slots); __i++) __r.push(0n); return __r; })();
+    (() => { let __r = zeroes; for (let __i = __r.length; __i < Number(slots); __i++) __r.push(0n); return __r; })();
     return new PaddedLabelBatch({ $flabel_count: this.label_count(), $fdifferences: differences, $fzeroes: zeroes });
   }
 
@@ -2923,7 +2923,7 @@ export class PaddedLabelBatch {
       return new ChoiceLengthMismatch({ $fexpected: this.$flabel_count, $factual: BigInt(choices.length) });
     }
     let out = EncodedLabelBatch.expanded_choices(choices);
-    out.resize(this.slots(), false);
+    (() => { let __r = out; for (let __i = __r.length; __i < Number(this.slots()); __i++) __r.push(false); return __r; })();
     return out;
   }
 
@@ -3107,10 +3107,10 @@ export class Polynomial {
 
   add_assign(ring: any, other: any)
   {
-    for (const [left, right] of this.$ffirst.zip(other.$ffirst))     {
+    for (const [left, right] of this.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$ffirst)[__zip_i]]))     {
       left = add_mod(left, right, ring.$fparameters.$fplaintext_modulus);
     }
-    for (const [left, right] of this.$fsecond.zip(other.$fsecond))     {
+    for (const [left, right] of this.$fsecond.map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$fsecond)[__zip_i]]))     {
       left = add_mod(left, right, ring.$fparameters.$fdelta);
     }
   }
@@ -3137,10 +3137,10 @@ export class Polynomial {
   product(ring: any, other: any): Polynomial
   {
     let output = ring.zero();
-    for (const [[output, left], right] of output.$ffirst.zip(this.$ffirst).zip(other.$ffirst))     {
+    for (const [[output, left], right] of output.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (this.$ffirst)[__zip_i]]).map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$ffirst)[__zip_i]]))     {
       output = mul_mod(left, right, ring.$fparameters.$fplaintext_modulus);
     }
-    for (const [[output, left], right] of output.$fsecond.zip(this.$fsecond).zip(other.$fsecond))     {
+    for (const [[output, left], right] of output.$fsecond.map((__zip_a: any, __zip_i: number) => [__zip_a, (this.$fsecond)[__zip_i]]).map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$fsecond)[__zip_i]]))     {
       output = mul_mod(left, right, ring.$fparameters.$fdelta);
     }
     return output;
@@ -3167,10 +3167,10 @@ export class Polynomial {
 
   sub_assign(ring: any, other: any)
   {
-    for (const [left, right] of this.$ffirst.zip(other.$ffirst))     {
+    for (const [left, right] of this.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$ffirst)[__zip_i]]))     {
       left = sub_mod(left, right, ring.$fparameters.$fplaintext_modulus);
     }
-    for (const [left, right] of this.$fsecond.zip(other.$fsecond))     {
+    for (const [left, right] of this.$fsecond.map((__zip_a: any, __zip_i: number) => [__zip_a, (other.$fsecond)[__zip_i]]))     {
       left = sub_mod(left, right, ring.$fparameters.$fdelta);
     }
   }
@@ -3324,7 +3324,7 @@ export class BatchSelect {
       (result).push(value);
     }
     const correction = this.lenc_eval(first.$flenc_ciphertext, tree);
-    for (const [value, delta] of result.zip(correction))     {
+    for (const [value, delta] of result.map((__zip_a: any, __zip_i: number) => [__zip_a, (correction)[__zip_i]]))     {
       value.sub_assign(this.$fring, delta);
     }
     return this.$fring.decode_messages(result);
@@ -3560,10 +3560,10 @@ export class Ring {
     }
     this.$ffirst_ntt.forward(first);
     this.$fsecond_ntt.forward(second);
-    for (const [destination, error] of value.$ffirst.zip(first))     {
+    for (const [destination, error] of value.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (first)[__zip_i]]))     {
       destination = add_mod(destination, error, this.$fparameters.$fplaintext_modulus);
     }
-    for (const [destination, error] of value.$fsecond.zip(second))     {
+    for (const [destination, error] of value.$fsecond.map((__zip_a: any, __zip_i: number) => [__zip_a, (second)[__zip_i]]))     {
       destination = add_mod(destination, error, this.$fparameters.$fdelta);
     }
     return [];
@@ -3651,7 +3651,7 @@ export class Ring {
     let output = ([] as any[]);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
       let value = this.zero();
-      for (const [[first, second], choice] of value.$ffirst.zip(value.$fsecond).zip(chunk))       {
+      for (const [[first, second], choice] of value.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (value.$fsecond)[__zip_i]]).map((__zip_a: any, __zip_i: number) => [__zip_a, (chunk)[__zip_i]]))       {
         const choice_1 = u64.from(choice);
         first = choice_1;
         second = choice_1;
@@ -3674,7 +3674,7 @@ export class Ring {
     let output = ([] as any[]);
     for (const chunk of input.chunks_exact(this.$fparameters.$fdegree))     {
       let value = this.zero();
-      for (const [slot, message] of value.$ffirst.zip(chunk))       {
+      for (const [slot, message] of value.$ffirst.map((__zip_a: any, __zip_i: number) => [__zip_a, (chunk)[__zip_i]]))       {
         slot = mul_mod(message, (this.$fparameters.$fdelta % this.$fparameters.$fplaintext_modulus), this.$fparameters.$fplaintext_modulus);
       }
       (output).push(value);
@@ -3748,7 +3748,7 @@ export class Ntt {
 
   forward(values: bigint[])
   {
-    for (const [index, value] of values.enumerate())     {
+    for (const [index, value] of values.map((__enum_a: any, __enum_i: number) => [__enum_i, __enum_a]))     {
       value = mul_mod(value, pow_mod(this.$fpsi, index, this.$fmodulus), this.$fmodulus);
     }
     this.cyclic(values, this.$fomega);
@@ -3757,7 +3757,7 @@ export class Ntt {
   inverse(values: bigint[])
   {
     this.cyclic(values, this.$finverse_omega);
-    for (const [index, value] of values.enumerate())     {
+    for (const [index, value] of values.map((__enum_a: any, __enum_i: number) => [__enum_i, __enum_a]))     {
       value = mul_mod(value, this.$finverse_degree, this.$fmodulus);
       value = mul_mod(value, pow_mod(this.$finverse_psi, index, this.$fmodulus), this.$fmodulus);
     }
@@ -7674,7 +7674,7 @@ export function g_double(seed: any): [Block, Block]
 export function gadget_decompose(log: bigint, ell: bigint, base_log: bigint, x: bigint): bigint[]
 {
   let digits = Array.from({length: Number(ell)}, () => 0n);
-  for (const [j, d] of digits.enumerate())   {
+  for (const [j, d] of digits.map((__enum_a: any, __enum_i: number) => [__enum_i, __enum_a]))   {
     const shift = level_shift(log, base_log, j);
     const bits = level_bits(log, base_log, j);
     const m = (() => { if ((bits >= 32n)) {

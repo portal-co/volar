@@ -4923,6 +4923,31 @@ fn emit_other_method_call(
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             return Ok(());
         }
+        // `arr.zip(other)` → element-wise pairs `[arr[i], other[i]]`.
+        "zip" if args.len() == 1 => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".map((__zip_a: any, __zip_i: number) => [__zip_a, (")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, ")[__zip_i]])")?;
+            return Ok(());
+        }
+        // `arr.enumerate()` → `[i, arr[i]]` pairs.
+        "enumerate" if args.is_empty() => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".map((__enum_a: any, __enum_i: number) => [__enum_i, __enum_a])")?;
+            return Ok(());
+        }
+        // `vec.resize(n, val)` — grow to length n filling with val (statement).
+        "resize" if args.len() == 2 => {
+            write!(f, "(() => {{ let __r = ")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, "; for (let __i = __r.length; __i < Number(")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, "); __i++) __r.push(")?;
+            TsExprWriter { expr: &args[1] }.ts_fmt(f, cx)?;
+            write!(f, "); return __r; }})()")?;
+            return Ok(());
+        }
         // Integer predicate: is_power_of_two() → (x > 0 && (x & (x-1)) === 0)
         "is_power_of_two" if args.is_empty() => {
             write!(f, "((")?;
