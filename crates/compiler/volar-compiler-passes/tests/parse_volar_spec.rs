@@ -320,6 +320,55 @@ impl Foo {
 }
 
 #[test]
+fn test_parse_bare_loop_as_while_true() {
+    // `loop { .. }` has no less of a boundedness guarantee than
+    // `while true { .. }` (neither is statically proven bounded), so the
+    // parser accepts it identically instead of hard-rejecting it — see
+    // docs/ts-emitter-length-params-and-solidity-backend-plan.md §1.3.4/§2.4.
+    let source = r#"
+fn find_first_even(xs: &[u32]) -> u32 {
+    let mut i = 0;
+    loop {
+        if xs[i] % 2 == 0 {
+            break;
+        }
+        i += 1;
+    }
+    xs[i]
+}
+    "#;
+
+    let module = parse_source(source, "bare_loop", &[]).expect("loop {} should parse");
+    assert_eq!(module.functions.len(), 1);
+
+    let func = &module.functions[0];
+    // The `loop { .. }` is a statement (not the function's tail expression),
+    // so it shows up as an `IrStmtKind::Expr`/`Semi` in the body.
+    let loop_expr = func
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match &s.kind {
+            volar_compiler::ir::IrStmtKind::Expr(e)
+            | volar_compiler::ir::IrStmtKind::Semi(e) => {
+                matches!(e.kind, volar_compiler::ir::IrExprKind::WhileLoop { .. }).then_some(e)
+            }
+            _ => None,
+        })
+        .expect("expected a WhileLoop statement");
+
+    match &loop_expr.kind {
+        volar_compiler::ir::IrExprKind::WhileLoop { cond, .. } => match &cond.kind {
+            volar_compiler::ir::IrExprKind::Lit(volar_compiler::ir::IrLit::Bool(b)) => {
+                assert!(*b, "loop {{ .. }} should lower to while true {{ .. }}, got while {{ .. }}");
+            }
+            other => panic!("expected Lit(Bool(true)) condition, got {:?}", other),
+        },
+        other => panic!("expected WhileLoop, got {:?}", other),
+    }
+}
+
+#[test]
 #[cfg(feature = "parsing")]
 fn test_prove_module_static_print_roundtrip() {
     use std::fs;

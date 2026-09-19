@@ -1301,7 +1301,16 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             cond: Box::new(convert_expr(&w.cond)?),
             body: convert_block(&w.body)?,
         })),
-        Expr::Loop(_) => Err(CompilerError::UnboundedLoop),
+        // `loop { .. }` has no static boundedness proof, but neither does
+        // `while cond { .. }` above (`while true { .. }` is accepted
+        // unconditionally) — so treat `loop` identically to `while true`
+        // rather than hard-rejecting it. See
+        // docs/ts-emitter-length-params-and-solidity-backend-plan.md §1.3.4/§2.4
+        // and docs/compiler.md's Totality section for the reasoning.
+        Expr::Loop(l) => Ok(ir_expr(IrExprKind::WhileLoop {
+            cond: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+            body: convert_block(&l.body)?,
+        })),
         Expr::Match(m) => Ok(ir_expr(IrExprKind::Match {
             expr: Box::new(convert_expr(&m.expr)?),
             arms: m
