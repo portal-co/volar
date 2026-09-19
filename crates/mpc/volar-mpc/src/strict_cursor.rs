@@ -22,6 +22,11 @@ use crate::{
 pub enum CursorState {
     /// The next gate is an AND and requires one streamed garbled table.
     NeedsTable,
+    /// Pure gate evaluation has reached an external action boundary. The
+    /// caller must execute/reinsert this call, then resume the cursor. This
+    /// is deliberately a public call-table index; the strict adapter binds it
+    /// to `ActionSpec::request_id` before accepting action frames.
+    NeedsExternalBoundary { call: u32 },
     /// All gates have executed.
     Complete,
 }
@@ -48,8 +53,9 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
         })
     }
 
-    /// Advance all gates that do not require an AND table. Storage and action
-    /// interactions are performed at their original schedule position.
+    /// Advance pure gates until an AND table, an external action boundary, or
+    /// completion. Storage remains an existing strict-chain interaction;
+    /// actions pause rather than performing transport I/O in this cursor.
     pub fn advance<D: Digest, T: Transport>(
         &mut self,
         transport: &mut T,
@@ -61,6 +67,15 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
             let Some(gate) = self.schedule.gates.get(self.gate).copied() else {
                 return Ok(CursorState::Complete);
             };
+            if let Gate::ActionBit { call, .. } = gate
+                && self
+                    .call_results
+                    .get(call as usize)
+                    .and_then(|result| result.as_ref())
+                    .is_none()
+            {
+                return Ok(CursorState::NeedsExternalBoundary { call });
+            }
             let out = match gate {
                 Gate::And(..) => return Ok(CursorState::NeedsTable),
                 Gate::Zero => Eval::zero(),
@@ -94,6 +109,21 @@ impl<'a, N: VoleArray<u8>> StrictGateCursor<'a, N> {
             self.wires.push(out);
             self.gate += 1;
         }
+    }
+
+    /// Execute the compatibility evaluator-hosted action at a paused
+    /// boundary. This retains the old per-call frames temporarily; the caller
+    /// owns the pause/resume point and a future batch adapter can replace this
+    /// method without changing cursor gate traversal.
+    pub fn execute_legacy_action<T: Transport>(
+        &mut self,
+        call: u32,
+        transport: &mut T,
+        ot: &mut dyn OtChannel<N>,
+        host: &mut dyn StrictActionHost,
+    ) -> Result<(), MpcError> {
+        self.action_bit(call as usize, 0, transport, ot, host)
+            .map(|_| ())
     }
 
     /// Consume exactly one table for the pending AND gate.

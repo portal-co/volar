@@ -809,9 +809,14 @@ fn eval_strict_table_stream_cursor<N: VoleArray<u8>, D: Digest, T: Transport>(
         match SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)? {
             SessionFrame::SetupStrictChunk { tables } => {
                 for table in decode_table_chunk::<N>(tables)? {
-                    if cursor.advance::<D, T>(transport, ot, host, gram)? != CursorState::NeedsTable
-                    {
-                        return Err(MpcError::MalformedSchedule);
+                    loop {
+                        match cursor.advance::<D, T>(transport, ot, host, gram)? {
+                            CursorState::NeedsExternalBoundary { call } => {
+                                cursor.execute_legacy_action(call, transport, ot, host)?;
+                            }
+                            CursorState::NeedsTable => break,
+                            CursorState::Complete => return Err(MpcError::MalformedSchedule),
+                        }
                     }
                     cursor.apply_table::<D>(&table)?;
                     seen += 1;
@@ -821,10 +826,15 @@ fn eval_strict_table_stream_cursor<N: VoleArray<u8>, D: Digest, T: Transport>(
                 if seen != table_count as usize || seen != schedule.and_count() {
                     return Err(MpcError::MalformedSchedule);
                 }
-                if cursor.advance::<D, T>(transport, ot, host, gram)? != CursorState::Complete {
-                    return Err(MpcError::MalformedSchedule);
+                loop {
+                    match cursor.advance::<D, T>(transport, ot, host, gram)? {
+                        CursorState::NeedsExternalBoundary { call } => {
+                            cursor.execute_legacy_action(call, transport, ot, host)?;
+                        }
+                        CursorState::Complete => return cursor.outputs(),
+                        CursorState::NeedsTable => return Err(MpcError::MalformedSchedule),
+                    }
                 }
-                return cursor.outputs();
             }
             _ => return Err(MpcError::UnexpectedMessage),
         }
