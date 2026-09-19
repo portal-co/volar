@@ -305,7 +305,7 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579** (and seeded
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509** (and seeded
 components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
 *syntax* errors are fixed; the remainder are semantic. Bug classes fixed:
 
@@ -346,6 +346,13 @@ one-line fix):
   a `static` method references `n`, which is never in scope there.
 - **Function-local `fn` items** (recursive helpers like bavc's `walk`):
   dropped by the parser; representing them needs a new `IrStmtKind` variant.
+- **Projection length witnesses in static methods** (`Array<u8, D::OutputSize>`
+  in a `static fn`): the value `D::OutputSize` is a runtime length but the
+  lowering has no `self` to source it from and adds no leading length param for
+  it, so the body's `Array::from_fn`/`(0..n)` references an unbound `n`. Needs
+  the lowering to detect projection-typed array lengths in a static method's
+  signature and inject a leading `usize` param (the concrete piece of the
+  "weak type inference pass"). ~12 errors; also present in Rust-dyn output.
 - **Associated consts on impls** (`impl Fe25519 { pub const ONE: Self = ... }`,
   referenced as `Fe25519::ONE`): the parser's `convert_impl_item` drops
   `ImplItem::Const`, so `Type::CONST` references emit as the undefined
