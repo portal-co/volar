@@ -39,8 +39,9 @@ use volar_spec::vole::VoleArray;
 
 use crate::strict_cursor::{CursorState, StrictGateCursor};
 use crate::{
-    DynGarbledCircuit, DynGarbledExec, Eval, ExternalBatchBinding, ExternalBatchFrame,
-    ExternalBatchManifest, Gate, GateSchedule, InputOwner, MpcError, OtChannel, SessionFrame,
+    DynGarbledCircuit, DynGarbledExec, Eval, EvaluatorBatchExecutor, ExternalBatchAction,
+    ExternalBatchActionHost, ExternalBatchBinding, ExternalBatchFrame, ExternalBatchManifest,
+    ExternalBatchTranscript, Gate, GateSchedule, InputOwner, MpcError, OtChannel, SessionFrame,
     Transport,
 };
 
@@ -322,6 +323,37 @@ pub trait StrictActionHost {
     /// Execute action `name` on the decoded argument bits, returning the
     /// result bits (the schedule's `ActionSpec::num_bits` wide).
     fn action(&mut self, name: &str, args: &[bool]) -> Result<Vec<bool>, MpcError>;
+}
+
+struct LegacyBatchHost<'a> {
+    host: &'a mut dyn StrictActionHost,
+}
+
+impl ExternalBatchActionHost for LegacyBatchHost<'_> {
+    fn action(
+        &mut self,
+        registration: &ExternalBatchAction,
+        args: &[bool],
+    ) -> Result<Vec<bool>, MpcError> {
+        self.host.action(&registration.name, args)
+    }
+}
+
+fn batch_action_registrations(
+    schedule: &GateSchedule,
+) -> Result<Vec<ExternalBatchAction>, MpcError> {
+    schedule
+        .actions
+        .iter()
+        .map(|action| {
+            validate_legacy_action_spec(action)?;
+            Ok(ExternalBatchAction {
+                request_id: action.request_id,
+                name: action.name.clone(),
+                argument_bits: action.arg_wires.len(),
+            })
+        })
+        .collect()
 }
 
 /// Validate that a schedule uses the only action disclosure mode implemented
@@ -636,6 +668,25 @@ where
         }
     }
 
+    // Versioned external-batch transport is admitted before any streamed
+    // table. The evaluator has completed its input OTs and can now confirm it
+    // derived the exact same public action manifest.
+    let manifest =
+        ExternalBatchManifest::from_actions(crate::ExternalBoundaryId(0), &schedule.actions)?;
+    let binding = manifest.bind([0; 32], [0; 32]);
+    let peer =
+        ExternalBatchFrame::decode(&transport.recv()).map_err(|_| MpcError::UnexpectedMessage)?;
+    peer.validate_manifest(&manifest, binding)
+        .map_err(|_| MpcError::UnexpectedMessage)?;
+    transport.send(
+        &ExternalBatchFrame::Manifest {
+            binding,
+            manifest: manifest.clone(),
+        }
+        .encode(),
+    );
+    let mut transcript = ExternalBatchTranscript::new(manifest.clone(), binding);
+
     for tables in exec.circuit.tables.chunks(STRICT_TABLE_CHUNK) {
         transport.send(
             &SessionFrame::SetupStrictChunk {
@@ -660,42 +711,36 @@ where
         .encode(),
     );
 
-    // Lockstep action walk: per call, decode the evaluator's arg labels and
-    // offer each result bit by OT (both parties derive the same sequence of
-    // events from the schedule).
-    let mut done_calls: Vec<bool> = alloc::vec![false; schedule.actions.len()];
-    for gate in &schedule.gates {
-        if let Gate::ActionBit { call, bit: 0 } = *gate {
-            let call = call as usize;
-            if done_calls.get(call).copied().unwrap_or(false) {
-                return Err(MpcError::MalformedSchedule);
-            }
-            done_calls[call] = true;
-            let spec = schedule
-                .actions
-                .get(call)
-                .ok_or(MpcError::MalformedSchedule)?;
-            let frame =
-                SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
-            let labels = match frame {
-                SessionFrame::ActionArgs {
-                    call: c,
-                    request_id,
-                    labels,
-                } if c as usize == call && request_id == spec.request_id => labels,
-                _ => return Err(MpcError::UnexpectedMessage),
-            };
-            let bits = decode_legacy_action_reveal(full, call, spec.request_id, &labels)?;
-            transport.send(
-                &SessionFrame::ActionArgsClear {
-                    call: call as u32,
-                    request_id: spec.request_id,
-                    bits,
-                }
-                .encode(),
-            );
-            offer_legacy_action_result_labels::<N, D>(full, call, ot)?;
+    for (call, _spec) in schedule.actions.iter().enumerate() {
+        let reveal = ExternalBatchFrame::decode(&transport.recv())
+            .map_err(|_| MpcError::UnexpectedMessage)?;
+        transcript
+            .accept(&reveal)
+            .map_err(|_| MpcError::UnexpectedMessage)?;
+        let clear = decode_external_batch_action_reveal(full, &manifest, binding, call, &reveal)?;
+        transcript
+            .accept(&clear)
+            .map_err(|_| MpcError::UnexpectedMessage)?;
+        transport.send(&clear.encode());
+        let result = ExternalBatchFrame::decode(&transport.recv())
+            .map_err(|_| MpcError::UnexpectedMessage)?;
+        transcript
+            .accept(&result)
+            .map_err(|_| MpcError::UnexpectedMessage)?;
+        offer_external_batch_action_result_labels::<N, D>(
+            full, &manifest, binding, call, &result, ot,
+        )?;
+        let ack = ExternalBatchFrame::decode(&transport.recv())
+            .map_err(|_| MpcError::UnexpectedMessage)?;
+        transcript
+            .accept(&ack)
+            .map_err(|_| MpcError::UnexpectedMessage)?;
+        if !matches!(ack, ExternalBatchFrame::Reinserted { .. }) {
+            return Err(MpcError::UnexpectedMessage);
         }
+    }
+    if !transcript.is_complete() {
+        return Err(MpcError::MalformedSchedule);
     }
 
     // Receive the evaluator's output labels and decode each against its
@@ -983,14 +1028,39 @@ pub(crate) fn eval_strict_table_stream<N: VoleArray<u8>, D: Digest, T: Transport
 /// Evaluate a strict table stream with a resumable cursor. Unlike
 /// [`eval_strict_table_stream`], this supports GRAM and evaluator-hosted
 /// actions, pausing only at AND gates until the next table arrives.
-fn eval_strict_table_stream_cursor<N: VoleArray<u8>, D: Digest, T: Transport>(
+/// Evaluate a strict table stream while executing every action boundary over
+/// versioned [`ExternalBatchFrame`] transport frames.
+///
+/// The caller has already computed the public session/circuit binding. The
+/// evaluator sends its locally derived manifest first and rejects any garbler
+/// manifest mismatch before it transports a label reveal. Each paused action
+/// runs through `Reveal → ClearInputs → Result → Reinserted`; result bits are
+/// reinserted by OT labels before evaluation resumes.
+fn eval_strict_table_stream_batch_cursor<N: VoleArray<u8>, D: Digest, T: Transport>(
     schedule: &GateSchedule,
     inputs: &[Eval<N>],
+    manifest: ExternalBatchManifest,
+    binding: ExternalBatchBinding,
     transport: &mut T,
     ot: &mut dyn OtChannel<N>,
     host: &mut dyn StrictActionHost,
     gram: &mut [&mut dyn crate::GramDrive<N>],
 ) -> Result<Vec<Eval<N>>, MpcError> {
+    let registrations = batch_action_registrations(schedule)?;
+    let mut executor = EvaluatorBatchExecutor::new(manifest.clone(), binding, registrations)?;
+    transport.send(
+        &ExternalBatchFrame::Manifest {
+            binding,
+            manifest: manifest.clone(),
+        }
+        .encode(),
+    );
+    let peer_manifest =
+        ExternalBatchFrame::decode(&transport.recv()).map_err(|_| MpcError::UnexpectedMessage)?;
+    peer_manifest
+        .validate_manifest(&manifest, binding)
+        .map_err(|_| MpcError::UnexpectedMessage)?;
+
     let mut cursor = StrictGateCursor::new(schedule, inputs)?;
     let mut seen = 0usize;
     loop {
@@ -1000,7 +1070,30 @@ fn eval_strict_table_stream_cursor<N: VoleArray<u8>, D: Digest, T: Transport>(
                     loop {
                         match cursor.advance::<D, T>(transport, ot, host, gram)? {
                             CursorState::NeedsExternalBoundary { call } => {
-                                cursor.execute_legacy_action(call, transport, ot, host)?;
+                                let reveal =
+                                    cursor.action_batch_reveal(&manifest, binding, call)?;
+                                executor.accept_reveal(&reveal)?;
+                                transport.send(&reveal.encode());
+                                let clear = ExternalBatchFrame::decode(&transport.recv())
+                                    .map_err(|_| MpcError::UnexpectedMessage)?;
+                                let mut batch_host = LegacyBatchHost { host };
+                                let result =
+                                    executor.execute_clear_inputs(&clear, &mut batch_host)?;
+                                transport.send(&result.encode());
+                                cursor.reinsert_batch_action_result(
+                                    &manifest, binding, call, &result, ot,
+                                )?;
+                                let ack = ExternalBatchFrame::Reinserted {
+                                    binding,
+                                    request_id: match &result {
+                                        ExternalBatchFrame::Result { request_id, .. } => {
+                                            *request_id
+                                        }
+                                        _ => return Err(MpcError::MalformedSchedule),
+                                    },
+                                };
+                                executor.accept_reinserted(&ack)?;
+                                transport.send(&ack.encode());
                             }
                             CursorState::NeedsTable => break,
                             CursorState::Complete => return Err(MpcError::MalformedSchedule),
@@ -1017,9 +1110,33 @@ fn eval_strict_table_stream_cursor<N: VoleArray<u8>, D: Digest, T: Transport>(
                 loop {
                     match cursor.advance::<D, T>(transport, ot, host, gram)? {
                         CursorState::NeedsExternalBoundary { call } => {
-                            cursor.execute_legacy_action(call, transport, ot, host)?;
+                            let reveal = cursor.action_batch_reveal(&manifest, binding, call)?;
+                            executor.accept_reveal(&reveal)?;
+                            transport.send(&reveal.encode());
+                            let clear = ExternalBatchFrame::decode(&transport.recv())
+                                .map_err(|_| MpcError::UnexpectedMessage)?;
+                            let mut batch_host = LegacyBatchHost { host };
+                            let result = executor.execute_clear_inputs(&clear, &mut batch_host)?;
+                            transport.send(&result.encode());
+                            cursor.reinsert_batch_action_result(
+                                &manifest, binding, call, &result, ot,
+                            )?;
+                            let ack = ExternalBatchFrame::Reinserted {
+                                binding,
+                                request_id: match &result {
+                                    ExternalBatchFrame::Result { request_id, .. } => *request_id,
+                                    _ => return Err(MpcError::MalformedSchedule),
+                                },
+                            };
+                            executor.accept_reinserted(&ack)?;
+                            transport.send(&ack.encode());
                         }
-                        CursorState::Complete => return cursor.outputs(),
+                        CursorState::Complete => {
+                            if !executor.is_complete() {
+                                return Err(MpcError::MalformedSchedule);
+                            }
+                            return cursor.outputs();
+                        }
                         CursorState::NeedsTable => return Err(MpcError::MalformedSchedule),
                     }
                 }
@@ -1156,8 +1273,12 @@ where
     if owned_i != owned.len() || eval_i != evaluator_bits.len() {
         return Err(MpcError::BadPartition);
     }
-    let out_labels =
-        eval_strict_table_stream_cursor::<N, D, T>(schedule, &labels, transport, ot, host, gram)?;
+    let manifest =
+        ExternalBatchManifest::from_actions(crate::ExternalBoundaryId(0), &schedule.actions)?;
+    let binding = manifest.bind([0; 32], [0; 32]);
+    let out_labels = eval_strict_table_stream_batch_cursor::<N, D, T>(
+        schedule, &labels, manifest, binding, transport, ot, host, gram,
+    )?;
     transport.send(
         &SessionFrame::OutputLabels(out_labels.iter().map(|l| arr_to_vec(&l.target)).collect())
             .encode(),
