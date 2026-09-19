@@ -4252,7 +4252,9 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, ") & 0xFFn)")?;
                 }
                 IrType::Primitive(PrimitiveType::Usize) => {
-                    write!(f, "Number(")?;
+                    // `usize` is `bigint` in this target (see ts_primitive); a cast
+                    // must stay bigint, not narrow to `number`.
+                    write!(f, "BigInt(")?;
                     TsExprWriter { expr }.ts_fmt(f, cx)?;
                     write!(f, ")")?;
                 }
