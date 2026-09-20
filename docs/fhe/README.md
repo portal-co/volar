@@ -7,6 +7,18 @@ claim.
 
 ## Current direction
 
+- [Future provider integration ledger](future-provider-integration-ledger.md) —
+  mandatory ledger for generic provider/LLVM plumbing and every deferred
+  provider check. It explicitly excludes the legacy `FheScheme`/TFHE surface
+  as a validation substitute.
+- [Self-contained circuit-provider ABI](circuit-provider-abi.md) — draft
+  compiler contract for split-seed AES-GCM-keystream KDF, randomized
+  encryption/decryption circuits, full unrolling, inline composition, and
+  demand-driven wire conversion.
+- [Storage-capable circuit-provider plan](circuit-provider-storage-plan.md) —
+  accepted staged design for readonly storage snapshots, tailored reads,
+  fully materialized provider loops, and per-invocation copy/use/discard
+  caches using the strict-chain held-slot registry.
 - [TFHE two-track plan](tfhe-two-track-cleanup-plan.md) — Track S is the
   speculative legacy steady state, backed by a growing completeness/fuzzing
   corpus; Track V2 is separate construction research.

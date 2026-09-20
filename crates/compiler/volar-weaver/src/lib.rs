@@ -32,17 +32,11 @@
 #![no_std]
 extern crate alloc;
 
-use alloc::{
-    boxed::Box,
-    collections::BTreeMap,
-    string::String,
-    vec,
-    vec::Vec,
-};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, vec, vec::Vec};
 
 use volar_compiler::ir::{
-    IrClosureParam, IrExpr, IrExprKind, IrPattern, IrType, MethodKind, PrimitiveType,
-    SpecUnaryOp, StdMethod,
+    IrClosureParam, IrExpr, IrExprKind, IrPattern, IrType, MethodKind, PrimitiveType, SpecUnaryOp,
+    StdMethod,
 };
 
 /// Construct a fresh `IrExpr` with default provenance and no side — for
@@ -67,117 +61,109 @@ use volar_ir::{
 // Provenance handler — re-exported from volar-provenance
 // ============================================================================
 
-pub use volar_provenance::{ProvenanceHandler, NoProvenance, KeepProvenance, MapProvenance};
+pub use volar_provenance::{KeepProvenance, MapProvenance, NoProvenance, ProvenanceHandler};
 
-pub mod garble;
-pub mod vole;
-pub(crate) mod vole_common;
-pub(crate) mod vole_split;
-pub(crate) mod nested_block_chunk;
 pub mod faest;
 pub mod fhe;
 pub mod fhe_binfhe;
-pub mod oram;
 pub mod gadgets;
-pub mod noop;
-#[cfg(feature = "net")]
-pub mod net;
-#[cfg(feature = "net")]
-pub mod hybrid_net;
-#[cfg(feature = "net")]
-pub mod storage_loop;
+pub mod garble;
 #[cfg(feature = "net")]
 pub mod glue;
+#[cfg(feature = "net")]
+pub mod hybrid_net;
+pub mod mpc;
+pub(crate) mod nested_block_chunk;
+#[cfg(feature = "net")]
+pub mod net;
+pub mod noop;
+pub mod oram;
+#[cfg(feature = "net")]
+pub mod storage_loop;
+pub mod vole;
+pub(crate) mod vole_common;
+pub(crate) mod vole_split;
 
 // Re-export the most commonly used public items from each submodule.
-pub use garble::{
-    print_weaved_module,
-    weave_eval_from_setup, weave_eval_from_setup_bounded,
-    weave_evaluator, weave_evaluator_bounded,
-    weave_garbler, weave_garbler_bounded,
-    weave_into_gc, weave_into_gc_bounded,
-    weave_evaluator_with_handler, weave_evaluator_bounded_with_handler,
-    weave_garbler_with_handler, weave_garbler_bounded_with_handler,
-    weave_into_gc_with_handler, weave_into_gc_bounded_with_handler,
-    weave_eval_from_setup_with_handler, weave_eval_from_setup_bounded_with_handler,
-    LoweringMode,
-};
 #[cfg(feature = "linking")]
 pub use garble::garble_linked_spec;
+pub use garble::{
+    GramActionConfig, LoweringMode, print_weaved_module, weave_eval_from_setup,
+    weave_eval_from_setup_bounded, weave_eval_from_setup_bounded_with_handler,
+    weave_eval_from_setup_with_handler, weave_evaluator, weave_evaluator_bounded,
+    weave_evaluator_bounded_with_handler, weave_evaluator_with_gram, weave_evaluator_with_handler,
+    weave_garbler, weave_garbler_bounded, weave_garbler_bounded_with_handler,
+    weave_garbler_with_gram, weave_garbler_with_handler, weave_into_gc, weave_into_gc_bounded,
+    weave_into_gc_bounded_with_handler, weave_into_gc_with_handler,
+};
+pub use oram::OramConfig;
 #[cfg(feature = "linking")]
 pub use oram::oram_linked_spec;
 #[cfg(feature = "linking")]
 pub use oram::runtime_linked_spec;
-pub use oram::OramConfig;
 
 pub use vole::{
-    print_weaved_vole_module,
-    weave_vole_prover, weave_vole_prover_bounded,
-    weave_vole_verifier, weave_vole_verifier_bounded,
-    weave_vole_prover_with_handler, weave_vole_prover_bounded_with_handler,
-    weave_vole_verifier_with_handler, weave_vole_verifier_bounded_with_handler,
+    IopSink, MemoryTrace, MemoryTraceEntry, StorageMode, StorageSizes, VerifierTraceSink,
+    VoleProtection, VoleSideAssignments, ZkActionConfig, ZkWitnessConfig, print_weaved_vole_module,
+    weave_vole_prover, weave_vole_prover_bounded, weave_vole_prover_bounded_with_config,
+    weave_vole_prover_bounded_with_config_and_handler, weave_vole_prover_bounded_with_handler,
+    weave_vole_prover_ir, weave_vole_prover_ir_split, weave_vole_prover_ir_with_mode,
     weave_vole_prover_with_config, weave_vole_prover_with_config_and_handler,
-    weave_vole_verifier_with_config, weave_vole_verifier_with_config_and_handler,
-    weave_vole_prover_bounded_with_config, weave_vole_prover_bounded_with_config_and_handler,
+    weave_vole_prover_with_handler, weave_vole_prover_with_side,
+    weave_vole_prover_with_side_and_handler, weave_vole_qsim_ir_split,
+    weave_vole_qsim_ir_with_mode, weave_vole_verifier, weave_vole_verifier_bounded,
     weave_vole_verifier_bounded_with_config, weave_vole_verifier_bounded_with_config_and_handler,
-    weave_vole_prover_with_side, weave_vole_prover_with_side_and_handler,
+    weave_vole_verifier_bounded_with_handler, weave_vole_verifier_ir,
+    weave_vole_verifier_ir_split_with_trace, weave_vole_verifier_ir_with_mode,
+    weave_vole_verifier_ir_with_mode_and_trace, weave_vole_verifier_with_config,
+    weave_vole_verifier_with_config_and_handler, weave_vole_verifier_with_handler,
     weave_vole_verifier_with_side, weave_vole_verifier_with_side_and_handler,
-    weave_vole_prover_ir, weave_vole_verifier_ir,
-    weave_vole_prover_ir_with_mode, weave_vole_verifier_ir_with_mode,
-    weave_vole_verifier_ir_with_mode_and_trace, weave_vole_qsim_ir_with_mode,
-    weave_vole_prover_ir_split, weave_vole_verifier_ir_split_with_trace, weave_vole_qsim_ir_split,
     weave_vole_verifier_with_trace,
-    StorageSizes, StorageMode, MemoryTrace, MemoryTraceEntry,
-    ZkWitnessConfig, ZkActionConfig,
-    VoleProtection, VoleSideAssignments,
-    VerifierTraceSink, IopSink,
 };
 
-pub use volar_discipline::{Tagged, Zk, Transparent, Discipline, NonZk};
+pub use volar_discipline::{Discipline, NonZk, Tagged, Transparent, Zk};
 
 pub use faest::{
+    AesGateMeta, FaestParams, FaestProvenanceHandler, print_weaved_faest_module,
     weave_faest_prover, weave_faest_verifier,
-    print_weaved_faest_module,
-    AesGateMeta, FaestParams, FaestProvenanceHandler,
 };
 
 #[cfg(feature = "net")]
 pub use net::{
-    weave_net_vole_prover, weave_net_vole_verifier,
-    weave_net_vole_prover_loop, weave_net_vole_verifier_loop,
-    print_net_vole_module, print_net_vole_cfg_module,
+    print_net_vole_cfg_module, print_net_vole_module, weave_net_vole_prover,
+    weave_net_vole_prover_loop, weave_net_vole_verifier, weave_net_vole_verifier_loop,
 };
 
 #[cfg(feature = "net")]
 pub use hybrid_net::{
-    weave_hybrid_net_vole_prover, weave_hybrid_net_vole_verifier,
-    print_hybrid_net_cfg_module,
+    print_hybrid_net_cfg_module, weave_hybrid_net_vole_prover, weave_hybrid_net_vole_verifier,
 };
 
 #[cfg(feature = "net")]
-pub use storage_loop::{
-    weave_storage_commit_loop_prover, weave_ts_storage_loop_prover, weave_ts_storage_loop_verifier,
-    weave_lt_check, weave_lt_check_verifier, print_storage_loop_module,
+pub use glue::{
+    GlueMode, print_glue_module, weave_continuation_glue_prover, weave_continuation_glue_verifier,
+    weave_skip_resume_prover, weave_skip_resume_verifier,
 };
 #[cfg(feature = "net")]
-pub use glue::{
-    weave_continuation_glue_prover, weave_continuation_glue_verifier, weave_skip_resume_prover,
-    weave_skip_resume_verifier, print_glue_module, GlueMode,
+pub use storage_loop::{
+    print_storage_loop_module, weave_lt_check, weave_lt_check_verifier,
+    weave_storage_commit_loop_prover, weave_ts_storage_loop_prover, weave_ts_storage_loop_verifier,
+};
+
+pub use fhe_binfhe::{
+    BinFhePlanAdapter, BinFhePlanAdapterError, BinFheScheme, PlanBuildError, PlanRegionBinding,
+    build_bootstrap_plan, build_bootstrap_plan_with_binding, weave_binfhe_fused, weave_binfhe_plan,
 };
 
 pub use fhe::{
-    weave_fhe, weave_fhe_with_handler, weave_fhe_flat_bir,
-    weave_fhe_flat_ir_with_handler, weave_fhe_cfg_with_handler,
-    derive_storage_config,
-    oblivious_read_loop, oblivious_write_loop,
-    FheScheme, FheOutput, FheStorageConfig, FheStorageSizes,
-    FheActionConfig, FheProtection,
-    TfheScheme,
-    print_fhe_cfg_module, print_fhe_flat_module,
+    FheActionConfig, FheOutput, FheProtection, FheScheme, FheStorageConfig, FheStorageSizes,
+    TfheScheme, derive_storage_config, oblivious_read_loop, oblivious_write_loop,
+    print_fhe_cfg_module, print_fhe_flat_module, weave_fhe, weave_fhe_cfg_with_handler,
+    weave_fhe_flat_bir, weave_fhe_flat_ir_with_handler, weave_fhe_with_handler,
 };
 pub use volar_ir::public::PublicSet;
 
-pub use noop::{weave_noop, weave_noop_ir, weave_noop_ir_with_handler, print_noop_module};
+pub use noop::{print_noop_module, weave_noop, weave_noop_ir, weave_noop_ir_with_handler};
 
 // ============================================================================
 // Shared: Or-gate lowering
@@ -387,36 +373,57 @@ pub(crate) mod tests_common {
 
     /// Two-input circuit: Xor(0,1)->wire2, And(0,2)->wire3, Return wire3.
     pub fn build_xor_and_circuit() -> BIrBlocks {
-        BIrBlocks { blocks: vec![BIrBlock {
-            params: 2,
-            stmts: vec![
-                Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None),
-                Node::new(BIrStmt::And(IRVarId(0), IRVarId(2)), (), None),
-            ],
-            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(3)] }),
-        }], pre_init: vec![] }
+        BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 2,
+                stmts: vec![
+                    Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None),
+                    Node::new(BIrStmt::And(IRVarId(0), IRVarId(2)), (), None),
+                ],
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(3)],
+                }),
+            }],
+            pre_init: vec![],
+        }
     }
 
     /// Two-input AND circuit: And(0,1)->wire2, Return wire2.
     pub fn build_and_circuit() -> BIrBlocks {
-        BIrBlocks { blocks: vec![BIrBlock {
-            params: 2,
-            stmts: vec![Node::new(BIrStmt::And(IRVarId(0), IRVarId(1)), (), None)],
-            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2)] }),
-        }], pre_init: vec![] }
+        BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 2,
+                stmts: vec![Node::new(BIrStmt::And(IRVarId(0), IRVarId(1)), (), None)],
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(2)],
+                }),
+            }],
+            pre_init: vec![],
+        }
     }
 
     /// Single-bit self-loop: params=1, stmts=[One], CondJmp → Return or Block(0).
     pub fn build_simple_loop() -> BIrBlocks {
-        BIrBlocks { blocks: vec![BIrBlock {
-            params: 1,
-            stmts: vec![Node::new(BIrStmt::One, (), None)],
-            terminator: BIrTerminator::CondJmp {
-                val: IRVarId(0),
-                then_target: BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0)] },
-                else_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(0)), args: vec![IRVarId(1)] },
-            },
-        }], pre_init: vec![] }
+        BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 1,
+                stmts: vec![Node::new(BIrStmt::One, (), None)],
+                terminator: BIrTerminator::CondJmp {
+                    val: IRVarId(0),
+                    then_target: BIrTarget {
+                        block: IRBlockTargetId::Return,
+                        args: vec![IRVarId(0)],
+                    },
+                    else_target: BIrTarget {
+                        block: IRBlockTargetId::Block(IRBlockId(0)),
+                        args: vec![IRVarId(1)],
+                    },
+                },
+            }],
+            pre_init: vec![],
+        }
     }
 
     /// Generate a temp Cargo project, put `code` in src/lib.rs,
@@ -586,7 +593,10 @@ pub(crate) mod tests_common {
             }
             Err(_) => {
                 // tsc not on PATH — skip test gracefully
-                std::eprintln!("tsc not found on PATH, skipping TS compile check for {}", test_name);
+                std::eprintln!(
+                    "tsc not found on PATH, skipping TS compile check for {}",
+                    test_name
+                );
             }
         }
     }
@@ -617,7 +627,10 @@ pub(crate) mod tests_common {
                 }
             }
             Err(_) => {
-                std::eprintln!("cc not found on PATH, skipping C compile check for {}", test_name);
+                std::eprintln!(
+                    "cc not found on PATH, skipping C compile check for {}",
+                    test_name
+                );
             }
         }
     }

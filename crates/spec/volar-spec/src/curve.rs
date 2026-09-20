@@ -33,7 +33,7 @@ use core::ops::{Add, Mul, Neg, Sub};
 use digest::Digest;
 
 use crate::SpecRng;
-use crate::ot::group::Group;
+use crate::ot::group::{Group, ScalarOps};
 
 // ============================================================================
 // Field arithmetic mod p = 2^255 - 19
@@ -574,6 +574,208 @@ impl Group for Ed25519 {
         let (x, y) = elt.to_affine();
         h.update(x.to_bytes());
         h.update(y.to_bytes());
+    }
+}
+
+// ============================================================================
+// Scalar arithmetic mod ℓ (Ed25519 group order) — for the malicious-secure OT
+// ============================================================================
+//
+// The Schnorr OR-proof (ot/base.rs) needs scalar arithmetic mod ℓ on the
+// `[u8; 32]` scalars. Implement 256-bit limb arithmetic (`[u64; 4]`,
+// little-endian) with mod-ℓ reduction. Multiplication reduces a 512-bit
+// product by bit-by-bit long division — slow but simple and correct, and the
+// Schnorr proof needs only a handful of scalar ops. All scalars are < ℓ, and
+// every point used (generator, `S = g^y`, `R = g^x·S^c`) is in the prime-order
+// subgroup, so the mod-ℓ arithmetic is consistent with `ed_scalar_mul`.
+//
+// NOTE: the Ed25519 group has cofactor 8; this is consistent because all proof
+// points live in the prime-order subgroup. A production deployment should use
+// Ristretto255 or cofactor-clearing for the small-subgroup-confinement concern
+// (see the module doc).
+
+/// ℓ = 2^252 + 27742317777372353535851937790883648493, little-endian u64 limbs.
+const L_LIMBS: [u64; 4] = [
+    0x5812_631a_5cf5_d3ed,
+    0x14de_f9de_a2f7_9cd6,
+    0,
+    0x1000_0000_0000_0000,
+];
+
+fn bytes_to_limbs(b: &[u8; 32]) -> [u64; 4] {
+    let mut out = [0u64; 4];
+    for i in 0..4 {
+        let mut le = [0u8; 8];
+        le.copy_from_slice(&b[i * 8..i * 8 + 8]);
+        out[i] = u64::from_le_bytes(le);
+    }
+    out
+}
+
+fn limbs_to_bytes(l: &[u64; 4]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for i in 0..4 {
+        out[i * 8..i * 8 + 8].copy_from_slice(&l[i].to_le_bytes());
+    }
+    out
+}
+
+fn cmp4(a: &[u64; 4], b: &[u64; 4]) -> core::cmp::Ordering {
+    for i in (0..4).rev() {
+        if a[i] != b[i] {
+            return a[i].cmp(&b[i]);
+        }
+    }
+    core::cmp::Ordering::Equal
+}
+
+/// a − b (requires a ≥ b), 256-bit. Borrows are handled by adding 2^64 first
+/// so the per-limb subtraction never underflows.
+fn sub4(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+    let mut out = [0u64; 4];
+    let mut borrow = 0u128;
+    for i in 0..4 {
+        let d = (1u128 << 64) + a[i] as u128 - b[i] as u128 - borrow;
+        out[i] = d as u64;
+        borrow = 1 - (d >> 64); // borrow out iff d < 2^64
+    }
+    out
+}
+
+fn add4(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+    let mut out = [0u64; 4];
+    let mut carry = 0u128;
+    for i in 0..4 {
+        let s = a[i] as u128 + b[i] as u128 + carry;
+        out[i] = s as u64;
+        carry = s >> 64;
+    }
+    out
+}
+
+fn add_mod_l(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+    // a, b < ℓ < 2^253 so a+b < 2^254 (no 256-bit overflow).
+    let mut s = add4(a, b);
+    if cmp4(&s, &L_LIMBS) != core::cmp::Ordering::Less {
+        s = sub4(&s, &L_LIMBS);
+    }
+    s
+}
+
+fn sub_mod_l(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+    if cmp4(a, b) != core::cmp::Ordering::Less {
+        sub4(a, b)
+    } else {
+        sub4(&add4(a, &L_LIMBS), b)
+    }
+}
+
+/// 256×256 → 512-bit product.
+fn mul4(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
+    let mut out = [0u64; 8];
+    for i in 0..4 {
+        let mut carry = 0u128;
+        for j in 0..4 {
+            let idx = i + j;
+            let cur = out[idx] as u128 + (a[i] as u128) * (b[j] as u128) + carry;
+            out[idx] = cur as u64;
+            carry = cur >> 64;
+        }
+        let mut k = i + 4;
+        while carry > 0 && k < 8 {
+            let cur = out[k] as u128 + carry;
+            out[k] = cur as u64;
+            carry = cur >> 64;
+            k += 1;
+        }
+    }
+    out
+}
+
+/// Reduce a 512-bit number mod ℓ via bit-by-bit long division.
+fn reduce512(x: &[u64; 8]) -> [u64; 4] {
+    let mut r = [0u64; 4]; // running remainder, stays < ℓ
+    for bit in (0..512).rev() {
+        let xbit = (x[bit / 64] >> (bit % 64)) & 1;
+        // r = 2r + xbit (r < ℓ < 2^253, so the shift never overflows 256 bits
+        // and the result is < 2ℓ, so one conditional subtraction suffices).
+        let mut carry = xbit;
+        for limb in r.iter_mut() {
+            let new_carry = *limb >> 63;
+            *limb = (*limb << 1) | carry;
+            carry = new_carry;
+        }
+        if cmp4(&r, &L_LIMBS) != core::cmp::Ordering::Less {
+            r = sub4(&r, &L_LIMBS);
+        }
+    }
+    r
+}
+
+impl ScalarOps for Ed25519 {
+    fn scalar_zero() -> [u8; 32] {
+        [0u8; 32]
+    }
+    fn scalar_add(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+        limbs_to_bytes(&add_mod_l(&bytes_to_limbs(a), &bytes_to_limbs(b)))
+    }
+    fn scalar_sub(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+        limbs_to_bytes(&sub_mod_l(&bytes_to_limbs(a), &bytes_to_limbs(b)))
+    }
+    fn scalar_mul_scalar(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+        let prod = mul4(&bytes_to_limbs(a), &bytes_to_limbs(b));
+        limbs_to_bytes(&reduce512(&prod))
+    }
+    fn scalar_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+        // Reduce both (callers may pass non-canonical scalars) and compare.
+        let ra = reduce512(&[
+            {
+                let l = bytes_to_limbs(a);
+                l[0]
+            },
+            bytes_to_limbs(a)[1],
+            bytes_to_limbs(a)[2],
+            bytes_to_limbs(a)[3],
+            0,
+            0,
+            0,
+            0,
+        ]);
+        let rb = reduce512(&[
+            {
+                let l = bytes_to_limbs(b);
+                l[0]
+            },
+            bytes_to_limbs(b)[1],
+            bytes_to_limbs(b)[2],
+            bytes_to_limbs(b)[3],
+            0,
+            0,
+            0,
+            0,
+        ]);
+        cmp4(&ra, &rb) == core::cmp::Ordering::Equal
+    }
+    fn scalar_from_hash<D: Digest>(h: D) -> [u8; 32] {
+        let out = h.finalize();
+        let mut wide = [0u64; 8];
+        let n = out.len().min(64);
+        for (i, chunk) in out[..n].chunks(8).enumerate() {
+            let mut le = [0u8; 8];
+            le[..chunk.len()].copy_from_slice(chunk);
+            wide[i] = u64::from_le_bytes(le);
+        }
+        limbs_to_bytes(&reduce512(&wide))
+    }
+    fn random_mod_order<R: SpecRng>(rng: &mut R) -> [u8; 32] {
+        // Sample < 2^252 < ℓ (clear the top 4 bits). The bias (missing
+        // [2^252, ℓ)) is c/ℓ ≈ 2^-127, negligible.
+        let mut k = [0u8; 32];
+        for byte in k.iter_mut() {
+            *byte = rng.next_u8();
+        }
+        k[31] &= 0x0F;
+        k
     }
 }
 

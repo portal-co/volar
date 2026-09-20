@@ -26,7 +26,8 @@ use crate::binfhe::blind_rotate::binfhe_blind_rotate;
 use crate::binfhe::keys::{BinfheBootstrappingKey, binfhe_key_switch};
 use crate::binfhe::lut::{Lut, fill_test_poly, table_is_constant};
 use crate::binfhe::lwe::{
-    BinfheLweCiphertext, binfhe_trivial, binfhe_lwe_add, binfhe_lwe_add_const, binfhe_lwe_scale, wire_delta,
+    BinfheLweCiphertext, binfhe_lwe_add, binfhe_lwe_add_const, binfhe_lwe_scale, binfhe_trivial,
+    wire_delta,
 };
 use crate::binfhe::modswitch::mod_switch_lwe;
 use crate::binfhe::rlwe::binfhe_sample_extract;
@@ -44,7 +45,7 @@ pub fn binfhe_pbs_core<
     const BS_BASE_LOG: u32,
     const KS_ELL: usize,
     const KS_BASE_LOG: u32,
-    BK: crate::binfhe::keys::AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + ?Sized,
+    BK: crate::binfhe::keys::AsBinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + ?Sized,
 >(
     ct: &BinfheLweCiphertext<N_LWE>,
     test_poly: &[u32; BIG_N],
@@ -143,13 +144,7 @@ pub fn binfhe_lut_read_dyn<
     }
     let arity = table.len().trailing_zeros() as usize;
     assert_eq!(inputs.len(), arity, "LUT arity must match the table");
-    let test_poly = fill_test_poly::<BIG_N>(
-        table,
-        arity,
-        k_max as usize,
-        LOG_Q,
-        LOG_Q_LWE,
-    );
+    let test_poly = fill_test_poly::<BIG_N>(table, arity, k_max as usize, LOG_Q, LOG_Q_LWE);
     let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0);
     for (j, bit) in inputs.iter().enumerate() {
         let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(bit, 1u32 << j);
@@ -157,8 +152,16 @@ pub fn binfhe_lut_read_dyn<
     }
     combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(&combined, delta / 2);
     binfhe_pbs_core::<
-        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, _,
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_ELL,
+        BS_BASE_LOG,
+        KS_ELL,
+        KS_BASE_LOG,
+        _,
     >(&combined, &test_poly, bk)
 }
 
@@ -183,8 +186,15 @@ pub fn binfhe_gate_and<
     bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> BinfheLweCiphertext<N_LWE> {
     binfhe_lut_read_dyn::<
-        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_ELL,
+        BS_BASE_LOG,
+        KS_ELL,
+        KS_BASE_LOG,
     >(&[a, b], &[false, false, false, true], K_MAX, bk)
 }
 
@@ -206,8 +216,15 @@ pub fn binfhe_gate_or<
     bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> BinfheLweCiphertext<N_LWE> {
     binfhe_lut_read_dyn::<
-        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_ELL,
+        BS_BASE_LOG,
+        KS_ELL,
+        KS_BASE_LOG,
     >(&[a, b], &[false, true, true, true], K_MAX, bk)
 }
 
@@ -230,15 +247,22 @@ pub fn binfhe_gate_xor<
     bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> BinfheLweCiphertext<N_LWE> {
     binfhe_lut_read_dyn::<
-        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_ELL,
+        BS_BASE_LOG,
+        KS_ELL,
+        KS_BASE_LOG,
     >(&[a, b], &[false, true, true, false], K_MAX, bk)
 }
 
 /// CMUX (oblivious select) as a 3-input LUT: `sel ? a : b` with
 /// `addr = sel + 2*a + 4*b`. One programmable bootstrap. Requires
 /// `K_MAX >= 3`.
-pub fn binfhe_cmux<
+pub fn binfhe_rgsw_cmux<
     const N_LWE: usize,
     const BIG_N: usize,
     const LOG_Q: u32,
@@ -258,21 +282,29 @@ pub fn binfhe_cmux<
     // addr = sel + 2a + 4b; f(sel,a,b) = sel ? a : b.
     const TABLE: [bool; 8] = [false, false, false, true, true, false, true, true];
     binfhe_lut_read_dyn::<
-        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_ELL,
+        BS_BASE_LOG,
+        KS_ELL,
+        KS_BASE_LOG,
     >(&[sel, a, b], &TABLE, K_MAX, bk)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SpecRng;
     use crate::binfhe::keys::binfhe_gen_bootstrapping_key;
     use crate::binfhe::lwe::{
-        BinfheLweSecretKey, binfhe_not, binfhe_gen_lwe_secret_key, binfhe_lwe_decrypt, binfhe_lwe_encrypt, lwe_phase,
+        BinfheLweSecretKey, binfhe_gen_lwe_secret_key, binfhe_lwe_decrypt, binfhe_lwe_encrypt,
+        binfhe_not, lwe_phase,
     };
     use crate::binfhe::params::{toy, toy_noisy};
     use crate::binfhe::rlwe::{BinfheRlweSecretKey, binfhe_gen_rlwe_secret_key};
-    use crate::SpecRng;
     use alloc::vec::Vec;
 
     struct TestRng(u64);
@@ -292,7 +324,8 @@ mod tests {
         }
     }
 
-    type ToyBk = BinfheBootstrappingKey<{ toy::N_LWE }, { toy::BIG_N }, { toy::BS_ELL }, { toy::KS_ELL }>;
+    type ToyBk =
+        BinfheBootstrappingKey<{ toy::N_LWE }, { toy::BIG_N }, { toy::BS_ELL }, { toy::KS_ELL }>;
 
     fn toy_keys(seed: u64) -> (BinfheLweSecretKey<{ toy::N_LWE }>, ToyBk) {
         let mut rng = TestRng::new(seed);
@@ -356,27 +389,57 @@ mod tests {
                     let cb = toy_encrypt(b, 2, &sk, 200 + b as u64 + key_seed);
                     assert_wire(
                         &binfhe_gate_and::<
-                            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                            { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
+                            { toy::N_LWE },
+                            { toy::BIG_N },
+                            { toy::LOG_Q },
+                            { toy::LOG_Q_LWE },
+                            { toy::LOG_MOD_KS },
+                            { toy::BS_ELL },
+                            { toy::BS_BASE_LOG },
+                            { toy::KS_ELL },
+                            { toy::KS_BASE_LOG },
+                            2,
                         >(ca, cb, &bk),
-                        a && b, 2, &sk, "AND",
+                        a && b,
+                        2,
+                        &sk,
+                        "AND",
                     );
                     assert_wire(
                         &binfhe_gate_or::<
-                            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                            { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
+                            { toy::N_LWE },
+                            { toy::BIG_N },
+                            { toy::LOG_Q },
+                            { toy::LOG_Q_LWE },
+                            { toy::LOG_MOD_KS },
+                            { toy::BS_ELL },
+                            { toy::BS_BASE_LOG },
+                            { toy::KS_ELL },
+                            { toy::KS_BASE_LOG },
+                            2,
                         >(ca, cb, &bk),
-                        a || b, 2, &sk, "OR",
+                        a || b,
+                        2,
+                        &sk,
+                        "OR",
                     );
                     assert_wire(
                         &binfhe_gate_xor::<
-                            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                            { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
+                            { toy::N_LWE },
+                            { toy::BIG_N },
+                            { toy::LOG_Q },
+                            { toy::LOG_Q_LWE },
+                            { toy::LOG_MOD_KS },
+                            { toy::BS_ELL },
+                            { toy::BS_BASE_LOG },
+                            { toy::KS_ELL },
+                            { toy::KS_BASE_LOG },
+                            2,
                         >(ca, cb, &bk),
-                        a ^ b, 2, &sk, "XOR",
+                        a ^ b,
+                        2,
+                        &sk,
+                        "XOR",
                     );
                 }
             }
@@ -394,19 +457,43 @@ mod tests {
             let ct = toy_encrypt(m, 1, &sk, 300 + m as u64);
             assert_wire(
                 &binfhe_lut_read::<
-                    { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                    { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                    { toy::KS_ELL }, { toy::KS_BASE_LOG }, 1, 2, 1,
+                    { toy::N_LWE },
+                    { toy::BIG_N },
+                    { toy::LOG_Q },
+                    { toy::LOG_Q_LWE },
+                    { toy::LOG_MOD_KS },
+                    { toy::BS_ELL },
+                    { toy::BS_BASE_LOG },
+                    { toy::KS_ELL },
+                    { toy::KS_BASE_LOG },
+                    1,
+                    2,
+                    1,
                 >(&[ct], &identity, &bk),
-                m, 1, &sk, "identity PBS",
+                m,
+                1,
+                &sk,
+                "identity PBS",
             );
             assert_wire(
                 &binfhe_lut_read::<
-                    { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                    { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                    { toy::KS_ELL }, { toy::KS_BASE_LOG }, 1, 2, 1,
+                    { toy::N_LWE },
+                    { toy::BIG_N },
+                    { toy::LOG_Q },
+                    { toy::LOG_Q_LWE },
+                    { toy::LOG_MOD_KS },
+                    { toy::BS_ELL },
+                    { toy::BS_BASE_LOG },
+                    { toy::KS_ELL },
+                    { toy::KS_BASE_LOG },
+                    1,
+                    2,
+                    1,
                 >(&[ct], &not, &bk),
-                !m, 1, &sk, "NOT PBS",
+                !m,
+                1,
+                &sk,
+                "NOT PBS",
             );
         }
     }
@@ -419,26 +506,42 @@ mod tests {
         for (i, e) in table.iter_mut().enumerate() {
             *e = (i * 5 + 1) % 7 < 3;
         }
-        let lut =
-            Lut::<4, 16, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 4>::new(table)
-                .unwrap();
+        let lut = Lut::<4, 16, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 4>::new(table)
+            .unwrap();
         for addr in 0..16usize {
             let bits: [BinfheLweCiphertext<{ toy::N_LWE }>; 4] = core::array::from_fn(|j| {
-                toy_encrypt((addr >> j) & 1 == 1, 4, &sk, 400 + addr as u64 * 8 + j as u64)
+                toy_encrypt(
+                    (addr >> j) & 1 == 1,
+                    4,
+                    &sk,
+                    400 + addr as u64 * 8 + j as u64,
+                )
             });
             assert_wire(
                 &binfhe_lut_read::<
-                    { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                    { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                    { toy::KS_ELL }, { toy::KS_BASE_LOG }, 4, 16, 4,
+                    { toy::N_LWE },
+                    { toy::BIG_N },
+                    { toy::LOG_Q },
+                    { toy::LOG_Q_LWE },
+                    { toy::LOG_MOD_KS },
+                    { toy::BS_ELL },
+                    { toy::BS_BASE_LOG },
+                    { toy::KS_ELL },
+                    { toy::KS_BASE_LOG },
+                    4,
+                    16,
+                    4,
                 >(&bits, &lut, &bk),
-                table[addr], 4, &sk, "4-input LUT",
+                table[addr],
+                4,
+                &sk,
+                "4-input LUT",
             );
         }
     }
 
     #[test]
-    fn cmux_lut_selects() {
+    fn binfhe_rgsw_cmux_lut_selects() {
         let (sk, bk) = toy_keys(0xC5);
         for sel in [false, true] {
             for a in [false, true] {
@@ -447,13 +550,22 @@ mod tests {
                     let ca = toy_encrypt(a, 3, &sk, 502 + a as u64);
                     let cb = toy_encrypt(b, 3, &sk, 503 + b as u64);
                     assert_wire(
-                        &binfhe_cmux::<
-                            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                            { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
+                        &binfhe_rgsw_cmux::<
+                            { toy::N_LWE },
+                            { toy::BIG_N },
+                            { toy::LOG_Q },
+                            { toy::LOG_Q_LWE },
+                            { toy::LOG_MOD_KS },
+                            { toy::BS_ELL },
+                            { toy::BS_BASE_LOG },
+                            { toy::KS_ELL },
+                            { toy::KS_BASE_LOG },
+                            3,
                         >(cs, ca, cb, &bk),
                         if sel { a } else { b },
-                        3, &sk, "CMUX",
+                        3,
+                        &sk,
+                        "CMUX",
                     );
                 }
             }
@@ -463,16 +575,25 @@ mod tests {
     #[test]
     fn constant_lut_is_free_and_exact() {
         let (sk, bk) = toy_keys(0xC05);
-        let c = Lut::<2, 4, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 2>::new(
-            [true, true, true, true],
-        )
+        let c = Lut::<2, 4, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 2>::new([
+            true, true, true, true,
+        ])
         .unwrap();
         let ca = toy_encrypt(true, 2, &sk, 601);
         let cb = toy_encrypt(false, 2, &sk, 602);
         let out = binfhe_lut_read::<
-            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-            { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2, 4, 2,
+            { toy::N_LWE },
+            { toy::BIG_N },
+            { toy::LOG_Q },
+            { toy::LOG_Q_LWE },
+            { toy::LOG_MOD_KS },
+            { toy::BS_ELL },
+            { toy::BS_BASE_LOG },
+            { toy::KS_ELL },
+            { toy::KS_BASE_LOG },
+            2,
+            4,
+            2,
         >(&[ca, cb], &c, &bk);
         // Constant path returns a trivial ciphertext: mask is all zero.
         assert!(out.a.iter().all(|&x| x == 0));
@@ -495,7 +616,9 @@ mod tests {
         // Deterministic pseudo-random op sequence (LCG).
         let mut state = 0x1234_5678u64;
         let mut next = || {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (state >> 33) as usize
         };
         for _ in 0..24 {
@@ -508,35 +631,63 @@ mod tests {
                     let k = next() % n;
                     (
                         if wires[i] { wires[j] } else { wires[k] },
-                        binfhe_cmux::<
-                            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                            { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
+                        binfhe_rgsw_cmux::<
+                            { toy::N_LWE },
+                            { toy::BIG_N },
+                            { toy::LOG_Q },
+                            { toy::LOG_Q_LWE },
+                            { toy::LOG_MOD_KS },
+                            { toy::BS_ELL },
+                            { toy::BS_BASE_LOG },
+                            { toy::KS_ELL },
+                            { toy::KS_BASE_LOG },
+                            3,
                         >(cts[i], cts[j], cts[k], &bk),
                     )
                 }
                 1 => (
                     wires[i] && wires[j],
                     binfhe_gate_and::<
-                        { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                        { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                        { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
+                        { toy::N_LWE },
+                        { toy::BIG_N },
+                        { toy::LOG_Q },
+                        { toy::LOG_Q_LWE },
+                        { toy::LOG_MOD_KS },
+                        { toy::BS_ELL },
+                        { toy::BS_BASE_LOG },
+                        { toy::KS_ELL },
+                        { toy::KS_BASE_LOG },
+                        3,
                     >(cts[i], cts[j], &bk),
                 ),
                 2 => (
                     wires[i] || wires[j],
                     binfhe_gate_or::<
-                        { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                        { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                        { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
+                        { toy::N_LWE },
+                        { toy::BIG_N },
+                        { toy::LOG_Q },
+                        { toy::LOG_Q_LWE },
+                        { toy::LOG_MOD_KS },
+                        { toy::BS_ELL },
+                        { toy::BS_BASE_LOG },
+                        { toy::KS_ELL },
+                        { toy::KS_BASE_LOG },
+                        3,
                     >(cts[i], cts[j], &bk),
                 ),
                 3 => (
                     wires[i] ^ wires[j],
                     binfhe_gate_xor::<
-                        { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                        { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-                        { toy::KS_ELL }, { toy::KS_BASE_LOG }, 3,
+                        { toy::N_LWE },
+                        { toy::BIG_N },
+                        { toy::LOG_Q },
+                        { toy::LOG_Q_LWE },
+                        { toy::LOG_MOD_KS },
+                        { toy::BS_ELL },
+                        { toy::BS_BASE_LOG },
+                        { toy::KS_ELL },
+                        { toy::KS_BASE_LOG },
+                        3,
                     >(cts[i], cts[j], &bk),
                 ),
                 _ => (
@@ -593,29 +744,47 @@ mod tests {
             let b = seed % 3 == 0;
             let mut ra = TestRng::new(1000 + seed);
             let mut rb = TestRng::new(2000 + seed);
-            let ca = binfhe_lwe_encrypt::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }, { toy_noisy::CBD_ETA }, _>(
-                a, delta, &lwe_sk, &mut ra,
-            );
-            let cb = binfhe_lwe_encrypt::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }, { toy_noisy::CBD_ETA }, _>(
-                b, delta, &lwe_sk, &mut rb,
-            );
+            let ca = binfhe_lwe_encrypt::<
+                { toy_noisy::N_LWE },
+                { toy_noisy::LOG_Q_LWE },
+                { toy_noisy::CBD_ETA },
+                _,
+            >(a, delta, &lwe_sk, &mut ra);
+            let cb = binfhe_lwe_encrypt::<
+                { toy_noisy::N_LWE },
+                { toy_noisy::LOG_Q_LWE },
+                { toy_noisy::CBD_ETA },
+                _,
+            >(b, delta, &lwe_sk, &mut rb);
             let out = binfhe_gate_and::<
-                { toy_noisy::N_LWE }, { toy_noisy::BIG_N }, { toy_noisy::LOG_Q },
-                { toy_noisy::LOG_Q_LWE }, { toy_noisy::LOG_MOD_KS }, { toy_noisy::BS_ELL },
-                { toy_noisy::BS_BASE_LOG }, { toy_noisy::KS_ELL }, { toy_noisy::KS_BASE_LOG }, 2,
+                { toy_noisy::N_LWE },
+                { toy_noisy::BIG_N },
+                { toy_noisy::LOG_Q },
+                { toy_noisy::LOG_Q_LWE },
+                { toy_noisy::LOG_MOD_KS },
+                { toy_noisy::BS_ELL },
+                { toy_noisy::BS_BASE_LOG },
+                { toy_noisy::KS_ELL },
+                { toy_noisy::KS_BASE_LOG },
+                2,
             >(ca, cb, &bk);
             let phase = lwe_phase::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }>(&out, &lwe_sk);
             let expected = if a && b { delta } else { 0 };
             let err = phase.wrapping_sub(expected) & 0x7F;
-            let err = err.min((-((err as i32))).rem_euclid(128) as u32);
+            let err = err.min((-(err as i32)).rem_euclid(128) as u32);
             max_err = max_err.max(err);
             assert_eq!(
-                binfhe_lwe_decrypt::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }>(&out, &lwe_sk, delta),
+                binfhe_lwe_decrypt::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }>(
+                    &out, &lwe_sk, delta
+                ),
                 a && b,
                 "noisy AND seed {seed}"
             );
         }
-        assert!(max_err < 8, "observed max output phase error {max_err} must stay under Delta/2 = 8");
+        assert!(
+            max_err < 8,
+            "observed max output phase error {max_err} must stay under Delta/2 = 8"
+        );
     }
 
     // ── M8 noise-budget suite (plan §6.6) ───────────────────────────────
@@ -632,10 +801,17 @@ mod tests {
         let lwe_sk = binfhe_gen_lwe_secret_key::<{ toy_noisy::N_LWE }, _>(&mut rng);
         let rlwe_sk = binfhe_gen_rlwe_secret_key::<{ toy_noisy::BIG_N }, _>(&mut rng);
         let bk = binfhe_gen_bootstrapping_key::<
-            { toy_noisy::N_LWE }, { toy_noisy::BIG_N }, { toy_noisy::LOG_Q },
-            { toy_noisy::LOG_Q_LWE }, { toy_noisy::LOG_MOD_KS }, { toy_noisy::BS_ELL },
-            { toy_noisy::BS_BASE_LOG }, { toy_noisy::KS_ELL }, { toy_noisy::KS_BASE_LOG },
-            { toy_noisy::CBD_ETA }, _,
+            { toy_noisy::N_LWE },
+            { toy_noisy::BIG_N },
+            { toy_noisy::LOG_Q },
+            { toy_noisy::LOG_Q_LWE },
+            { toy_noisy::LOG_MOD_KS },
+            { toy_noisy::BS_ELL },
+            { toy_noisy::BS_BASE_LOG },
+            { toy_noisy::KS_ELL },
+            { toy_noisy::KS_BASE_LOG },
+            { toy_noisy::CBD_ETA },
+            _,
         >(&lwe_sk, &rlwe_sk, &mut rng);
         (lwe_sk, bk)
     }
@@ -648,9 +824,12 @@ mod tests {
     ) -> BinfheLweCiphertext<{ toy_noisy::N_LWE }> {
         let delta = wire_delta::<{ toy_noisy::LOG_Q_LWE }>(k_max);
         let mut rng = TestRng::new(seed);
-        binfhe_lwe_encrypt::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }, { toy_noisy::CBD_ETA }, _>(
-            m, delta, sk, &mut rng,
-        )
+        binfhe_lwe_encrypt::<
+            { toy_noisy::N_LWE },
+            { toy_noisy::LOG_Q_LWE },
+            { toy_noisy::CBD_ETA },
+            _,
+        >(m, delta, sk, &mut rng)
     }
 
     /// Centered absolute phase error (mod 128) against a canonical value.
@@ -682,15 +861,29 @@ mod tests {
             let cb = noisy_encrypt(b, 2, &sk, 20_000 + trial);
             let out = if use_and {
                 binfhe_gate_and::<
-                    { toy_noisy::N_LWE }, { toy_noisy::BIG_N }, { toy_noisy::LOG_Q },
-                    { toy_noisy::LOG_Q_LWE }, { toy_noisy::LOG_MOD_KS }, { toy_noisy::BS_ELL },
-                    { toy_noisy::BS_BASE_LOG }, { toy_noisy::KS_ELL }, { toy_noisy::KS_BASE_LOG }, 2,
+                    { toy_noisy::N_LWE },
+                    { toy_noisy::BIG_N },
+                    { toy_noisy::LOG_Q },
+                    { toy_noisy::LOG_Q_LWE },
+                    { toy_noisy::LOG_MOD_KS },
+                    { toy_noisy::BS_ELL },
+                    { toy_noisy::BS_BASE_LOG },
+                    { toy_noisy::KS_ELL },
+                    { toy_noisy::KS_BASE_LOG },
+                    2,
                 >(ca, cb, &bk)
             } else {
                 binfhe_gate_or::<
-                    { toy_noisy::N_LWE }, { toy_noisy::BIG_N }, { toy_noisy::LOG_Q },
-                    { toy_noisy::LOG_Q_LWE }, { toy_noisy::LOG_MOD_KS }, { toy_noisy::BS_ELL },
-                    { toy_noisy::BS_BASE_LOG }, { toy_noisy::KS_ELL }, { toy_noisy::KS_BASE_LOG }, 2,
+                    { toy_noisy::N_LWE },
+                    { toy_noisy::BIG_N },
+                    { toy_noisy::LOG_Q },
+                    { toy_noisy::LOG_Q_LWE },
+                    { toy_noisy::LOG_MOD_KS },
+                    { toy_noisy::BS_ELL },
+                    { toy_noisy::BS_BASE_LOG },
+                    { toy_noisy::KS_ELL },
+                    { toy_noisy::KS_BASE_LOG },
+                    2,
                 >(ca, cb, &bk)
             };
             bootstrap_count += 1;
@@ -698,13 +891,17 @@ mod tests {
             let phase = lwe_phase::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }>(&out, &sk);
             let canonical = if expected { delta } else { 0 };
             max_err = max_err.max(centered_err(phase, canonical));
-            if binfhe_lwe_decrypt::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }>(&out, &sk, delta)
-                != expected
+            if binfhe_lwe_decrypt::<{ toy_noisy::N_LWE }, { toy_noisy::LOG_Q_LWE }>(
+                &out, &sk, delta,
+            ) != expected
             {
                 failures += 1;
             }
         }
-        assert_eq!(failures, 0, "{failures}/{bootstrap_count} bootstrap failures");
+        assert_eq!(
+            failures, 0,
+            "{failures}/{bootstrap_count} bootstrap failures"
+        );
         // The analytic decode margin is Delta/2 = 8; the observed errors
         // must remain at or below half the margin with slack to spare.
         assert!(
@@ -740,10 +937,22 @@ mod tests {
         // arity 3 is not (7 * 32 = 224 >= 64). Wide-cone fusion at real
         // parameters needs either a quieter eval path or refreshed-input
         // discipline — precisely what the weaver's budget check prices.
-        assert!(selector_margin(crate::binfhe::params::std128::LOG_Q_LWE, 2, 32));
-        assert!(!selector_margin(crate::binfhe::params::std128::LOG_Q_LWE, 3, 32));
+        assert!(selector_margin(
+            crate::binfhe::params::std128::LOG_Q_LWE,
+            2,
+            32
+        ));
+        assert!(!selector_margin(
+            crate::binfhe::params::std128::LOG_Q_LWE,
+            3,
+            32
+        ));
         // And with quiet wires (bound 1), arity 3 fits at std128.
-        assert!(selector_margin(crate::binfhe::params::std128::LOG_Q_LWE, 3, 1));
+        assert!(selector_margin(
+            crate::binfhe::params::std128::LOG_Q_LWE,
+            3,
+            1
+        ));
     }
 
     /// Std128-shaped smoke test: full keygen and one AND gate at the
@@ -766,32 +975,53 @@ mod tests {
         let lwe_sk = binfhe_gen_lwe_secret_key::<{ std128::N_LWE }, _>(&mut rng);
         let rlwe_sk = binfhe_gen_rlwe_secret_key::<{ std128::BIG_N }, _>(&mut rng);
         let bk = binfhe_gen_bootstrapping_key::<
-            { std128::N_LWE }, { std128::BIG_N }, { std128::LOG_Q },
-            { std128::LOG_Q_LWE }, { std128::LOG_MOD_KS }, { std128::BS_ELL },
-            { std128::BS_BASE_LOG }, { std128::KS_ELL }, { std128::KS_BASE_LOG },
-            { std128::CBD_ETA }, _,
+            { std128::N_LWE },
+            { std128::BIG_N },
+            { std128::LOG_Q },
+            { std128::LOG_Q_LWE },
+            { std128::LOG_MOD_KS },
+            { std128::BS_ELL },
+            { std128::BS_BASE_LOG },
+            { std128::KS_ELL },
+            { std128::KS_BASE_LOG },
+            { std128::CBD_ETA },
+            _,
         >(&lwe_sk, &rlwe_sk, &mut rng);
         let delta = wire_delta::<{ std128::LOG_Q_LWE }>(2);
         for (a, b) in [(false, false), (false, true), (true, false), (true, true)] {
             let mut ra = TestRng::new(100 + a as u64);
             let mut rb = TestRng::new(200 + b as u64);
             let ca = binfhe_lwe_encrypt::<
-                { std128::N_LWE }, { std128::LOG_Q_LWE }, { std128::CBD_ETA }, _,
+                { std128::N_LWE },
+                { std128::LOG_Q_LWE },
+                { std128::CBD_ETA },
+                _,
             >(a, delta, &lwe_sk, &mut ra);
             let cb = binfhe_lwe_encrypt::<
-                { std128::N_LWE }, { std128::LOG_Q_LWE }, { std128::CBD_ETA }, _,
+                { std128::N_LWE },
+                { std128::LOG_Q_LWE },
+                { std128::CBD_ETA },
+                _,
             >(b, delta, &lwe_sk, &mut rb);
             let out = binfhe_gate_and::<
-                { std128::N_LWE }, { std128::BIG_N }, { std128::LOG_Q },
-                { std128::LOG_Q_LWE }, { std128::LOG_MOD_KS }, { std128::BS_ELL },
-                { std128::BS_BASE_LOG }, { std128::KS_ELL }, { std128::KS_BASE_LOG }, 2,
+                { std128::N_LWE },
+                { std128::BIG_N },
+                { std128::LOG_Q },
+                { std128::LOG_Q_LWE },
+                { std128::LOG_MOD_KS },
+                { std128::BS_ELL },
+                { std128::BS_BASE_LOG },
+                { std128::KS_ELL },
+                { std128::KS_BASE_LOG },
+                2,
             >(ca, cb, &bk);
             assert_eq!(
-                binfhe_lwe_decrypt::<{ std128::N_LWE }, { std128::LOG_Q_LWE }>(&out, &lwe_sk, delta),
+                binfhe_lwe_decrypt::<{ std128::N_LWE }, { std128::LOG_Q_LWE }>(
+                    &out, &lwe_sk, delta
+                ),
                 a && b,
                 "std128 AND({a},{b})"
             );
         }
     }
 }
-

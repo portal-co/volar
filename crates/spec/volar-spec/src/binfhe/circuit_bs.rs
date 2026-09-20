@@ -55,9 +55,13 @@ use crate::SpecRng;
 use crate::binfhe::blind_rotate::binfhe_blind_rotate;
 use crate::binfhe::gadget;
 use crate::binfhe::keys::{BinfheBootstrappingKey, binfhe_gen_bootstrapping_key};
-use crate::binfhe::lwe::{BinfheLweCiphertext, BinfheLweSecretKey, binfhe_lwe_add_const, wire_delta};
+use crate::binfhe::lwe::{
+    BinfheLweCiphertext, BinfheLweSecretKey, binfhe_lwe_add_const, wire_delta,
+};
 use crate::binfhe::rgsw::{BinfheRgswCiphertext, BinfheRgswRow};
-use crate::binfhe::rlwe::{BinfheRlweCiphertext, BinfheRlweSecretKey, binfhe_rlwe_encrypt_poly, binfhe_sample_extract};
+use crate::binfhe::rlwe::{
+    BinfheRlweCiphertext, BinfheRlweSecretKey, binfhe_rlwe_encrypt_poly, binfhe_sample_extract,
+};
 use crate::binfhe::torus;
 
 /// Private key-switching key for circuit bootstrapping.
@@ -128,8 +132,17 @@ pub fn gen_circuit_bootstrapping_key<
     rng: &mut R,
 ) -> CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL> {
     let bk = binfhe_gen_bootstrapping_key::<
-        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, ETA, R,
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_ELL,
+        BS_BASE_LOG,
+        KS_ELL,
+        KS_BASE_LOG,
+        ETA,
+        R,
     >(lwe_sk, rlwe_sk, rng);
 
     let zero = [0u32; BIG_N];
@@ -150,7 +163,11 @@ pub fn gen_circuit_bootstrapping_key<
     let mut a_col = alloc::vec::Vec::with_capacity(BIG_N);
     for i in 0..BIG_N {
         // f(s'_i) = s'_i * s'(X).
-        let msg = if rlwe_sk.key[i] == 1 { &rlwe_sk.key } else { &zero };
+        let msg = if rlwe_sk.key[i] == 1 {
+            &rlwe_sk.key
+        } else {
+            &zero
+        };
         a_col.push(core::array::from_fn(|l| {
             encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, PRIV_BASE_LOG, rlwe_sk, rng)
         }));
@@ -158,7 +175,11 @@ pub fn gen_circuit_bootstrapping_key<
     let mut b_col = alloc::vec::Vec::with_capacity(BIG_N);
     for i in 0..BIG_N {
         // f(s'_i) = -s'_i (scalar).
-        let msg = if rlwe_sk.key[i] == 1 { &neg_one_const } else { &zero };
+        let msg = if rlwe_sk.key[i] == 1 {
+            &neg_one_const
+        } else {
+            &zero
+        };
         b_col.push(core::array::from_fn(|l| {
             encrypt_scaled_poly::<BIG_N, LOG_Q, ETA, R>(msg, l, PRIV_BASE_LOG, rlwe_sk, rng)
         }));
@@ -183,7 +204,12 @@ pub fn gen_circuit_bootstrapping_key<
 
 /// Private key switch on one column family: gadget_decompose each source mask
 /// coefficient and the body, accumulate digit-times-entry.
-fn priv_ks<const BIG_N: usize, const LOG_Q: u32, const PRIV_ELL: usize, const PRIV_BASE_LOG: u32>(
+fn priv_ks<
+    const BIG_N: usize,
+    const LOG_Q: u32,
+    const PRIV_ELL: usize,
+    const PRIV_BASE_LOG: u32,
+>(
     src: &BinfheLweCiphertext<BIG_N>,
     col: &[[BinfheRlweCiphertext<BIG_N>; PRIV_ELL]],
     body: &[BinfheRlweCiphertext<BIG_N>; PRIV_ELL],
@@ -290,7 +316,7 @@ mod tests {
     use super::*;
     use crate::binfhe::lwe::{binfhe_gen_lwe_secret_key, binfhe_lwe_encrypt};
     use crate::binfhe::params::toy;
-    use crate::binfhe::rgsw::{binfhe_rgsw_cmux, binfhe_external_product};
+    use crate::binfhe::rgsw::{binfhe_external_product, binfhe_rgsw_cmux};
     use crate::binfhe::rlwe::{binfhe_gen_rlwe_secret_key, binfhe_rlwe_trivial};
 
     struct TestRng(u64);
@@ -318,22 +344,40 @@ mod tests {
         { toy::PRIV_ELL },
     >;
 
-    fn toy_cb_keys(seed: u64) -> (crate::binfhe::lwe::BinfheLweSecretKey<{ toy::N_LWE }>, BinfheRlweSecretKey<{ toy::BIG_N }>, ToyCbk) {
+    fn toy_cb_keys(
+        seed: u64,
+    ) -> (
+        crate::binfhe::lwe::BinfheLweSecretKey<{ toy::N_LWE }>,
+        BinfheRlweSecretKey<{ toy::BIG_N }>,
+        ToyCbk,
+    ) {
         let mut rng = TestRng::new(seed);
         let lwe_sk = binfhe_gen_lwe_secret_key(&mut rng);
         let rlwe_sk = binfhe_gen_rlwe_secret_key(&mut rng);
         let cbk = gen_circuit_bootstrapping_key::<
-            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-            { toy::KS_ELL }, { toy::KS_BASE_LOG }, { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG },
-            { toy::CBD_ETA }, _,
+            { toy::N_LWE },
+            { toy::BIG_N },
+            { toy::LOG_Q },
+            { toy::LOG_Q_LWE },
+            { toy::LOG_MOD_KS },
+            { toy::BS_ELL },
+            { toy::BS_BASE_LOG },
+            { toy::KS_ELL },
+            { toy::KS_BASE_LOG },
+            { toy::PRIV_ELL },
+            { toy::PRIV_BASE_LOG },
+            { toy::CBD_ETA },
+            _,
         >(&lwe_sk, &rlwe_sk, &mut rng);
         (lwe_sk, rlwe_sk, cbk)
     }
 
     /// Independent per-coefficient phase model (shares no code with
     /// `binfhe_rlwe_phase`).
-    fn clear_phase(ct: &BinfheRlweCiphertext<{ toy::BIG_N }>, key: &[u32; toy::BIG_N]) -> [u32; toy::BIG_N] {
+    fn clear_phase(
+        ct: &BinfheRlweCiphertext<{ toy::BIG_N }>,
+        key: &[u32; toy::BIG_N],
+    ) -> [u32; toy::BIG_N] {
         let mut phase = [0u32; toy::BIG_N];
         for i in 0..toy::BIG_N {
             let mut product = 0u32;
@@ -361,9 +405,15 @@ mod tests {
                 m, delta, &lwe_sk, &mut rng,
             );
             let rgsw = circuit_bootstrap::<
-                { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                { toy::BS_ELL }, { toy::BS_BASE_LOG }, { toy::KS_ELL },
-                { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG },
+                { toy::N_LWE },
+                { toy::BIG_N },
+                { toy::LOG_Q },
+                { toy::LOG_Q_LWE },
+                { toy::BS_ELL },
+                { toy::BS_BASE_LOG },
+                { toy::KS_ELL },
+                { toy::PRIV_ELL },
+                { toy::PRIV_BASE_LOG },
             >(&wire, &cbk, 2);
             // Row invariant: phase(rlwe0_j) = -m * g_j * s'(X),
             // phase(rlwe1_j) = m * g_j (constant).
@@ -372,7 +422,11 @@ mod tests {
                 let p0 = clear_phase(&row.rlwe0, &rlwe_sk.key);
                 let p1 = clear_phase(&row.rlwe1, &rlwe_sk.key);
                 for i in 0..toy::BIG_N {
-                    let expect0 = if m { torus::torus_neg::<7>(g.wrapping_mul(rlwe_sk.key[i])) } else { 0 };
+                    let expect0 = if m {
+                        torus::torus_neg::<7>(g.wrapping_mul(rlwe_sk.key[i]))
+                    } else {
+                        0
+                    };
                     assert_eq!(p0[i], expect0, "a-column level {j} coeff {i}, m={m}");
                     let expect1 = if m && i == 0 { g } else { 0 };
                     assert_eq!(p1[i], expect1, "b-column level {j} coeff {i}, m={m}");
@@ -396,12 +450,21 @@ mod tests {
                 m, delta, &lwe_sk, &mut rng,
             );
             let rgsw = circuit_bootstrap::<
-                { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                { toy::BS_ELL }, { toy::BS_BASE_LOG }, { toy::KS_ELL },
-                { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG },
+                { toy::N_LWE },
+                { toy::BIG_N },
+                { toy::LOG_Q },
+                { toy::LOG_Q_LWE },
+                { toy::BS_ELL },
+                { toy::BS_BASE_LOG },
+                { toy::KS_ELL },
+                { toy::PRIV_ELL },
+                { toy::PRIV_BASE_LOG },
             >(&wire, &cbk, 2);
             let out = binfhe_external_product::<
-                { toy::BIG_N }, 7, { toy::BS_ELL }, { toy::BS_BASE_LOG },
+                { toy::BIG_N },
+                7,
+                { toy::BS_ELL },
+                { toy::BS_BASE_LOG },
             >(&rgsw, &content);
             let phase = clear_phase(&out, &rlwe_sk.key);
             for i in 0..toy::BIG_N {
@@ -412,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn circuit_bootstrapped_cmux_tree_selects() {
+    fn circuit_bootstrapped_binfhe_rgsw_cmux_tree_selects() {
         // 2-level oblivious select over 4 RLWE contents with two CB'd
         // address bits; compare against plaintext selection.
         let (lwe_sk, rlwe_sk, cbk) = toy_cb_keys(0xCB03);
@@ -432,18 +495,28 @@ mod tests {
                     bit, delta, &lwe_sk, &mut rng,
                 );
                 circuit_bootstrap::<
-                    { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-                    { toy::BS_ELL }, { toy::BS_BASE_LOG }, { toy::KS_ELL },
-                    { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG },
+                    { toy::N_LWE },
+                    { toy::BIG_N },
+                    { toy::LOG_Q },
+                    { toy::LOG_Q_LWE },
+                    { toy::BS_ELL },
+                    { toy::BS_BASE_LOG },
+                    { toy::KS_ELL },
+                    { toy::PRIV_ELL },
+                    { toy::PRIV_BASE_LOG },
                 >(&wire, &cbk, 2)
             };
             let s0 = select(addr & 1 == 1);
             let s1 = select(addr & 2 == 2);
             let lo = binfhe_rgsw_cmux::<{ toy::BIG_N }, 7, { toy::BS_ELL }, { toy::BS_BASE_LOG }>(
-                &s0, &contents[1], &contents[0],
+                &s0,
+                &contents[1],
+                &contents[0],
             );
             let hi = binfhe_rgsw_cmux::<{ toy::BIG_N }, 7, { toy::BS_ELL }, { toy::BS_BASE_LOG }>(
-                &s0, &contents[3], &contents[2],
+                &s0,
+                &contents[3],
+                &contents[2],
             );
             let out = binfhe_rgsw_cmux::<{ toy::BIG_N }, 7, { toy::BS_ELL }, { toy::BS_BASE_LOG }>(
                 &s1, &hi, &lo,
@@ -468,24 +541,31 @@ mod tests {
     /// the signal that the CB path meets its recorded budget.
     #[test]
     #[ignore = "§9 evidence: Std128 CB is over its selection budget; see doc comment"]
-    fn std128_circuit_bootstrapped_cmux_selects() {
+    fn std128_circuit_bootstrapped_binfhe_rgsw_cmux_selects() {
         use crate::binfhe::params::std128;
         let mut rng = TestRng::new(0xCB128);
         let lwe_sk = binfhe_gen_lwe_secret_key::<{ std128::N_LWE }, _>(&mut rng);
         let rlwe_sk = binfhe_gen_rlwe_secret_key::<{ std128::BIG_N }, _>(&mut rng);
         let cbk = gen_circuit_bootstrapping_key::<
-            { std128::N_LWE }, { std128::BIG_N }, { std128::LOG_Q },
-            { std128::LOG_Q_LWE }, { std128::LOG_MOD_KS }, { std128::BS_ELL },
-            { std128::BS_BASE_LOG }, { std128::KS_ELL }, { std128::KS_BASE_LOG },
-            { std128::PRIV_ELL }, { std128::PRIV_BASE_LOG }, { std128::CBD_ETA }, _,
+            { std128::N_LWE },
+            { std128::BIG_N },
+            { std128::LOG_Q },
+            { std128::LOG_Q_LWE },
+            { std128::LOG_MOD_KS },
+            { std128::BS_ELL },
+            { std128::BS_BASE_LOG },
+            { std128::KS_ELL },
+            { std128::KS_BASE_LOG },
+            { std128::PRIV_ELL },
+            { std128::PRIV_BASE_LOG },
+            { std128::CBD_ETA },
+            _,
         >(&lwe_sk, &rlwe_sk, &mut rng);
         let delta = wire_delta::<{ std128::LOG_Q_LWE }>(2);
-        let mut content0 = binfhe_rlwe_trivial::<{ std128::BIG_N }, { std128::LOG_Q }>(
-            &[0u32; std128::BIG_N],
-        );
-        let mut content1 = binfhe_rlwe_trivial::<{ std128::BIG_N }, { std128::LOG_Q }>(
-            &[0u32; std128::BIG_N],
-        );
+        let mut content0 =
+            binfhe_rlwe_trivial::<{ std128::BIG_N }, { std128::LOG_Q }>(&[0u32; std128::BIG_N]);
+        let mut content1 =
+            binfhe_rlwe_trivial::<{ std128::BIG_N }, { std128::LOG_Q }>(&[0u32; std128::BIG_N]);
         for i in 0..std128::BIG_N {
             content0.b[i] = (i as u32 * 3 + 1) & 0x7F;
             content1.b[i] = (i as u32 * 5 + 2) & 0x7F;
@@ -493,21 +573,34 @@ mod tests {
         for m in [false, true] {
             let mut rng = TestRng::new(0xCB200 + m as u64);
             let wire = binfhe_lwe_encrypt::<
-                { std128::N_LWE }, { std128::LOG_Q_LWE }, { std128::CBD_ETA }, _,
+                { std128::N_LWE },
+                { std128::LOG_Q_LWE },
+                { std128::CBD_ETA },
+                _,
             >(m, delta, &lwe_sk, &mut rng);
             let rgsw = circuit_bootstrap::<
-                { std128::N_LWE }, { std128::BIG_N }, { std128::LOG_Q },
-                { std128::LOG_Q_LWE }, { std128::BS_ELL }, { std128::BS_BASE_LOG },
-                { std128::KS_ELL }, { std128::PRIV_ELL }, { std128::PRIV_BASE_LOG },
+                { std128::N_LWE },
+                { std128::BIG_N },
+                { std128::LOG_Q },
+                { std128::LOG_Q_LWE },
+                { std128::BS_ELL },
+                { std128::BS_BASE_LOG },
+                { std128::KS_ELL },
+                { std128::PRIV_ELL },
+                { std128::PRIV_BASE_LOG },
             >(&wire, &cbk, 2);
             let out = crate::binfhe::rgsw::binfhe_rgsw_cmux::<
-                { std128::BIG_N }, { std128::LOG_Q }, { std128::BS_ELL }, { std128::BS_BASE_LOG },
+                { std128::BIG_N },
+                { std128::LOG_Q },
+                { std128::BS_ELL },
+                { std128::BS_BASE_LOG },
             >(&rgsw, &content1, &content0);
             let expected = if m { &content1 } else { &content0 };
             for i in 0..std128::BIG_N {
-                let phase = crate::binfhe::rlwe::binfhe_rlwe_phase::<{ std128::BIG_N }, { std128::LOG_Q }>(
-                    &out, &rlwe_sk,
-                );
+                let phase = crate::binfhe::rlwe::binfhe_rlwe_phase::<
+                    { std128::BIG_N },
+                    { std128::LOG_Q },
+                >(&out, &rlwe_sk);
                 assert_eq!(phase[i], expected.b[i], "coeff {i}, m={m}");
             }
         }

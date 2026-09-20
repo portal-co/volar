@@ -39,7 +39,7 @@ use core::marker::PhantomData;
 
 use digest::Digest;
 
-use super::group::Group;
+use super::group::{Group, ScalarOps};
 use crate::SpecRng;
 
 /// Sender state across a single base OT instance.
@@ -140,6 +140,131 @@ pub fn ot_recv_finish<G: Group, D: Digest>(state: &BaseOtReceiver<G, D>) -> dige
 /// Sender's choice bit accessor (constant for a given instance).
 pub fn ot_recv_choice<G: Group, D: Digest>(state: &BaseOtReceiver<G, D>) -> bool {
     state.c
+}
+
+// ============================================================================
+// Malicious-secure base OT: receiver consistency proof (Schnorr OR-proof)
+// ============================================================================
+//
+// Plain Chou-Orlandi is semi-honest: a malicious receiver can set
+// `R = S^a · g^x` for known `a` and derive *both* keys (it knows `S^a = T^a`
+// and `S^x`, so it reconstructs `R^y` and `(R·S^{-1})^y`). The malicious-secure
+// variant makes the receiver prove, in zero knowledge, that `R` is well-formed:
+// it knows `x` such that `R = g^x` OR `R·S^{-1} = g^x`. This is a Schnorr
+// OR-proof (Cramer–Damgård–Schoenmakers), made non-interactive with
+// Fiat–Shamir. A receiver that cannot produce a valid proof is rejected before
+// the sender derives keys.
+
+/// The receiver's consistency proof: `(e_0, e_1, z_0, z_1)`.
+#[derive(Clone)]
+pub struct OtConsistencyProof<S> {
+    pub e0: S,
+    pub e1: S,
+    pub z0: S,
+    pub z1: S,
+}
+
+fn or_proof_challenge<G: ScalarOps, D: Digest>(
+    s: &G::Element,
+    r: &G::Element,
+    a0: &G::Element,
+    a1: &G::Element,
+) -> G::Scalar {
+    let g = G::generator();
+    let mut h = D::new();
+    h.update(b"volar-chou-orlandi-or-proof-v1");
+    G::write_element::<D>(&g, &mut h);
+    G::write_element::<D>(s, &mut h);
+    G::write_element::<D>(r, &mut h);
+    G::write_element::<D>(a0, &mut h);
+    G::write_element::<D>(a1, &mut h);
+    G::scalar_from_hash::<D>(h)
+}
+
+/// Receiver: generate the consistency proof for a well-formed `R` (knowing `x`
+/// and the choice bit `c`, with `R = g^x` when `c = 0` and `R = S·g^x` when
+/// `c = 1`).
+pub fn ot_recv_prove<G: ScalarOps, D: Digest, R: SpecRng>(
+    rng: &mut R,
+    s: &G::Element,
+    r: &G::Element,
+    x: &G::Scalar,
+    c: bool,
+) -> OtConsistencyProof<G::Scalar> {
+    let g = G::generator();
+    // Statements: R_0 = R (real when c=0), R_1 = R·S^{-1} (real when c=1).
+    let r1_stmt = G::add(r, &G::neg(s));
+    // Real branch gets a genuine Schnorr commitment; the simulated branch is
+    // computed from a random challenge/response.
+    let rr = G::random_mod_order(rng);
+    let e_sim = G::random_mod_order(rng);
+    let z_sim = G::random_mod_order(rng);
+    let a_real = G::scalar_mul(&g, &rr);
+    let r_sim_stmt = if c { r } else { &r1_stmt };
+    let a_sim = G::add(
+        &G::scalar_mul(&g, &z_sim),
+        &G::neg(&G::scalar_mul(r_sim_stmt, &e_sim)),
+    );
+    let (a0, a1) = if c { (a_sim, a_real) } else { (a_real, a_sim) };
+    let e = or_proof_challenge::<G, D>(s, r, &a0, &a1);
+    let e_real = G::scalar_sub(&e, &e_sim);
+    let z_real = G::scalar_add(&rr, &G::scalar_mul_scalar(&e_real, x));
+    let (e0, z0, e1, z1) = if c {
+        (e_sim, z_sim, e_real, z_real)
+    } else {
+        (e_real, z_real, e_sim, z_sim)
+    };
+    OtConsistencyProof { e0, e1, z0, z1 }
+}
+
+/// Sender: verify the receiver's consistency proof. Returns `true` iff `R` is
+/// well-formed (`R = g^x` or `R = S·g^x` for the receiver's secret `x`).
+pub fn ot_send_verify<G: ScalarOps, D: Digest>(
+    s: &G::Element,
+    r: &G::Element,
+    proof: &OtConsistencyProof<G::Scalar>,
+) -> bool {
+    let g = G::generator();
+    let r1_stmt = G::add(r, &G::neg(s));
+    // Recompute the commitments: A_b = g^{z_b} · R_b^{-e_b}.
+    let a0 = G::add(
+        &G::scalar_mul(&g, &proof.z0),
+        &G::neg(&G::scalar_mul(r, &proof.e0)),
+    );
+    let a1 = G::add(
+        &G::scalar_mul(&g, &proof.z1),
+        &G::neg(&G::scalar_mul(&r1_stmt, &proof.e1)),
+    );
+    let e = or_proof_challenge::<G, D>(s, r, &a0, &a1);
+    G::scalar_eq(&e, &G::scalar_add(&proof.e0, &proof.e1))
+}
+
+/// Malicious-secure receiver step: [`ot_recv`] plus the consistency proof.
+pub fn ot_recv_malicious<G: ScalarOps, D: Digest, R: SpecRng>(
+    rng: &mut R,
+    s: G::Element,
+    c: bool,
+) -> (
+    BaseOtReceiver<G, D>,
+    OtReceiverMsg<G>,
+    OtConsistencyProof<G::Scalar>,
+) {
+    let (state, msg) = ot_recv::<G, D, R>(rng, s, c);
+    let proof = ot_recv_prove::<G, D, R>(rng, &state.s, &msg.r, &state.x, state.c);
+    (state, msg, proof)
+}
+
+/// Malicious-secure sender finish: verify the consistency proof, then derive
+/// the keys. Returns `None` (reject) if the proof is invalid.
+pub fn ot_send_finish_malicious<G: ScalarOps, D: Digest>(
+    state: &BaseOtSender<G, D>,
+    msg: &OtReceiverMsg<G>,
+    proof: &OtConsistencyProof<G::Scalar>,
+) -> Option<(digest::Output<D>, digest::Output<D>)> {
+    if !ot_send_verify::<G, D>(&state.s, &msg.r, proof) {
+        return None;
+    }
+    Some(ot_send_finish::<G, D>(state, msg))
 }
 
 // ============================================================================
@@ -267,5 +392,79 @@ mod tests {
         let mut mc = [0u8; 31];
         ot_recv_payload::<Sha256>(&kc, &e1, &mut mc);
         assert_eq!(&mc, m1);
+    }
+
+    // --- Malicious-secure base OT (Schnorr OR-proof) ---
+
+    #[test]
+    fn malicious_base_ot_honest_receiver_passes() {
+        for c in [false, true] {
+            let mut rng = TestRng(0x1111_2222_3333_4444);
+            let (sender, s) = ot_send_setup::<ToyGroup, Sha256, _>(&mut rng);
+            let (receiver, msg, proof) = ot_recv_malicious::<ToyGroup, Sha256, _>(&mut rng, s, c);
+            let keys = ot_send_finish_malicious::<ToyGroup, Sha256>(&sender, &msg, &proof);
+            let (k0, k1) = keys.expect("honest receiver's proof verifies");
+            let kc = ot_recv_finish::<ToyGroup, Sha256>(&receiver);
+            assert_eq!(kc, if c { k1 } else { k0 });
+        }
+    }
+
+    #[test]
+    fn malicious_base_ot_rejects_malformed_r() {
+        // A malicious receiver sets R = S^a · g^x for known a (a = 2), which is
+        // neither g^x nor S·g^x — it would learn both keys. It cannot produce a
+        // valid consistency proof for the malformed R.
+        let mut rng = TestRng(0x5555_6666_7777_8888);
+        let (sender, s) = ot_send_setup::<ToyGroup, Sha256, _>(&mut rng);
+        let a = ToyGroup::random_scalar(&mut rng);
+        let x = ToyGroup::random_scalar(&mut rng);
+        // R = S^a · g^x (malformed).
+        let sa = ToyGroup::scalar_mul(&s, &a);
+        let gx = ToyGroup::scalar_mul(&ToyGroup::generator(), &x);
+        let r_bad = ToyGroup::add(&sa, &gx);
+        let msg = OtReceiverMsg { r: r_bad };
+        // The receiver claims R = g^x (c=0) — but that's false.
+        let bad_proof = ot_recv_prove::<ToyGroup, Sha256, _>(&mut rng, &s, &msg.r, &x, false);
+        assert!(
+            !ot_send_verify::<ToyGroup, Sha256>(&s, &msg.r, &bad_proof),
+            "a malformed R cannot produce a valid consistency proof"
+        );
+        assert!(ot_send_finish_malicious::<ToyGroup, Sha256>(&sender, &msg, &bad_proof).is_none());
+    }
+
+    #[test]
+    fn malicious_base_ot_ed25519() {
+        use crate::curve::Ed25519;
+        for c in [false, true] {
+            let mut rng = TestRng(0x9999_AAAA_BBBB_CCCC);
+            let (sender, s) = ot_send_setup::<Ed25519, Sha256, _>(&mut rng);
+            let (receiver, msg, proof) = ot_recv_malicious::<Ed25519, Sha256, _>(&mut rng, s, c);
+            let keys = ot_send_finish_malicious::<Ed25519, Sha256>(&sender, &msg, &proof);
+            let (k0, k1) = keys.expect("honest Ed25519 receiver's proof verifies");
+            let kc = ot_recv_finish::<Ed25519, Sha256>(&receiver);
+            assert_eq!(kc, if c { k1 } else { k0 }, "choice {c}");
+        }
+    }
+
+    #[test]
+    fn ed25519_scalar_arithmetic_mod_l() {
+        use crate::curve::Ed25519;
+        use crate::ot::group::ScalarOps;
+        // a=3, b=5: add, sub, mul mod ℓ.
+        let mut a = [0u8; 32];
+        a[0] = 3;
+        let mut b = [0u8; 32];
+        b[0] = 5;
+        let sum = Ed25519::scalar_add(&a, &b);
+        assert_eq!(sum[0], 8);
+        let diff = Ed25519::scalar_sub(&b, &a);
+        assert_eq!(diff[0], 2);
+        let prod = Ed25519::scalar_mul_scalar(&a, &b);
+        assert_eq!(prod[0], 15);
+        // Consistency with the group law: g^{a+b} = g^a · g^b.
+        let g = Ed25519::generator();
+        let lhs = Ed25519::scalar_mul(&g, &sum);
+        let rhs = Ed25519::add(&Ed25519::scalar_mul(&g, &a), &Ed25519::scalar_mul(&g, &b));
+        assert_eq!(lhs.to_affine(), rhs.to_affine(), "g^(a+b) == g^a·g^b");
     }
 }

@@ -25,7 +25,8 @@
 use crate::SpecRng;
 use crate::binfhe::gadget;
 use crate::binfhe::rlwe::{
-    BinfheRlweCiphertext, BinfheRlweSecretKey, binfhe_poly_mul_neg, binfhe_rlwe_add, binfhe_rlwe_encrypt_scalar, binfhe_rlwe_sub,
+    BinfheRlweCiphertext, BinfheRlweSecretKey, binfhe_poly_mul_neg, binfhe_rlwe_add,
+    binfhe_rlwe_encrypt_scalar, binfhe_rlwe_sub,
 };
 use crate::binfhe::torus;
 
@@ -171,12 +172,20 @@ mod tests {
         }
 
         for bit in [false, true] {
-            let c = binfhe_rgsw_encrypt::<{ toy::BIG_N }, 8, { toy::BS_ELL }, { toy::BS_BASE_LOG }, 0, _>(
-                bit, &sk, &mut rng,
-            );
-            let out = binfhe_external_product::<{ toy::BIG_N }, 8, { toy::BS_ELL }, { toy::BS_BASE_LOG }>(
-                &c, &content,
-            );
+            let c = binfhe_rgsw_encrypt::<
+                { toy::BIG_N },
+                8,
+                { toy::BS_ELL },
+                { toy::BS_BASE_LOG },
+                0,
+                _,
+            >(bit, &sk, &mut rng);
+            let out = binfhe_external_product::<
+                { toy::BIG_N },
+                8,
+                { toy::BS_ELL },
+                { toy::BS_BASE_LOG },
+            >(&c, &content);
             let phase = clear_phase(&out, &sk.key);
             for i in 0..toy::BIG_N {
                 let expected = if bit { content.b[i] } else { 0 };
@@ -189,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn cmux_selects_the_correct_operand() {
+    fn binfhe_rgsw_cmux_selects_the_correct_operand() {
         let mut rng = TestRng::new(0xC1);
         let sk = crate::binfhe::rlwe::binfhe_gen_rlwe_secret_key::<{ toy::BIG_N }, _>(&mut rng);
         let mut d0 = binfhe_rlwe_trivial::<{ toy::BIG_N }, 8>(&[0u32; toy::BIG_N]);
@@ -199,16 +208,24 @@ mod tests {
             d1.b[i] = (i as u32 * 29 + 7) & 0xFF;
         }
         for bit in [false, true] {
-            let c = binfhe_rgsw_encrypt::<{ toy::BIG_N }, 8, { toy::BS_ELL }, { toy::BS_BASE_LOG }, 0, _>(
-                bit, &sk, &mut rng,
-            );
+            let c = binfhe_rgsw_encrypt::<
+                { toy::BIG_N },
+                8,
+                { toy::BS_ELL },
+                { toy::BS_BASE_LOG },
+                0,
+                _,
+            >(bit, &sk, &mut rng);
             let out = binfhe_rgsw_cmux::<{ toy::BIG_N }, 8, { toy::BS_ELL }, { toy::BS_BASE_LOG }>(
                 &c, &d1, &d0,
             );
             let phase = clear_phase(&out, &sk.key);
             let expected = if bit { &d1 } else { &d0 };
             for i in 0..toy::BIG_N {
-                assert_eq!(phase[i], expected.b[i], "binfhe_rgsw_cmux coefficient {i}, bit={bit}");
+                assert_eq!(
+                    phase[i], expected.b[i],
+                    "binfhe_rgsw_cmux coefficient {i}, bit={bit}"
+                );
             }
         }
     }

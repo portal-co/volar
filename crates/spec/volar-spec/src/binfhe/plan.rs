@@ -19,8 +19,8 @@
 //!
 //! # Wire model
 //!
-//! Three arenas: Boolean wires (LWE, [`u32`]), RGSW wires produced by
-//! circuit bootstrap ([`u32`]), and RLWE content cells ([`u32`]) on
+//! Three arenas: Boolean wires (LWE, [`WireId`]), RGSW wires produced by
+//! circuit bootstrap ([`RgswId`]), and RLWE content cells ([`CellId`]) on
 //! which RGSW multiplexers act (the oblivious-read shape). Inputs occupy
 //! the lowest ids of each arena; every op appends exactly one new value.
 
@@ -30,12 +30,126 @@ use alloc::vec::Vec;
 use crate::binfhe::circuit_bs::{CircuitBootstrappingKey, circuit_bootstrap};
 use crate::binfhe::keys::BinfheBootstrappingKey;
 use crate::binfhe::lut::table_is_constant;
+use crate::binfhe::lwe::{BinfheLweCiphertext, binfhe_not, binfhe_trivial, wire_delta};
 use crate::binfhe::pbs::binfhe_lut_read_dyn;
-use crate::binfhe::lwe::{
-    BinfheLweCiphertext, binfhe_not, binfhe_trivial, wire_delta,
-};
 use crate::binfhe::rgsw::{BinfheRgswCiphertext, binfhe_rgsw_cmux};
 use crate::binfhe::rlwe::BinfheRlweCiphertext;
+
+/// Fixed-capacity arena requirements for one [`BootstrapPlan`] execution.
+///
+/// The counts include plan inputs/cells and every result that can be live at
+/// once. A host/WASM adapter allocates this once, then reuses the arena for
+/// each call; no execution-path `Vec` growth is permitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlanWorkspaceRequirements {
+    pub wires: usize,
+    pub rgsws: usize,
+    pub cells: usize,
+    pub lut_inputs: usize,
+}
+
+/// Bounded `alloc` workspace for an executable bootstrap plan.
+///
+/// This is intentionally not a global allocator. The outer no-std WASM
+/// adapter chooses the allocator and memory limit; this module makes the
+/// plan's *transient* allocation explicit and reusable. [`Self::reset`]
+/// clears all logical global/storage arenas between module calls, so a prior
+/// computation's wire/cell state cannot become an implicit later input.
+pub struct PlanWorkspace<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize> {
+    wires: Vec<BinfheLweCiphertext<N_LWE>>,
+    rgsws: Vec<BinfheRgswCiphertext<BIG_N, BS_ELL>>,
+    cells: Vec<BinfheRlweCiphertext<BIG_N>>,
+    lut_inputs: Vec<BinfheLweCiphertext<N_LWE>>,
+}
+
+/// Workspace construction/execution failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlanWorkspaceError {
+    InvalidPlan(PlanError),
+    CapacityOverflow,
+    InputCount { expected: usize, actual: usize },
+    CellCount { expected: usize, actual: usize },
+}
+
+impl BootstrapPlan {
+    /// Count the bounded scratch arenas required to execute this plan without
+    /// any `Vec` capacity growth after setup.
+    pub fn workspace_requirements(&self) -> Result<PlanWorkspaceRequirements, PlanWorkspaceError> {
+        self.validate().map_err(PlanWorkspaceError::InvalidPlan)?;
+        let mut wires = self.num_inputs as usize;
+        let mut rgsws = 0usize;
+        let mut cells = self.num_cells as usize;
+        let mut lut_inputs = 0usize;
+        for layer in &self.layers {
+            for op in layer {
+                match op {
+                    PlanOp::Const { .. } | PlanOp::Not { .. } | PlanOp::Lut { .. } => {
+                        wires = wires
+                            .checked_add(1)
+                            .ok_or(PlanWorkspaceError::CapacityOverflow)?;
+                    }
+                    PlanOp::CircuitBootstrap { .. } => {
+                        rgsws = rgsws
+                            .checked_add(1)
+                            .ok_or(PlanWorkspaceError::CapacityOverflow)?;
+                    }
+                    PlanOp::RgswMux { .. } => {
+                        cells = cells
+                            .checked_add(1)
+                            .ok_or(PlanWorkspaceError::CapacityOverflow)?;
+                    }
+                }
+                if let PlanOp::Lut { inputs, .. } = op {
+                    lut_inputs = lut_inputs.max(inputs.len());
+                }
+            }
+        }
+        Ok(PlanWorkspaceRequirements {
+            wires,
+            rgsws,
+            cells,
+            lut_inputs,
+        })
+    }
+}
+
+impl<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize>
+    PlanWorkspace<N_LWE, BIG_N, BS_ELL>
+{
+    /// Allocate the exact reusable arena required by `plan`.
+    // TODO(provider-ledger: FHE-PLUMB-WASM-ARENA-01): instantiate this from
+    // the bounded no-std WASM adapter and measure its peak linear-memory use
+    // for a selected BinFHE profile.
+    pub fn new(plan: &BootstrapPlan) -> Result<Self, PlanWorkspaceError> {
+        let required = plan.workspace_requirements()?;
+        Ok(Self {
+            wires: Vec::with_capacity(required.wires),
+            rgsws: Vec::with_capacity(required.rgsws),
+            cells: Vec::with_capacity(required.cells),
+            lut_inputs: Vec::with_capacity(required.lut_inputs),
+        })
+    }
+
+    /// Clear all logical wire, RGSW, cell, and LUT-input state while retaining
+    /// the bounded allocation for the next module call.
+    pub fn reset(&mut self) {
+        self.wires.clear();
+        self.rgsws.clear();
+        self.cells.clear();
+        self.lut_inputs.clear();
+    }
+
+    /// Capacity selected at construction; useful to a WASM host enforcing a
+    /// memory budget before it begins a computation.
+    pub fn requirements(&self) -> PlanWorkspaceRequirements {
+        PlanWorkspaceRequirements {
+            wires: self.wires.capacity(),
+            rgsws: self.rgsws.capacity(),
+            cells: self.cells.capacity(),
+            lut_inputs: self.lut_inputs.capacity(),
+        }
+    }
+}
 
 /// Boolean wire (LWE) id.
 pub type WireId = u32;
@@ -46,110 +160,32 @@ pub type CellId = u32;
 /// Index into [`BootstrapPlan::luts`].
 pub type LutId = u32;
 
-/// Maximum LUT arity: matches [`crate::binfhe::params::max_lut_arity`]'s
-/// profile cap (`LOG_Q_LWE - 2 <= 30`); rounded up to 32. A LUT arity is
-/// weaver-known (it is bounded by `plan.k_max`), so the input id-list is an
-/// inline fixed-capacity array, not a heap `Vec`.
-pub const MAX_LUT_ARITY: usize = 32;
-
-/// Inline fixed-capacity list of wire ids (hand-rolled to avoid a new
-/// dependency; AGENTS.md Core Design Rule 11). `len <= MAX_LUT_ARITY`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LutInputs {
-    pub ids: [u32; MAX_LUT_ARITY],
-    pub len: u8,
-}
-
-impl LutInputs {
-    /// Empty list.
-    pub const fn new() -> Self {
-        LutInputs {
-            ids: [0; MAX_LUT_ARITY],
-            len: 0,
-        }
-    }
-
-    /// Build from a slice, truncating past capacity (callers validate).
-    pub fn from_slice(ids: &[u32]) -> Self {
-        let mut out = Self::new();
-        let take = ids.len().min(MAX_LUT_ARITY);
-        out.ids[..take].copy_from_slice(&ids[..take]);
-        out.len = take as u8;
-        out
-    }
-
-    /// The occupied prefix.
-    pub fn as_slice(&self) -> &[u32] {
-        &self.ids[..self.len as usize]
-    }
-
-    /// Number of occupied entries.
-    pub fn len(&self) -> usize {
-        self.len as usize
-    }
-
-    /// Whether the list is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
-impl Default for LutInputs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl AsRef<[u32]> for LutInputs {
-    fn as_ref(&self) -> &[u32] {
-        self.as_slice()
-    }
-}
-
-impl From<&[u32]> for LutInputs {
-    fn from(ids: &[u32]) -> Self {
-        Self::from_slice(ids)
-    }
-}
-
-impl<const N: usize> From<[u32; N]> for LutInputs {
-    fn from(ids: [u32; N]) -> Self {
-        Self::from_slice(&ids)
-    }
-}
-
-impl From<Vec<u32>> for LutInputs {
-    fn from(ids: Vec<u32>) -> Self {
-        Self::from_slice(&ids)
-    }
-}
-
-impl From<&Vec<u32>> for LutInputs {
-    fn from(ids: &Vec<u32>) -> Self {
-        Self::from_slice(ids)
-    }
-}
-
 /// One scheduled operation. Wires produced by an op always have the next
 /// free id of their arena, in layer order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlanOp {
     /// Cleartext constant wire (trivial encryption).
-    Const { out: u32, value: bool },
+    Const { out: WireId, value: bool },
     /// Free NOT (exact linear op).
-    Not { input: u32, out: u32 },
+    Not { input: WireId, out: WireId },
     /// Multi-input LUT read; `inputs` are LSB-first. One blind rotation.
-    Lut { inputs: LutInputs, table: u32, out: u32 },
+    Lut {
+        inputs: Vec<u32>,
+        table: LutId,
+        out: WireId,
+    },
     /// Circuit bootstrap: Boolean wire -> RGSW wire.
-    CircuitBootstrap { input: u32, out: u32 },
+    CircuitBootstrap { input: WireId, out: RgswId },
     /// Oblivious select between two RLWE cells: `sel ? then : else`.
-    RgswMux { sel: u32, then_cell: u32, else_cell: u32, out: u32 },
+    RgswMux {
+        sel: RgswId,
+        then_cell: CellId,
+        else_cell: CellId,
+        out: CellId,
+    },
 }
 
 /// A logical lookup table (address-ordered entries, length `2^k`).
-/// @volar-allow-vec: runtime-boundary: table *entries* are plan data (not
-/// shape); the inline-capacity treatment applies to the id-list
-/// ([`LutInputs`]), which is shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LutSpec {
     pub entries: Vec<bool>,
@@ -176,9 +212,6 @@ pub struct FailureBudget {
 }
 
 /// A complete bootstrap schedule.
-/// @volar-allow-vec: runtime-boundary: a host interpreter loads a plan whose
-/// size was not known at spec-compile time. Generated code (the weaver)
-/// never sees these buffers; it emits presized calls.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootstrapPlan {
     pub profile: ProfileId,
@@ -193,9 +226,9 @@ pub struct BootstrapPlan {
     /// Number of input RLWE cells (ids `0..num_cells`).
     pub num_cells: u32,
     /// Output Boolean wires.
-    pub outputs: Vec<u32>,
+    pub outputs: Vec<WireId>,
     /// Output RLWE cells.
-    pub cell_outputs: Vec<u32>,
+    pub cell_outputs: Vec<CellId>,
     pub budget: FailureBudget,
 }
 
@@ -203,9 +236,9 @@ pub struct BootstrapPlan {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlanError {
     /// A LUT table is not a non-empty power of two.
-    BadTableShape { table: u32 },
+    BadTableShape { table: LutId },
     /// A LUT arity exceeds `k_max`.
-    ArityExceedsKMax { table: u32 },
+    ArityExceedsKMax { table: LutId },
     /// An op references a value that does not exist yet (topological
     /// violation) or is out of range.
     BadReference,
@@ -225,11 +258,7 @@ impl BootstrapPlan {
     ///
     /// Panics on malformed input or structure. Call [`Self::validate`] first
     /// when invalid plans must be reported rather than rejected.
-    pub fn execute_clear(
-        &self,
-        inputs: &[bool],
-        cells: &[bool],
-    ) -> (Vec<bool>, Vec<bool>) {
+    pub fn execute_clear(&self, inputs: &[bool], cells: &[bool]) -> (Vec<bool>, Vec<bool>) {
         assert_eq!(inputs.len(), self.num_inputs as usize, "input wire count");
         assert_eq!(cells.len(), self.num_cells as usize, "input cell count");
 
@@ -250,7 +279,7 @@ impl BootstrapPlan {
                     PlanOp::Lut { inputs, table, out } => {
                         assert_eq!(*out as usize, wires.len());
                         let mut address = 0usize;
-                        for (bit, input) in inputs.as_slice().iter().enumerate() {
+                        for (bit, input) in inputs.iter().enumerate() {
                             address |= (wires[*input as usize] as usize) << bit;
                         }
                         wires.push(self.luts[*table as usize].entries[address]);
@@ -259,7 +288,12 @@ impl BootstrapPlan {
                         assert_eq!(*out as usize, rgsws.len());
                         rgsws.push(wires[*input as usize]);
                     }
-                    PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
+                    PlanOp::RgswMux {
+                        sel,
+                        then_cell,
+                        else_cell,
+                        out,
+                    } => {
                         assert_eq!(*out as usize, cell_arena.len());
                         cell_arena.push(if rgsws[*sel as usize] {
                             cell_arena[*then_cell as usize]
@@ -301,11 +335,11 @@ impl BootstrapPlan {
         for (i, spec) in self.luts.iter().enumerate() {
             let len = spec.entries.len();
             if len == 0 || !len.is_power_of_two() {
-                return Err(PlanError::BadTableShape { table: i as u32 });
+                return Err(PlanError::BadTableShape { table: i as LutId });
             }
             let arity = len.trailing_zeros() as usize;
             if arity > self.k_max as usize {
-                return Err(PlanError::ArityExceedsKMax { table: i as u32 });
+                return Err(PlanError::ArityExceedsKMax { table: i as LutId });
             }
         }
         // Reference validity + topology: walk ops, tracking arena sizes.
@@ -333,7 +367,7 @@ impl BootstrapPlan {
                         }
                         let arity = self.luts[*table as usize].entries.len().trailing_zeros();
                         if inputs.len() != arity as usize
-                            || inputs.as_slice().iter().any(|w| *w >= wires)
+                            || inputs.iter().any(|w| *w >= wires)
                             || *out != wires
                         {
                             return Err(PlanError::BadReference);
@@ -346,7 +380,12 @@ impl BootstrapPlan {
                         }
                         rgsws += 1;
                     }
-                    PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
+                    PlanOp::RgswMux {
+                        sel,
+                        then_cell,
+                        else_cell,
+                        out,
+                    } => {
                         if *sel >= rgsws
                             || *then_cell >= cells
                             || *else_cell >= cells
@@ -359,8 +398,7 @@ impl BootstrapPlan {
                 }
             }
         }
-        if self.outputs.iter().any(|w| *w >= wires)
-            || self.cell_outputs.iter().any(|c| *c >= cells)
+        if self.outputs.iter().any(|w| *w >= wires) || self.cell_outputs.iter().any(|c| *c >= cells)
         {
             return Err(PlanError::BadOutput);
         }
@@ -387,8 +425,16 @@ impl BootstrapPlan {
             }
         }
         let mut h = 0xcbf29ce484222325u64;
-        macro_rules! feed_u32 { ($x:expr) => { feed(&mut h, &($x as u32).to_le_bytes()) } }
-        macro_rules! feed_b { ($x:expr) => { feed(&mut h, &[$x]) } }
+        macro_rules! feed_u32 {
+            ($x:expr) => {
+                feed(&mut h, &($x as u32).to_le_bytes())
+            };
+        }
+        macro_rules! feed_b {
+            ($x:expr) => {
+                feed(&mut h, &[$x])
+            };
+        }
         feed_b!(self.profile as u8);
         feed_u32!(self.k_max);
         feed_u32!(self.luts.len() as u32);
@@ -421,7 +467,7 @@ impl BootstrapPlan {
                     PlanOp::Lut { inputs, table, out } => {
                         feed_b!(2);
                         feed_u32!(inputs.len() as u32);
-                        for w in inputs.as_slice() {
+                        for w in inputs {
                             feed_u32!(*w);
                         }
                         feed_u32!(*table);
@@ -432,7 +478,12 @@ impl BootstrapPlan {
                         feed_u32!(*input);
                         feed_u32!(*out);
                     }
-                    PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
+                    PlanOp::RgswMux {
+                        sel,
+                        then_cell,
+                        else_cell,
+                        out,
+                    } => {
                         feed_b!(4);
                         feed_u32!(*sel);
                         feed_u32!(*then_cell);
@@ -466,9 +517,6 @@ impl BootstrapPlan {
 ///
 /// Panics on malformed input or unvalidated structure — call
 /// [`BootstrapPlan::validate`] first for a diagnosable error.
-/// @volar-allow-vec: host-interpreter: grows wire/RGSW/cell arenas while
-/// executing a runtime-supplied plan; the generated-code consumer is the
-/// weaver's presized emission, not this interpreter.
 pub fn execute_plan<
     const N_LWE: usize,
     const BIG_N: usize,
@@ -487,64 +535,168 @@ pub fn execute_plan<
     cells: &[BinfheRlweCiphertext<BIG_N>],
     bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
     cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
-) -> (Vec<BinfheLweCiphertext<N_LWE>>, Vec<BinfheRlweCiphertext<BIG_N>>) {
-    assert_eq!(inputs.len(), plan.num_inputs as usize, "input wire count");
-    assert_eq!(cells.len(), plan.num_cells as usize, "input cell count");
-    let delta = wire_delta::<LOG_Q_LWE>(plan.k_max as usize);
+) -> (
+    Vec<BinfheLweCiphertext<N_LWE>>,
+    Vec<BinfheRlweCiphertext<BIG_N>>,
+) {
+    let mut workspace = PlanWorkspace::<N_LWE, BIG_N, BS_ELL>::new(plan)
+        .expect("execute_plan: invalid or overflowing workspace requirements");
+    execute_plan_in_workspace::<
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_ELL,
+        BS_BASE_LOG,
+        KS_ELL,
+        KS_BASE_LOG,
+        PRIV_ELL,
+        PRIV_BASE_LOG,
+    >(plan, inputs, cells, bk, cbk, &mut workspace)
+    .map(|(wires, cells)| (wires.to_vec(), cells.to_vec()))
+    .expect("execute_plan: invalid input/cell shape")
+}
 
-    let mut wires: Vec<BinfheLweCiphertext<N_LWE>> = inputs.to_vec();
-    let mut rgsws: Vec<BinfheRgswCiphertext<BIG_N, BS_ELL>> = Vec::new();
-    let mut cell_arena: Vec<BinfheRlweCiphertext<BIG_N>> = cells.to_vec();
+/// Execute `plan` in a caller-owned, fixed-capacity workspace.
+///
+/// This is the no-std/WASM-facing executor: it performs no allocation after
+/// [`PlanWorkspace::new`], clears the prior logical arenas before loading this
+/// call's ciphertext/cell inputs, and returns borrowed arenas. The caller must
+/// copy/decrypt declared outputs before the next call or [`PlanWorkspace::reset`].
+#[allow(clippy::too_many_arguments)]
+pub fn execute_plan_in_workspace<
+    'a,
+    const N_LWE: usize,
+    const BIG_N: usize,
+    const LOG_Q: u32,
+    const LOG_Q_LWE: u32,
+    const LOG_MOD_KS: u32,
+    const BS_ELL: usize,
+    const BS_BASE_LOG: u32,
+    const KS_ELL: usize,
+    const KS_BASE_LOG: u32,
+    const PRIV_ELL: usize,
+    const PRIV_BASE_LOG: u32,
+>(
+    plan: &BootstrapPlan,
+    inputs: &[BinfheLweCiphertext<N_LWE>],
+    cells: &[BinfheRlweCiphertext<BIG_N>],
+    bk: &BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    cbk: &CircuitBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, PRIV_ELL>,
+    workspace: &'a mut PlanWorkspace<N_LWE, BIG_N, BS_ELL>,
+) -> Result<
+    (
+        &'a [BinfheLweCiphertext<N_LWE>],
+        &'a [BinfheRlweCiphertext<BIG_N>],
+    ),
+    PlanWorkspaceError,
+> {
+    plan.validate().map_err(PlanWorkspaceError::InvalidPlan)?;
+    if inputs.len() != plan.num_inputs as usize {
+        return Err(PlanWorkspaceError::InputCount {
+            expected: plan.num_inputs as usize,
+            actual: inputs.len(),
+        });
+    }
+    if cells.len() != plan.num_cells as usize {
+        return Err(PlanWorkspaceError::CellCount {
+            expected: plan.num_cells as usize,
+            actual: cells.len(),
+        });
+    }
+    let required = plan.workspace_requirements()?;
+    if workspace.wires.capacity() < required.wires
+        || workspace.rgsws.capacity() < required.rgsws
+        || workspace.cells.capacity() < required.cells
+        || workspace.lut_inputs.capacity() < required.lut_inputs
+    {
+        return Err(PlanWorkspaceError::CapacityOverflow);
+    }
+
+    // This reset is the module-call isolation point: no wire/cell/global-like
+    // plan arena survives from an earlier ciphertext/plaintext transition.
+    workspace.reset();
+    workspace.wires.extend_from_slice(inputs);
+    workspace.cells.extend_from_slice(cells);
+    let delta = wire_delta::<LOG_Q_LWE>(plan.k_max as usize);
 
     for layer in &plan.layers {
         for op in layer {
             match op {
                 PlanOp::Const { out, value } => {
-                    assert_eq!(*out as usize, wires.len());
-                    wires.push(binfhe_trivial::<N_LWE, LOG_Q_LWE>(*value, delta));
+                    assert_eq!(*out as usize, workspace.wires.len());
+                    workspace
+                        .wires
+                        .push(binfhe_trivial::<N_LWE, LOG_Q_LWE>(*value, delta));
                 }
                 PlanOp::Not { input, out } => {
-                    assert_eq!(*out as usize, wires.len());
-                    wires.push(binfhe_not::<N_LWE, LOG_Q_LWE>(
-                        &wires[*input as usize],
-                        delta,
-                    ));
+                    assert_eq!(*out as usize, workspace.wires.len());
+                    let input = workspace.wires[*input as usize];
+                    workspace
+                        .wires
+                        .push(binfhe_not::<N_LWE, LOG_Q_LWE>(&input, delta));
                 }
                 PlanOp::Lut { inputs, table, out } => {
-                    assert_eq!(*out as usize, wires.len());
+                    assert_eq!(*out as usize, workspace.wires.len());
                     let spec = &plan.luts[*table as usize];
                     let arity = spec.entries.len().trailing_zeros() as usize;
                     assert_eq!(inputs.len(), arity, "LUT arity");
-                    // Inline presized temp (arity <= MAX_LUT_ARITY); no heap.
-                    let mut cts: [BinfheLweCiphertext<N_LWE>; MAX_LUT_ARITY] = [binfhe_trivial::<N_LWE, LOG_Q_LWE>(false, 0); MAX_LUT_ARITY];
-                    for (j, w) in inputs.as_slice().iter().enumerate() {
-                        cts[j] = wires[*w as usize];
-                    }
-                    wires.push(binfhe_lut_read_dyn::<
-                        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS,
-                        BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG,
-                    >(&cts[..arity], &spec.entries, plan.k_max as usize, bk));
+                    // Shared executor with weaver-generated code.
+                    workspace.lut_inputs.clear();
+                    workspace
+                        .lut_inputs
+                        .extend(inputs.iter().map(|w| workspace.wires[*w as usize]));
+                    workspace.wires.push(binfhe_lut_read_dyn::<
+                        N_LWE,
+                        BIG_N,
+                        LOG_Q,
+                        LOG_Q_LWE,
+                        LOG_MOD_KS,
+                        BS_ELL,
+                        BS_BASE_LOG,
+                        KS_ELL,
+                        KS_BASE_LOG,
+                    >(
+                        &workspace.lut_inputs,
+                        &spec.entries,
+                        plan.k_max as usize,
+                        bk,
+                    ));
                 }
                 PlanOp::CircuitBootstrap { input, out } => {
-                    assert_eq!(*out as usize, rgsws.len());
-                    rgsws.push(circuit_bootstrap::<
-                        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG,
-                        KS_ELL, PRIV_ELL, PRIV_BASE_LOG,
-                    >(&wires[*input as usize], cbk, plan.k_max as usize));
+                    assert_eq!(*out as usize, workspace.rgsws.len());
+                    let input = workspace.wires[*input as usize];
+                    workspace.rgsws.push(circuit_bootstrap::<
+                        N_LWE,
+                        BIG_N,
+                        LOG_Q,
+                        LOG_Q_LWE,
+                        BS_ELL,
+                        BS_BASE_LOG,
+                        KS_ELL,
+                        PRIV_ELL,
+                        PRIV_BASE_LOG,
+                    >(&input, cbk, plan.k_max as usize));
                 }
-                PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
-                    assert_eq!(*out as usize, cell_arena.len());
+                PlanOp::RgswMux {
+                    sel,
+                    then_cell,
+                    else_cell,
+                    out,
+                } => {
+                    assert_eq!(*out as usize, workspace.cells.len());
                     let out_cell = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(
-                        &rgsws[*sel as usize],
-                        &cell_arena[*then_cell as usize],
-                        &cell_arena[*else_cell as usize],
+                        &workspace.rgsws[*sel as usize],
+                        &workspace.cells[*then_cell as usize],
+                        &workspace.cells[*else_cell as usize],
                     );
-                    cell_arena.push(out_cell);
+                    workspace.cells.push(out_cell);
                 }
             }
         }
     }
-    (wires, cell_arena)
+    Ok((&workspace.wires, &workspace.cells))
 }
 
 /// Re-export the runtime LUT shape check for plan builders.
@@ -553,11 +705,15 @@ pub use crate::binfhe::lut::check_lut_shape as validate_lut_shape;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binfhe::circuit_bs::gen_circuit_bootstrapping_key;
-    use crate::binfhe::lwe::{BinfheLweSecretKey, binfhe_gen_lwe_secret_key, binfhe_lwe_encrypt, lwe_phase};
-    use crate::binfhe::params::toy;
-    use crate::binfhe::rlwe::{BinfheRlweSecretKey, binfhe_gen_rlwe_secret_key, binfhe_rlwe_trivial};
     use crate::SpecRng;
+    use crate::binfhe::circuit_bs::gen_circuit_bootstrapping_key;
+    use crate::binfhe::lwe::{
+        BinfheLweSecretKey, binfhe_gen_lwe_secret_key, binfhe_lwe_encrypt, lwe_phase,
+    };
+    use crate::binfhe::params::toy;
+    use crate::binfhe::rlwe::{
+        BinfheRlweSecretKey, binfhe_gen_rlwe_secret_key, binfhe_rlwe_trivial,
+    };
 
     struct TestRng(u64);
     impl TestRng {
@@ -584,15 +740,30 @@ mod tests {
         { toy::PRIV_ELL },
     >;
 
-    fn toy_keys(seed: u64) -> (BinfheLweSecretKey<{ toy::N_LWE }>, BinfheRlweSecretKey<{ toy::BIG_N }>, ToyCbk) {
+    fn toy_keys(
+        seed: u64,
+    ) -> (
+        BinfheLweSecretKey<{ toy::N_LWE }>,
+        BinfheRlweSecretKey<{ toy::BIG_N }>,
+        ToyCbk,
+    ) {
         let mut rng = TestRng::new(seed);
         let lwe_sk = binfhe_gen_lwe_secret_key(&mut rng);
         let rlwe_sk = binfhe_gen_rlwe_secret_key(&mut rng);
         let cbk = gen_circuit_bootstrapping_key::<
-            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-            { toy::KS_ELL }, { toy::KS_BASE_LOG }, { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG },
-            { toy::CBD_ETA }, _,
+            { toy::N_LWE },
+            { toy::BIG_N },
+            { toy::LOG_Q },
+            { toy::LOG_Q_LWE },
+            { toy::LOG_MOD_KS },
+            { toy::BS_ELL },
+            { toy::BS_BASE_LOG },
+            { toy::KS_ELL },
+            { toy::KS_BASE_LOG },
+            { toy::PRIV_ELL },
+            { toy::PRIV_BASE_LOG },
+            { toy::CBD_ETA },
+            _,
         >(&lwe_sk, &rlwe_sk, &mut rng);
         (lwe_sk, rlwe_sk, cbk)
     }
@@ -603,14 +774,29 @@ mod tests {
             profile: ProfileId::Toy,
             k_max: 2,
             luts: vec![
-                LutSpec { entries: vec![false, false, false, true] }, // 0: AND
-                LutSpec { entries: vec![false, true, true, false] },  // 1: XOR
+                LutSpec {
+                    entries: vec![false, false, false, true],
+                }, // 0: AND
+                LutSpec {
+                    entries: vec![false, true, true, false],
+                }, // 1: XOR
             ],
             layers: vec![
-                vec![PlanOp::Lut { inputs: LutInputs::from_slice(&[0, 1]), table: 0, out: 3 }],
+                vec![PlanOp::Lut {
+                    inputs: vec![0, 1],
+                    table: 0,
+                    out: 3,
+                }],
                 vec![
-                    PlanOp::Lut { inputs: LutInputs::from_slice(&[3, 2]), table: 1, out: 4 },
-                    PlanOp::Const { out: 5, value: true },
+                    PlanOp::Lut {
+                        inputs: vec![3, 2],
+                        table: 1,
+                        out: 4,
+                    },
+                    PlanOp::Const {
+                        out: 5,
+                        value: true,
+                    },
                     PlanOp::Not { input: 5, out: 6 },
                 ],
             ],
@@ -618,7 +804,10 @@ mod tests {
             num_cells: 0,
             outputs: vec![4, 6],
             cell_outputs: vec![],
-            budget: FailureBudget { per_bootstrap_log2: 30, total_log2: 32 },
+            budget: FailureBudget {
+                per_bootstrap_log2: 30,
+                total_log2: 32,
+            },
         }
     }
 
@@ -628,20 +817,33 @@ mod tests {
         cells: &[BinfheRlweCiphertext<{ toy::BIG_N }>],
         sk: &BinfheLweSecretKey<{ toy::N_LWE }>,
         cbk: &ToyCbk,
-    ) -> (Vec<BinfheLweCiphertext<{ toy::N_LWE }>>, Vec<BinfheRlweCiphertext<{ toy::BIG_N }>>) {
+    ) -> (
+        Vec<BinfheLweCiphertext<{ toy::N_LWE }>>,
+        Vec<BinfheRlweCiphertext<{ toy::BIG_N }>>,
+    ) {
         let delta = wire_delta::<{ toy::LOG_Q_LWE }>(plan.k_max as usize);
         let inputs: Vec<_> = input_bits
             .iter()
             .enumerate()
             .map(|(i, &b)| {
                 let mut rng = TestRng::new(5000 + i as u64);
-                binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(b, delta, sk, &mut rng)
+                binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(
+                    b, delta, sk, &mut rng,
+                )
             })
             .collect();
         execute_plan::<
-            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-            { toy::KS_ELL }, { toy::KS_BASE_LOG }, { toy::PRIV_ELL }, { toy::PRIV_BASE_LOG },
+            { toy::N_LWE },
+            { toy::BIG_N },
+            { toy::LOG_Q },
+            { toy::LOG_Q_LWE },
+            { toy::LOG_MOD_KS },
+            { toy::BS_ELL },
+            { toy::BS_BASE_LOG },
+            { toy::KS_ELL },
+            { toy::KS_BASE_LOG },
+            { toy::PRIV_ELL },
+            { toy::PRIV_BASE_LOG },
         >(plan, &inputs, cells, &cbk.bk, cbk)
     }
 
@@ -685,20 +887,40 @@ mod tests {
         let plan = small_plan();
         let delta = wire_delta::<{ toy::LOG_Q_LWE }>(2);
         let mut rng = TestRng::new(0x50A2);
-        let ca = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(true, delta, &sk, &mut rng);
-        let cb = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(false, delta, &sk, &mut rng);
-        let cc = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(true, delta, &sk, &mut rng);
+        let ca = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(
+            true, delta, &sk, &mut rng,
+        );
+        let cb = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(
+            false, delta, &sk, &mut rng,
+        );
+        let cc = binfhe_lwe_encrypt::<{ toy::N_LWE }, { toy::LOG_Q_LWE }, 0, _>(
+            true, delta, &sk, &mut rng,
+        );
 
         // Direct: AND then XOR via the gate wrappers (same tables).
         let and = crate::binfhe::pbs::binfhe_gate_and::<
-            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-            { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
+            { toy::N_LWE },
+            { toy::BIG_N },
+            { toy::LOG_Q },
+            { toy::LOG_Q_LWE },
+            { toy::LOG_MOD_KS },
+            { toy::BS_ELL },
+            { toy::BS_BASE_LOG },
+            { toy::KS_ELL },
+            { toy::KS_BASE_LOG },
+            2,
         >(ca, cb, &cbk.bk);
         let direct = crate::binfhe::pbs::binfhe_gate_xor::<
-            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-            { toy::KS_ELL }, { toy::KS_BASE_LOG }, 2,
+            { toy::N_LWE },
+            { toy::BIG_N },
+            { toy::LOG_Q },
+            { toy::LOG_Q_LWE },
+            { toy::LOG_MOD_KS },
+            { toy::BS_ELL },
+            { toy::BS_BASE_LOG },
+            { toy::KS_ELL },
+            { toy::KS_BASE_LOG },
+            2,
         >(and, cc, &cbk.bk);
 
         let (wires, _) = run_toy_plan(&plan, &[true, false, true], &[], &sk, &cbk);
@@ -724,19 +946,33 @@ mod tests {
         let plan = BootstrapPlan {
             profile: ProfileId::Toy,
             k_max: 2,
-            luts: vec![LutSpec { entries: vec![true, false] }], // NOT as LUT
+            luts: vec![LutSpec {
+                entries: vec![true, false],
+            }], // NOT as LUT
             layers: vec![
                 vec![
-                    PlanOp::Lut { inputs: LutInputs::from_slice(&[0]), table: 0, out: 1 },
+                    PlanOp::Lut {
+                        inputs: vec![0],
+                        table: 0,
+                        out: 1,
+                    },
                     PlanOp::CircuitBootstrap { input: 0, out: 0 },
                 ],
-                vec![PlanOp::RgswMux { sel: 0, then_cell: 1, else_cell: 0, out: 2 }],
+                vec![PlanOp::RgswMux {
+                    sel: 0,
+                    then_cell: 1,
+                    else_cell: 0,
+                    out: 2,
+                }],
             ],
             num_inputs: 1,
             num_cells: 2,
             outputs: vec![1],
             cell_outputs: vec![2],
-            budget: FailureBudget { per_bootstrap_log2: 30, total_log2: 33 },
+            budget: FailureBudget {
+                per_bootstrap_log2: 30,
+                total_log2: 33,
+            },
         };
         plan.validate().unwrap();
         for m in [false, true] {
@@ -753,7 +989,8 @@ mod tests {
             for i in 0..toy::BIG_N {
                 // Phase via the public binfhe_rlwe_phase (checked elsewhere against
                 // an independent convolution).
-                let phase = crate::binfhe::rlwe::binfhe_rlwe_phase::<{ toy::BIG_N }, 7>(out, &rlwe_sk);
+                let phase =
+                    crate::binfhe::rlwe::binfhe_rlwe_phase::<{ toy::BIG_N }, 7>(out, &rlwe_sk);
                 assert_eq!(phase[i], expected.b[i], "cell coeff {i}, m={m}");
             }
         }
@@ -776,11 +1013,19 @@ mod tests {
         ));
         // Out-of-range reference.
         plan = small_plan();
-        plan.layers[0][0] = PlanOp::Lut { inputs: LutInputs::from_slice(&[0, 9]), table: 0, out: 3 };
+        plan.layers[0][0] = PlanOp::Lut {
+            inputs: vec![0, 9],
+            table: 0,
+            out: 3,
+        };
         assert!(matches!(plan.validate(), Err(PlanError::BadReference)));
         // Non-sequential output id.
         plan = small_plan();
-        plan.layers[0][0] = PlanOp::Lut { inputs: LutInputs::from_slice(&[0, 1]), table: 0, out: 4 };
+        plan.layers[0][0] = PlanOp::Lut {
+            inputs: vec![0, 1],
+            table: 0,
+            out: 4,
+        };
         assert!(matches!(plan.validate(), Err(PlanError::BadReference)));
         // Bad output.
         plan = small_plan();
@@ -789,7 +1034,10 @@ mod tests {
         // Inconsistent budget.
         plan = small_plan();
         plan.budget.total_log2 = 30;
-        assert!(matches!(plan.validate(), Err(PlanError::BudgetInconsistent)));
+        assert!(matches!(
+            plan.validate(),
+            Err(PlanError::BudgetInconsistent)
+        ));
     }
 
     #[test]
@@ -816,13 +1064,21 @@ mod tests {
             luts: vec![],
             layers: vec![
                 vec![PlanOp::CircuitBootstrap { input: 0, out: 0 }],
-                vec![PlanOp::RgswMux { sel: 0, then_cell: 1, else_cell: 0, out: 2 }],
+                vec![PlanOp::RgswMux {
+                    sel: 0,
+                    then_cell: 1,
+                    else_cell: 0,
+                    out: 2,
+                }],
             ],
             num_inputs: 1,
             num_cells: 2,
             outputs: vec![],
             cell_outputs: vec![2],
-            budget: FailureBudget { per_bootstrap_log2: 30, total_log2: 30 },
+            budget: FailureBudget {
+                per_bootstrap_log2: 30,
+                total_log2: 30,
+            },
         };
         plan.validate().unwrap();
         assert_eq!(plan.execute_clear(&[false], &[false, true]).1[2], false);

@@ -9,15 +9,19 @@ repository.workspace = true
 [features]
 default          = ["cargo-directives"]
 cargo-directives = []
-weave-rust       = ["dep:volar-ir", "dep:volar-weaver"]
-weave-net        = ["weave-rust", "volar-weaver/net"]
-weave-chunked    = ["weave-rust", "dep:volar-compiler", "dep:volar-compiler-passes"]
-weave-ts         = ["weave-rust", "dep:volar-compiler", "dep:volar-compiler-passes"]
-pipeline         = ["dep:volar-ir", "dep:volar-ir-build"]
-pipeline-vaffle  = ["pipeline", "volar-ir-build/vaffle"]
-pipeline-wasm    = ["pipeline-vaffle", "volar-ir-build/wasm"]
-pipeline-llvm    = ["pipeline-vaffle", "volar-ir-build/llvm"]
-pipeline-cc      = ["pipeline-llvm", "volar-ir-build/cc", "dep:cc"]
+weave-rust       = ["dep:volar-ir","dep:volar-weaver"]
+weave-net        = ["weave-rust","volar-weaver/net"]
+weave-chunked    = ["weave-rust","dep:volar-compiler","dep:volar-compiler-passes"]
+weave-ts         = ["weave-rust","dep:volar-compiler","dep:volar-compiler-passes"]
+pipeline         = ["dep:volar-ir","dep:volar-ir-build"]
+pipeline-vaffle  = ["pipeline","volar-ir-build/vaffle"]
+pipeline-wasm    = ["pipeline-vaffle","volar-ir-build/wasm"]
+pipeline-llvm    = ["pipeline-vaffle","volar-ir-build/llvm"]
+pipeline-cc      = ["pipeline-llvm","volar-ir-build/cc","dep:cc"]
+# Deterministic Rust `wasm32v1-none` -> LLVM-bitcode plumbing for future
+# reviewed FHE or heavy-garbling provider artifacts. Enabling this selects no
+# provider and executes no artifact build.
+provider-llvm-toolchain = ["pipeline-llvm"]
 
 [dependencies]
 volar-lir-saved = { workspace = true, features = ["rkyv"] }

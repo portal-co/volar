@@ -1,0 +1,48 @@
+[package]
+name = "volar-vc"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "vc-spec two-party verifiable-compute embedder over Volar's garbled-circuit MPC"
+repository.workspace = true
+
+[dependencies]
+volar-mpc.workspace = true
+sha2 = { version = "0.11.0-rc.0", default-features = false }
+volar-spec = { git = "https://github.com/portal-co/volar.git" }
+volar-ir.workspace = true
+volar-ir-common.workspace = true
+volar-side.workspace = true
+volar-oram.workspace = true
+volar-ir-opt.workspace = true
+# Used by the provider-neutral 5a1 marker tunnel. It only transports IR
+# variable identity through movfuscation; it does not select or invoke FHE.
+volar-ir-passes.workspace = true
+digest.workspace = true
+hybrid-array.workspace = true
+
+[dev-dependencies]
+volar-mpc = { workspace = true, features = ["std"] }
+volar-ir-common.workspace = true
+volar-side.workspace = true
+sha2 = { version = "0.11.0-rc.0", default-features = false }
+typenum = { version = "1.17", default-features = false }
+# D2 WAT conformance test: drive a real guest through the vc pipeline.
+volar-vaffle-target.workspace = true
+vaffle.workspace = true
+portal-pc-waffle-ir.workspace = true
+portal-pc-waffle-frontend.workspace = true
+volar-ir-opt.workspace = true
+volar-fuzz.workspace = true
+wat = "1.212.0"
+volar-llvm-vaffle-import = { path = "../../../../volar-ir/crates/frontends/volar-llvm-vaffle-import" }
+inkwell.workspace = true
+# Live-TLS integration test: a real rustls server on loopback.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+[features]
+default = []
+# std-only helpers (e.g. cross-process embedding over framed TCP).
+std = ["volar-mpc/std"]

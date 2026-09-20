@@ -20,8 +20,8 @@
 use crate::SpecRng;
 use crate::binfhe::gadget;
 use crate::binfhe::lwe::{BinfheLweCiphertext, BinfheLweSecretKey, binfhe_lwe_encrypt_raw};
-use crate::binfhe::rlwe::BinfheRlweSecretKey;
 use crate::binfhe::rgsw::{BinfheRgswCiphertext, binfhe_rgsw_encrypt};
+use crate::binfhe::rlwe::BinfheRlweSecretKey;
 use crate::binfhe::torus;
 
 /// A borrowed view of a key-switching key (zero heap).
@@ -32,7 +32,8 @@ use crate::binfhe::torus;
 /// [`BinfheKeySwitchingKey`] on native targets. See the plan
 /// (`docs/fhe/vec-elimination-and-linter-plan.md` §4.2).
 #[derive(Clone, Copy, Debug)]
-pub struct BinfheKeySwitchingKeyRef<'a, const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize> {
+pub struct BinfheKeySwitchingKeyRef<'a, const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize>
+{
     pub ksk: &'a [[BinfheLweCiphertext<N_LWE>; KS_ELL]],
 }
 
@@ -56,7 +57,7 @@ pub trait AsKeySwitchingKey<const N_LWE: usize, const BIG_N: usize, const KS_ELL
 }
 
 /// Read access to a bootstrapping key.
-pub trait AsBootstrappingKey<
+pub trait AsBinfheBootstrappingKey<
     const N_LWE: usize,
     const BIG_N: usize,
     const BS_ELL: usize,
@@ -84,7 +85,7 @@ impl<'a, const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize>
 }
 
 impl<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize, const KS_ELL: usize>
-    AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
+    AsBinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
     for BinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
 {
     fn bsk_rows(&self) -> &[BinfheRgswCiphertext<BIG_N, BS_ELL>] {
@@ -96,7 +97,7 @@ impl<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize, const KS_ELL: 
 }
 
 impl<'a, const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize, const KS_ELL: usize>
-    AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
+    AsBinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>
     for BinfheBootstrappingKeyRef<'a, N_LWE, BIG_N, BS_ELL, KS_ELL>
 {
     fn bsk_rows(&self) -> &[BinfheRgswCiphertext<BIG_N, BS_ELL>] {
@@ -244,7 +245,9 @@ pub fn binfhe_key_switch<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binfhe::lwe::{binfhe_gen_lwe_secret_key, binfhe_lwe_decrypt, binfhe_lwe_encrypt, lwe_phase};
+    use crate::binfhe::lwe::{
+        binfhe_gen_lwe_secret_key, binfhe_lwe_decrypt, binfhe_lwe_encrypt, lwe_phase,
+    };
     use crate::binfhe::params::toy;
     use crate::binfhe::rlwe::binfhe_gen_rlwe_secret_key;
 
@@ -312,13 +315,21 @@ mod tests {
         let rlwe_sk = crate::binfhe::rlwe::binfhe_gen_rlwe_secret_key(&mut rng);
         // Generate into an owned key, then move the rows into stack arrays.
         let owned = binfhe_gen_bootstrapping_key::<
-            { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE },
-            { toy::LOG_MOD_KS }, { toy::BS_ELL }, { toy::BS_BASE_LOG },
-            { toy::KS_ELL }, { toy::KS_BASE_LOG }, { toy::CBD_ETA }, _,
+            { toy::N_LWE },
+            { toy::BIG_N },
+            { toy::LOG_Q },
+            { toy::LOG_Q_LWE },
+            { toy::LOG_MOD_KS },
+            { toy::BS_ELL },
+            { toy::BS_BASE_LOG },
+            { toy::KS_ELL },
+            { toy::KS_BASE_LOG },
+            { toy::CBD_ETA },
+            _,
         >(&lwe_sk, &rlwe_sk, &mut rng);
         // Stack-allocated storage (toy dims fit on the stack).
-        let bsk_store: [crate::binfhe::rgsw::BinfheRgswCiphertext<{ toy::BIG_N }, { toy::BS_ELL }>; { toy::N_LWE }] =
-            owned.bsk.try_into().unwrap();
+        let bsk_store: [crate::binfhe::rgsw::BinfheRgswCiphertext<{ toy::BIG_N }, { toy::BS_ELL }>;
+            { toy::N_LWE }] = owned.bsk.try_into().unwrap();
         let ksk_store: [[BinfheLweCiphertext<{ toy::N_LWE }>; { toy::KS_ELL }]; { toy::BIG_N }] =
             owned.ksk.ksk.try_into().unwrap();
         let borrowed = BinfheBootstrappingKeyRef {
@@ -336,8 +347,12 @@ mod tests {
                 m, delta, &source_sk, &mut rng,
             );
             let out = binfhe_key_switch::<
-                { toy::N_LWE }, { toy::BIG_N }, { toy::LOG_MOD_KS },
-                { toy::KS_ELL }, { toy::KS_BASE_LOG }, _,
+                { toy::N_LWE },
+                { toy::BIG_N },
+                { toy::LOG_MOD_KS },
+                { toy::KS_ELL },
+                { toy::KS_BASE_LOG },
+                _,
             >(&ct_big, &borrowed.ksk);
             assert_eq!(
                 binfhe_lwe_decrypt::<{ toy::N_LWE }, { toy::LOG_MOD_KS }>(&out, &lwe_sk, delta),
@@ -380,7 +395,9 @@ mod tests {
                 "switched phase must be canonical for {m}"
             );
             assert_eq!(
-                binfhe_lwe_decrypt::<{ toy::N_LWE }, { toy::LOG_MOD_KS }>(&ct_small, &lwe_sk, delta),
+                binfhe_lwe_decrypt::<{ toy::N_LWE }, { toy::LOG_MOD_KS }>(
+                    &ct_small, &lwe_sk, delta
+                ),
                 m
             );
         }
