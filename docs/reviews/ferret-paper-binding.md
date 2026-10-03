@@ -19,13 +19,13 @@ seams it consumes.
 | Appendix C batched consistency check | `spcot_batched_fs_chis`, `spcot_batched_masked_choice`, `spcot_batched_sender_hash_v`, `spcot_batched_receiver_hash_w` | One masking over m SPCOTs (`ϕ = ∑_l χ_{α_l}^l`). For the malicious-secure MPCOT (§5). |
 | §5 regular-indices MPCOT | `ot/ferret/mpcot_reg.rs` | `t` SPCOT calls on intervals of length `n/t` (power of two). Batched consistency check wired: `mpcot_reg_consistency_check`. |
 | Fig. 7 ΠMPCOT Cuckoo | `ot/ferret/mpcot_uni.rs` | `m = ⌈1.5 t⌉`, `τ = 3`, extra dummy cell, SHA3 stand-in for AES-128 `h_i`. |
-| §6.2 10-local primal LPN / RO matrix `A` | `ot/ferret/lpn.rs` | Columns have weight 10 from a public seed; `A` is never sent. |
+| §6.2 10-local primal LPN / RO matrix `A` | `ot/ferret/lpn.rs` | Columns have weight 10 from a public seed; `A` is never sent. The per-column SHA3 derivation remains an unpinned implementation choice, not a validated binding to the paper's optimized expansion. The Ferret finish path now reuses each generated column across all three encoded outputs and folds MPCOT/noise into the outputs in one pass; this yielded an exploratory ~32.5% setup+drain time reduction versus the previously recorded run, without materially reducing peak RSS. |
 | Fig. 9 ΠCOT + §6.2 keep-`M` bootstrap | `ot/ferret/cot.rs`, `pool.rs` | Consume `M = k + t log(n/t)` seed COTs, emit `n − M`, keep first `M`. `ferret_extend_malicious` adds the Appendix C batched consistency check (extra κ COTs, keep-`M = seed_cot_count(true)`). |
-| Table 2 Ferret-Reg `(n,k,t)` / `(n0,k0,t0)` | `ot/ferret/params.rs` `FERRET_REG_SETUP` / `FERRET_REG_MAIN` | Documented constants. **Not used in unit tests.** Setup `n/t` is not a power of two; do not call `splen()` on it. |
+| Table 2 Ferret-Reg `(n,k,t)` / `(n0,k0,t0)` | `ot/ferret/params.rs` `FERRET_REG_SETUP` / `FERRET_REG_MAIN` | Documented constants. **Not used in unit tests.** `FERRET_REG_SETUP.n % t != 0`, so it violates the current regular-MPCOT precondition and cannot be passed to `splen()`/`mpcot_reg`; the paper-style setup→main path is not implemented. |
 | Table 2 Ferret-Uni | `FERRET_UNI_SETUP` / `FERRET_UNI_MAIN` | Same: documented only. |
 | Insecure toy sizes | `FERRET_REG_TOY` / `FERRET_UNI_TOY` | `n=256, k=32, t=4` for correctness tests. |
 | Bea95 random-COT → chosen-bit | `ot/ferret/pool.rs` `bea95_chosen_bit` | Receiver sends `d = b ⊕ x`. |
-| LWE base OT / SoftSpoken / IKNP seams | `ot/lwe.rs`, `ot/base_ot.rs`, `ot/iknp.rs`, `ot/softspoken.rs` | Role-separated `BaseOt`; SoftSpoken `K>1` remains a no-op (Roy 2022 at `k=1`). |
+| LWE base OT / SoftSpoken / IKNP seams | `ot/lwe.rs`, `ot/base_ot.rs`, `ot/iknp.rs`, `ot/softspoken.rs`, `ot/stack.rs` | Role-separated `BaseOt`; `OtStack::setup_with_base` now allows an alternate base OT to seed the same local extension/pool path. The default setup is still LWE-based; SoftSpoken `K>1` remains a no-op (Roy 2022 at `k=1`). The optional ML-KEM-1024 adapter in `volar-mpc::ot_mlkem` is an unreviewed in-process candidate, not a paper-bound or networked Ferret base-OT deployment. |
 
 ## Scope and excluded claims
 
@@ -35,9 +35,10 @@ existing callers. The SPCOT consistency check (Fig. 6 steps 6–9 + Appendix C
 batched) is **wired** (M5) and unit-tested, and `ferret_extend_malicious` runs
 the malicious-secure ΠCOT extend over the **regular** MPCOT. Not yet done:
 the malicious path is not wired into the `CotPool` / `pool.rs` refill loop, the
-Ferret-**Uni** (Cuckoo) MPCOT has no consistency-check wrapper, and the *base* OT
-seeding the first iteration is still semi-honest (Chou-Orlandi). Ferret is not
-woven into generated ZK prover IR.
+Ferret-**Uni** (Cuckoo) MPCOT has no consistency-check wrapper, and the default
+*base* OT seeding remains LWE-based/semi-honest. The optional ML-KEM adapter is
+only tested in process and does not replace that default or provide transport.
+Ferret is not woven into generated ZK prover IR.
 
 ## Reproduction
 

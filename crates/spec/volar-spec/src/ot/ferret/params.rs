@@ -22,26 +22,47 @@ pub struct FerretParams {
 impl FerretParams {
     /// SPCOT block length `n/t`. Must be a power of two for regular MPCOT.
     pub fn splen(&self) -> usize {
-        debug_assert!(self.t > 0 && self.n % self.t == 0);
+        assert!(self.t > 0, "regular MPCOT requires t > 0");
+        assert!(
+            self.n % self.t == 0,
+            "regular MPCOT requires n divisible by t"
+        );
         self.n / self.t
     }
 
     /// `h = log2(n/t)`.
     pub fn log_splen(&self) -> usize {
         let s = self.splen();
-        debug_assert!(s.is_power_of_two());
+        assert!(
+            s.is_power_of_two(),
+            "regular MPCOT requires n/t to be a power of two"
+        );
         s.trailing_zeros() as usize
     }
 
     /// Seed COTs consumed per iteration: `k + t·log(n/t)`, plus `κ` if
     /// the SPCOT consistency check is enabled (Fig. 6 steps 6–9).
     pub fn seed_cot_count(&self, malicious: bool) -> usize {
-        let body = self.k + self.t * self.log_splen();
-        if malicious {
-            body + super::KAPPA_BITS
+        assert!(
+            self.k >= super::lpn::LOCALITY,
+            "10-local Ferret LPN dimension k must be at least 10"
+        );
+        let body = self
+            .t
+            .checked_mul(self.log_splen())
+            .and_then(|noise| self.k.checked_add(noise))
+            .expect("Ferret seed-COT count must fit usize");
+        let seed_count = if malicious {
+            body.checked_add(super::KAPPA_BITS)
+                .expect("malicious Ferret seed-COT count must fit usize")
         } else {
             body
-        }
+        };
+        assert!(
+            self.n > seed_count,
+            "Ferret iteration must emit at least one COT beyond its retained seed"
+        );
+        seed_count
     }
 
     /// COTs emitted per iteration after keeping the next seed (`n − M`).
@@ -102,9 +123,24 @@ mod tests {
         assert_eq!(FERRET_REG_MAIN.splen(), 8192);
         assert_eq!(FERRET_REG_TOY.seed_cot_count(false), 32 + 4 * 6);
         assert_eq!(FERRET_REG_TOY.output_cot_count(false), 256 - 56);
-        // Setup n/t is not a power of two in Table 2; do not call splen().
+        // This setup row is unsupported by the current regular-MPCOT path;
+        // it must fail closed rather than silently truncate n/t in release.
         assert_eq!(FERRET_REG_SETUP.n, 609_728);
         assert_eq!(FERRET_REG_SETUP.k, 36_288);
         assert_eq!(FERRET_REG_SETUP.t, 1_269);
+        assert_ne!(FERRET_REG_SETUP.n % FERRET_REG_SETUP.t, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "regular MPCOT requires n divisible by t")]
+    fn ferret_reg_setup_profile_fails_closed_for_uneven_intervals() {
+        let _ = FERRET_REG_SETUP.seed_cot_count(false);
+    }
+
+    #[test]
+    #[should_panic(expected = "10-local Ferret LPN dimension k must be at least 10")]
+    fn ferret_rejects_too_small_lpn_dimension() {
+        let params = FerretParams { n: 256, k: 9, t: 4 };
+        let _ = params.seed_cot_count(false);
     }
 }

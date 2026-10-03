@@ -9,7 +9,7 @@
 
 use alloc::vec::Vec;
 
-use super::lpn::{encode_bits, encode_blocks};
+use super::lpn::{encode_bits, encode_blocks, encode_ferret_outputs};
 use super::mpcot_reg::{
     MpcotRegSenderMsg, mpcot_reg_choice_bits, mpcot_reg_consistency_check, mpcot_reg_receiver,
     mpcot_reg_sender, sample_regular_noise,
@@ -160,31 +160,21 @@ fn ferret_finish_m(
     let u_lpn = &receiver_seed.u[..k];
     let w_lpn = &receiver_seed.w[..k];
 
-    let y_lpn = encode_blocks(&prep.lpn_seed, k, n, v_lpn);
-    let x_bits = encode_bits(&prep.lpn_seed, k, n, u_lpn);
-    let z_lpn = encode_blocks(&prep.lpn_seed, k, n, w_lpn);
+    let (mut y, mut x, mut z) =
+        encode_ferret_outputs(&prep.lpn_seed, k, n, v_lpn, u_lpn, w_lpn, s, &prep.e, r);
 
-    let mut y = Vec::with_capacity(n);
-    let mut x = Vec::with_capacity(n);
-    let mut z = Vec::with_capacity(n);
-    for j in 0..n {
-        y.push(xor_block(&y_lpn[j], &s[j]));
-        x.push(x_bits[j] ^ prep.e[j]);
-        z.push(xor_block(&z_lpn[j], &r[j]));
-    }
-
+    let sender_out = y.split_off(m);
+    let recv_x = x.split_off(m);
+    let recv_z = z.split_off(m);
     let sender_seed = FerretSenderSeed {
         delta: sender_seed.delta,
-        q: y[..m].to_vec(),
+        q: y,
     };
-    let receiver_seed = FerretReceiverSeed {
-        u: x[..m].to_vec(),
-        w: z[..m].to_vec(),
-    };
+    let receiver_seed = FerretReceiverSeed { u: x, w: z };
     FerretExtendOut {
-        sender_out: y[m..].to_vec(),
-        recv_x: x[m..].to_vec(),
-        recv_z: z[m..].to_vec(),
+        sender_out,
+        recv_x,
+        recv_z,
         sender_seed,
         receiver_seed,
     }

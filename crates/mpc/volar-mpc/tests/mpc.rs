@@ -594,7 +594,7 @@ fn mpc_session_tcp_loopback() {
 }
 
 /// mpc_session_tcp_mlkem: same cross-process TCP session, but the OT phase
-/// uses the ML-KEM-1024 channel (post-quantum) instead of Chou-Orlandi.
+/// uses the experimental ML-KEM-1024 KEM-OT candidate instead of Chou-Orlandi.
 #[cfg(all(feature = "std", feature = "mlkem"))]
 #[test]
 fn mpc_session_tcp_mlkem_loopback() {

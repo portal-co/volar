@@ -2,33 +2,27 @@
 // @stability: very-unstable
 //! @ai: assisted
 //!
-//! ML-KEM-1024 1-of-2 oblivious transfer (the `mlkem` feature).
+//! Experimental ML-KEM-1024 1-of-2 OT candidate (the `mlkem` feature).
 //!
-//! A post-quantum alternative to the default Chou–Orlandi base OT
-//! ([`crate::ot::CoSender`]/[`crate::ot::CoReceiver`]). The construction is a
-//! 1-of-N KEM-OT specialized to N=2, the same shape as cirrus's `miniot`:
+//! This is a custom real/fake-public-key PKE-OT candidate, not the Masny–Rindal
+//! protocol and not a reviewed or deployment-ready OT. The receiver places a
+//! generated ML-KEM encapsulation key at its choice index and a uniformly
+//! sampled valid public key at the other index; unlike generating and dropping
+//! a second secret key, the fake-key path creates no second decapsulation key.
+//! The candidate relies on public-key pseudorandomness and message hiding for
+//! encapsulation under the fake key. FIPS 203 standardizes ML-KEM, not this OT
+//! composition; no post-quantum security claim is made here.
 //!
-//! 1. **Receiver** generates a real ML-KEM keypair, plants the encapsulation
-//!    key at index `choice ∈ {0,1}`, and a freshly generated *decoy* key
-//!    (whose decapsulation key it discards) at the other index; it sends both
-//!    encapsulation keys to the sender. The sender cannot tell which index
-//!    holds a key the receiver can decapsulate.
-//! 2. **Sender** encapsulates a fresh shared key against *both* public keys
-//!    and XORs each resulting shared key (KDF-expanded to `N` bytes) with the
-//!    corresponding label; it sends both `(ciphertext, masked-label)` pairs.
-//! 3. **Receiver** decapsulates only the ciphertext at its choice index and
-//!    unmasks that label. The other label stays hidden: its shared key is
-//!    encapsulated under a key the receiver cannot decapsulate.
-//!
-//! Roles are explicit step state machines ([`MkReceiver`] / [`MkSender`]) so
-//! a harness can interleave both on one thread or drive them across a framed
-//! transport, exactly like the Chou–Orlandi pair.
+//! The sender encapsulates independently under both keys and masks each label
+//! with its KEM shared secret. These step state machines ([`MkReceiver`] /
+//! [`MkSender`]) support in-process tests and a potential transport adapter;
+//! this module does not itself define a framed network protocol.
 
 use alloc::vec::Vec;
 
 use core::convert::Infallible;
 use digest::Digest;
-use hybrid_array::Array;
+use hybrid_array::{Array, typenum::U16};
 use ml_kem::{
     Decapsulate, Encapsulate, Generate, KeyExport,
     ml_kem_1024::{Ciphertext, EncapsulationKey},
@@ -36,6 +30,7 @@ use ml_kem::{
 };
 use sha2::Sha256;
 use volar_spec::SpecRng;
+use volar_spec::ot::base_ot::BaseOt;
 use volar_spec::vole::VoleArray;
 
 use crate::ot::OtError;
@@ -84,6 +79,39 @@ pub const EK_BYTES: usize = 1568;
 /// ML-KEM-1024 ciphertext byte length.
 pub const CT_BYTES: usize = 1568;
 
+// ML-KEM-1024 uses k=4 polynomials of 256 coefficients in Z_3329, encoded
+// with 12 bits each; the final 32 bytes of the encapsulation key are rho.
+const EK_COEFFICIENTS: usize = 4 * 256;
+const EK_T_BYTES: usize = EK_COEFFICIENTS * 12 / 8;
+const MLKEM_Q: u16 = 3329;
+
+/// Sample a canonical public-key encoding from the uniform ML-KEM-1024 key
+/// space. This is the candidate's fake key: it has no corresponding secret key.
+/// The required public-key pseudorandomness/message-hiding argument is not yet
+/// paper-bound for this OT composition.
+fn sample_fake_ek_bytes(rng: &mut dyn SpecRng) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(EK_BYTES);
+    for _ in 0..(EK_COEFFICIENTS / 2) {
+        let mut sample = || loop {
+            let value = (rng.next_u32() & 0x0fff) as u16;
+            if value < MLKEM_Q {
+                break value;
+            }
+        };
+        let a = sample();
+        let b = sample();
+        bytes.push(a as u8);
+        bytes.push(((a >> 8) as u8 & 0x0f) | ((b as u8 & 0x0f) << 4));
+        bytes.push((b >> 4) as u8);
+    }
+    debug_assert_eq!(bytes.len(), EK_T_BYTES);
+    for _ in 0..32 {
+        bytes.push(rng.next_u32() as u8);
+    }
+    debug_assert_eq!(bytes.len(), EK_BYTES);
+    bytes
+}
+
 fn ek_to_bytes(ek: &EncapsulationKey) -> Vec<u8> {
     ek.to_bytes().as_slice().to_vec()
 }
@@ -129,17 +157,19 @@ pub struct MkReceiver {
 }
 
 impl MkReceiver {
-    /// Step 1: generate the keypair, plant the real encapsulation key at
-    /// `choice` and a decoy at the other index, and emit both encapsulation
-    /// keys (2 × [`EK_BYTES`] bytes, index 0 first).
+    /// Step 1: generate one keypair, plant its encapsulation key at `choice`,
+    /// sample a fake public key with no secret key at the other index, and emit
+    /// both encapsulation keys (2 × [`EK_BYTES`] bytes, index 0 first).
     pub fn setup(rng: &mut dyn SpecRng, choice: bool) -> (Self, Vec<u8>) {
-        let mut crng = SpecRngAsCrypto(rng);
-        let decaps = DecapsulationKey1024::generate_from_rng(&mut crng);
-        let real_ek = decaps.encapsulation_key().clone();
-        // A decoy key the receiver cannot decapsulate: generate and drop its
-        // decapsulation half, keeping only the encapsulation key.
-        let decoy_decaps = DecapsulationKey1024::generate_from_rng(&mut crng);
-        let decoy_ek = decoy_decaps.encapsulation_key().clone();
+        let (decaps, real_ek) = {
+            let mut crng = SpecRngAsCrypto(rng);
+            let decaps = DecapsulationKey1024::generate_from_rng(&mut crng);
+            let real_ek = decaps.encapsulation_key().clone();
+            (decaps, real_ek)
+        };
+        let decoy_bytes = sample_fake_ek_bytes(rng);
+        let decoy_ek = ek_from_bytes(&decoy_bytes)
+            .expect("uniform ML-KEM-1024 public-key encoding is canonical");
 
         let mut out = Vec::with_capacity(2 * EK_BYTES);
         let (k0, k1) = if choice {
@@ -156,6 +186,10 @@ impl MkReceiver {
     /// (`CT_BYTES` + `N`) bytes), decapsulate the choice-index ciphertext, and
     /// unmask that label.
     pub fn finish<N: VoleArray<u8>>(self, frame: &[u8]) -> Result<Array<u8, N>, OtError> {
+        self.finish_ref::<N>(frame)
+    }
+
+    fn finish_ref<N: VoleArray<u8>>(&self, frame: &[u8]) -> Result<Array<u8, N>, OtError> {
         let half = CT_BYTES + N::USIZE;
         if frame.len() != 2 * half {
             return Err(OtError);
@@ -167,6 +201,51 @@ impl MkReceiver {
         let shared: SharedKey = self.decaps.decapsulate(&ct);
         let keystream = kdf_expand(shared.as_slice(), N::USIZE);
         Ok(Array::<u8, N>::from_fn(|i| masked[i] ^ keystream[i]))
+    }
+}
+
+/// ML-KEM-1024 base-OT adapter for the existing semi-honest IKNP/SoftSpoken →
+/// Ferret stack. It is an experimental candidate; the `BaseOt` trait does not
+/// supply transport framing or make a security claim for this construction.
+pub struct MlKem1024BaseOt;
+
+impl BaseOt<16> for MlKem1024BaseOt {
+    type SenderState = ();
+    type ReceiverState = MkReceiver;
+    type SetupMsg = ();
+    type RecvMsg = Vec<u8>;
+    type PayloadMsg = Vec<u8>;
+
+    fn sender_setup<R: SpecRng>(_rng: &mut R) -> (Self::SenderState, Self::SetupMsg) {
+        ((), ())
+    }
+
+    fn recv_start<R: SpecRng>(
+        rng: &mut R,
+        _setup: &Self::SetupMsg,
+        choice: bool,
+    ) -> (Self::ReceiverState, Self::RecvMsg) {
+        MkReceiver::setup(rng, choice)
+    }
+
+    fn sender_payload<R: SpecRng>(
+        rng: &mut R,
+        _state: &Self::SenderState,
+        recv_msg: &Self::RecvMsg,
+        m0: &[u8; 16],
+        m1: &[u8; 16],
+    ) -> Self::PayloadMsg {
+        let l0 = Array::<u8, U16>::from_fn(|i| m0[i]);
+        let l1 = Array::<u8, U16>::from_fn(|i| m1[i]);
+        MkSender::finish::<U16>(rng, recv_msg, [&l0, &l1])
+            .expect("base-OT receiver sent two valid ML-KEM public keys")
+    }
+
+    fn recv_finish(state: &Self::ReceiverState, payload: &Self::PayloadMsg) -> [u8; 16] {
+        let chosen = state
+            .finish_ref::<U16>(payload)
+            .expect("base-OT sender returned a correctly shaped ML-KEM frame");
+        core::array::from_fn(|i| chosen[i])
     }
 }
 
@@ -222,9 +301,11 @@ pub fn mk_ot_once<N: VoleArray<u8>>(
 mod tests {
     use super::*;
     use crate::ot::SeedRng;
-    use hybrid_array::typenum::Unsigned;
-    use typenum::U16;
-
+    use hybrid_array::typenum::{U1, U16, Unsigned};
+    use volar_spec::field::Galois128;
+    use volar_spec::ot::ferret::{FERRET_REG_TOY, params::FerretParams};
+    use volar_spec::ot::stack::OtStack;
+    use volar_spec::vole::Delta;
     type N = U16;
 
     fn label(byte: u8) -> Array<u8, N> {
@@ -241,6 +322,15 @@ mod tests {
         let got1 = mk_ot_once::<N>([&l0, &l1], true, &mut rng);
         assert_eq!(got0, l0);
         assert_eq!(got1, l1);
+    }
+
+    /// Uniformly sampled fake keys remain valid canonical ML-KEM public keys.
+    #[test]
+    fn fake_public_key_is_valid() {
+        let mut rng = SeedRng::new(0xFAE);
+        let bytes = sample_fake_ek_bytes(&mut rng);
+        let key = ek_from_bytes(&bytes).expect("fake key is canonical");
+        assert_eq!(key.to_bytes().as_slice(), bytes.as_slice());
     }
 
     /// The sender's frame does not leak the un-chosen label in plaintext, and
@@ -261,5 +351,26 @@ mod tests {
         // Chosen label recovers correctly.
         let got = receiver.finish::<N>(&frame).unwrap();
         assert_eq!(got, l0);
+    }
+
+    /// ML-KEM base OT can seed the common SoftSpoken → Ferret pool and the
+    /// resulting chosen-bit correlations satisfy their VOLE equation.
+    #[test]
+    fn mlkem_base_ot_ferret_stack_produces_valid_correlations() {
+        let mut rng_s = SeedRng::new(0x1122_3344);
+        let mut rng_r = SeedRng::new(0x5566_7788);
+        let params: FerretParams = FERRET_REG_TOY;
+        let mut stack =
+            OtStack::setup_with_base::<Sha256, _, MlKem1024BaseOt>(&mut rng_s, &mut rng_r, params);
+        let bits = [true, false, true, false, true, true];
+        let committed = stack.commit_bits(&mut rng_s, &bits);
+        let delta = Delta {
+            delta: Array::<Galois128, U1>::from_fn(|_| {
+                Galois128(u128::from_le_bytes(stack.sender.seed.delta))
+            }),
+        };
+        for (i, (vope, q)) in committed.iter().enumerate() {
+            assert!(vope.clone() * delta.clone() == *q, "COT row {i}");
+        }
     }
 }

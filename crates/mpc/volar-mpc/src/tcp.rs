@@ -425,8 +425,9 @@ impl<N: volar_spec::vole::VoleArray<u8>, T: Transport> crate::OtChannel<N>
 // ML-KEM OT channel (mlkem + std)
 // ============================================================================
 
-/// An [`crate::OtChannel`] that runs the ML-KEM-1024 1-of-2 OT over a framed
-/// transport, for cross-process sessions (the post-quantum OT option).
+/// An [`crate::OtChannel`] that runs the experimental ML-KEM-1024 real/fake-
+/// public-key OT candidate over a framed transport. FIPS 203 standardizes the
+/// KEM, not this OT composition; no post-quantum security claim is made here.
 ///
 /// Same ownership model as [`NetOtChannel`]. ML-KEM OT is receiver-initiated
 /// and non-interactive (receiver sends its two encapsulation keys, sender

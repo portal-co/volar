@@ -18,6 +18,10 @@ rand_core = { version = "0.10", default-features = false, optional = true }
 sha2 = { version = "0.11.0-rc.0", default-features = false }
 typenum = { version = "1.17", default-features = false }
 
+[[example]]
+name = "ot_ferret_probe"
+required-features = ["mlkem"]
+
 [features]
 default = []
 # Framed-TCP transport + std-only helpers. The crate is no_std+alloc by default.
@@ -25,6 +29,6 @@ std = []
 # Explicit server-only admission and adapter surface for batched TinyLabels
 # delivery. It never enables automatically and is unavailable without `std`.
 tinylabels = ["std"]
-# ML-KEM-1024 1-of-2 OT (post-quantum KEM-based), an alternative to the
-# default Chou-Orlandi base OT. No extra std requirement.
+# Experimental ML-KEM-1024 real/fake-public-key OT candidate. FIPS 203 covers
+# the KEM, not this OT composition; no post-quantum security claim is made.
 mlkem = ["dep:ml-kem", "dep:rand_core"]

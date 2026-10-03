@@ -42,6 +42,22 @@ impl OtStack {
         Self::setup_impl::<D, R, LweBaseOt<LWE_N>>(rng_s, rng_r, params, false)
     }
 
+    /// One-time setup using an alternate semi-honest base OT implementation.
+    /// The selected implementation supplies the 128 seed OTs for the existing
+    /// SoftSpoken/IKNP extension; Ferret then owns all subsequent COT refills.
+    ///
+    /// This is the seam for measuring candidate base OTs without changing the
+    /// protocol consumed through [`CotSource`]. It does not upgrade the base
+    /// OT or Ferret security assumptions, and it does not provide a transport.
+    pub fn setup_with_base<D, R, B>(rng_s: &mut R, rng_r: &mut R, params: FerretParams) -> Self
+    where
+        D: Digest,
+        R: SpecRng,
+        B: BaseOt<16>,
+    {
+        Self::setup_impl::<D, R, B>(rng_s, rng_r, params, false)
+    }
+
     /// Malicious-secure one-time setup: identical to [`OtStack::setup`] but the
     /// LWE base OT is the per-coordinate [`LweBaseOtSecure`] (a malicious base
     /// receiver — here the SoftSpoken sender, who picks the base-OT choice bits
