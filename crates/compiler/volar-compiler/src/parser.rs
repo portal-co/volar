@@ -1301,7 +1301,16 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             cond: Box::new(convert_expr(&w.cond)?),
             body: convert_block(&w.body)?,
         })),
-        Expr::Loop(_) => Err(CompilerError::UnboundedLoop),
+        // `loop { .. }` has no static boundedness proof, but neither does
+        // `while cond { .. }` above (`while true { .. }` is accepted
+        // unconditionally) — so treat `loop` identically to `while true`
+        // rather than hard-rejecting it. See
+        // docs/ts-emitter-length-params-and-solidity-backend-plan.md §1.3.4/§2.4
+        // and docs/compiler.md's Totality section for the reasoning.
+        Expr::Loop(l) => Ok(ir_expr(IrExprKind::WhileLoop {
+            cond: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+            body: convert_block(&l.body)?,
+        })),
         Expr::Match(m) => Ok(ir_expr(IrExprKind::Match {
             expr: Box::new(convert_expr(&m.expr)?),
             arms: m
@@ -2199,6 +2208,23 @@ fn convert_block(block: &syn::Block) -> Result<IrBlock> {
                         None,
                     ));
                 }
+            }
+            // Function-local `const X: T = ...;` — semantically an immutable
+            // binding in this position; emit as a `let` so references resolve.
+            // (Previously the catch-all below silently dropped it, leaving
+            // dangling references — a parse-gap.)
+            syn::Stmt::Item(syn::Item::Const(c)) => {
+                let ty = convert_type(&c.ty).ok();
+                let init = convert_expr(&c.expr)?;
+                stmts.push(volar_ir_common::Node::new(
+                    IrStmtKind::Let {
+                        pattern: IrPattern::ident(c.ident.to_string()),
+                        ty,
+                        init: Some(init),
+                    },
+                    (),
+                    None,
+                ));
             }
             _ => {}
         }

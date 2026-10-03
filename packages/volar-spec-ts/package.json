@@ -22,7 +22,7 @@
   "scripts": {
     "generate": "cd ../.. && cargo generate-ts",
     "build": "npx zshy --project ../../tsconfig.json",
-    "test": "npm run build --workspace @portal-solutions/volar-runtime && npm run build && node scripts/import-smoke.mjs",
+    "test": "npm run test --workspace @portal-solutions/volar-runtime && npm run build && node scripts/import-smoke.mjs",
     "typecheck": "./scripts/typecheck-strict.sh",
     "typecheck:count": "./scripts/typecheck-strict.sh --count"
   },

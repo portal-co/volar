@@ -1,20 +1,28 @@
 [alias]
 # Generate dynamic Rust into crates/spec/volar-spec-dyn/src/generated.rs
+# (the `volar-codegen` binary's own default for the `dyn` target).
 generate-spec = [
     "run",
-    "--package", "volar-compiler",
+    "--package", "volar-compiler-passes",
     "--bin", "volar-codegen",
     "--features", "parsing",
     "--",
     "dyn",
 ]
 
-# Generate TypeScript into packages/volar-runtime/src/generated.ts
+# Generate TypeScript into packages/volar-spec-ts/generated.ts
+# (the `volar-codegen` binary's own default for the `ts` target).
 generate-ts = [
     "run",
-    "--package", "volar-compiler",
+    "--package", "volar-compiler-passes",
     "--bin", "volar-codegen",
     "--features", "parsing",
     "--",
     "ts",
 ]
+
+# `cargo xtask <subcommand>` — regenerate/check the derived spec files listed
+# in xtask/src/main.rs (gen-specs / check-specs). Without this alias,
+# `cargo xtask ...` fails with "no such command" and CI's check-generated job
+# (which runs `cargo xtask check-specs`) cannot run at all.
+xtask = ["run", "--package", "xtask", "--"]

@@ -1,8 +1,9 @@
 //! Component-level TS codegen tests using seeded lazy emission.
 //!
 //! Each test compiles only the functions reachable from a small set of seeds,
-//! so one failing component doesn't block others.  All tests are expected to
-//! fail initially; they turn green as errors are fixed component by component.
+//! so one failing component doesn't block others. A working `tsc` process is
+//! required: executable/launcher failures fail the test rather than being
+//! misread as a clean strict-mode run.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -178,9 +179,20 @@ fn run_ts_component(seeds: &[&str], label: &str) {
 
     let _ = fs::remove_file(&tmp_path);
 
+    // Same fail-closed rule as ts_backend.rs: a broken tsc launcher (e.g. a
+    // stale node_modules/.bin entry) must not pass as "0 errors" just
+    // because its output contains no `error TS` lines.
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stdout}{stderr}");
+
+    if !output.status.success() && !combined.contains("error TS") {
+        panic!(
+            "tsc failed without TypeScript diagnostics (status {:?}):\n{}",
+            output.status.code(),
+            combined
+        );
+    }
 
     let mut by_code: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut total = 0usize;

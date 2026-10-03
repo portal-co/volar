@@ -106,6 +106,10 @@ pub struct LoweringContext {
     /// A generic `Foo` normally becomes `FooDyn`; if the source already
     /// declares a concrete `FooDyn`, use `FooLoweredDyn` instead.
     pub lowered_struct_names: BTreeMap<String, String>,
+    /// Bare struct name → (field name → field type), for resolving a
+    /// struct-expression field's declared array length during placeholder
+    /// length inference (`from_fn` without turbofish). Built once per module.
+    pub struct_field_types: BTreeMap<String, BTreeMap<String, IrType>>,
 }
 
 impl LoweringContext {
@@ -368,11 +372,28 @@ impl LoweringContext {
             }
         }
 
+        // Bare struct name → field name → field type (for placeholder length
+        // inference against struct-expression field types).
+        let struct_field_types: BTreeMap<String, BTreeMap<String, IrType>> = module
+            .structs
+            .iter()
+            .map(|s| {
+                (
+                    s.kind.to_string(),
+                    s.fields
+                        .iter()
+                        .map(|fl| (fl.name.clone(), fl.ty.clone()))
+                        .collect(),
+                )
+            })
+            .collect();
+
         Self {
             struct_info,
             length_aliases,
             fn_length_params,
             lowered_struct_names,
+            struct_field_types,
         }
     }
 }
@@ -869,6 +890,22 @@ fn lower_function_dyn(
             .collect::<Vec<_>>(),
     );
 
+    // Resolve `from_fn`/array placeholders (`let rows = from_fn(...); ...; Struct { rows }`)
+    // to the use-site's declared array length. `bound` = every name in scope (params +
+    // lowered length generics), so a free lowercase var is an unresolved placeholder.
+    {
+        let mut bound: BTreeSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        for g in fn_gen.iter().chain(impl_gen.iter()) {
+            bound.insert(g.name.to_lowercase());
+        }
+        // Use the *original* (pre-lowering) return type so projection lengths like
+        // `D::OutputSize` survive long enough to resolve against (lowering erases
+        // them to Vec, losing the length). The resolved placeholder becomes
+        // `LengthOf(D::OutputSize)`, which the TS witness system turns into
+        // `ctx.D_OutputSize`.
+        resolve_placeholder_lengths(&mut body, &bound, ctx, &fn_gen, f.return_type.as_ref());
+    }
+
     // Unpack witnesses in methods
     if f.receiver.is_some() {
         if let Some(sname) = self_struct {
@@ -957,6 +994,763 @@ fn lower_function_dyn(
         where_clause: lower_where_clause_dyn(&f.where_clause, ctx, &combined_gen),
         body,
         external_kind: f.external_kind,
+    }
+}
+
+/// Find the expected array length at the use-site of `name`, by scanning `expr`
+/// for a `StructExpr` field whose value is exactly `Var(name)` and returning that
+/// field's declared array length as a runtime expression. Returns `None` if the
+/// use-site isn't a struct field with a resolvable array length.
+/// Find the type `name` is bound to at a use-site: when `name` is used as a
+/// struct-field value, return that field's declared `IrType` (resolved through
+/// the source struct name for lowered `FooDyn` references).
+fn find_use_type_of_var(
+    expr: &IrExpr,
+    name: &str,
+    ctx: &LoweringContext,
+) -> Option<IrType> {
+    match &expr.kind {
+        IrExprKind::StructExpr { kind, fields, rest, .. } => {
+            let lowered_name = kind.to_string();
+            // struct_field_types is keyed by the *source* struct name; a lowered
+            // `FooDyn` reference must look up `Foo`.
+            let sname = ctx
+                .lowered_struct_names
+                .iter()
+                .find(|(_, dyn_name)| **dyn_name == lowered_name)
+                .map(|(src, _)| src.clone())
+                .unwrap_or(lowered_name);
+            for (field_name, val) in fields {
+                // Direct use: `Field { name: <name>, .. }`
+                if let IrExprKind::Var(v) = &val.kind {
+                    if v == name {
+                        if let Some(field_ty) = ctx
+                            .struct_field_types
+                            .get(&sname)
+                            .and_then(|m| m.get(field_name))
+                        {
+                            return Some(field_ty.clone());
+                        }
+                    }
+                }
+                // Recurse into field values (name may be nested).
+                if let Some(found) = find_use_type_of_var(val, name, ctx) {
+                    return Some(found);
+                }
+            }
+            if let Some(r) = rest {
+                return find_use_type_of_var(r, name, ctx);
+            }
+            None
+        }
+        IrExprKind::Binary { left, right, .. } => {
+            find_use_type_of_var(left, name, ctx)
+                .or_else(|| find_use_type_of_var(right, name, ctx))
+        }
+        IrExprKind::Unary { expr: e, .. } => find_use_type_of_var(e, name, ctx),
+        IrExprKind::Call { func, args } => {
+            for a in args {
+                if let Some(found) = find_use_type_of_var(a, name, ctx) {
+                    return Some(found);
+                }
+            }
+            find_use_type_of_var(func, name, ctx)
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            find_use_type_of_var(receiver, name, ctx).or_else(|| {
+                args.iter()
+                    .find_map(|a| find_use_type_of_var(a, name, ctx))
+            })
+        }
+        IrExprKind::Block(b) => find_use_type_of_var_in_block(b, name, ctx),
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => find_use_type_of_var(cond, name, ctx)
+            .or_else(|| find_use_type_of_var_in_block(then_branch, name, ctx))
+            .or_else(|| {
+                else_branch
+                    .as_ref()
+                    .and_then(|eb| find_use_type_of_var(eb, name, ctx))
+            }),
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => es
+            .iter()
+            .find_map(|e| find_use_type_of_var(e, name, ctx)),
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            find_use_type_of_var(e, name, ctx)
+        }
+        IrExprKind::Closure { body, .. } => find_use_type_of_var(body, name, ctx),
+        _ => None,
+    }
+}
+
+fn find_use_type_of_var_in_block(
+    block: &IrBlock,
+    name: &str,
+    ctx: &LoweringContext,
+) -> Option<IrType> {
+    for s in &block.stmts {
+        match &s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+                if let Some(found) = find_use_type_of_var(e, name, ctx) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    block
+        .expr
+        .as_ref()
+        .and_then(|e| find_use_type_of_var(e, name, ctx))
+}
+
+/// Recursively align an array producer against an expected array type, rewriting
+/// its length placeholder to the type's length, then recursing into the element
+/// body with the element type (handles nested `from_fn` like
+/// `Vec<[LweCiphertext; KS_ELL]>`). Only rewrites *placeholder* (unbound) vars;
+/// never touches bound in-scope names.
+fn align_producer_to_type(
+    expr: &mut IrExpr,
+    ty: &IrType,
+    bound: &BTreeSet<String>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) {
+    // Unwrap transparent wrappers to reach the producer.
+    match &mut expr.kind {
+        IrExprKind::Block(b) => {
+            if let Some(tail) = &mut b.expr {
+                align_producer_to_type(tail, ty, bound, ctx, fn_gen);
+            }
+            return;
+        }
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            align_producer_to_type(e, ty, bound, ctx, fn_gen);
+            return;
+        }
+        _ => {}
+    }
+    let (elem_ty, len_ty) = match ty {
+        IrType::Array { elem, len, .. } => (Some(elem.as_ref()), Some(len)),
+        _ => (array_like_elem(ty), None),
+    };
+    // Rewrite this level's length placeholder (if a producer).
+    if let Some(len) = len_ty {
+        let resolved = array_length_to_expr(len, fn_gen, ctx);
+        let mut phs = Vec::new();
+        collect_length_placeholder_shallow(expr, bound, &mut phs);
+        for ph in phs {
+            substitute_var_in_length_position(expr, &ph, &resolved);
+        }
+    }
+    // Recurse into the element body with the element type.
+    if let Some(elem) = elem_ty {
+        if let IrType::Array { .. } | IrType::Vector { .. } = elem {
+            let mut go = |body: &mut IrExpr| align_producer_to_type(body, elem, bound, ctx, fn_gen);
+            for_each_element_body(expr, &mut go);
+        }
+    }
+}
+
+/// Like `collect_length_placeholder` but only looks at THIS producer's length
+/// position (not recursing into the element body, which the caller handles).
+fn collect_length_placeholder_shallow(expr: &IrExpr, bound: &BTreeSet<String>, out: &mut Vec<String>) {
+    let is_ph = |v: &str| {
+        !bound.contains(v)
+            && v.chars().next().map_or(false, |c| c.is_lowercase())
+            && v.chars().all(|c| c.is_lowercase() || c.is_ascii_digit() || c == '_')
+            && v != "self"
+            && v != "ctx"
+    };
+    if let IrExprKind::IterPipeline(chain) = &expr.kind {
+        if let IterChainSource::Range { end, .. } = &chain.source {
+            if let IrExprKind::Var(v) = &end.kind {
+                if is_ph(v) && !out.contains(v) {
+                    out.push(v.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Substitute a placeholder var ONLY in the length position of this producer
+/// (the Range source end), not in the element body.
+fn substitute_var_in_length_position(expr: &mut IrExpr, old: &str, replacement: &IrExpr) {
+    if let IrExprKind::IterPipeline(chain) = &mut expr.kind {
+        if let IterChainSource::Range { end, .. } = &mut chain.source {
+            if matches!(&end.kind, IrExprKind::Var(v) if v == old) {
+                **end = replacement.clone();
+            }
+        }
+    }
+}
+
+/// Run `f` on the element body of an array producer (the closure body of a
+/// from_fn-lowered IterPipeline, i.e. the Map step that follows the Range).
+fn for_each_element_body(expr: &mut IrExpr, f: &mut dyn FnMut(&mut IrExpr)) {
+    if let IrExprKind::IterPipeline(chain) = &mut expr.kind {
+        for step in &mut chain.steps {
+            if let IterStep::Map { body, .. } | IterStep::FlatMap { body, .. } = step {
+                f(body);
+            }
+        }
+    }
+}
+
+/// Resolve `from_fn`/array placeholders: for each `let name = init` whose `init`
+/// references a placeholder length var (a bare `N` → `n` that isn't bound to any
+/// in-scope length generic), find the expected array length at `name`'s use-site
+/// (a struct-field assignment with a statically-known array length) and rewrite
+/// the placeholder in `init` to that length's runtime expression.
+///
+/// This is a bounded instance of the "weak type inference" the pipeline doc calls
+/// for: it only fires when the use-site length is unambiguous (a struct field with
+/// an array type), which covers the dominant spec pattern
+/// (`let rows = from_fn(...); ...; RgswCiphertext { rows }`).
+fn resolve_placeholder_lengths(
+    block: &mut IrBlock,
+    bound: &BTreeSet<String>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+    return_type: Option<&IrType>,
+) {
+    // For each `let name = <array producer>`, find the type `name` is bound to at
+    // a downstream use-site (a struct-field assignment) and recursively align the
+    // producer against that type — rewriting this level's length placeholder and
+    // recursing into nested producers (element-of-element) with the element type.
+    let n_stmts = block.stmts.len();
+    for i in 0..n_stmts {
+        let (name, use_ty) = {
+            let IrStmtKind::Let { pattern, ty: let_ty, init: Some(init) } = &block.stmts[i].kind else {
+                continue;
+            };
+            let IrPattern::Ident { name, .. } = pattern else {
+                continue;
+            };
+            // Skip producers with no length placeholder at any level.
+            let mut phs = Vec::new();
+            collect_length_placeholder(init, bound, &mut phs);
+            if phs.is_empty() {
+                continue;
+            }
+            let name = name.clone();
+            // Prefer the let's own type annotation when it carries an array length
+            // (e.g. `let neg_sk: [u32; BIG_N] = from_fn(..)`); otherwise fall back to
+            // the use-site (struct-field) type.
+            let annotation_is_array = matches!(let_ty, Some(IrType::Array { .. } | IrType::Vector { .. }));
+            let mut use_ty = if annotation_is_array { let_ty.clone() } else { None };
+            if use_ty.is_none() {
+                for later in &block.stmts[i + 1..] {
+                    match &later.kind {
+                        IrStmtKind::Let { init: Some(e), .. }
+                        | IrStmtKind::Semi(e)
+                        | IrStmtKind::Expr(e) => {
+                            if let Some(t) = find_use_type_of_var(e, &name, ctx) {
+                                use_ty = Some(t);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if use_ty.is_none() {
+                if let Some(tail) = &block.expr {
+                    use_ty = find_use_type_of_var(tail, &name, ctx);
+                }
+            }
+            (name, use_ty)
+        };
+        if let Some(ty) = use_ty {
+            if let IrStmtKind::Let { init: Some(init), .. } = &mut block.stmts[i].kind {
+                align_producer_to_type(init, &ty, bound, ctx, fn_gen);
+            }
+        }
+        let _ = name;
+    }
+
+    // Return-position array producers: `return [.., from_fn(...), ..]` or a tail
+    // array literal. Align the whole returned expression against the original
+    // (pre-lowering) return type, so projections like `D::OutputSize` survive.
+    if let Some(ret_ty) = return_type {
+        if let Some(tail) = &mut block.expr {
+            align_producer_to_type(tail, ret_ty, bound, ctx, fn_gen);
+            // A bare `[a, b]` return literal's *elements* are the producers; align
+            // each element against the return type's element type.
+            if let IrExprKind::Array(es) | IrExprKind::FixedArray(es) | IrExprKind::Tuple(es) =
+                &mut tail.kind
+            {
+                if let IrType::Array { elem, .. } | IrType::Vector { elem } = ret_ty {
+                    for e in es {
+                        align_producer_to_type(e, elem, bound, ctx, fn_gen);
+                    }
+                }
+            }
+        }
+        for s in block.stmts.iter_mut() {
+            if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &mut s.kind {
+                if let IrExprKind::Return(Some(ret)) = &mut e.kind {
+                    align_producer_to_type(ret, ret_ty, bound, ctx, fn_gen);
+                }
+            }
+        }
+    }
+
+    // Producers written directly as struct-field values (not through a let):
+    // `BinfheKeySwitchingKey { ksk: (0..BIG_N).map(|i| from_fn(..)).collect() }`.
+    // Align each field value against its declared field type (recursing into
+    // nested producers inside closures).
+    for s in block.stmts.iter_mut() {
+        match &mut s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+                align_struct_field_producers(e, bound, ctx, fn_gen);
+            }
+            _ => {}
+        }
+    }
+    if let Some(tail) = &mut block.expr {
+        align_struct_field_producers(tail, bound, ctx, fn_gen);
+    }
+
+    // Imperative push-into-vec: `let mut v = Vec::with_capacity(N); for .. {
+    // v.push(from_fn(..)) }`, then `v` used as a struct field. Build a map from
+    // the vec var name to its field element type, then align each pushed producer
+    // against that element type.
+    let mut vec_elem: BTreeMap<String, IrType> = BTreeMap::new();
+    collect_vec_field_elems(block, ctx, &mut vec_elem);
+    if !vec_elem.is_empty() {
+        for s in block.stmts.iter_mut() {
+            align_push_producers_in_stmt(s, &vec_elem, bound, ctx, fn_gen);
+        }
+        if let Some(tail) = &mut block.expr {
+            align_push_producers_in_expr(tail, &vec_elem, bound, ctx, fn_gen);
+        }
+    }
+}
+
+/// Extract the element type of an array-like type: `Vector`, `Array`, or a
+/// `Vec<E>`/`VecDeque<E>` parsed as `Struct{Custom("Vec"), [E]}`.
+fn array_like_elem(ty: &IrType) -> Option<&IrType> {
+    match ty {
+        IrType::Vector { elem } | IrType::Array { elem, .. } => Some(elem.as_ref()),
+        IrType::Struct { kind, type_args, .. }
+            if matches!(kind, StructKind::Custom(n) if n == "Vec" || n == "VecDeque")
+                && type_args.len() == 1 =>
+        {
+            Some(&type_args[0])
+        }
+        _ => None,
+    }
+}
+
+/// Collect, for each variable used as a struct field whose type is an array/vector
+/// of arrays, the element type — so `v.push(producer)` can align the producer.
+fn collect_vec_field_elems(block: &IrBlock, ctx: &LoweringContext, out: &mut BTreeMap<String, IrType>) {
+    let mut scan = |e: &IrExpr| collect_vec_field_elems_expr(e, ctx, out);
+    for s in &block.stmts {
+        match &s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => scan(e),
+            _ => {}
+        }
+    }
+    if let Some(t) = &block.expr {
+        scan(t);
+    }
+}
+
+fn collect_vec_field_elems_expr(expr: &IrExpr, ctx: &LoweringContext, out: &mut BTreeMap<String, IrType>) {
+    if let IrExprKind::StructExpr { kind, fields, rest, .. } = &expr.kind {
+        let lowered_name = kind.to_string();
+        let sname = ctx
+            .lowered_struct_names
+            .iter()
+            .find(|(_, dyn_name)| **dyn_name == lowered_name)
+            .map(|(src, _)| src.clone())
+            .unwrap_or(lowered_name);
+        if let Some(field_map) = ctx.struct_field_types.get(&sname) {
+            for (field_name, val) in fields.iter() {
+                if let IrExprKind::Var(v) = &val.kind {
+                    if let Some(elem) = field_map.get(field_name).and_then(array_like_elem) {
+                        out.insert(v.clone(), elem.clone());
+                    }
+                }
+            }
+        }
+        for (_, val) in fields.iter() {
+            collect_vec_field_elems_expr(val, ctx, out);
+        }
+        if let Some(r) = rest {
+            collect_vec_field_elems_expr(r, ctx, out);
+        }
+        return;
+    }
+    match &expr.kind {
+        IrExprKind::Binary { left, right, .. } => {
+            collect_vec_field_elems_expr(left, ctx, out);
+            collect_vec_field_elems_expr(right, ctx, out);
+        }
+        IrExprKind::Unary { expr: e, .. } | IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            collect_vec_field_elems_expr(e, ctx, out)
+        }
+        IrExprKind::Call { func, args } => {
+            collect_vec_field_elems_expr(func, ctx, out);
+            for a in args {
+                collect_vec_field_elems_expr(a, ctx, out);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            collect_vec_field_elems_expr(receiver, ctx, out);
+            for a in args {
+                collect_vec_field_elems_expr(a, ctx, out);
+            }
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                collect_vec_field_elems_expr(e, ctx, out);
+            }
+        }
+        IrExprKind::Block(b) => collect_vec_field_elems(b, ctx, out),
+        _ => {}
+    }
+}
+
+/// For any `v.push(producer)` where `v` maps to an array element type, align the
+/// producer against that element type.
+fn align_push_producers_in_stmt(
+    stmt: &mut IrStmt,
+    vec_elem: &BTreeMap<String, IrType>,
+    bound: &BTreeSet<String>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) {
+    match &mut stmt.kind {
+        IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+            align_push_producers_in_expr(e, vec_elem, bound, ctx, fn_gen);
+        }
+        _ => {}
+    }
+}
+
+fn align_push_producers_in_expr(
+    expr: &mut IrExpr,
+    vec_elem: &BTreeMap<String, IrType>,
+    bound: &BTreeSet<String>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) {
+    // `v.push(arg)` — arg aligned against vec_elem[v].
+    if let IrExprKind::MethodCall { receiver, method, args, .. } = &mut expr.kind {
+        if matches!(method, volar_compiler::MethodKind::Known(StdMethod::Push)) {
+            // Unwrap references/derefs to reach the pushed-onto variable.
+            let mut recv: &IrExpr = receiver;
+            loop {
+                match &recv.kind {
+                    IrExprKind::Unary { expr: e, .. }
+                    | IrExprKind::Cast { expr: e, .. } => recv = e,
+                    _ => break,
+                }
+            }
+            if let IrExprKind::Var(v) = &recv.kind {
+                if let Some(elem_ty) = vec_elem.get(v).cloned() {
+                    for a in args.iter_mut() {
+                        align_producer_to_type(a, &elem_ty, bound, ctx, fn_gen);
+                    }
+                }
+            }
+        }
+    }
+    // Recurse (a push may be inside a loop body block).
+    match &mut expr.kind {
+        IrExprKind::Block(b) => {
+            for st in &mut b.stmts {
+                align_push_producers_in_stmt(st, vec_elem, bound, ctx, fn_gen);
+            }
+            if let Some(t) = &mut b.expr {
+                align_push_producers_in_expr(t, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            align_push_producers_in_expr(receiver, vec_elem, bound, ctx, fn_gen);
+            for a in args {
+                align_push_producers_in_expr(a, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::Call { func, args } => {
+            align_push_producers_in_expr(func, vec_elem, bound, ctx, fn_gen);
+            for a in args {
+                align_push_producers_in_expr(a, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::Binary { left, right, .. } => {
+            align_push_producers_in_expr(left, vec_elem, bound, ctx, fn_gen);
+            align_push_producers_in_expr(right, vec_elem, bound, ctx, fn_gen);
+        }
+        IrExprKind::Unary { expr: e, .. } | IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            align_push_producers_in_expr(e, vec_elem, bound, ctx, fn_gen)
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                align_push_producers_in_expr(e, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        // Loop bodies: a BoundedLoop/WhileLoop/IterLoop body is a block.
+        IrExprKind::BoundedLoop { body, .. }
+        | IrExprKind::WhileLoop { body, .. }
+        | IrExprKind::IterLoop { body, .. } => {
+            for st in &mut body.stmts {
+                align_push_producers_in_stmt(st, vec_elem, bound, ctx, fn_gen);
+            }
+            if let Some(t) = &mut body.expr {
+                align_push_producers_in_expr(t, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::If { cond, then_branch, else_branch } => {
+            align_push_producers_in_expr(cond, vec_elem, bound, ctx, fn_gen);
+            for st in &mut then_branch.stmts {
+                align_push_producers_in_stmt(st, vec_elem, bound, ctx, fn_gen);
+            }
+            if let Some(eb) = else_branch {
+                align_push_producers_in_expr(eb, vec_elem, bound, ctx, fn_gen);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Walk an expression; for every `StructExpr`, align each field value (which may
+/// be or contain an array producer) against that field's declared type, so
+/// inline nested producers get their lengths from the field type.
+fn align_struct_field_producers(
+    expr: &mut IrExpr,
+    bound: &BTreeSet<String>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) {
+    // First handle this node if it's a struct expr.
+    if let IrExprKind::StructExpr { kind, fields, rest, .. } = &mut expr.kind {
+        let lowered_name = kind.to_string();
+        let sname = ctx
+            .lowered_struct_names
+            .iter()
+            .find(|(_, dyn_name)| **dyn_name == lowered_name)
+            .map(|(src, _)| src.clone())
+            .unwrap_or(lowered_name);
+        if let Some(field_map) = ctx.struct_field_types.get(&sname) {
+            for (field_name, val) in fields.iter_mut() {
+                if let Some(field_ty) = field_map.get(field_name).cloned() {
+                    align_producer_to_type(val, &field_ty, bound, ctx, fn_gen);
+                }
+            }
+        }
+        // Keep recursing into field values (they may contain nested struct exprs).
+        for (_, val) in fields.iter_mut() {
+            align_struct_field_producers(val, bound, ctx, fn_gen);
+        }
+        if let Some(r) = rest {
+            align_struct_field_producers(r, bound, ctx, fn_gen);
+        }
+        return;
+    }
+    // Generic recursion into children.
+    match &mut expr.kind {
+        IrExprKind::Binary { left, right, .. } => {
+            align_struct_field_producers(left, bound, ctx, fn_gen);
+            align_struct_field_producers(right, bound, ctx, fn_gen);
+        }
+        IrExprKind::Unary { expr: e, .. }
+        | IrExprKind::Cast { expr: e, .. }
+        | IrExprKind::Try(e) => align_struct_field_producers(e, bound, ctx, fn_gen),
+        IrExprKind::Call { func, args } => {
+            align_struct_field_producers(func, bound, ctx, fn_gen);
+            for a in args {
+                align_struct_field_producers(a, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            align_struct_field_producers(receiver, bound, ctx, fn_gen);
+            for a in args {
+                align_struct_field_producers(a, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                align_struct_field_producers(e, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::Block(b) => {
+            for st in &mut b.stmts {
+                match &mut st.kind {
+                    IrStmtKind::Let { init: Some(e), .. }
+                    | IrStmtKind::Semi(e)
+                    | IrStmtKind::Expr(e) => align_struct_field_producers(e, bound, ctx, fn_gen),
+                    _ => {}
+                }
+            }
+            if let Some(t) = &mut b.expr {
+                align_struct_field_producers(t, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::If { cond, then_branch, else_branch } => {
+            align_struct_field_producers(cond, bound, ctx, fn_gen);
+            for st in &mut then_branch.stmts {
+                if let IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &mut st.kind {
+                    align_struct_field_producers(e, bound, ctx, fn_gen);
+                }
+            }
+            if let Some(t) = &mut then_branch.expr {
+                align_struct_field_producers(t, bound, ctx, fn_gen);
+            }
+            if let Some(eb) = else_branch {
+                align_struct_field_producers(eb, bound, ctx, fn_gen);
+            }
+        }
+        IrExprKind::IterPipeline(chain) => {
+            for step in &mut chain.steps {
+                if let IterStep::Map { body, .. } | IterStep::FlatMap { body, .. } = step {
+                    align_struct_field_producers(body, bound, ctx, fn_gen);
+                }
+            }
+        }
+        IrExprKind::Closure { body, .. } => align_struct_field_producers(body, bound, ctx, fn_gen),
+        _ => {}
+    }
+}
+
+/// Replace every free occurrence of `Var(old)` in `expr` with a clone of `replacement`.
+fn substitute_var_with_expr(expr: &mut IrExpr, old: &str, replacement: &IrExpr) {
+    if matches!(&expr.kind, IrExprKind::Var(v) if v == old) {
+        *expr = replacement.clone();
+        return;
+    }
+    // Recurse through the same structure as rename_var_in_expr.
+    match &mut expr.kind {
+        IrExprKind::Binary { left, right, .. } => {
+            substitute_var_with_expr(left, old, replacement);
+            substitute_var_with_expr(right, old, replacement);
+        }
+        IrExprKind::Unary { expr: e, .. } => substitute_var_with_expr(e, old, replacement),
+        IrExprKind::Field { base, .. } => substitute_var_with_expr(base, old, replacement),
+        IrExprKind::Index { base, index } => {
+            substitute_var_with_expr(base, old, replacement);
+            substitute_var_with_expr(index, old, replacement);
+        }
+        IrExprKind::Call { func, args } => {
+            substitute_var_with_expr(func, old, replacement);
+            for a in args {
+                substitute_var_with_expr(a, old, replacement);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            substitute_var_with_expr(receiver, old, replacement);
+            for a in args {
+                substitute_var_with_expr(a, old, replacement);
+            }
+        }
+        IrExprKind::IterPipeline(chain) => substitute_var_in_iter_chain(chain, old, replacement),
+        IrExprKind::ArrayGenerate { body, .. } => substitute_var_with_expr(body, old, replacement),
+        IrExprKind::Block(b) => substitute_var_in_block(b, old, replacement),
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            substitute_var_with_expr(cond, old, replacement);
+            substitute_var_in_block(then_branch, old, replacement);
+            if let Some(eb) = else_branch {
+                substitute_var_with_expr(eb, old, replacement);
+            }
+        }
+        IrExprKind::StructExpr { fields, rest, .. } => {
+            for (_, e) in fields {
+                substitute_var_with_expr(e, old, replacement);
+            }
+            if let Some(r) = rest {
+                substitute_var_with_expr(r, old, replacement);
+            }
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                substitute_var_with_expr(e, old, replacement);
+            }
+        }
+        IrExprKind::Repeat { elem, len } => {
+            substitute_var_with_expr(elem, old, replacement);
+            substitute_var_with_expr(len, old, replacement);
+        }
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            substitute_var_with_expr(e, old, replacement)
+        }
+        IrExprKind::Closure { body, .. } => substitute_var_with_expr(body, old, replacement),
+        IrExprKind::RawMap { receiver, body, .. } => {
+            substitute_var_with_expr(receiver, old, replacement);
+            substitute_var_with_expr(body, old, replacement);
+        }
+        IrExprKind::RawZip {
+            left, right, body, ..
+        } => {
+            substitute_var_with_expr(left, old, replacement);
+            substitute_var_with_expr(right, old, replacement);
+            substitute_var_with_expr(body, old, replacement);
+        }
+        IrExprKind::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
+            substitute_var_with_expr(receiver, old, replacement);
+            substitute_var_with_expr(init, old, replacement);
+            substitute_var_with_expr(body, old, replacement);
+        }
+        _ => {}
+    }
+}
+
+fn substitute_var_in_block(block: &mut IrBlock, old: &str, replacement: &IrExpr) {
+    for s in &mut block.stmts {
+        match &mut s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+                substitute_var_with_expr(e, old, replacement)
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = &mut block.expr {
+        substitute_var_with_expr(e, old, replacement);
+    }
+}
+
+fn substitute_var_in_iter_chain(chain: &mut IrIterChain, old: &str, replacement: &IrExpr) {
+    match &mut chain.source {
+        IterChainSource::Method { collection, .. } => {
+            substitute_var_with_expr(collection, old, replacement)
+        }
+        IterChainSource::Range { start, end, .. } => {
+            substitute_var_with_expr(start, old, replacement);
+            substitute_var_with_expr(end, old, replacement);
+        }
+        IterChainSource::Zip { left, right } => {
+            substitute_var_in_iter_chain(left, old, replacement);
+            substitute_var_in_iter_chain(right, old, replacement);
+        }
+    }
+    for step in &mut chain.steps {
+        match step {
+            IterStep::Map { body, .. }
+            | IterStep::Filter { body, .. }
+            | IterStep::FilterMap { body, .. }
+            | IterStep::FlatMap { body, .. } => substitute_var_with_expr(body, old, replacement),
+            IterStep::Take { count } | IterStep::Skip { count } => {
+                substitute_var_with_expr(count, old, replacement)
+            }
+            _ => {}
+        }
+    }
+    if let IterTerminal::Fold { init, body, .. } = &mut chain.terminal {
+        substitute_var_with_expr(init, old, replacement);
+        substitute_var_with_expr(body, old, replacement);
     }
 }
 
@@ -1443,6 +2237,215 @@ fn rename_var_in_iter_chain(chain: &mut IrIterChain, old: &str, new_name: &str) 
     }
 }
 
+/// Extract the length-position placeholder var from an array-producing expr:
+/// a `from_fn`-lowered `IterPipeline` whose source is a `Range` ending in a bare
+/// placeholder var, or an `ArrayGenerate` whose len is one. Only the *length*
+/// expression is examined (never the element body, whose free vars are closure
+/// locals). Recurses through transparent wrappers (blocks, casts, Try, clones).
+fn collect_length_placeholder(expr: &IrExpr, bound: &BTreeSet<String>, out: &mut Vec<String>) {
+    // A var is a length placeholder iff it's lowercase-ish and not bound in scope.
+    let is_ph = |v: &str| {
+        !bound.contains(v)
+            && v.chars().next().map_or(false, |c| c.is_lowercase())
+            && v.chars().all(|c| c.is_lowercase() || c.is_ascii_digit() || c == '_')
+            && v != "self"
+            && v != "ctx"
+    };
+    match &expr.kind {
+        IrExprKind::IterPipeline(chain) => {
+            if let IterChainSource::Range { end, .. } = &chain.source {
+                if let IrExprKind::Var(v) = &end.kind {
+                    if is_ph(v) && !out.contains(v) {
+                        out.push(v.clone());
+                    }
+                }
+            }
+        }
+        IrExprKind::ArrayGenerate { .. } => {
+            // ArrayGenerate carries an ArrayLength, not an IrExpr; its placeholder was
+            // already collapsed to `TypeParam("n")`. We resolve via the use-site and
+            // rewrite at the ArrayGenerate level separately (handled by the caller).
+            // Here, just record the conventional placeholder name if the len is a
+            // bare type-param placeholder.
+        }
+        // Transparent wrappers — recurse.
+        IrExprKind::Block(b) => {
+            if let Some(tail) = &b.expr {
+                collect_length_placeholder(tail, bound, out);
+            }
+        }
+        // Array/tuple literals: a producer may be an element (`[v, from_fn(...)]`).
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                collect_length_placeholder(e, bound, out);
+            }
+        }
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            collect_length_placeholder(e, bound, out)
+        }
+        IrExprKind::MethodCall { receiver, args, .. }
+            if matches!(&receiver.kind, IrExprKind::IterPipeline(_)) =>
+        {
+            collect_length_placeholder(receiver, bound, out);
+            for a in args {
+                collect_length_placeholder(a, bound, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect free lowercase variable references in `expr` that are not in `bound`
+/// and are not known non-length names — candidates for an unresolved `from_fn`
+/// length placeholder (the parser emits bare `N` → `n` when no turbofish is
+/// given). Conservative: only names of the form `n`, `len_*`, `<single lowercase
+/// letter>`, or `<name>_<field>` produced by the placeholder fallback.
+fn collect_placeholder_vars(expr: &IrExpr, bound: &BTreeSet<String>, out: &mut Vec<String>) {
+    match &expr.kind {
+        IrExprKind::Var(v) => {
+            let is_placeholder = !bound.contains(v)
+                && v.chars().next().map_or(false, |c| c.is_lowercase())
+                && v.chars().all(|c| c.is_lowercase() || c.is_ascii_digit() || c == '_')
+                // Exclude obvious non-length locals/keywords that are legitimately free
+                // at this stage (they'd be bound elsewhere or are builtins).
+                && v != "self"
+                && v != "ctx";
+            if is_placeholder && !out.contains(v) {
+                out.push(v.clone());
+            }
+        }
+        IrExprKind::Binary { left, right, .. } => {
+            collect_placeholder_vars(left, bound, out);
+            collect_placeholder_vars(right, bound, out);
+        }
+        IrExprKind::Unary { expr: e, .. } => collect_placeholder_vars(e, bound, out),
+        IrExprKind::Field { base, .. } => collect_placeholder_vars(base, bound, out),
+        IrExprKind::Index { base, index } => {
+            collect_placeholder_vars(base, bound, out);
+            collect_placeholder_vars(index, bound, out);
+        }
+        IrExprKind::Call { func, args } => {
+            collect_placeholder_vars(func, bound, out);
+            for a in args {
+                collect_placeholder_vars(a, bound, out);
+            }
+        }
+        IrExprKind::MethodCall { receiver, args, .. } => {
+            collect_placeholder_vars(receiver, bound, out);
+            for a in args {
+                collect_placeholder_vars(a, bound, out);
+            }
+        }
+        IrExprKind::IterPipeline(chain) => collect_placeholder_vars_chain(chain, bound, out),
+        IrExprKind::ArrayGenerate { body, .. } => collect_placeholder_vars(body, bound, out),
+        IrExprKind::Block(b) => collect_placeholder_vars_block(b, bound, out),
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_placeholder_vars(cond, bound, out);
+            collect_placeholder_vars_block(then_branch, bound, out);
+            if let Some(eb) = else_branch {
+                collect_placeholder_vars(eb, bound, out);
+            }
+        }
+        IrExprKind::StructExpr { fields, rest, .. } => {
+            for (_, e) in fields {
+                collect_placeholder_vars(e, bound, out);
+            }
+            if let Some(r) = rest {
+                collect_placeholder_vars(r, bound, out);
+            }
+        }
+        IrExprKind::Array(es) | IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                collect_placeholder_vars(e, bound, out);
+            }
+        }
+        IrExprKind::Repeat { elem, len } => {
+            collect_placeholder_vars(elem, bound, out);
+            collect_placeholder_vars(len, bound, out);
+        }
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
+            collect_placeholder_vars(e, bound, out)
+        }
+        IrExprKind::Closure { body, .. } => collect_placeholder_vars(body, bound, out),
+        IrExprKind::RawMap { receiver, body, .. } => {
+            collect_placeholder_vars(receiver, bound, out);
+            collect_placeholder_vars(body, bound, out);
+        }
+        IrExprKind::RawZip {
+            left, right, body, ..
+        } => {
+            collect_placeholder_vars(left, bound, out);
+            collect_placeholder_vars(right, bound, out);
+            collect_placeholder_vars(body, bound, out);
+        }
+        IrExprKind::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
+            collect_placeholder_vars(receiver, bound, out);
+            collect_placeholder_vars(init, bound, out);
+            collect_placeholder_vars(body, bound, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_placeholder_vars_block(block: &IrBlock, bound: &BTreeSet<String>, out: &mut Vec<String>) {
+    for s in &block.stmts {
+        match &s.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+                collect_placeholder_vars(e, bound, out)
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = &block.expr {
+        collect_placeholder_vars(e, bound, out);
+    }
+}
+
+fn collect_placeholder_vars_chain(
+    chain: &IrIterChain,
+    bound: &BTreeSet<String>,
+    out: &mut Vec<String>,
+) {
+    match &chain.source {
+        IterChainSource::Method { collection, .. } => {
+            collect_placeholder_vars(collection, bound, out)
+        }
+        IterChainSource::Range { start, end, .. } => {
+            collect_placeholder_vars(start, bound, out);
+            collect_placeholder_vars(end, bound, out);
+        }
+        IterChainSource::Zip { left, right } => {
+            collect_placeholder_vars_chain(left, bound, out);
+            collect_placeholder_vars_chain(right, bound, out);
+        }
+    }
+    for step in &chain.steps {
+        match step {
+            IterStep::Map { body, .. }
+            | IterStep::Filter { body, .. }
+            | IterStep::FilterMap { body, .. }
+            | IterStep::FlatMap { body, .. } => collect_placeholder_vars(body, bound, out),
+            IterStep::Take { count } | IterStep::Skip { count } => {
+                collect_placeholder_vars(count, bound, out)
+            }
+            _ => {}
+        }
+    }
+    if let IterTerminal::Fold { init, body, .. } = &chain.terminal {
+        collect_placeholder_vars(init, bound, out);
+        collect_placeholder_vars(body, bound, out);
+    }
+}
+
 fn lower_block_dyn(block: &IrBlock, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrBlock {
     IrBlock {
         stmts: block
@@ -1784,13 +2787,23 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 }
                 _ => None,
             };
+            // These hardcoded rewrites target *free* functions (`commit::<D>(...)`,
+            // `create_vole_from_material::<B,...>(...)`). They must NOT fire on
+            // trait-method calls that merely share the method name — e.g.
+            // `L::commit(...)` (`L: LeafCommit`) has a type-param qualifier and is a
+            // different function from the free `commit::<D>`. Gate on the absence of
+            // a path qualifier so we only rewrite genuinely free calls; a qualified
+            // `Trait::method`/`Type::assoc` call keeps its qualifier for the backend
+            // (witness) machinery to resolve.
+            let is_free_call = func_qualifier.is_none();
             if let Some(name) = &func_name {
                 // `B::double(x)` passes through unchanged — the TS printer handles it
                 // via class witnesses (`ctx.BClass.double(x)`). No lowering hack needed.
                 if false && name == "double" {
                     // (disabled: was rewriting to double_vec which is not spec-consistent)
-                } else if name == "create_vole_from_material"
-                    || name == "create_vole_from_material_expanded"
+                } else if is_free_call
+                    && (name == "create_vole_from_material"
+                        || name == "create_vole_from_material_expanded")
                 {
                     if let Some(b_param) = fn_gen.iter().find(|p| {
                         p.name.starts_with('B')
@@ -1823,7 +2836,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                             name
                         );
                     }
-                } else if name == "commit" {
+                } else if is_free_call && name == "commit" {
                     if let Some(d_param) = fn_gen.iter().find(|p| {
                         p.name.starts_with('D')
                             && p.bounds
@@ -1856,11 +2869,36 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             // erased length generic. Call sites inside generic functions have those
             // params in scope (from their own lowered signature) and must forward them.
             {
-                // Only inject for bare Var references (top-level function calls).
-                // Path expressions like ["D", "new"] are type-param qualified calls
-                // handled by class witnesses in the TS printer — don't touch them.
+                // Inject for bare function references: either a `Var` or a
+                // single-segment `Path` (`fill_test_poly::<BIG_N>(...)` parses the
+                // callee as `Path["fill_test_poly"]` with turbofish type args, not a
+                // `Var`). Multi-segment paths like ["D", "new"] are type-param
+                // qualified calls handled by class witnesses in the TS printer —
+                // don't touch them.
                 let callee_name = match &func.kind {
                     IrExprKind::Var(name) => Some(name.as_str()),
+                    IrExprKind::Path { segments, .. } if segments.len() == 1 => {
+                        Some(segments[0].as_str())
+                    }
+                    // Associated/static call `Type::method(..)`: the callee is the
+                    // method name (last segment). Only forward when the head is a
+                    // dyn-lowered generic struct (so the method genuinely gained a
+                    // leading length param) — not for type-param-qualified calls like
+                    // `D::new` (handled by class witnesses) where segments[0] is a
+                    // bare type param with no struct info.
+                    IrExprKind::Path { segments, .. } if segments.len() == 2 => {
+                        let head_is_dyn_struct = ctx
+                            .get_struct_info(&segments[0])
+                            .map(|info| {
+                                !info.length_witnesses.is_empty() || !info.type_params.is_empty()
+                            })
+                            .unwrap_or(false);
+                        if head_is_dyn_struct {
+                            Some(segments[1].as_str())
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 };
                 // Never inject into constructors (uppercase first letter).
@@ -1883,17 +2921,59 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                                     }
                                 })
                                 .collect();
-                            // Prepend length params that the callee expects and we have in scope.
+                            // The turbofish type args (`reduce::<LOG_Q>`) directly supply the
+                            // callee's leading length params, positionally — this resolves the
+                            // name mismatch where the callee's param (`log`) differs from the
+                            // caller's generic (`log_q`). Map each type-param turbofish arg to
+                            // its lowercased in-scope var.
+                            let turbofish: Vec<String> = match &func.kind {
+                                IrExprKind::Path { type_args, .. } => type_args
+                                    .iter()
+                                    .filter_map(|t| match t {
+                                        IrType::TypeParam(nm) => Some(nm.to_lowercase()),
+                                        _ => None,
+                                    })
+                                    .collect(),
+                                _ => Vec::new(),
+                            };
+                            // Prepend length params the callee expects. Prefer turbofish args
+                            // positionally; fall back to same-named in-scope params.
                             let mut prepend: Vec<IrExpr> = Vec::new();
-                            for param in expected {
-                                if in_scope.contains(param) {
-                                    prepend.push(ir_expr(IrExprKind::Var(param.clone())));
+                            for (idx, param) in expected.iter().enumerate() {
+                                let v = if idx < turbofish.len() && in_scope.contains(&turbofish[idx]) {
+                                    Some(turbofish[idx].clone())
+                                } else if in_scope.contains(param) {
+                                    Some(param.clone())
+                                } else {
+                                    None
+                                };
+                                if let Some(v) = v {
+                                    prepend.push(ir_expr(IrExprKind::Var(v)));
                                 }
                             }
                             if !prepend.is_empty() {
                                 prepend.extend(final_args);
                                 final_args = prepend;
                             }
+                        }
+                    }
+                }
+            }
+
+            // Rename the type head of an associated-function call
+            // (`Garble::zero()` → `GarbleDyn::zero()`) when the head names a
+            // generic struct that was dyn-renamed. Without this, the printed
+            // call references the un-suffixed name, which doesn't exist in the
+            // dyn-lowered output. Distinct from the constructor rename below,
+            // which targets the *last* segment (the constructor name itself).
+            if let IrExprKind::Path { segments, .. } = &mut func.kind {
+                if segments.len() >= 2 {
+                    let head = segments[0].clone();
+                    if let Some(info) = ctx.get_struct_info(&head) {
+                        let has_generics =
+                            !info.length_witnesses.is_empty() || !info.type_params.is_empty();
+                        if has_generics {
+                            segments[0] = ctx.lowered_struct_name(&head);
                         }
                     }
                 }
