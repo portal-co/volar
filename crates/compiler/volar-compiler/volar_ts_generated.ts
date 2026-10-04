@@ -9011,7 +9011,7 @@ export function ot_recv<G, D, R>(ctx: { GClass: { new(...args: any[]): any } & R
 } else {
   return gx;
 } })();
-  return [new BaseOtReceiverDyn({ $fx: x, $fs: s, $fc: c, $f_d: PhantomData }), new OtReceiverMsgDyn({ $fr: r })];
+  return [new BaseOtReceiverDyn({ $fx: x, $fs: s, $fc: c }), new OtReceiverMsgDyn({ $fr: r })];
 }
 
 export function ot_recv_choice<G, D>(state: BaseOtReceiverDyn<G, D>): boolean
@@ -9063,7 +9063,7 @@ export function ot_send_setup<G, D, R>(ctx: { GClass: { new(...args: any[]): any
   const g = ctx.GClass.generator();
   const s = ctx.GClass.scalar_mul(g, y);
   const t = ctx.GClass.scalar_mul(s, y);
-  return [new BaseOtSenderDyn({ $fy: y, $fs: __clone(s), $ft: t, $f_d: PhantomData }), s];
+  return [new BaseOtSenderDyn({ $fy: y, $fs: __clone(s), $ft: t }), s];
 }
 
 export function pack_kappa(bits: boolean[]): bigint[]

@@ -6293,9 +6293,17 @@ fn is_phantom_field(field: &IrField) -> bool {
         || matches!(&field.ty, IrType::Struct { kind, .. } if kind.to_string().contains("PhantomData"))
 }
 
-/// TS has no PhantomData — drop any call argument that is a bare `PhantomData` path.
+/// TS has no PhantomData — drop its zero-sized value in any IR constructor shape.
 fn is_phantom_arg(expr: &IrExpr) -> bool {
-    matches!(&expr.kind, IrExprKind::Path { segments, .. } if segments.last().map(|s| s == "PhantomData").unwrap_or(false))
+    match &expr.kind {
+        IrExprKind::Path { segments, .. } => {
+            segments.last().map(|s| s == "PhantomData").unwrap_or(false)
+        }
+        IrExprKind::Var(name) => name == "PhantomData",
+        IrExprKind::Call { func, .. } => is_phantom_arg(func),
+        IrExprKind::StructExpr { kind, .. } => kind.to_string().contains("PhantomData"),
+        _ => false,
+    }
 }
 
 fn pattern_is_mutable(pat: &IrPattern) -> bool {
@@ -7235,14 +7243,16 @@ mod enum_variant_constructor_tests {
     use crate::parser::parse_source;
 
     #[test]
-    fn resolves_qualified_struct_and_unit_variant_constructors() {
+    fn resolves_enum_and_struct_constructors_and_erases_phantom_fields() {
         let source = r#"
             struct Same { ordinary: u8 }
+            struct Marker<T> { _d: core::marker::PhantomData<T> }
             enum First { Same { first: u8, second: u8 }, Done }
             enum Second { Same { other: u8 } }
             fn make() -> First { First::Same { second: 2, first: 1 } }
             fn make_unit() -> First { First::Done }
             fn make_struct() -> Same { Same { ordinary: 3 } }
+            fn make_marker() -> Marker<u8> { Marker { _d: PhantomData } }
         "#;
         let module = parse_source(source, "enum_variant_test", &[]).unwrap();
         let ts = print_module_ts(&module);
@@ -7250,6 +7260,9 @@ mod enum_variant_constructor_tests {
         assert!(ts.contains("new First_Same(1n, 2n)"), "{ts}");
         assert!(ts.contains("new First_Done()"), "{ts}");
         assert!(ts.contains("new Same({ $fordinary: 3n })"), "{ts}");
+        assert!(ts.contains("new Marker({"), "{ts}");
+        assert!(!ts.contains("PhantomData"), "{ts}");
+        assert!(!ts.contains("$f_d"), "{ts}");
         assert!(!ts.contains("new First_Same({"), "{ts}");
     }
 }

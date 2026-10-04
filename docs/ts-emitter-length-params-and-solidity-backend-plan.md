@@ -305,10 +305,11 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397 → 362 → 350 → 315 → 304 → 283 → 279 → 269** (and seeded components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397 → 362 → 350 → 315 → 304 → 283 → 279 → 269 → 265** (and seeded components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
 *syntax* errors are fixed; the remainder are semantic. The latest 279 → 269
-batch resolves enum-variant constructors by IR metadata, including ambiguous
-bare variant names and unit variants. Bug classes fixed:
+batches resolve enum-variant constructors by IR metadata and erase zero-sized
+PhantomData values. The latest 269 → 265 batch removes emitted references to
+PhantomData. Bug classes fixed:
 
 - **Module-path qualifiers not stripped** (`torus::reduce` → `torus.reduce`,
   never defined): `TsContext::is_type_head` + leading-module-segment stripping
@@ -338,6 +339,8 @@ bare variant names and unit variants. Bug classes fixed:
 - **Enum variant construction** now resolves struct-like variants to the
   emitted `Enum_Variant` class with declaration-ordered positional fields,
   and resolves unique bare unit variants (279 → 269).
+- **`PhantomData` marker values** no longer leak into generated expressions;
+  these Rust zero-sized markers are erased from struct initializers (269 → 265).
 
 **Remaining error classes** (each a deeper emitter/lowering feature, not a
 one-line fix):
