@@ -3375,7 +3375,7 @@ export class BatchSelect {
     for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(result.length); __zip_mut_2 += 1n) {
       const delta = correction[Number(__zip_mut_2)];
       {
-        value.sub_assign(this.$fring, delta);
+        result[Number(__zip_mut_2)].sub_assign(this.$fring, delta);
       }}
     return this.$fring.decode_messages(result);
   }
@@ -3401,7 +3401,7 @@ export class BatchSelect {
     let messages = __volar_try_0;
     for (let __mut_2 = 0n; __mut_2 < BigInt(messages.length); __mut_2 += 1n) {
     {
-      const __volar_try_0 = this.$fring.add_noise(ctx, message, noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
+      const __volar_try_0 = this.$fring.add_noise(ctx, messages[Number(__mut_2)], noise, LARGE_NOISE_STANDARD_DEVIATION, LARGE_NOISE_MAX_DEVIATION);
       if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
     }}
     const __volar_try_2 = this.lhe_enc2(ctx, messages, random, noise);
@@ -3504,7 +3504,7 @@ export class BatchSelect {
     }
     for (let __mut_2 = 0n; __mut_2 < BigInt(ciphertext.length); __mut_2 += 1n) {
     {
-      const __volar_try_0 = this.$fring.add_noise(ctx, value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
+      const __volar_try_0 = this.$fring.add_noise(ctx, ciphertext[Number(__mut_2)], noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION);
       if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
     }}
     return [random_vector, ciphertext];
@@ -3726,8 +3726,8 @@ export class Ring {
       for (let __mut_3 = 0n; __mut_3 < BigInt(digits.length); __mut_3 += 1n) {
       {
         const part = BigInt((combined % (this.$fparameters.$fgadget_base as unknown as bigint)));
-        digit.$ffirst[Number(index)] = (part % this.$fparameters.$fplaintext_modulus);
-        digit.$fsecond[Number(index)] = (part % this.$fparameters.$fdelta);
+        digits[Number(__mut_3)].$ffirst[Number(index)] = (part % this.$fparameters.$fplaintext_modulus);
+        digits[Number(__mut_3)].$fsecond[Number(index)] = (part % this.$fparameters.$fdelta);
         combined /= (this.$fparameters.$fgadget_base as unknown as bigint);
       }}
       if (!__equals(combined, 0n))       {
@@ -3736,8 +3736,8 @@ export class Ring {
     }
     for (let __mut_2 = 0n; __mut_2 < BigInt(digits.length); __mut_2 += 1n) {
     {
-      this.$ffirst_ntt.forward(digit.$ffirst);
-      this.$fsecond_ntt.forward(digit.$fsecond);
+      this.$ffirst_ntt.forward(digits[Number(__mut_2)].$ffirst);
+      this.$fsecond_ntt.forward(digits[Number(__mut_2)].$fsecond);
     }}
     return digits;
   }
@@ -6208,8 +6208,8 @@ export function build_buckets(seed: bigint[], n: bigint, m: bigint): Vec<Vec<big
   }
   for (let __mut_1 = 0n; __mut_1 < BigInt(buckets.length); __mut_1 += 1n) {
   {
-    b.sort((__a: any, __b: any) => (__a < __b ? -1 : (__a > __b ? 1 : 0)));
-    b.dedup();
+    buckets[Number(__mut_1)].sort((__a: any, __b: any) => (__a < __b ? -1 : (__a > __b ? 1 : 0)));
+    buckets[Number(__mut_1)].dedup();
   }}
   return buckets;
 }

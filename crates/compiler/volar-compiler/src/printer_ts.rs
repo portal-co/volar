@@ -3937,6 +3937,12 @@ impl<'a> TsBackend for TsExprWriter<'a> {
         match &self.expr.kind {
             IrExprKind::Lit(l) => ts_literal(l, f)?,
             IrExprKind::Var(v) => {
+                // Mutable iterator bindings are represented by indexed write-through
+                // refs rather than JS loop locals; reads/method receivers must resolve
+                // to the backing element just like explicit `*value` expressions.
+                if let Some(r) = cx.find_mut_ref(v) {
+                    return write!(f, "{}[Number({})]", r.array_expr, r.index_var);
+                }
                 let name = if v == "self" {
                     "this".to_string()
                 } else if v == "None" {

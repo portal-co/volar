@@ -305,11 +305,12 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397 → 362 → 350 → 315 → 304 → 283 → 279 → 269 → 265 → 263 → 261** (and seeded components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397 → 362 → 350 → 315 → 304 → 283 → 279 → 269 → 265 → 263 → 261 → 252** (and seeded components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
 *syntax* errors are fixed; the remainder are semantic. The 279 → 269 batch
 resolves enum-variant constructors by IR metadata; 269 → 265 erases zero-sized
 PhantomData values; and 265 → 263 lowers type-alias targets through dyn-lowering.
-Bug classes fixed:
+The latest 261 → 252 batch resolves reads/method calls on mutable iterator refs
+through their backing-array indices. Bug classes fixed:
 
 - **Module-path qualifiers not stripped** (`torus::reduce` → `torus.reduce`,
   never defined): `TsContext::is_type_head` + leading-module-segment stripping
@@ -335,7 +336,8 @@ Bug classes fixed:
 - **Result `?` propagation** now evaluates once, returns error-enum instances,
   and narrows the success value (397 → 362).
 - **`iter_mut()` write-back through zip loops** now writes through indexed
-  references rather than rebinding loop locals (362 → 350).
+  references rather than rebinding loop locals (362 → 350); mutable-reference
+  reads and method receivers also resolve to the backing element (261 → 252).
 - **Enum variant construction** now resolves struct-like variants to the
   emitted `Enum_Variant` class with declaration-ordered positional fields,
   and resolves unique bare unit variants (279 → 269).
