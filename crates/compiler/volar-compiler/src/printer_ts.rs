@@ -648,6 +648,73 @@ fn build_structs_by_name(module: &IrModule<IrFunction>) -> BTreeMap<String, IrSt
         .collect()
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct EnumVariantInfo {
+    class_name: String,
+    fields: Vec<String>,
+    is_unit: bool,
+    is_struct: bool,
+}
+
+fn insert_enum_variant(
+    variants: &mut BTreeMap<String, Option<EnumVariantInfo>>,
+    key: String,
+    info: EnumVariantInfo,
+) {
+    if let Some(existing) = variants.get_mut(&key) {
+        if existing.as_ref() != Some(&info) {
+            *existing = None;
+        }
+    } else {
+        variants.insert(key, Some(info));
+    }
+}
+
+/// Build a registry for enum constructors. Qualified keys always preserve the
+/// enum identity; bare variant names resolve only when unique in the module.
+fn build_enum_variants(
+    module: &IrModule<IrFunction>,
+) -> BTreeMap<String, Option<EnumVariantInfo>> {
+    let mut variants = BTreeMap::new();
+    for en in &module.enums {
+        let enum_name = en.kind.to_string();
+        for variant in &en.variants {
+            let info = EnumVariantInfo {
+                class_name: format!("{}_{}", enum_name, variant.name),
+                fields: match &variant.fields {
+                    IrEnumVariantData::Struct(fields) => {
+                        fields.iter().map(|field| field.name.clone()).collect()
+                    }
+                    _ => Vec::new(),
+                },
+                is_unit: matches!(&variant.fields, IrEnumVariantData::Unit),
+                is_struct: matches!(&variant.fields, IrEnumVariantData::Struct(_)),
+            };
+            insert_enum_variant(&mut variants, variant.name.clone(), info.clone());
+            insert_enum_variant(
+                &mut variants,
+                format!("{}::{}", enum_name, variant.name),
+                info,
+            );
+        }
+    }
+    variants
+}
+
+fn find_enum_variant<'a>(cx: &'a TsContext<'_>, path: &str) -> Option<&'a EnumVariantInfo> {
+    if !path.contains("::") && cx.structs_by_name.contains_key(path) {
+        return None;
+    }
+    if let Some(Some(info)) = cx.enum_variants.get(path) {
+        return Some(info);
+    }
+    let mut segments = path.rsplit("::");
+    let variant = segments.next()?;
+    let enum_name = segments.next()?;
+    let qualified = format!("{}::{}", enum_name, variant);
+    cx.enum_variants.get(&qualified).and_then(Option::as_ref)
+}
+
 /// Build an alias-name → target-type registry for the module, used to resolve
 /// alias heads of paths (`DigestImpl::new()` → `new Sha3_256()`). Keyed by the
 /// bare alias name (aliases are emitted into the flat TS scope by bare name).
@@ -983,6 +1050,7 @@ pub fn print_module_ts_with_imports(
     let error_enums = collect_error_enums(&module);
     let enum_names: std::collections::HashSet<String> =
         module.enums.iter().map(|e| e.kind.to_string()).collect();
+    let enum_variants = build_enum_variants(&module);
     let method_t_fields_map = build_method_t_fields(&module);
     let structs_by_name = build_structs_by_name(&module);
     let type_aliases = build_type_aliases(&module);
@@ -995,6 +1063,7 @@ pub fn print_module_ts_with_imports(
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names,
+        enum_variants: &enum_variants,
         error_enums: &error_enums,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map,
@@ -1079,6 +1148,7 @@ fn print_module_ts_with_emit_flags(
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map = build_method_t_fields(&module);
     let (oracle_fns, async_fns) = compute_async_fns(&module);
+    let enum_variants = build_enum_variants(&module);
     let structs_by_name = build_structs_by_name(&module);
     let type_aliases = build_type_aliases(&module);
     let cx = TsContext {
@@ -1090,6 +1160,7 @@ fn print_module_ts_with_emit_flags(
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names,
+        enum_variants: &enum_variants,
         error_enums: &error_enums,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map,
@@ -1154,6 +1225,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
     let error_enums = collect_error_enums(&module);
     let enum_names: std::collections::HashSet<String> =
         module.enums.iter().map(|e| e.kind.to_string()).collect();
+    let enum_variants = build_enum_variants(&module);
     let method_t_fields_map2 = build_method_t_fields(&module);
     let structs_by_name = build_structs_by_name(&module);
     let type_aliases = build_type_aliases(&module);
@@ -1166,6 +1238,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names,
+        enum_variants: &enum_variants,
         error_enums: &error_enums,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map2,
@@ -1278,6 +1351,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
     let error_enums_flat = collect_error_enums(&flat);
     let enum_names_flat: std::collections::HashSet<String> =
         flat.enums.iter().map(|e| e.kind.to_string()).collect();
+    let enum_variants_flat = build_enum_variants(&flat);
     let method_t_fields_map3 = build_method_t_fields(&flat);
     let structs_by_name = build_structs_by_name(&flat);
     let type_aliases = build_type_aliases(&flat);
@@ -1290,6 +1364,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names_flat,
+        enum_variants: &enum_variants_flat,
         error_enums: &error_enums_flat,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map3,
@@ -1482,9 +1557,11 @@ struct TsContext<'a> {
     class_witnesses: Vec<String>,
     /// Mutable-reference variables in scope (from `iter_mut` loops).
     mut_refs: Vec<MutRef>,
-    /// Enum type names in this module. Used to detect `Enum::Variant(...)` constructor calls
-    /// and emit `Enum_Variant(...)` (factory function) instead of `Enum.Variant(...)`.
+    /// Enum type names in this module, used to detect qualified variant constructors.
     enum_names: &'a std::collections::HashSet<String>,
+    /// Variant path → generated class, field order, and shape metadata. Ambiguous
+    /// bare names map to None so the printer never guesses which enum was intended.
+    enum_variants: &'a BTreeMap<String, Option<EnumVariantInfo>>,
     /// Enum names used as the `E` in a `Result<T, E>` return type anywhere in the
     /// module; their variant classes extend `__VolarError` for `?` desugar.
     error_enums: &'a std::collections::HashSet<String>,
@@ -1564,6 +1641,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: self.class_witnesses.clone(),
             mut_refs: self.mut_refs.clone(),
             enum_names: self.enum_names,
+            enum_variants: self.enum_variants,
             error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
@@ -1588,6 +1666,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: witnesses,
             mut_refs: self.mut_refs.clone(),
             enum_names: self.enum_names,
+            enum_variants: self.enum_variants,
             error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
@@ -1614,6 +1693,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: self.class_witnesses.clone(),
             mut_refs,
             enum_names: self.enum_names,
+            enum_variants: self.enum_variants,
             error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
@@ -1643,6 +1723,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: self.class_witnesses.clone(),
             mut_refs: self.mut_refs.clone(),
             enum_names: self.enum_names,
+            enum_variants: self.enum_variants,
             error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
@@ -2527,6 +2608,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     class_witnesses: cx.class_witnesses.clone(),
                     mut_refs: cx.mut_refs.clone(),
                     enum_names: cx.enum_names,
+                    enum_variants: cx.enum_variants,
                     error_enums: cx.error_enums,
                     var_types: core::cell::RefCell::new(cx.var_types.borrow().clone()),
                     method_t_fields: cx.method_t_fields.clone(),
@@ -4333,6 +4415,14 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         write!(f, "new {}_{}()", resolved[0], resolved[1])?;
                         return Ok(());
                     }
+                    if resolved.len() == 1 {
+                        if let Some(variant) = find_enum_variant(cx, &resolved[0]) {
+                            if variant.is_unit {
+                                write!(f, "new {}()", variant.class_name)?;
+                                return Ok(());
+                            }
+                        }
+                    }
                     // Associated constants whose Rust definitions are attached to
                     // impls (the parser intentionally keeps them out of module
                     // consts when their value references `Self`). Emit their
@@ -4377,6 +4467,28 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 } else {
                     base.to_string()
                 };
+                if let Some(variant) = find_enum_variant(cx, &raw) {
+                    let fields_match = variant.is_struct
+                        && variant.fields.len() == fields.len()
+                        && variant
+                            .fields
+                            .iter()
+                            .all(|name| fields.iter().any(|(field, _)| field == name));
+                    if fields_match {
+                        write!(f, "new {}(", variant.class_name)?;
+                        for (index, field_name) in variant.fields.iter().enumerate() {
+                            if index > 0 {
+                                write!(f, ", ")?;
+                            }
+                            let (_, value) = fields
+                                .iter()
+                                .find(|(field, _)| field == field_name)
+                                .unwrap();
+                            TsExprWriter { expr: value }.ts_fmt(f, cx)?;
+                        }
+                        return write!(f, ")");
+                    }
+                }
                 let real_fields: Vec<&(String, IrExpr)> = fields
                     .iter()
                     .filter(|(n, v)| !n.starts_with("_phantom") && !is_phantom_arg(v))
@@ -7115,4 +7227,29 @@ fn ts_write_jump_setup(
     }
     writeln!(f, "{}__state = {};", ind, jump.target)?;
     Ok(())
+}
+
+#[cfg(all(test, feature = "parsing"))]
+mod enum_variant_constructor_tests {
+    use super::print_module_ts;
+    use crate::parser::parse_source;
+
+    #[test]
+    fn resolves_qualified_struct_and_unit_variant_constructors() {
+        let source = r#"
+            struct Same { ordinary: u8 }
+            enum First { Same { first: u8, second: u8 }, Done }
+            enum Second { Same { other: u8 } }
+            fn make() -> First { First::Same { second: 2, first: 1 } }
+            fn make_unit() -> First { First::Done }
+            fn make_struct() -> Same { Same { ordinary: 3 } }
+        "#;
+        let module = parse_source(source, "enum_variant_test", &[]).unwrap();
+        let ts = print_module_ts(&module);
+
+        assert!(ts.contains("new First_Same(1n, 2n)"), "{ts}");
+        assert!(ts.contains("new First_Done()"), "{ts}");
+        assert!(ts.contains("new Same({ $fordinary: 3n })"), "{ts}");
+        assert!(!ts.contains("new First_Same({"), "{ts}");
+    }
 }

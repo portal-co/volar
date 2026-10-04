@@ -2478,11 +2478,11 @@ return (() => {
     for (const [i, spec] of this.$fluts.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       const len = BigInt(spec.$fentries.length);
       if ((__equals(len, 0n) || !((len) > 0n && ((len) & ((len) - 1n)) === 0n)))       {
-        return new BadTableShape({ $ftable: BigInt(i) });
+        return new PlanError_BadTableShape(BigInt(i));
       }
       const arity = BigInt(Math.clz32((() => { const __tz = Number(len) | 0; return (__tz & -__tz) | 0; })()));
       if ((arity > BigInt(this.$fk_max)))       {
-        return new ArityExceedsKMax({ $ftable: BigInt(i) });
+        return new PlanError_ArityExceedsKMax(BigInt(i));
       }
     }
     let wires = this.$fnum_inputs;
@@ -2886,7 +2886,7 @@ export class EncodedLabelBatch {
   {
     const used = BigInt(this.$fzeroes.length);
     if ((slots < used))     {
-      return new TooFewSlots({ $fslots: slots, $fused: used });
+      return new LabelBatchPaddingError_TooFewSlots(slots, used);
     }
     let differences = __clone(this.$fdifferences);
     let zeroes = __clone(this.$fzeroes);
@@ -2933,7 +2933,7 @@ export class PaddedLabelBatch {
   expanded_choices(choices: boolean[]): Result<Vec<boolean>, LabelBatchPaddingError>
   {
     if (!__equals(BigInt(choices.length), this.$flabel_count))     {
-      return new ChoiceLengthMismatch({ $fexpected: this.$flabel_count, $factual: BigInt(choices.length) });
+      return new LabelBatchPaddingError_ChoiceLengthMismatch(this.$flabel_count, BigInt(choices.length));
     }
     let out = EncodedLabelBatch.expanded_choices(choices);
     (() => { let __r = out; for (let __i = __r.length; __i < Number(this.slots()); __i++) __r.push(false); return __r; })();
@@ -3006,7 +3006,7 @@ export class LabelBatchDyn {
     }
     for (const [index, pair] of pairs.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       if (!__equals(pair.$fone, Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((byte: any) => fieldBitxor(pair.$fzero[Number(byte)], offset[Number(byte)]))))       {
-        return new MismatchedPair({ $findex: index });
+        return new BatchError_MismatchedPair(index);
       }
     }
     return new LabelBatchDyn({ $fpairs: pairs });
@@ -6610,10 +6610,10 @@ export function decode_label_16(elements: bigint[]): Result<bigint[], LabelEncod
   let offset = 0n;
   for (const [index, [element, width]] of elements.map((__a: any, __i: number) => [__a, WIDTHS[__i]] as [typeof __a, any]).map((val: any, i: number) => [i, val] as [number, typeof val]))   {
     if ((element >= modulus))     {
-      return new FieldElementOutOfRange({ $findex: index });
+      return new LabelEncodingError_FieldElementOutOfRange(index);
     }
     if ((element >= fieldShl(1n, width)))     {
-      return new NonCanonicalElement({ $findex: index });
+      return new LabelEncodingError_NonCanonicalElement(index);
     }
     const bytes = [(element) & 0xFFn, ((element) >> 8n) & 0xFFn, ((element) >> 16n) & 0xFFn, ((element) >> 24n) & 0xFFn];
     const count = BigInt((width / 8n));
@@ -9323,8 +9323,8 @@ export function read_op(reader: any): Result<PlanOp, DecodeError>
   if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
   const out = __volar_try_0;
   const value = (() => { const __match = reader.byte(); if (__match === 0n) { return false; } else if (__match === 1n) { return true; } else { return new DecodeError_UnknownTag(); } })();
-  return new Const({ $fout: out, $fvalue: value });
-})(); } else if (__match === 1n) { return new Not({ $finput: reader.u32(), $fout: reader.u32() }); } else if (__match === 2n) { return (() => {
+  return new PlanOp_Const(out, value);
+})(); } else if (__match === 1n) { return new PlanOp_Not(reader.u32(), reader.u32()); } else if (__match === 2n) { return (() => {
   const __volar_try_0 = reader.count();
   if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
   const count = __volar_try_0;
@@ -9339,8 +9339,8 @@ export function read_op(reader: any): Result<PlanOp, DecodeError>
   const __volar_try_5 = reader.u32();
   if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
   const out: WireId = __volar_try_5;
-  return new Lut({ $finputs: inputs, $ftable: table, $fout: out });
-})(); } else if (__match === 3n) { return new CircuitBootstrap({ $finput: reader.u32(), $fout: reader.u32() }); } else if (__match === 4n) { return (() => {
+  return new PlanOp_Lut(inputs, table, out);
+})(); } else if (__match === 3n) { return new PlanOp_CircuitBootstrap(reader.u32(), reader.u32()); } else if (__match === 4n) { return (() => {
   const __volar_try_0 = reader.u32();
   if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
   const sel: RgswId = __volar_try_0;
@@ -9353,7 +9353,7 @@ export function read_op(reader: any): Result<PlanOp, DecodeError>
   const __volar_try_3 = reader.u32();
   if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
   const out = __volar_try_3;
-  return new RgswMux({ $fsel: sel, $fthen_cell: then_cell, $felse_cell: else_cell, $fout: out });
+  return new PlanOp_RgswMux(sel, then_cell, else_cell, out);
 })(); } else { return new DecodeError_UnknownTag(); } })();
 }
 
@@ -10628,6 +10628,6 @@ return (() => {
 
 export function try_from(value: bigint): Result<any, FrameError>
 {
-  return (() => { const __match = value; if (__match === 1n) { return PublicParameters; } else if (__match === 2n) { return ReusableCiphertext; } else if (__match === 3n) { return PerUseCiphertext; } else if (__match === 4n) { return SelectionKey; } else if (__match === 5n) { return Complete; } else if (__match === 6n) { return Error; } else { return new FrameError_UnknownStage(); } })();
+  return (() => { const __match = value; if (__match === 1n) { return PublicParameters; } else if (__match === 2n) { return new Stage_ReusableCiphertext(); } else if (__match === 3n) { return new Stage_PerUseCiphertext(); } else if (__match === 4n) { return SelectionKey; } else if (__match === 5n) { return new Stage_Complete(); } else if (__match === 6n) { return new Stage_Error(); } else { return new FrameError_UnknownStage(); } })();
 }
 
