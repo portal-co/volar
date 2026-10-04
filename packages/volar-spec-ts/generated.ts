@@ -3922,7 +3922,7 @@ export class Frame {
     if ((!__equals(input.slice(0, Number(8n)), MAGIC) || !__equals(u16_from_le_bytes([input[Number(8n)], input[Number(9n)]]), VERSION)))     {
       return new FrameError_UnsupportedFormat();
     }
-    const __volar_try_2 = new Stage_try_from(input[Number(10n)]);
+    const __volar_try_2 = try_from(input[Number(10n)]);
     if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
     const stage = __volar_try_2;
     let offset = 11n;

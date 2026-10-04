@@ -305,12 +305,13 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397 → 362 → 350 → 315 → 304 → 283 → 279 → 269 → 265 → 263 → 261 → 252** (and seeded components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397 → 362 → 350 → 315 → 304 → 283 → 279 → 269 → 265 → 263 → 261 → 252 → 251** (and seeded components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
 *syntax* errors are fixed; the remainder are semantic. The 279 → 269 batch
 resolves enum-variant constructors by IR metadata; 269 → 265 erases zero-sized
 PhantomData values; and 265 → 263 lowers type-alias targets through dyn-lowering.
-The latest 261 → 252 batch resolves reads/method calls on mutable iterator refs
-through their backing-array indices. Bug classes fixed:
+The 261 → 252 batch resolves reads/method calls on mutable iterator refs
+through their backing-array indices; 252 → 251 stops mistaking enum-associated
+function calls for variant constructors. Bug classes fixed:
 
 - **Module-path qualifiers not stripped** (`torus::reduce` → `torus.reduce`,
   never defined): `TsContext::is_type_head` + leading-module-segment stripping
@@ -346,6 +347,10 @@ through their backing-array indices. Bug classes fixed:
 - **Type-alias targets bypassed dyn-lowering**: aliases that referenced a
   dyn-lowered struct with const generics now use the `*Dyn` name and omit erased
   const arguments (`LweBaseOt<LWE_N>` → `LweBaseOtDyn`; 265 → 263).
+- **Enum-associated calls confused with variants**: the printer now confirms
+  variant identity from IR metadata before constructing `Enum_Variant`, so
+  `Stage::try_from(...)` remains a call to the flattened `try_from` function
+  (252 → 251).
 - **Primitive integer conversions**: `u16::from_le_bytes` and `uN/iN::from`
   now map to runtime byte decoding and `BigInt` conversion helpers (263 → 261).
 

@@ -4263,10 +4263,30 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         {
                             return write!(f, "([] as any[])");
                         }
-                        // Enum::Variant(...) → new EnumName_VariantName(...)
+                        // Enum::Variant(...) constructs a variant only when the
+                        // registry confirms that this is an actual variant. Other
+                        // enum-qualified calls (e.g. Stage::try_from) are flattened
+                        // associated functions and must not become fake variants.
                         if segs.len() == 2 && cx.enum_names.contains(segs[0]) {
-                            write!(f, "new {}_{}", segs[0], segs[1])?;
-                            write!(f, "(")?;
+                            let variant = format!("{}::{}", segs[0], segs[1]);
+                            if let Some(info) = find_enum_variant(cx, &variant) {
+                                if info.is_unit && args.is_empty() {
+                                    return write!(f, "new {}()", info.class_name);
+                                }
+                                if !info.is_unit {
+                                    write!(f, "new {}(", info.class_name)?;
+                                    let mut first = true;
+                                    for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                                        if !first {
+                                            write!(f, ", ")?;
+                                        }
+                                        first = false;
+                                        TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                                    }
+                                    return write!(f, ")");
+                                }
+                            }
+                            write!(f, "{}(", segs[1])?;
                             let mut first = true;
                             for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
                                 if !first {
@@ -4417,10 +4437,15 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         resolved.push(last);
                     }
                     // `Enum::Variant` in value position → an instance of the variant
-                    // class (`new Enum_Variant()`). Unit variants take no fields.
-                    if resolved.len() == 2 && cx.enum_names.contains(&resolved[0]) {
-                        write!(f, "new {}_{}()", resolved[0], resolved[1])?;
-                        return Ok(());
+                    // class, but only when IR metadata confirms the qualified variant.
+                    if resolved.len() == 2 {
+                        let variant = format!("{}::{}", resolved[0], resolved[1]);
+                        if let Some(info) = find_enum_variant(cx, &variant) {
+                            if info.is_unit {
+                                write!(f, "new {}()", info.class_name)?;
+                                return Ok(());
+                            }
+                        }
                     }
                     if resolved.len() == 1 {
                         if let Some(variant) = find_enum_variant(cx, &resolved[0]) {
