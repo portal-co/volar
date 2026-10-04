@@ -499,10 +499,13 @@ pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     // Const declarations pass through unchanged.
     lowered.consts.extend(module.consts.iter().cloned());
 
-    // Type aliases pass through unchanged (e.g. `type Zq = u32`).
-    lowered
-        .type_aliases
-        .extend(module.type_aliases.iter().cloned());
+    // Lower type aliases too: their targets may mention structs whose const/type
+    // parameters were erased or whose names were changed to `*Dyn` above.
+    for alias in &module.type_aliases {
+        let mut lowered_alias = alias.clone();
+        lowered_alias.target = lower_type_dyn(&alias.target, &ctx, &alias.generics);
+        lowered.type_aliases.push(lowered_alias);
+    }
 
     lowered
 }

@@ -60,7 +60,7 @@ export type RgswId = bigint;
 export type CellId = bigint;
 export type LutId = bigint;
 export type DigestImpl = Sha3_256;
-export type Base = LweBaseOt<LWE_N>;
+export type Base = LweBaseOtDyn;
 export type Zq = bigint;
 export type Block = bigint[];
 

@@ -305,11 +305,11 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397 → 362 → 350 → 315 → 304 → 283 → 279 → 269 → 265** (and seeded components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
-*syntax* errors are fixed; the remainder are semantic. The latest 279 → 269
-batches resolve enum-variant constructors by IR metadata and erase zero-sized
-PhantomData values. The latest 269 → 265 batch removes emitted references to
-PhantomData. Bug classes fixed:
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397 → 362 → 350 → 315 → 304 → 283 → 279 → 269 → 265 → 263** (and seeded components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
+*syntax* errors are fixed; the remainder are semantic. The 279 → 269 batch
+resolves enum-variant constructors by IR metadata; 269 → 265 erases zero-sized
+PhantomData values; and 265 → 263 lowers type-alias targets through dyn-lowering.
+Bug classes fixed:
 
 - **Module-path qualifiers not stripped** (`torus::reduce` → `torus.reduce`,
   never defined): `TsContext::is_type_head` + leading-module-segment stripping
@@ -341,6 +341,9 @@ PhantomData. Bug classes fixed:
   and resolves unique bare unit variants (279 → 269).
 - **`PhantomData` marker values** no longer leak into generated expressions;
   these Rust zero-sized markers are erased from struct initializers (269 → 265).
+- **Type-alias targets bypassed dyn-lowering**: aliases that referenced a
+  dyn-lowered struct with const generics now use the `*Dyn` name and omit erased
+  const arguments (`LweBaseOt<LWE_N>` → `LweBaseOtDyn`; 265 → 263).
 
 **Remaining error classes** (each a deeper emitter/lowering feature, not a
 one-line fix):
