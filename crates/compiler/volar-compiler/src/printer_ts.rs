@@ -2130,6 +2130,7 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "  wrappingNeg,")?;
         writeln!(f, "  __chunks,")?;
         writeln!(f, "  asRefU8,")?;
+        writeln!(f, "  u16_from_le_bytes,")?;
         writeln!(f, "  u32_from_le_bytes,")?;
         writeln!(f, "  u64_from_le_bytes,")?;
         writeln!(f, "  u128_from_le_bytes,")?;
@@ -5774,7 +5775,8 @@ pub(crate) fn is_namespace_prefix(s: &str) -> bool {
 enum KnownCallPath<'a> {
     VecNew,               // Vec::new()          → []
     VecWithCapacity,      // Vec::with_capacity  → Array
-    FromLeBytes(&'a str), // u32/u64/u128::from_le_bytes → u*_from_le_bytes
+    FromLeBytes(&'a str), // u16/u32/u64/u128::from_le_bytes → u*_from_le_bytes
+    IntFrom,              // uN/iN::from(value) → BigInt(value)
     AsRefAsRef,           // AsRef::as_ref       → asRefU8
     SizeOf,               // size_of / size_of_val → ctx.sizeOf_unknown (fallback)
     None_,                // None                → undefined
@@ -5788,8 +5790,17 @@ impl<'a> KnownCallPath<'a> {
             ["VecDeque", "new"] => Some(Self::VecNew),
             ["VecDeque", "with_capacity"] => Some(Self::VecWithCapacity),
             ["Vec", "with_capacity"] => Some(Self::VecWithCapacity),
-            [int, "from_le_bytes"] if matches!(*int, "u32" | "u64" | "u128") => {
+            [int, "from_le_bytes"] if matches!(*int, "u16" | "u32" | "u64" | "u128") => {
                 Some(Self::FromLeBytes(int))
+            }
+            [int, "from"]
+                if matches!(
+                    *int,
+                    "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16"
+                        | "i32" | "i64" | "i128" | "isize"
+                ) =>
+            {
+                Some(Self::IntFrom)
             }
             ["AsRef", "as_ref"] => Some(Self::AsRefAsRef),
             ["size_of_val"] | ["size_of"] => Some(Self::SizeOf),
@@ -5812,6 +5823,7 @@ fn emit_path(segments: &[String], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Some(KnownCallPath::VecNew) => write!(f, "[] as any[]"),
         Some(KnownCallPath::VecWithCapacity) => write!(f, "/* Vec::with_capacity */ Array"),
         Some(KnownCallPath::FromLeBytes(ty)) => write!(f, "{}_from_le_bytes", ty),
+        Some(KnownCallPath::IntFrom) => write!(f, "BigInt"),
         Some(KnownCallPath::AsRefAsRef) => write!(f, "asRefU8"),
         Some(KnownCallPath::SizeOf) => write!(f, "ctx.sizeOf_unknown"),
         Some(KnownCallPath::None_) => write!(f, "undefined"),

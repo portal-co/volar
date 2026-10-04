@@ -24,6 +24,7 @@ import {
   wrappingNeg,
   __chunks,
   asRefU8,
+  u16_from_le_bytes,
   u32_from_le_bytes,
   u64_from_le_bytes,
   u128_from_le_bytes,
@@ -3752,7 +3753,7 @@ export class Ring {
       for (let __zip_mut_3 = 0n; __zip_mut_3 < BigInt(value.$ffirst.length); __zip_mut_3 += 1n) {
         const choice = chunk[Number(__zip_mut_3)];
         {
-          const choice_1 = u64.from(choice);
+          const choice_1 = BigInt(choice);
           value.$ffirst[Number(__zip_mut_3)] = choice_1;
           second = choice_1;
         }}
@@ -3918,7 +3919,7 @@ export class Frame {
     if ((BigInt(input.length) < HEADER_BYTES))     {
       return new FrameError_Truncated();
     }
-    if ((!__equals(input.slice(0, Number(8n)), MAGIC) || !__equals(u16.from_le_bytes([input[Number(8n)], input[Number(9n)]]), VERSION)))     {
+    if ((!__equals(input.slice(0, Number(8n)), MAGIC) || !__equals(u16_from_le_bytes([input[Number(8n)], input[Number(9n)]]), VERSION)))     {
       return new FrameError_UnsupportedFormat();
     }
     const __volar_try_2 = new Stage_try_from(input[Number(10n)]);
