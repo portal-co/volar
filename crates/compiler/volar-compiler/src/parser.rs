@@ -182,9 +182,10 @@ fn convert_enum_variant(v: &syn::Variant) -> Result<IrEnumVariant> {
 /// attributes.  We look for any doc string containing `@volar-native:`
 /// and return the corresponding [`volar_ir_common::Type`] if recognised.
 ///
-/// Accepted type names (case-sensitive):
-/// `Bit`, `AES8`, `Galois8`, `Galois64`, `_8`, `_16`, `_32`, `_64`,
-/// `_128`, `_256`.
+/// Accepted type names (case-sensitive) are the scalar primitives represented
+/// by `volar_ir_common::Type`. Algebra-specific types such as `Galois8` are not
+/// representable by that shared primitive enum and therefore are not marked as
+/// native.
 fn parse_native_volar_type(attrs: &[syn::Attribute]) -> Option<volar_ir_common::Type> {
     for attr in attrs {
         if !attr.path().is_ident("doc") {
@@ -218,16 +219,28 @@ fn volar_native_type_from_str(s: &str) -> Option<volar_ir_common::Type> {
     use volar_ir_common::Type;
     match s {
         "Bit" => Some(Type::Bit),
-        "AES8" | "Galois8" => Some(Type::AES8),
-        "Galois64" => Some(Type::Galois64),
         "_8" | "U8" => Some(Type::_8),
         "_16" | "U16" => Some(Type::_16),
         "_32" | "U32" => Some(Type::_32),
         "_64" | "U64" => Some(Type::_64),
         "_128" | "U128" => Some(Type::_128),
         "_256" => Some(Type::_256),
-        "Z3" => Some(Type::Z3),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod native_type_tests {
+    use super::volar_native_type_from_str;
+    use volar_ir_common::Type;
+
+    #[test]
+    fn maps_only_shared_scalar_types() {
+        assert_eq!(volar_native_type_from_str("Bit"), Some(Type::Bit));
+        assert_eq!(volar_native_type_from_str("Galois8"), None);
+        assert_eq!(volar_native_type_from_str("Galois64"), None);
+        assert_eq!(volar_native_type_from_str("Z3"), None);
+        assert_eq!(volar_native_type_from_str("U8"), Some(Type::_8));
     }
 }
 
