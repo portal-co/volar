@@ -40,13 +40,90 @@ pub struct CotPoolReceiver {
     pub(crate) out_z: VecDeque<Block>,
 }
 
+/// Why independently provisioned Ferret seeds cannot initialize a pool.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PoolSeedError {
+    /// The regular Ferret parameters are invalid or have no positive output.
+    InvalidParameters,
+    /// Sender seed COT count did not match the parameter-derived count.
+    SenderSeedCount { expected: usize, found: usize },
+    /// Receiver choice-bit count did not match the parameter-derived count.
+    ReceiverChoiceCount { expected: usize, found: usize },
+    /// Receiver seed-value count did not match the parameter-derived count.
+    ReceiverSeedCount { expected: usize, found: usize },
+}
+
+/// Validate regular Ferret parameters and return the seed COT count.
+pub fn checked_seed_cot_count(params: FerretParams) -> Result<usize, PoolSeedError> {
+    if params.t == 0 || params.n == 0 || params.k == 0 || params.n % params.t != 0 {
+        return Err(PoolSeedError::InvalidParameters);
+    }
+    let splen = params.n / params.t;
+    if !splen.is_power_of_two() {
+        return Err(PoolSeedError::InvalidParameters);
+    }
+    let log_splen = splen.trailing_zeros() as usize;
+    let body = params
+        .t
+        .checked_mul(log_splen)
+        .and_then(|extra| params.k.checked_add(extra))
+        .ok_or(PoolSeedError::InvalidParameters)?;
+    if body >= params.n {
+        return Err(PoolSeedError::InvalidParameters);
+    }
+    Ok(body)
+}
+
 impl CotPoolSender {
+    /// Initialize one protocol side from an independently produced Ferret seed.
+    pub fn from_seed(params: FerretParams, seed: FerretSenderSeed) -> Result<Self, PoolSeedError> {
+        let expected = checked_seed_cot_count(params)?;
+        if seed.q.len() != expected {
+            return Err(PoolSeedError::SenderSeedCount {
+                expected,
+                found: seed.q.len(),
+            });
+        }
+        Ok(Self {
+            params,
+            seed,
+            out: VecDeque::new(),
+            raise_n: None,
+        })
+    }
+
     pub fn remaining(&self) -> usize {
         self.out.len()
     }
 }
 
 impl CotPoolReceiver {
+    /// Initialize one protocol side from independently produced Ferret seeds.
+    pub fn from_seed(
+        params: FerretParams,
+        seed: FerretReceiverSeed,
+    ) -> Result<Self, PoolSeedError> {
+        let expected = checked_seed_cot_count(params)?;
+        if seed.u.len() != expected {
+            return Err(PoolSeedError::ReceiverChoiceCount {
+                expected,
+                found: seed.u.len(),
+            });
+        }
+        if seed.w.len() != expected {
+            return Err(PoolSeedError::ReceiverSeedCount {
+                expected,
+                found: seed.w.len(),
+            });
+        }
+        Ok(Self {
+            params,
+            seed,
+            out_x: VecDeque::new(),
+            out_z: VecDeque::new(),
+        })
+    }
+
     pub fn remaining(&self) -> usize {
         self.out_x.len()
     }

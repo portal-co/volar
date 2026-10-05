@@ -87,17 +87,51 @@ where
     // Receiver's v = r0 + b·Δ. Then q = v + b·Δ ⇒ q = v + u·Δ. ✓
     let (r0, v) = cot.cot(rng, sample_t, bit);
 
+    (
+        vole_commit_bit_prover_share(v, bit_to_t, bit),
+        vole_commit_bit_verifier_share(r0),
+    )
+}
+
+/// Construct only the prover's VOLE share from the C-OT value share.
+///
+/// Used by the prover role after obtaining `v` from a networked COT backend.
+pub fn vole_commit_bit_prover_share<N, T>(
+    v: Array<T, N>,
+    bit_to_t: impl Fn(bool) -> T,
+    bit: bool,
+) -> Vope<N, T, U1>
+where
+    N: VoleArray<T>,
+    T: Clone + Default,
+{
     let u_t = bit_to_t(bit);
     let u_row: Array<T, N> = lift_bit(u_t);
     let u: Array<Array<T, N>, U1> =
         Array::<Array<T, N>, U1>::from_fn(|_| Array::<T, N>::from_fn(|i| u_row[i].clone()));
-    let q = Array::<T, N>::from_fn(|i| r0[i].clone());
-    (Vope { u, v }, Q { q })
+    Vope { u, v }
 }
 
-/// Assemble VOLE shares from an already-produced C-OT pair `(r0, v)`.
+/// Construct only the verifier's share of a VOLE-committed bit.
 ///
-/// Used when the C-OT came from Ferret / SoftSpoken rather than [`IdealCot`].
+/// This intentionally has no prover-share or witness input, so verifier code
+/// cannot accidentally materialize the other role's private share.
+pub fn vole_commit_bit_verifier_share<N, T>(q: Array<T, N>) -> Q<N, T>
+where
+    N: VoleArray<T>,
+    T: Clone + Default,
+{
+    Q { q }
+}
+
+/// Assemble both shares in a trusted local harness. Networked protocol roles
+/// should call [`vole_commit_bit_prover_share`] and
+/// [`vole_commit_bit_verifier_share`] independently instead.
+/// Assemble both VOLE shares from a locally available C-OT pair `(r0, v)`.
+///
+/// Used by trusted local tests and ideal-functionality adapters; networked
+/// protocol roles should never call this because each role would materialize
+/// the other side's share.
 pub fn vole_commit_bit_shares<N, T>(
     r0: Array<T, N>,
     v: Array<T, N>,
@@ -108,12 +142,10 @@ where
     N: VoleArray<T>,
     T: Clone + Default,
 {
-    let u_t = bit_to_t(bit);
-    let u_row: Array<T, N> = lift_bit(u_t);
-    let u: Array<Array<T, N>, U1> =
-        Array::<Array<T, N>, U1>::from_fn(|_| Array::<T, N>::from_fn(|i| u_row[i].clone()));
-    let q = Array::<T, N>::from_fn(|i| r0[i].clone());
-    (Vope { u, v }, Q { q })
+    (
+        vole_commit_bit_prover_share(v, bit_to_t, bit),
+        vole_commit_bit_verifier_share(r0),
+    )
 }
 
 /// Source of C-OT pairs `(r0, v)` for [`vole_commit_bit_from`].
