@@ -288,6 +288,32 @@ fn option_let_else_checks_and_binds_the_some_value() {
 }
 
 #[test]
+fn option_combinators_and_vec_split_off_lower_to_typescript() {
+    let source = r#"
+        fn checked_round_up(value: usize) -> Option<usize> {
+            value.checked_next_power_of_two()
+        }
+
+        fn continue_option(value: Option<u32>) -> Option<u32> {
+            value.and_then(|item| Some(item + 1))
+        }
+
+        fn has_even_value(value: Option<u32>) -> bool {
+            value.is_some_and(|item| item % 2 == 0)
+        }
+
+        fn split_values(values: &mut Vec<u32>) -> Vec<u32> {
+            values.split_off(1)
+        }
+
+        fn encrypt_block() {}
+    "#;
+    let module = parse_source(source, "option_combinators", &[]).unwrap();
+    let ts_code = print_module_typescript(&module);
+    run_ts_code(&ts_code, "option_combinators_and_split_off");
+}
+
+#[test]
 fn mutable_iteration_writes_through_enumerate_and_slice_loops() {
     let source = r#"
         fn mutate_enumerated(values: &mut [u32]) {

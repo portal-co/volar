@@ -4890,7 +4890,7 @@ export class FerretParams {
   splen(): bigint
   {
     const max_interval_len = ((this.$fn) + (this.$ft) - 1n) / (this.$ft);
-    return (max_interval_len.checked_next_power_of_two())!;
+    return (((__value: bigint) => { let __power = 1n; while (__power < __value) __power <<= 1n; return __power <= 18446744073709551615n ? __power : undefined; }) (max_interval_len))!;
   }
 }
 
@@ -4948,7 +4948,7 @@ export class CotPoolSender {
     const delta = this.$fseed.$fdelta;
     let cots = this.$fseed.$fq;
     cots.push(...(this.$fout));
-    const out = cots.split_off(required);
+    const out = ((__vector: any[], __at: number) => __vector.splice(__at))(cots, Number(required));
     this.$fparams = params;
     this.$fseed = new FerretSenderSeed({ $fdelta: delta, $fq: cots });
     this.$fout = out;
@@ -5021,8 +5021,8 @@ export class CotPoolReceiver {
     choices.push(...(this.$fout_x));
     let values = this.$fseed.$fw;
     values.push(...(this.$fout_z));
-    const output_choices = choices.split_off(required);
-    const output_values = values.split_off(required);
+    const output_choices = ((__vector: any[], __at: number) => __vector.splice(__at))(choices, Number(required));
+    const output_values = ((__vector: any[], __at: number) => __vector.splice(__at))(values, Number(required));
     this.$fparams = params;
     this.$fseed = new FerretReceiverSeed({ $fu: choices, $fw: values });
     this.$fout_x = output_choices;
@@ -6474,11 +6474,11 @@ export function checked_seed_cot_count(params: any): Result<bigint, PoolSeedErro
     return new PoolSeedError_InvalidParameters();
   }
   const max_interval_len = ((params.$fn) + (params.$ft) - 1n) / (params.$ft);
-  const __volar_try_2 = ((max_interval_len.checked_next_power_of_two()) ?? (new PoolSeedError_InvalidParameters()));
+  const __volar_try_2 = ((((__value: bigint) => { let __power = 1n; while (__power < __value) __power <<= 1n; return __power <= 18446744073709551615n ? __power : undefined; }) (max_interval_len)) ?? (new PoolSeedError_InvalidParameters()));
   if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
   const splen = __volar_try_2;
   const log_splen = BigInt(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
-  const __volar_try_4 = ((((params.$ft) * (log_splen)).and_then((extra) => (params.$fk + (extra)))) ?? (new PoolSeedError_InvalidParameters()));
+  const __volar_try_4 = ((((__option: any, __continuation: (value: any) => any) => __option == null ? undefined : __continuation(__option))(((params.$ft) * (log_splen)), (extra) => (params.$fk + (extra)))) ?? (new PoolSeedError_InvalidParameters()));
   if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
   const body = __volar_try_4;
   if ((body >= params.$fn))   {
@@ -6855,7 +6855,7 @@ export function decode_plan(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, n
     const __volar_try_2 = reader.take(packed_len);
     if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
     const packed = __volar_try_2;
-    if ((!__equals((bit_count % 8n), 0n) && packed.at(-1).is_some_and((byte) => !__equals(fieldShr(byte, (bit_count % 8n)), 0n))))     {
+    if ((!__equals((bit_count % 8n), 0n) && ((__option: any, __predicate: (value: any) => boolean) => __option != null && __predicate(__option))(packed.at(-1), (byte) => !__equals(fieldShr(byte, (bit_count % 8n)), 0n))))     {
       return new DecodeError_UnknownTag();
     }
     let entries = ([] as any[]);
@@ -9163,7 +9163,7 @@ export function new_pool<R>(rng: any, params: any): [CotPoolSender, CotPoolRecei
 
 export function next_pow2(x: bigint): bigint
 {
-  return BigInt(Math.max(Number(BigInt(1 << Math.ceil(Math.log2(Number(x))))), Number(2n)));
+  return BigInt(Math.max(Number(((__value: bigint) => { let __power = 1n; while (__power < __value) __power <<= 1n; return __power; }) (x)), Number(2n)));
 }
 
 export function ot_recv<G, D, R>(ctx: { GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, rng: any, s: number /* G::Element */, c: boolean): [BaseOtReceiverDyn<G, D>, OtReceiverMsgDyn<G>]
@@ -9244,7 +9244,7 @@ export function pack_kappa(bits: boolean[]): bigint[]
 
 export function padded_interval_len(n: bigint, t: bigint): bigint
 {
-  return (((n) + (t) - 1n) / (t).checked_next_power_of_two())!;
+  return (((__value: bigint) => { let __power = 1n; while (__power < __value) __power <<= 1n; return __power <= 18446744073709551615n ? __power : undefined; }) (((n) + (t) - 1n) / (t)))!;
 }
 
 export function parse_profile(tag: bigint): Result<ProfileId, DecodeError>

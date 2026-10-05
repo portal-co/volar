@@ -5820,6 +5820,13 @@ fn emit_other_method_call(
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             return write!(f, ") == null");
         }
+        "is_some_and" if args.len() == 1 => {
+            write!(f, "((__option: any, __predicate: (value: any) => boolean) => __option != null && __predicate(__option))(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", ")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            return write!(f, ")");
+        }
         "is_ok" => {
             write!(f, "(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
@@ -5838,11 +5845,42 @@ fn emit_other_method_call(
             // collect() is a no-op in TS — arrays are already concrete
             return TsExprWriter { expr: receiver }.ts_fmt(f, cx);
         }
-        "next_power_of_two" => {
-            // Round up to next power of 2
-            write!(f, "BigInt(1 << Math.ceil(Math.log2(Number(")?;
+        "next_power_of_two" | "checked_next_power_of_two" if args.is_empty() => {
+            // Compute with bigint so large usize values are not rounded through
+            // Number. The checked form returns the Rust Option representation
+            // (undefined) when the result exceeds the receiver's integer width.
+            let checked = name == "checked_next_power_of_two";
+            let max = if checked {
+                let bits = infer_expr_ir_type(receiver, cx)
+                    .and_then(|ty| match unwrap_ref(&ty) {
+                        IrType::Primitive(primitive) => primitive_bit_width(*primitive),
+                        _ => None,
+                    })
+                    .unwrap_or(64);
+                Some(if bits >= 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << bits) - 1
+                })
+            } else {
+                None
+            };
+            write!(f, "((__value: bigint) => {{ let __power = 1n; while (__power < __value) __power <<= 1n; return ")?;
+            if let Some(max) = max {
+                write!(f, "__power <= {}n ? __power : undefined;", max)?;
+            } else {
+                write!(f, "__power;")?;
+            }
+            write!(f, " }}) (")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            return write!(f, "))))");
+            return write!(f, ")");
+        }
+        "and_then" if args.len() == 1 => {
+            write!(f, "((__option: any, __continuation: (value: any) => any) => __option == null ? undefined : __continuation(__option))(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", ")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            return write!(f, ")");
         }
         "all" => {
             // .all(|x| pred) → emit as .every()
@@ -5890,6 +5928,17 @@ fn emit_other_method_call(
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")); return __dst; }})()")?;
             return Ok(());
+        }
+        // Vec::split_off(at) mutates the original prefix and returns the tail.
+        "split_off" if args.len() == 1 => {
+            write!(
+                f,
+                "((__vector: any[], __at: number) => __vector.splice(__at))("
+            )?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", Number(")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            return write!(f, "))");
         }
         // `iter.any(pred)` → `Array.prototype.some`.
         "any" if args.len() == 1 => {
