@@ -668,8 +668,7 @@ pub fn plan_flat_module<P: Clone>(
                     _ => (callee_def, arg_tys),
                 };
             let mut callee_env =
-                bind_call_args(callee_def, &type_args, &arg_tys, &env, expected.as_ref())
-                    ?;
+                bind_call_args(callee_def, &type_args, &arg_tys, &env, expected.as_ref())?;
             if let Some(derived) = derived_held.as_ref() {
                 // Default unbound return-position generics: a field-mul
                 // output (`O` in `T: Mul<U, Output = O>`) has the same layout
@@ -1501,6 +1500,20 @@ fn substitute_type_for_projection_in_stmt<P: Clone>(
                 substitute_type_for_projection_in_expr(init, projection, replacement);
             }
         }
+        IrStmtKind::LetElse {
+            ty,
+            init,
+            else_expr,
+            ..
+        } => {
+            if let Some(ty) = ty {
+                substitute_type_for_projection(ty, projection, replacement);
+            }
+            if let Some(init) = init {
+                substitute_type_for_projection_in_expr(init, projection, replacement);
+            }
+            substitute_type_for_projection_in_expr(else_expr, projection, replacement);
+        }
         IrStmtKind::Expr(expr) | IrStmtKind::Semi(expr) => {
             substitute_type_for_projection_in_expr(expr, projection, replacement)
         }
@@ -1649,6 +1662,20 @@ fn substitute_projection_output_in_stmt<P: Clone>(
             if let Some(init) = init {
                 substitute_projection_output_in_expr(init, generic, value);
             }
+        }
+        IrStmtKind::LetElse {
+            ty,
+            init,
+            else_expr,
+            ..
+        } => {
+            if let Some(ty) = ty {
+                substitute_projection_output(ty, generic, value);
+            }
+            if let Some(init) = init {
+                substitute_projection_output_in_expr(init, generic, value);
+            }
+            substitute_projection_output_in_expr(else_expr, generic, value);
         }
         IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
             substitute_projection_output_in_expr(e, generic, value)
@@ -1974,6 +2001,28 @@ fn collect_stmt_calls<P: Clone>(
                     }
                 }
             }
+        }
+        IrStmtKind::LetElse {
+            pattern,
+            ty,
+            init,
+            else_expr,
+            ..
+        } => {
+            if let Some(expr) = init {
+                collect_expr_calls(expr, env, defs, structs, var_types, calls);
+                if let Some(binding) = ty
+                    .clone()
+                    .or_else(|| infer_expr_type(expr, env, Some(var_types), Some(structs)))
+                {
+                    let mut idents = Vec::new();
+                    pattern_idents(pattern, &mut idents);
+                    for name in idents {
+                        var_types.insert(name, binding.clone());
+                    }
+                }
+            }
+            collect_expr_calls(else_expr, env, defs, structs, var_types, calls);
         }
         IrStmtKind::Semi(expr) | IrStmtKind::Expr(expr) => {
             collect_expr_calls(expr, env, defs, structs, var_types, calls)
@@ -2590,6 +2639,17 @@ fn mono_stmt(stmt: &IrStmt, env: &MonoEnv) -> IrStmt {
             pattern: pattern.clone(),
             ty: ty.as_ref().map(|t| mono_type(t, env)),
             init: init.as_ref().map(|e| mono_expr(e, env)),
+        },
+        IrStmtKind::LetElse {
+            pattern,
+            ty,
+            init,
+            else_expr,
+        } => IrStmtKind::LetElse {
+            pattern: pattern.clone(),
+            ty: ty.as_ref().map(|t| mono_type(t, env)),
+            init: init.as_ref().map(|e| mono_expr(e, env)),
+            else_expr: mono_expr(else_expr, env),
         },
         IrStmtKind::Semi(e) => IrStmtKind::Semi(mono_expr(e, env)),
         IrStmtKind::Expr(e) => IrStmtKind::Expr(mono_expr(e, env)),

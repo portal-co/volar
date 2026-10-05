@@ -174,6 +174,14 @@ fn collect_block(block: &IrBlock, idx_map: &HashMap<&str, usize>, out: &mut Vec<
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 collect_expr(e, idx_map, out);
             }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_expr(init, idx_map, out);
+                }
+                collect_expr(else_expr, idx_map, out);
+            }
             _ => {}
         }
     }
@@ -187,6 +195,14 @@ fn collect_method_names_block(block: &IrBlock, out: &mut Vec<String>) {
         match &stmt.kind {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 collect_method_names_expr(e, out);
+            }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_method_names_expr(init, out);
+                }
+                collect_method_names_expr(else_expr, out);
             }
             _ => {}
         }

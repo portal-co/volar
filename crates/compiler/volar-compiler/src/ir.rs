@@ -1427,6 +1427,15 @@ pub enum IrStmtKind<P: Clone = ()> {
         #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         init: Option<IrExpr<P>>,
     },
+    /// A refutable `let PAT = EXPR else { ... }` statement.
+    LetElse {
+        pattern: IrPattern,
+        ty: Option<IrType>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        init: Option<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        else_expr: IrExpr<P>,
+    },
     Semi(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrExpr<P>),
     Expr(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrExpr<P>),
 }
@@ -3047,6 +3056,17 @@ impl<P: Clone, Q: Clone> MapKind<P, Q> for IrStmtKind<P> {
                 pattern,
                 ty,
                 init: init.map(|e| e.map_kind_prov(f)),
+            },
+            IrStmtKind::LetElse {
+                pattern,
+                ty,
+                init,
+                else_expr,
+            } => IrStmtKind::LetElse {
+                pattern,
+                ty,
+                init: init.map(|e| e.map_kind_prov(f)),
+                else_expr: else_expr.map_kind_prov(f),
             },
             IrStmtKind::Semi(e) => IrStmtKind::Semi(e.map_kind_prov(f)),
             IrStmtKind::Expr(e) => IrStmtKind::Expr(e.map_kind_prov(f)),

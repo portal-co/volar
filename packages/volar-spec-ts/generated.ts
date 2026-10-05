@@ -8418,7 +8418,13 @@ export function hash_to_curve(ctx: { DClass: { new(...args: any[]): any } & Reco
       continue;
     }
     const yy = fe_mul(num, fe_invert(den));
-    const y = fe_sqrt(yy);
+    const __volar_let_else_15 = fe_sqrt(yy);
+    if (!(__volar_let_else_15 !== null && __volar_let_else_15 !== undefined)) {
+            {
+        continue;
+      }
+    }
+    let y = __volar_let_else_15;
     if (!__equals(fieldBitand(y.to_bytes()[Number(0n)], 1n), sign))     {
       y = fe_neg(y);
     }
@@ -9980,7 +9986,13 @@ export function spcot_consistency_check(ctx: { defaultT: () => any, TClass: { ne
       alpha = i;
     }
   }
-  const a = alpha;
+  const __volar_let_else_13 = alpha;
+  if (!(__volar_let_else_13 !== null && __volar_let_else_13 !== undefined)) {
+        {
+      return false;
+    }
+  }
+  const a = __volar_let_else_13;
   if (!__equals(xor_block(v[Number(a)], w[Number(a)]), delta))   {
     return false;
   }

@@ -515,6 +515,14 @@ fn collect_vars_in_block(block: &IrBlock, out: &mut BTreeSet<String>) {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 collect_vars_in_expr(e, out)
             }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_vars_in_expr(init, out);
+                }
+                collect_vars_in_expr(else_expr, out);
+            }
             IrStmtKind::Let { init: None, .. } => {}
             _ => {}
         }

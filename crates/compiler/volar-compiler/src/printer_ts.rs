@@ -345,6 +345,14 @@ fn scan_block_witnesses(block: &IrBlock, out: &mut WitnessNeeds, declared_generi
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 scan_expr_witnesses(e, out, declared_generics);
             }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    scan_expr_witnesses(init, out, declared_generics);
+                }
+                scan_expr_witnesses(else_expr, out, declared_generics);
+            }
             _ => {}
         }
     }
@@ -857,6 +865,14 @@ fn collect_call_targets_block(block: &IrBlock, targets: &mut Vec<String>) {
         match &stmt.kind {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 collect_call_targets_expr(e, targets);
+            }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_call_targets_expr(init, targets);
+                }
+                collect_call_targets_expr(else_expr, targets);
             }
             _ => {}
         }
@@ -4085,6 +4101,69 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         match &self.stmt.kind {
+            IrStmtKind::LetElse {
+                pattern,
+                ty,
+                init,
+                else_expr,
+            } => {
+                if let Some(IrType::TypeParam(tp)) = ty {
+                    collect_pattern_var_types(pattern, tp, cx);
+                }
+                let let_else_name = format!("__volar_let_else_{}", self.try_index);
+                if let Some(init) = init {
+                    if let IrExprKind::Try(inner) = &init.kind {
+                        let try_name = format!("__volar_let_else_try_{}", self.try_index);
+                        write!(f, "{}const {} = ", ind, try_name)?;
+                        TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
+                        writeln!(f, ";")?;
+                        if cx.try_returns_option {
+                            writeln!(f, "{}if ({} == null) return undefined;", ind, try_name)?;
+                        } else {
+                            writeln!(
+                                f,
+                                "{}if ({} instanceof __VolarError) return {};",
+                                ind, try_name, try_name
+                            )?;
+                        }
+                        write!(f, "{}const {}", ind, let_else_name)?;
+                        if let Some(ty) = ty {
+                            write!(f, ": ")?;
+                            TsTypeWriter { ty }.ts_fmt(f, cx)?;
+                        }
+                        writeln!(f, " = {};", try_name)?;
+                    } else {
+                        write!(f, "{}const {}", ind, let_else_name)?;
+                        if let Some(ty) = ty {
+                            write!(f, ": ")?;
+                            TsTypeWriter { ty }.ts_fmt(f, cx)?;
+                        }
+                        write!(f, " = ")?;
+                        TsExprWriter { expr: init }.ts_fmt(f, cx)?;
+                        writeln!(f, ";")?;
+                    }
+                } else {
+                    writeln!(f, "{}const {} = undefined;", ind, let_else_name)?;
+                }
+                write!(f, "{}if (!(", ind)?;
+                ts_pattern_condition(pattern, &let_else_name, f)?;
+                writeln!(f, ")) {{")?;
+                let else_ind = "  ".repeat(self.indent + 1);
+                write!(f, "{}", else_ind)?;
+                if is_statement_like(else_expr) {
+                    emit_statement_expr(else_expr, self.indent + 1, f, cx)?;
+                } else {
+                    TsExprWriter { expr: else_expr }.ts_fmt(f, cx)?;
+                    write!(f, ";")?;
+                }
+                writeln!(f)?;
+                writeln!(f, "{}}}", ind)?;
+                let mut bindings = String::new();
+                ts_emit_pattern_bindings(pattern, &let_else_name, &mut bindings)?;
+                for binding in bindings.lines() {
+                    writeln!(f, "{}{}", ind, binding)?;
+                }
+            }
             // Rust `?` is statement-level control flow, not an expression-level
             // cast: evaluate once, propagate an error immediately, then bind the
             // narrowed Ok value. `var` deliberately permits multiple Try statements
@@ -6675,6 +6754,13 @@ fn is_phantom_arg(expr: &IrExpr) -> bool {
 fn pattern_is_mutable(pat: &IrPattern) -> bool {
     match pat {
         IrPattern::Ident { mutable, .. } => *mutable,
+        IrPattern::Tuple(patterns)
+        | IrPattern::TupleStruct {
+            elems: patterns, ..
+        } => patterns.iter().any(pattern_is_mutable),
+        IrPattern::Struct { fields, .. } => fields.iter().any(|(_, pat)| pattern_is_mutable(pat)),
+        IrPattern::Ref { pat, .. } => pattern_is_mutable(pat),
+        IrPattern::Or(patterns) => patterns.iter().any(pattern_is_mutable),
         _ => false,
     }
 }
@@ -6725,10 +6811,10 @@ fn ts_pattern_condition(
 
 /// Emit pattern binding statements into the match arm body.
 /// E.g., `Some(s)` → `const s = __match;`
-fn ts_emit_pattern_bindings(
+fn ts_emit_pattern_bindings<W: fmt::Write>(
     pat: &IrPattern,
     match_var: &str,
-    f: &mut fmt::Formatter<'_>,
+    f: &mut W,
 ) -> fmt::Result {
     match pat {
         IrPattern::Ident { name, mutable, .. }

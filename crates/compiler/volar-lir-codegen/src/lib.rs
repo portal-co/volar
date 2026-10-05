@@ -25,16 +25,16 @@ use volar_compiler::ir::{
 use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 
 use mono::{
-    FunctionInstanceKey, MonoEnv, MonoPlan, mono_len, mono_type, normalized_args, type_args_to_len,
-    typenum_usize,
+    mono_len, mono_type, normalized_args, type_args_to_len, typenum_usize, FunctionInstanceKey,
+    MonoEnv, MonoPlan,
 };
 use structs::{
-    EnumRegistry, StructRegistry, flatten_count, flatten_scalar_types, primitive_to_lir,
-    struct_field_scalar_offset, struct_field_scalar_width,
+    flatten_count, flatten_scalar_types, primitive_to_lir, struct_field_scalar_offset,
+    struct_field_scalar_width, EnumRegistry, StructRegistry,
 };
 use volar_compiler::ir::IrEnum;
 
-pub use mono::{MonoError, plan_flat_module};
+pub use mono::{plan_flat_module, MonoError};
 
 // Unwrap a single-element Vec into a scalar, panicking if the vec has != 1 element.
 fn into_scalar<V: Clone>(vals: Vec<V>, context: &str) -> V {
@@ -1008,7 +1008,10 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     // Module-level type aliases (e.g. `Block = [u8; KAPPA_BYTES]`) must be
     // resolvable during all type conversion — collect them too.
     for alias in &module.type_aliases {
-        empty.aliases.entry(alias.name.clone()).or_insert_with(|| alias.target.clone());
+        empty
+            .aliases
+            .entry(alias.name.clone())
+            .or_insert_with(|| alias.target.clone());
     }
     let mut registry = structs::StructRegistry::new();
     registry.lenient = lenient;
@@ -1698,6 +1701,20 @@ fn body_let_annotations<P: Clone>(block: &IrBlock<P>) -> Vec<IrType> {
     fn walk_stmt<P: Clone>(stmt: &IrStmt<P>, out: &mut Vec<IrType>) {
         match &stmt.kind {
             IrStmtKind::Let { ty: Some(ty), .. } => out.push(ty.clone()),
+            IrStmtKind::LetElse {
+                ty,
+                init,
+                else_expr,
+                ..
+            } => {
+                if let Some(ty) = ty {
+                    out.push(ty.clone());
+                }
+                if let Some(init) = init {
+                    walk_expr(init, out);
+                }
+                walk_expr(else_expr, out);
+            }
             IrStmtKind::Expr(e) | IrStmtKind::Semi(e) => walk_expr(e, out),
             _ => {}
         }

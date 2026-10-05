@@ -8311,7 +8311,9 @@ pub fn spcot_consistency_check(mut delta: &Block, mut v: &[Block], mut w: &[Bloc
     alpha = Some(i);
 }
 };
-    let Some(a) = alpha;
+    let Some(a) = alpha else {
+    return false;
+};
     if xor_block(&v[a], &w[a]) != *delta{
     return false;
 };
@@ -9522,7 +9524,9 @@ pub fn hash_to_curve(mut domain: &[u8], mut index: u64) -> EdPoint
     continue;
 };
     let yy = fe_mul(&num, &fe_invert(&den));
-    let Some(mut y) = fe_sqrt(&yy);
+    let Some(mut y) = fe_sqrt(&yy) else {
+    continue;
+};
     if (y.to_bytes()[0] & 1) != sign{
     y = fe_neg(&y);
 };

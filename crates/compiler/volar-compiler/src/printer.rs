@@ -173,6 +173,14 @@ fn collect_callee_names_block(block: &IrBlock, out: &mut BTreeSet<String>) {
     for stmt in &block.stmts {
         match &stmt.kind {
             IrStmtKind::Let { init: Some(e), .. } => collect_callee_names_expr(e, out),
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_callee_names_expr(init, out);
+                }
+                collect_callee_names_expr(else_expr, out);
+            }
             IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => collect_callee_names_expr(e, out),
             _ => {}
         }
@@ -186,6 +194,14 @@ fn collect_callee_names_cfg_block(block: &IrCfgBlock, out: &mut BTreeSet<String>
     for stmt in &block.stmts {
         match &stmt.kind {
             IrStmtKind::Let { init: Some(e), .. } => collect_callee_names_expr(e, out),
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_callee_names_expr(init, out);
+                }
+                collect_callee_names_expr(else_expr, out);
+            }
             IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => collect_callee_names_expr(e, out),
             _ => {}
         }
@@ -1154,6 +1170,34 @@ impl<'a> RustBackend for StmtWriter<'a> {
                     }
                     .fmt(f)?;
                 }
+                writeln!(f, ";")?;
+            }
+            IrStmtKind::LetElse {
+                pattern,
+                ty,
+                init,
+                else_expr,
+            } => {
+                write!(f, "let ")?;
+                PatternWriter { pat: pattern }.fmt(f)?;
+                if let Some(t) = ty {
+                    write!(f, ": ")?;
+                    TypeWriter { ty: t }.fmt(f)?;
+                }
+                if let Some(i) = init {
+                    write!(f, " = ")?;
+                    TopLevelExprWriter {
+                        expr: i,
+                        ctx: self.ctx,
+                    }
+                    .fmt(f)?;
+                }
+                write!(f, " else ")?;
+                TopLevelExprWriter {
+                    expr: else_expr,
+                    ctx: self.ctx,
+                }
+                .fmt(f)?;
                 writeln!(f, ";")?;
             }
             IrStmtKind::Semi(e) => {

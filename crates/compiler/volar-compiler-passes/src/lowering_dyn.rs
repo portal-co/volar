@@ -1302,6 +1302,15 @@ fn find_use_type_of_var_in_block(
                     return Some(found);
                 }
             }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                for expr in init.iter().chain(core::iter::once(else_expr)) {
+                    if let Some(found) = find_use_type_of_var(expr, name, ctx) {
+                        return Some(found);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1433,11 +1442,17 @@ fn resolve_placeholder_lengths(
     let n_stmts = block.stmts.len();
     for i in 0..n_stmts {
         let (name, use_ty) = {
-            let IrStmtKind::Let {
+            let (IrStmtKind::Let {
                 pattern,
                 ty: let_ty,
                 init: Some(init),
-            } = &block.stmts[i].kind
+            }
+            | IrStmtKind::LetElse {
+                pattern,
+                ty: let_ty,
+                init: Some(init),
+                ..
+            }) = &block.stmts[i].kind
             else {
                 continue;
             };
@@ -1472,6 +1487,19 @@ fn resolve_placeholder_lengths(
                                 break;
                             }
                         }
+                        IrStmtKind::LetElse {
+                            init, else_expr, ..
+                        } => {
+                            for expr in init.iter().chain(core::iter::once(else_expr)) {
+                                if let Some(t) = find_use_type_of_var(expr, &name, ctx) {
+                                    use_ty = Some(t);
+                                    break;
+                                }
+                            }
+                            if use_ty.is_some() {
+                                break;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1484,11 +1512,14 @@ fn resolve_placeholder_lengths(
             (name, use_ty)
         };
         if let Some(ty) = use_ty {
-            if let IrStmtKind::Let {
-                init: Some(init), ..
-            } = &mut block.stmts[i].kind
-            {
-                align_producer_to_type(init, &ty, bound, ctx, fn_gen);
+            match &mut block.stmts[i].kind {
+                IrStmtKind::Let {
+                    init: Some(init), ..
+                }
+                | IrStmtKind::LetElse {
+                    init: Some(init), ..
+                } => align_producer_to_type(init, &ty, bound, ctx, fn_gen),
+                _ => {}
             }
         }
         let _ = name;
@@ -1529,6 +1560,14 @@ fn resolve_placeholder_lengths(
         match &mut s.kind {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 align_struct_field_producers(e, bound, ctx, fn_gen);
+            }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    align_struct_field_producers(init, bound, ctx, fn_gen);
+                }
+                align_struct_field_producers(else_expr, bound, ctx, fn_gen);
             }
             _ => {}
         }
@@ -1581,6 +1620,14 @@ fn collect_vec_field_elems(
         match &s.kind {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 scan(e)
+            }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    scan(init);
+                }
+                scan(else_expr);
             }
             _ => {}
         }
@@ -1665,6 +1712,14 @@ fn align_push_producers_in_stmt(
     match &mut stmt.kind {
         IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
             align_push_producers_in_expr(e, vec_elem, bound, ctx, fn_gen);
+        }
+        IrStmtKind::LetElse {
+            init, else_expr, ..
+        } => {
+            if let Some(init) = init {
+                align_push_producers_in_expr(init, vec_elem, bound, ctx, fn_gen);
+            }
+            align_push_producers_in_expr(else_expr, vec_elem, bound, ctx, fn_gen);
         }
         _ => {}
     }
@@ -1836,6 +1891,14 @@ fn align_struct_field_producers(
                     IrStmtKind::Let { init: Some(e), .. }
                     | IrStmtKind::Semi(e)
                     | IrStmtKind::Expr(e) => align_struct_field_producers(e, bound, ctx, fn_gen),
+                    IrStmtKind::LetElse {
+                        init, else_expr, ..
+                    } => {
+                        if let Some(init) = init {
+                            align_struct_field_producers(init, bound, ctx, fn_gen);
+                        }
+                        align_struct_field_producers(else_expr, bound, ctx, fn_gen);
+                    }
                     _ => {}
                 }
             }
@@ -1850,11 +1913,19 @@ fn align_struct_field_producers(
         } => {
             align_struct_field_producers(cond, bound, ctx, fn_gen);
             for st in &mut then_branch.stmts {
-                if let IrStmtKind::Let { init: Some(e), .. }
-                | IrStmtKind::Semi(e)
-                | IrStmtKind::Expr(e) = &mut st.kind
-                {
-                    align_struct_field_producers(e, bound, ctx, fn_gen);
+                match &mut st.kind {
+                    IrStmtKind::Let { init: Some(e), .. }
+                    | IrStmtKind::Semi(e)
+                    | IrStmtKind::Expr(e) => align_struct_field_producers(e, bound, ctx, fn_gen),
+                    IrStmtKind::LetElse {
+                        init, else_expr, ..
+                    } => {
+                        if let Some(init) = init {
+                            align_struct_field_producers(init, bound, ctx, fn_gen);
+                        }
+                        align_struct_field_producers(else_expr, bound, ctx, fn_gen);
+                    }
+                    _ => {}
                 }
             }
             if let Some(t) = &mut then_branch.expr {
@@ -1971,6 +2042,14 @@ fn substitute_var_in_block(block: &mut IrBlock, old: &str, replacement: &IrExpr)
         match &mut s.kind {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 substitute_var_with_expr(e, old, replacement)
+            }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    substitute_var_with_expr(init, old, replacement);
+                }
+                substitute_var_with_expr(else_expr, old, replacement);
             }
             _ => {}
         }
@@ -2296,6 +2375,17 @@ fn rename_var_in_stmt(stmt: &mut IrStmt, old: &str, new_name: &str) {
             if let Some(e) = init {
                 rename_var_in_expr(e, old, new_name);
             }
+        }
+        IrStmtKind::LetElse {
+            pattern: _,
+            init,
+            else_expr,
+            ..
+        } => {
+            if let Some(e) = init {
+                rename_var_in_expr(e, old, new_name);
+            }
+            rename_var_in_expr(else_expr, old, new_name);
         }
         IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
             rename_var_in_expr(e, old, new_name);
@@ -2664,6 +2754,14 @@ fn collect_placeholder_vars_block(
         match &s.kind {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 collect_placeholder_vars(e, bound, out)
+            }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_placeholder_vars(init, bound, out);
+                }
+                collect_placeholder_vars(else_expr, bound, out);
             }
             _ => {}
         }
@@ -3177,7 +3275,11 @@ fn lower_block_dyn(block: &IrBlock, ctx: &LoweringContext, fn_gen: &FnScope<'_>)
             var_types: var_types.clone(),
         };
         let lowered = lower_stmt_dyn(stmt, ctx, &scope);
-        if let IrStmtKind::Let { pattern, ty, init } = &stmt.kind {
+        if let IrStmtKind::Let { pattern, ty, init }
+        | IrStmtKind::LetElse {
+            pattern, ty, init, ..
+        } = &stmt.kind
+        {
             clear_pattern_types(pattern, &mut var_types);
             let binding_ty = ty.clone().or_else(|| {
                 init.as_ref()
@@ -3210,6 +3312,19 @@ fn lower_stmt_dyn(s: &IrStmt, ctx: &LoweringContext, fn_gen: &FnScope<'_>) -> Ir
             init: init
                 .as_ref()
                 .map(|i| lower_expr_dyn_in_scope(i, ctx, fn_gen)),
+        },
+        IrStmtKind::LetElse {
+            pattern,
+            ty,
+            init,
+            else_expr,
+        } => IrStmtKind::LetElse {
+            pattern: lower_pattern_dyn(pattern, ctx),
+            ty: ty.as_ref().map(|t| lower_type_dyn(t, ctx, fn_gen)),
+            init: init
+                .as_ref()
+                .map(|i| lower_expr_dyn_in_scope(i, ctx, fn_gen)),
+            else_expr: lower_expr_dyn_in_scope(else_expr, ctx, fn_gen),
         },
         IrStmtKind::Semi(e) => IrStmtKind::Semi(lower_expr_dyn_in_scope(e, ctx, fn_gen)),
         IrStmtKind::Expr(e) => IrStmtKind::Expr(lower_expr_dyn_in_scope(e, ctx, fn_gen)),

@@ -24,7 +24,7 @@ use hashbrown::{HashMap, HashSet};
 
 use syn::PathArguments;
 #[cfg(feature = "parsing")]
-use syn::{Expr, FnArg, GenericParam, Item, Pat, ReturnType, Type, Visibility, parse_file};
+use syn::{parse_file, Expr, FnArg, GenericParam, Item, Pat, ReturnType, Type, Visibility};
 
 /// A named source file to be parsed into IR.
 ///
@@ -2197,19 +2197,28 @@ fn convert_block(block: &syn::Block) -> Result<IrBlock> {
                 } else {
                     None
                 };
-                stmts.push(volar_ir_common::Node::new(
+                let init_expr = l
+                    .init
+                    .as_ref()
+                    .map(|init| convert_expr(&init.expr))
+                    .transpose()?;
+                let let_kind = if let Some((_, diverge)) =
+                    l.init.as_ref().and_then(|init| init.diverge.as_ref())
+                {
+                    IrStmtKind::LetElse {
+                        pattern: convert_pattern(&l.pat),
+                        ty,
+                        init: init_expr,
+                        else_expr: convert_expr(diverge)?,
+                    }
+                } else {
                     IrStmtKind::Let {
                         pattern: convert_pattern(&l.pat),
                         ty,
-                        init: l
-                            .init
-                            .as_ref()
-                            .map(|init| convert_expr(&init.expr))
-                            .transpose()?,
-                    },
-                    (),
-                    None,
-                ));
+                        init: init_expr,
+                    }
+                };
+                stmts.push(volar_ir_common::Node::new(let_kind, (), None));
             }
             syn::Stmt::Expr(e, semi) => {
                 if is_last && semi.is_none() {

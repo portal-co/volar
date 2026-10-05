@@ -270,6 +270,24 @@ fn option_try_propagates_none() {
 }
 
 #[test]
+fn option_let_else_checks_and_binds_the_some_value() {
+    let source = r#"
+        fn increment_if_some(value: Option<u32>) -> Option<u32> {
+            let Some(mut result) = value else {
+                return None;
+            };
+            result = result + 1;
+            Some(result)
+        }
+
+        fn encrypt_block() {}
+    "#;
+    let module = parse_source(source, "option_let_else", &[]).unwrap();
+    let ts_code = print_module_typescript(&module);
+    run_ts_code(&ts_code, "option_let_else");
+}
+
+#[test]
 fn mutable_iteration_writes_through_enumerate_and_slice_loops() {
     let source = r#"
         fn mutate_enumerated(values: &mut [u32]) {

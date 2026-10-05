@@ -357,6 +357,20 @@ fn collect_type_refs_in_block(block: &IrBlock, refs: &mut BTreeSet<String>) {
                     collect_type_refs_in_expr(i, refs);
                 }
             }
+            IrStmtKind::LetElse {
+                ty,
+                init,
+                else_expr,
+                ..
+            } => {
+                if let Some(t) = ty {
+                    collect_type_refs_in_type(t, refs);
+                }
+                if let Some(i) = init {
+                    collect_type_refs_in_expr(i, refs);
+                }
+                collect_type_refs_in_expr(else_expr, refs);
+            }
             IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => collect_type_refs_in_expr(e, refs),
             _ => {}
         }
