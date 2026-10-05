@@ -51,17 +51,21 @@ pub enum PoolSeedError {
     ReceiverChoiceCount { expected: usize, found: usize },
     /// Receiver seed-value count did not match the parameter-derived count.
     ReceiverSeedCount { expected: usize, found: usize },
+    /// A profile transition needed more COTs than the setup pool contains.
+    InsufficientCotMaterial { required: usize, available: usize },
+    /// Receiver choices and value shares in the ready queue had different lengths.
+    ReceiverOutputCountMismatch { choices: usize, values: usize },
 }
 
 /// Validate regular Ferret parameters and return the seed COT count.
 pub fn checked_seed_cot_count(params: FerretParams) -> Result<usize, PoolSeedError> {
-    if params.t == 0 || params.n == 0 || params.k == 0 || params.n % params.t != 0 {
+    if params.t == 0 || params.n < params.t || params.k == 0 {
         return Err(PoolSeedError::InvalidParameters);
     }
-    let splen = params.n / params.t;
-    if !splen.is_power_of_two() {
-        return Err(PoolSeedError::InvalidParameters);
-    }
+    let max_interval_len = params.n.div_ceil(params.t);
+    let splen = max_interval_len
+        .checked_next_power_of_two()
+        .ok_or(PoolSeedError::InvalidParameters)?;
     let log_splen = splen.trailing_zeros() as usize;
     let body = params
         .t
@@ -95,6 +99,44 @@ impl CotPoolSender {
     pub fn remaining(&self) -> usize {
         self.out.len()
     }
+
+    /// Change from a one-time setup parameter set to a main-iteration set.
+    ///
+    /// Call immediately after one setup refill, before consuming any outputs.
+    /// The refreshed setup seed is treated as the first part of the generated
+    /// `n`-COT sequence; queued outputs follow it. The first target `M` COTs
+    /// become the main seed, and the rest remain available in this pool.
+    pub fn reprofile(mut self, params: FerretParams) -> Result<Self, PoolSeedError> {
+        let old_seed_count = checked_seed_cot_count(self.params)?;
+        if self.seed.q.len() != old_seed_count {
+            return Err(PoolSeedError::SenderSeedCount {
+                expected: old_seed_count,
+                found: self.seed.q.len(),
+            });
+        }
+        let required = checked_seed_cot_count(params)?;
+        let available = self
+            .seed
+            .q
+            .len()
+            .checked_add(self.out.len())
+            .ok_or(PoolSeedError::InvalidParameters)?;
+        if available < required {
+            return Err(PoolSeedError::InsufficientCotMaterial {
+                required,
+                available,
+            });
+        }
+        let delta = self.seed.delta;
+        let mut cots = self.seed.q;
+        cots.extend(self.out);
+        let out = cots.split_off(required);
+        self.params = params;
+        self.seed = FerretSenderSeed { delta, q: cots };
+        self.out = out.into();
+        self.raise_n = None;
+        Ok(self)
+    }
 }
 
 impl CotPoolReceiver {
@@ -126,6 +168,61 @@ impl CotPoolReceiver {
 
     pub fn remaining(&self) -> usize {
         self.out_x.len()
+    }
+
+    /// Change from a one-time setup parameter set to a main-iteration set.
+    ///
+    /// Call immediately after one setup refill, before consuming any outputs.
+    /// The refreshed setup seed is treated as the first part of the generated
+    /// `n`-COT sequence; queued outputs follow it. The first target `M` COTs
+    /// become the main seed, and the rest remain available in this pool.
+    pub fn reprofile(mut self, params: FerretParams) -> Result<Self, PoolSeedError> {
+        let old_seed_count = checked_seed_cot_count(self.params)?;
+        if self.seed.u.len() != old_seed_count {
+            return Err(PoolSeedError::ReceiverChoiceCount {
+                expected: old_seed_count,
+                found: self.seed.u.len(),
+            });
+        }
+        if self.seed.w.len() != old_seed_count {
+            return Err(PoolSeedError::ReceiverSeedCount {
+                expected: old_seed_count,
+                found: self.seed.w.len(),
+            });
+        }
+        if self.out_x.len() != self.out_z.len() {
+            return Err(PoolSeedError::ReceiverOutputCountMismatch {
+                choices: self.out_x.len(),
+                values: self.out_z.len(),
+            });
+        }
+        let required = checked_seed_cot_count(params)?;
+        let available = self
+            .seed
+            .u
+            .len()
+            .checked_add(self.out_x.len())
+            .ok_or(PoolSeedError::InvalidParameters)?;
+        if available < required {
+            return Err(PoolSeedError::InsufficientCotMaterial {
+                required,
+                available,
+            });
+        }
+        let mut choices = self.seed.u;
+        choices.extend(self.out_x);
+        let mut values = self.seed.w;
+        values.extend(self.out_z);
+        let output_choices = choices.split_off(required);
+        let output_values = values.split_off(required);
+        self.params = params;
+        self.seed = FerretReceiverSeed {
+            u: choices,
+            w: values,
+        };
+        self.out_x = output_choices.into();
+        self.out_z = output_values.into();
+        Ok(self)
     }
 }
 
@@ -252,6 +349,44 @@ mod tests {
                 r0[j]
             };
             assert_eq!(z[j], expected, "row {j}");
+        }
+    }
+
+    #[test]
+    fn reprofile_keeps_cot_relation_for_uneven_setup_intervals() {
+        let mut rng = TestRng(0xB007_57A9);
+        let setup_params = FerretParams {
+            n: 512,
+            k: 32,
+            t: 7,
+        };
+        let main_params = FERRET_REG_TOY;
+        let (sender_seed, receiver_seed) =
+            sample_seed_cots(&mut rng, checked_seed_cot_count(setup_params).unwrap());
+        let mut sender = CotPoolSender::from_seed(setup_params, sender_seed).unwrap();
+        let mut receiver = CotPoolReceiver::from_seed(setup_params, receiver_seed).unwrap();
+
+        refill(&mut rng, &mut sender, &mut receiver);
+        let sender = sender.reprofile(main_params).unwrap();
+        let receiver = receiver.reprofile(main_params).unwrap();
+        assert_eq!(sender.remaining(), 512 - main_params.seed_cot_count(false));
+        assert_eq!(sender.remaining(), receiver.remaining());
+        let delta = sender.seed.delta;
+        for (q, (&choice, z)) in sender
+            .seed
+            .q
+            .iter()
+            .zip(receiver.seed.u.iter().zip(&receiver.seed.w))
+        {
+            assert_eq!(*z, if choice { xor_block(q, &delta) } else { *q });
+        }
+        for ((q, &choice), z) in sender
+            .out
+            .iter()
+            .zip(receiver.out_x.iter())
+            .zip(receiver.out_z.iter())
+        {
+            assert_eq!(*z, if choice { xor_block(q, &delta) } else { *q });
         }
     }
 

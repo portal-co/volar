@@ -19,8 +19,8 @@ seams it consumes.
 | §5 regular-indices MPCOT | `ot/ferret/mpcot_reg.rs` | `t` SPCOT calls on intervals of length `n/t` (power of two). |
 | Fig. 7 ΠMPCOT Cuckoo | `ot/ferret/mpcot_uni.rs` | `m = ⌈1.5 t⌉`, `τ = 3`, extra dummy cell, SHA3 stand-in for AES-128 `h_i`. |
 | §6.2 10-local primal LPN / RO matrix `A` | `ot/ferret/lpn.rs` | Columns have weight 10 from a public seed; `A` is never sent. |
-| Fig. 9 ΠCOT + §6.2 keep-`M` bootstrap | `ot/ferret/cot.rs`, `pool.rs` | Consume `M = k + t log(n/t)` seed COTs, emit `n − M`, keep first `M`. |
-| Table 2 Ferret-Reg `(n,k,t)` / `(n0,k0,t0)` | `ot/ferret/params.rs` `FERRET_REG_SETUP` / `FERRET_REG_MAIN` | Documented constants. **Not used in unit tests.** Setup `n/t` is not a power of two; do not call `splen()` on it. |
+| Fig. 9 ΠCOT + §6.2 keep-`M` bootstrap | `ot/ferret/cot.rs`, `pool.rs` | Consume `M = k + t·h` seed COTs, where `h` is the padded regular-interval SPCOT height; emit `n − M`, keep first `M`. |
+| Table 2 Ferret-Reg `(n0,k0,t0)` / `(n,k,t)` | `ot/ferret/params.rs` `FERRET_REG_SETUP` / `FERRET_REG_MAIN`; `mpcot_reg.rs` | Constants are checked arithmetically. Setup uses `n0=609,728`, `k0=36,288`, `t0=1,269`; its floor-partitioned intervals have length 480 or 481 and are padded to SPCOT length 512, with padded leaves discarded. Main uses `n=10,805,248`, `k=589,760`, `t=1,319`, and SPCOT length 8,192. Full-size execution is not unit tested. |
 | Table 2 Ferret-Uni | `FERRET_UNI_SETUP` / `FERRET_UNI_MAIN` | Same: documented only. |
 | Insecure toy sizes | `FERRET_REG_TOY` / `FERRET_UNI_TOY` | `n=256, k=32, t=4` for correctness tests. |
 | Bea95 random-COT → chosen-bit | `ot/ferret/pool.rs` `bea95_chosen_bit` | Receiver sends `d = b ⊕ x`. |
@@ -30,9 +30,11 @@ seams it consumes.
 
 This landing does not claim 128-bit attack cost, production LWE/LPN
 parameters, malicious security of the SPCOT check, SoftSpoken subfield-VOLE,
-or a replacement of Chou-Orlandi for existing callers. Ferret is not woven
-into generated ZK prover IR. Passing the toy tests establishes only the
-stated algebraic COT / VOLE relations on those sizes.
+or a replacement of Chou-Orlandi for existing callers. The documented
+parameter values are the paper's target sets, not a security claim for this
+implementation. Ferret is not woven into generated ZK prover IR. Passing toy
+and arithmetic tests establishes only the stated COT / VOLE relations and
+parameter calculations, not paper conformance or security.
 
 ## Reproduction
 

@@ -7,9 +7,10 @@
 //! exemption applies to the whole file.
 //! Bootstrapped COT extension ΠCOT (Ferret Fig. 9 + §6.2).
 //!
-//! Consumes `M = k + t log(n/t)` seed COTs (same global `Δ`), runs regular
-//! MPCOT of length `n`, LPN-encodes with the 10-local code, keeps the first
-//! `M` output COTs as the next seed, and emits `n − M` fresh random COTs.
+//! Consumes `M = k + t·h` seed COTs (same global `Δ`), where `h` is the
+//! padded regular-interval SPCOT height. It runs regular MPCOT of length `n`,
+//! LPN-encodes with the 10-local code, keeps the first `M` output COTs as the
+//! next seed, and emits `n − M` fresh random COTs.
 
 use alloc::vec::Vec;
 
@@ -92,7 +93,11 @@ pub fn ferret_prepare_receiver<R: SpecRng>(
     let alphas = sample_regular_noise(rng, n, t);
     let mut e = alloc::vec![false; n];
     for (i, &a) in alphas.iter().enumerate() {
-        e[i * params.splen() + a] = true;
+        let (start, end) = params
+            .interval_bounds(i)
+            .expect("regular noise interval index must be valid");
+        debug_assert!(a < end - start);
+        e[start + a] = true;
     }
     let lpn_seed = sample_seed(rng);
     let cot_r = &receiver_seed.u[k..];

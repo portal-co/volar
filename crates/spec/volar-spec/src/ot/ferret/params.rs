@@ -3,10 +3,11 @@
 //! @ai: assisted
 //! Ferret LPN parameter sets.
 //!
-//! Table 2 of ePrint 2020/924 (Ferret-Reg / Ferret-Uni, 128-bit attack-cost
-//! target) is recorded as named constants. **Those sizes are not used in
-//! unit tests.** [`FERRET_REG_TOY`] / [`FERRET_UNI_TOY`] are insecure and
-//! exist only for correctness tests.
+//! Table 2 of ePrint 2020/924 (Ferret-Reg / Ferret-Uni, targeting 128-bit
+//! attack cost) is recorded as named constants. Production-size constants are
+//! checked arithmetically; full-size protocol runs are intentionally not unit
+//! tested. [`FERRET_REG_TOY`] / [`FERRET_UNI_TOY`] are insecure and exist only
+//! for correctness tests.
 
 /// Primal-LPN dimensions for one Ferret ΠCOT iteration (Fig. 9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,21 +21,43 @@ pub struct FerretParams {
 }
 
 impl FerretParams {
-    /// SPCOT block length `n/t`. Must be a power of two for regular MPCOT.
+    /// Padded SPCOT block length for the largest regular-noise interval.
+    ///
+    /// The `t` intervals partition `[0,n)` at `floor(i*n/t)`. When `n/t` is
+    /// not a power of two (including the official Ferret-Reg setup set), each
+    /// interval is padded to the next power of two and unused leaves are
+    /// discarded by regular MPCOT.
     pub fn splen(&self) -> usize {
-        debug_assert!(self.t > 0 && self.n % self.t == 0);
-        self.n / self.t
+        debug_assert!(self.t > 0 && self.n >= self.t);
+        let max_interval_len = self.n.div_ceil(self.t);
+        max_interval_len
+            .checked_next_power_of_two()
+            .expect("Ferret SPCOT interval length overflow")
     }
 
-    /// `h = log2(n/t)`.
+    /// `h = ceil(log2(ceil(n/t)))`.
     pub fn log_splen(&self) -> usize {
         let s = self.splen();
         debug_assert!(s.is_power_of_two());
         s.trailing_zeros() as usize
     }
 
-    /// Seed COTs consumed per iteration: `k + t·log(n/t)`, plus `κ` if
-    /// the SPCOT consistency check is enabled (Fig. 6 steps 6–9).
+    /// Bounds of a regular-noise interval, partitioning `[0,n)` at
+    /// `floor(i*n/t)`. Returns `None` for an invalid interval index/parameter.
+    pub fn interval_bounds(&self, index: usize) -> Option<(usize, usize)> {
+        if self.t == 0 || index >= self.t {
+            return None;
+        }
+        let n = self.n as u128;
+        let t = self.t as u128;
+        let start = (index as u128 * n / t) as usize;
+        let end = ((index as u128 + 1) * n / t) as usize;
+        Some((start, end))
+    }
+
+    /// Seed COTs consumed per regular iteration: `k + t·h`, where
+    /// `h = ceil(log2(ceil(n/t)))`, plus `κ` if the SPCOT consistency check
+    /// is enabled (Fig. 6 steps 6–9).
     pub fn seed_cot_count(&self, malicious: bool) -> usize {
         let body = self.k + self.t * self.log_splen();
         if malicious {
@@ -57,7 +80,8 @@ pub const FERRET_REG_TOY: FerretParams = FerretParams {
     t: 4,
 };
 
-/// Table 2 Ferret-Reg one-time setup `(n0, k0, t0)`. Not for tests.
+/// Table 2 Ferret-Reg one-time setup `(n0, k0, t0)`. Its 1,269 regular-noise
+/// intervals have 480 or 481 entries and are padded to SPCOT length 512.
 pub const FERRET_REG_SETUP: FerretParams = FerretParams {
     n: 609_728,
     k: 36_288,
@@ -97,14 +121,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn table2_reg_main_splen_is_power_of_two() {
+    fn paper_reg_setup_and_main_dimensions_and_seed_counts() {
+        assert_eq!(FERRET_REG_SETUP.splen(), 512);
+        assert_eq!(FERRET_REG_SETUP.interval_bounds(0), Some((0, 480)));
+        assert_eq!(FERRET_REG_SETUP.interval_bounds(1), Some((480, 960)));
+        assert_eq!(
+            FERRET_REG_SETUP.interval_bounds(1_268),
+            Some((609_247, 609_728))
+        );
+        assert_eq!(FERRET_REG_SETUP.seed_cot_count(false), 36_288 + 1_269 * 9);
+        assert_eq!(FERRET_REG_SETUP.seed_cot_count(true), 47_837);
+        assert_eq!(FERRET_REG_SETUP.output_cot_count(false), 609_728 - 47_709);
+
         assert_eq!(FERRET_REG_MAIN.n / FERRET_REG_MAIN.t, 8192);
         assert_eq!(FERRET_REG_MAIN.splen(), 8192);
+        assert_eq!(FERRET_REG_MAIN.seed_cot_count(false), 606_907);
+        assert_eq!(FERRET_REG_MAIN.seed_cot_count(true), 607_035);
         assert_eq!(FERRET_REG_TOY.seed_cot_count(false), 32 + 4 * 6);
         assert_eq!(FERRET_REG_TOY.output_cot_count(false), 256 - 56);
-        // Setup n/t is not a power of two in Table 2; do not call splen().
-        assert_eq!(FERRET_REG_SETUP.n, 609_728);
-        assert_eq!(FERRET_REG_SETUP.k, 36_288);
-        assert_eq!(FERRET_REG_SETUP.t, 1_269);
     }
 }

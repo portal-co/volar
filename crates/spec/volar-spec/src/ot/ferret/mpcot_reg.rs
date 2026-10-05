@@ -8,8 +8,8 @@
 //! Regular-indices MPCOT (Ferret §5, last paragraph).
 //!
 //! Noise is regular: exactly one puncture in each interval
-//! `U_i = [i·n/t, (i+1)·n/t)`. Instantiated as `t` independent SPCOT calls
-//! of length `n/t`, concatenated.
+//! `U_i = [floor(i·n/t), floor((i+1)·n/t))`. Each interval is padded to the
+//! next power of two for its SPCOT call; padded leaves are discarded.
 
 use alloc::vec::Vec;
 
@@ -17,6 +17,30 @@ use super::spcot::{
     Block, SpcotSenderMsg, spcot_choice_bits, spcot_receiver_extend, spcot_sender_extend,
 };
 use crate::SpecRng;
+
+fn interval_bounds(n: usize, t: usize, index: usize) -> (usize, usize) {
+    let n = n as u128;
+    let t = t as u128;
+    let index = index as u128;
+    ((index * n / t) as usize, ((index + 1) * n / t) as usize)
+}
+
+fn padded_interval_len(n: usize, t: usize) -> usize {
+    n.div_ceil(t)
+        .checked_next_power_of_two()
+        .expect("regular MPCOT interval length overflow")
+}
+
+fn sample_below<R: SpecRng>(rng: &mut R, upper: usize) -> usize {
+    let upper = u32::try_from(upper).expect("regular MPCOT interval exceeds RNG range");
+    let zone = u32::MAX - (u32::MAX % upper);
+    loop {
+        let value = rng.next_u32();
+        if value < zone {
+            return (value % upper) as usize;
+        }
+    }
+}
 
 /// Sender message: one SPCOT transcript per interval.
 #[derive(Clone)]
@@ -33,8 +57,8 @@ pub fn mpcot_reg_sender<R: SpecRng>(
     cot_q: &[Block],
     choices: &[bool],
 ) -> (Vec<Block>, MpcotRegSenderMsg) {
-    debug_assert!(n % t == 0);
-    let splen = n / t;
+    debug_assert!(t > 0 && n >= t);
+    let splen = padded_interval_len(n, t);
     let h = splen.trailing_zeros() as usize;
     debug_assert_eq!(cot_q.len(), t * h);
     debug_assert_eq!(choices.len(), t * h);
@@ -44,8 +68,9 @@ pub fn mpcot_reg_sender<R: SpecRng>(
     for i in 0..t {
         let q = &cot_q[i * h..(i + 1) * h];
         let ch = &choices[i * h..(i + 1) * h];
+        let (start, end) = interval_bounds(n, t, i);
         let (v, msg) = spcot_sender_extend(rng, delta, splen, q, ch);
-        s.extend(v);
+        s.extend(v.into_iter().take(end - start));
         blocks.push(msg);
     }
     (s, MpcotRegSenderMsg { blocks })
@@ -61,20 +86,23 @@ pub fn mpcot_reg_receiver(
     msg: &MpcotRegSenderMsg,
 ) -> Vec<Block> {
     debug_assert_eq!(alphas.len(), t);
-    let splen = n / t;
+    debug_assert!(t > 0 && n >= t);
+    let splen = padded_interval_len(n, t);
     let h = splen.trailing_zeros() as usize;
     let mut r = Vec::with_capacity(n);
     for i in 0..t {
+        let (start, end) = interval_bounds(n, t, i);
         let t_rows = &cot_t[i * h..(i + 1) * h];
         let w = spcot_receiver_extend(alphas[i], splen, t_rows, &msg.blocks[i]);
-        r.extend(w);
+        r.extend(w.into_iter().take(end - start));
     }
     r
 }
 
 /// Build receiver choice bits for regular punctures `alphas`.
 pub fn mpcot_reg_choice_bits(n: usize, t: usize, alphas: &[usize], cot_r: &[bool]) -> Vec<bool> {
-    let splen = n / t;
+    debug_assert!(t > 0 && n >= t);
+    let splen = padded_interval_len(n, t);
     let h = splen.trailing_zeros() as usize;
     let mut out = Vec::with_capacity(t * h);
     for i in 0..t {
@@ -86,8 +114,13 @@ pub fn mpcot_reg_choice_bits(n: usize, t: usize, alphas: &[usize], cot_r: &[bool
 
 /// Sample a regular weight-`t` noise vector: one uniform index per interval.
 pub fn sample_regular_noise<R: SpecRng>(rng: &mut R, n: usize, t: usize) -> Vec<usize> {
-    let splen = n / t;
-    (0..t).map(|_| (rng.next_u32() as usize) % splen).collect()
+    debug_assert!(t > 0 && n >= t);
+    (0..t)
+        .map(|i| {
+            let (start, end) = interval_bounds(n, t, i);
+            sample_below(rng, end - start)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -132,6 +165,50 @@ mod tests {
         for i in 0..8 {
             let expect = if i == 1 { delta } else { [0u8; 16] };
             assert_eq!(xor_block(&v1[i], &w1[i]), expect);
+        }
+    }
+
+    #[test]
+    fn regular_mpcot_relation_supports_uneven_padded_intervals() {
+        let mut rng = TestRng(0x3737);
+        let n = 37;
+        let t = 7;
+        let h = padded_interval_len(n, t).trailing_zeros() as usize;
+        let mut delta = [0u8; 16];
+        for b in &mut delta {
+            *b = rng.next_u32() as u8;
+        }
+        delta[0] |= 1;
+        let mut cot_q = Vec::new();
+        let mut cot_r = Vec::new();
+        let mut cot_t = Vec::new();
+        for _ in 0..(t * h) {
+            let mut row = [0u8; 16];
+            for chunk in row.chunks_mut(4) {
+                chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
+            }
+            let bit = (rng.next_u32() & 1) == 1;
+            cot_q.push(row);
+            cot_r.push(bit);
+            cot_t.push(if bit { xor_block(&row, &delta) } else { row });
+        }
+        let alphas = sample_regular_noise(&mut rng, n, t);
+        let choices = mpcot_reg_choice_bits(n, t, &alphas, &cot_r);
+        let (sender, msg) = mpcot_reg_sender(&mut rng, &delta, n, t, &cot_q, &choices);
+        let receiver = mpcot_reg_receiver(n, t, &alphas, &cot_t, &msg);
+        assert_eq!(sender.len(), n);
+        assert_eq!(receiver.len(), n);
+        for i in 0..t {
+            let (start, end) = interval_bounds(n, t, i);
+            assert!(alphas[i] < end - start);
+            for index in start..end {
+                let expected = if index == start + alphas[i] {
+                    delta
+                } else {
+                    [0u8; 16]
+                };
+                assert_eq!(xor_block(&sender[index], &receiver[index]), expected);
+            }
         }
     }
 
