@@ -1,11 +1,11 @@
-# Task: call-site const-generic inference for static method calls
+# Task: call-site const-generic inference for dyn-lowered functions
 
-> **Status:** implemented and verified for the canonical static-call case; broader
-> TS2554 work remains. Historical base: `1bc0fd7` (469 errors, TS2554 = 91).
-> On a like-for-like fresh generation from the current spec sources, strict TS
-> moved from 256 to 255 errors and TS2554 from 90 to 89. The current spec tree
-> includes the role-separated Ferret seed APIs added after the historical 251-error
-> checkpoint.
+> **Status:** implemented for static calls and module-qualified free calls; the
+> remaining TS2554 cases have other causes. Historical base: `1bc0fd7` (469
+> errors, TS2554 = 91). On the current fresh-generated spec tree, the call-site
+> work reduced strict TS from 256 to 205 errors and TS2554 from 90 to 39. The
+> current spec tree includes the role-separated Ferret seed APIs added after the
+> historical 251-error checkpoint.
 
 ## Problem
 
@@ -54,7 +54,8 @@ The machinery is in `crates/compiler/volar-compiler-passes/src/lowering_dyn.rs`:
 
 - `LoweringContext` stores source signatures for unambiguous inherent static
   methods (`Type::method`) and uniquely named free functions. Conflicting
-  signatures are marked ambiguous and are not guessed.
+  signatures are marked ambiguous and are not guessed. Bare and module-qualified
+  free-function paths are supported; module qualifiers are not emitted as values.
 - A function-scoped `FnScope` carries the source generic parameters and declared
   parameter types into expression lowering. It currently does not track local
   `let` bindings.
@@ -67,7 +68,8 @@ The machinery is in `crates/compiler/volar-compiler-passes/src/lowering_dyn.rs`:
   when the complete prefix is resolvable, avoiding partial argument shifts.
 - The canonical `EncodedLabelBatch::from_pairs` call now emits
   `LabelBatchDyn.new(16n, pairs, offset)`; it does not add a spurious witness to
-  `from_pairs` itself.
+  `from_pairs` itself. Qualified turbofish calls such as
+  `torus::torus_add::<LOG_M>` now emit the caller witness before source arguments.
 
 The registries and scope are broader than the original static-method-only sketch:
 unique free-function signatures are eligible too. Instance-method call inference,
@@ -85,13 +87,14 @@ cp ../volar-spec-ts/generated.ts src/.chk.ts && sed -i '' '/^\/\/ @ts-nocheck/d'
 rm -f src/.chk.ts
 ```
 Verified: `cargo test -p volar-compiler-passes --features parsing --lib` passes
-(54 tests, including direct const-length inference and call-injection regressions);
+(56 tests, including direct const-length inference, qualified-call forwarding, and
+trait-path non-misclassification regressions);
 `cargo xtask gen-specs` followed by `cargo xtask check-specs` reports all four
-artifacts fresh. The full generated TypeScript remains red at 255 errors
-(TS2554 = 89), down from 256 (TS2554 = 90) with call-site inference disabled on
-the same source tree. `cargo check -p volar-spec-dyn --features generated` still
-fails with its pre-existing 1486-error generated-Rust surface; enabling versus
-disabling this inference produced identical Rust diagnostic counts. Runtime
+artifacts fresh. After qualified free-call forwarding, the full generated
+TypeScript remains red at 205 errors (TS2554 = 39), down from 255 (TS2554 = 89)
+at the preceding static-call checkpoint. `cargo check -p volar-spec-dyn --features
+generated` still fails with its pre-existing 1486-error generated-Rust surface;
+the Rust diagnostic count was unchanged by the forwarding work. Runtime
 export-count checks have not been rerun for this implementation.
 
 Watch for: `LabelBatchDyn.new(16, pairs, offset)` should appear; the

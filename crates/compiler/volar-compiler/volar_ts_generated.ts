@@ -5805,8 +5805,8 @@ export function binfhe_cmux(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_l
 
 export function binfhe_external_product(n: bigint, log: bigint, ell: bigint, base_log: bigint, c: BinfheRgswCiphertextDyn, ct: BinfheRlweCiphertextDyn): BinfheRlweCiphertextDyn
 {
-  const a_dec = gadget_poly_decompose(ct.$fa);
-  const b_dec = gadget_poly_decompose(ct.$fb);
+  const a_dec = gadget_poly_decompose(n, log, ell, base_log, ct.$fa);
+  const b_dec = gadget_poly_decompose(n, log, ell, base_log, ct.$fb);
   let out_a = Array.from({length: Number(n)}, () => 0n);
   let out_b = Array.from({length: Number(n)}, () => 0n);
   for (let j = 0n; j < ell; j += 1n)   {
@@ -5821,8 +5821,8 @@ export function binfhe_external_product(n: bigint, log: bigint, ell: bigint, bas
     }
   }
   for (let k = 0n; k < n; k += 1n)   {
-    out_a[Number(k)] = reduce(out_a[Number(k)]);
-    out_b[Number(k)] = reduce(out_b[Number(k)]);
+    out_a[Number(k)] = reduce(log, out_a[Number(k)]);
+    out_b[Number(k)] = reduce(log, out_b[Number(k)]);
   }
   return new BinfheRlweCiphertextDyn({ $fa: out_a, $fb: out_b, $fn: 0n });
 }
@@ -5849,8 +5849,8 @@ export function binfhe_gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, lo
 })());
   const ksk = new BinfheKeySwitchingKeyDyn({ $fksk: Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   return Array.from({length: Number(ks_ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
-  const msg = BigInt(Math.imul(Number(rlwe_sk.$fkey[Number(i)]), Number(level_factor(ks_base_log, j))));
-  return binfhe_lwe_encrypt_raw(n_lwe, log_mod_ks, eta, reduce(msg), lwe_sk, rng);
+  const msg = BigInt(Math.imul(Number(rlwe_sk.$fkey[Number(i)]), Number(level_factor(log_mod_ks, ks_base_log, j))));
+  return binfhe_lwe_encrypt_raw(n_lwe, log_mod_ks, eta, reduce(log_mod_ks, msg), lwe_sk, rng);
 })());
 })()), $fn_lwe: 0n, $fbig_n: 0n, $fks_ell: 0n });
   return new BinfheBootstrappingKeyDyn({ $fbsk: bsk, $fksk: ksk, $fn_lwe: 0n, $fbig_n: 0n, $fbs_ell: 0n, $fks_ell: 0n });
@@ -5888,7 +5888,7 @@ export function binfhe_key_switch<K>(n_lwe: bigint, big_n: bigint, log_mod_ks: b
   let out_a = Array.from({length: Number(n_lwe)}, () => 0n);
   let out_b = ct.$fb;
   for (let i = 0n; i < big_n; i += 1n)   {
-    const digits = gadget_decompose(ct.$fa[Number(i)]);
+    const digits = gadget_decompose(log_mod_ks, ks_ell, ks_base_log, ct.$fa[Number(i)]);
     for (let j = 0n; j < ks_ell; j += 1n)     {
       const d = digits[Number(j)];
       if (__equals(d, 0n))       {
@@ -5902,9 +5902,9 @@ export function binfhe_key_switch<K>(n_lwe: bigint, big_n: bigint, log_mod_ks: b
     }
   }
   for (let k = 0n; k < n_lwe; k += 1n)   {
-    out_a[Number(k)] = reduce(out_a[Number(k)]);
+    out_a[Number(k)] = reduce(log_mod_ks, out_a[Number(k)]);
   }
-  return new BinfheLweCiphertextDyn({ $fa: out_a, $fb: reduce(out_b), $fn: 0n });
+  return new BinfheLweCiphertextDyn({ $fa: out_a, $fb: reduce(log_mod_ks, out_b), $fn: 0n });
 }
 
 export function binfhe_lut_read(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, ks_base_log: bigint, addr_bits: bigint, table_len: bigint, k_max: bigint, addr: BinfheLweCiphertextDyn[], lut: LutDyn, bk: BinfheBootstrappingKeyDyn): BinfheLweCiphertextDyn
@@ -5943,14 +5943,14 @@ export function binfhe_lwe_add(n: bigint, log_m: bigint, x: BinfheLweCiphertextD
 {
   let a = Array.from({length: Number(n)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
-    a[Number(i)] = torus_add(x.$fa[Number(i)], y.$fa[Number(i)]);
+    a[Number(i)] = torus_add(log_m, x.$fa[Number(i)], y.$fa[Number(i)]);
   }
-  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus_add(x.$fb, y.$fb), $fn: 0n });
+  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus_add(log_m, x.$fb, y.$fb), $fn: 0n });
 }
 
 export function binfhe_lwe_add_const(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, c: bigint): BinfheLweCiphertextDyn
 {
-  return new BinfheLweCiphertextDyn({ $fa: x.$fa, $fb: torus_add(x.$fb, c), $fn: 0n });
+  return new BinfheLweCiphertextDyn({ $fa: x.$fa, $fb: torus_add(log_m, x.$fb, c), $fn: 0n });
 }
 
 export function binfhe_lwe_decrypt(n: bigint, log_m: bigint, ct: BinfheLweCiphertextDyn, sk: BinfheLweSecretKeyDyn, delta: bigint): boolean
@@ -5973,14 +5973,14 @@ export function binfhe_lwe_encrypt_raw<R>(n: bigint, log_m: bigint, eta: bigint,
   let a = Array.from({length: Number(n)}, () => 0n);
   for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(a.length); __zip_mut_1 += 1n) {
     {
-      a[Number(__zip_mut_1)] = reduce(rng.next_u32());
+      a[Number(__zip_mut_1)] = reduce(log_m, rng.next_u32());
     }}
   let dot = 0n;
   for (let i = 0n; i < n; i += 1n)   {
     dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(BigInt(sk.$fkey[Number(i)])))), 32);
   }
-  const e = sample_error(rng);
-  const b = reduce(wrappingAdd(wrappingAdd(dot, e, 32), msg, 32));
+  const e = sample_error(log_m, eta, rng);
+  const b = reduce(log_m, wrappingAdd(wrappingAdd(dot, e, 32), msg, 32));
   return new BinfheLweCiphertextDyn({ $fa: a, $fb: b, $fn: 0n });
 }
 
@@ -5988,33 +5988,33 @@ export function binfhe_lwe_neg(n: bigint, log_m: bigint, x: BinfheLweCiphertextD
 {
   let a = Array.from({length: Number(n)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
-    a[Number(i)] = torus_neg(x.$fa[Number(i)]);
+    a[Number(i)] = torus_neg(log_m, x.$fa[Number(i)]);
   }
-  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus_neg(x.$fb), $fn: 0n });
+  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus_neg(log_m, x.$fb), $fn: 0n });
 }
 
 export function binfhe_lwe_scale(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, c: bigint): BinfheLweCiphertextDyn
 {
   let a = Array.from({length: Number(n)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
-    a[Number(i)] = mul_exact(x.$fa[Number(i)], c);
+    a[Number(i)] = mul_exact(log_m, x.$fa[Number(i)], c);
   }
-  return new BinfheLweCiphertextDyn({ $fa: a, $fb: mul_exact(x.$fb, c), $fn: 0n });
+  return new BinfheLweCiphertextDyn({ $fa: a, $fb: mul_exact(log_m, x.$fb, c), $fn: 0n });
 }
 
 export function binfhe_lwe_sub(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, y: BinfheLweCiphertextDyn): BinfheLweCiphertextDyn
 {
   let a = Array.from({length: Number(n)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
-    a[Number(i)] = torus_sub(x.$fa[Number(i)], y.$fa[Number(i)]);
+    a[Number(i)] = torus_sub(log_m, x.$fa[Number(i)], y.$fa[Number(i)]);
   }
-  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus_sub(x.$fb, y.$fb), $fn: 0n });
+  return new BinfheLweCiphertextDyn({ $fa: a, $fb: torus_sub(log_m, x.$fb, y.$fb), $fn: 0n });
 }
 
 export function binfhe_not(n: bigint, log_m: bigint, x: BinfheLweCiphertextDyn, delta: bigint): BinfheLweCiphertextDyn
 {
   let out = binfhe_lwe_neg(n, log_m, x);
-  out.$fb = torus_add(out.$fb, delta);
+  out.$fb = torus_add(log_m, out.$fb, delta);
   return out;
 }
 
@@ -6043,7 +6043,7 @@ export function binfhe_poly_mul_neg(n: bigint, log: bigint, a: bigint[], b: bigi
   }
   for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(result.length); __zip_mut_1 += 1n) {
     {
-      result[Number(__zip_mut_1)] = reduce(result[Number(__zip_mut_1)]);
+      result[Number(__zip_mut_1)] = reduce(log, result[Number(__zip_mut_1)]);
     }}
   return result;
 }
@@ -6064,7 +6064,7 @@ export function binfhe_poly_rotate(n: bigint, log: bigint, p: bigint[], exp: big
   }
   for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(result.length); __zip_mut_1 += 1n) {
     {
-      result[Number(__zip_mut_1)] = reduce(result[Number(__zip_mut_1)]);
+      result[Number(__zip_mut_1)] = reduce(log, result[Number(__zip_mut_1)]);
     }}
   return result;
 }
@@ -6079,14 +6079,14 @@ export function binfhe_rgsw_cmux(n: bigint, log: bigint, ell: bigint, base_log: 
 export function binfhe_rgsw_encrypt<R>(n: bigint, log: bigint, ell: bigint, base_log: bigint, eta: bigint, m: boolean, sk: BinfheRlweSecretKeyDyn, rng: any): BinfheRgswCiphertextDyn
 {
   const rows = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
-  const g = level_factor(base_log, j);
+  const g = level_factor(log, base_log, j);
   const contrib = (() => { if (m) {
   return g;
 } else {
   return 0n;
 } })();
   let rlwe0 = binfhe_rlwe_encrypt_scalar(n, log, eta, 0n, sk, rng);
-  rlwe0.$fa[Number(0n)] = torus_add(rlwe0.$fa[Number(0n)], contrib);
+  rlwe0.$fa[Number(0n)] = torus_add(log, rlwe0.$fa[Number(0n)], contrib);
   const rlwe1 = binfhe_rlwe_encrypt_scalar(n, log, eta, contrib, sk, rng);
   return new BinfheRgswRowDyn({ $frlwe0: rlwe0, $frlwe1: rlwe1, $fn: 0n });
 })());
@@ -6097,18 +6097,18 @@ export function binfhe_rlwe_add(n: bigint, log: bigint, x: BinfheRlweCiphertextD
 {
   let out = x;
   for (let i = 0n; i < n; i += 1n)   {
-    out.$fa[Number(i)] = torus_add(out.$fa[Number(i)], y.$fa[Number(i)]);
-    out.$fb[Number(i)] = torus_add(out.$fb[Number(i)], y.$fb[Number(i)]);
+    out.$fa[Number(i)] = torus_add(log, out.$fa[Number(i)], y.$fa[Number(i)]);
+    out.$fb[Number(i)] = torus_add(log, out.$fb[Number(i)], y.$fb[Number(i)]);
   }
   return out;
 }
 
 export function binfhe_rlwe_encrypt_poly<R>(n: bigint, log: bigint, eta: bigint, msg: bigint[], sk: BinfheRlweSecretKeyDyn, rng: any): BinfheRlweCiphertextDyn
 {
-  const a: bigint[] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => reduce(rng.next_u32()));
+  const a: bigint[] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => reduce(log, rng.next_u32()));
   let b = binfhe_poly_mul_neg(n, log, a, sk.$fkey);
   for (let i = 0n; i < n; i += 1n)   {
-    b[Number(i)] = reduce(wrappingAdd(wrappingAdd(b[Number(i)], sample_error(rng), 32), msg[Number(i)], 32));
+    b[Number(i)] = reduce(log, wrappingAdd(wrappingAdd(b[Number(i)], sample_error(log, eta, rng), 32), msg[Number(i)], 32));
   }
   return new BinfheRlweCiphertextDyn({ $fa: a, $fb: b, $fn: 0n });
 }
@@ -6125,7 +6125,7 @@ export function binfhe_rlwe_phase(n: bigint, log: bigint, ct: BinfheRlweCipherte
   const product = binfhe_poly_mul_neg(n, log, ct.$fa, sk.$fkey);
   let phase = Array.from({length: Number(n)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
-    phase[Number(i)] = torus_sub(ct.$fb[Number(i)], product[Number(i)]);
+    phase[Number(i)] = torus_sub(log, ct.$fb[Number(i)], product[Number(i)]);
   }
   return phase;
 }
@@ -6139,8 +6139,8 @@ export function binfhe_rlwe_sub(n: bigint, log: bigint, x: BinfheRlweCiphertextD
 {
   let out = x;
   for (let i = 0n; i < n; i += 1n)   {
-    out.$fa[Number(i)] = torus_sub(out.$fa[Number(i)], y.$fa[Number(i)]);
-    out.$fb[Number(i)] = torus_sub(out.$fb[Number(i)], y.$fb[Number(i)]);
+    out.$fa[Number(i)] = torus_sub(log, out.$fa[Number(i)], y.$fa[Number(i)]);
+    out.$fb[Number(i)] = torus_sub(log, out.$fb[Number(i)], y.$fb[Number(i)]);
   }
   return out;
 }
@@ -6155,7 +6155,7 @@ export function binfhe_sample_extract(n: bigint, log: bigint, ct: BinfheRlweCiph
   let a_lwe = Array.from({length: Number(n)}, () => 0n);
   a_lwe[Number(0n)] = ct.$fa[Number(0n)];
   for (let i = 1n; i < n; i += 1n)   {
-    a_lwe[Number(i)] = torus_neg(ct.$fa[Number(fieldSub(n, i))]);
+    a_lwe[Number(i)] = torus_neg(log, ct.$fa[Number(fieldSub(n, i))]);
   }
   return new BinfheLweCiphertextDyn({ $fa: a_lwe, $fb: ct.$fb[Number(0n)], $fn: 0n });
 }
@@ -7258,10 +7258,10 @@ export function encrypt_branch_dyn<R>(n: bigint, rng: any, crs: LweOtCrsDyn, pk:
 
 export function encrypt_scaled_poly<R>(big_n: bigint, log_q: bigint, eta: bigint, msg: bigint[], level: bigint, base_log: bigint, sk: BinfheRlweSecretKeyDyn, rng: any): BinfheRlweCiphertextDyn
 {
-  const g = level_factor(base_log, level);
+  const g = level_factor(log_q, base_log, level);
   let scaled = Array.from({length: Number(big_n)}, () => 0n);
   for (let i = 0n; i < big_n; i += 1n)   {
-    scaled[Number(i)] = mul_exact(msg[Number(i)], g);
+    scaled[Number(i)] = mul_exact(log_q, msg[Number(i)], g);
   }
   return binfhe_rlwe_encrypt_poly(big_n, log_q, eta, scaled, sk, rng);
 }
@@ -7948,10 +7948,10 @@ export function gen_circuit_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, l
   const zero = Array.from({length: Number(big_n)}, () => 0n);
   const neg_one_const: bigint[] = (() => {
   let p = Array.from({length: Number(big_n)}, () => 0n);
-  p[Number(0n)] = torus_neg(1n);
+  p[Number(0n)] = torus_neg(log_q, 1n);
   return p;
 })();
-  const neg_sk: bigint[] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => torus_neg(rlwe_sk.$fkey[Number(i)]));
+  const neg_sk: bigint[] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => torus_neg(log_q, rlwe_sk.$fkey[Number(i)]));
   const one_const: bigint[] = (() => {
   let p = Array.from({length: Number(big_n)}, () => 0n);
   p[Number(0n)] = 1n;
@@ -8631,7 +8631,7 @@ export function level_bits(log: bigint, base_log: bigint, j: bigint): bigint
 
 export function level_factor(log: bigint, base_log: bigint, j: bigint): bigint
 {
-  return reduce(fieldShl(1n, level_shift(log, base_log, j)));
+  return reduce(log, fieldShl(1n, level_shift(log, base_log, j)));
 }
 
 export function level_shift(log: bigint, base_log: bigint, j: bigint): bigint
@@ -8642,7 +8642,7 @@ export function level_shift(log: bigint, base_log: bigint, j: bigint): bigint
 export function level_test_poly(big_n: bigint, log_q: bigint, level: bigint, bs_base_log: bigint, k_max: bigint): bigint[]
 {
   const width = fieldShr(big_n, k_max);
-  const g = level_factor(bs_base_log, level);
+  const g = level_factor(log_q, bs_base_log, level);
   let poly = Array.from({length: Number(big_n)}, () => 0n);
   for (let p = width; p < fieldMul(2n, width); p += 1n)   {
     poly[Number(p)] = g;
@@ -8666,7 +8666,7 @@ export function lwe_add(n_lwe: bigint, a: LweCiphertextDyn, b: LweCiphertextDyn)
 
 export function lwe_decode(log_m: bigint, phase: bigint, delta: bigint): boolean
 {
-  return (reduce(wrappingSub(phase, (delta / 2n), 32)) < delta);
+  return (reduce(log_m, wrappingSub(phase, (delta / 2n), 32)) < delta);
 }
 
 export function lwe_decrypt(n_lwe: bigint, ct: LweCiphertextDyn, sk: LweSecretKeyDyn): boolean
@@ -8812,7 +8812,7 @@ export function lwe_phase(n: bigint, log_m: bigint, ct: BinfheLweCiphertextDyn, 
   for (let i = 0n; i < n; i += 1n)   {
     dot = wrappingAdd(dot, BigInt(Math.imul(Number(ct.$fa[Number(i)]), Number(BigInt(sk.$fkey[Number(i)])))), 32);
   }
-  return reduce(wrappingSub(ct.$fb, dot, 32));
+  return reduce(log_m, wrappingSub(ct.$fb, dot, 32));
 }
 
 export function mask(log: bigint): bigint
@@ -8891,12 +8891,12 @@ export function mix_columns(state: bigint[])
 export function mod_switch(from_: bigint, to: bigint, x: bigint): bigint
 {
   return (() => { if ((to >= from_)) {
-  return embed_up(x);
+  return embed_up(from_, to, x);
 } else {
   const shift = fieldSub(from_, to);
   const half = fieldShl(1n, fieldSub(shift, 1n));
   const rounded = BigInt(fieldShr(fieldAdd(BigInt(x), BigInt(half)), shift));
-  return reduce(rounded);
+  return reduce(to, rounded);
 } })();
 }
 
@@ -9289,7 +9289,7 @@ export function priv_ks(big_n: bigint, log_q: bigint, priv_ell: bigint, priv_bas
 {
   let out = new BinfheRlweCiphertextDyn({ $fa: Array.from({length: Number(big_n)}, () => 0n), $fb: Array.from({length: Number(big_n)}, () => 0n), $fn: 0n });
   for (let i = 0n; i < big_n; i += 1n)   {
-    const digits = gadget_decompose(src.$fa[Number(i)]);
+    const digits = gadget_decompose(log_q, priv_ell, priv_base_log, src.$fa[Number(i)]);
     for (const [l, d] of digits.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       if (__equals(d, 0n))       {
         continue;
@@ -9301,7 +9301,7 @@ export function priv_ks(big_n: bigint, log_q: bigint, priv_ell: bigint, priv_bas
       }
     }
   }
-  const digits = gadget_decompose(src.$fb);
+  const digits = gadget_decompose(log_q, priv_ell, priv_base_log, src.$fb);
   for (const [l, d] of digits.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
     if (__equals(d, 0n))     {
       continue;
@@ -9313,8 +9313,8 @@ export function priv_ks(big_n: bigint, log_q: bigint, priv_ell: bigint, priv_bas
     }
   }
   for (let k = 0n; k < big_n; k += 1n)   {
-    out.$fa[Number(k)] = reduce(out.$fa[Number(k)]);
-    out.$fb[Number(k)] = reduce(out.$fb[Number(k)]);
+    out.$fa[Number(k)] = reduce(log_q, out.$fa[Number(k)]);
+    out.$fb[Number(k)] = reduce(log_q, out.$fb[Number(k)]);
   }
   return out;
 }
@@ -9575,7 +9575,7 @@ export function sample_bytes<R>(l: bigint, rng: any): bigint[]
 
 export function sample_error<R>(log: bigint, eta: bigint, rng: any): bigint
 {
-  return reduce(BigInt(cbd(eta, rng)));
+  return reduce(log, BigInt(cbd(eta, rng)));
 }
 
 export function sample_extract(big_n: bigint, rlwe: RlweCiphertextDyn): LweCiphertextDyn

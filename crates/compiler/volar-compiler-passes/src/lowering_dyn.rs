@@ -113,6 +113,8 @@ pub struct LoweringContext {
     /// Ambiguous keys are `None`; inference must never guess between signatures.
     static_method_signatures: BTreeMap<String, Option<CallSignature>>,
     free_function_signatures: BTreeMap<String, Option<CallSignature>>,
+    enum_names: BTreeSet<String>,
+    trait_names: BTreeSet<String>,
     /// Source struct name to collision-free lowered struct name.
     ///
     /// A generic `Foo` normally becomes `FooDyn`; if the source already
@@ -415,6 +417,37 @@ impl LoweringContext {
             }
         }
 
+        let enum_names = module
+            .enums
+            .iter()
+            .map(|item| item.kind.to_string())
+            .collect();
+        let mut trait_names = BTreeSet::new();
+        for structure in &module.structs {
+            for generic in &structure.generics {
+                for bound in &generic.bounds {
+                    add_trait_name(&mut trait_names, &bound.trait_kind);
+                }
+            }
+        }
+        for function in &module.functions {
+            for generic in &function.generics {
+                for bound in &generic.bounds {
+                    add_trait_name(&mut trait_names, &bound.trait_kind);
+                }
+            }
+        }
+        for implementation in &module.impls {
+            if let Some(trait_ref) = &implementation.trait_ {
+                add_trait_name(&mut trait_names, &trait_ref.kind);
+            }
+            for generic in &implementation.generics {
+                for bound in &generic.bounds {
+                    add_trait_name(&mut trait_names, &bound.trait_kind);
+                }
+            }
+        }
+
         // Bare struct name → field name → field type (for placeholder length
         // inference against struct-expression field types).
         let struct_generic_params: BTreeMap<String, Vec<String>> = module
@@ -450,11 +483,62 @@ impl LoweringContext {
             fn_length_params,
             static_method_signatures,
             free_function_signatures,
+            enum_names,
+            trait_names,
             lowered_struct_names,
             struct_field_types,
             struct_generic_params,
         }
     }
+}
+
+fn add_trait_name(names: &mut BTreeSet<String>, kind: &TraitKind) {
+    let name = kind.to_string();
+    names.insert(name);
+    if let TraitKind::External { path } = kind {
+        if let Some(bare_name) = path.last() {
+            names.insert(bare_name.clone());
+        }
+    }
+}
+
+fn is_trait_qualifier(name: &str, ctx: &LoweringContext) -> bool {
+    ctx.trait_names.contains(name)
+        || matches!(
+            name,
+            "AsMut"
+                | "AsRef"
+                | "Borrow"
+                | "BorrowMut"
+                | "Clone"
+                | "Copy"
+                | "Default"
+                | "Digest"
+                | "DigestUpdate"
+                | "From"
+                | "Into"
+                | "Iterator"
+                | "ToOwned"
+                | "TryFrom"
+                | "TryInto"
+        )
+}
+
+fn is_module_qualified_free_path(
+    segments: &[String],
+    generics: &[IrGenericParam],
+    ctx: &LoweringContext,
+) -> bool {
+    segments.len() >= 2
+        && !segments[..segments.len() - 1].iter().any(|qualifier| {
+            qualifier == "Self"
+                || generics
+                    .iter()
+                    .any(|generic| generic.name == qualifier.as_str())
+                || ctx.get_struct_info(qualifier).is_some()
+                || ctx.enum_names.contains(qualifier)
+                || is_trait_qualifier(qualifier, ctx)
+        })
 }
 
 fn static_method_key(self_ty: &IrType, method: &str) -> Option<String> {
@@ -3292,32 +3376,39 @@ fn lower_expr_dyn_in_scope(e: &IrExpr, ctx: &LoweringContext, fn_gen: &FnScope<'
             // erased length generic. Call sites inside generic functions have those
             // params in scope (from their own lowered signature) and must forward them.
             {
-                // Inject for bare function references: either a `Var` or a
-                // single-segment `Path` (`fill_test_poly::<BIG_N>(...)` parses the
-                // callee as `Path["fill_test_poly"]` with turbofish type args, not a
-                // `Var`). Multi-segment paths like ["D", "new"] are type-param
-                // qualified calls handled by class witnesses in the TS printer —
-                // don't touch them.
+                // Free functions may be bare (`fill_test_poly::<N>(...)`) or
+                // module-qualified (`torus::torus_add::<LOG>(...)`). Associated
+                // calls are handled separately, while type-param-qualified trait
+                // calls such as `D::new` remain with class-witness dispatch.
                 let callee_name = match &func.kind {
                     IrExprKind::Var(name) => Some(name.as_str()),
                     IrExprKind::Path { segments, .. } if segments.len() == 1 => {
                         Some(segments[0].as_str())
                     }
-                    // Associated/static call `Type::method(..)`: the callee is the
-                    // method name (last segment). Only forward when the head is a
-                    // dyn-lowered generic struct (so the method genuinely gained a
-                    // leading length param) — not for type-param-qualified calls like
-                    // `D::new` (handled by class witnesses) where segments[0] is a
-                    // bare type param with no struct info.
-                    IrExprKind::Path { segments, .. } if segments.len() == 2 => {
+                    // For qualified paths, prefer an inherent static-method
+                    // signature; otherwise recognize a module-qualified free
+                    // function only when the head is neither a type param nor a
+                    // known struct. A struct method without a signature may still
+                    // be registered in fn_length_params (e.g. a dependency).
+                    IrExprKind::Path { segments, .. } if segments.len() >= 2 => {
+                        let head = &segments[0];
+                        let method = segments.last().unwrap();
+                        let has_static_signature = ctx
+                            .static_method_signatures
+                            .contains_key(&format!("{}::{}", head, method));
                         let head_is_dyn_struct = ctx
-                            .get_struct_info(&segments[0])
+                            .get_struct_info(head)
                             .map(|info| {
                                 !info.length_witnesses.is_empty() || !info.type_params.is_empty()
                             })
                             .unwrap_or(false);
-                        if head_is_dyn_struct {
-                            Some(segments[1].as_str())
+                        if has_static_signature
+                            || head_is_dyn_struct
+                            || (is_module_qualified_free_path(segments, fn_gen, ctx)
+                                && (ctx.free_function_signatures.contains_key(method)
+                                    || ctx.get_fn_length_params(method).is_some()))
+                        {
+                            Some(method.as_str())
                         } else {
                             None
                         }
@@ -3331,9 +3422,20 @@ fn lower_expr_dyn_in_scope(e: &IrExpr, ctx: &LoweringContext, fn_gen: &FnScope<'
                 if !is_constructor {
                     if let Some(callee) = callee_name {
                         let call_signature_entry = match &func.kind {
-                            IrExprKind::Path { segments, .. } if segments.len() == 2 => ctx
-                                .static_method_signatures
-                                .get(&format!("{}::{}", segments[0], segments[1])),
+                            IrExprKind::Path { segments, .. } if segments.len() >= 2 => {
+                                let head = &segments[0];
+                                let method = segments.last().unwrap();
+                                let static_entry = ctx
+                                    .static_method_signatures
+                                    .get(&format!("{}::{}", head, method));
+                                if static_entry.is_some() {
+                                    static_entry
+                                } else if is_module_qualified_free_path(segments, fn_gen, ctx) {
+                                    ctx.free_function_signatures.get(method)
+                                } else {
+                                    None
+                                }
+                            }
                             IrExprKind::Path { segments, .. } if segments.len() == 1 => {
                                 ctx.free_function_signatures.get(&segments[0])
                             }
@@ -4452,6 +4554,8 @@ mod tests {
             fn_length_params: BTreeMap::new(),
             static_method_signatures: BTreeMap::new(),
             free_function_signatures: BTreeMap::new(),
+            enum_names: BTreeSet::new(),
+            trait_names: BTreeSet::new(),
             lowered_struct_names: BTreeMap::new(),
             struct_field_types: BTreeMap::new(),
             struct_generic_params: BTreeMap::new(),
@@ -4511,6 +4615,76 @@ mod tests {
         assert_eq!(args.len(), 2);
         assert_eq!(args[0].kind, IrExprKind::Lit(IrLit::Int(16)));
         assert_eq!(args[1].kind, IrExprKind::Var("offset".to_string()));
+    }
+
+    #[test]
+    fn module_qualified_free_call_forwards_turbofish_length() {
+        let mut ctx = empty_ctx();
+        ctx.free_function_signatures.insert(
+            "torus_add".to_string(),
+            Some(CallSignature {
+                params: vec![
+                    IrType::Primitive(PrimitiveType::U32),
+                    IrType::Primitive(PrimitiveType::U32),
+                ],
+                length_params: vec!["log".to_string()],
+            }),
+        );
+        let generics = vec![length_param("LOG_M", vec![])];
+        let scope = FnScope {
+            generics: &generics,
+            var_types: BTreeMap::from([
+                ("a".to_string(), IrType::Primitive(PrimitiveType::U32)),
+                ("b".to_string(), IrType::Primitive(PrimitiveType::U32)),
+            ]),
+        };
+        let call = ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+                segments: vec!["torus".to_string(), "torus_add".to_string()],
+                type_args: vec![IrType::TypeParam("LOG_M".to_string())],
+            })),
+            args: vec![
+                ir_expr(IrExprKind::Var("a".to_string())),
+                ir_expr(IrExprKind::Var("b".to_string())),
+            ],
+        });
+        let lowered = lower_expr_dyn_in_scope(&call, &ctx, &scope);
+        let IrExprKind::Call { args, .. } = lowered.kind else {
+            panic!("expected lowered call, got {lowered:?}");
+        };
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0].kind, IrExprKind::Var("log_m".to_string()));
+    }
+
+    #[test]
+    fn trait_qualified_default_is_not_treated_as_module_free_function() {
+        let mut ctx = empty_ctx();
+        ctx.free_function_signatures.insert(
+            "default".to_string(),
+            Some(CallSignature {
+                params: vec![],
+                length_params: vec!["n".to_string(), "k".to_string()],
+            }),
+        );
+        let call = ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+                segments: vec!["Default".to_string(), "default".to_string()],
+                type_args: vec![],
+            })),
+            args: vec![],
+        });
+        let lowered = lower_expr_dyn_in_scope(
+            &call,
+            &ctx,
+            &FnScope {
+                generics: &[],
+                var_types: BTreeMap::new(),
+            },
+        );
+        let IrExprKind::Call { args, .. } = lowered.kind else {
+            panic!("expected lowered call, got {lowered:?}");
+        };
+        assert!(args.is_empty());
     }
 
     #[test]
