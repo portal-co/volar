@@ -1062,6 +1062,14 @@ pub enum PoolSeedError {
         expected: usize,
         found: usize,
     },
+    InsufficientCotMaterial {
+        required: usize,
+        available: usize,
+    },
+    ReceiverOutputCountMismatch {
+        choices: usize,
+        values: usize,
+    },
 }
 
 pub trait FieldMulBackend: ShlAssign<u32> + ShrAssign<u32> + Default + BitXor<Output = Self> + BitXorAssign + Shl<u32, Output = Self> + BitAnd<Output = Self> + PartialEq + From<u8> + Clone {
@@ -4267,12 +4275,24 @@ impl  BaseOt<L> for LweBaseOtDyn {
 impl  FerretParams {
     pub fn splen(&self) -> usize
     {
-        self.n / self.t
+        let max_interval_len = self.n.div_ceil(self.t);
+        max_interval_len.checked_next_power_of_two().expect("Ferret SPCOT interval length overflow")
     }
     pub fn log_splen(&self) -> usize
     {
         let s = self.splen();
         s.trailing_zeros() as usize
+    }
+    pub fn interval_bounds(&self, mut index: usize) -> Option<(usize, usize)>
+    {
+        if (self.t == 0) || (index >= self.t){
+    return None;
+};
+        let n = self.n as u128;
+        let t = self.t as u128;
+        let start = (((index as u128) * n) / t) as usize;
+        let end = ((((index as u128) + 1) * n) / t) as usize;
+        Some((start, end))
     }
     pub fn seed_cot_count(&self, mut malicious: bool) -> usize
     {
@@ -4302,6 +4322,27 @@ impl  CotPoolSender {
     {
         self.out.len()
     }
+    pub fn reprofile(self, mut params: FerretParams) -> Result<Self, PoolSeedError>
+    {
+        let old_seed_count = checked_seed_cot_count(self.params)?;
+        if self.seed.q.len() != old_seed_count{
+    return Err(PoolSeedError::SenderSeedCount { expected: old_seed_count, found: self.seed.q.len() });
+};
+        let required = checked_seed_cot_count(params)?;
+        let available = self.seed.q.len().checked_add(self.out.len()).ok_or(PoolSeedError::InvalidParameters)?;
+        if available < required{
+    return Err(PoolSeedError::InsufficientCotMaterial { required: required, available: available });
+};
+        let delta = self.seed.delta;
+        let mut cots = self.seed.q;
+        cots.extend(self.out);
+        let out = cots.split_off(required);
+        self.params = params;
+        self.seed = FerretSenderSeed { delta: delta, q: cots };
+        self.out = out.into();
+        self.raise_n = None;
+        Ok(self)
+    }
 }
 
 impl  CotPoolReceiver {
@@ -4319,6 +4360,35 @@ impl  CotPoolReceiver {
     pub fn remaining(&self) -> usize
     {
         self.out_x.len()
+    }
+    pub fn reprofile(self, mut params: FerretParams) -> Result<Self, PoolSeedError>
+    {
+        let old_seed_count = checked_seed_cot_count(self.params)?;
+        if self.seed.u.len() != old_seed_count{
+    return Err(PoolSeedError::ReceiverChoiceCount { expected: old_seed_count, found: self.seed.u.len() });
+};
+        if self.seed.w.len() != old_seed_count{
+    return Err(PoolSeedError::ReceiverSeedCount { expected: old_seed_count, found: self.seed.w.len() });
+};
+        if self.out_x.len() != self.out_z.len(){
+    return Err(PoolSeedError::ReceiverOutputCountMismatch { choices: self.out_x.len(), values: self.out_z.len() });
+};
+        let required = checked_seed_cot_count(params)?;
+        let available = self.seed.u.len().checked_add(self.out_x.len()).ok_or(PoolSeedError::InvalidParameters)?;
+        if available < required{
+    return Err(PoolSeedError::InsufficientCotMaterial { required: required, available: available });
+};
+        let mut choices = self.seed.u;
+        choices.extend(self.out_x);
+        let mut values = self.seed.w;
+        values.extend(self.out_z);
+        let output_choices = choices.split_off(required);
+        let output_values = values.split_off(required);
+        self.params = params;
+        self.seed = FerretReceiverSeed { u: choices, w: values };
+        self.out_x = output_choices.into();
+        self.out_z = output_values.into();
+        Ok(self)
     }
 }
 
@@ -8525,13 +8595,11 @@ pub fn xor_block(mut a: &Block, mut b: &Block) -> Block
 
 pub fn checked_seed_cot_count(mut params: FerretParams) -> Result<usize, PoolSeedError>
 {
-    if (params.t == 0) || (params.n == 0) || (params.k == 0) || ((params.n % params.t) != 0){
+    if (params.t == 0) || (params.n < params.t) || (params.k == 0){
     return Err(PoolSeedError::InvalidParameters);
 };
-    let splen = params.n / params.t;
-    if !splen.is_power_of_two(){
-    return Err(PoolSeedError::InvalidParameters);
-};
+    let max_interval_len = params.n.div_ceil(params.t);
+    let splen = max_interval_len.checked_next_power_of_two().ok_or(PoolSeedError::InvalidParameters)?;
     let log_splen = splen.trailing_zeros() as usize;
     let body = params.t.checked_mul(log_splen).and_then(|extra| params.k.checked_add(extra)).ok_or(PoolSeedError::InvalidParameters)?;
     if body >= params.n{
@@ -8603,17 +8671,43 @@ pub fn bea95_chosen_bit(mut delta: &Block, mut r0: Block, mut x: bool, mut z: Bl
     (r0_chosen, z, d)
 }
 
+pub fn interval_bounds(mut n: usize, mut t: usize, mut index: usize) -> (usize, usize)
+{
+    let n = n as u128;
+    let t = t as u128;
+    let index = index as u128;
+    ((((index * n) / t) as usize), ((((index + 1) * n) / t) as usize))
+}
+
+pub fn padded_interval_len(mut n: usize, mut t: usize) -> usize
+{
+    n.div_ceil(t).checked_next_power_of_two().expect("regular MPCOT interval length overflow")
+}
+
+pub fn sample_below<R: SpecRng>(mut rng: &mut R, mut upper: usize) -> usize
+{
+    let upper = u32::try_from(upper).expect("regular MPCOT interval exceeds RNG range");
+    let zone = u32::MAX - (u32::MAX % upper);
+    while true{
+    let value = rng.next_u32();
+    if value < zone{
+    return ((value % upper) as usize);
+}
+}
+}
+
 pub fn mpcot_reg_sender<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut n: usize, mut t: usize, mut cot_q: &[Block], mut choices: &[bool]) -> (Vec<Block>, MpcotRegSenderMsg)
 {
-    let splen = n / t;
+    let splen = padded_interval_len(n, t);
     let h = splen.trailing_zeros() as usize;
     let mut s = Vec::with_capacity(n);
     let mut blocks = Vec::with_capacity(t);
     for i in 0.. t{
     let q = &cot_q[(i * h)..((i + 1) * h)];
     let ch = &choices[(i * h)..((i + 1) * h)];
+    let (start, end) = interval_bounds(n, t, i);
     let (v, msg) = spcot_sender_extend(rng, delta, splen, q, ch);
-    s.extend(v);
+    s.extend(v.into_iter().take((end - start)));
     blocks.push(msg);
 };
     (s, MpcotRegSenderMsg { blocks: blocks })
@@ -8621,20 +8715,21 @@ pub fn mpcot_reg_sender<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut n: u
 
 pub fn mpcot_reg_receiver(mut n: usize, mut t: usize, mut alphas: &[usize], mut cot_t: &[Block], mut msg: &MpcotRegSenderMsg) -> Vec<Block>
 {
-    let splen = n / t;
+    let splen = padded_interval_len(n, t);
     let h = splen.trailing_zeros() as usize;
     let mut r = Vec::with_capacity(n);
     for i in 0.. t{
+    let (start, end) = interval_bounds(n, t, i);
     let t_rows = &cot_t[(i * h)..((i + 1) * h)];
     let w = spcot_receiver_extend(alphas[i], splen, t_rows, &msg.blocks[i]);
-    r.extend(w);
+    r.extend(w.into_iter().take((end - start)));
 };
     r
 }
 
 pub fn mpcot_reg_choice_bits(mut n: usize, mut t: usize, mut alphas: &[usize], mut cot_r: &[bool]) -> Vec<bool>
 {
-    let splen = n / t;
+    let splen = padded_interval_len(n, t);
     let h = splen.trailing_zeros() as usize;
     let mut out = Vec::with_capacity((t * h));
     for i in 0.. t{
@@ -8646,8 +8741,10 @@ pub fn mpcot_reg_choice_bits(mut n: usize, mut t: usize, mut alphas: &[usize], m
 
 pub fn sample_regular_noise<R: SpecRng>(mut rng: &mut R, mut n: usize, mut t: usize) -> Vec<usize>
 {
-    let splen = n / t;
-    (0..t).map(|_| ((rng.next_u32() as usize) % splen)).collect::<Vec<_>>()
+    (0..t).map(|i| {
+    let (start, end) = interval_bounds(n, t, i);
+    sample_below(rng, (end - start))
+}).collect::<Vec<_>>()
 }
 
 pub fn xor_block(mut a: &Block, mut b: &Block) -> Block
@@ -8676,7 +8773,8 @@ pub fn ferret_prepare_receiver<R: SpecRng>(mut rng: &mut R, mut params: FerretPa
     let alphas = sample_regular_noise(rng, n, t);
     let mut e = vec![];
     for (i, ..) in alphas.iter().enumerate(){
-    e[(i * params.splen()) + a] = true;
+    let (start, end) = params.interval_bounds(i).expect("regular noise interval index must be valid");
+    e[start + a] = true;
 };
     let lpn_seed = sample_seed(rng);
     let cot_r = &receiver_seed.u[k..];

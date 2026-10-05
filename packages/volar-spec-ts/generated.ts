@@ -3640,7 +3640,7 @@ export class Ring {
   add_noise(ctx: { defaultA: () => any }, value: any, noise: any, standard_deviation: bigint, bound: bigint): Result<void, Error>
   {
     let coefficients = [] as any[];
-    const __volar_try_1 = noise.sample(coefficients.$fn, standard_deviation, bound, coefficients);
+    const __volar_try_1 = noise.sample(ctx, coefficients.$fn, standard_deviation, bound, coefficients);
     if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
     if (coefficients.some((sample) => (((sample) < 0n ? -(sample) : (sample)) > bound)))     {
       return new Error_Noise();
@@ -4850,6 +4850,18 @@ export class FerretParams {
     return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fk: __zeroValue(this.$fk), $ft: __zeroValue(this.$ft) }) as this;
   }
 
+  interval_bounds(index: bigint): ([bigint, bigint] | undefined)
+  {
+    if ((__equals(this.$ft, 0n) || (index >= this.$ft)))     {
+      return undefined;
+    }
+    const n = (this.$fn as unknown as bigint);
+    const t = (this.$ft as unknown as bigint);
+    const start = BigInt((fieldMul((index as unknown as bigint), n) / t));
+    const end = BigInt((fieldMul(fieldAdd((index as unknown as bigint), 1n), n) / t));
+    return [start, end];
+  }
+
   log_splen(): bigint
   {
     const s = this.splen();
@@ -4873,7 +4885,8 @@ export class FerretParams {
 
   splen(): bigint
   {
-    return (this.$fn / this.$ft);
+    const max_interval_len = ((this.$fn) + (this.$ft) - 1n) / (this.$ft);
+    return (max_interval_len.checked_next_power_of_two())!;
   }
 }
 
@@ -4909,6 +4922,34 @@ export class CotPoolSender {
   remaining(): bigint
   {
     return BigInt(this.$fout.length);
+  }
+
+  reprofile(params: any): Result<CotPoolSender, PoolSeedError>
+  {
+    const __volar_try_0 = checked_seed_cot_count(this.$fparams);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const old_seed_count = __volar_try_0;
+    if (!__equals(BigInt(this.$fseed.$fq.length), old_seed_count))     {
+      return new PoolSeedError_SenderSeedCount(old_seed_count, BigInt(this.$fseed.$fq.length));
+    }
+    const __volar_try_2 = checked_seed_cot_count(params);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const required = __volar_try_2;
+    const __volar_try_3 = (((BigInt(this.$fseed.$fq.length) + (BigInt(this.$fout.length)))) ?? (new PoolSeedError_InvalidParameters()));
+    if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+    const available = __volar_try_3;
+    if ((available < required))     {
+      return new PoolSeedError_InsufficientCotMaterial(required, available);
+    }
+    const delta = this.$fseed.$fdelta;
+    let cots = this.$fseed.$fq;
+    cots.push(...(this.$fout));
+    const out = cots.split_off(required);
+    this.$fparams = params;
+    this.$fseed = new FerretSenderSeed({ $fdelta: delta, $fq: cots });
+    this.$fout = out;
+    this.$fraise_n = undefined;
+    return this;
   }
 }
 
@@ -4947,6 +4988,42 @@ export class CotPoolReceiver {
   remaining(): bigint
   {
     return BigInt(this.$fout_x.length);
+  }
+
+  reprofile(params: any): Result<CotPoolReceiver, PoolSeedError>
+  {
+    const __volar_try_0 = checked_seed_cot_count(this.$fparams);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const old_seed_count = __volar_try_0;
+    if (!__equals(BigInt(this.$fseed.$fu.length), old_seed_count))     {
+      return new PoolSeedError_ReceiverChoiceCount(old_seed_count, BigInt(this.$fseed.$fu.length));
+    }
+    if (!__equals(BigInt(this.$fseed.$fw.length), old_seed_count))     {
+      return new PoolSeedError_ReceiverSeedCount(old_seed_count, BigInt(this.$fseed.$fw.length));
+    }
+    if (!__equals(BigInt(this.$fout_x.length), BigInt(this.$fout_z.length)))     {
+      return new PoolSeedError_ReceiverOutputCountMismatch(BigInt(this.$fout_x.length), BigInt(this.$fout_z.length));
+    }
+    const __volar_try_4 = checked_seed_cot_count(params);
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const required = __volar_try_4;
+    const __volar_try_5 = (((BigInt(this.$fseed.$fu.length) + (BigInt(this.$fout_x.length)))) ?? (new PoolSeedError_InvalidParameters()));
+    if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+    const available = __volar_try_5;
+    if ((available < required))     {
+      return new PoolSeedError_InsufficientCotMaterial(required, available);
+    }
+    let choices = this.$fseed.$fu;
+    choices.push(...(this.$fout_x));
+    let values = this.$fseed.$fw;
+    values.push(...(this.$fout_z));
+    const output_choices = choices.split_off(required);
+    const output_values = values.split_off(required);
+    this.$fparams = params;
+    this.$fseed = new FerretReceiverSeed({ $fu: choices, $fw: values });
+    this.$fout_x = output_choices;
+    this.$fout_z = output_values;
+    return this;
   }
 }
 
@@ -5600,7 +5677,13 @@ export class PoolSeedError_ReceiverChoiceCount extends __VolarError { constructo
 export class PoolSeedError_ReceiverSeedCount extends __VolarError { constructor(public $fexpected: bigint, public $ffound: bigint) { super(); }
   __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fexpected), __zeroValue(this.$ffound)) as this; }
 }
-export type PoolSeedError = PoolSeedError_InvalidParameters | PoolSeedError_SenderSeedCount | PoolSeedError_ReceiverChoiceCount | PoolSeedError_ReceiverSeedCount;
+export class PoolSeedError_InsufficientCotMaterial extends __VolarError { constructor(public $frequired: bigint, public $favailable: bigint) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$frequired), __zeroValue(this.$favailable)) as this; }
+}
+export class PoolSeedError_ReceiverOutputCountMismatch extends __VolarError { constructor(public $fchoices: bigint, public $fvalues: bigint) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fchoices), __zeroValue(this.$fvalues)) as this; }
+}
+export type PoolSeedError = PoolSeedError_InvalidParameters | PoolSeedError_SenderSeedCount | PoolSeedError_ReceiverChoiceCount | PoolSeedError_ReceiverSeedCount | PoolSeedError_InsufficientCotMaterial | PoolSeedError_ReceiverOutputCountMismatch;
 
 export const GF8_POLY = 27n;
 export const GF64_POLY = 27n;
@@ -6383,13 +6466,13 @@ export function check_profile(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q
 
 export function checked_seed_cot_count(params: any): Result<bigint, PoolSeedError>
 {
-  if ((((__equals(params.$ft, 0n) || __equals(params.$fn, 0n)) || __equals(params.$fk, 0n)) || !__equals((params.$fn % params.$ft), 0n)))   {
+  if (((__equals(params.$ft, 0n) || (params.$fn < params.$ft)) || __equals(params.$fk, 0n)))   {
     return new PoolSeedError_InvalidParameters();
   }
-  const splen = (params.$fn / params.$ft);
-  if (!((splen) > 0n && ((splen) & ((splen) - 1n)) === 0n))   {
-    return new PoolSeedError_InvalidParameters();
-  }
+  const max_interval_len = ((params.$fn) + (params.$ft) - 1n) / (params.$ft);
+  const __volar_try_2 = ((max_interval_len.checked_next_power_of_two()) ?? (new PoolSeedError_InvalidParameters()));
+  if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+  const splen = __volar_try_2;
   const log_splen = BigInt(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
   const __volar_try_4 = ((((params.$ft) * (log_splen)).and_then((extra) => (params.$fk + (extra)))) ?? (new PoolSeedError_InvalidParameters()));
   if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
@@ -6563,12 +6646,12 @@ export function crhf(input: any, tweak: bigint): Block
   return b;
 }
 
-export function cross_term<S>(ctx: { defaultS: () => any }, w1: S[], u1: any, w2: S[], u2: any): S[]
+export function cross_term<S>(ctx: { defaultS: () => any, UClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, w1: S[], u1: any, w2: S[], u2: any): S[]
 {
   const z1 = full_z(w1, u1);
   const z2 = full_z(w2, u2);
-  const [az1, bz1, cz1] = eval_abc(z1);
-  const [az2, bz2, cz2] = eval_abc(z2);
+  const [az1, bz1, cz1] = eval_abc(ctx, z1);
+  const [az2, bz2, cz2] = eval_abc(ctx, z2);
   let t = [undefined as any /* S::default() */, undefined as any /* S::default() */, undefined as any /* S::default() */];
   for (let i = 0n; i < AND_CONS; i += 1n)   {
     const cross = fieldAdd(fieldMul(__clone(az1[Number(i)]), __clone(bz2[Number(i)])), fieldMul(__clone(az2[Number(i)]), __clone(bz1[Number(i)])));
@@ -7669,7 +7752,8 @@ export function ferret_prepare_receiver<R>(rng: any, params: any, receiver_seed:
   const alphas = sample_regular_noise(rng, n, t);
   let e = [] as any[];
   for (const [i, a] of alphas.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
-    e[Number(fieldAdd(fieldMul(i, params.splen()), a))] = true;
+    const [start, end] = (params.interval_bounds(i))!;
+    e[Number(fieldAdd(start, a))] = true;
   }
   const lpn_seed = sample_seed(rng);
   const cot_r = receiver_seed.$fu.slice(Number(k));
@@ -7694,7 +7778,7 @@ export function field_from_block(b: any): Galois128
   return Galois128(u128_from_le_bytes(b));
 }
 
-export function field_invert<T>(ctx: { defaultT: () => any }, a: any, c: any, w: bigint): T
+export function field_invert<T>(ctx: { defaultT: () => any, TClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, sizeOfT: bigint }, a: any, c: any, w: bigint): T
 {
   if (__equals(a, ctx.defaultT()))   {
     return ctx.defaultT();
@@ -7706,16 +7790,16 @@ export function field_invert<T>(ctx: { defaultT: () => any }, a: any, c: any, w:
   for (const bit_pos of (Array.from({length: Number(msb - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
     let tmp = __clone(r);
     for (let _ = 0n; _ < k; _ += 1n)     {
-      tmp = field_square(tmp, __clone(c));
+      tmp = field_square(ctx, tmp, __clone(c));
     }
-    r = field_mul(tmp, r, __clone(c));
+    r = field_mul(ctx, tmp, r, __clone(c));
     k = fieldMul(k, 2n);
     if (__equals(fieldBitand(fieldShr(e, bit_pos), 1n), 1n))     {
-      r = field_mul(field_square(r, __clone(c)), __clone(a), __clone(c));
+      r = field_mul(ctx, field_square(ctx, r, __clone(c)), __clone(a), __clone(c));
       k = fieldAdd(k, 1n);
     }
   }
-  return field_square(r, c);
+  return field_square(ctx, r, c);
 }
 
 export function field_mul(...__args: any[]): any {
@@ -7754,14 +7838,14 @@ export function field_mul(...__args: any[]): any {
   throw new Error("field_mul(): no matching variant for " + __args.length + " args");
 }
 
-export function field_mul_block(a: any, b: any): Block
+export function field_mul_block(ctx: { defaultT: () => any, TClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, sizeOfT: bigint }, a: any, b: any): Block
 {
-  return block_from_field(field_mul(field_from_block(a), field_from_block(b)));
+  return block_from_field(field_mul(ctx, field_from_block(a), field_from_block(b)));
 }
 
-export function field_square<T>(a: any, c: any): T
+export function field_square<T>(ctx: { defaultT: () => any, TClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, sizeOfT: bigint }, a: any, c: any): T
 {
-  return field_mul(__clone(a), a, c);
+  return field_mul(ctx, __clone(a), a, c);
 }
 
 export function fill_test_poly(big_n: bigint, logical: boolean[], addr_bits: bigint, k_max: bigint, log_q: bigint, log_q_lwe: bigint): bigint[]
@@ -8191,13 +8275,13 @@ export function gf_mul_u8(a: bigint, b: bigint, c: bigint): bigint
   return p;
 }
 
-export function grind_chall3(chall_2: bigint[], a_hat: bigint[], b_hat: bigint[], c_hat_base: bigint[], lambda: bigint, w_grind: bigint, use_shake256: boolean, max_iters: bigint): ([Vec<bigint>, bigint] | undefined)
+export function grind_chall3(ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, chall_2: bigint[], a_hat: bigint[], b_hat: bigint[], c_hat_base: bigint[], lambda: bigint, w_grind: bigint, use_shake256: boolean, max_iters: bigint): ([Vec<bigint>, bigint] | undefined)
 {
   for (let counter = 0n; counter < max_iters; counter += 1n)   {
     const counter_bytes = [(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn];
     let c_hat_grind = Vec.from(c_hat_base);
     c_hat_grind.push(...(counter_bytes));
-    const candidate = chall3(chall_2, a_hat, b_hat, c_hat_grind, lambda, use_shake256);
+    const candidate = chall3(ctx, chall_2, a_hat, b_hat, c_hat_grind, lambda, use_shake256);
     if (has_trailing_zero_bits(candidate, w_grind))     {
       return [candidate, counter];
     }
@@ -8493,6 +8577,14 @@ export function inner_product(ring: any, left: Polynomial[], right: Polynomial[]
   return output;
 }
 
+export function interval_bounds(n: bigint, t: bigint, index: bigint): [bigint, bigint]
+{
+  const n_1 = (n as unknown as bigint);
+  const t_1 = (t as unknown as bigint);
+  const index_1 = (index as unknown as bigint);
+  return [BigInt((fieldMul(index_1, n_1) / t_1)), BigInt((fieldMul(fieldAdd(index_1, 1n), n_1) / t_1))];
+}
+
 export function inverse_mod(value: bigint, modulus: bigint): (bigint | undefined)
 {
   if ((__equals(value, 0n) || (modulus < 2n)))   {
@@ -8513,10 +8605,10 @@ export function inverse_mod(value: bigint, modulus: bigint): (bigint | undefined
   return BigInt((((old_s) % ((modulus as unknown as bigint)) + ((modulus as unknown as bigint))) % ((modulus as unknown as bigint))));
 }
 
-export function is_satisfied_relaxed<S>(w: S[], e: S[], u: any): boolean
+export function is_satisfied_relaxed<S>(ctx: { defaultS: () => any, UClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, w: S[], e: S[], u: any): boolean
 {
   const z = full_z(w, u);
-  const [az, bz, cz] = eval_abc(z);
+  const [az, bz, cz] = eval_abc(ctx, z);
   let ok = true;
   for (let i = 0n; i < AND_CONS; i += 1n)   {
     const lhs = fieldMul(__clone(az[Number(i)]), __clone(bz[Number(i)]));
@@ -8911,7 +9003,7 @@ export function mod_switch_lwe(n: bigint, from_: bigint, to: bigint, ct: BinfheL
 
 export function mpcot_reg_choice_bits(n: bigint, t: bigint, alphas: bigint[], cot_r: boolean[]): Vec<boolean>
 {
-  const splen = (n / t);
+  const splen = padded_interval_len(n, t);
   const h = BigInt(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
   let out = ([] as any[]);
   for (let i = 0n; i < t; i += 1n)   {
@@ -8923,28 +9015,30 @@ export function mpcot_reg_choice_bits(n: bigint, t: bigint, alphas: bigint[], co
 
 export function mpcot_reg_receiver(n: bigint, t: bigint, alphas: bigint[], cot_t: Block[], msg: any): Vec<Block>
 {
-  const splen = (n / t);
+  const splen = padded_interval_len(n, t);
   const h = BigInt(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
   let r = ([] as any[]);
   for (let i = 0n; i < t; i += 1n)   {
+    const [start, end] = interval_bounds(n, t, i);
     const t_rows = cot_t.slice(Number(fieldMul(i, h)), Number(fieldMul(fieldAdd(i, 1n), h)));
     const w = spcot_receiver_extend(alphas[Number(i)], splen, t_rows, msg.$fblocks[Number(i)]);
-    r.push(...(w));
+    r.push(...(w.slice(0, Number(fieldSub(end, start)))));
   }
   return r;
 }
 
 export function mpcot_reg_sender<R>(rng: any, delta: any, n: bigint, t: bigint, cot_q: Block[], choices: boolean[]): [Vec<Block>, MpcotRegSenderMsg]
 {
-  const splen = (n / t);
+  const splen = padded_interval_len(n, t);
   const h = BigInt(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
   let s = ([] as any[]);
   let blocks = ([] as any[]);
   for (let i = 0n; i < t; i += 1n)   {
     const q = cot_q.slice(Number(fieldMul(i, h)), Number(fieldMul(fieldAdd(i, 1n), h)));
     const ch = choices.slice(Number(fieldMul(i, h)), Number(fieldMul(fieldAdd(i, 1n), h)));
+    const [start, end] = interval_bounds(n, t, i);
     const [v, msg] = spcot_sender_extend(rng, delta, splen, q, ch);
-    s.push(...(v));
+    s.push(...(v.slice(0, Number(fieldSub(end, start)))));
     (blocks).push(msg);
   }
   return [s, new MpcotRegSenderMsg({ $fblocks: blocks })];
@@ -9134,6 +9228,11 @@ export function pack_kappa(bits: boolean[]): bigint[]
     }
   }
   return out;
+}
+
+export function padded_interval_len(n: bigint, t: bigint): bigint
+{
+  return (((n) + (t) - 1n) / (t).checked_next_power_of_two())!;
 }
 
 export function parse_profile(tag: bigint): Result<ProfileId, DecodeError>
@@ -9554,6 +9653,18 @@ export function rlwe_sub(big_n: bigint, a: RlweCiphertextDyn, b: RlweCiphertextD
   return new RlweCiphertextDyn({ $fa: poly_sub_neg(big_n, a.$fa, b.$fa), $fb: poly_sub_neg(big_n, a.$fb, b.$fb), $fbig_n: 0n });
 }
 
+export function sample_below<R>(rng: any, upper: bigint): bigint
+{
+  const upper_1 = (u32.try_from(upper))!;
+  const zone = fieldSub(4294967295n, (4294967295n % upper_1));
+  while (true)   {
+    const value = rng.next_u32();
+    if ((value < zone))     {
+      return BigInt((value % upper_1));
+    }
+  }
+}
+
 export function sample_block<R>(rng: any): Block
 {
   let b = Array.from({length: Number(KAPPA_BYTES)}, () => 0n);
@@ -9601,8 +9712,10 @@ export function sample_noise<R>(rng: any): Zq
 
 export function sample_regular_noise<R>(rng: any, n: bigint, t: bigint): Vec<bigint>
 {
-  const splen = (n / t);
-  return Array.from({length: Number(t - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (BigInt(rng.next_u32()) % splen));
+  return Array.from({length: Number(t - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const [start, end] = interval_bounds(n, t, i);
+  return sample_below(rng, fieldSub(end, start));
+})());
 }
 
 export function sample_seed<R>(rng: any): bigint[]
@@ -9707,7 +9820,7 @@ export function shift_rows(state: bigint[])
   state[Number(3n)] = t_3;
 }
 
-export function sign(ctx: { newD: () => any, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, sk: any, pk: any, message: bigint[], iv_seed: bigint[], prover: any): FaestSignature
+export function sign(ctx: { newD: () => any, defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, sk: any, pk: any, message: bigint[], iv_seed: bigint[], prover: any): FaestSignature
 {
   const iv: bigint[] = aes128_encrypt(iv_seed, Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
   const r: bigint[] = aes128_encrypt(sk[0], iv);
@@ -9718,7 +9831,7 @@ export function sign(ctx: { newD: () => any, LClass: { new(...args: any[]): any 
   h.update(message);
   return [...h.finalize()];
 })();
-  const chall_1 = chall1(mu, iv, commitment.$froot, fieldAdd(LAMBDA_BYTES, 8n), false);
+  const chall_1 = chall1(ctx, mu, iv, commitment.$froot, fieldAdd(LAMBDA_BYTES, 8n), false);
   const deltas = expand_challenge_to_deltas(chall_1, TAU, SUB_VOLE_N);
   const nodes = BavcDyn.collect_open_nodes(32n, deltas, recompute_tree(r, fieldMul(TAU, SUB_VOLE_N)), TAU, SUB_VOLE_N);
   const hidden_commits: Vec<bigint[]> = deltas.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([i, d]: any) => commitment.$fcommitments[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), d))]);
@@ -9731,10 +9844,10 @@ export function sign(ctx: { newD: () => any, LClass: { new(...args: any[]): any 
   }
   const big_vole: BigVoleProver = concat_small_voles(sub_voles);
   const corrections_flat: Vec<bigint> = big_vole.$fc.flat();
-  const chall_2 = chall2(chall_1, big_vole.$fu, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
+  const chall_2 = chall2(ctx, chall_1, big_vole.$fu, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
   const hash_key = hash_key_from_chall(chall_2);
   const qs_proof = prover.prove_aes_witness(big_vole, hash_key);
-  const [chall_3, counter] = (grind_chall3(chall_2, qs_proof.$fa_hat, qs_proof.$fb_hat, qs_proof.$fc_hat_base, LAMBDA_BYTES, W_GRIND, false, 1000000n))!;
+  const [chall_3, counter] = (grind_chall3(ctx, chall_2, qs_proof.$fa_hat, qs_proof.$fb_hat, qs_proof.$fc_hat_base, LAMBDA_BYTES, W_GRIND, false, 1000000n))!;
   let c_hat_with_counter = __clone(qs_proof.$fc_hat_base);
   c_hat_with_counter.push(...([(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn]));
   return new FaestSignature({ $fiv: iv, $fbavc_root: __clone(commitment.$froot), $fhidden_commits: hidden_commits, $fnodes: nodes, $fcorrections: __clone(big_vole.$fc), $fvole_u: __clone(big_vole.$fu), $fqs_proof: qs_proof, $fc_hat_with_counter: c_hat_with_counter, $fchall_3: chall_3, $fcounter: counter });
@@ -9835,7 +9948,7 @@ export function spcot_choice_bits(alpha: bigint, h: bigint, cot_r: boolean[]): V
   return Array.from({length: Number(h - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(fieldBitxor(cot_r[Number(i)], bit_msb(alpha, h, i)), true));
 }
 
-export function spcot_consistency_check(delta: any, v: Block[], w: Block[], extra_q: Block[], extra_r: boolean[], extra_t: Block[], transcript: bigint[]): boolean
+export function spcot_consistency_check(ctx: { defaultT: () => any, TClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, sizeOfT: bigint }, delta: any, v: Block[], w: Block[], extra_q: Block[], extra_r: boolean[], extra_t: Block[], transcript: bigint[]): boolean
 {
   const _ = [extra_q, extra_r, extra_t];
   const n = BigInt(v.length);
@@ -9849,7 +9962,7 @@ export function spcot_consistency_check(delta: any, v: Block[], w: Block[], extr
   let chis = ([] as any[]);
   for (let _ = 0n; _ < n; _ += 1n)   {
     (chis).push(block_from_field(chi_pow));
-    chi_pow = field_mul(chi_pow, field_from_block(chi));
+    chi_pow = field_mul(ctx, chi_pow, field_from_block(chi));
   }
   let alpha = undefined;
   for (let i = 0n; i < n; i += 1n)   {
@@ -9867,11 +9980,11 @@ export function spcot_consistency_check(delta: any, v: Block[], w: Block[], extr
   let ip_v = Array.from({length: Number(KAPPA_BYTES)}, () => 0n);
   let ip_w = Array.from({length: Number(KAPPA_BYTES)}, () => 0n);
   for (let i = 0n; i < n; i += 1n)   {
-    ip_v = xor_block(ip_v, field_mul_block(chis[Number(i)], v[Number(i)]));
-    ip_w = xor_block(ip_w, field_mul_block(chis[Number(i)], w[Number(i)]));
+    ip_v = xor_block(ip_v, field_mul_block(ctx, chis[Number(i)], v[Number(i)]));
+    ip_w = xor_block(ip_w, field_mul_block(ctx, chis[Number(i)], w[Number(i)]));
   }
   const hv = hash_prime(ip_v);
-  const hw = hash_prime(xor_block(ip_w, field_mul_block(chis[Number(a)], delta)));
+  const hw = hash_prime(xor_block(ip_w, field_mul_block(ctx, chis[Number(a)], delta)));
   return __equals(hv, hw);
 }
 
@@ -10346,7 +10459,7 @@ export function unique_bins(seed: bigint[], x: bigint, m: bigint): Vec<bigint>
   return js;
 }
 
-export function verify(ctx: { newD: () => any, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, pk: any, message: bigint[], sig: any): boolean
+export function verify(ctx: { newD: () => any, defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, pk: any, message: bigint[], sig: any): boolean
 {
   const iv = sig.$fiv;
   const mu: Vec<bigint> = (() => {
@@ -10355,7 +10468,7 @@ export function verify(ctx: { newD: () => any, LClass: { new(...args: any[]): an
   h.update(message);
   return [...h.finalize()];
 })();
-  const chall_1 = chall1(mu, iv, sig.$fbavc_root, fieldAdd(LAMBDA_BYTES, 8n), false);
+  const chall_1 = chall1(ctx, mu, iv, sig.$fbavc_root, fieldAdd(LAMBDA_BYTES, 8n), false);
   const deltas = expand_challenge_to_deltas(chall_1, TAU, SUB_VOLE_N);
   const reconstructed_seeds_opt = BavcDyn.reconstruct(ctx, 32n, sig.$fnodes, sig.$fhidden_commits, deltas, iv, sig.$fbavc_root, TAU, SUB_VOLE_N);
   const reconstructed_seeds = (() => { const __match = reconstructed_seeds_opt; if (__match !== null && __match !== undefined) { const s = __match;
@@ -10381,9 +10494,9 @@ return s; } else { return false; } })();
   return q_out.$fq_columns.flat();
 })();
   const corrections_flat: Vec<bigint> = sig.$fcorrections.flat();
-  const chall_2 = chall2(chall_1, sig.$fvole_u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
+  const chall_2 = chall2(ctx, chall_1, sig.$fvole_u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
   const hash_key = hash_key_from_chall(chall_2);
-  const derived_chall_3 = chall3(chall_2, sig.$fqs_proof.$fa_hat, sig.$fqs_proof.$fb_hat, sig.$fc_hat_with_counter, LAMBDA_BYTES, false);
+  const derived_chall_3 = chall3(ctx, chall_2, sig.$fqs_proof.$fa_hat, sig.$fqs_proof.$fb_hat, sig.$fc_hat_with_counter, LAMBDA_BYTES, false);
   if (!__equals(derived_chall_3, sig.$fchall_3))   {
     return false;
   }
@@ -10488,7 +10601,7 @@ export function vole_hash_consistency_check(key: any, hu: any, hq: any, hv: any,
 export function vole_mul3_prover_step<T>(ctx: { defaultT: () => any }, n: bigint, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>, vope_d: VopeDyn<T>): VopeDyn<T>
 {
   const ab: VopeDyn<T> = vope_a.mul_generalized(ctx, vope_b.$fk, vope_b);
-  return ab.mul_generalized({ defaultT: () => __zeroValue(((recv: any) => recv.$fu?.[0] ?? 0n)(ab)) }, vope_d.$fk, vope_d);
+  return ab.mul_generalized(ctx, vope_d.$fk, vope_d);
 }
 
 export function vole_mul3_verifier_check<T>(n: bigint, delta: DeltaDyn<T>, q_a: QDyn<T>, q_b: QDyn<T>, q_d: QDyn<T>, vope_abd: VopeDyn<T>): [QDyn<T>, boolean]

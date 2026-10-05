@@ -353,6 +353,12 @@ function calls for variant constructors. Bug classes fixed:
   (252 → 251).
 - **Primitive integer conversions**: `u16::from_le_bytes` and `uN/iN::from`
   now map to runtime byte decoding and `BigInt` conversion helpers (263 → 261).
+- **Witness-context forwarding**: unqualified free-function calls represented
+  as `Var` now forward a caller's `ctx`; method calls use exact receiver types
+  where available and only fall back to a uniquely matching method witness
+  when receiver type inference is unavailable. The focused generated-code test
+  passes, and the full strict count is now **187** (196 → 187). Current leading
+  categories: TS2322 (53), TS2345 (37), TS2339 (23), TS2554 (9), TS2304 (8).
 
 **Remaining error classes** (each a deeper emitter/lowering feature, not a
 one-line fix):

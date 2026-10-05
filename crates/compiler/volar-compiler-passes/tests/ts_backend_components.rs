@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use volar_compiler::{ir::IrFunction, ir::IrModule, parser::parse_source};
-use volar_compiler_passes::print_module_typescript_seeded;
+use volar_compiler_passes::{print_module_typescript, print_module_typescript_seeded};
 
 // ---------------------------------------------------------------------------
 // Shared helpers (mirrors ts_backend.rs)
@@ -141,7 +141,10 @@ fn find_tsc() -> Option<PathBuf> {
 fn run_ts_component(seeds: &[&str], label: &str) {
     let module = build_module();
     let ts_code = print_module_typescript_seeded(&module, seeds);
+    run_ts_code(&ts_code, label);
+}
 
+fn run_ts_code(ts_code: &str, label: &str) {
     let stripped: String = ts_code
         .lines()
         .filter(|l| !l.trim_start().starts_with("// @ts-nocheck"))
@@ -231,6 +234,24 @@ fn run_ts_component(seeds: &[&str], label: &str) {
         "tsc --strict reported {} error(s) for component '{}'; see above",
         total, label
     );
+}
+
+#[test]
+fn unqualified_function_calls_forward_witness_context() {
+    let source = r#"
+        fn needs_default<T: Default>(value: T) -> T {
+            T::default()
+        }
+
+        fn forwards<T: Default>(value: T) -> T {
+            needs_default(value)
+        }
+
+        fn encrypt_block() {}
+    "#;
+    let module = parse_source(source, "witness_forwarding", &[]).unwrap();
+    let ts_code = print_module_typescript(&module);
+    run_ts_code(&ts_code, "unqualified_witness_forwarding");
 }
 
 // ---------------------------------------------------------------------------
