@@ -357,8 +357,11 @@ function calls for variant constructors. Bug classes fixed:
   as `Var` now forward a caller's `ctx`; method calls use exact receiver types
   where available and only fall back to a uniquely matching method witness
   when receiver type inference is unavailable. The focused generated-code test
-  passes, and the full strict count is now **187** (196 → 187). Current leading
-  categories: TS2322 (53), TS2345 (37), TS2339 (23), TS2554 (9), TS2304 (8).
+  passes, and the full strict count reached **187** (196 → 187). Current
+  `Option<T>` `?` sites now propagate `None` via a nullish check instead of
+  testing the value against `__VolarError`; the targeted strict-compile test
+  passes and full-module errors fell 187 → **186**. Leading categories are
+  TS2322 (52), TS2345 (37), TS2339 (23), TS2554 (9), and TS2304 (8).
 
 **Remaining error classes** (each a deeper emitter/lowering feature, not a
 one-line fix):

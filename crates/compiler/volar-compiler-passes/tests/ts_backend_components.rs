@@ -254,6 +254,21 @@ fn unqualified_function_calls_forward_witness_context() {
     run_ts_code(&ts_code, "unqualified_witness_forwarding");
 }
 
+#[test]
+fn option_try_propagates_none() {
+    let source = r#"
+        fn unwrap_option(value: Option<u32>) -> Option<u32> {
+            let value = value?;
+            Some(value)
+        }
+
+        fn encrypt_block() {}
+    "#;
+    let module = parse_source(source, "option_try", &[]).unwrap();
+    let ts_code = print_module_typescript(&module);
+    run_ts_code(&ts_code, "option_try_propagates_none");
+}
+
 // ---------------------------------------------------------------------------
 // Component test table
 // ---------------------------------------------------------------------------

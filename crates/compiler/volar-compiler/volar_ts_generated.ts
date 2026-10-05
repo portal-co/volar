@@ -1064,7 +1064,7 @@ return (() => {
           (leaf_coms).push(hidden_commits[Number(i)]);
         } else         {
           const __volar_try_0 = tree[Number(tree_pos)];
-          if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+          if (__volar_try_0 == null) return undefined;
           const r_leaf = __volar_try_0;
           const tweak = BigInt(leaf_k);
           const [sd, com] = ctx.LClass.commit(r_leaf, iv, tweak);

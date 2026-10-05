@@ -764,6 +764,16 @@ fn collect_error_enums(module: &IrModule<IrFunction>) -> std::collections::HashS
     errors
 }
 
+fn is_option_return_type(ty: Option<&IrType>) -> bool {
+    matches!(
+        ty,
+        Some(IrType::Struct {
+            kind: crate::ir::StructKind::Custom(name),
+            ..
+        }) if name == "Option"
+    )
+}
+
 fn build_type_aliases(module: &IrModule<IrFunction>) -> BTreeMap<String, IrType> {
     module
         .type_aliases
@@ -1096,6 +1106,7 @@ pub fn print_module_ts_with_imports(
         type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
         has_ctx_param: false,
+        try_returns_option: false,
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1193,6 +1204,7 @@ fn print_module_ts_with_emit_flags(
         type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
         has_ctx_param: false,
+        try_returns_option: false,
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1271,6 +1283,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
         has_ctx_param: false,
+        try_returns_option: false,
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1397,6 +1410,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         type_aliases: &type_aliases,
         local_var_types: BTreeMap::new(),
         has_ctx_param: false,
+        try_returns_option: false,
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
@@ -1634,6 +1648,8 @@ struct TsContext<'a> {
     /// `ctx` value is in scope to forward to callees that need one. Set by
     /// each function/method writer from its `witness_needs`.
     has_ctx_param: bool,
+    /// Whether `?` in the current function propagates `None` instead of an error.
+    try_returns_option: bool,
 }
 
 impl<'a> TsContext<'a> {
@@ -1704,6 +1720,7 @@ impl<'a> TsContext<'a> {
             type_aliases: self.type_aliases,
             local_var_types: self.local_var_types.clone(),
             has_ctx_param: self.has_ctx_param,
+            try_returns_option: self.try_returns_option,
         }
     }
 
@@ -1729,6 +1746,7 @@ impl<'a> TsContext<'a> {
             type_aliases: self.type_aliases,
             local_var_types: self.local_var_types.clone(),
             has_ctx_param: self.has_ctx_param,
+            try_returns_option: self.try_returns_option,
         }
     }
 
@@ -1756,6 +1774,7 @@ impl<'a> TsContext<'a> {
             type_aliases: self.type_aliases,
             local_var_types: self.local_var_types.clone(),
             has_ctx_param: self.has_ctx_param,
+            try_returns_option: self.try_returns_option,
         }
     }
 
@@ -1786,6 +1805,7 @@ impl<'a> TsContext<'a> {
             type_aliases: self.type_aliases,
             local_var_types: types,
             has_ctx_param: self.has_ctx_param,
+            try_returns_option: self.try_returns_option,
         }
     }
 
@@ -1845,6 +1865,12 @@ impl<'a> TsContext<'a> {
     fn with_ctx_param(&self, has_ctx: bool) -> TsContext<'a> {
         let mut c = self.with_local_var_types(self.local_var_types.clone());
         c.has_ctx_param = has_ctx;
+        c
+    }
+
+    fn with_try_returns_option(&self, returns_option: bool) -> TsContext<'a> {
+        let mut c = self.with_local_var_types(self.local_var_types.clone());
+        c.try_returns_option = returns_option;
         c
     }
 
@@ -2695,6 +2721,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     type_aliases: cx.type_aliases,
                     local_var_types: cx.local_var_types.clone(),
                     has_ctx_param: cx.has_ctx_param,
+                    try_returns_option: cx.try_returns_option,
                 };
                 &cx_static
             } else {
@@ -2874,7 +2901,8 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
             .collect();
         let cx_local = cx_after_witnesses
             .with_local_var_types(param_types)
-            .with_ctx_param(!self.witness_needs.is_empty());
+            .with_ctx_param(!self.witness_needs.is_empty())
+            .with_try_returns_option(is_option_return_type(self.func.return_type.as_ref()));
         let cx_body = &cx_local;
         TsBlockWriter {
             block: &self.func.body,
@@ -3018,6 +3046,8 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
 
             // Emit the variant's body inline
             let body = &variant.func.body;
+            let cx_variant = cx
+                .with_try_returns_option(is_option_return_type(variant.func.return_type.as_ref()));
             let inner_ind = "  ".repeat(self.indent + 2);
             for (try_index, stmt) in body.stmts.iter().enumerate() {
                 TsStmtWriter {
@@ -3025,16 +3055,16 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
                     indent: self.indent + 2,
                     try_index,
                 }
-                .ts_fmt(f, cx)?;
+                .ts_fmt(f, &cx_variant)?;
             }
             if let Some(tail) = &body.expr {
                 if is_statement_like(tail) {
                     write!(f, "{}", inner_ind)?;
-                    TsExprWriter { expr: tail }.ts_fmt(f, cx)?;
+                    TsExprWriter { expr: tail }.ts_fmt(f, &cx_variant)?;
                     writeln!(f, ";")?;
                 } else {
                     write!(f, "{}return ", inner_ind)?;
-                    TsExprWriter { expr: tail }.ts_fmt(f, cx)?;
+                    TsExprWriter { expr: tail }.ts_fmt(f, &cx_variant)?;
                     writeln!(f, ";")?;
                 }
             }
@@ -3125,7 +3155,8 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
             .collect();
         let cx_local = cx_after_witnesses
             .with_local_var_types(param_types)
-            .with_ctx_param(!self.witness_needs.is_empty());
+            .with_ctx_param(!self.witness_needs.is_empty())
+            .with_try_returns_option(is_option_return_type(self.func.return_type.as_ref()));
         let cx_body = &cx_local;
         TsBlockWriter {
             block: &self.func.body,
@@ -3254,7 +3285,8 @@ impl<'a> TsBackend for TsMergedFunctionWriter<'a> {
                 .collect();
             let cx_local = cx_after_witnesses
                 .with_local_var_types(param_types)
-                .with_ctx_param(!self.witness_needs.is_empty());
+                .with_ctx_param(!self.witness_needs.is_empty())
+                .with_try_returns_option(is_option_return_type(variant.return_type.as_ref()));
             let cx_body = &cx_local;
             write!(f, "    return (() => ")?;
             TsBlockWriter {
@@ -3970,11 +4002,15 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                 write!(f, "{}const {} = ", ind, try_name)?;
                 TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
                 writeln!(f, ";")?;
-                writeln!(
-                    f,
-                    "{}if ({} instanceof __VolarError) return {};",
-                    ind, try_name, try_name
-                )?;
+                if cx.try_returns_option {
+                    writeln!(f, "{}if ({} == null) return undefined;", ind, try_name)?;
+                } else {
+                    writeln!(
+                        f,
+                        "{}if ({} instanceof __VolarError) return {};",
+                        ind, try_name, try_name
+                    )?;
+                }
                 let kw = if pattern_is_mutable(pattern) {
                     "let"
                 } else {
@@ -4029,11 +4065,15 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                 write!(f, "{}const {} = ", ind, try_name)?;
                 TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
                 writeln!(f, ";")?;
-                writeln!(
-                    f,
-                    "{}if ({} instanceof __VolarError) return {};",
-                    ind, try_name, try_name
-                )?;
+                if cx.try_returns_option {
+                    writeln!(f, "{}if ({} == null) return undefined;", ind, try_name)?;
+                } else {
+                    writeln!(
+                        f,
+                        "{}if ({} instanceof __VolarError) return {};",
+                        ind, try_name, try_name
+                    )?;
+                }
             }
             IrStmtKind::Semi(e) => {
                 // Statement-like expressions get special treatment
@@ -7319,6 +7359,8 @@ impl<'a> TsBackend for TsCfgFunctionWriter<'a> {
 
         // ── Body ──────────────────────────────────────────────────────────
         writeln!(f, " {{")?;
+        let cx_body = cx.with_try_returns_option(is_option_return_type(func.return_type.as_ref()));
+        let cx = &cx_body;
 
         // Single-block fast path (no state machine needed)
         if blocks.len() == 1 {
