@@ -1047,6 +1047,23 @@ pub enum TfheBootstrapTableError {
     InputEncodingUnsupported,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PoolSeedError {
+    InvalidParameters,
+    SenderSeedCount {
+        expected: usize,
+        found: usize,
+    },
+    ReceiverChoiceCount {
+        expected: usize,
+        found: usize,
+    },
+    ReceiverSeedCount {
+        expected: usize,
+        found: usize,
+    },
+}
+
 pub trait FieldMulBackend: ShlAssign<u32> + ShrAssign<u32> + Default + BitXor<Output = Self> + BitXorAssign + Shl<u32, Output = Self> + BitAnd<Output = Self> + PartialEq + From<u8> + Clone {
 }
 
@@ -3152,7 +3169,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
 impl  EncodedLabelBatch {
     pub fn from_pairs(mut pairs: &[LabelPairDyn], mut offset: [u8; 16]) -> Result<Self, BatchError>
     {
-        let batch = LabelBatchDyn::new(pairs, offset)?;
+        let batch = LabelBatchDyn::new(16, pairs, offset)?;
         let mut differences = alloc::vec::Vec::with_capacity((pairs.len() * 3));
         let mut zeroes = alloc::vec::Vec::with_capacity((pairs.len() * 3));
         let modulus = ring_lwe::REFERENCE_PLAINTEXT_MODULUS;
@@ -4273,6 +4290,14 @@ impl  FerretParams {
 }
 
 impl  CotPoolSender {
+    pub fn from_seed(mut params: FerretParams, mut seed: FerretSenderSeed) -> Result<Self, PoolSeedError>
+    {
+        let expected = checked_seed_cot_count(params)?;
+        if seed.q.len() != expected{
+    return Err(PoolSeedError::SenderSeedCount { expected: expected, found: seed.q.len() });
+};
+        Ok(Self { params: params, seed: seed, out: VecDeque::new(), raise_n: None })
+    }
     pub fn remaining(&self) -> usize
     {
         self.out.len()
@@ -4280,6 +4305,17 @@ impl  CotPoolSender {
 }
 
 impl  CotPoolReceiver {
+    pub fn from_seed(mut params: FerretParams, mut seed: FerretReceiverSeed) -> Result<Self, PoolSeedError>
+    {
+        let expected = checked_seed_cot_count(params)?;
+        if seed.u.len() != expected{
+    return Err(PoolSeedError::ReceiverChoiceCount { expected: expected, found: seed.u.len() });
+};
+        if seed.w.len() != expected{
+    return Err(PoolSeedError::ReceiverSeedCount { expected: expected, found: seed.w.len() });
+};
+        Ok(Self { params: params, seed: seed, out_x: VecDeque::new(), out_z: VecDeque::new() })
+    }
     pub fn remaining(&self) -> usize
     {
         self.out_x.len()
@@ -5415,7 +5451,7 @@ pub fn memory_check_per_lane<N, T>(mut n: usize, mut challenges: Vec<T>) -> Vec<
 {
     (0..n).map(|i| {
     let key = ChallengeKeyDyn::from_challenge(challenges[i].clone());
-    MemoryCheckStateDyn::new(n, key)
+    MemoryCheckStateDyn::new(key)
 }).collect::<Vec<_>>()
 }
 
@@ -5496,20 +5532,25 @@ pub fn lift_bit<T: Clone>(mut n: usize, mut bit_t: T) -> Vec<T>
 pub fn vole_commit_bit<N, T, R>(mut n: usize, mut cot: &IdealCotDyn<T>, mut rng: &mut R, mut sample_t: impl Fn, mut bit_to_t: impl FnMut(bool) -> T, mut bit: bool) -> (VopeDyn<T>, QDyn<T>) where T: Clone + Add<Output = T> + Mul<Output = T> + Default
 {
     let (r0, v) = cot.cot(rng, sample_t, bit);
-    let u_t = bit_to_t(bit);
-    let u_row: Vec<T> = lift_bit(n, u_t);
-    let u: Vec<Vec<T>> = (0..1).map(|_| (0..n).map(|i| u_row[i].clone()).collect::<Vec<T>>()).collect::<Vec<Vec<T>>>();
-    let q = (0..n).map(|i| r0[i].clone()).collect::<Vec<T>>();
-    (VopeDyn { u: u, v: v, n: 0, k: 1 }, QDyn { q: q, n: 0 })
+    (vole_commit_bit_prover_share(n, v, bit_to_t, bit), vole_commit_bit_verifier_share(n, r0))
 }
 
-pub fn vole_commit_bit_shares<N, T>(mut n: usize, mut r0: Vec<T>, mut v: Vec<T>, mut bit_to_t: impl FnMut(bool) -> T, mut bit: bool) -> (VopeDyn<T>, QDyn<T>) where T: Clone + Default
+pub fn vole_commit_bit_prover_share<N, T>(mut n: usize, mut v: Vec<T>, mut bit_to_t: impl FnMut(bool) -> T, mut bit: bool) -> VopeDyn<T> where T: Clone + Default
 {
     let u_t = bit_to_t(bit);
     let u_row: Vec<T> = lift_bit(n, u_t);
     let u: Vec<Vec<T>> = (0..1).map(|_| (0..n).map(|i| u_row[i].clone()).collect::<Vec<T>>()).collect::<Vec<Vec<T>>>();
-    let q = (0..n).map(|i| r0[i].clone()).collect::<Vec<T>>();
-    (VopeDyn { u: u, v: v, n: 0, k: 1 }, QDyn { q: q, n: 0 })
+    VopeDyn { u: u, v: v, n: 0, k: 1 }
+}
+
+pub fn vole_commit_bit_verifier_share<N, T>(mut n: usize, mut q: Vec<T>) -> QDyn<T> where T: Clone + Default
+{
+    QDyn { q: q, n: 0 }
+}
+
+pub fn vole_commit_bit_shares<N, T>(mut n: usize, mut r0: Vec<T>, mut v: Vec<T>, mut bit_to_t: impl FnMut(bool) -> T, mut bit: bool) -> (VopeDyn<T>, QDyn<T>) where T: Clone + Default
+{
+    (vole_commit_bit_prover_share(n, v, bit_to_t, bit), vole_commit_bit_verifier_share(n, r0))
 }
 
 pub fn vole_commit_bit_from<N, T, R, C>(mut n: usize, mut cot: &mut C, mut rng: &mut R, mut sample_t: impl Fn, mut bit_to_t: impl FnMut(bool) -> T, mut bit: bool) -> (VopeDyn<T>, QDyn<T>) where T: Clone + Add<Output = T> + Mul<Output = T> + Default
@@ -8480,6 +8521,23 @@ pub fn xor_block(mut a: &Block, mut b: &Block) -> Block
     o[i] = (a[i] ^ b[i]);
 };
     o
+}
+
+pub fn checked_seed_cot_count(mut params: FerretParams) -> Result<usize, PoolSeedError>
+{
+    if (params.t == 0) || (params.n == 0) || (params.k == 0) || ((params.n % params.t) != 0){
+    return Err(PoolSeedError::InvalidParameters);
+};
+    let splen = params.n / params.t;
+    if !splen.is_power_of_two(){
+    return Err(PoolSeedError::InvalidParameters);
+};
+    let log_splen = splen.trailing_zeros() as usize;
+    let body = params.t.checked_mul(log_splen).and_then(|extra| params.k.checked_add(extra)).ok_or(PoolSeedError::InvalidParameters)?;
+    if body >= params.n{
+    return Err(PoolSeedError::InvalidParameters);
+};
+    Ok(body)
 }
 
 pub fn new_pool<R: SpecRng>(mut rng: &mut R, mut params: FerretParams) -> (CotPoolSender, CotPoolReceiver)

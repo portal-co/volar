@@ -2857,7 +2857,7 @@ export class EncodedLabelBatch {
 
   static from_pairs(pairs: LabelPairDyn[], offset: bigint[]): Result<EncodedLabelBatch, BatchError>
   {
-    const __volar_try_0 = LabelBatchDyn.new(pairs, offset);
+    const __volar_try_0 = LabelBatchDyn.new(16n, pairs, offset);
     if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
     const batch = __volar_try_0;
     let differences = ([] as any[]);
@@ -4895,6 +4895,17 @@ export class CotPoolSender {
     return new (this.constructor as any)({ $fparams: __zeroValue(this.$fparams), $fseed: __zeroValue(this.$fseed), $fout: __zeroValue(this.$fout), $fraise_n: __zeroValue(this.$fraise_n) }) as this;
   }
 
+  static from_seed(params: any, seed: any): Result<CotPoolSender, PoolSeedError>
+  {
+    const __volar_try_0 = checked_seed_cot_count(params);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const expected = __volar_try_0;
+    if (!__equals(BigInt(seed.$fq.length), expected))     {
+      return new PoolSeedError_SenderSeedCount(expected, BigInt(seed.$fq.length));
+    }
+    return new CotPoolSender({ $fparams: params, $fseed: seed, $fout: [] as any[], $fraise_n: undefined });
+  }
+
   remaining(): bigint
   {
     return BigInt(this.$fout.length);
@@ -4917,6 +4928,20 @@ export class CotPoolReceiver {
   }
   __zero(): this {
     return new (this.constructor as any)({ $fparams: __zeroValue(this.$fparams), $fseed: __zeroValue(this.$fseed), $fout_x: __zeroValue(this.$fout_x), $fout_z: __zeroValue(this.$fout_z) }) as this;
+  }
+
+  static from_seed(params: any, seed: any): Result<CotPoolReceiver, PoolSeedError>
+  {
+    const __volar_try_0 = checked_seed_cot_count(params);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const expected = __volar_try_0;
+    if (!__equals(BigInt(seed.$fu.length), expected))     {
+      return new PoolSeedError_ReceiverChoiceCount(expected, BigInt(seed.$fu.length));
+    }
+    if (!__equals(BigInt(seed.$fw.length), expected))     {
+      return new PoolSeedError_ReceiverSeedCount(expected, BigInt(seed.$fw.length));
+    }
+    return new CotPoolReceiver({ $fparams: params, $fseed: seed, $fout_x: [] as any[], $fout_z: [] as any[] });
   }
 
   remaining(): bigint
@@ -5562,6 +5587,20 @@ export class TfheBootstrapTableError_InputEncodingUnsupported extends __VolarErr
   __zero(): this { return new (this.constructor as any)() as this; }
 }
 export type TfheBootstrapTableError = TfheBootstrapTableError_AddressWidthOutOfRange | TfheBootstrapTableError_TableLengthMismatch | TfheBootstrapTableError_RingCapacityExceeded | TfheBootstrapTableError_NegacyclicIncompatible | TfheBootstrapTableError_InputEncodingUnsupported;
+
+export class PoolSeedError_InvalidParameters extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class PoolSeedError_SenderSeedCount extends __VolarError { constructor(public $fexpected: bigint, public $ffound: bigint) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fexpected), __zeroValue(this.$ffound)) as this; }
+}
+export class PoolSeedError_ReceiverChoiceCount extends __VolarError { constructor(public $fexpected: bigint, public $ffound: bigint) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fexpected), __zeroValue(this.$ffound)) as this; }
+}
+export class PoolSeedError_ReceiverSeedCount extends __VolarError { constructor(public $fexpected: bigint, public $ffound: bigint) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fexpected), __zeroValue(this.$ffound)) as this; }
+}
+export type PoolSeedError = PoolSeedError_InvalidParameters | PoolSeedError_SenderSeedCount | PoolSeedError_ReceiverChoiceCount | PoolSeedError_ReceiverSeedCount;
 
 export const GF8_POLY = 27n;
 export const GF64_POLY = 27n;
@@ -6340,6 +6379,25 @@ export function check_lut_shape(addr_bits: bigint, table_len: bigint, big_n: big
 
 export function check_profile(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, log_mod_ks: bigint, bs_base_log: bigint, bs_ell: bigint, ks_base_log: bigint, ks_ell: bigint, priv_base_log: bigint, priv_ell: bigint)
 {
+}
+
+export function checked_seed_cot_count(params: any): Result<bigint, PoolSeedError>
+{
+  if ((((__equals(params.$ft, 0n) || __equals(params.$fn, 0n)) || __equals(params.$fk, 0n)) || !__equals((params.$fn % params.$ft), 0n)))   {
+    return new PoolSeedError_InvalidParameters();
+  }
+  const splen = (params.$fn / params.$ft);
+  if (!((splen) > 0n && ((splen) & ((splen) - 1n)) === 0n))   {
+    return new PoolSeedError_InvalidParameters();
+  }
+  const log_splen = BigInt(Math.clz32((() => { const __tz = Number(splen) | 0; return (__tz & -__tz) | 0; })()));
+  const __volar_try_4 = ((((params.$ft) * (log_splen)).and_then((extra) => (params.$fk + (extra)))) ?? (new PoolSeedError_InvalidParameters()));
+  if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+  const body = __volar_try_4;
+  if ((body >= params.$fn))   {
+    return new PoolSeedError_InvalidParameters();
+  }
+  return body;
 }
 
 export function circuit_bootstrap(n_lwe: bigint, big_n: bigint, log_q: bigint, log_q_lwe: bigint, bs_ell: bigint, bs_base_log: bigint, ks_ell: bigint, priv_ell: bigint, priv_base_log: bigint, ct: BinfheLweCiphertextDyn, cbk: CircuitBootstrappingKeyDyn, k_max: bigint): BinfheRgswCiphertextDyn
@@ -8811,7 +8869,7 @@ export function memory_check_per_lane<T>(ctx: { HClass: { new(...args: any[]): a
 {
   return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const key = ChallengeKeyDyn.from_challenge(__clone(challenges[Number(i)]));
-  return MemoryCheckStateDyn.new(ctx, n, key);
+  return MemoryCheckStateDyn.new(ctx, key);
 })());
 }
 
@@ -10361,11 +10419,7 @@ export function vole_and_verifier_check<T>(n: bigint, delta: DeltaDyn<T>, q_a: Q
 export function vole_commit_bit<T, R>(n: bigint, cot: IdealCotDyn<T>, rng: any, sample_t: any, bit_to_t: (arg: boolean) => T, bit: boolean): [VopeDyn<T>, QDyn<T>]
 {
   const [r0, v] = cot.cot(rng, sample_t, bit);
-  const u_t = bit_to_t(bit);
-  const u_row: T[] = lift_bit(n, u_t);
-  const u: T[][] = Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(u_row[Number(i)])));
-  const q = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(r0[Number(i)]));
-  return [new VopeDyn({ $fu: u, $fv: v, $fn: 0n, $fk: 1n }), new QDyn({ $fq: q, $fn: 0n })];
+  return [vole_commit_bit_prover_share(n, v, bit_to_t, bit), vole_commit_bit_verifier_share(n, r0)];
 }
 
 export function vole_commit_bit_from<T, R, C>(n: bigint, cot: any, rng: any, sample_t: any, bit_to_t: (arg: boolean) => T, bit: boolean): [VopeDyn<T>, QDyn<T>]
@@ -10374,13 +10428,22 @@ export function vole_commit_bit_from<T, R, C>(n: bigint, cot: any, rng: any, sam
   return vole_commit_bit_shares(n, r0, v, bit_to_t, bit);
 }
 
-export function vole_commit_bit_shares<T>(n: bigint, r0: T[], v: T[], bit_to_t: (arg: boolean) => T, bit: boolean): [VopeDyn<T>, QDyn<T>]
+export function vole_commit_bit_prover_share<T>(n: bigint, v: T[], bit_to_t: (arg: boolean) => T, bit: boolean): VopeDyn<T>
 {
   const u_t = bit_to_t(bit);
   const u_row: T[] = lift_bit(n, u_t);
   const u: T[][] = Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(u_row[Number(i)])));
-  const q = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(r0[Number(i)]));
-  return [new VopeDyn({ $fu: u, $fv: v, $fn: 0n, $fk: 1n }), new QDyn({ $fq: q, $fn: 0n })];
+  return new VopeDyn({ $fu: u, $fv: v, $fn: 0n, $fk: 1n });
+}
+
+export function vole_commit_bit_shares<T>(n: bigint, r0: T[], v: T[], bit_to_t: (arg: boolean) => T, bit: boolean): [VopeDyn<T>, QDyn<T>]
+{
+  return [vole_commit_bit_prover_share(n, v, bit_to_t, bit), vole_commit_bit_verifier_share(n, r0)];
+}
+
+export function vole_commit_bit_verifier_share<T>(n: bigint, q: T[]): QDyn<T>
+{
+  return new QDyn({ $fq: q, $fn: 0n });
 }
 
 export function vole_hash(key: any, input: bigint[]): UniversalHashOutput
