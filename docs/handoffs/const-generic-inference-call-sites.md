@@ -2,12 +2,12 @@
 
 > **Status:** implemented for static calls, module-qualified free calls, local
 > call-result type propagation, and unique integer const-generic turbofish
-> values; the
-> remaining TS2554 cases have other causes. Historical base: `1bc0fd7` (469
-> errors, TS2554 = 91). On the current fresh-generated spec tree, the call-site
-> work reduced strict TS from 256 to 198 errors and TS2554 from 90 to 32. The
-> current spec tree includes the role-separated Ferret seed APIs added after the
-> historical 251-error checkpoint.
+> values; the remaining TS2554 cases have other causes. Historical base:
+> `1bc0fd7` (469 errors, TS2554 = 91). The original current-tree progression
+> reached 190 errors (TS2554 = 24). With independent Ferret source edits now
+> present in the worktree, fresh-generation strict TS is 196 errors (TS2554 = 18);
+> reference-field inference reduced this updated surface from 202 to 196. The
+> role-separated Ferret APIs are not part of the compiler milestone.
 
 ## Problem
 
@@ -66,10 +66,11 @@ The machinery is in `crates/compiler/volar-compiler-passes/src/lowering_dyn.rs`:
   uniquely-resolved call return types; scopes do not leak bindings out of nested
   blocks.
 - Argument type recovery covers variables, references/dereferences, casts,
-  struct expressions/fields (including struct generic substitution), indexing,
-  array/repeat literals, and tuples. Call return types are recovered only from
-  unambiguous signatures, substituting explicit turbofish generic arguments; this
-  lets later calls infer lengths through local producer bindings.
+  struct expressions/fields (including struct generic substitution through
+  references), indexing, array/repeat literals, and tuples. Call return types are
+  recovered only from unambiguous signatures, substituting explicit turbofish
+  generic arguments; this lets later calls infer lengths through local producer
+  bindings.
 - Type unification matches array lengths and nested struct/tuple/vector/reference
   types. It can infer either a concrete const or forward a differently named
   in-scope length generic. A call receives injected leading length arguments only
@@ -96,13 +97,16 @@ cp ../volar-spec-ts/generated.ts src/.chk.ts && sed -i '' '/^\/\/ @ts-nocheck/d'
 rm -f src/.chk.ts
 ```
 Verified: `cargo test -p volar-compiler-passes --features parsing --lib` passes
-(60 tests, including direct const-length inference, qualified-call forwarding,
-local producer propagation, shadowed-name invalidation, unique/ambiguous const
-resolution, and trait-path non-misclassification regressions);
+(61 tests, including direct const-length inference, qualified-call forwarding,
+local producer propagation, reference-field inference, shadowed-name
+invalidation, unique/ambiguous const resolution, and trait-path
+non-misclassification regressions);
 `cargo xtask gen-specs` followed by `cargo xtask check-specs` reports all four
-artifacts fresh. After local producer propagation, the full generated
-TypeScript remains red at 190 errors (TS2554 = 24), down from 198 (TS2554 = 32)
-at the preceding local-producer checkpoint. `cargo check -p volar-spec-dyn --features
+artifacts fresh. On this worktree, generated TypeScript remains red at 196
+errors (TS2554 = 18); an A/B run with only the six reference-field call witnesses
+removed reports 202 errors (TS2554 = 24). The six-error delta is entirely
+TS2554. Independent uncommitted Ferret source changes are preserved and excluded
+from the compiler commit. `cargo check -p volar-spec-dyn --features
 generated` still fails with its pre-existing 1486-error generated-Rust surface;
 the Rust diagnostic count was unchanged by the forwarding work. Runtime
 export-count checks have not been rerun for this implementation.

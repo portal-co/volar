@@ -7126,17 +7126,17 @@ pub fn poly_decompose(mut big_n: usize, mut bs_ell: usize, mut bs_bg_log: usize,
 
 pub fn rlwe_add(mut big_n: usize, mut a: &RlweCiphertextDyn, mut b: &RlweCiphertextDyn) -> RlweCiphertextDyn
 {
-    RlweCiphertextDyn { a: poly_add_neg(&a.a, &b.a), b: poly_add_neg(&a.b, &b.b), big_n: 0 }
+    RlweCiphertextDyn { a: poly_add_neg(big_n, &a.a, &b.a), b: poly_add_neg(big_n, &a.b, &b.b), big_n: 0 }
 }
 
 pub fn rlwe_sub(mut big_n: usize, mut a: &RlweCiphertextDyn, mut b: &RlweCiphertextDyn) -> RlweCiphertextDyn
 {
-    RlweCiphertextDyn { a: poly_sub_neg(&a.a, &b.a), b: poly_sub_neg(&a.b, &b.b), big_n: 0 }
+    RlweCiphertextDyn { a: poly_sub_neg(big_n, &a.a, &b.a), b: poly_sub_neg(big_n, &a.b, &b.b), big_n: 0 }
 }
 
 pub fn rlwe_rotate(mut big_n: usize, mut ct: &RlweCiphertextDyn, mut exp: usize) -> RlweCiphertextDyn
 {
-    RlweCiphertextDyn { a: poly_rotate(&ct.a, exp), b: poly_rotate(&ct.b, exp), big_n: 0 }
+    RlweCiphertextDyn { a: poly_rotate(big_n, &ct.a, exp), b: poly_rotate(big_n, &ct.b, exp), big_n: 0 }
 }
 
 pub fn lwe_add(mut n_lwe: usize, mut a: LweCiphertextDyn, mut b: LweCiphertextDyn) -> LweCiphertextDyn

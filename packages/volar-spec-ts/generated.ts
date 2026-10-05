@@ -9523,7 +9523,7 @@ export function rgsw_encrypt<R>(big_n: bigint, bs_ell: bigint, bs_bg_log: bigint
 
 export function rlwe_add(big_n: bigint, a: RlweCiphertextDyn, b: RlweCiphertextDyn): RlweCiphertextDyn
 {
-  return new RlweCiphertextDyn({ $fa: poly_add_neg(a.$fa, b.$fa), $fb: poly_add_neg(a.$fb, b.$fb), $fbig_n: 0n });
+  return new RlweCiphertextDyn({ $fa: poly_add_neg(big_n, a.$fa, b.$fa), $fb: poly_add_neg(big_n, a.$fb, b.$fb), $fbig_n: 0n });
 }
 
 export function rlwe_encrypt_poly<R>(big_n: bigint, msg_poly: bigint[], sk: RlweSecretKeyDyn, noise_bits: bigint, rng: any): RlweCiphertextDyn
@@ -9546,12 +9546,12 @@ export function rlwe_encrypt_scalar<R>(big_n: bigint, m: bigint, sk: RlweSecretK
 
 export function rlwe_rotate(big_n: bigint, ct: RlweCiphertextDyn, exp: bigint): RlweCiphertextDyn
 {
-  return new RlweCiphertextDyn({ $fa: poly_rotate(ct.$fa, exp), $fb: poly_rotate(ct.$fb, exp), $fbig_n: 0n });
+  return new RlweCiphertextDyn({ $fa: poly_rotate(big_n, ct.$fa, exp), $fb: poly_rotate(big_n, ct.$fb, exp), $fbig_n: 0n });
 }
 
 export function rlwe_sub(big_n: bigint, a: RlweCiphertextDyn, b: RlweCiphertextDyn): RlweCiphertextDyn
 {
-  return new RlweCiphertextDyn({ $fa: poly_sub_neg(a.$fa, b.$fa), $fb: poly_sub_neg(a.$fb, b.$fb), $fbig_n: 0n });
+  return new RlweCiphertextDyn({ $fa: poly_sub_neg(big_n, a.$fa, b.$fa), $fb: poly_sub_neg(big_n, a.$fb, b.$fb), $fbig_n: 0n });
 }
 
 export function sample_block<R>(rng: any): Block

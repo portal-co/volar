@@ -2715,6 +2715,15 @@ struct FnScope<'a> {
     var_types: BTreeMap<String, IrType>,
 }
 
+fn strip_source_references(mut ty: IrType) -> IrType {
+    loop {
+        match ty {
+            IrType::Reference { elem, .. } => ty = *elem,
+            other => return other,
+        }
+    }
+}
+
 fn source_expr_type(expr: &IrExpr, scope: &FnScope<'_>, ctx: &LoweringContext) -> Option<IrType> {
     match &expr.kind {
         IrExprKind::Var(name) => scope.var_types.get(name).cloned(),
@@ -2740,7 +2749,7 @@ fn source_expr_type(expr: &IrExpr, scope: &FnScope<'_>, ctx: &LoweringContext) -
             type_args: type_args.clone(),
         }),
         IrExprKind::Field { base, field } => {
-            let base_ty = source_expr_type(base, scope, ctx)?;
+            let base_ty = strip_source_references(source_expr_type(base, scope, ctx)?);
             let (struct_name, type_args) = match base_ty {
                 IrType::Struct { kind, type_args } => (kind.to_string(), type_args),
                 IrType::TypeParam(name) => (name, Vec::new()),
@@ -2751,10 +2760,12 @@ fn source_expr_type(expr: &IrExpr, scope: &FnScope<'_>, ctx: &LoweringContext) -
             let bindings: BTreeMap<_, _> = type_params.iter().cloned().zip(type_args).collect();
             Some(substitute_type_params(field_ty, &bindings))
         }
-        IrExprKind::Index { base, .. } => match source_expr_type(base, scope, ctx)? {
-            IrType::Array { elem, .. } | IrType::Vector { elem } => Some(*elem),
-            _ => None,
-        },
+        IrExprKind::Index { base, .. } => {
+            match strip_source_references(source_expr_type(base, scope, ctx)?) {
+                IrType::Array { elem, .. } | IrType::Vector { elem } => Some(*elem),
+                _ => None,
+            }
+        }
         IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
             let elem = elems
                 .first()
@@ -5182,6 +5193,57 @@ mod tests {
             &scope,
             &ctx,
         );
+        assert_eq!(
+            inferred.get("n"),
+            Some(&Some(InferredLength::Param("m".to_string())))
+        );
+    }
+
+    #[test]
+    fn infers_call_length_through_referenced_struct_field() {
+        let mut ctx = empty_ctx();
+        ctx.struct_field_types.insert(
+            "Buffer".to_string(),
+            BTreeMap::from([(
+                "bytes".to_string(),
+                IrType::Array {
+                    kind: ArrayKind::FixedArray,
+                    elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
+                    len: ArrayLength::TypeParam("N".to_string()),
+                },
+            )]),
+        );
+        ctx.struct_generic_params
+            .insert("Buffer".to_string(), vec!["N".to_string()]);
+        let generics = vec![length_param("M", vec![])];
+        let scope = FnScope {
+            generics: &generics,
+            var_types: BTreeMap::from([(
+                "buffer".to_string(),
+                IrType::Reference {
+                    mutable: false,
+                    elem: Box::new(IrType::Struct {
+                        kind: StructKind::Custom("Buffer".to_string()),
+                        type_args: vec![IrType::TypeParam("M".to_string())],
+                    }),
+                },
+            )]),
+        };
+        let signature = CallSignature {
+            params: vec![IrType::Array {
+                kind: ArrayKind::FixedArray,
+                elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
+                len: ArrayLength::TypeParam("N".to_string()),
+            }],
+            return_type: None,
+            generic_params: vec![],
+            length_params: vec!["n".to_string()],
+        };
+        let field = ir_expr(IrExprKind::Field {
+            base: Box::new(ir_expr(IrExprKind::Var("buffer".to_string()))),
+            field: "bytes".to_string(),
+        });
+        let inferred = infer_static_call_lengths(&signature, &[field], &scope, &ctx);
         assert_eq!(
             inferred.get("n"),
             Some(&Some(InferredLength::Param("m".to_string())))
