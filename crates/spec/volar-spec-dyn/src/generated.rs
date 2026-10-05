@@ -4352,7 +4352,7 @@ impl  OtStack {
         for chunk in delta_msg.chunks_mut(4){
     chunk.copy_from_slice(&rng_s.next_u32().to_le_bytes()[..chunk.len()]);
 };
-        let out = softspoken_cot_extend_base::<LweBaseOtDyn, D, R, 16>(rng_s, rng_r, &bits, &delta_msg);
+        let out = softspoken_cot_extend_base::<LweBaseOtDyn, D, R, 16>(16, rng_s, rng_r, &bits, &delta_msg);
         let mut q = Vec::with_capacity(m);
         let mut w = Vec::with_capacity(m);
         for j in 0.. m{
@@ -5162,7 +5162,7 @@ pub fn sign(mut sk: &FaestSecretKey, mut pk: &FaestPublicKey, mut message: &[u8]
 {
     let iv: [u8; LAMBDA_BYTES] = aes128_encrypt(&iv_seed, &[0; LAMBDA_BYTES]);
     let r: [u8; LAMBDA_BYTES] = aes128_encrypt(&sk.0, &iv);
-    let commitment: BavcCommitmentDyn = BavcDyn::<EmLeafCommit, COM_BYTES, Sha3_256>::commit(r, &iv, TAU, SUB_VOLE_N);
+    let commitment: BavcCommitmentDyn = BavcDyn::<EmLeafCommit, COM_BYTES, Sha3_256>::commit(32, r, &iv, TAU, SUB_VOLE_N);
     let mu: Vec<u8> = {
     let mut h = Sha3_256::new();
     DigestUpdate::update(&mut h, &pk.0);
@@ -5171,7 +5171,7 @@ pub fn sign(mut sk: &FaestSecretKey, mut pk: &FaestPublicKey, mut message: &[u8]
 };
     let chall_1 = chall1(&mu, &iv, &commitment.root, (LAMBDA_BYTES + 8), false);
     let deltas = expand_challenge_to_deltas(&chall_1, TAU, SUB_VOLE_N);
-    let nodes = BavcDyn::<EmLeafCommit, COM_BYTES>::collect_open_nodes(&deltas, &recompute_tree(r, (TAU * SUB_VOLE_N)), TAU, SUB_VOLE_N);
+    let nodes = BavcDyn::<EmLeafCommit, COM_BYTES>::collect_open_nodes(32, &deltas, &recompute_tree(r, (TAU * SUB_VOLE_N)), TAU, SUB_VOLE_N);
     let hidden_commits: Vec<[u8; COM_BYTES]> = deltas.iter().enumerate().map(|(i, d)| commitment.commitments[(i * SUB_VOLE_N) + d]).collect::<Vec<_>>();
     let opening = BavcOpeningDyn { hidden_commits: hidden_commits.clone(), nodes: nodes.clone(), com_bytes: 0 };
     let _ = opening;
@@ -5202,7 +5202,7 @@ pub fn verify(mut pk: &FaestPublicKey, mut message: &[u8], mut sig: &FaestSignat
 };
     let chall_1 = chall1(&mu, iv, &sig.bavc_root, (LAMBDA_BYTES + 8), false);
     let deltas = expand_challenge_to_deltas(&chall_1, TAU, SUB_VOLE_N);
-    let reconstructed_seeds_opt = BavcDyn::<EmLeafCommit, COM_BYTES, Sha3_256>::reconstruct(&sig.nodes, &sig.hidden_commits, &deltas, iv, &sig.bavc_root, TAU, SUB_VOLE_N);
+    let reconstructed_seeds_opt = BavcDyn::<EmLeafCommit, COM_BYTES, Sha3_256>::reconstruct(32, &sig.nodes, &sig.hidden_commits, &deltas, iv, &sig.bavc_root, TAU, SUB_VOLE_N);
     let reconstructed_seeds = match reconstructed_seeds_opt {
     Some(s) => s,
     None => return false,
@@ -7552,7 +7552,7 @@ pub fn ssp_receiver_tag(mut delta_msg: &[u8; 16], mut bits: &[bool], mut v: &[[u
 pub fn stack_setup_sender<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: FerretParams, mut io: &mut Io) -> CotPoolSender
 {
     let m = params.seed_cot_count(false);
-    let delta_msg = sample_bytes::<R, 16>(rng);
+    let delta_msg = sample_bytes::<R, 16>(16, rng);
     io.send(TAG_DELTA, &delta_msg);
     let mut delta_ot = [false; IKNP_KAPPA];
     for i in 0.. IKNP_KAPPA{
@@ -7561,7 +7561,7 @@ pub fn stack_setup_sender<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: 
     let delta_ot_bytes = pack_kappa(&delta_ot);
     let mut chosen_seeds = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
     for i in 0.. IKNP_KAPPA{
-    let setup = decode_lwe_crs::<LWE_N>(&io.recv(TAG_LWE_SETUP));
+    let setup = decode_lwe_crs::<LWE_N>(16, &io.recv(TAG_LWE_SETUP));
     let (r_state, recv_msg) = Base::<IKNP_KAPPA_BYTES>::recv_start(rng, &setup, delta_ot[i]);
     io.send(TAG_LWE_RECV, &encode_lwe_recv(&recv_msg));
     let payload = decode_lwe_payload(&io.recv(TAG_LWE_PAYLOAD));
@@ -7601,14 +7601,14 @@ pub fn stack_setup_receiver<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params
     for i in 0.. IKNP_KAPPA{
     let (s_state, setup) = Base::<IKNP_KAPPA_BYTES>::sender_setup(rng);
     io.send(TAG_LWE_SETUP, &encode_lwe_crs(&setup));
-    let recv_msg = decode_lwe_recv::<LWE_N>(&io.recv(TAG_LWE_RECV));
+    let recv_msg = decode_lwe_recv::<LWE_N>(16, &io.recv(TAG_LWE_RECV));
     let payload = Base::<IKNP_KAPPA_BYTES>::sender_payload(rng, &s_state, &recv_msg, &seeds_0[i], &seeds_1[i]);
     io.send(TAG_LWE_PAYLOAD, &encode_lwe_payload(&payload));
 };
     let (t_cols, u_msg) = iknp_receiver_u_cols::<DigestImpl>(m, &bits, &seeds_0, &seeds_1);
     io.send(TAG_IKNP_U, &encode_iknp_u(&u_msg));
     let corrections = decode_iknp_corr(&io.recv(TAG_IKNP_CORR));
-    let receiver_v = iknp_receiver_finish::<DigestImpl, 16>(&bits, &t_cols, &corrections);
+    let receiver_v = iknp_receiver_finish::<DigestImpl, 16>(16, &bits, &t_cols, &corrections);
     let tag_s = io.recv(TAG_SSP_S);
     let tag_r = ssp_receiver_tag(&delta_msg, &bits, &receiver_v);
     io.send(TAG_SSP_R, tag_r.as_slice());
@@ -7916,8 +7916,8 @@ pub fn lwe_ot_send<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut 
     for i in 0.. n{
     pk1[i] = zq_sub(crs.h[i], pk0[i]);
 };
-    let (u0, v0) = encrypt_branch::<R, N, L>(n, n, rng, crs, &pk0, m0);
-    let (u1, v1) = encrypt_branch::<R, N, L>(n, n, rng, crs, &pk1, m1);
+    let (u0, v0) = encrypt_branch::<R, N, L>(n, l, rng, crs, &pk0, m0);
+    let (u1, v1) = encrypt_branch::<R, N, L>(n, l, rng, crs, &pk1, m1);
     LweOtSenderMsgLoweredDyn { u0: u0, v0: v0, u1: u1, v1: v1, n: 0, l: 0 }
 }
 

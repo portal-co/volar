@@ -5178,7 +5178,7 @@ export class OtStack {
     for (const chunk of __chunks(delta_msg, Number(4n)))     {
       (chunk).splice(0, ([(rng_s.next_u32()) & 0xFFn, ((rng_s.next_u32()) >> 8n) & 0xFFn, ((rng_s.next_u32()) >> 16n) & 0xFFn, ((rng_s.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))).length, ...([(rng_s.next_u32()) & 0xFFn, ((rng_s.next_u32()) >> 8n) & 0xFFn, ((rng_s.next_u32()) >> 16n) & 0xFFn, ((rng_s.next_u32()) >> 24n) & 0xFFn].slice(0, Number(BigInt(chunk.length)))));
     }
-    const out = softspoken_cot_extend_base(ctx, rng_s, rng_r, bits, delta_msg);
+    const out = softspoken_cot_extend_base(ctx, 16n, rng_s, rng_r, bits, delta_msg);
     let q = ([] as any[]);
     let w = ([] as any[]);
     for (let j = 0n; j < m; j += 1n)     {
@@ -8787,8 +8787,8 @@ export function lwe_ot_send<R>(n: bigint, l: bigint, rng: any, crs: LweOtCrsDyn,
   for (let i = 0n; i < n; i += 1n)   {
     pk1[Number(i)] = zq_sub(crs.$fh[Number(i)], pk0[Number(i)]);
   }
-  const [u0, v0] = encrypt_branch(n, n, rng, crs, pk0, m0);
-  const [u1, v1] = encrypt_branch(n, n, rng, crs, pk1, m1);
+  const [u0, v0] = encrypt_branch(n, l, rng, crs, pk0, m0);
+  const [u1, v1] = encrypt_branch(n, l, rng, crs, pk1, m1);
   return new LweOtSenderMsgLoweredDyn({ $fu0: u0, $fv0: v0, $fu1: u1, $fv1: v1, $fn: 0n, $fl: 0n });
 }
 
@@ -9711,7 +9711,7 @@ export function sign(ctx: { newD: () => any, LClass: { new(...args: any[]): any 
 {
   const iv: bigint[] = aes128_encrypt(iv_seed, Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
   const r: bigint[] = aes128_encrypt(sk[0], iv);
-  const commitment: BavcCommitmentDyn = BavcDyn.commit(ctx, r, iv, TAU, SUB_VOLE_N);
+  const commitment: BavcCommitmentDyn = BavcDyn.commit(ctx, 32n, r, iv, TAU, SUB_VOLE_N);
   const mu: Vec<bigint> = (() => {
   let h = new Sha3_256();
   h.update(pk[0]);
@@ -9720,7 +9720,7 @@ export function sign(ctx: { newD: () => any, LClass: { new(...args: any[]): any 
 })();
   const chall_1 = chall1(mu, iv, commitment.$froot, fieldAdd(LAMBDA_BYTES, 8n), false);
   const deltas = expand_challenge_to_deltas(chall_1, TAU, SUB_VOLE_N);
-  const nodes = BavcDyn.collect_open_nodes(deltas, recompute_tree(r, fieldMul(TAU, SUB_VOLE_N)), TAU, SUB_VOLE_N);
+  const nodes = BavcDyn.collect_open_nodes(32n, deltas, recompute_tree(r, fieldMul(TAU, SUB_VOLE_N)), TAU, SUB_VOLE_N);
   const hidden_commits: Vec<bigint[]> = deltas.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([i, d]: any) => commitment.$fcommitments[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), d))]);
   const opening = new BavcOpeningDyn({ $fhidden_commits: __clone(hidden_commits), $fnodes: __clone(nodes), $fcom_bytes: 0n });
   const _ = opening;
@@ -10064,14 +10064,14 @@ export function stack_setup_receiver<R, Io>(ctx: { newD: () => any }, rng: any, 
   for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
     const [s_state, setup] = sender_setup(rng);
     io.send(TAG_LWE_SETUP, encode_lwe_crs(setup));
-    const recv_msg = decode_lwe_recv(io.recv(TAG_LWE_RECV));
+    const recv_msg = decode_lwe_recv(16n, io.recv(TAG_LWE_RECV));
     const payload = sender_payload(rng, s_state, recv_msg, seeds_0[Number(i)], seeds_1[Number(i)]);
     io.send(TAG_LWE_PAYLOAD, encode_lwe_payload(payload));
   }
   const [t_cols, u_msg] = iknp_receiver_u_cols(ctx, m, bits, seeds_0, seeds_1);
   io.send(TAG_IKNP_U, encode_iknp_u(u_msg));
   const corrections = decode_iknp_corr(io.recv(TAG_IKNP_CORR));
-  const receiver_v = iknp_receiver_finish(ctx, bits, t_cols, corrections);
+  const receiver_v = iknp_receiver_finish(ctx, 16n, bits, t_cols, corrections);
   const tag_s = io.recv(TAG_SSP_S);
   const tag_r = ssp_receiver_tag(delta_msg, bits, receiver_v);
   io.send(TAG_SSP_R, tag_r);
@@ -10087,7 +10087,7 @@ export function stack_setup_receiver<R, Io>(ctx: { newD: () => any }, rng: any, 
 export function stack_setup_sender<R, Io>(ctx: { newD: () => any }, rng: any, params: any, io: any): CotPoolSender
 {
   const m = params.seed_cot_count(false);
-  const delta_msg = sample_bytes(rng);
+  const delta_msg = sample_bytes(16n, rng);
   io.send(TAG_DELTA, delta_msg);
   let delta_ot = Array.from({length: Number(IKNP_KAPPA)}, () => false);
   for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
@@ -10096,7 +10096,7 @@ export function stack_setup_sender<R, Io>(ctx: { newD: () => any }, rng: any, pa
   const delta_ot_bytes = pack_kappa(delta_ot);
   let chosen_seeds = Array.from({length: Number(IKNP_KAPPA)}, () => Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n));
   for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
-    const setup = decode_lwe_crs(io.recv(TAG_LWE_SETUP));
+    const setup = decode_lwe_crs(16n, io.recv(TAG_LWE_SETUP));
     const [r_state, recv_msg] = recv_start(rng, setup, delta_ot[Number(i)]);
     io.send(TAG_LWE_RECV, encode_lwe_recv(recv_msg));
     const payload = decode_lwe_payload(io.recv(TAG_LWE_PAYLOAD));
@@ -10357,7 +10357,7 @@ export function verify(ctx: { newD: () => any, LClass: { new(...args: any[]): an
 })();
   const chall_1 = chall1(mu, iv, sig.$fbavc_root, fieldAdd(LAMBDA_BYTES, 8n), false);
   const deltas = expand_challenge_to_deltas(chall_1, TAU, SUB_VOLE_N);
-  const reconstructed_seeds_opt = BavcDyn.reconstruct(ctx, sig.$fnodes, sig.$fhidden_commits, deltas, iv, sig.$fbavc_root, TAU, SUB_VOLE_N);
+  const reconstructed_seeds_opt = BavcDyn.reconstruct(ctx, 32n, sig.$fnodes, sig.$fhidden_commits, deltas, iv, sig.$fbavc_root, TAU, SUB_VOLE_N);
   const reconstructed_seeds = (() => { const __match = reconstructed_seeds_opt; if (__match !== null && __match !== undefined) { const s = __match;
 return s; } else { return false; } })();
   let sub_voles_v = ([] as any[]);

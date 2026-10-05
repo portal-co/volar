@@ -1,7 +1,8 @@
 # Task: call-site const-generic inference for dyn-lowered functions
 
-> **Status:** implemented for static calls, module-qualified free calls, and
-> local call-result type propagation; the
+> **Status:** implemented for static calls, module-qualified free calls, local
+> call-result type propagation, and unique integer const-generic turbofish
+> values; the
 > remaining TS2554 cases have other causes. Historical base: `1bc0fd7` (469
 > errors, TS2554 = 91). On the current fresh-generated spec tree, the call-site
 > work reduced strict TS from 256 to 198 errors and TS2554 from 90 to 32. The
@@ -57,6 +58,9 @@ The machinery is in `crates/compiler/volar-compiler-passes/src/lowering_dyn.rs`:
   methods (`Type::method`) and uniquely named free functions. Conflicting
   signatures are marked ambiguous and are not guessed. Bare and module-qualified
   free-function paths are supported; module qualifiers are not emitted as values.
+  Static signatures retain impl- and method-generic order, so const turbofish
+  arguments can be matched to the exact length parameter. Direct integer module
+  constants are used only when their names are unique.
 - A function-scoped `FnScope` carries source generic parameters and parameter
   types. Sequential block lowering adds local `let` types from annotations or
   uniquely-resolved call return types; scopes do not leak bindings out of nested
@@ -92,18 +96,19 @@ cp ../volar-spec-ts/generated.ts src/.chk.ts && sed -i '' '/^\/\/ @ts-nocheck/d'
 rm -f src/.chk.ts
 ```
 Verified: `cargo test -p volar-compiler-passes --features parsing --lib` passes
-(58 tests, including direct const-length inference, qualified-call forwarding,
-local producer propagation, shadowed-name invalidation, and trait-path
-non-misclassification regressions);
+(60 tests, including direct const-length inference, qualified-call forwarding,
+local producer propagation, shadowed-name invalidation, unique/ambiguous const
+resolution, and trait-path non-misclassification regressions);
 `cargo xtask gen-specs` followed by `cargo xtask check-specs` reports all four
 artifacts fresh. After local producer propagation, the full generated
-TypeScript remains red at 198 errors (TS2554 = 32), down from 205 (TS2554 = 39)
-at the preceding qualified-free-call checkpoint. `cargo check -p volar-spec-dyn --features
+TypeScript remains red at 190 errors (TS2554 = 24), down from 198 (TS2554 = 32)
+at the preceding local-producer checkpoint. `cargo check -p volar-spec-dyn --features
 generated` still fails with its pre-existing 1486-error generated-Rust surface;
 the Rust diagnostic count was unchanged by the forwarding work. Runtime
 export-count checks have not been rerun for this implementation.
 
-Watch for: `LabelBatchDyn.new(16, pairs, offset)` should appear; the
+Watch for: `LabelBatchDyn.new(16, pairs, offset)` and
+`BavcDyn.commit(ctx, 32, ...)` should receive their concrete witnesses; the
 `from_pairs`-style callers should NOT gain a spurious `n` param.
 
 ## Out of scope

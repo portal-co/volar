@@ -104,6 +104,22 @@ struct CallSignature {
     length_params: Vec<String>,
 }
 
+fn explicit_length_arg(arg: &IrType, in_scope: &[String], ctx: &LoweringContext) -> Option<IrExpr> {
+    let IrType::TypeParam(name) = arg else {
+        return None;
+    };
+    let lowered_name = name.to_lowercase();
+    if in_scope.contains(&lowered_name) {
+        return Some(ir_expr(IrExprKind::Var(lowered_name)));
+    }
+    if let Some(value) = ctx.const_values.get(name) {
+        return Some(ir_expr(IrExprKind::Lit(IrLit::Int(*value as i128))));
+    }
+    name.parse::<usize>()
+        .ok()
+        .map(|value| ir_expr(IrExprKind::Lit(IrLit::Int(value as i128))))
+}
+
 /// Context for lowering
 pub struct LoweringContext {
     /// IrPath-keyed struct metadata. Key = module_path + struct_name (last segment = bare name).
@@ -119,6 +135,8 @@ pub struct LoweringContext {
     free_function_signatures: BTreeMap<String, Option<CallSignature>>,
     enum_names: BTreeSet<String>,
     trait_names: BTreeSet<String>,
+    /// Statically evaluable integer constants for const-generic turbofish args.
+    const_values: BTreeMap<String, usize>,
     /// Source struct name to collision-free lowered struct name.
     ///
     /// A generic `Foo` normally becomes `FooDyn`; if the source already
@@ -407,9 +425,9 @@ impl LoweringContext {
                                 let signature = CallSignature {
                                     params: f.params.iter().map(|p| p.ty.clone()).collect(),
                                     return_type: f.return_type.clone(),
-                                    generic_params: f
-                                        .generics
+                                    generic_params: impl_gen
                                         .iter()
+                                        .chain(&f.generics)
                                         .filter(|param| param.kind != IrGenericParamKind::Lifetime)
                                         .map(|param| param.name.clone())
                                         .collect(),
@@ -440,6 +458,7 @@ impl LoweringContext {
             .iter()
             .map(|item| item.kind.to_string())
             .collect();
+        let const_values = collect_const_values(&module.consts);
         let mut trait_names = BTreeSet::new();
         for structure in &module.structs {
             for generic in &structure.generics {
@@ -503,11 +522,30 @@ impl LoweringContext {
             free_function_signatures,
             enum_names,
             trait_names,
+            const_values,
             lowered_struct_names,
             struct_field_types,
             struct_generic_params,
         }
     }
+}
+
+fn collect_const_values(consts: &[IrConst]) -> BTreeMap<String, usize> {
+    let mut candidates: BTreeMap<String, Option<usize>> = BTreeMap::new();
+    for item in consts {
+        let value = match &item.value.kind {
+            IrExprKind::Lit(IrLit::Int(value)) => usize::try_from(*value).ok(),
+            _ => None,
+        };
+        candidates
+            .entry(item.name.clone())
+            .and_modify(|existing| *existing = None)
+            .or_insert(value);
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name, value)))
+        .collect()
 }
 
 fn add_trait_name(names: &mut BTreeSet<String>, kind: &TraitKind) {
@@ -3665,20 +3703,17 @@ fn lower_expr_dyn_in_scope(e: &IrExpr, ctx: &LoweringContext, fn_gen: &FnScope<'
                                     }
                                 })
                                 .collect();
-                            // The turbofish type args (`reduce::<LOG_Q>`) directly supply the
-                            // callee's leading length params, positionally — this resolves the
-                            // name mismatch where the callee's param (`log`) differs from the
-                            // caller's generic (`log_q`). Map each type-param turbofish arg to
-                            // its lowercased in-scope var.
-                            let turbofish: Vec<String> = match &func.kind {
-                                IrExprKind::Path { type_args, .. } => type_args
+                            let type_args: &[IrType] = match &func.kind {
+                                IrExprKind::Path { type_args, .. } => type_args,
+                                _ => &[],
+                            };
+                            let legacy_turbofish: Vec<&IrType> = if call_signature.is_none() {
+                                type_args
                                     .iter()
-                                    .filter_map(|t| match t {
-                                        IrType::TypeParam(nm) => Some(nm.to_lowercase()),
-                                        _ => None,
-                                    })
-                                    .collect(),
-                                _ => Vec::new(),
+                                    .filter(|arg| matches!(arg, IrType::TypeParam(_)))
+                                    .collect()
+                            } else {
+                                Vec::new()
                             };
                             // Static-call signatures retain source param types, allowing
                             // concrete const lengths to be inferred from argument types when
@@ -3693,26 +3728,40 @@ fn lower_expr_dyn_in_scope(e: &IrExpr, ctx: &LoweringContext, fn_gen: &FnScope<'
                             let mut prepend: Vec<IrExpr> = Vec::new();
                             let mut all_resolved = true;
                             for (idx, param) in expected.iter().enumerate() {
-                                let value = if idx < turbofish.len()
-                                    && in_scope.contains(&turbofish[idx])
-                                {
-                                    Some(ir_expr(IrExprKind::Var(turbofish[idx].clone())))
-                                } else if in_scope.contains(param) {
-                                    Some(ir_expr(IrExprKind::Var(param.clone())))
-                                } else {
-                                    inferred
-                                        .as_ref()
-                                        .and_then(|values| values.get(param))
-                                        .and_then(Option::as_ref)
-                                        .map(|value| match value {
-                                            InferredLength::Const(value) => {
-                                                ir_expr(IrExprKind::Lit(IrLit::Int(*value as i128)))
-                                            }
-                                            InferredLength::Param(name) => {
-                                                ir_expr(IrExprKind::Var(name.clone()))
-                                            }
+                                let explicit = call_signature
+                                    .and_then(|signature| {
+                                        signature
+                                            .generic_params
+                                            .iter()
+                                            .position(|generic| generic.eq_ignore_ascii_case(param))
+                                            .and_then(|generic_idx| type_args.get(generic_idx))
+                                    })
+                                    .and_then(|arg| explicit_length_arg(arg, &in_scope, ctx))
+                                    .or_else(|| {
+                                        legacy_turbofish.get(idx).and_then(|arg| {
+                                            explicit_length_arg(arg, &in_scope, ctx)
                                         })
-                                };
+                                    });
+                                let value = explicit
+                                    .or_else(|| {
+                                        in_scope
+                                            .contains(param)
+                                            .then(|| ir_expr(IrExprKind::Var(param.clone())))
+                                    })
+                                    .or_else(|| {
+                                        inferred
+                                            .as_ref()
+                                            .and_then(|values| values.get(param))
+                                            .and_then(Option::as_ref)
+                                            .map(|value| match value {
+                                                InferredLength::Const(value) => ir_expr(
+                                                    IrExprKind::Lit(IrLit::Int(*value as i128)),
+                                                ),
+                                                InferredLength::Param(name) => {
+                                                    ir_expr(IrExprKind::Var(name.clone()))
+                                                }
+                                            })
+                                    });
                                 if let Some(value) = value {
                                     prepend.push(value);
                                 } else {
@@ -4756,6 +4805,7 @@ mod tests {
             free_function_signatures: BTreeMap::new(),
             enum_names: BTreeSet::new(),
             trait_names: BTreeSet::new(),
+            const_values: BTreeMap::new(),
             lowered_struct_names: BTreeMap::new(),
             struct_field_types: BTreeMap::new(),
             struct_generic_params: BTreeMap::new(),
@@ -4830,7 +4880,7 @@ mod tests {
                     IrType::Primitive(PrimitiveType::U32),
                 ],
                 return_type: None,
-                generic_params: vec![],
+                generic_params: vec!["LOG".to_string()],
                 length_params: vec!["log".to_string()],
             }),
         );
@@ -4978,6 +5028,61 @@ mod tests {
         };
         assert_eq!(args.len(), 3);
         assert_eq!(args[0].kind, IrExprKind::Var("big_n".to_string()));
+    }
+
+    #[test]
+    fn duplicate_named_consts_are_not_used_as_turbofish_values() {
+        let make_const = |name: &str, module: &[&str], value: i128| IrConst {
+            name: name.to_string(),
+            module_path: module.iter().map(|segment| segment.to_string()).collect(),
+            ty: IrType::Primitive(PrimitiveType::Usize),
+            value: ir_expr(IrExprKind::Lit(IrLit::Int(value))),
+        };
+        let values = collect_const_values(&[
+            make_const("N", &["a"], 16),
+            make_const("COM_BYTES", &["a"], 32),
+            make_const("COM_BYTES", &["b"], 48),
+        ]);
+        assert_eq!(values.get("N"), Some(&16));
+        assert!(!values.contains_key("COM_BYTES"));
+    }
+
+    #[test]
+    fn static_call_resolves_const_generic_turbofish_value() {
+        let mut ctx = empty_ctx();
+        ctx.const_values.insert("COM_BYTES".to_string(), 32);
+        ctx.static_method_signatures.insert(
+            "Bavc::commit".to_string(),
+            Some(CallSignature {
+                params: vec![],
+                return_type: None,
+                generic_params: vec!["L".to_string(), "COM_BYTES".to_string(), "D".to_string()],
+                length_params: vec!["com_bytes".to_string()],
+            }),
+        );
+        let call = ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+                segments: vec!["Bavc".to_string(), "commit".to_string()],
+                type_args: vec![
+                    IrType::TypeParam("EmLeafCommit".to_string()),
+                    IrType::TypeParam("COM_BYTES".to_string()),
+                    IrType::TypeParam("Sha3_256".to_string()),
+                ],
+            })),
+            args: vec![],
+        });
+        let lowered = lower_expr_dyn_in_scope(
+            &call,
+            &ctx,
+            &FnScope {
+                generics: &[],
+                var_types: BTreeMap::new(),
+            },
+        );
+        let IrExprKind::Call { args, .. } = lowered.kind else {
+            panic!("expected lowered call, got {lowered:?}");
+        };
+        assert_eq!(args, vec![ir_expr(IrExprKind::Lit(IrLit::Int(32)))]);
     }
 
     #[test]
