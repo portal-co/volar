@@ -96,6 +96,10 @@ pub struct StructInfo {
 struct CallSignature {
     /// Source-level parameter types, before any length witnesses are injected.
     params: Vec<IrType>,
+    /// Source-level return type, before any lowering transformations.
+    return_type: Option<IrType>,
+    /// Generic parameter names in source declaration order.
+    generic_params: Vec<String>,
     /// Lowercased names of the leading length witnesses inserted by lowering.
     length_params: Vec<String>,
 }
@@ -356,6 +360,13 @@ impl LoweringContext {
             }
             let signature = CallSignature {
                 params: f.params.iter().map(|param| param.ty.clone()).collect(),
+                return_type: f.return_type.clone(),
+                generic_params: f
+                    .generics
+                    .iter()
+                    .filter(|param| param.kind != IrGenericParamKind::Lifetime)
+                    .map(|param| param.name.clone())
+                    .collect(),
                 length_params,
             };
             if let Some(existing) = free_function_signatures.get_mut(&f.name) {
@@ -395,6 +406,13 @@ impl LoweringContext {
                             if let Some(key) = static_method_key(&im.self_ty, &f.name) {
                                 let signature = CallSignature {
                                     params: f.params.iter().map(|p| p.ty.clone()).collect(),
+                                    return_type: f.return_type.clone(),
+                                    generic_params: f
+                                        .generics
+                                        .iter()
+                                        .filter(|param| param.kind != IrGenericParamKind::Lifetime)
+                                        .map(|param| param.name.clone())
+                                        .collect(),
                                     length_params: params,
                                 };
                                 if let Some(existing) = static_method_signatures.get_mut(&key) {
@@ -2727,6 +2745,62 @@ fn source_expr_type(expr: &IrExpr, scope: &FnScope<'_>, ctx: &LoweringContext) -
                 .map(|e| source_expr_type(e, scope, ctx))
                 .collect::<Option<Vec<_>>>()?,
         )),
+        IrExprKind::Call { func, .. } => {
+            let (entry, type_args) = match &func.kind {
+                IrExprKind::Var(name) => (ctx.free_function_signatures.get(name), &[][..]),
+                IrExprKind::Path {
+                    segments,
+                    type_args,
+                } if segments.len() == 1 => (
+                    ctx.free_function_signatures.get(&segments[0]),
+                    type_args.as_slice(),
+                ),
+                IrExprKind::Path {
+                    segments,
+                    type_args,
+                } if segments.len() >= 2 => {
+                    let method = segments.last().unwrap();
+                    let static_entry =
+                        segments[..segments.len() - 1]
+                            .iter()
+                            .rev()
+                            .find_map(|head| {
+                                ctx.static_method_signatures
+                                    .get(&format!("{}::{}", head, method))
+                            });
+                    if let Some(entry) = static_entry {
+                        (Some(entry), type_args.as_slice())
+                    } else if is_module_qualified_free_path(segments, scope, ctx) {
+                        (
+                            ctx.free_function_signatures.get(method),
+                            type_args.as_slice(),
+                        )
+                    } else {
+                        (None, &[][..])
+                    }
+                }
+                _ => (None, &[][..]),
+            };
+            let signature = entry?.as_ref()?;
+            let return_type = signature.return_type.as_ref()?;
+            let bindings = signature
+                .generic_params
+                .iter()
+                .zip(type_args)
+                .map(|(name, arg)| (name.clone(), arg.clone()))
+                .collect();
+            Some(substitute_type_params(return_type, &bindings))
+        }
+        IrExprKind::Block(block) => block
+            .expr
+            .as_deref()
+            .and_then(|expr| source_expr_type(expr, scope, ctx)),
+        IrExprKind::Try(inner) => match source_expr_type(inner, scope, ctx)? {
+            IrType::Struct { kind, type_args } if matches!(&kind, StructKind::Custom(name) if matches!(name.as_str(), "Result" | "Option")) => {
+                type_args.into_iter().next()
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -2939,17 +3013,143 @@ impl core::ops::Deref for FnScope<'_> {
     }
 }
 
+fn clear_pattern_types(pattern: &IrPattern, var_types: &mut BTreeMap<String, IrType>) {
+    match pattern {
+        IrPattern::Ident { name, subpat, .. } => {
+            var_types.remove(name);
+            if let Some(subpat) = subpat {
+                clear_pattern_types(subpat, var_types);
+            }
+        }
+        IrPattern::Tuple(patterns) | IrPattern::Slice(patterns) | IrPattern::Or(patterns) => {
+            for pattern in patterns {
+                clear_pattern_types(pattern, var_types);
+            }
+        }
+        IrPattern::Struct { fields, .. } => {
+            for (_, pattern) in fields {
+                clear_pattern_types(pattern, var_types);
+            }
+        }
+        IrPattern::TupleStruct { elems, .. } => {
+            for pattern in elems {
+                clear_pattern_types(pattern, var_types);
+            }
+        }
+        IrPattern::Ref { pat, .. } => clear_pattern_types(pat, var_types),
+        IrPattern::Wild | IrPattern::Lit(_) | IrPattern::Rest => {}
+        _ => {}
+    }
+}
+
+fn bind_pattern_type(
+    pattern: &IrPattern,
+    ty: &IrType,
+    ctx: &LoweringContext,
+    var_types: &mut BTreeMap<String, IrType>,
+) {
+    match pattern {
+        IrPattern::Ident { name, subpat, .. } => {
+            if name != "_" {
+                var_types.insert(name.clone(), ty.clone());
+            }
+            if let Some(subpat) = subpat {
+                bind_pattern_type(subpat, ty, ctx, var_types);
+            }
+        }
+        IrPattern::Ref { pat, .. } => {
+            let inner_ty = match ty {
+                IrType::Reference { elem, .. } => elem.as_ref(),
+                _ => ty,
+            };
+            bind_pattern_type(pat, inner_ty, ctx, var_types);
+        }
+        IrPattern::Tuple(patterns) => {
+            if let IrType::Tuple(types) = ty {
+                for (pattern, ty) in patterns.iter().zip(types) {
+                    bind_pattern_type(pattern, ty, ctx, var_types);
+                }
+            }
+        }
+        IrPattern::Slice(patterns) => {
+            let elem_ty = match ty {
+                IrType::Array { elem, .. } | IrType::Vector { elem } => Some(elem.as_ref()),
+                _ => None,
+            };
+            if let Some(elem_ty) = elem_ty {
+                for pattern in patterns {
+                    bind_pattern_type(pattern, elem_ty, ctx, var_types);
+                }
+            }
+        }
+        IrPattern::Struct { kind, fields, .. } => {
+            let (struct_name, type_args) = match ty {
+                IrType::Struct { kind, type_args } => (kind.to_string(), type_args.as_slice()),
+                IrType::TypeParam(name) => (name.clone(), &[][..]),
+                _ => return,
+            };
+            if struct_name != kind.to_string() {
+                return;
+            }
+            let Some(field_types) = ctx.struct_field_types.get(&struct_name) else {
+                return;
+            };
+            let Some(type_params) = ctx.struct_generic_params.get(&struct_name) else {
+                return;
+            };
+            let bindings: BTreeMap<_, _> = type_params
+                .iter()
+                .cloned()
+                .zip(type_args.iter().cloned())
+                .collect();
+            for (field, pattern) in fields {
+                if let Some(field_ty) = field_types.get(field) {
+                    let field_ty = substitute_type_params(field_ty, &bindings);
+                    bind_pattern_type(pattern, &field_ty, ctx, var_types);
+                }
+            }
+        }
+        IrPattern::Or(patterns) => {
+            for pattern in patterns {
+                bind_pattern_type(pattern, ty, ctx, var_types);
+            }
+        }
+        IrPattern::TupleStruct { .. } | IrPattern::Wild | IrPattern::Lit(_) | IrPattern::Rest => {}
+        _ => {}
+    }
+}
+
 fn lower_block_dyn(block: &IrBlock, ctx: &LoweringContext, fn_gen: &FnScope<'_>) -> IrBlock {
+    let mut var_types = fn_gen.var_types.clone();
+    let mut stmts = Vec::with_capacity(block.stmts.len());
+    for stmt in &block.stmts {
+        let scope = FnScope {
+            generics: fn_gen.generics,
+            var_types: var_types.clone(),
+        };
+        let lowered = lower_stmt_dyn(stmt, ctx, &scope);
+        if let IrStmtKind::Let { pattern, ty, init } = &stmt.kind {
+            clear_pattern_types(pattern, &mut var_types);
+            let binding_ty = ty.clone().or_else(|| {
+                init.as_ref()
+                    .and_then(|init| source_expr_type(init, &scope, ctx))
+            });
+            if let Some(binding_ty) = binding_ty {
+                bind_pattern_type(pattern, &binding_ty, ctx, &mut var_types);
+            }
+        }
+        stmts.push(lowered);
+    }
+    let scope = FnScope {
+        generics: fn_gen.generics,
+        var_types,
+    };
     IrBlock {
-        stmts: block
-            .stmts
-            .iter()
-            .map(|s| lower_stmt_dyn(s, ctx, fn_gen))
-            .collect(),
+        stmts,
         expr: block
             .expr
             .as_ref()
-            .map(|e| Box::new(lower_expr_dyn_in_scope(e, ctx, fn_gen))),
+            .map(|e| Box::new(lower_expr_dyn_in_scope(e, ctx, &scope))),
     }
 }
 
@@ -4587,6 +4787,8 @@ mod tests {
                     elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
                     len: ArrayLength::TypeParam("N".to_string()),
                 }],
+                return_type: None,
+                generic_params: vec![],
                 length_params: vec!["n".to_string()],
             }),
         );
@@ -4627,6 +4829,8 @@ mod tests {
                     IrType::Primitive(PrimitiveType::U32),
                     IrType::Primitive(PrimitiveType::U32),
                 ],
+                return_type: None,
+                generic_params: vec![],
                 length_params: vec!["log".to_string()],
             }),
         );
@@ -4657,12 +4861,134 @@ mod tests {
     }
 
     #[test]
+    fn clearing_shadowed_local_type_prevents_stale_inference() {
+        let mut var_types =
+            BTreeMap::from([("value".to_string(), IrType::Primitive(PrimitiveType::U32))]);
+        clear_pattern_types(&IrPattern::ident("value"), &mut var_types);
+        assert!(!var_types.contains_key("value"));
+    }
+
+    #[test]
+    fn local_call_result_type_forwards_length_to_later_call() {
+        fn u32_array(length: &str) -> IrType {
+            IrType::Array {
+                kind: ArrayKind::FixedArray,
+                elem: Box::new(IrType::Primitive(PrimitiveType::U32)),
+                len: ArrayLength::TypeParam(length.to_string()),
+            }
+        }
+        let mut ctx = empty_ctx();
+        ctx.free_function_signatures.insert(
+            "poly_decompose".to_string(),
+            Some(CallSignature {
+                params: vec![IrType::Reference {
+                    mutable: false,
+                    elem: Box::new(u32_array("BIG_N")),
+                }],
+                return_type: Some(IrType::Array {
+                    kind: ArrayKind::FixedArray,
+                    elem: Box::new(u32_array("BIG_N")),
+                    len: ArrayLength::TypeParam("BS_ELL".to_string()),
+                }),
+                generic_params: vec!["BIG_N".to_string(), "BS_ELL".to_string()],
+                length_params: vec!["big_n".to_string(), "bs_ell".to_string()],
+            }),
+        );
+        ctx.free_function_signatures.insert(
+            "poly_mul_neg".to_string(),
+            Some(CallSignature {
+                params: vec![
+                    IrType::Reference {
+                        mutable: false,
+                        elem: Box::new(u32_array("N")),
+                    },
+                    IrType::Reference {
+                        mutable: false,
+                        elem: Box::new(u32_array("N")),
+                    },
+                ],
+                return_type: Some(u32_array("N")),
+                generic_params: vec!["N".to_string()],
+                length_params: vec!["n".to_string()],
+            }),
+        );
+        let generics = vec![
+            length_param("BIG_N", vec![]),
+            length_param("BS_ELL", vec![]),
+        ];
+        let scope = FnScope {
+            generics: &generics,
+            var_types: BTreeMap::from([("input".to_string(), u32_array("BIG_N"))]),
+        };
+        let decompose = ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+                segments: vec!["poly_decompose".to_string()],
+                type_args: vec![
+                    IrType::TypeParam("BIG_N".to_string()),
+                    IrType::TypeParam("BS_ELL".to_string()),
+                ],
+            })),
+            args: vec![ir_expr(IrExprKind::Unary {
+                op: SpecUnaryOp::Ref,
+                expr: Box::new(ir_expr(IrExprKind::Var("input".to_string()))),
+            })],
+        });
+        let digits_index = ir_expr(IrExprKind::Index {
+            base: Box::new(ir_expr(IrExprKind::Var("digits".to_string()))),
+            index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
+        });
+        let multiply = ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Var("poly_mul_neg".to_string()))),
+            args: vec![
+                ir_expr(IrExprKind::Unary {
+                    op: SpecUnaryOp::Ref,
+                    expr: Box::new(digits_index),
+                }),
+                ir_expr(IrExprKind::Unary {
+                    op: SpecUnaryOp::Ref,
+                    expr: Box::new(ir_expr(IrExprKind::Var("input".to_string()))),
+                }),
+            ],
+        });
+        let block = IrBlock {
+            stmts: vec![
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::ident("digits"),
+                    ty: None,
+                    init: Some(decompose),
+                }),
+                ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::ident("product"),
+                    ty: None,
+                    init: Some(multiply),
+                }),
+            ],
+            expr: None,
+        };
+
+        let lowered = lower_block_dyn(&block, &ctx, &scope);
+        let IrStmtKind::Let {
+            init: Some(init), ..
+        } = &lowered.stmts[1].kind
+        else {
+            panic!("expected lowered multiplication let");
+        };
+        let IrExprKind::Call { args, .. } = &init.kind else {
+            panic!("expected lowered multiplication call");
+        };
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0].kind, IrExprKind::Var("big_n".to_string()));
+    }
+
+    #[test]
     fn trait_qualified_default_is_not_treated_as_module_free_function() {
         let mut ctx = empty_ctx();
         ctx.free_function_signatures.insert(
             "default".to_string(),
             Some(CallSignature {
                 params: vec![],
+                return_type: None,
+                generic_params: vec![],
                 length_params: vec!["n".to_string(), "k".to_string()],
             }),
         );
@@ -4707,6 +5033,8 @@ mod tests {
                 elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
                 len: ArrayLength::TypeParam("N".to_string()),
             }],
+            return_type: None,
+            generic_params: vec![],
             length_params: vec!["n".to_string()],
         };
         let inferred = infer_static_call_lengths(
@@ -4739,6 +5067,8 @@ mod tests {
                 elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
                 len: ArrayLength::TypeParam("N".to_string()),
             }],
+            return_type: None,
+            generic_params: vec![],
             length_params: vec!["n".to_string()],
         };
         let inferred = infer_static_call_lengths(
@@ -4785,6 +5115,8 @@ mod tests {
                 elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
                 len: ArrayLength::TypeParam("N".to_string()),
             }],
+            return_type: None,
+            generic_params: vec![],
             length_params: vec!["n".to_string()],
         };
         let field = ir_expr(IrExprKind::Field {

@@ -1,9 +1,10 @@
 # Task: call-site const-generic inference for dyn-lowered functions
 
-> **Status:** implemented for static calls and module-qualified free calls; the
+> **Status:** implemented for static calls, module-qualified free calls, and
+> local call-result type propagation; the
 > remaining TS2554 cases have other causes. Historical base: `1bc0fd7` (469
 > errors, TS2554 = 91). On the current fresh-generated spec tree, the call-site
-> work reduced strict TS from 256 to 205 errors and TS2554 from 90 to 39. The
+> work reduced strict TS from 256 to 198 errors and TS2554 from 90 to 32. The
 > current spec tree includes the role-separated Ferret seed APIs added after the
 > historical 251-error checkpoint.
 
@@ -56,12 +57,15 @@ The machinery is in `crates/compiler/volar-compiler-passes/src/lowering_dyn.rs`:
   methods (`Type::method`) and uniquely named free functions. Conflicting
   signatures are marked ambiguous and are not guessed. Bare and module-qualified
   free-function paths are supported; module qualifiers are not emitted as values.
-- A function-scoped `FnScope` carries the source generic parameters and declared
-  parameter types into expression lowering. It currently does not track local
-  `let` bindings.
+- A function-scoped `FnScope` carries source generic parameters and parameter
+  types. Sequential block lowering adds local `let` types from annotations or
+  uniquely-resolved call return types; scopes do not leak bindings out of nested
+  blocks.
 - Argument type recovery covers variables, references/dereferences, casts,
   struct expressions/fields (including struct generic substitution), indexing,
-  array/repeat literals, and tuples.
+  array/repeat literals, and tuples. Call return types are recovered only from
+  unambiguous signatures, substituting explicit turbofish generic arguments; this
+  lets later calls infer lengths through local producer bindings.
 - Type unification matches array lengths and nested struct/tuple/vector/reference
   types. It can infer either a concrete const or forward a differently named
   in-scope length generic. A call receives injected leading length arguments only
@@ -72,9 +76,10 @@ The machinery is in `crates/compiler/volar-compiler-passes/src/lowering_dyn.rs`:
   `torus::torus_add::<LOG_M>` now emit the caller witness before source arguments.
 
 The registries and scope are broader than the original static-method-only sketch:
-unique free-function signatures are eligible too. Instance-method call inference,
-let-binding type tracking, ambiguous signatures, and projection-based consts
-remain unsupported and should not be guessed.
+unique free-function signatures are eligible too. Still unsupported: instance-
+method return inference, call-result generic inference from argument types when
+turbofish is absent, ambiguous signatures, and projection-based consts. Do not
+guess in these cases.
 
 ## Verification loop (same as the rest of this work)
 
@@ -87,12 +92,13 @@ cp ../volar-spec-ts/generated.ts src/.chk.ts && sed -i '' '/^\/\/ @ts-nocheck/d'
 rm -f src/.chk.ts
 ```
 Verified: `cargo test -p volar-compiler-passes --features parsing --lib` passes
-(56 tests, including direct const-length inference, qualified-call forwarding, and
-trait-path non-misclassification regressions);
+(58 tests, including direct const-length inference, qualified-call forwarding,
+local producer propagation, shadowed-name invalidation, and trait-path
+non-misclassification regressions);
 `cargo xtask gen-specs` followed by `cargo xtask check-specs` reports all four
-artifacts fresh. After qualified free-call forwarding, the full generated
-TypeScript remains red at 205 errors (TS2554 = 39), down from 255 (TS2554 = 89)
-at the preceding static-call checkpoint. `cargo check -p volar-spec-dyn --features
+artifacts fresh. After local producer propagation, the full generated
+TypeScript remains red at 198 errors (TS2554 = 32), down from 205 (TS2554 = 39)
+at the preceding qualified-free-call checkpoint. `cargo check -p volar-spec-dyn --features
 generated` still fails with its pre-existing 1486-error generated-Rust surface;
 the Rust diagnostic count was unchanged by the forwarding work. Runtime
 export-count checks have not been rerun for this implementation.

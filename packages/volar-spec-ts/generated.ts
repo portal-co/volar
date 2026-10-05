@@ -7436,10 +7436,10 @@ export function external_product(big_n: bigint, bs_ell: bigint, bs_bg_log: bigin
   let out_b = Array.from({length: Number(big_n)}, () => 0n);
   for (let j = 0n; j < bs_ell; j += 1n)   {
     const row = rgsw.$frows[Number(j)];
-    const prod_a0 = poly_mul_neg(a_decomp[Number(j)], row.$frlwe0.$fa);
-    const prod_a1 = poly_mul_neg(a_decomp[Number(j)], row.$frlwe0.$fb);
-    const prod_b0 = poly_mul_neg(b_decomp[Number(j)], row.$frlwe1.$fa);
-    const prod_b1 = poly_mul_neg(b_decomp[Number(j)], row.$frlwe1.$fb);
+    const prod_a0 = poly_mul_neg(big_n, a_decomp[Number(j)], row.$frlwe0.$fa);
+    const prod_a1 = poly_mul_neg(big_n, a_decomp[Number(j)], row.$frlwe0.$fb);
+    const prod_b0 = poly_mul_neg(big_n, b_decomp[Number(j)], row.$frlwe1.$fa);
+    const prod_b1 = poly_mul_neg(big_n, b_decomp[Number(j)], row.$frlwe1.$fb);
     for (let k = 0n; k < big_n; k += 1n)     {
       out_a[Number(k)] = wrappingAdd(wrappingAdd(out_a[Number(k)], prod_a0[Number(k)], 32), prod_b0[Number(k)], 32);
       out_b[Number(k)] = wrappingAdd(wrappingAdd(out_b[Number(k)], prod_a1[Number(k)], 32), prod_b1[Number(k)], 32);
@@ -9529,7 +9529,7 @@ export function rlwe_add(big_n: bigint, a: RlweCiphertextDyn, b: RlweCiphertextD
 export function rlwe_encrypt_poly<R>(big_n: bigint, msg_poly: bigint[], sk: RlweSecretKeyDyn, noise_bits: bigint, rng: any): RlweCiphertextDyn
 {
   const a: bigint[] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => rng.next_u32());
-  let b = poly_mul_neg(a, sk.$fkey);
+  let b = poly_mul_neg(big_n, a, sk.$fkey);
   for (let i = 0n; i < big_n; i += 1n)   {
     b[Number(i)] = wrappingAdd(wrappingAdd(b[Number(i)], small_noise(noise_bits, rng), 32), msg_poly[Number(i)], 32);
   }
@@ -9539,7 +9539,7 @@ export function rlwe_encrypt_poly<R>(big_n: bigint, msg_poly: bigint[], sk: Rlwe
 export function rlwe_encrypt_scalar<R>(big_n: bigint, m: bigint, sk: RlweSecretKeyDyn, noise_bits: bigint, rng: any): RlweCiphertextDyn
 {
   const a: bigint[] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => rng.next_u32());
-  let b = poly_mul_neg(a, sk.$fkey);
+  let b = poly_mul_neg(big_n, a, sk.$fkey);
   b[Number(0n)] = wrappingAdd(wrappingAdd(b[Number(0n)], small_noise(noise_bits, rng), 32), m, 32);
   return new RlweCiphertextDyn({ $fa: a, $fb: b, $fbig_n: 0n });
 }
@@ -10103,7 +10103,7 @@ export function stack_setup_sender<R, Io>(ctx: { newD: () => any }, rng: any, pa
     chosen_seeds[Number(i)] = recv_finish(r_state, payload);
   }
   const u_msg = decode_iknp_u(io.recv(TAG_IKNP_U));
-  const [sender_r0, corrections] = iknp_sender_from_u(ctx, m, delta_msg, delta_ot, delta_ot_bytes, chosen_seeds, u_msg);
+  const [sender_r0, corrections] = iknp_sender_from_u(ctx, 16n, m, delta_msg, delta_ot, delta_ot_bytes, chosen_seeds, u_msg);
   io.send(TAG_IKNP_CORR, encode_iknp_corr(corrections));
   const tag_s = ssp_sender_tag(delta_msg, sender_r0);
   io.send(TAG_SSP_S, tag_s);

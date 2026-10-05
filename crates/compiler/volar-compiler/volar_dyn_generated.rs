@@ -6938,7 +6938,7 @@ pub fn gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut
 pub fn rlwe_encrypt_scalar<R: SpecRng>(mut big_n: usize, mut m: u32, mut sk: &RlweSecretKeyDyn, mut noise_bits: u32, mut rng: &mut R) -> RlweCiphertextDyn
 {
     let a: [u32; BIG_N] = (0..big_n).map(|_| rng.next_u32()).collect::<Vec<_>>();
-    let mut b = poly_mul_neg(&a, &sk.key);
+    let mut b = poly_mul_neg(big_n, &a, &sk.key);
     b[0] = b[0].wrapping_add(small_noise(noise_bits, rng)).wrapping_add(m);
     RlweCiphertextDyn { a: a, b: b, big_n: 0 }
 }
@@ -6946,7 +6946,7 @@ pub fn rlwe_encrypt_scalar<R: SpecRng>(mut big_n: usize, mut m: u32, mut sk: &Rl
 pub fn rlwe_encrypt_poly<R: SpecRng>(mut big_n: usize, mut msg_poly: &[u32; BIG_N], mut sk: &RlweSecretKeyDyn, mut noise_bits: u32, mut rng: &mut R) -> RlweCiphertextDyn
 {
     let a: [u32; BIG_N] = (0..big_n).map(|_| rng.next_u32()).collect::<Vec<_>>();
-    let mut b = poly_mul_neg(&a, &sk.key);
+    let mut b = poly_mul_neg(big_n, &a, &sk.key);
     for i in 0.. big_n{
     b[i] = b[i].wrapping_add(small_noise(noise_bits, rng)).wrapping_add(msg_poly[i]);
 };
@@ -7087,10 +7087,10 @@ pub fn external_product(mut big_n: usize, mut bs_ell: usize, mut bs_bg_log: usiz
     let mut out_b = [0; big_n];
     for j in 0.. bs_ell{
     let row = &rgsw.rows[j];
-    let prod_a0 = poly_mul_neg(&a_decomp[j], &row.rlwe0.a);
-    let prod_a1 = poly_mul_neg(&a_decomp[j], &row.rlwe0.b);
-    let prod_b0 = poly_mul_neg(&b_decomp[j], &row.rlwe1.a);
-    let prod_b1 = poly_mul_neg(&b_decomp[j], &row.rlwe1.b);
+    let prod_a0 = poly_mul_neg(big_n, &a_decomp[j], &row.rlwe0.a);
+    let prod_a1 = poly_mul_neg(big_n, &a_decomp[j], &row.rlwe0.b);
+    let prod_b0 = poly_mul_neg(big_n, &b_decomp[j], &row.rlwe1.a);
+    let prod_b1 = poly_mul_neg(big_n, &b_decomp[j], &row.rlwe1.b);
     for k in 0.. big_n{
     out_a[k] = out_a[k].wrapping_add(prod_a0[k]).wrapping_add(prod_b0[k]);
     out_b[k] = out_b[k].wrapping_add(prod_a1[k]).wrapping_add(prod_b1[k]);
@@ -7568,7 +7568,7 @@ pub fn stack_setup_sender<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: 
     chosen_seeds[i] = Base::<IKNP_KAPPA_BYTES>::recv_finish(&r_state, &payload);
 };
     let u_msg = decode_iknp_u(&io.recv(TAG_IKNP_U));
-    let (sender_r0, corrections) = iknp_sender_from_u::<DigestImpl, 16>(m, &delta_msg, &delta_ot, &delta_ot_bytes, &chosen_seeds, &u_msg);
+    let (sender_r0, corrections) = iknp_sender_from_u::<DigestImpl, 16>(16, m, &delta_msg, &delta_ot, &delta_ot_bytes, &chosen_seeds, &u_msg);
     io.send(TAG_IKNP_CORR, &encode_iknp_corr(&corrections));
     let tag_s = ssp_sender_tag(&delta_msg, &sender_r0);
     io.send(TAG_SSP_S, tag_s.as_slice());
