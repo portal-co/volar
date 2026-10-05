@@ -3615,6 +3615,67 @@ fn emit_statement_expr(
                     }
                 }
             }
+            // A source-level `.iter_mut().enumerate()` can also be represented
+            // as nested MethodCall nodes rather than an IterPipeline. Use an
+            // indexed loop so the enumerated element remains a write-through ref.
+            if let IrExprKind::MethodCall {
+                receiver: iter,
+                method: MethodKind::Other(enumerate),
+                args,
+                ..
+            } = &collection.kind
+            {
+                if enumerate == "enumerate" && args.is_empty() {
+                    if let IrExprKind::MethodCall {
+                        receiver: mutable_source,
+                        method: MethodKind::Other(iter_mut),
+                        args: iter_mut_args,
+                        ..
+                    } = &iter.kind
+                    {
+                        if iter_mut == "iter_mut" && iter_mut_args.is_empty() {
+                            if let IrPattern::Tuple(parts) = pattern {
+                                if let [IrPattern::Ident {
+                                    name: index_name, ..
+                                }, IrPattern::Ident {
+                                    name: value_name, ..
+                                }] = parts.as_slice()
+                                {
+                                    let idx_var = format!("__mut_{}", indent);
+                                    let arr_str = format!(
+                                        "{}",
+                                        TsFmt(
+                                            TsExprWriter {
+                                                expr: mutable_source
+                                            },
+                                            cx
+                                        )
+                                    );
+                                    let cx_body = cx.with_mut_ref(MutRef {
+                                        var: value_name.clone(),
+                                        array_expr: arr_str.clone(),
+                                        index_var: idx_var.clone(),
+                                    });
+                                    writeln!(
+                                        f,
+                                        "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
+                                        idx_var, idx_var, arr_str, idx_var
+                                    )?;
+                                    let bind_ind = "  ".repeat(indent + 1);
+                                    writeln!(f, "{}const {} = {};", bind_ind, index_name, idx_var)?;
+                                    TsBlockWriter {
+                                        block: body,
+                                        indent: indent + 1,
+                                    }
+                                    .ts_fmt(f, &cx_body)?;
+                                    write!(f, "}}")?;
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // A source-level `.iter_mut().zip(..)` is represented as nested
             // MethodCall nodes (not an IterPipeline). Flatten it and index every
             // leaf in lockstep so each mutable leaf is a write-through MutRef.
@@ -3752,6 +3813,47 @@ fn emit_statement_expr(
                     .ts_fmt(f, &cx_body)?;
                     write!(f, "}}")?;
                     return Ok(());
+                }
+            }
+            // Iterating a mutable slice parameter directly (`for value in values`)
+            // yields references in Rust but copied values in a JS for-of loop. Keep
+            // those element bindings write-through by iterating by index.
+            if let Some(IrType::Reference {
+                mutable: true,
+                elem,
+            }) = infer_expr_ir_type(collection, cx)
+            {
+                let iterable =
+                    matches!(elem.as_ref(), IrType::Array { .. } | IrType::Vector { .. })
+                        || matches!(
+                            elem.as_ref(),
+                            IrType::Struct {
+                                kind: StructKind::Custom(name),
+                                ..
+                            } if matches!(name.as_str(), "Vec" | "VecDeque")
+                        );
+                if iterable {
+                    if let IrPattern::Ident { name, .. } = pattern {
+                        let arr_str = format!("{}", TsFmt(TsExprWriter { expr: collection }, cx));
+                        let idx_var = format!("__mut_{}", indent);
+                        let cx_body = cx.with_mut_ref(MutRef {
+                            var: name.clone(),
+                            array_expr: arr_str.clone(),
+                            index_var: idx_var.clone(),
+                        });
+                        writeln!(
+                            f,
+                            "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
+                            idx_var, idx_var, arr_str, idx_var
+                        )?;
+                        TsBlockWriter {
+                            block: body,
+                            indent: indent + 1,
+                        }
+                        .ts_fmt(f, &cx_body)?;
+                        write!(f, "}}")?;
+                        return Ok(());
+                    }
                 }
             }
             // Direct `iter_mut().zip(other.iter())`: preserve the left source's

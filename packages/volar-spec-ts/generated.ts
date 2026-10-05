@@ -3854,19 +3854,23 @@ export class Ntt {
 
   forward(values: bigint[])
   {
-    for (const [index, value] of values.map((__enum_a: any, __enum_i: number) => [__enum_i, __enum_a]))     {
-      value = mul_mod(value, pow_mod(this.$fpsi, index, this.$fmodulus), this.$fmodulus);
-    }
+    for (let __mut_2 = 0n; __mut_2 < BigInt(values.length); __mut_2 += 1n) {
+      const index = __mut_2;
+      {
+        values[Number(__mut_2)] = mul_mod(values[Number(__mut_2)], pow_mod(this.$fpsi, index, this.$fmodulus), this.$fmodulus);
+      }}
     this.cyclic(values, this.$fomega);
   }
 
   inverse(values: bigint[])
   {
     this.cyclic(values, this.$finverse_omega);
-    for (const [index, value] of values.map((__enum_a: any, __enum_i: number) => [__enum_i, __enum_a]))     {
-      value = mul_mod(value, this.$finverse_degree, this.$fmodulus);
-      value = mul_mod(value, pow_mod(this.$finverse_psi, index, this.$fmodulus), this.$fmodulus);
-    }
+    for (let __mut_2 = 0n; __mut_2 < BigInt(values.length); __mut_2 += 1n) {
+      const index = __mut_2;
+      {
+        values[Number(__mut_2)] = mul_mod(values[Number(__mut_2)], this.$finverse_degree, this.$fmodulus);
+        values[Number(__mut_2)] = mul_mod(values[Number(__mut_2)], pow_mod(this.$finverse_psi, index, this.$fmodulus), this.$fmodulus);
+      }}
   }
 
   static new(degree: bigint, modulus: bigint): Result<Ntt, Error>
@@ -7952,16 +7956,18 @@ export function g_double(seed: any): [Block, Block]
 export function gadget_decompose(log: bigint, ell: bigint, base_log: bigint, x: bigint): bigint[]
 {
   let digits = Array.from({length: Number(ell)}, () => 0n);
-  for (const [j, d] of digits.map((__enum_a: any, __enum_i: number) => [__enum_i, __enum_a]))   {
-    const shift = level_shift(log, base_log, j);
-    const bits = level_bits(log, base_log, j);
-    const m = (() => { if ((bits >= 32n)) {
+  for (let __mut_1 = 0n; __mut_1 < BigInt(digits.length); __mut_1 += 1n) {
+    const j = __mut_1;
+    {
+      const shift = level_shift(log, base_log, j);
+      const bits = level_bits(log, base_log, j);
+      const m = (() => { if ((bits >= 32n)) {
   return 4294967295n;
 } else {
   return fieldSub(fieldShl(1n, bits), 1n);
 } })();
-    d = fieldBitand(fieldShr(x, shift), m);
-  }
+      digits[Number(__mut_1)] = fieldBitand(fieldShr(x, shift), m);
+    }}
   return digits;
 }
 
@@ -9757,18 +9763,19 @@ export function sample_seed_cots<R>(rng: any, m: bigint): [FerretSenderSeed, Fer
 export function sample_uniform(random: any, modulus: bigint, output: bigint[]): Result<void, Error>
 {
   const threshold = fieldSub(18446744073709551615n, (18446744073709551615n % modulus));
-  for (const value of output)   {
-    while (true)     {
-      let bytes = Array.from({length: Number(8n)}, () => 0n);
-      const __volar_try_1 = random.fill_bytes(bytes);
-      if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
-      const candidate = u64_from_le_bytes(bytes);
-      if ((candidate < threshold))       {
-        value = (candidate % modulus);
-        break;
+  for (let __mut_1 = 0n; __mut_1 < BigInt(output.length); __mut_1 += 1n) {
+    {
+      while (true)       {
+        let bytes = Array.from({length: Number(8n)}, () => 0n);
+        const __volar_try_1 = random.fill_bytes(bytes);
+        if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+        const candidate = u64_from_le_bytes(bytes);
+        if ((candidate < threshold))         {
+          output[Number(__mut_1)] = (candidate % modulus);
+          break;
+        }
       }
-    }
-  }
+    }}
   return undefined;
 }
 

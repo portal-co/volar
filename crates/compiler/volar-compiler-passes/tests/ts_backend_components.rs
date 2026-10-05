@@ -269,6 +269,28 @@ fn option_try_propagates_none() {
     run_ts_code(&ts_code, "option_try_propagates_none");
 }
 
+#[test]
+fn mutable_iteration_writes_through_enumerate_and_slice_loops() {
+    let source = r#"
+        fn mutate_enumerated(values: &mut [u32]) {
+            for (index, value) in values.iter_mut().enumerate() {
+                *value = *value + index as u32;
+            }
+        }
+
+        fn mutate_slice(values: &mut [u32]) {
+            for value in values {
+                *value = *value + 1;
+            }
+        }
+
+        fn encrypt_block() {}
+    "#;
+    let module = parse_source(source, "mutable_iteration", &[]).unwrap();
+    let ts_code = print_module_typescript(&module);
+    run_ts_code(&ts_code, "mutable_iteration_writes_through");
+}
+
 // ---------------------------------------------------------------------------
 // Component test table
 // ---------------------------------------------------------------------------
