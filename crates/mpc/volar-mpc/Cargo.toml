@@ -22,6 +22,10 @@ typenum = { version = "1.17", default-features = false }
 name = "ot_ferret_probe"
 required-features = ["mlkem"]
 
+[[example]]
+name = "ot_kem_candidate_rank"
+required-features = ["mlkem"]
+
 [features]
 default = []
 # Framed-TCP transport + std-only helpers. The crate is no_std+alloc by default.

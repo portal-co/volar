@@ -25,7 +25,7 @@ seams it consumes.
 | Table 2 Ferret-Uni | `FERRET_UNI_SETUP` / `FERRET_UNI_MAIN` | Same: documented only. |
 | Insecure toy sizes | `FERRET_REG_TOY` / `FERRET_UNI_TOY` | `n=256, k=32, t=4` for correctness tests. |
 | Bea95 random-COT → chosen-bit | `ot/ferret/pool.rs` `bea95_chosen_bit` | Receiver sends `d = b ⊕ x`. |
-| LWE base OT / SoftSpoken / IKNP seams | `ot/lwe.rs`, `ot/base_ot.rs`, `ot/iknp.rs`, `ot/softspoken.rs`, `ot/stack.rs` | Role-separated `BaseOt`; `OtStack::setup_with_base` now allows an alternate base OT to seed the same local extension/pool path. The default setup is still LWE-based; SoftSpoken `K>1` remains a no-op (Roy 2022 at `k=1`). The optional ML-KEM-1024 adapter in `volar-mpc::ot_mlkem` is an unreviewed in-process candidate, not a paper-bound or networked Ferret base-OT deployment. |
+| LWE base OT / SoftSpoken / IKNP seams | `ot/lwe.rs`, `ot/base_ot.rs`, `ot/iknp.rs`, `ot/softspoken.rs`, `ot/stack.rs` | Role-separated `BaseOt`; `OtStack::setup_with_base` now allows an alternate base OT to seed the same local extension/pool path. The default setup is still LWE-based; SoftSpoken `K>1` remains a no-op (Roy 2022 at `k=1`). The optional ML-KEM-1024 adapter in `volar-mpc::ot_mlkem` is an unreviewed in-process candidate, not a paper-bound or networked Ferret base-OT deployment. The benchmark-only `ot_kem_candidate_rank` example plugs 512/768/1024 variants into that common seam; those variants are not shipped adapters or approved security parameters. |
 
 ## Scope and excluded claims
 
