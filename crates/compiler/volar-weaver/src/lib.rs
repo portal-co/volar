@@ -389,6 +389,22 @@ pub(crate) mod tests_common {
         }
     }
 
+    /// Two-input circuit returning XOR(input0, input1) and input1, exercising
+    /// multi-output return typing without introducing gate-specific behavior.
+    pub fn build_two_output_circuit() -> BIrBlocks {
+        BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 2,
+                stmts: vec![Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None)],
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(2), IRVarId(1)],
+                }),
+            }],
+            pre_init: vec![],
+        }
+    }
+
     /// Two-input AND circuit: And(0,1)->wire2, Return wire2.
     pub fn build_and_circuit() -> BIrBlocks {
         BIrBlocks {

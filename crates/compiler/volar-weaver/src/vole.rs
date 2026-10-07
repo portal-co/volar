@@ -1333,14 +1333,6 @@ where
         }
     });
 
-    // Return type: (Vope<N, T, U1>, [Array<T, N>; K1_COUNT])
-    // or, when sbox_count > 0: (Vope<N, T, U1>, [Array<T, N>; K1_COUNT], [Vope<N,T,U2>; SBOX_COUNT])
-    let ret_type = if sbox_count == 0 {
-        IrType::Tuple(vec![vope_type(), hat_array_type(and_count)])
-    } else {
-        IrType::Tuple(vec![vope_type(), hat_array_type(and_count), sbox_vope_array_type(sbox_count)])
-    };
-
     let (generics, where_clause) = prover_generics_and_where();
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
@@ -1507,13 +1499,19 @@ where
     //        (output_wire, [hat_0, ...], [sbox_k2_0, ...]) when sbox_count > 0.
     // Legacy `BIrBlocks` weaver -- entirely independent of `VoleIrCtx`'s
     // own `_hat_pool` scratch pooling, always real names.
-    let (output_expr, _) = build_return(block, &var_names, vope_type());
+    let (output_expr, output_ty) = build_return(block, &var_names, vope_type());
     let hats_expr = ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|h| var(h)).collect()));
-    let ret_expr = if sbox_k2_names.is_empty() {
-        ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr]))
+    let (ret_type, ret_expr) = if sbox_k2_names.is_empty() {
+        (
+            IrType::Tuple(vec![output_ty, hat_array_type(and_count)]),
+            ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr])),
+        )
     } else {
         let sbox_expr = ir_expr(IrExprKind::FixedArray(sbox_k2_names.iter().map(|n| var(n)).collect()));
-        ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr, sbox_expr]))
+        (
+            IrType::Tuple(vec![output_ty, hat_array_type(and_count), sbox_vope_array_type(sbox_count)]),
+            ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr, sbox_expr])),
+        )
     };
 
     let func = IrFunction { no_inline: true,
@@ -1826,17 +1824,6 @@ where
         });
     }
 
-    // Return type: (Q<N, T>, bool) — or (Q<N, T>, bool, {state_type_name})
-    // when a trace sink is configured.
-    let mut ret_elems = vec![
-        q_type(),
-        IrType::Primitive(PrimitiveType::Bool),
-    ];
-    if let Some(sink) = config.trace_sink() {
-        ret_elems.push(IrType::TypeParam(sink.state_type_name().into()));
-    }
-    let ret_type = IrType::Tuple(ret_elems);
-
     let (generics, mut where_clause) = verifier_generics_and_where();
     // Extend T's bound with the sink's fold-lift trait (bare, externally
     // resolved — see VerifierTraceSink::fold_lift_trait_name), so
@@ -2072,11 +2059,14 @@ where
 
     // Return (output_wire, all_ok) — or (output_wire, all_ok, fold_state)
     // when a trace sink is configured.
-    let (output_expr, _) = build_return(block, &var_names, q_type());
+    let (output_expr, output_ty) = build_return(block, &var_names, q_type());
+    let mut ret_elems = vec![output_ty, IrType::Primitive(PrimitiveType::Bool)];
     let mut ret_tuple = vec![output_expr, var("all_ok")];
-    if config.trace_sink().is_some() {
+    if let Some(sink) = config.trace_sink() {
+        ret_elems.push(IrType::TypeParam(sink.state_type_name().into()));
         ret_tuple.push(var("fold_state"));
     }
+    let ret_type = IrType::Tuple(ret_elems);
     let ret_expr = ir_expr(IrExprKind::Tuple(ret_tuple));
 
     let func = IrFunction { no_inline: true,
@@ -9676,7 +9666,9 @@ mod tests {
     extern crate std;
 
     use super::*;
-    use crate::tests_common::{build_xor_and_circuit, build_simple_loop, run_compile_check};
+    use crate::tests_common::{
+        build_two_output_circuit, build_xor_and_circuit, build_simple_loop, run_compile_check,
+    };
 
     #[test]
     fn test_weave_vole_prover_compiles() {
@@ -9684,6 +9676,33 @@ mod tests {
         let module = weave_vole_prover(&circuit, "test_circuit", None);
         let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_prover");
+    }
+
+    #[test]
+    fn multi_output_prover_and_verifier_return_types_match_their_outputs() {
+        let circuit = build_two_output_circuit();
+        let prover = weave_vole_prover(&circuit, "two_outputs", None);
+        let verifier = weave_vole_verifier(&circuit, "two_outputs", None);
+
+        for (module, function_name) in [
+            (prover.inner(), "vole_prove_two_outputs"),
+            (verifier.inner(), "vole_verify_two_outputs"),
+        ] {
+            let function = module
+                .functions
+                .iter()
+                .find(|function| function.name == function_name)
+                .expect("weaver must emit the requested entry function");
+            let Some(IrType::Tuple(return_elements)) = function.return_type.as_ref() else {
+                panic!("entry return must be a tuple");
+            };
+            let Some(IrType::Tuple(output_elements)) = return_elements.first() else {
+                panic!("multi-output circuit wires must be represented by a tuple");
+            };
+            assert_eq!(output_elements.len(), 2);
+            let code = print_weaved_vole_module(module);
+            run_compile_check(&code, function_name);
+        }
     }
 
     #[test]

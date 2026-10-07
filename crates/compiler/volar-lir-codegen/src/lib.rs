@@ -2024,7 +2024,7 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
                         _ => false,
                     })
                     .unwrap_or(false);
-                if left_is_struct_mul {
+                if *op == SpecBinOp::Mul && left_is_struct_mul {
                     // Dispatch by receiver struct: several `Mul` impls share
                     // the method name `mul` in the source module, so the
                     // callee is keyed as `mul__<StructKind>` (mirroring the
