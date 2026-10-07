@@ -74,6 +74,50 @@ fn vec_repeat_rejects_types_without_copy_or_clone_lowering() {
 }
 
 #[test]
+fn vec_with_capacity_allocates_for_push_and_tracks_length() {
+    let c_source = lower_root(
+        r#"
+        fn root(capacity: usize) -> u64 {
+            let mut values: Vec<u8> = Vec::with_capacity(capacity);
+            values.push(4);
+            values.push(7);
+            values[0] as u64 + values[1] as u64 + values.len() as u64
+        }
+        "#,
+    );
+    let output = compile_and_run(
+        &c_source,
+        r#"printf("%llu\n", (unsigned long long)root(2));"#,
+    );
+    assert_eq!(output.trim(), "13", "generated C:\n{c_source}");
+}
+
+#[test]
+fn vec_new_and_push_mutate_through_a_borrowed_vec_handle() {
+    let c_source = lower_root(
+        r#"
+        fn push_one(values: &mut Vec<u8>, value: u8) {
+            values.push(value);
+        }
+        fn root() -> u64 {
+            let mut values: Vec<u8> = Vec::new();
+            push_one(&mut values, 1);
+            push_one(&mut values, 2);
+            push_one(&mut values, 3);
+            push_one(&mut values, 4);
+            push_one(&mut values, 5);
+            values[0] as u64 + values[4] as u64 + values.len() as u64
+        }
+        "#,
+    );
+    let output = compile_and_run(
+        &c_source,
+        r#"printf("%llu\n", (unsigned long long)root());"#,
+    );
+    assert_eq!(output.trim(), "11", "generated C:\n{c_source}");
+}
+
+#[test]
 fn vec_literal_allocates_and_initializes_each_element() {
     let c_source = lower_root(
         r#"
@@ -88,6 +132,68 @@ fn vec_literal_allocates_and_initializes_each_element() {
         r#"printf("%llu\n", (unsigned long long)root());"#,
     );
     assert_eq!(output.trim(), "19", "generated C:\n{c_source}");
+}
+
+#[test]
+fn vec_for_loop_uses_runtime_length_and_preserves_loop_carried_values() {
+    let c_source = lower_root(
+        r#"
+        fn root(count: usize) -> u64 {
+            let values = vec![7u8; count];
+            let mut sum = 0u64;
+            for value in &values {
+                sum += value as u64;
+            }
+            sum + values.len() as u64
+        }
+        "#,
+    );
+    let output = compile_and_run(
+        &c_source,
+        r#"printf("%llu\n", (unsigned long long)root(5)); printf("%llu\n", (unsigned long long)root(0));"#,
+    );
+    assert_eq!(output.trim(), "40\n0", "generated C:\n{c_source}");
+}
+
+#[test]
+fn vec_option_repeat_and_mutation_preserve_some_none_semantics() {
+    let c_source = lower_root(
+        r#"
+        fn root() -> u64 {
+            let mut values: Vec<Option<u8>> = vec![None; 3];
+            values[0] = Some(7u8);
+            match values[0] {
+                Some(value) => value as u64 + values[1].is_none() as u64 + values.len() as u64,
+                None => 0,
+            }
+        }
+        "#,
+    );
+    let output = compile_and_run(
+        &c_source,
+        r#"printf("%llu\n", (unsigned long long)root());"#,
+    );
+    assert_eq!(output.trim(), "11", "generated C:\n{c_source}");
+}
+
+#[test]
+fn vec_reference_coerces_to_a_slice_for_local_calls() {
+    let c_source = lower_root(
+        r#"
+        fn second(values: &[u8]) -> u64 {
+            values[1] as u64
+        }
+        fn root() -> u64 {
+            let values = vec![4u8, 7u8, 9u8];
+            second(&values) + values.len() as u64
+        }
+        "#,
+    );
+    let output = compile_and_run(
+        &c_source,
+        r#"printf("%llu\n", (unsigned long long)root());"#,
+    );
+    assert_eq!(output.trim(), "10", "generated C:\n{c_source}");
 }
 
 #[test]

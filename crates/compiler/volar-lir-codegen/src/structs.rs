@@ -491,11 +491,11 @@ pub fn ensure_type_nominals<T: LirTarget<P>, P: Clone>(
                 return;
             }
             // `Vec<T>` / `VecDeque<T>` (std, parsed as a nominal struct with
-            // one type arg): synthesize a fat-pointer layout
-            // `{ data: Ptr<T>, len: U64 }`.
-            // `ir_type_to_lir` has no `target` access, so the synthesized
-            // definition must be created here, before any field of a
-            // containing struct is mapped.
+            // one type arg): synthesize a mutable handle layout containing
+            // pointers to the data-pointer, length, and capacity cells. The
+            // extra indirection preserves mutations through `&mut Vec<T>`
+            // across LIR calls; lowering owns the backing allocation and cell
+            // initialization.
             if matches!(&kind, StructKind::Custom(n) if n == "Vec" || n == "VecDeque")
                 && type_args.len() == 1
             {
@@ -509,11 +509,17 @@ pub fn ensure_type_nominals<T: LirTarget<P>, P: Clone>(
                         fields: vec![
                             FieldDef {
                                 name: "data".to_string(),
-                                ty: LirType::Ptr(Box::new(elem_lir.clone())),
+                                ty: LirType::Ptr(Box::new(LirType::Ptr(Box::new(
+                                    elem_lir.clone(),
+                                )))),
                             },
                             FieldDef {
                                 name: "len".to_string(),
-                                ty: LirType::U64,
+                                ty: LirType::Ptr(Box::new(LirType::U64)),
+                            },
+                            FieldDef {
+                                name: "capacity".to_string(),
+                                ty: LirType::Ptr(Box::new(LirType::U64)),
                             },
                         ],
                     };
@@ -522,8 +528,16 @@ pub fn ensure_type_nominals<T: LirTarget<P>, P: Clone>(
                         key,
                         StructEntry {
                             id,
-                            field_names: vec!["data".to_string(), "len".to_string()],
-                            field_types: vec![LirType::Ptr(Box::new(elem_lir)), LirType::U64],
+                            field_names: vec![
+                                "data".to_string(),
+                                "len".to_string(),
+                                "capacity".to_string(),
+                            ],
+                            field_types: vec![
+                                LirType::Ptr(Box::new(LirType::Ptr(Box::new(elem_lir)))),
+                                LirType::Ptr(Box::new(LirType::U64)),
+                                LirType::Ptr(Box::new(LirType::U64)),
+                            ],
                         },
                     );
                 }

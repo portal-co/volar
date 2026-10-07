@@ -181,8 +181,8 @@ where
         // across the BFS layout. We use the simple linear layout
         // leaf k at tree position (leaf_count - 1 + k), and map
         // (i, j) -> k = i * n + j. Will need swapping for KAT.
-        let mut seeds = Vec::with_capacity(leaf_count);
-        let mut commitments = Vec::with_capacity(leaf_count);
+        let mut seeds: Vec<[u8; LAMBDA_BYTES]> = Vec::with_capacity(leaf_count);
+        let mut commitments: Vec<[u8; COM_BYTES]> = Vec::with_capacity(leaf_count);
         for i in 0..tau {
             for j in 0..n {
                 let leaf_k = i * n + j;
@@ -349,7 +349,7 @@ where
     /// Returns `Some(seeds)` on success, `None` if the recomputed root
     /// doesn't match `expected`.
     pub fn reconstruct<D: Digest>(
-        nodes: &[(usize, [u8; LAMBDA_BYTES])],
+        nodes: &Vec<(usize, [u8; LAMBDA_BYTES])>,
         hidden_commits: &[[u8; COM_BYTES]],
         deltas: &[usize],
         iv: &[u8; 16],
@@ -358,7 +358,11 @@ where
         n: usize,
     ) -> Option<Vec<[u8; LAMBDA_BYTES]>> {
         assert_eq!(deltas.len(), tau, "BAVC: deltas.len() must equal tau");
-        assert_eq!(hidden_commits.len(), tau, "BAVC: hidden_commits.len() must equal tau");
+        assert_eq!(
+            hidden_commits.len(),
+            tau,
+            "BAVC: hidden_commits.len() must equal tau"
+        );
         let leaf_count = tau * n;
         let total_nodes = 2 * leaf_count - 1;
 
@@ -432,11 +436,18 @@ where
         }
         let root = h.finalize().to_vec();
 
-        if root.as_slice() == expected_root {
-            Some(leaf_seeds)
-        } else {
-            None
+        // Explicit element comparison: slice `==` has no LIR lowering (a
+        // slice param is a bare pointer; a Vec-derived slice carries its
+        // handle), so compare length and elements directly.
+        let mut matches = root.len() == expected_root.len();
+        let mut k = 0;
+        while k < root.len() {
+            if root[k] != expected_root[k] {
+                matches = false;
+            }
+            k += 1;
         }
+        if matches { Some(leaf_seeds) } else { None }
     }
 }
 

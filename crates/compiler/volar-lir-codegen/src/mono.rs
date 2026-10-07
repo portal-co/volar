@@ -298,6 +298,134 @@ fn resolve_explicit_type_arg(ty: &IrType, structs: &StructTable) -> IrType {
     }
 }
 
+/// Name the concrete self type of an impl for static associated-method keys.
+/// The parser represents a bare nominal path (e.g. `AesCtrLengthDoubler`)
+/// as `TypeParam`; distinguish it from a genuine impl generic by checking the
+/// impl's declared parameters.
+fn static_impl_self_name<P: Clone>(ir_impl: &IrImpl<P>) -> Option<String> {
+    match &ir_impl.self_ty {
+        IrType::Struct { kind, .. } => Some(kind_name(kind)),
+        IrType::TypeParam(name)
+            if name != "Self" && !ir_impl.generics.iter().any(|g| g.name == *name) =>
+        {
+            Some(name.clone())
+        }
+        _ => None,
+    }
+}
+
+struct GenericStaticCallResolution {
+    target_name: String,
+    /// Unify the selected impl's trait arguments with the concrete trait bound
+    /// on the caller's generic owner (e.g. `L: LeafCommit<16, COM_BYTES>`).
+    trait_arg_bindings: Vec<(IrType, IrType)>,
+}
+
+/// Resolve `T::method()` when `T` is a generic parameter with a concrete
+/// specialization and trait bound in its enclosing impl. The source IR keeps
+/// only the owner parameter (`T`) in the path; the monomorphization planner
+/// must select the unique matching concrete trait impl and carry its trait
+/// arguments into that method's generic environment.
+fn resolve_generic_static_call<P: Clone>(
+    module: &IrModule<IrFunction<P>, P>,
+    source_name: &str,
+    caller_env: &MonoEnv,
+    structs: &StructTable,
+) -> Option<GenericStaticCallResolution> {
+    let (owner_param, method_name, concrete_owner) = caller_env
+        .type_params
+        .iter()
+        .filter_map(|(param, ty)| {
+            let prefix = format!("{param}_");
+            source_name
+                .strip_prefix(&prefix)
+                .filter(|method| !method.is_empty())
+                .map(|method| (param.as_str(), method, ty))
+        })
+        .max_by_key(|(param, _, _)| param.len())?;
+    let concrete_owner = mono_type(
+        &resolve_explicit_type_arg(concrete_owner, structs),
+        caller_env,
+    );
+    let caller_self = caller_env.type_params.get("Self")?;
+    let caller_self = mono_type(&resolve_explicit_type_arg(caller_self, structs), caller_env);
+
+    let (parent_impl, bounds) = module.impls.iter().find_map(|ir_impl| {
+        let impl_self = mono_type(
+            &resolve_explicit_type_arg(&ir_impl.self_ty, structs),
+            caller_env,
+        );
+        if canonical_type(&impl_self) != canonical_type(&caller_self) {
+            return None;
+        }
+        let mut bounds: Vec<_> = ir_impl
+            .generics
+            .iter()
+            .find(|param| param.name == owner_param)
+            .into_iter()
+            .flat_map(|param| param.bounds.iter())
+            .collect();
+        bounds.extend(ir_impl.where_clause.iter().flat_map(|predicate| match predicate {
+            volar_compiler::ir::IrWherePredicate::TypeBound { ty, bounds }
+                if matches!(ty, IrType::TypeParam(name) if name == owner_param) =>
+            {
+                bounds.iter().collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        }));
+        (!bounds.is_empty()).then_some((ir_impl, bounds))
+    })?;
+    let _ = parent_impl;
+
+    let mut matches = Vec::new();
+    for bound in bounds {
+        let mut candidates = module.impls.iter().filter_map(|candidate| {
+            let trait_ref = candidate.trait_.as_ref()?;
+            if trait_ref.kind != bound.trait_kind
+                || trait_ref.type_args.len() != bound.type_args.len()
+            {
+                return None;
+            }
+            let candidate_self = mono_type(
+                &resolve_explicit_type_arg(&candidate.self_ty, structs),
+                caller_env,
+            );
+            if canonical_type(&candidate_self) != canonical_type(&concrete_owner) {
+                return None;
+            }
+            let method = candidate.items.iter().find_map(|item| match item {
+                volar_compiler::ir::IrImplItem::Method(method)
+                    if method.name == method_name && method.receiver.is_none() =>
+                {
+                    Some(method)
+                }
+                _ => None,
+            })?;
+            let target_name = format!("{}_{}", static_impl_self_name(candidate)?, method.name);
+            let trait_arg_bindings = trait_ref
+                .type_args
+                .iter()
+                .zip(&bound.type_args)
+                .map(|(formal, actual)| (formal.clone(), mono_type(actual, caller_env)))
+                .collect();
+            Some(GenericStaticCallResolution {
+                target_name,
+                trait_arg_bindings,
+            })
+        });
+        if let Some(found) = candidates.next() {
+            if candidates.next().is_none() {
+                matches.push(found);
+            }
+        }
+    }
+    if matches.len() == 1 {
+        matches.pop()
+    } else {
+        None
+    }
+}
+
 /// Resolve a planned source key to its definition, including the qualified
 /// keys used for static associated methods (`Type_method`).
 pub(crate) fn find_source_function<'a, P: Clone>(
@@ -318,10 +446,7 @@ pub(crate) fn find_source_function<'a, P: Clone>(
         })
         .or_else(|| {
             module.impls.iter().find_map(|ir_impl| {
-                let IrType::Struct { kind, .. } = &ir_impl.self_ty else {
-                    return None;
-                };
-                let prefix = format!("{}_", kind_name(kind));
+                let prefix = format!("{}_", static_impl_self_name(ir_impl)?);
                 let method_name = source_name.strip_prefix(&prefix)?;
                 ir_impl.items.iter().find_map(|item| match item {
                     IrImplItem::Method(method)
@@ -342,12 +467,10 @@ fn static_associated_definition<P: Clone>(
     module: &IrModule<IrFunction<P>, P>,
     source_name: &str,
     method: &IrFunction<P>,
-) -> Option<IrFunction<P>> {
+) -> Option<(IrFunction<P>, IrType)> {
     module.impls.iter().find_map(|ir_impl| {
-        let IrType::Struct { kind, .. } = &ir_impl.self_ty else {
-            return None;
-        };
-        if source_name != format!("{}_{}", kind_name(kind), method.name) {
+        let owner = static_impl_self_name(ir_impl)?;
+        if source_name != format!("{}_{}", owner, method.name) {
             return None;
         }
         let owner_method = ir_impl.items.iter().any(|item| {
@@ -364,7 +487,7 @@ fn static_associated_definition<P: Clone>(
         let mut generics = ir_impl.generics.clone();
         generics.extend(derived.generics);
         derived.generics = generics;
-        Some(derived)
+        Some((derived, ir_impl.self_ty.clone()))
     })
 }
 pub(crate) fn normalized_args(type_args: &[IrType], env: &MonoEnv) -> String {
@@ -438,9 +561,9 @@ pub fn plan_flat_module<P: Clone>(
                 // qualified local key so the planner emits the body instead
                 // of treating it as an unresolved extern.
                 if method.receiver.is_none() {
-                    if let IrType::Struct { kind, .. } = &ir_impl.self_ty {
+                    if let Some(owner) = static_impl_self_name(ir_impl) {
                         definitions
-                            .entry(format!("{}_{}", kind_name(kind), method.name))
+                            .entry(format!("{}_{}", owner, method.name))
                             .or_insert(method);
                     }
                 }
@@ -477,12 +600,25 @@ pub fn plan_flat_module<P: Clone>(
         .map(|s| (s.kind.to_string(), s.clone()))
         .collect();
     // Named module-level constants (e.g. FAEST's LAMBDA_BYTES) participate
-    // in array-length resolution for every planned instance.
-    let module_consts: BTreeMap<String, usize> = module
-        .consts
-        .iter()
-        .filter_map(|c| const_eval_expr(&c.value).map(|v| (c.name.clone(), v)))
-        .collect();
+    // in array-length resolution for every planned instance. Resolve
+    // references iteratively so `NK_ROUND_KEYS = NR + 1` works regardless of
+    // declaration order; unresolved cycles/non-constant expressions stay out.
+    let mut module_consts = BTreeMap::new();
+    loop {
+        let mut resolved_any = false;
+        for constant in &module.consts {
+            if module_consts.contains_key(&constant.name) {
+                continue;
+            }
+            if let Some(value) = const_eval_expr(&constant.value, &module_consts) {
+                module_consts.insert(constant.name.clone(), value);
+                resolved_any = true;
+            }
+        }
+        if !resolved_any {
+            break;
+        }
+    }
     let selected: Vec<(String, MonoEnv)> = if roots.is_empty() {
         module
             .functions
@@ -610,7 +746,12 @@ pub fn plan_flat_module<P: Clone>(
             direct_calls(definition, &env, &definitions, &struct_table)
         {
             let explicit_type_args = type_args.clone();
-            let Some(callee_def) = definitions.get(&callee) else {
+            let generic_static = resolve_generic_static_call(module, &callee, &env, &struct_table);
+            let definition_name = generic_static
+                .as_ref()
+                .map(|resolved| resolved.target_name.as_str())
+                .unwrap_or(&callee);
+            let Some(callee_def) = definitions.get(definition_name) else {
                 continue;
             };
             if callee_def.external_kind != volar_compiler::ir::ExternalKind::Normal {
@@ -624,8 +765,12 @@ pub fn plan_flat_module<P: Clone>(
             // impl-level generics are not present on the parsed method, so
             // restore them ahead of method generics to bind the full path
             // turbofish (`Type::<...>::method::<...>`).
-            let mut derived_held =
-                static_associated_definition(module, &callee, callee_def).map(std::rc::Rc::new);
+            let static_associated =
+                static_associated_definition(module, definition_name, callee_def);
+            let static_self_ty = static_associated
+                .as_ref()
+                .map(|(_, self_ty)| self_ty.clone());
+            let mut derived_held = static_associated.map(|(derived, _)| std::rc::Rc::new(derived));
             let source_def = derived_held.as_deref().unwrap_or(callee_def);
             // Impl method with a receiver: the parser records the receiver's
             // ref kind but not its type, so `params` excludes `self`. For
@@ -732,7 +877,7 @@ pub fn plan_flat_module<P: Clone>(
                         // type-arg slot binds to that argument's numeric
                         // lane count; the receiver supplies its own.
                         let other_arg_ty = arg_tys.get(1).cloned().flatten();
-                        if let (Some(other_ty), Some(ret_ty)) =
+                        if let (Some(other_ty), Some(_)) =
                             (other_arg_ty, derived.return_type.as_ref())
                         {
                             let recv_k = trailing_numeric_slot(&self_ty);
@@ -773,7 +918,7 @@ pub fn plan_flat_module<P: Clone>(
                         // (e.g. `O`) are bound later by unification against
                         // the call's expected type or args.
                         let assocs = impl_assoc_dispatched
-                            .get(&callee)
+                            .get(definition_name)
                             .or_else(|| impl_assoc_plain.get(callee_def.name.as_str()));
                         if let Some(assocs) = assocs {
                             for (assoc_name, assoc_ty) in assocs {
@@ -809,8 +954,23 @@ pub fn plan_flat_module<P: Clone>(
                     }
                     _ => (source_def, arg_tys),
                 };
-            let mut callee_env =
-                bind_call_args(callee_def, &type_args, &arg_tys, &env, expected.as_ref())?;
+            let trait_arg_bindings = generic_static
+                .as_ref()
+                .map(|resolved| resolved.trait_arg_bindings.as_slice())
+                .unwrap_or(&[]);
+            let mut callee_env = bind_call_args_with_trait_args(
+                callee_def,
+                &type_args,
+                &arg_tys,
+                &env,
+                expected.as_ref(),
+                trait_arg_bindings,
+            )?;
+            if let Some(self_ty) = static_self_ty {
+                let self_ty = resolve_explicit_type_arg(&self_ty, &struct_table);
+                let self_ty = mono_type(&self_ty, &callee_env);
+                callee_env.type_params.insert("Self".to_owned(), self_ty);
+            }
             if let Some(derived) = derived_held.as_ref() {
                 // Default unbound return-position generics: a field-mul
                 // output (`O` in `T: Mul<U, Output = O>`) has the same layout
@@ -844,9 +1004,12 @@ pub fn plan_flat_module<P: Clone>(
                         }
                     }
                 }
-                materialized.insert(instance_key(&callee, &callee_env), (**derived).clone());
+                materialized.insert(
+                    instance_key(definition_name, &callee_env),
+                    (**derived).clone(),
+                );
             }
-            let callee_key = instance_key(&callee, &callee_env);
+            let callee_key = instance_key(definition_name, &callee_env);
             // The plain generic-args key can collide when two sites differ
             // only in impl-level receiver parameters (e.g. `self: Vope<..,K>`
             // with K=1 vs K=2). Append the canonical argument types — the
@@ -935,6 +1098,17 @@ fn bind_call_args<P: Clone>(
     caller_env: &MonoEnv,
     expected: Option<&IrType>,
 ) -> Result<MonoEnv, MonoError> {
+    bind_call_args_with_trait_args(function, type_args, arg_tys, caller_env, expected, &[])
+}
+
+fn bind_call_args_with_trait_args<P: Clone>(
+    function: &IrFunction<P>,
+    type_args: &[IrType],
+    arg_tys: &[Option<IrType>],
+    caller_env: &MonoEnv,
+    expected: Option<&IrType>,
+    trait_arg_bindings: &[(IrType, IrType)],
+) -> Result<MonoEnv, MonoError> {
     if function.generics.is_empty() {
         if !type_args.is_empty() {
             return Err(MonoError::new(format!(
@@ -982,6 +1156,9 @@ fn bind_call_args<P: Clone>(
         for (parameter, argument) in function.generics.iter().zip(type_args) {
             bind_one_generic(&mut env, function, parameter, argument, caller_env)?;
         }
+        for (pattern, concrete) in trait_arg_bindings {
+            unify_into(&mut env, pattern, concrete, function, caller_env)?;
+        }
         return Ok(env);
     }
     // Restricted inference: unify callee parameter types with call-site arg types.
@@ -1000,6 +1177,9 @@ fn bind_call_args<P: Clone>(
         if let Some(ret) = &function.return_type {
             unify_into(&mut env, ret, expected, function, caller_env)?;
         }
+    }
+    for (pattern, concrete) in trait_arg_bindings {
+        unify_into(&mut env, pattern, concrete, function, caller_env)?;
     }
     // Every layout-relevant generic must be concrete after inference.
     for parameter in &function.generics {
@@ -1418,6 +1598,28 @@ fn infer_expr_type<P: Clone>(
         IrExprKind::Lit(IrLit::Bool(_)) => {
             Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool))
         }
+        IrExprKind::Call { func, args } if args.len() == 1 => {
+            let IrExprKind::Path {
+                segments,
+                type_args,
+            } = &func.kind
+            else {
+                return None;
+            };
+            if matches!(
+                segments.last().map(String::as_str),
+                Some("Array" | "GenericArray")
+            ) && type_args.len() >= 2
+            {
+                Some(IrType::Array {
+                    kind: ArrayKind::GenericArray,
+                    elem: Box::new(mono_type(&type_args[0], env)),
+                    len: mono_len(&type_args_to_len(type_args.get(1), env), env),
+                })
+            } else {
+                None
+            }
+        }
         IrExprKind::FixedArray(elems) => {
             let elem_ty = elems
                 .first()
@@ -1641,7 +1843,7 @@ fn substitute_type_for_projection(ty: &mut IrType, projection: &IrType, replacem
         IrType::Reference { elem, .. } | IrType::Vector { elem } => {
             substitute_type_for_projection(elem, projection, replacement)
         }
-        IrType::Array { elem, len, .. } => {
+        IrType::Array { elem, .. } => {
             substitute_type_for_projection(elem, projection, replacement);
             // A projection can also appear in an array-length position
             // (`Array<_, Self::Output>`); leave those for the later
@@ -1990,9 +2192,6 @@ fn substitute_projection_output_in_expr<P: Clone>(
             substitute_projection_output_in_expr(right, generic, value);
             substitute_projection_output_in_expr(body, generic, value);
         }
-        IrExprKind::BoundedLoop { body, .. } => {
-            substitute_projection_output_in_block(body, generic, value)
-        }
         IrExprKind::Match { .. } => {}
         _ => {}
     }
@@ -2001,21 +2200,29 @@ fn substitute_projection_output_in_expr<P: Clone>(
 /// Constant-fold a module const initializer down to a `usize`.
 /// Handles integer literals and the arithmetic/shift/logic binary ops the
 /// spec sources use in const expressions (e.g. `Q4 = 1 << 30`).
-fn const_eval_expr(expr: &IrExpr) -> Option<usize> {
+fn const_eval_expr(expr: &IrExpr, constants: &BTreeMap<String, usize>) -> Option<usize> {
     match &expr.kind {
         IrExprKind::Lit(IrLit::Int(v)) => Some(*v as usize),
         IrExprKind::Lit(IrLit::Bool(b)) => Some(*b as usize),
+        IrExprKind::Var(name) => constants.get(name).copied(),
+        IrExprKind::Path {
+            segments,
+            type_args,
+        } if type_args.is_empty() => segments
+            .last()
+            .and_then(|name| constants.get(name))
+            .copied(),
         IrExprKind::Unary {
             op: SpecUnaryOp::Neg,
             expr,
-        } => const_eval_expr(expr).map(|v| v.wrapping_neg()),
+        } => const_eval_expr(expr, constants).map(|v| v.wrapping_neg()),
         IrExprKind::Unary {
             op: SpecUnaryOp::Not,
             expr,
-        } => const_eval_expr(expr).map(|v| !v),
+        } => const_eval_expr(expr, constants).map(|v| !v),
         IrExprKind::Binary { op, left, right } => {
-            let l = const_eval_expr(left)?;
-            let r = const_eval_expr(right)?;
+            let l = const_eval_expr(left, constants)?;
+            let r = const_eval_expr(right, constants)?;
             Some(match op {
                 SpecBinOp::Add => l.wrapping_add(r),
                 SpecBinOp::Sub => l.wrapping_sub(r),
@@ -2074,6 +2281,26 @@ fn bind_pattern_types(pattern: &IrPattern, ty: &IrType, vars: &mut VarTypes) {
         }
         (IrPattern::Ref { pat, .. }, IrType::Reference { elem, .. }) => {
             bind_pattern_types(pat, elem, vars);
+        }
+        (IrPattern::Slice(patterns), IrType::Array { elem, .. }) => {
+            for pattern in patterns {
+                if !matches!(pattern, IrPattern::Rest) {
+                    bind_pattern_types(pattern, elem, vars);
+                }
+            }
+        }
+        (
+            IrPattern::Slice(patterns),
+            IrType::Struct {
+                kind: StructKind::Custom(name),
+                type_args,
+            },
+        ) if name == "Vec" && type_args.len() == 1 => {
+            for pattern in patterns {
+                if !matches!(pattern, IrPattern::Rest) {
+                    bind_pattern_types(pattern, &type_args[0], vars);
+                }
+            }
         }
         // Preserve useful conservative information for patterns whose type
         // shape is not represented in the current IR type model.
@@ -2236,7 +2463,8 @@ fn collect_stmt_calls<P: Clone>(
                         // inference downstream.
                         let binding = ty
                             .clone()
-                            .or_else(|| call_result_type(expr, env, defs, var_types, structs));
+                            .or_else(|| call_result_type(expr, env, defs, var_types, structs))
+                            .or_else(|| infer_expr_type(expr, env, Some(var_types), Some(structs)));
                         if let Some(binding) = binding {
                             bind_pattern_types(pattern, &binding, var_types);
                         }
@@ -2747,6 +2975,11 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
             } else if let Some(&n) = env.const_params.get(name) {
                 // Const-generic names often appear as `TypeParam("N")` in
                 // struct type_args (`Vope<N, T, U1>`); bind via `with_len`.
+                IrType::TypeParam(n.to_string())
+            } else if let Some(&n) = env.consts.get(name) {
+                // Named module constants used directly as generic arguments
+                // (rather than array lengths) must be concrete for impl-trait
+                // argument unification as well.
                 IrType::TypeParam(n.to_string())
             } else if let Ok(n) = name.parse::<usize>() {
                 IrType::TypeParam(n.to_string())

@@ -15,7 +15,7 @@ pub mod structs;
 
 use std::sync::LazyLock;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgFunction, IrCfgJump,
     IrCfgModule, IrCfgTerminator, IrExpr, IrExprKind, IrFunction, IrLit, IrModule, IrPattern,
@@ -25,8 +25,7 @@ use volar_compiler::ir::{
 use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 
 use mono::{
-    FunctionInstanceKey, MonoEnv, MonoPlan, mono_len, mono_type, normalized_args, type_args_to_len,
-    typenum_usize,
+    FunctionInstanceKey, MonoEnv, MonoPlan, mono_len, mono_type, type_args_to_len, typenum_usize,
 };
 use structs::{
     EnumRegistry, StructRegistry, flatten_count, flatten_scalar_types, primitive_to_lir,
@@ -144,6 +143,11 @@ struct LowerCtx<'t, T: LirTarget<P>, P: Clone = ()> {
     func_sigs: &'t BTreeMap<String, FuncSigInfo>,
     /// IR-level return types for functions, for type inference on Call exprs.
     ir_func_ret_types: &'t BTreeMap<String, IrType>,
+    /// Generic parameters bounded by Digest, whose static `new()` returns an
+    /// opaque handle and whose operations are external to the parsed module.
+    digest_type_params: BTreeSet<String>,
+    /// Locals initialized by `D::new()` for a `D: Digest` parameter.
+    digest_handle_vars: BTreeSet<String>,
     /// Current concrete local function and the closed specialization plan.
     current_instance: Option<&'t FunctionInstanceKey>,
     mono_plan: Option<&'t MonoPlan<P>>,
@@ -189,6 +193,8 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             external_fns: &EMPTY_EXTERNAL_FNS,
             func_sigs: &EMPTY_FUNC_SIGS,
             ir_func_ret_types: &EMPTY_IR_RET_TYPES,
+            digest_type_params: BTreeSet::new(),
+            digest_handle_vars: BTreeSet::new(),
             current_instance: None,
             mono_plan: None,
             loop_mode: LoopLowering::Unroll,
@@ -197,6 +203,34 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             promoted: BTreeMap::new(),
             _p: std::marker::PhantomData,
         }
+    }
+
+    /// Infer the result of `D::new()` for an external `D: Digest`. Its
+    /// concrete Rust type is outside the parsed module, so represent the
+    /// digest state as the opaque machine-word handle used by the LIR ABI.
+    fn is_digest_handle(&self, expr: &IrExpr<P>) -> bool {
+        match &expr.kind {
+            IrExprKind::Var(name) => self.digest_handle_vars.contains(name),
+            IrExprKind::Unary { expr, .. } => self.is_digest_handle(expr),
+            _ => false,
+        }
+    }
+
+    fn infer_digest_new_type(&self, func: &IrExpr<P>) -> Option<IrType> {
+        let IrExprKind::Path { segments, .. } = &func.kind else {
+            return None;
+        };
+        if segments.len() < 2 || segments.last().map(String::as_str) != Some("new") {
+            return None;
+        }
+        let owner = &segments[segments.len() - 2];
+        if !self.digest_type_params.contains(owner) {
+            return None;
+        }
+        self.mono.type_params.get(owner).map(|_| IrType::FnPtr {
+            params: Vec::new(),
+            ret: Box::new(IrType::Unit),
+        })
     }
 
     /// Infer the IrType of an expression using env_types and module struct defs.
@@ -211,6 +245,18 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 if let IrType::Tuple(elems) = &base_ty {
                     let idx: usize = field.parse().ok()?;
                     return elems.get(idx).cloned();
+                }
+                // hybrid_array's tuple wrapper is represented by its
+                // underlying fixed array in LIR; `.0` is therefore a
+                // transparent projection, not a registered struct field.
+                if matches!(
+                    &base_ty,
+                    IrType::Array {
+                        kind: ArrayKind::GenericArray,
+                        ..
+                    }
+                ) {
+                    return (field == "0").then_some(base_ty);
                 }
                 let (struct_kind, type_args) = match &base_ty {
                     IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
@@ -306,6 +352,28 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 .is_some() =>
             {
                 Some(IrType::Primitive(PrimitiveType::Usize))
+            }
+
+            IrExprKind::MethodCall {
+                receiver,
+                method: MethodKind::Known(StdMethod::Finalize),
+                ..
+            } if self.is_digest_handle(receiver) => Some(IrType::Struct {
+                kind: StructKind::Custom("Vec".to_string()),
+                type_args: vec![IrType::Primitive(PrimitiveType::U8)],
+            }),
+
+            IrExprKind::MethodCall {
+                receiver,
+                method: MethodKind::Known(StdMethod::ToVec),
+                ..
+            } if self
+                .infer_type(receiver)
+                .as_ref()
+                .and_then(vec_elem_type)
+                .is_some() =>
+            {
+                self.infer_type(receiver)
             }
 
             // User-defined method: resolve through the monomorphization plan
@@ -435,6 +503,42 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             // to an unmangled source-name lookup. This preserves the concrete
             // return layout for `let value = helper::<N>(...)`.
             IrExprKind::Call { func, args } => {
+                if args.is_empty() {
+                    if let Some(ty) = self.infer_digest_new_type(func) {
+                        return Some(ty);
+                    }
+                }
+                if args.len() == 1 {
+                    if let IrExprKind::Path {
+                        segments,
+                        type_args,
+                    } = &func.kind
+                    {
+                        if segments.len() >= 2
+                            && segments[segments.len() - 2] == "Vec"
+                            && segments.last().map(String::as_str) == Some("with_capacity")
+                        {
+                            return type_args.first().map(|elem| IrType::Struct {
+                                kind: StructKind::Custom("Vec".to_string()),
+                                type_args: vec![mono_type(elem, self.mono)],
+                            });
+                        }
+                        if matches!(
+                            segments.last().map(String::as_str),
+                            Some("Array" | "GenericArray")
+                        ) && type_args.len() >= 2
+                        {
+                            return Some(IrType::Array {
+                                kind: ArrayKind::GenericArray,
+                                elem: Box::new(mono_type(&type_args[0], self.mono)),
+                                len: mono_len(
+                                    &type_args_to_len(type_args.get(1), self.mono),
+                                    self.mono,
+                                ),
+                            });
+                        }
+                    }
+                }
                 let (name, type_args): (String, &[IrType]) = match &func.kind {
                     IrExprKind::Path {
                         segments,
@@ -595,12 +699,18 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
     }
 }
 
-/// Extract the `StructKind` from a type (stripping references).
 thread_local! {
     /// Debug aid: the instance currently being lowered (set by
     /// `lower_function_instance`).
     pub static CURRENT_INSTANCE_DEBUG: std::cell::RefCell<String> =
         const { std::cell::RefCell::new(String::new()) };
+}
+
+fn current_ir_return_type<T: LirTarget<P>, P: Clone>(ctx: &LowerCtx<T, P>) -> Option<IrType> {
+    ctx.current_instance
+        .and_then(|instance| ctx.mono_plan.map(|plan| plan.emitted_name(instance)))
+        .and_then(|name| ctx.ir_func_ret_types.get(name))
+        .cloned()
 }
 
 static EMPTY_EXTERNAL_FNS: LazyLock<BTreeMap<String, ExternalFnInfo>> =
@@ -707,6 +817,37 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
 ) -> (LirType, Vec<T::Value>) {
     let ptr_needed = matches!(declared, Some(LirType::Ptr(_)));
     if ptr_needed {
+        // Rust's `&Vec<T>` → `&[T]` coercion passes the Vec's backing-data
+        // pointer, not the handle's pointer/length/capacity cells.
+        if let Some(arg_ir_ty) = ctx.infer_type(arg) {
+            if let Some(elem_ir_ty) = vec_elem_type(&arg_ir_ty) {
+                let elem_lir_ty = ctx.registry.ir_type_to_lir(elem_ir_ty, ctx.mono);
+                let Some(LirType::Ptr(expected_elem_ty)) = declared else {
+                    unreachable!("ptr_needed was checked above")
+                };
+                assert_eq!(
+                    expected_elem_ty.as_ref(),
+                    &elem_lir_ty,
+                    "Vec-to-slice call argument element type mismatch"
+                );
+                let handle = lower_expr(arg, ctx);
+                let data_cell = handle
+                    .first()
+                    .cloned()
+                    .expect("Vec handle must contain a data-pointer cell");
+                let zero = ctx.target.iconst(LirType::U64, 0);
+                let data = into_scalar(
+                    ctx.target.ptr_index_load(
+                        data_cell,
+                        zero,
+                        &LirType::Ptr(Box::new(elem_lir_ty)),
+                    ),
+                    "Vec-to-slice data pointer",
+                );
+                return (declared.cloned().unwrap(), vec![data]);
+            }
+        }
+
         // Pass-through: arg is a name whose values are already pointer-backed.
         if let IrExprKind::Var(name) = &arg.kind {
             if let Some(slot) = ctx.promoted.get(name.as_str()) {
@@ -1321,20 +1462,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     let param_lir_tys: Vec<_> = func
         .params
         .iter()
-        .map(|param| {
-            let lir = param_abi_lir_type(&registry, &param.ty, env, memory_capable);
-            if std::env::var("VOLAR_PARAM_DEBUG").is_ok() {
-                eprintln!(
-                    "[param-debug] {} param {} ty={:?} lir={:?} width={}",
-                    emitted_name,
-                    param.name,
-                    mono_type(&param.ty, env),
-                    lir,
-                    flatten_count(&lir, registry)
-                );
-            }
-            lir
-        })
+        .map(|param| param_abi_lir_type(&registry, &param.ty, env, memory_capable))
         .collect();
     let ret_ty = func
         .return_type
@@ -1407,6 +1535,17 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     ctx.external_fns = external_fns;
     ctx.func_sigs = func_sigs;
     ctx.ir_func_ret_types = ir_func_ret_types;
+    ctx.digest_type_params.extend(
+        func.generics
+            .iter()
+            .filter(|generic| {
+                generic
+                    .bounds
+                    .iter()
+                    .any(|bound| bound.trait_kind == volar_compiler::ir::TraitKind::Digest)
+            })
+            .map(|generic| generic.name.clone()),
+    );
     ctx.current_instance = Some(instance);
     ctx.mono_plan = Some(plan);
     ctx.loop_mode = loop_lowering;
@@ -1676,6 +1815,80 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                         }
                     }
                 }
+                // `Vec::with_capacity()` has no element type in its expression
+                // unless turbofish is explicit. Use the let annotation as the
+                // type-checker context and allocate the requested capacity.
+                if let IrExprKind::Call { func, args } = &init_expr.kind {
+                    if args.len() == 1 {
+                        if let IrExprKind::Path {
+                            segments,
+                            type_args,
+                        } = &func.kind
+                        {
+                            if segments.len() >= 2
+                                && segments[segments.len() - 2] == "Vec"
+                                && segments.last().map(String::as_str) == Some("with_capacity")
+                            {
+                                let annotated_ty = ty.clone().or_else(|| match pattern {
+                                    IrPattern::Ident { name, .. } => {
+                                        ctx.env_types.get(name).cloned()
+                                    }
+                                    _ => None,
+                                });
+                                let elem_ty = annotated_ty
+                                    .as_ref()
+                                    .and_then(vec_elem_type)
+                                    .cloned()
+                                    .or_else(|| type_args.first().cloned())
+                                    .unwrap_or_else(|| {
+                                        panic!("LIR lowering: cannot infer Vec::with_capacity element type")
+                                    });
+                                let vec_ty = annotated_ty.unwrap_or_else(|| IrType::Struct {
+                                    kind: StructKind::Custom("Vec".to_string()),
+                                    type_args: vec![elem_ty.clone()],
+                                });
+                                let vals = lower_vec_with_capacity(&elem_ty, &args[0], ctx);
+                                bind_pattern(pattern, vals, Some(&vec_ty), ctx);
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // `Vec::new()` has no element type in its expression. Rust's
+                // type checker supplies it from the let annotation, so pass
+                // that context into dynamic Vec construction here.
+                if let IrExprKind::Call { func, args } = &init_expr.kind {
+                    if args.is_empty() {
+                        if let IrExprKind::Path {
+                            segments,
+                            type_args,
+                        } = &func.kind
+                        {
+                            if segments.len() >= 2
+                                && segments[segments.len() - 2] == "Vec"
+                                && segments.last().map(String::as_str) == Some("new")
+                            {
+                                let elem_ty = ty
+                                    .as_ref()
+                                    .and_then(vec_elem_type)
+                                    .cloned()
+                                    .or_else(|| type_args.first().cloned())
+                                    .unwrap_or_else(|| {
+                                        panic!("LIR lowering: cannot infer Vec::new element type")
+                                    });
+                                let vec_ty = ty.clone().unwrap_or_else(|| IrType::Struct {
+                                    kind: StructKind::Custom("Vec".to_string()),
+                                    type_args: vec![elem_ty.clone()],
+                                });
+                                let vals = lower_vec_new(&elem_ty, ctx);
+                                bind_pattern(pattern, vals, Some(&vec_ty), ctx);
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 // A `VecRepeat` element such as `None` can require the let's
                 // declared `Vec<T>` element type for inference. Use that type
                 // when available before falling back to expression inference.
@@ -1696,6 +1909,16 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                     }
                     _ => lower_expr(init_expr, ctx),
                 };
+                let digest_constructor = matches!(
+                    &init_expr.kind,
+                    IrExprKind::Call { func, args }
+                        if args.is_empty() && ctx.infer_digest_new_type(func).is_some()
+                );
+                if digest_constructor {
+                    if let IrPattern::Ident { name, .. } = pattern {
+                        ctx.digest_handle_vars.insert(name.clone());
+                    }
+                }
                 // For tuple patterns, split by element widths derived from the type.
                 if let IrPattern::Tuple(sub_pats) = pattern {
                     let tuple_ty = ty.clone().or_else(|| ctx.infer_type(init_expr));
@@ -1713,6 +1936,11 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                             return;
                         }
                     }
+                }
+                if let IrPattern::Slice(_) = pattern {
+                    let array_ty = ty.clone().or_else(|| ctx.infer_type(init_expr));
+                    bind_pattern(pattern, vals, array_ty.as_ref(), ctx);
+                    return;
                 }
                 bind_pattern(pattern, vals, None, ctx);
             }
@@ -1908,11 +2136,13 @@ fn bind_tuple_pattern<T: LirTarget<P>, P: Clone>(
             // No type info: give each sub-pattern 1 scalar.
             1
         };
-        let slice = if offset + width <= vals.len() {
-            vals[offset..offset + width].to_vec()
-        } else {
-            vals[offset..].to_vec()
-        };
+        assert!(
+            offset <= vals.len() && width <= vals.len() - offset,
+            "tuple pattern element {i} requires scalars {offset}..{} but expression produced only {} values (type={tuple_ty:?})",
+            offset.saturating_add(width),
+            vals.len(),
+        );
+        let slice = vals[offset..offset + width].to_vec();
         let elem_ty_hint = elem_types.and_then(|elems| elems.get(i));
         bind_pattern(sub_pat, slice, elem_ty_hint, ctx);
         offset += width;
@@ -1983,6 +2213,37 @@ fn bind_pattern<T: LirTarget<P>, P: Clone>(
         IrPattern::Tuple(sub_pats) => {
             bind_tuple_pattern(sub_pats, vals, ty_hint, ctx);
         }
+        IrPattern::Slice(sub_pats) => {
+            let array_ty = match ty_hint {
+                Some(IrType::Reference { elem, .. }) => elem.as_ref(),
+                Some(ty) => ty,
+                None => panic!("slice destructuring requires an inferred fixed-array type"),
+            };
+            let (elem_ty, len) = array_elem_and_len(array_ty, ctx.mono);
+            assert_eq!(
+                sub_pats.len(),
+                len,
+                "LIR slice destructuring only supports exact fixed-array patterns"
+            );
+            assert!(
+                !sub_pats.iter().any(|pat| matches!(pat, IrPattern::Rest)),
+                "LIR slice destructuring does not support rest patterns"
+            );
+            let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ty, ctx.mono);
+            let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+            assert_eq!(
+                vals.len(),
+                len * elem_width,
+                "LIR slice destructuring value has {} scalars, expected {} for {len} elements",
+                vals.len(),
+                len * elem_width
+            );
+            for (index, sub_pat) in sub_pats.iter().enumerate() {
+                let start = index * elem_width;
+                let end = start + elem_width;
+                bind_pattern(sub_pat, vals[start..end].to_vec(), Some(&elem_ty), ctx);
+            }
+        }
         IrPattern::TupleStruct { kind, elems } => {
             // Enum variant pattern: the vals ARE the payload (caller strips tag first).
             use volar_compiler::ir::StructKind;
@@ -2046,6 +2307,21 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             if let Some(value) = volar_compiler::ir::digit_var_as_literal(name) {
                 return vec![ctx.target.iconst(LirType::U64, value as i64)];
             }
+            // A bare `None` carries no payload, so its layout comes from
+            // context: the enclosing function's `Option` return type. Lower
+            // to the canonical all-zero None value (`lower_try` uses the
+            // same convention): tag 0 plus a zeroed payload.
+            if name == "None" {
+                if let Some(return_ty) = current_ir_return_type(ctx) {
+                    if option_payload_type(&return_ty).is_some() {
+                        return lower_default_zero_values(&return_ty, ctx);
+                    }
+                }
+                unimplemented!(
+                    "lower_expr: bare `None` requires an Option-typed enclosing \
+                     return (payload width is otherwise unknown)"
+                );
+            }
             panic!("undefined variable: {name}")
         }
 
@@ -2103,11 +2379,16 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
                     .collect()
             } else {
                 panic!(
-                    "Binary {:?}: operand widths {} vs {} — cannot apply element-wise [caller {:?}]",
+                    "Binary {:?}: operand widths {} vs {} — cannot apply element-wise [caller {:?}] left={:?} right={:?} left_ty={:?} right_ty={:?}",
                     op,
                     lv.len(),
                     rv.len(),
-                    ctx.current_instance.map(|k| k.source_name.clone())
+                    ctx.mono_plan
+                        .and_then(|p| ctx.current_instance.map(|c| p.emitted_name(c).to_owned())),
+                    std::mem::discriminant(&left.kind),
+                    std::mem::discriminant(&right.kind),
+                    ctx.infer_type(left),
+                    ctx.infer_type(right),
                 )
             }
         }
@@ -2242,7 +2523,23 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
                 lower_bounded_loop_descending(pattern, start, end, body, ctx);
                 return Vec::new();
             }
-            unimplemented!("lower_expr: unsupported iterator loop shape")
+            if lower_vec_iter_loop(pattern, collection, body, ctx) {
+                return Vec::new();
+            }
+            let (collection_ty, elem_probe) = match ctx.infer_type(collection) {
+                Some(ty) => {
+                    let probe = vec_elem_type(&ty).map(|e| format!("{e:?}"));
+                    (format!("{ty:?}"), probe)
+                }
+                None => ("<none>".to_owned(), None),
+            };
+            unimplemented!(
+                "lower_expr: unsupported iterator loop shape collection_kind={:?} collection_ty={} elem={:?} pattern={:?}",
+                std::mem::discriminant(&collection.kind),
+                collection_ty,
+                elem_probe,
+                pattern,
+            )
         }
 
         IrExprKind::BoundedLoop {
@@ -2595,19 +2892,21 @@ fn lower_match<T: LirTarget<P>, P: Clone>(
     let scrutinee_vals = lower_expr(scrutinee, ctx);
     let scrutinee_ty = ctx.infer_type(scrutinee);
 
-    // Determine whether this is an enum match or primitive match.
-    let is_enum = scrutinee_ty.as_ref().map_or(false, |ty| {
-        let base_ty = match ty {
-            IrType::Reference { elem, .. } => elem.as_ref(),
-            other => other,
-        };
-        matches!(base_ty, IrType::Struct { kind, .. } if ctx.enum_registry.is_enum(kind))
-    });
+    let option_elem_ty = scrutinee_ty.as_ref().and_then(option_payload_type).cloned();
+    // Determine whether this is an enum/Option match or primitive match.
+    let is_enum = option_elem_ty.is_some()
+        || scrutinee_ty.as_ref().is_some_and(|ty| {
+            let base_ty = match ty {
+                IrType::Reference { elem, .. } => elem.as_ref(),
+                other => other,
+            };
+            matches!(base_ty, IrType::Struct { kind, .. } if ctx.enum_registry.is_enum(kind))
+        });
 
     if is_enum && !scrutinee_vals.is_empty() {
         let tag = scrutinee_vals[0].clone();
         let payload = scrutinee_vals[1..].to_vec();
-        lower_enum_match(tag, payload, arms, ctx)
+        lower_enum_match(tag, payload, arms, option_elem_ty.as_ref(), ctx)
     } else {
         // Primitive match: compare scrutinee scalar against literal patterns.
         lower_primitive_match(&scrutinee_vals, arms, ctx)
@@ -2759,6 +3058,7 @@ fn lower_enum_match<T: LirTarget<P>, P: Clone>(
     tag: T::Value,
     payload: Vec<T::Value>,
     arms: &[volar_compiler::ir::IrMatchArm<P>],
+    option_elem_ty: Option<&IrType>,
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
     use volar_compiler::ir::IrPattern;
@@ -2779,7 +3079,13 @@ fn lower_enum_match<T: LirTarget<P>, P: Clone>(
 
     for arm in &variant_arms {
         // Resolve discriminant and payload binding from the pattern.
-        let (disc, bound_payload) = enum_arm_disc_and_payload(arm, &payload, ctx);
+        // Option is synthesized as a tagged struct instead of a module enum.
+        let (disc, bound_payload) =
+            if option_elem_ty.is_some() && is_option_some_pattern(&arm.pattern) {
+                (1, payload.clone())
+            } else {
+                enum_arm_disc_and_payload(arm, &payload, ctx)
+            };
 
         let disc_val = ctx.target.iconst(LirType::U8, disc as i64);
         let cond = ctx.target.icmp(IcmpPred::Eq, tag.clone(), disc_val);
@@ -2796,7 +3102,11 @@ fn lower_enum_match<T: LirTarget<P>, P: Clone>(
         ctx.target.switch_to_block(then_block.clone());
         ctx.current_block = then_block;
         // Bind pattern variables to their payload slices.
-        bind_enum_arm_pattern(arm, &bound_payload, ctx);
+        if option_elem_ty.is_some() && is_option_some_pattern(&arm.pattern) {
+            bind_option_some_pattern(arm, &bound_payload, option_elem_ty.unwrap(), ctx);
+        } else {
+            bind_enum_arm_pattern(arm, &bound_payload, ctx);
+        }
         let then_vals = lower_expr(&arm.body, ctx);
 
         if join_params.is_none() {
@@ -2843,6 +3153,30 @@ fn lower_enum_match<T: LirTarget<P>, P: Clone>(
     ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
     jp
+}
+
+fn is_option_some_pattern(pattern: &IrPattern) -> bool {
+    match pattern {
+        IrPattern::TupleStruct { kind, .. } => match kind {
+            StructKind::Custom(name) => {
+                name == "Some" || name.ends_with("_Some") || name.ends_with("::Some")
+            }
+            StructKind::GenericArray => false,
+        },
+        _ => false,
+    }
+}
+
+fn bind_option_some_pattern<T: LirTarget<P>, P: Clone>(
+    arm: &volar_compiler::ir::IrMatchArm<P>,
+    payload: &[T::Value],
+    elem_ty: &IrType,
+    ctx: &mut LowerCtx<T, P>,
+) {
+    if let IrPattern::TupleStruct { elems, .. } = &arm.pattern {
+        assert_eq!(elems.len(), 1, "Option::Some pattern must have one element");
+        bind_pattern(&elems[0], payload.to_vec(), Some(elem_ty), ctx);
+    }
 }
 
 /// Return the discriminant of a variant arm and the relevant payload slice.
@@ -2937,9 +3271,16 @@ fn lower_try<T: LirTarget<P>, P: Clone>(
     if vals.is_empty() {
         return vals;
     }
+    let is_option = ctx
+        .infer_type(inner)
+        .as_ref()
+        .and_then(option_payload_type)
+        .is_some();
     let tag = vals[0].clone();
-    let ok_disc = ctx.target.iconst(LirType::U8, 0);
-    let is_ok = ctx.target.icmp(IcmpPred::Eq, tag, ok_disc);
+    let success_disc = ctx
+        .target
+        .iconst(LirType::U8, if is_option { 1 } else { 0 });
+    let is_ok = ctx.target.icmp(IcmpPred::Eq, tag, success_disc);
     let ok_block = ctx.target.create_block();
     let err_block = ctx.target.create_block();
     ctx.target.branch(
@@ -2949,10 +3290,23 @@ fn lower_try<T: LirTarget<P>, P: Clone>(
         err_block.clone(),
         BranchTarget::args([]),
     );
-    // Err path: propagate error via early return.
+    // Err/None path: propagate the failure via early return. Option uses the
+    // canonical all-zero None value of the enclosing function's return type;
+    // Result preserves its original error payload.
     ctx.target.switch_to_block(err_block.clone());
     ctx.current_block = err_block;
-    ctx.target.ret(&vals);
+    let return_vals = if is_option {
+        let return_ty = current_ir_return_type(ctx)
+            .unwrap_or_else(|| panic!("LIR Option `?`: enclosing return type is unavailable"));
+        assert!(
+            option_payload_type(&return_ty).is_some(),
+            "LIR Option `?`: enclosing function must return Option, got {return_ty:?}"
+        );
+        lower_default_zero_values(&return_ty, ctx)
+    } else {
+        vals.clone()
+    };
+    ctx.target.ret(&return_vals);
     // Ok path: unwrap the payload (drop tag).
     ctx.target.switch_to_block(ok_block.clone());
     ctx.current_block = ok_block;
@@ -2995,6 +3349,20 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
 
         let base_vals = lower_expr(base, ctx);
         return base_vals[offset..offset + width].to_vec();
+    }
+
+    // hybrid_array::Array<T, N> is represented by its underlying array, so
+    // its single tuple-struct field `.0` is a transparent value projection.
+    if field == "0"
+        && matches!(
+            &base_ir_ty,
+            IrType::Array {
+                kind: ArrayKind::GenericArray,
+                ..
+            }
+        )
+    {
+        return lower_expr(base, ctx);
     }
 
     // Peel any reference layers before the struct lookup.
@@ -3180,7 +3548,139 @@ fn heap_alloc_dynamic<T: LirTarget<P>, P: Clone>(
         .expect("dynamic Vec lowering requires heap_alloc_dynamic support")
 }
 
-/// Lower `vec![elem; len]` to a heap-backed `{ data, len }` value.
+/// Build a mutable Vec handle whose pointer/length/capacity cells are shared
+/// by value copies and `&mut Vec` parameters.
+fn vec_handle_from_parts<T: LirTarget<P>, P: Clone>(
+    elem_ty: &LirType,
+    data: T::Value,
+    len: T::Value,
+    capacity: T::Value,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let one = ctx.target.iconst(LirType::U64, 1);
+    let zero = ctx.target.iconst(LirType::U64, 0);
+    let data_cell = heap_alloc_dynamic(LirType::Ptr(Box::new(elem_ty.clone())), one.clone(), ctx);
+    let len_cell = heap_alloc_dynamic(LirType::U64, one.clone(), ctx);
+    let capacity_cell = heap_alloc_dynamic(LirType::U64, one, ctx);
+    ctx.target.ptr_index_store(
+        data_cell.clone(),
+        zero.clone(),
+        &[data],
+        &LirType::Ptr(Box::new(elem_ty.clone())),
+    );
+    ctx.target
+        .ptr_index_store(len_cell.clone(), zero.clone(), &[len], &LirType::U64);
+    ctx.target
+        .ptr_index_store(capacity_cell.clone(), zero, &[capacity], &LirType::U64);
+    vec![data_cell, len_cell, capacity_cell]
+}
+
+fn load_vec_parts<T: LirTarget<P>, P: Clone>(
+    handle: &[T::Value],
+    elem_ty: &LirType,
+    ctx: &mut LowerCtx<T, P>,
+) -> (T::Value, T::Value, T::Value, T::Value, T::Value, T::Value) {
+    assert_eq!(
+        handle.len(),
+        3,
+        "Vec handle must contain three shared cells"
+    );
+    let data_cell = handle[0].clone();
+    let len_cell = handle[1].clone();
+    let capacity_cell = handle[2].clone();
+    let zero = ctx.target.iconst(LirType::U64, 0);
+    let data = into_scalar(
+        ctx.target.ptr_index_load(
+            data_cell.clone(),
+            zero.clone(),
+            &LirType::Ptr(Box::new(elem_ty.clone())),
+        ),
+        "Vec data pointer",
+    );
+    let len = into_scalar(
+        ctx.target
+            .ptr_index_load(len_cell.clone(), zero.clone(), &LirType::U64),
+        "Vec length",
+    );
+    let capacity = into_scalar(
+        ctx.target
+            .ptr_index_load(capacity_cell.clone(), zero, &LirType::U64),
+        "Vec capacity",
+    );
+    (data_cell, len_cell, capacity_cell, data, len, capacity)
+}
+
+fn lower_vec_new<T: LirTarget<P>, P: Clone>(
+    elem_ir_ty: &IrType,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let elem_ty = ctx.registry.ir_type_to_lir(elem_ir_ty, ctx.mono);
+    let zero = ctx.target.iconst(LirType::U64, 0);
+    let data = heap_alloc_dynamic(elem_ty.clone(), zero.clone(), ctx);
+    vec_handle_from_parts(&elem_ty, data, zero.clone(), zero, ctx)
+}
+
+fn lower_vec_with_capacity<T: LirTarget<P>, P: Clone>(
+    elem_ir_ty: &IrType,
+    capacity_expr: &IrExpr<P>,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let elem_ty = ctx.registry.ir_type_to_lir(elem_ir_ty, ctx.mono);
+    let capacity = into_scalar(lower_expr(capacity_expr, ctx), "Vec capacity");
+    let capacity = if ctx.target.value_scalar_type(&capacity) == LirType::U64 {
+        capacity
+    } else {
+        ctx.target.zext(capacity, LirType::U64)
+    };
+    let data = heap_alloc_dynamic(elem_ty.clone(), capacity.clone(), ctx);
+    let len = ctx.target.iconst(LirType::U64, 0);
+    vec_handle_from_parts(&elem_ty, data, len, capacity, ctx)
+}
+
+/// Copy `len` elements between heap buffers with a native LIR loop.
+fn copy_vec_prefix<T: LirTarget<P>, P: Clone>(
+    source: T::Value,
+    destination: T::Value,
+    len: T::Value,
+    elem_ty: &LirType,
+    ctx: &mut LowerCtx<T, P>,
+) {
+    let header = ctx.target.create_block();
+    let body = ctx.target.create_block();
+    let exit = ctx.target.create_block();
+    let index = ctx.target.add_block_param(header.clone(), LirType::U64);
+    let zero = ctx.target.iconst(LirType::U64, 0);
+    ctx.target
+        .jump(header.clone(), BranchTarget::args(vec![zero]));
+
+    ctx.target.switch_to_block(header.clone());
+    ctx.current_block = header.clone();
+    let keep_going = ctx.target.icmp(IcmpPred::Ult, index.clone(), len);
+    ctx.target.branch(
+        keep_going,
+        body.clone(),
+        BranchTarget::args([]),
+        exit.clone(),
+        BranchTarget::args([]),
+    );
+
+    ctx.target.switch_to_block(body.clone());
+    ctx.current_block = body;
+    let values = ctx.target.ptr_index_load(source, index.clone(), elem_ty);
+    ctx.target
+        .ptr_index_store(destination, index.clone(), &values, elem_ty);
+    let one = ctx.target.iconst(LirType::U64, 1);
+    let next = ctx.target.add(index, one);
+    ctx.target.jump(
+        header,
+        BranchTarget::args(vec![next]).with_reentry(ReentryHint::bounded_loop_ascending()),
+    );
+
+    ctx.target.switch_to_block(exit.clone());
+    ctx.current_block = exit;
+}
+
+/// Lower `vec![elem; len]` to a heap-backed mutable Vec handle.
 ///
 /// The element expression is evaluated once, as Rust's repeat form requires,
 /// then its Copy value is stored into each runtime-indexed slot. Non-Copy
@@ -3202,7 +3702,14 @@ fn lower_vec_repeat<T: LirTarget<P>, P: Clone>(
         );
     }
     let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
-    let elem_values = lower_expr(elem, ctx);
+    let elem_values = if is_none_variant_expr(elem) && option_payload_type(&elem_ir_ty).is_some() {
+        // The synthesized Option<T> layout is `{ tag, payload }`; all-zero
+        // scalars are the canonical `None` representation, so no variant
+        // constructor or Clone call is needed for this repeated value.
+        lower_default_zero_values(&elem_ir_ty, ctx)
+    } else {
+        lower_expr(elem, ctx)
+    };
     let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
     assert_eq!(
         elem_values.len(),
@@ -3254,19 +3761,42 @@ fn lower_vec_repeat<T: LirTarget<P>, P: Clone>(
 
     ctx.target.switch_to_block(exit.clone());
     ctx.current_block = exit;
-    vec![data, vec_len]
+    vec_handle_from_parts(&elem_lir_ty, data, vec_len.clone(), vec_len, ctx)
+}
+
+fn option_payload_type(ty: &IrType) -> Option<&IrType> {
+    match ty {
+        IrType::Struct {
+            kind: StructKind::Custom(name),
+            type_args,
+        } if name == "Option" && type_args.len() == 1 => type_args.first(),
+        IrType::Reference { elem, .. } => option_payload_type(elem),
+        _ => None,
+    }
+}
+
+fn is_none_variant_expr<P: Clone>(expr: &IrExpr<P>) -> bool {
+    match &expr.kind {
+        IrExprKind::Path { segments, .. } => segments.last().map(String::as_str) == Some("None"),
+        IrExprKind::Var(name) => name == "None",
+        _ => false,
+    }
 }
 
 /// A conservative subset whose values are Copy by construction. Structs and
 /// custom types are rejected because this IR does not carry enough trait
 /// information to prove that their Rust `Clone` operation is equivalent to a
-/// bitwise/value copy.
+/// bitwise/value copy. `Option<T>` is Copy exactly when its payload is Copy.
 fn is_copy_vec_repeat_type(ty: &IrType) -> bool {
     match ty {
         IrType::Primitive(_) | IrType::FnPtr { .. } => true,
         IrType::Reference { mutable: false, .. } => true,
         IrType::Array { elem, .. } => is_copy_vec_repeat_type(elem),
         IrType::Tuple(elems) => elems.iter().all(is_copy_vec_repeat_type),
+        IrType::Struct {
+            kind: StructKind::Custom(name),
+            type_args,
+        } if name == "Option" && type_args.len() == 1 => is_copy_vec_repeat_type(&type_args[0]),
         _ => false,
     }
 }
@@ -3318,7 +3848,7 @@ fn lower_vec_literal<T: LirTarget<P>, P: Clone>(
         ctx.target
             .ptr_index_store(data.clone(), index, &flat, &elem_lir_ty);
     }
-    vec![data, vec_len]
+    vec_handle_from_parts(&elem_lir_ty, data, vec_len.clone(), vec_len, ctx)
 }
 
 /// Lower a fixed-size `[value; N]` literal by concretely unrolling it.
@@ -3721,6 +4251,178 @@ fn array_elem_and_len(ty: &IrType, env: &MonoEnv) -> (IrType, usize) {
         IrType::Array { elem, len, .. } => (*elem.clone(), const_len(len, env)),
         IrType::Reference { elem, .. } => array_elem_and_len(elem, env),
         other => panic!("expected array type, got {:?}", other),
+    }
+}
+
+// ============================================================================
+// Runtime Vec iteration
+// ============================================================================
+
+/// Lower `for item in vec` / `for item in &vec` by capturing the Vec handle
+/// and its current length once, then using the native counted-loop lowering.
+/// The Rust borrow rules prevent changing the iterated Vec while the loop is
+/// live; capturing its length before the loop therefore preserves iterator
+/// semantics and avoids re-evaluating the source expression.
+fn lower_vec_iter_loop<T: LirTarget<P>, P: Clone>(
+    pattern: &IrPattern,
+    collection: &IrExpr<P>,
+    body: &IrBlock<P>,
+    ctx: &mut LowerCtx<T, P>,
+) -> bool {
+    let Some(collection_ty) = ctx.infer_type(collection) else {
+        return false;
+    };
+    let Some(elem_ir_ty) = vec_elem_type(&collection_ty).cloned() else {
+        return false;
+    };
+
+    let vec_ty = match &collection_ty {
+        IrType::Reference { elem, .. } => elem.as_ref().clone(),
+        other => other.clone(),
+    };
+    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+    let handle = lower_expr(collection, ctx);
+    let (_, _, _, _, len, _) = load_vec_parts(&handle, &elem_lir_ty, ctx);
+
+    let vec_name = fresh_lowering_name("__volar_iter_vec", ctx);
+    ctx.env.insert(vec_name.clone(), handle);
+    ctx.env_types.insert(vec_name.clone(), vec_ty);
+    let len_name = fresh_lowering_name("__volar_iter_len", ctx);
+    ctx.env.insert(len_name.clone(), vec![len]);
+    ctx.env_types
+        .insert(len_name.clone(), IrType::Primitive(PrimitiveType::Usize));
+    let index_name = fresh_lowering_name("__volar_iter_index", ctx);
+
+    // The body binding is scoped to each iteration. Preserve shadowed outer
+    // names while the ordinary let/pattern lowering handles tuple, struct,
+    // reference, and wildcard patterns uniformly.
+    let mut bound_names = BTreeSet::new();
+    collect_pattern_binding_names(pattern, &mut bound_names);
+    let saved_bindings: Vec<_> = bound_names
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                ctx.env.get(name).cloned(),
+                ctx.env_types.get(name).cloned(),
+                ctx.promoted.get(name).cloned(),
+            )
+        })
+        .collect();
+
+    let prov = collection.prov.clone();
+    let side = collection.side;
+    let collection_expr =
+        volar_ir_common::Node::new(IrExprKind::Var(vec_name.clone()), prov.clone(), side);
+    let index_expr =
+        volar_ir_common::Node::new(IrExprKind::Var(index_name.clone()), prov.clone(), side);
+    let item_expr = volar_ir_common::Node::new(
+        IrExprKind::Index {
+            base: Box::new(collection_expr),
+            index: Box::new(index_expr),
+        },
+        prov.clone(),
+        side,
+    );
+    let item_binding = volar_ir_common::Node::new(
+        IrStmtKind::Let {
+            pattern: pattern.clone(),
+            ty: Some(elem_ir_ty),
+            init: Some(item_expr),
+        },
+        prov.clone(),
+        side,
+    );
+    let mut loop_stmts = Vec::with_capacity(body.stmts.len() + 1);
+    loop_stmts.push(item_binding);
+    loop_stmts.extend(body.stmts.iter().cloned());
+    let loop_body = IrBlock {
+        stmts: loop_stmts,
+        expr: body.expr.clone(),
+    };
+    let start = volar_ir_common::Node::new(IrExprKind::Lit(IrLit::Int(0)), prov.clone(), side);
+    let end = volar_ir_common::Node::new(IrExprKind::Var(len_name.clone()), prov, side);
+
+    // Vec iteration has a runtime bound even when the surrounding codegen
+    // normally unrolls constant-bounded loops. Route through the sound native
+    // CFG path; it rejects bodies whose loop-carried state cannot be modeled.
+    let prior_loop_mode = ctx.loop_mode;
+    ctx.loop_mode = LoopLowering::Native;
+    lower_bounded_loop(&index_name, &start, &end, false, &loop_body, ctx);
+    ctx.loop_mode = prior_loop_mode;
+
+    ctx.env.remove(&vec_name);
+    ctx.env_types.remove(&vec_name);
+    ctx.env.remove(&len_name);
+    ctx.env_types.remove(&len_name);
+    for (name, values, ty, promoted) in saved_bindings {
+        match values {
+            Some(values) => {
+                ctx.env.insert(name.clone(), values);
+            }
+            None => {
+                ctx.env.remove(&name);
+            }
+        }
+        match ty {
+            Some(ty) => {
+                ctx.env_types.insert(name.clone(), ty);
+            }
+            None => {
+                ctx.env_types.remove(&name);
+            }
+        }
+        match promoted {
+            Some(slot) => {
+                ctx.promoted.insert(name, slot);
+            }
+            None => {
+                ctx.promoted.remove(&name);
+            }
+        }
+    }
+    true
+}
+
+fn fresh_lowering_name<T: LirTarget<P>, P: Clone>(prefix: &str, ctx: &LowerCtx<T, P>) -> String {
+    for suffix in 0usize.. {
+        let candidate = format!("{prefix}_{suffix}");
+        if !ctx.env.contains_key(&candidate)
+            && !ctx.env_types.contains_key(&candidate)
+            && !ctx.promoted.contains_key(&candidate)
+        {
+            return candidate;
+        }
+    }
+    unreachable!("lowering temporary namespace exhausted")
+}
+
+fn collect_pattern_binding_names(pattern: &IrPattern, names: &mut BTreeSet<String>) {
+    match pattern {
+        IrPattern::Ident { name, subpat, .. } => {
+            names.insert(name.clone());
+            if let Some(subpat) = subpat {
+                collect_pattern_binding_names(subpat, names);
+            }
+        }
+        IrPattern::Tuple(patterns) | IrPattern::Slice(patterns) | IrPattern::Or(patterns) => {
+            for pattern in patterns {
+                collect_pattern_binding_names(pattern, names);
+            }
+        }
+        IrPattern::Struct { fields, .. } => {
+            for (_, pattern) in fields {
+                collect_pattern_binding_names(pattern, names);
+            }
+        }
+        IrPattern::TupleStruct { elems, .. } => {
+            for pattern in elems {
+                collect_pattern_binding_names(pattern, names);
+            }
+        }
+        IrPattern::Ref { pat, .. } => collect_pattern_binding_names(pat, names),
+        IrPattern::Wild | IrPattern::Lit(_) | IrPattern::Rest => {}
+        _ => {}
     }
 }
 
@@ -4781,17 +5483,14 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
         )
     });
 
-    // Owned Vec values carry a typed data pointer and runtime length; their
-    // elements are always accessed through the heap rather than a flat mux.
+    // Vec values carry shared cells for their data pointer, length, and
+    // capacity so mutation through borrowed handles remains visible to callers.
     if let Some(elem_ir_ty) = vec_elem_type(&base_ir_ty) {
         let elem_lir_ty = ctx.registry.ir_type_to_lir(elem_ir_ty, ctx.mono);
         let fields = lower_expr(base, ctx);
-        let ptr = fields
-            .first()
-            .cloned()
-            .expect("Vec fat pointer must contain its data pointer");
+        let (_, _, _, data, _, _) = load_vec_parts(&fields, &elem_lir_ty, ctx);
         let idx_val = into_scalar(lower_expr(index, ctx), "Vec index");
-        return ctx.target.ptr_index_load(ptr, idx_val, &elem_lir_ty);
+        return ctx.target.ptr_index_load(data, idx_val, &elem_lir_ty);
     }
 
     // Pointer-based indexing: Reference<Slice<T>> → Ptr(T) in LIR.
@@ -4954,10 +5653,7 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
             if let Some(elem_ir_ty) = vec_elem_type(&base_ir_ty) {
                 let elem_lir_ty = ctx.registry.ir_type_to_lir(elem_ir_ty, ctx.mono);
                 let fields = lower_expr(base, ctx);
-                let ptr = fields
-                    .first()
-                    .cloned()
-                    .expect("Vec fat pointer must contain its data pointer");
+                let (_, _, _, ptr, _, _) = load_vec_parts(&fields, &elem_lir_ty, ctx);
                 let idx_val = into_scalar(lower_expr(index, ctx), "Vec assign index");
                 let rhs_vals = lower_expr(right, ctx);
                 ctx.target
@@ -5229,7 +5925,7 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
                 IrType::Reference { elem, .. } => *elem,
                 other => other,
             };
-            let IrType::Struct { kind, type_args } = &base_ir_ty else {
+            let IrType::Struct { kind, .. } = &base_ir_ty else {
                 unimplemented!("lower_assign: field assign on non-struct {base_ir_ty:?}");
             };
             let ir_struct = ctx
@@ -5378,6 +6074,120 @@ fn lower_bounded_loop_descending<T: LirTarget<P>, P: Clone>(
     }
 }
 
+fn lower_vec_push<T: LirTarget<P>, P: Clone>(
+    receiver: &IrExpr<P>,
+    args: &[IrExpr<P>],
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    assert_eq!(args.len(), 1, "Vec::push expects exactly one value");
+    let receiver_ir_ty = ctx
+        .infer_type(receiver)
+        .unwrap_or_else(|| panic!("LIR lowering: cannot infer Vec::push receiver type"));
+    let elem_ir_ty = vec_elem_type(&receiver_ir_ty)
+        .unwrap_or_else(|| panic!("LIR lowering: Vec::push receiver is not a Vec"));
+    let elem_lir_ty = ctx.registry.ir_type_to_lir(elem_ir_ty, ctx.mono);
+    let handle = lower_expr(receiver, ctx);
+    let elem_values = lower_expr(&args[0], ctx);
+    let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+    assert_eq!(
+        elem_values.len(),
+        elem_width,
+        "LIR lowering: Vec::push value has {} scalars, expected {elem_width}; value_kind={:?}, value_type={:?}, receiver_kind={:?}, instance={:?}",
+        elem_values.len(),
+        std::mem::discriminant(&args[0].kind),
+        ctx.infer_type(&args[0]),
+        std::mem::discriminant(&receiver.kind),
+        ctx.current_instance.map(|key| &key.source_name)
+    );
+    let (data_cell, len_cell, capacity_cell, old_data, len, capacity) =
+        load_vec_parts(&handle, &elem_lir_ty, ctx);
+    let zero = ctx.target.iconst(LirType::U64, 0);
+    let one = ctx.target.iconst(LirType::U64, 1);
+    let new_len = ctx.target.add(len.clone(), one);
+    let has_capacity = ctx
+        .target
+        .icmp(IcmpPred::Ult, len.clone(), capacity.clone());
+    let in_place = ctx.target.create_block();
+    let grow = ctx.target.create_block();
+    let exit = ctx.target.create_block();
+    ctx.target.branch(
+        has_capacity,
+        in_place.clone(),
+        BranchTarget::args([]),
+        grow.clone(),
+        BranchTarget::args([]),
+    );
+
+    ctx.target.switch_to_block(in_place.clone());
+    ctx.current_block = in_place;
+    ctx.target
+        .ptr_index_store(old_data.clone(), len.clone(), &elem_values, &elem_lir_ty);
+    ctx.target.ptr_index_store(
+        len_cell.clone(),
+        zero.clone(),
+        &[new_len.clone()],
+        &LirType::U64,
+    );
+    ctx.target.jump(exit.clone(), BranchTarget::args([]));
+
+    ctx.target.switch_to_block(grow.clone());
+    ctx.current_block = grow;
+    let capacity_is_zero = ctx
+        .target
+        .icmp(IcmpPred::Eq, capacity.clone(), zero.clone());
+    let two = ctx.target.iconst(LirType::U64, 2);
+    let doubled_capacity = ctx.target.mul(capacity, two);
+    let initial_capacity = ctx.target.iconst(LirType::U64, 4);
+    let new_capacity = ctx
+        .target
+        .select(capacity_is_zero, initial_capacity, doubled_capacity);
+    let new_data = heap_alloc_dynamic(elem_lir_ty.clone(), new_capacity.clone(), ctx);
+    copy_vec_prefix(old_data, new_data.clone(), len.clone(), &elem_lir_ty, ctx);
+    ctx.target
+        .ptr_index_store(new_data.clone(), len, &elem_values, &elem_lir_ty);
+    ctx.target.ptr_index_store(
+        data_cell,
+        zero.clone(),
+        &[new_data],
+        &LirType::Ptr(Box::new(elem_lir_ty)),
+    );
+    ctx.target
+        .ptr_index_store(capacity_cell, zero.clone(), &[new_capacity], &LirType::U64);
+    ctx.target
+        .ptr_index_store(len_cell, zero, &[new_len], &LirType::U64);
+    ctx.target.jump(exit.clone(), BranchTarget::args([]));
+
+    ctx.target.switch_to_block(exit.clone());
+    ctx.current_block = exit;
+    Vec::new()
+}
+
+fn lower_digest_external<T: LirTarget<P>, P: Clone>(
+    receiver: &IrExpr<P>,
+    method_name: &str,
+    args: &[IrExpr<P>],
+    return_type: Option<LirType>,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let mut arg_tys = vec![LirType::U64];
+    let mut flat_args = lower_expr(receiver, ctx);
+    for arg in args {
+        let arg_ty = ctx
+            .infer_type(arg)
+            .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
+            .unwrap_or(LirType::U64);
+        arg_tys.push(arg_ty);
+        flat_args.extend(lower_expr(arg, ctx));
+    }
+    let extern_name = if ctx.mono.hash_suffix.is_empty() {
+        method_name.to_owned()
+    } else {
+        format!("{method_name}_{}", ctx.mono.hash_suffix)
+    };
+    ctx.target
+        .call_extern(&extern_name, &arg_tys, &flat_args, return_type)
+}
+
 fn lower_method_call<T: LirTarget<P>, P: Clone>(
     receiver: &IrExpr<P>,
     method: &MethodKind,
@@ -5399,13 +6209,56 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
                 .and_then(vec_elem_type)
                 .is_some() =>
         {
+            let receiver_ir_ty = ctx
+                .infer_type(receiver)
+                .expect("Vec type was checked above");
+            let elem_ty = vec_elem_type(&receiver_ir_ty).expect("Vec type was checked above");
+            let elem_lir_ty = ctx.registry.ir_type_to_lir(elem_ty, ctx.mono);
             let fields = lower_expr(receiver, ctx);
-            vec![
-                fields
-                    .get(1)
-                    .cloned()
-                    .expect("Vec fat pointer must contain its runtime length"),
-            ]
+            let (_, _, _, _, len, _) = load_vec_parts(&fields, &elem_lir_ty, ctx);
+            vec![len]
+        }
+
+        MethodKind::Known(StdMethod::Push) => lower_vec_push(receiver, args, ctx),
+
+        MethodKind::Known(StdMethod::Update) if ctx.is_digest_handle(receiver) => {
+            lower_digest_external(receiver, "update", args, None, ctx)
+        }
+
+        MethodKind::Known(StdMethod::Finalize) if ctx.is_digest_handle(receiver) => {
+            let output_ty = IrType::Struct {
+                kind: StructKind::Custom("Vec".to_string()),
+                type_args: vec![IrType::Primitive(PrimitiveType::U8)],
+            };
+            let output_lir_ty = ctx.registry.ir_type_to_lir(&output_ty, ctx.mono);
+            lower_digest_external(receiver, "finalize", args, Some(output_lir_ty), ctx)
+        }
+
+        MethodKind::Known(StdMethod::ToVec)
+            if ctx
+                .infer_type(receiver)
+                .as_ref()
+                .and_then(vec_elem_type)
+                .is_some() =>
+        {
+            lower_expr(receiver, ctx)
+        }
+
+        MethodKind::Other(name)
+            if matches!(name.as_str(), "is_none" | "is_some")
+                && ctx
+                    .infer_type(receiver)
+                    .as_ref()
+                    .and_then(option_payload_type)
+                    .is_some() =>
+        {
+            let values = lower_expr(receiver, ctx);
+            let tag = values
+                .first()
+                .cloned()
+                .expect("Option value must contain its tag");
+            let expected = ctx.target.iconst(LirType::U8, i64::from(name == "is_some"));
+            vec![ctx.target.icmp(IcmpPred::Eq, tag, expected)]
         }
 
         // Integer wrapping operations are the target's native modular
@@ -5612,6 +6465,27 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     } = &func.kind
     {
         if segments.len() >= 2
+            && segments[segments.len() - 2] == "Vec"
+            && segments.last().map(String::as_str) == Some("new")
+            && args.is_empty()
+        {
+            let elem_ty = type_args.first().unwrap_or_else(|| {
+                panic!("LIR lowering: Vec::new needs an element type from context or turbofish")
+            });
+            return lower_vec_new(elem_ty, ctx);
+        }
+        if segments.len() >= 2
+            && segments[segments.len() - 2] == "Vec"
+            && segments.last().map(String::as_str) == Some("with_capacity")
+            && args.len() == 1
+        {
+            let elem_ty = type_args.first().unwrap_or_else(|| {
+                panic!("LIR lowering: Vec::with_capacity needs an element type from context or turbofish")
+            });
+            return lower_vec_with_capacity(elem_ty, &args[0], ctx);
+        }
+
+        if segments.len() >= 2
             && (segments[segments.len() - 2] == "Array"
                 || segments[segments.len() - 2] == "GenericArray"
                 // `core::array::from_fn(|i| ..)` — a plain `[Elem; W]` Rust
@@ -5637,6 +6511,21 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
             }
             // Fallback if closure form is unexpected.
             panic!("Array::from_fn with unexpected args — expected a single closure argument");
+        }
+
+        // hybrid_array's `Array<T, N>` / `GenericArray<T, N>` is a
+        // transparent one-field tuple struct around `[T; N]`. Its IR type is
+        // represented by the underlying array, so constructing the wrapper
+        // must preserve the argument's flattened elements rather than emit a
+        // nonexistent external `Array` call.
+        if args.len() == 1
+            && matches!(
+                segments.last().map(String::as_str),
+                Some("Array" | "GenericArray")
+            )
+            && type_args.len() >= 2
+        {
+            return lower_expr(&args[0], ctx);
         }
 
         // `Box::<[T; N]>::new(core::array::from_fn(|_| elem))` (see
@@ -5784,9 +6673,17 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         }
     }
 
+    // The prelude Option type is synthesized as a tagged `{ tag, payload }`
+    // struct rather than a module enum, so handle its constructors
+    // explicitly.
+    if func_name == "Some" && args.len() == 1 {
+        let mut values = vec![ctx.target.iconst(LirType::U8, 1)];
+        values.extend(lower_expr(&args[0], ctx));
+        return values;
+    }
+
     // ---- Enum variant construction (Tuple variant) -------------------------
     // Check if this call is `EnumKind::VariantName(args...)` — a tuple variant constructor.
-    // Both "Some" and "Option_Some" (joined path) are recognized.
     if let Some((entry, variant)) = ctx.enum_registry.find_variant(&func_name) {
         let tag = ctx.target.iconst(LirType::U8, variant.discriminant as i64);
         let mut scalars: Vec<T::Value> = vec![tag];
@@ -5923,7 +6820,11 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     let ret_ty = ctx
         .func_sigs
         .get(&func_name)
-        .and_then(|sig| sig.return_type.clone());
+        .and_then(|sig| sig.return_type.clone())
+        .or_else(|| {
+            ctx.infer_digest_new_type(func)
+                .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
+        });
 
     // A declared module function (in `func_sigs`) with a real aggregate ABI
     // (e.g. the host-side `iop_fold_gate` hook) gets its authoritative param
