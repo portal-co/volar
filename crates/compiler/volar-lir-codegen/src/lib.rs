@@ -6162,6 +6162,115 @@ fn lower_vec_push<T: LirTarget<P>, P: Clone>(
     Vec::new()
 }
 
+/// Lower `dest.copy_from_slice(src)` as a native bounded loop
+/// `for k in 0..len { dest[k] = src[start + k] }`. Routing through the
+/// synthesized loop reuses the existing index-store writeback (dest) and
+/// index-load (source) machinery for every shape — Vec handles, slice refs,
+/// and promoted local arrays alike — rather than inventing slice-dest
+/// semantics. The element type and copy length come from the destination,
+/// which must be a Vec, a slice, or a fixed array; the source is an optional
+/// `&base[..]` / `&base[start..end]` slice (or a bare fixed array).
+fn lower_copy_from_slice<T: LirTarget<P>, P: Clone>(
+    receiver: &IrExpr<P>,
+    args: &[IrExpr<P>],
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    use volar_compiler::ir::IrLit;
+    assert_eq!(args.len(), 1, "copy_from_slice expects exactly one source");
+    let dest_ir_ty = ctx
+        .infer_type(receiver)
+        .unwrap_or_else(|| panic!("copy_from_slice: cannot infer destination receiver type"));
+    let (elem_ir_ty, dest_len) = if let Some(elem) = vec_elem_type(&dest_ir_ty) {
+        // Vec destination: runtime length read from its handle.
+        (elem.clone(), None)
+    } else if is_slice_ref(&dest_ir_ty) {
+        (slice_ref_elem(&dest_ir_ty), None)
+    } else {
+        let (elem, n) = array_elem_and_len(&dest_ir_ty, ctx.mono);
+        (elem, Some(n))
+    };
+
+    // Peel the source: a reference to a `base[..]` / `base[start..end]` slice,
+    // or a bare fixed-array element source.
+    let src_arg = &args[0];
+    let (src_base, src_offset) = decompose_slice_source(src_arg);
+
+    let prov = receiver.prov.clone();
+    let side = receiver.side;
+    let node = |kind: IrExprKind<P>| volar_ir_common::Node::new(kind, prov.clone(), side);
+    let stmt_node = |kind: IrStmtKind<P>| volar_ir_common::Node::new(kind, prov.clone(), side);
+
+    let idx_name = fresh_lowering_name("__volar_copy_idx", ctx);
+    let idx_var = node(IrExprKind::Var(idx_name.clone()));
+
+    // Source element: `src_base[start + k]` (or `src_base[k]` when no offset).
+    let src_index = match src_offset {
+        Some(off) => node(IrExprKind::Binary {
+            op: SpecBinOp::Add,
+            left: Box::new(off),
+            right: Box::new(idx_var.clone()),
+        }),
+        None => idx_var.clone(),
+    };
+    let src_elem = node(IrExprKind::Index {
+        base: Box::new(src_base),
+        index: Box::new(src_index),
+    });
+    let dest_elem = node(IrExprKind::Index {
+        base: Box::new(receiver.clone()),
+        index: Box::new(idx_var),
+    });
+    let assign = node(IrExprKind::Assign {
+        left: Box::new(dest_elem),
+        right: Box::new(src_elem),
+    });
+    let body = IrBlock {
+        stmts: vec![stmt_node(IrStmtKind::Semi(assign))],
+        expr: None,
+    };
+
+    // Loop bound: the destination length (fixed for arrays, runtime for Vec/slice).
+    let len_expr = match dest_len {
+        Some(n) => node(IrExprKind::Lit(IrLit::Int(n as i128))),
+        None => node(IrExprKind::MethodCall {
+            receiver: Box::new(receiver.clone()),
+            method: MethodKind::Known(StdMethod::Len),
+            type_args: Vec::new(),
+            args: Vec::new(),
+        }),
+    };
+    let start = node(IrExprKind::Lit(IrLit::Int(0)));
+
+    let prior_loop_mode = ctx.loop_mode;
+    ctx.loop_mode = LoopLowering::Native;
+    lower_bounded_loop(&idx_name, &start, &len_expr, false, &body, ctx);
+    ctx.loop_mode = prior_loop_mode;
+
+    ctx.env.remove(&idx_name);
+    ctx.env_types.remove(&idx_name);
+    Vec::new()
+}
+
+/// Peel a `copy_from_slice` source argument into `(base, optional_start)`.
+/// Accepts `&base[..]`, `&base[start..end]`, `&base`, and bare `base`.
+fn decompose_slice_source<P: Clone>(arg: &IrExpr<P>) -> (IrExpr<P>, Option<IrExpr<P>>) {
+    // Strip a leading reference.
+    let inner: &IrExpr<P> = match &arg.kind {
+        IrExprKind::Unary {
+            op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
+            expr,
+        } => expr,
+        _ => arg,
+    };
+    // A `base[range]` index expression slices into `base`.
+    if let IrExprKind::Index { base, index } = &inner.kind {
+        if let IrExprKind::Range { start, .. } = &index.kind {
+            return ((**base).clone(), start.as_deref().cloned());
+        }
+    }
+    (inner.clone(), None)
+}
+
 fn lower_digest_external<T: LirTarget<P>, P: Clone>(
     receiver: &IrExpr<P>,
     method_name: &str,
@@ -6220,6 +6329,15 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
         }
 
         MethodKind::Known(StdMethod::Push) => lower_vec_push(receiver, args, ctx),
+
+        // `dest.copy_from_slice(src)` copies `src.len()` elements into `dest`.
+        // Synthesize a native bounded loop `for k in 0..len { dest[k] =
+        // src[start + k] }` so the existing index-store writeback (dest) and
+        // index-load (source) machinery handle every receiver/source shape —
+        // Vec handles, slice refs, and promoted local arrays alike. The
+        // element type comes from the destination, which must be a Vec,
+        // slice, or fixed array.
+        MethodKind::Known(StdMethod::CopyFromSlice) => lower_copy_from_slice(receiver, args, ctx),
 
         MethodKind::Known(StdMethod::Update) if ctx.is_digest_handle(receiver) => {
             lower_digest_external(receiver, "update", args, None, ctx)

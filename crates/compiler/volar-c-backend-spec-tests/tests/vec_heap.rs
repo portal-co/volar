@@ -212,3 +212,45 @@ fn vec_repeat_initializes_each_slot_from_the_repeated_value() {
     );
     assert_eq!(output.trim(), "19", "generated C:\n{c_source}");
 }
+
+#[test]
+fn copy_from_slice_into_fixed_array_from_offset_source() {
+    let c_source = lower_root(
+        r#"
+        fn root() -> u64 {
+            let digest = [3u8, 5, 7, 9, 11, 13, 17, 19];
+            let mut sd = [0u8; 3];
+            let mut com = [0u8; 2];
+            sd.copy_from_slice(&digest[..3]);
+            com.copy_from_slice(&digest[3..5]);
+            sd[0] as u64 + sd[1] as u64 + sd[2] as u64 + com[0] as u64 + com[1] as u64
+        }
+        "#,
+    );
+    let output = compile_and_run(
+        &c_source,
+        r#"printf("%llu\n", (unsigned long long)root());"#,
+    );
+    // 3 + 5 + 7 + 9 + 11 = 35
+    assert_eq!(output.trim(), "35", "generated C:\n{c_source}");
+}
+
+#[test]
+fn copy_from_slice_into_vec_from_whole_slice() {
+    let c_source = lower_root(
+        r#"
+        fn root() -> u64 {
+            let src = [4u8, 8, 15, 16, 23, 42];
+            let mut values: Vec<u8> = vec![0u8; 6];
+            values.copy_from_slice(&src[..]);
+            values[0] as u64 + values[4] as u64 + values[5] as u64
+        }
+        "#,
+    );
+    let output = compile_and_run(
+        &c_source,
+        r#"printf("%llu\n", (unsigned long long)root());"#,
+    );
+    // 4 + 23 + 42 = 69
+    assert_eq!(output.trim(), "69", "generated C:\n{c_source}");
+}
