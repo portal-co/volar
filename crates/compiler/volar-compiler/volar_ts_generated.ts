@@ -11203,9 +11203,9 @@ export function spcot_consistency_check(delta: any, v: Block[], w: Block[], extr
   }
   const __volar_let_else_4 = alpha;
   if (!(__volar_let_else_4 !== null && __volar_let_else_4 !== undefined)) {
-    (() => {
-  return return false;
-})();
+        {
+      return false;
+    }
   }
   const a = __volar_let_else_4;
   if (!__equals(xor_block(v[Number(a)], w[Number(a)]), delta))   {
