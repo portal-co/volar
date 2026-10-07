@@ -952,12 +952,14 @@ export class BavcDyn<L> {
     const leaf_count = fieldMul(tau, n);
     const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
     let hidden = [] as any[];
-    for (const [i, d] of deltas.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
-      const leaf_k = fieldAdd(fieldMul(i, n), d);
+    for (let i = 0n; i < tau; i += 1n)     {
+      const leaf_k = fieldAdd(fieldMul(i, n), deltas[Number(i)]);
       const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
       hidden[Number(tree_pos)] = true;
     }
-    for (const node of (Array.from({length: Number(fieldSub(leaf_count, 1n) - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
+    let node = fieldSub(leaf_count, 1n);
+    while ((node > 0n))     {
+      node = fieldSub(node, 1n);
       hidden[Number(node)] = (hidden[Number(fieldAdd(fieldMul(2n, node), 1n))] || hidden[Number(fieldAdd(fieldMul(2n, node), 2n))]);
     }
     let out: Vec<[bigint, bigint[]]> = [] as any[];
@@ -1008,17 +1010,20 @@ export class BavcDyn<L> {
 
   static open(com_bytes: bigint, commitment: BavcCommitmentDyn, deltas: bigint[], tau: bigint, n: bigint): BavcOpeningDyn
   {
-    for (const [i, d] of deltas.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
+    for (let i = 0n; i < tau; i += 1n)     {
+      const d = deltas[Number(i)];
     }
     const leaf_count = fieldMul(tau, n);
     const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
     let hidden = [] as any[];
-    for (const [i, d] of deltas.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
-      const leaf_k = fieldAdd(fieldMul(i, n), d);
+    for (let i = 0n; i < tau; i += 1n)     {
+      const leaf_k = fieldAdd(fieldMul(i, n), deltas[Number(i)]);
       const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
       hidden[Number(tree_pos)] = true;
     }
-    for (const node of (Array.from({length: Number(fieldSub(leaf_count, 1n) - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
+    let node = fieldSub(leaf_count, 1n);
+    while ((node > 0n))     {
+      node = fieldSub(node, 1n);
       const left = fieldAdd(fieldMul(2n, node), 1n);
       const right = fieldAdd(fieldMul(2n, node), 2n);
       hidden[Number(node)] = (hidden[Number(left)] || hidden[Number(right)]);
@@ -1033,12 +1038,14 @@ export class BavcDyn<L> {
     const leaf_count = fieldMul(tau, n);
     const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
     let hidden = [] as any[];
-    for (const [i, d] of deltas.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
-      const leaf_k = fieldAdd(fieldMul(i, n), d);
+    for (let i = 0n; i < tau; i += 1n)     {
+      const leaf_k = fieldAdd(fieldMul(i, n), deltas[Number(i)]);
       const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
       hidden[Number(tree_pos)] = true;
     }
-    for (const node of (Array.from({length: Number(fieldSub(leaf_count, 1n) - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
+    let node = fieldSub(leaf_count, 1n);
+    while ((node > 0n))     {
+      node = fieldSub(node, 1n);
       hidden[Number(node)] = (hidden[Number(fieldAdd(fieldMul(2n, node), 1n))] || hidden[Number(fieldAdd(fieldMul(2n, node), 2n))]);
     }
     let tree: Vec<(bigint[] | undefined)> = [] as any[];

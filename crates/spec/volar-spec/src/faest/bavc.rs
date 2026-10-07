@@ -235,7 +235,8 @@ where
         n: usize,
     ) -> BavcOpening<COM_BYTES> {
         assert_eq!(deltas.len(), tau, "BAVC: deltas.len() must equal tau");
-        for (i, &d) in deltas.iter().enumerate() {
+        for i in 0..tau {
+            let d = deltas[i];
             assert!(d < n, "BAVC: deltas[{}] = {} out of range (n={})", i, d, n);
         }
         let leaf_count = tau * n;
@@ -243,13 +244,15 @@ where
 
         // Mark leaves that are hidden.
         let mut hidden = vec![false; total_nodes];
-        for (i, &d) in deltas.iter().enumerate() {
-            let leaf_k = i * n + d;
+        for i in 0..tau {
+            let leaf_k = i * n + deltas[i];
             let tree_pos = leaf_count - 1 + leaf_k;
             hidden[tree_pos] = true;
         }
         // Propagate "any descendant hidden" upward.
-        for node in (0..(leaf_count - 1)).rev() {
+        let mut node = leaf_count - 1;
+        while node > 0 {
+            node -= 1;
             let left = 2 * node + 1;
             let right = 2 * node + 2;
             hidden[node] = hidden[left] || hidden[right];
@@ -312,15 +315,18 @@ where
         tau: usize,
         n: usize,
     ) -> Vec<(usize, [u8; LAMBDA_BYTES])> {
+        assert_eq!(deltas.len(), tau, "BAVC: deltas.len() must equal tau");
         let leaf_count = tau * n;
         let total_nodes = 2 * leaf_count - 1;
         let mut hidden = vec![false; total_nodes];
-        for (i, &d) in deltas.iter().enumerate() {
-            let leaf_k = i * n + d;
+        for i in 0..tau {
+            let leaf_k = i * n + deltas[i];
             let tree_pos = leaf_count - 1 + leaf_k;
             hidden[tree_pos] = true;
         }
-        for node in (0..(leaf_count - 1)).rev() {
+        let mut node = leaf_count - 1;
+        while node > 0 {
+            node -= 1;
             hidden[node] = hidden[2 * node + 1] || hidden[2 * node + 2];
         }
 
@@ -351,17 +357,21 @@ where
         tau: usize,
         n: usize,
     ) -> Option<Vec<[u8; LAMBDA_BYTES]>> {
+        assert_eq!(deltas.len(), tau, "BAVC: deltas.len() must equal tau");
+        assert_eq!(hidden_commits.len(), tau, "BAVC: hidden_commits.len() must equal tau");
         let leaf_count = tau * n;
         let total_nodes = 2 * leaf_count - 1;
 
         // Mark hidden nodes (same logic as open).
         let mut hidden = vec![false; total_nodes];
-        for (i, &d) in deltas.iter().enumerate() {
-            let leaf_k = i * n + d;
+        for i in 0..tau {
+            let leaf_k = i * n + deltas[i];
             let tree_pos = leaf_count - 1 + leaf_k;
             hidden[tree_pos] = true;
         }
-        for node in (0..(leaf_count - 1)).rev() {
+        let mut node = leaf_count - 1;
+        while node > 0 {
+            node -= 1;
             hidden[node] = hidden[2 * node + 1] || hidden[2 * node + 2];
         }
 

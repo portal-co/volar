@@ -1837,17 +1837,20 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     }
     pub fn open(mut com_bytes: usize, mut commitment: &BavcCommitmentDyn, mut deltas: &[usize], mut tau: usize, mut n: usize) -> BavcOpeningDyn
     {
-        for (i, ..) in deltas.iter().enumerate(){
+        for i in 0.. tau{
+    let d = deltas[i];
 };
         let leaf_count = tau * n;
         let total_nodes = (2 * leaf_count) - 1;
         let mut hidden = vec![];
-        for (i, ..) in deltas.iter().enumerate(){
-    let leaf_k = (i * n) + d;
+        for i in 0.. tau{
+    let leaf_k = (i * n) + deltas[i];
     let tree_pos = (leaf_count - 1) + leaf_k;
     hidden[tree_pos] = true;
 };
-        for node in 0..(leaf_count - 1).rev(){
+        let mut node = leaf_count - 1;
+        while (node > 0){
+    node -= 1;
     let left = (2 * node) + 1;
     let right = (2 * node) + 2;
     hidden[node] = (hidden[left] || hidden[right]);
@@ -1861,12 +1864,14 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
         let leaf_count = tau * n;
         let total_nodes = (2 * leaf_count) - 1;
         let mut hidden = vec![];
-        for (i, ..) in deltas.iter().enumerate(){
-    let leaf_k = (i * n) + d;
+        for i in 0.. tau{
+    let leaf_k = (i * n) + deltas[i];
     let tree_pos = (leaf_count - 1) + leaf_k;
     hidden[tree_pos] = true;
 };
-        for node in 0..(leaf_count - 1).rev(){
+        let mut node = leaf_count - 1;
+        while (node > 0){
+    node -= 1;
     hidden[node] = (hidden[(2 * node) + 1] || hidden[(2 * node) + 2]);
 };
         let mut out: Vec<(usize, [u8; LAMBDA_BYTES])> = Vec::new();
@@ -1878,12 +1883,14 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
         let leaf_count = tau * n;
         let total_nodes = (2 * leaf_count) - 1;
         let mut hidden = vec![];
-        for (i, ..) in deltas.iter().enumerate(){
-    let leaf_k = (i * n) + d;
+        for i in 0.. tau{
+    let leaf_k = (i * n) + deltas[i];
     let tree_pos = (leaf_count - 1) + leaf_k;
     hidden[tree_pos] = true;
 };
-        for node in 0..(leaf_count - 1).rev(){
+        let mut node = leaf_count - 1;
+        while (node > 0){
+    node -= 1;
     hidden[node] = (hidden[(2 * node) + 1] || hidden[(2 * node) + 2]);
 };
         let mut tree: Vec<Option<[u8; LAMBDA_BYTES]>> = vec![];
