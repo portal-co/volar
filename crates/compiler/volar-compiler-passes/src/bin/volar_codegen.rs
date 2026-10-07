@@ -310,6 +310,7 @@ fn parse_spec(spec_dir: &Path, module_name: &str, crate_name: &str) -> IrModule<
                                 vec_lint::VecUseKind::VecType => "Vec type",
                                 vec_lint::VecUseKind::VecCollect => "Vec collect",
                                 vec_lint::VecUseKind::VecCtorPath => "Vec constructor",
+                                vec_lint::VecUseKind::VecLiteral => "Vec literal",
                                 vec_lint::VecUseKind::VecRepeat => "Vec repetition",
                             }
                         );

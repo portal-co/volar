@@ -19,6 +19,7 @@
 //! | [`VecUseKind::VecType`] | `IrType::Vector` (parses/prints as `Vec<T>`) or `IrType::Struct { Custom("Vec"), .. }` in a signature, field, or binding type |
 //! | [`VecUseKind::VecCollect`] | `IrExprKind::IterPipeline` with terminal `IterStep::Collect` / `CollectTyped` — materializes a `Vec` |
 //! | [`VecUseKind::VecCtorPath`] | `IrExprKind::Path` resolving to `Vec::new` / `Vec::with_capacity` |
+//! | [`VecUseKind::VecLiteral`] | `IrExprKind::Array` from `vec![a, b]` |
 //! | [`VecUseKind::VecRepeat`] | `IrExprKind::VecRepeat` from `vec![elem; len]` |
 //!
 //! # Exemptions
@@ -71,6 +72,8 @@ pub enum VecUseKind {
     VecCollect,
     /// A `Vec::new` / `Vec::with_capacity` constructor path.
     VecCtorPath,
+    /// A `vec![a, b]` literal that materializes a Vec.
+    VecLiteral,
     /// A `vec![elem; len]` repetition that materializes a Vec.
     VecRepeat,
 }
@@ -427,7 +430,17 @@ fn lint_expr<P: Clone>(
                 lint_expr(e, path, exempt, errors);
             }
         }
-        IrExprKind::Tuple(es) | IrExprKind::Array(es) | IrExprKind::FixedArray(es) => {
+        IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                lint_expr(e, path, exempt, errors);
+            }
+        }
+        IrExprKind::Array(es) => {
+            errors.push(VecLintError {
+                path: path.to_string(),
+                kind: VecUseKind::VecLiteral,
+                note: "vec![a, b] materializes a Vec; use a fixed array or presized storage".into(),
+            });
             for e in es {
                 lint_expr(e, path, exempt, errors);
             }
@@ -640,6 +653,30 @@ mod tests {
         )));
         let errors = lint_module(&module_with(f), &no_exempt);
         assert!(errors.iter().any(|e| e.kind == VecUseKind::VecCtorPath));
+    }
+
+    #[test]
+    fn vec_literal_macro_is_flagged() {
+        let module = volar_compiler::parser::parse_source(
+            "fn make() { let values = vec![1u8, 2u8]; }",
+            "vec_literal",
+            &[],
+        )
+        .unwrap();
+        let errors = lint_module(&module, &no_exempt);
+        assert!(errors.iter().any(|e| e.kind == VecUseKind::VecLiteral));
+    }
+
+    #[test]
+    fn parsed_fixed_array_literal_is_clean() {
+        let module = volar_compiler::parser::parse_source(
+            "fn make() -> [u8; 2] { [1u8, 2u8] }",
+            "fixed_array_literal",
+            &[],
+        )
+        .unwrap();
+        let errors = lint_module(&module, &no_exempt);
+        assert!(errors.is_empty(), "fixed arrays are allowed: {errors:?}");
     }
 
     #[test]

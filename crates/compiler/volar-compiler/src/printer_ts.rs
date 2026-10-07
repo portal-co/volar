@@ -7787,12 +7787,14 @@ fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
                 .map(|elem| infer_expr_ir_type(elem, cx))
                 .collect::<Option<Vec<_>>>()?,
         )),
-        IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
-            let elem_ty = infer_expr_ir_type(elems.first()?, cx)?;
-            Some(IrType::Vector {
-                elem: Box::new(elem_ty),
-            })
-        }
+        IrExprKind::Array(elems) => Some(IrType::Vector {
+            elem: Box::new(infer_expr_ir_type(elems.first()?, cx)?),
+        }),
+        IrExprKind::FixedArray(elems) => Some(IrType::Array {
+            kind: ArrayKind::FixedArray,
+            elem: Box::new(infer_expr_ir_type(elems.first()?, cx)?),
+            len: ArrayLength::Const(elems.len()),
+        }),
         IrExprKind::Repeat { elem, .. } | IrExprKind::VecRepeat { elem, .. } => {
             Some(IrType::Vector {
                 elem: Box::new(infer_expr_ir_type(elem, cx)?),

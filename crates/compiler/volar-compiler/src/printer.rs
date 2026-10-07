@@ -3430,6 +3430,46 @@ mod tests {
     }
 
     #[test]
+    fn parsed_rust_array_literal_generated_rust_compiles_and_runs() {
+        let module = parse_source(
+            "fn make() -> [u8; 2] { [1u8, 2u8] }",
+            "array_literal_printer",
+            &[],
+        )
+        .unwrap();
+        let generated = format!(
+            "{}\nfn main() {{ assert_eq!(make(), [1, 2]); }}",
+            DisplayRust(ModuleWriter {
+                module: &module,
+                emit_async: false,
+            })
+        );
+        let dir = std::env::temp_dir().join(format!(
+            "volar-array-literal-printer-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("main.rs");
+        let binary = dir.join("main");
+        std::fs::write(&source, generated).unwrap();
+        let compile = std::process::Command::new("rustc")
+            .args(["--edition=2021"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "generated fixed-array Rust must compile:\\n{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new(&binary).output().unwrap();
+        assert!(run.status.success(), "generated fixed-array Rust must run");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn bounded_loop_range_skips_redundant_parens_on_binary() {
         // for i in a + 1..b { ... } -- start/end are already delimited by
         // `for .. in`/`..`/the trailing `{`.

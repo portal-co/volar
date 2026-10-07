@@ -1730,8 +1730,9 @@ pub enum IrExprKind<P: Clone = ()> {
         rest: Option<Box<IrExpr<P>>>,
     },
     Tuple(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrExpr<P>>),
+    /// A Vec literal (`vec![a, b, c]`); fixed-size Rust arrays use `FixedArray`.
     Array(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrExpr<P>>),
-    /// A fixed-size array literal `[a, b, c]` (as opposed to `Array`, which prints as `vec![...]`).
+    /// A fixed-size Rust array literal `[a, b, c]`.
     FixedArray(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrExpr<P>>),
     Repeat {
         #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]

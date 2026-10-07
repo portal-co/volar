@@ -306,6 +306,16 @@ mod vec_repeat_macro_tests {
             Some(IrExprKind::Array(elems)) if elems.len() == 2
         ));
     }
+
+    #[test]
+    fn rust_array_literal_is_not_a_vec_literal() {
+        let module =
+            parse_source("fn make() -> [u8; 2] { [1u8, 2u8] }", "array_literal", &[]).unwrap();
+        assert!(matches!(
+            module.functions[0].body.expr.as_deref().map(|expr| &expr.kind),
+            Some(IrExprKind::FixedArray(elems)) if elems.len() == 2
+        ));
+    }
 }
 
 /// Extract derive trait names from `#[derive(...)]` attributes.
@@ -1490,7 +1500,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             elem: Box::new(convert_expr(&r.expr)?),
             len: Box::new(convert_expr(&r.len)?),
         })),
-        Expr::Array(a) => Ok(ir_expr(IrExprKind::Array(
+        Expr::Array(a) => Ok(ir_expr(IrExprKind::FixedArray(
             a.elems
                 .iter()
                 .map(convert_expr)

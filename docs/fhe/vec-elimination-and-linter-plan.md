@@ -90,9 +90,10 @@ lintable:
    into a Vec". Also `IrExprKind::Path` resolving to `Vec::new` /
    `Vec::with_capacity` (TS printer pattern-matches these at
    `printer_ts.rs:4630-4631`).
-3. **Macro position:** the parser preserves list-form `vec![a, b]` as a
-   vector literal and repeat-form `vec![elem; len]` as `IrExprKind::VecRepeat`.
-   The linter rejects the repeat form unless the enclosing item has a valid
+3. **Macro position:** Rust `[a, b]` parses as a fixed `FixedArray`, while
+   list-form `vec![a, b]` remains a distinct Vec literal (`IrExprKind::Array`)
+   and repeat-form `vec![elem; len]` is `IrExprKind::VecRepeat`. The linter
+   rejects both Vec literal forms unless the enclosing item has a valid
    runtime-boundary exemption. LIR lowering remains fail-closed for dynamic
    Vec allocation; the Rust and TypeScript printers preserve the source form.
 
@@ -213,6 +214,7 @@ pub enum VecUseKind {
     VecType,        // IrType::Struct{Custom("Vec")} in sig/field
     VecCollect,     // IterPipeline terminal Collect/CollectTyped
     VecCtorPath,    // Path resolving to Vec::new / Vec::with_capacity
+    VecLiteral,     // IrExprKind::Array from vec![a, b]
     VecRepeat,      // IrExprKind::VecRepeat from vec![elem; len]
 }
 pub fn lint_module_no_vec(module: &IrModule<..>) -> Vec<VecLintError>;

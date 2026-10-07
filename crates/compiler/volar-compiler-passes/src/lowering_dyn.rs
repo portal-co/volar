@@ -2864,7 +2864,10 @@ fn source_expr_type(expr: &IrExpr, scope: &FnScope<'_>, ctx: &LoweringContext) -
                 _ => None,
             }
         }
-        IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
+        IrExprKind::Array(elems) => Some(IrType::Vector {
+            elem: Box::new(source_expr_type(elems.first()?, scope, ctx)?),
+        }),
+        IrExprKind::FixedArray(elems) => {
             let elem = elems
                 .first()
                 .and_then(|e| source_expr_type(e, scope, ctx))?;
