@@ -1437,10 +1437,45 @@ fn infer_expr_type<P: Clone>(
             let elem_ty = elems
                 .first()
                 .and_then(|e| infer_expr_type(e, env, vars, structs))?;
+            Some(IrType::Struct {
+                kind: StructKind::Custom("Vec".to_owned()),
+                type_args: vec![elem_ty],
+            })
+        }
+        IrExprKind::VecRepeat { elem, .. } => {
+            let elem_ty = infer_expr_type(elem, env, vars, structs)?;
+            Some(IrType::Struct {
+                kind: StructKind::Custom("Vec".to_owned()),
+                type_args: vec![elem_ty],
+            })
+        }
+        IrExprKind::Repeat { elem, len } => {
+            let elem_ty = infer_expr_type(elem, env, vars, structs)?;
+            let len = match &len.kind {
+                IrExprKind::Lit(IrLit::Int(value)) => ArrayLength::Const(*value as usize),
+                IrExprKind::Var(name) => env
+                    .const_params
+                    .get(name)
+                    .or_else(|| env.consts.get(name.as_str()))
+                    .copied()
+                    .map(ArrayLength::Const)
+                    .unwrap_or_else(|| ArrayLength::TypeParam(name.clone())),
+                IrExprKind::Path { segments, .. }
+                    if segments.len() == 2 && segments[1] == "USIZE" =>
+                {
+                    env.const_params
+                        .get(&segments[0])
+                        .or_else(|| env.consts.get(segments[0].as_str()))
+                        .copied()
+                        .map(ArrayLength::Const)
+                        .unwrap_or_else(|| ArrayLength::TypeParam(segments[0].clone()))
+                }
+                _ => return None,
+            };
             Some(IrType::Array {
                 kind: ArrayKind::FixedArray,
                 elem: Box::new(elem_ty),
-                len: ArrayLength::Const(elems.len()),
+                len,
             })
         }
         IrExprKind::StructExpr {
@@ -1458,17 +1493,6 @@ fn infer_expr_type<P: Clone>(
         },
         // Arithmetic preserves the (left) operand's type.
         IrExprKind::Binary { left, .. } => infer_expr_type(left, env, vars, structs),
-        // `[a, b, c]`: fixed array of the elements' common type.
-        IrExprKind::FixedArray(elems) => {
-            let elem_ty = elems
-                .first()
-                .and_then(|e| infer_expr_type(e, env, vars, structs))?;
-            Some(IrType::Array {
-                kind: ArrayKind::FixedArray,
-                elem: Box::new(elem_ty),
-                len: ArrayLength::Const(elems.len()),
-            })
-        }
         // `(a, b)`: tuple of the elements' types.
         IrExprKind::Tuple(elems) => {
             let tys: Option<Vec<IrType>> = elems
@@ -1489,12 +1513,30 @@ fn infer_expr_type<P: Clone>(
             match base_ty {
                 IrType::Array { elem, .. } => Some(*elem),
                 IrType::Vector { elem } => Some(*elem),
+                IrType::Struct {
+                    kind: StructKind::Custom(name),
+                    mut type_args,
+                } if name == "Vec" && type_args.len() == 1 => type_args.pop(),
                 _ => None,
             }
         }
         // `.clone()` / `.deref()` preserve the receiver's type — resolving
         // through it keeps call-arg inference alive for arguments like
         // `delta.clone()` passed to operator-impl methods.
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Known(volar_compiler::ir::StdMethod::Len),
+            ..
+        } if matches!(
+            infer_expr_type(receiver, env, vars, structs),
+            Some(IrType::Struct {
+                kind: StructKind::Custom(ref name),
+                type_args,
+            }) if name == "Vec" && type_args.len() == 1
+        ) =>
+        {
+            Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::Usize))
+        }
         IrExprKind::MethodCall { receiver, .. } => infer_expr_type(receiver, env, vars, structs),
         IrExprKind::Unary {
             op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
@@ -2937,6 +2979,11 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
         FixedArray(elems) => FixedArray(elems.iter().map(|e| mono_expr(e, env)).collect()),
 
         Repeat { elem, len } => Repeat {
+            elem: Box::new(mono_expr(elem, env)),
+            len: Box::new(mono_expr(len, env)),
+        },
+
+        VecRepeat { elem, len } => VecRepeat {
             elem: Box::new(mono_expr(elem, env)),
             len: Box::new(mono_expr(len, env)),
         },

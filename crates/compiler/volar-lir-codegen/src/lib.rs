@@ -249,6 +249,9 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
 
             IrExprKind::Index { base, .. } => {
                 let base_ty = self.infer_type(base)?;
+                if let Some(elem) = vec_elem_type(&base_ty) {
+                    return Some(elem.clone());
+                }
                 match &base_ty {
                     IrType::Array { elem, .. } => Some(*elem.clone()),
                     // Reference<Array<T>> (including slices): element type is T
@@ -291,6 +294,19 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 method: MethodKind::Known(StdMethod::Clone | StdMethod::Deref),
                 ..
             } => self.infer_type(receiver),
+
+            IrExprKind::MethodCall {
+                receiver,
+                method: MethodKind::Known(StdMethod::Len),
+                ..
+            } if self
+                .infer_type(receiver)
+                .as_ref()
+                .and_then(vec_elem_type)
+                .is_some() =>
+            {
+                Some(IrType::Primitive(PrimitiveType::Usize))
+            }
 
             // User-defined method: resolve through the monomorphization plan
             // (the receiver's type is the method's receiver type, not the
@@ -1660,6 +1676,17 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                         }
                     }
                 }
+                // A `VecRepeat` element such as `None` can require the let's
+                // declared `Vec<T>` element type for inference. Use that type
+                // when available before falling back to expression inference.
+                if let IrExprKind::VecRepeat { elem, len } = &init_expr.kind {
+                    if let Some(elem_ty) = ty.as_ref().and_then(vec_elem_type).cloned() {
+                        let vals = lower_vec_repeat(elem, len, Some(&elem_ty), ctx);
+                        bind_pattern(pattern, vals, ty.as_ref(), ctx);
+                        return;
+                    }
+                }
+
                 // When the init expression is a literal and we have a type
                 // annotation, pass the type hint so the literal gets the
                 // correct narrow type (e.g. U8 instead of U64).
@@ -1771,6 +1798,12 @@ fn bind_ident_mem_backed<T: LirTarget<P>, P: Clone>(
         IrType::Reference { elem, .. } => elem.as_ref().clone(),
         other => other.clone(),
     };
+    // Vec's flat pointer/length pair already refers to mutable heap storage;
+    // copying it into a stack aggregate would add no useful promotion and can
+    // require a synthetic Vec struct registration for a local-only value.
+    if vec_elem_type(&base_ty).is_some() {
+        return false;
+    }
     // Promotable aggregate layout: flat arrays get element-granularity slots
     // (runtime-indexed stores); structs and tuples get one whole-value slot.
     let layout: PromotedLayout = match &base_ty {
@@ -2148,9 +2181,8 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
 
         // ---- Phase 2: fixed-size array literal ------------------------------
         IrExprKind::FixedArray(elems) => lower_fixed_array(elems, ctx),
-        IrExprKind::Array(_) | IrExprKind::VecRepeat { .. } => {
-            unimplemented!("LIR lowering: Vec literals require dynamic vector allocation")
-        }
+        IrExprKind::Array(elems) => lower_vec_literal(elems, ctx),
+        IrExprKind::VecRepeat { elem, len } => lower_vec_repeat(elem, len, None, ctx),
         IrExprKind::Repeat { elem, len } => lower_repeat_array(elem, len, ctx),
 
         // ---- Phase 2: array generation via closure --------------------------
@@ -3121,6 +3153,174 @@ fn lower_fixed_array<T: LirTarget<P>, P: Clone>(
     elems.iter().flat_map(|e| lower_expr(e, ctx)).collect()
 }
 
+/// Return the element IR type for an owned `Vec<T>` (possibly behind refs).
+fn vec_elem_type(ty: &IrType) -> Option<&IrType> {
+    match ty {
+        IrType::Struct {
+            kind: StructKind::Custom(name),
+            type_args,
+        } if name == "Vec" && type_args.len() == 1 => type_args.first(),
+        IrType::Reference { elem, .. } => vec_elem_type(elem),
+        _ => None,
+    }
+}
+
+/// Allocate a Vec's backing storage at the current program point. Dynamic
+/// allocation is required so runtime lengths remain in scope and unsupported
+/// targets fail explicitly rather than silently substituting fixed storage.
+fn heap_alloc_dynamic<T: LirTarget<P>, P: Clone>(
+    elem_ty: LirType,
+    count: T::Value,
+    ctx: &mut LowerCtx<T, P>,
+) -> T::Value {
+    ctx.target
+        .heap_alloc_ext()
+        .expect("dynamic Vec lowering requires a target with HeapAllocExt")
+        .heap_alloc_dynamic(elem_ty, count)
+        .expect("dynamic Vec lowering requires heap_alloc_dynamic support")
+}
+
+/// Lower `vec![elem; len]` to a heap-backed `{ data, len }` value.
+///
+/// The element expression is evaluated once, as Rust's repeat form requires,
+/// then its Copy value is stored into each runtime-indexed slot. Non-Copy
+/// element types fail closed until their `Clone` implementation can be
+/// represented and invoked by LIR lowering.
+fn lower_vec_repeat<T: LirTarget<P>, P: Clone>(
+    elem: &IrExpr<P>,
+    len: &IrExpr<P>,
+    elem_ty_hint: Option<&IrType>,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let elem_ir_ty = elem_ty_hint
+        .cloned()
+        .or_else(|| ctx.infer_type(elem))
+        .unwrap_or_else(|| panic!("LIR lowering: cannot infer Vec repetition element type"));
+    if !is_copy_vec_repeat_type(&elem_ir_ty) {
+        unimplemented!(
+            "LIR lowering: Vec repetition currently requires a Copy element type; Clone lowering is not implemented"
+        );
+    }
+    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+    let elem_values = lower_expr(elem, ctx);
+    let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+    assert_eq!(
+        elem_values.len(),
+        elem_width,
+        "LIR lowering: Vec repetition element has {} scalars, expected {elem_width}",
+        elem_values.len()
+    );
+
+    let count = into_scalar(lower_expr(len, ctx), "Vec repetition length");
+    let count = if ctx.target.value_scalar_type(&count) == LirType::U64 {
+        count
+    } else {
+        ctx.target.zext(count, LirType::U64)
+    };
+    let vec_len = count.clone();
+    let data = heap_alloc_dynamic(elem_lir_ty.clone(), count, ctx);
+
+    let header = ctx.target.create_block();
+    let body = ctx.target.create_block();
+    let exit = ctx.target.create_block();
+    let index = ctx.target.add_block_param(header.clone(), LirType::U64);
+    let zero = ctx.target.iconst(LirType::U64, 0);
+    ctx.target
+        .jump(header.clone(), BranchTarget::args(vec![zero]));
+
+    ctx.target.switch_to_block(header.clone());
+    ctx.current_block = header.clone();
+    let keep_going = ctx
+        .target
+        .icmp(IcmpPred::Ult, index.clone(), vec_len.clone());
+    ctx.target.branch(
+        keep_going,
+        body.clone(),
+        BranchTarget::args([]),
+        exit.clone(),
+        BranchTarget::args([]),
+    );
+
+    ctx.target.switch_to_block(body.clone());
+    ctx.current_block = body;
+    ctx.target
+        .ptr_index_store(data.clone(), index.clone(), &elem_values, &elem_lir_ty);
+    let one = ctx.target.iconst(LirType::U64, 1);
+    let next = ctx.target.add(index, one);
+    ctx.target.jump(
+        header,
+        BranchTarget::args(vec![next]).with_reentry(ReentryHint::bounded_loop_ascending()),
+    );
+
+    ctx.target.switch_to_block(exit.clone());
+    ctx.current_block = exit;
+    vec![data, vec_len]
+}
+
+/// A conservative subset whose values are Copy by construction. Structs and
+/// custom types are rejected because this IR does not carry enough trait
+/// information to prove that their Rust `Clone` operation is equivalent to a
+/// bitwise/value copy.
+fn is_copy_vec_repeat_type(ty: &IrType) -> bool {
+    match ty {
+        IrType::Primitive(_) | IrType::FnPtr { .. } => true,
+        IrType::Reference { mutable: false, .. } => true,
+        IrType::Array { elem, .. } => is_copy_vec_repeat_type(elem),
+        IrType::Tuple(elems) => elems.iter().all(is_copy_vec_repeat_type),
+        _ => false,
+    }
+}
+
+/// Lower a list-form `vec![a, b, ...]`, evaluating and storing each element
+/// into dynamically allocated backing storage.
+fn lower_vec_literal<T: LirTarget<P>, P: Clone>(
+    elems: &[IrExpr<P>],
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let Some(first) = elems.first() else {
+        unimplemented!("LIR lowering: empty Vec literals need an inferred element type")
+    };
+    let elem_ir_ty = ctx
+        .infer_type(first)
+        .unwrap_or_else(|| panic!("LIR lowering: cannot infer Vec literal element type"));
+    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+    let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+    let mut values = Vec::with_capacity(elems.len());
+    for elem in elems {
+        let elem_ty = ctx
+            .infer_type(elem)
+            .unwrap_or_else(|| panic!("LIR lowering: cannot infer Vec literal element type"));
+        assert_eq!(
+            mono_type(&elem_ty, ctx.mono),
+            mono_type(&elem_ir_ty, ctx.mono),
+            "LIR lowering: Vec literal elements must have a homogeneous type"
+        );
+        let flat = lower_expr(elem, ctx);
+        assert_eq!(
+            flat.len(),
+            elem_width,
+            "LIR lowering: Vec literal element has {} scalars, expected {elem_width}",
+            flat.len()
+        );
+        values.push(flat);
+    }
+    let count = ctx.target.iconst(
+        LirType::U64,
+        i64::try_from(elems.len()).expect("Vec length exceeds i64"),
+    );
+    let vec_len = count.clone();
+    let data = heap_alloc_dynamic(elem_lir_ty.clone(), count, ctx);
+    for (index, flat) in values.into_iter().enumerate() {
+        let index = ctx.target.iconst(
+            LirType::U64,
+            i64::try_from(index).expect("Vec index exceeds i64"),
+        );
+        ctx.target
+            .ptr_index_store(data.clone(), index, &flat, &elem_lir_ty);
+    }
+    vec![data, vec_len]
+}
+
 /// Lower a fixed-size `[value; N]` literal by concretely unrolling it.
 ///
 /// LIR arrays are flattened values, so this must duplicate the element's
@@ -3145,11 +3345,14 @@ fn is_zero_default_expr<P: Clone>(expr: &IrExpr<P>) -> bool {
         IrExprKind::Call { func, args } if args.is_empty() => {
             matches!(&func.kind, IrExprKind::Path { segments, .. } if segments.last().map(String::as_str) == Some("default"))
         }
-        // A tuple of recognized-default elements (e.g. `_and_pool`'s own
-        // `(Vope::default(), Array::default())` element type) is itself
-        // recognized-default — `calloc`'s zero-init is still correct field
-        // by field.
-        IrExprKind::Tuple(elems) => elems.iter().all(is_zero_default_expr),
+        // A tuple or fixed aggregate of recognized-default elements is itself
+        // recognized-default — calloc's zero-init matches field by field.
+        IrExprKind::Tuple(elems) | IrExprKind::FixedArray(elems) => {
+            elems.iter().all(is_zero_default_expr)
+        }
+        IrExprKind::Repeat { elem, .. } => is_zero_default_expr(elem),
+        IrExprKind::Cast { expr, .. } => is_zero_default_expr(expr),
+        IrExprKind::Path { segments, .. } => segments.last().map(String::as_str) == Some("None"),
         _ => false,
     }
 }
@@ -4578,6 +4781,19 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
         )
     });
 
+    // Owned Vec values carry a typed data pointer and runtime length; their
+    // elements are always accessed through the heap rather than a flat mux.
+    if let Some(elem_ir_ty) = vec_elem_type(&base_ir_ty) {
+        let elem_lir_ty = ctx.registry.ir_type_to_lir(elem_ir_ty, ctx.mono);
+        let fields = lower_expr(base, ctx);
+        let ptr = fields
+            .first()
+            .cloned()
+            .expect("Vec fat pointer must contain its data pointer");
+        let idx_val = into_scalar(lower_expr(index, ctx), "Vec index");
+        return ctx.target.ptr_index_load(ptr, idx_val, &elem_lir_ty);
+    }
+
     // Pointer-based indexing: Reference<Slice<T>> → Ptr(T) in LIR.
     // Use ptr_index_load instead of the flat mux tree.
     if is_slice_ref(&base_ir_ty) {
@@ -4735,7 +4951,18 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
                 panic!("Assign: could not infer indexed base type in '{caller}' ({detail})")
             });
 
-            if is_slice_ref(&base_ir_ty) {
+            if let Some(elem_ir_ty) = vec_elem_type(&base_ir_ty) {
+                let elem_lir_ty = ctx.registry.ir_type_to_lir(elem_ir_ty, ctx.mono);
+                let fields = lower_expr(base, ctx);
+                let ptr = fields
+                    .first()
+                    .cloned()
+                    .expect("Vec fat pointer must contain its data pointer");
+                let idx_val = into_scalar(lower_expr(index, ctx), "Vec assign index");
+                let rhs_vals = lower_expr(right, ctx);
+                ctx.target
+                    .ptr_index_store(ptr, idx_val, &rhs_vals, &elem_lir_ty);
+            } else if is_slice_ref(&base_ir_ty) {
                 // Pointer-based store: ptr[idx] = pack(rhs_vals)
                 let elem_ir_ty = slice_ref_elem(&base_ir_ty);
                 let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
@@ -5161,6 +5388,25 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
     match method {
         // `.clone()` and `.deref()` are transparent in value semantics.
         MethodKind::Known(StdMethod::Clone | StdMethod::Deref) => lower_expr(receiver, ctx),
+
+        // Vec stores its dynamic length alongside the data pointer in its LIR
+        // fat-pointer representation. Preserve that length directly rather
+        // than emitting an unresolved external call to `Vec::len`.
+        MethodKind::Known(StdMethod::Len)
+            if ctx
+                .infer_type(receiver)
+                .as_ref()
+                .and_then(vec_elem_type)
+                .is_some() =>
+        {
+            let fields = lower_expr(receiver, ctx);
+            vec![
+                fields
+                    .get(1)
+                    .cloned()
+                    .expect("Vec fat pointer must contain its runtime length"),
+            ]
+        }
 
         // Integer wrapping operations are the target's native modular
         // operations. Emitting an extern here incorrectly requires a runtime
