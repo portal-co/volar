@@ -6786,6 +6786,22 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
                         };
                         return lower_default_zero_values(&struct_ty, ctx);
                     }
+                    // External / unregistered nominal type (e.g. the SHAKE
+                    // sponge state `Shake128` used by the FAEST transcript).
+                    // Its concrete layout lives outside the parsed module, so
+                    // the ABI maps it to an opaque machine word (`build_enum_registry`
+                    // and the lenient `ir_type_to_lir_inner` `None => U64` arm both
+                    // use width 1). Emit the matching width-1 zero handle so the
+                    // value's flattened width agrees with the ABI.
+                    if ctx
+                        .module_structs
+                        .iter()
+                        .all(|s| s.kind.to_string() != segments[0])
+                        && !segments[0].is_empty()
+                        && segments[0].chars().next().is_some_and(|c| c.is_uppercase())
+                    {
+                        return vec![ctx.target.iconst(LirType::U64, 0)];
+                    }
                 }
             }
         }
@@ -6806,7 +6822,15 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         let tag = ctx.target.iconst(LirType::U8, variant.discriminant as i64);
         let mut scalars: Vec<T::Value> = vec![tag];
         for a in args {
-            scalars.extend(lower_expr(a, ctx));
+            let v = lower_expr(a, ctx);
+            if func_name.contains("Sponge") {
+                eprintln!(
+                    "[probe] {func_name} payload arg -> {} scalars, max_w={}",
+                    v.len(),
+                    entry.max_payload_width
+                );
+            }
+            scalars.extend(v);
         }
         let max_w = entry.max_payload_width;
         while scalars.len() < 1 + max_w {
