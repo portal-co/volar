@@ -627,6 +627,13 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             dump_expr(out, len, level);
             let _ = write!(out, "]");
         }
+        IrExprKind::VecRepeat { elem, len } => {
+            let _ = write!(out, "vec![");
+            dump_expr(out, elem, level);
+            let _ = write!(out, "; ");
+            dump_expr(out, len, level);
+            let _ = write!(out, "]");
+        }
         IrExprKind::RawMap {
             receiver,
             elem_var,

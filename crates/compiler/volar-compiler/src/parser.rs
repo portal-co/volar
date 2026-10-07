@@ -274,6 +274,40 @@ mod typed_integer_literal_tests {
     }
 }
 
+#[cfg(test)]
+mod vec_repeat_macro_tests {
+    use super::parse_source;
+    use crate::ir::IrExprKind;
+
+    #[test]
+    fn vec_repeat_macro_preserves_dynamic_length() {
+        let module = parse_source(
+            "fn make(n: usize) -> Vec<bool> { vec![false; n] }",
+            "vec_repeat",
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            module.functions[0]
+                .body
+                .expr
+                .as_deref()
+                .map(|expr| &expr.kind),
+            Some(IrExprKind::VecRepeat { .. })
+        ));
+    }
+
+    #[test]
+    fn vec_list_macro_remains_a_vector_literal() {
+        let module =
+            parse_source("fn make() -> Vec<u8> { vec![1u8, 2u8] }", "vec_list", &[]).unwrap();
+        assert!(matches!(
+            module.functions[0].body.expr.as_deref().map(|expr| &expr.kind),
+            Some(IrExprKind::Array(elems)) if elems.len() == 2
+        ));
+    }
+}
+
 /// Extract derive trait names from `#[derive(...)]` attributes.
 ///
 /// Returns an empty `Vec` if no `#[derive(...)]` attribute is found, which
@@ -1485,25 +1519,35 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                     args: Vec::new(),
                 }));
             }
-            // For vec!, parse as an array literal
+            // Preserve the two supported vec! forms distinctly: list syntax
+            // becomes a vector literal, while `vec![elem; len]` must retain
+            // its runtime length rather than silently becoming `vec![]`.
             if name == "vec" {
-                let tokens = m.mac.tokens.clone();
-                // Wrap in brackets and parse as ExprArray
                 let bracketed =
                     proc_macro2::TokenStream::from_iter([proc_macro2::TokenTree::Group(
-                        proc_macro2::Group::new(proc_macro2::Delimiter::Bracket, tokens),
+                        proc_macro2::Group::new(
+                            proc_macro2::Delimiter::Bracket,
+                            m.mac.tokens.clone(),
+                        ),
                     )]);
-                let as_array: syn::Result<syn::ExprArray> = syn::parse2(bracketed);
-                if let Ok(arr) = as_array {
-                    let ir_elems = arr
-                        .elems
-                        .iter()
-                        .map(convert_expr)
-                        .collect::<Result<Vec<_>>>()?;
-                    return Ok(ir_expr(IrExprKind::Array(ir_elems)));
-                }
-                // Fallback: empty vec
-                return Ok(ir_expr(IrExprKind::Array(Vec::new())));
+                let expr: syn::Expr = syn::parse2(bracketed).map_err(|error| {
+                    CompilerError::ParseError(format!("invalid vec! macro input: {error}"))
+                })?;
+                return match expr {
+                    syn::Expr::Array(arr) => Ok(ir_expr(IrExprKind::Array(
+                        arr.elems
+                            .iter()
+                            .map(convert_expr)
+                            .collect::<Result<Vec<_>>>()?,
+                    ))),
+                    syn::Expr::Repeat(repeat) => Ok(ir_expr(IrExprKind::VecRepeat {
+                        elem: Box::new(convert_expr(&repeat.expr)?),
+                        len: Box::new(convert_expr(&repeat.len)?),
+                    })),
+                    other => Err(CompilerError::Unsupported(format!(
+                        "vec! macro form: {other:?}"
+                    ))),
+                };
             }
             // For typenum_usize, parse the token stream as a type and convert it
             if name == "typenum_usize" {

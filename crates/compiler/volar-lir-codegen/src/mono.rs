@@ -1867,7 +1867,7 @@ fn substitute_projection_output_in_expr<P: Clone>(
             }
             let _ = fields;
         }
-        IrExprKind::Repeat { elem, len, .. } => {
+        IrExprKind::Repeat { elem, len, .. } | IrExprKind::VecRepeat { elem, len } => {
             substitute_projection_output_in_expr(elem, generic, value);
             substitute_projection_output_in_expr(len, generic, value);
         }

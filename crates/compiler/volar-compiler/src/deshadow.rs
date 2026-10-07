@@ -151,7 +151,9 @@ fn expr_refs_any(expr: &IrExpr, names: &HashSet<String>) -> bool {
         IrExprKind::WhileLoop { cond, body } => {
             expr_refs_any(cond, names) || block_refs_any(body, names)
         }
-        IrExprKind::Repeat { elem, len } => expr_refs_any(elem, names) || expr_refs_any(len, names),
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
+            expr_refs_any(elem, names) || expr_refs_any(len, names)
+        }
         IrExprKind::RawMap { receiver, body, .. } => {
             expr_refs_any(receiver, names) || expr_refs_any(body, names)
         }
@@ -472,7 +474,7 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
             rename_var_in_expr(cond, old, new_name);
             rename_var_in_block(body, old, new_name);
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             rename_var_in_expr(elem, old, new_name);
             rename_var_in_expr(len, old, new_name);
         }
@@ -810,7 +812,7 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
             inner.insert(index_var.clone());
             deshadow_expr(body, &mut inner);
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             deshadow_expr(elem, scope);
             deshadow_expr(len, scope);
         }

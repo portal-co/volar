@@ -218,7 +218,7 @@ fn collect_calls_expr(
                 collect_calls_expr(e, name_to_idx, out);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_calls_expr(elem, name_to_idx, out);
             collect_calls_expr(len, name_to_idx, out);
         }

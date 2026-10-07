@@ -146,7 +146,7 @@ fn collect_callee_names_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
                 collect_callee_names_expr(e, out);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_callee_names_expr(elem, out);
             collect_callee_names_expr(len, out);
         }
@@ -1805,6 +1805,13 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 self.sub(len).fmt(f)?;
                 write!(f, "]")?;
             }
+            IrExprKind::VecRepeat { elem, len } => {
+                write!(f, "vec![")?;
+                self.sub(elem).fmt(f)?;
+                write!(f, "; ")?;
+                self.sub(len).fmt(f)?;
+                write!(f, "]")?;
+            }
             IrExprKind::Cast { expr, ty } => {
                 write!(f, "(")?;
                 self.sub(expr).fmt(f)?;
@@ -3382,6 +3389,44 @@ mod tests {
             "let x = if a == b{\n    x\n};",
             "If's own cond must not be defensively parenthesized: {out}"
         );
+    }
+
+    #[test]
+    fn vec_repeat_macro_generated_rust_compiles_and_runs() {
+        let module = parse_source(
+            "fn make(n: usize) -> Vec<bool> { vec![false; n] }",
+            "vec_repeat_printer",
+            &[],
+        )
+        .unwrap();
+        let generated = format!(
+            "{}\nfn main() {{ assert_eq!(make(4), vec![false; 4]); assert!(make(0).is_empty()); }}",
+            DisplayRust(ModuleWriter {
+                module: &module,
+                emit_async: false,
+            })
+        );
+        let dir =
+            std::env::temp_dir().join(format!("volar-vec-repeat-printer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("main.rs");
+        let binary = dir.join("main");
+        std::fs::write(&source, generated).unwrap();
+        let compile = std::process::Command::new("rustc")
+            .args(["--edition=2021"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "generated Vec repetition must compile:\\n{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new(&binary).output().unwrap();
+        assert!(run.status.success(), "generated Vec repetition must run");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

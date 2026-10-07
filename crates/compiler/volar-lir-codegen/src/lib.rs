@@ -484,6 +484,11 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
 
             // Array generation retains its element type and length in IR;
             // expose that shape to subsequent indexed reads and bindings.
+            IrExprKind::VecRepeat { elem, .. } => Some(IrType::Struct {
+                kind: StructKind::Custom("Vec".to_string()),
+                type_args: vec![mono_type(&self.infer_type(elem)?, &self.mono)],
+            }),
+
             IrExprKind::ArrayGenerate { elem_ty, len, .. } => Some(IrType::Array {
                 kind: ArrayKind::FixedArray,
                 elem: Box::new(mono_type(elem_ty.as_deref()?, &self.mono)),
@@ -2141,6 +2146,9 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
         IrExprKind::FixedArray(elems) => lower_fixed_array(elems, ctx),
         IrExprKind::Array(elems) => lower_fixed_array(elems, ctx),
         IrExprKind::Repeat { elem, len } => lower_repeat_array(elem, len, ctx),
+        IrExprKind::VecRepeat { .. } => {
+            unimplemented!("LIR lowering: Vec repetition requires dynamic vector allocation")
+        }
 
         // ---- Phase 2: array generation via closure --------------------------
         IrExprKind::ArrayGenerate {
@@ -3806,7 +3814,7 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
             }
             Ok(())
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             scan_native_expr(elem, ctx, info)?;
             scan_native_expr(len, ctx, info)
         }

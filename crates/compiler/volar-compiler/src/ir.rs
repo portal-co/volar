@@ -1881,6 +1881,15 @@ pub enum IrExprKind<P: Clone = ()> {
     },
     Unreachable,
     Try(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Box<IrExpr<P>>),
+    /// A dynamic vector repetition `vec![elem; len]` (distinct from the
+    /// fixed-size array expression `[elem; len]` in `Repeat`). Appended to
+    /// preserve the archive discriminants of existing expression variants.
+    VecRepeat {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        elem: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        len: Box<IrExpr<P>>,
+    },
 }
 
 /// An expression, with its own provenance and [side](volar_side::SideId)
@@ -2812,6 +2821,10 @@ impl<P: Clone, Q: Clone> MapKind<P, Q> for IrExprKind<P> {
                 IrExprKind::FixedArray(es.into_iter().map(|e| e.map_kind_prov(f)).collect())
             }
             IrExprKind::Repeat { elem, len } => IrExprKind::Repeat {
+                elem: Box::new(elem.map_kind_prov(f)),
+                len: Box::new(len.map_kind_prov(f)),
+            },
+            IrExprKind::VecRepeat { elem, len } => IrExprKind::VecRepeat {
                 elem: Box::new(elem.map_kind_prov(f)),
                 len: Box::new(len.map_kind_prov(f)),
             },

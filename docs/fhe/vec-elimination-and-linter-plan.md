@@ -90,11 +90,11 @@ lintable:
    into a Vec". Also `IrExprKind::Path` resolving to `Vec::new` /
    `Vec::with_capacity` (TS printer pattern-matches these at
    `printer_ts.rs:4630-4631`).
-3. **Macro position:** the parser does not expand `vec![...]` (binfhe
-   learned this the hard way in M7 — `vec!` in a parsed function body is a
-   parse error today). So `vec![]` never reaches the IR from source; it can
-   only be *constructed* by a pass/weaver, which is exactly what the linter
-   should reject at the IR level.
+3. **Macro position:** the parser preserves list-form `vec![a, b]` as a
+   vector literal and repeat-form `vec![elem; len]` as `IrExprKind::VecRepeat`.
+   The linter rejects the repeat form unless the enclosing item has a valid
+   runtime-boundary exemption. LIR lowering remains fail-closed for dynamic
+   Vec allocation; the Rust and TypeScript printers preserve the source form.
 
 There is an established **doc-comment annotation precedent**:
 `@volar-native: <Type>` (`parser.rs:179-216`) is scanned from `///` doc
@@ -212,7 +212,8 @@ pub struct VecLintError { pub path: String, pub kind: VecUseKind, pub note: Stri
 pub enum VecUseKind {
     VecType,        // IrType::Struct{Custom("Vec")} in sig/field
     VecCollect,     // IterPipeline terminal Collect/CollectTyped
-    VecCtorPath,    // Path resolving to Vec::new / Vec::with_capacity / vec![]
+    VecCtorPath,    // Path resolving to Vec::new / Vec::with_capacity
+    VecRepeat,      // IrExprKind::VecRepeat from vec![elem; len]
 }
 pub fn lint_module_no_vec(module: &IrModule<..>) -> Vec<VecLintError>;
 ```

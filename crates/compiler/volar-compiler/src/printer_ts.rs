@@ -257,7 +257,7 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 scan_expr_witnesses(e, out, declared_generics);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             scan_expr_witnesses(elem, out, declared_generics);
             scan_expr_witnesses(len, out, declared_generics);
         }
@@ -1033,7 +1033,7 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
                 collect_call_targets_expr(e, targets);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_call_targets_expr(elem, targets);
             collect_call_targets_expr(len, targets);
         }
@@ -5332,7 +5332,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, "]")?;
                 }
             }
-            IrExprKind::Repeat { elem, len } => {
+            IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
                 write!(f, "Array.from({{length: Number(")?;
                 TsExprWriter { expr: len }.ts_fmt(f, cx)?;
                 write!(f, ")}}, () => ")?;
@@ -7793,9 +7793,11 @@ fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
                 elem: Box::new(elem_ty),
             })
         }
-        IrExprKind::Repeat { elem, .. } => Some(IrType::Vector {
-            elem: Box::new(infer_expr_ir_type(elem, cx)?),
-        }),
+        IrExprKind::Repeat { elem, .. } | IrExprKind::VecRepeat { elem, .. } => {
+            Some(IrType::Vector {
+                elem: Box::new(infer_expr_ir_type(elem, cx)?),
+            })
+        }
         IrExprKind::ArrayGenerate { elem_ty, body, .. } => {
             let elem_ty = elem_ty
                 .as_deref()

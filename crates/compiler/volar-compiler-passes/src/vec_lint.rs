@@ -19,9 +19,7 @@
 //! | [`VecUseKind::VecType`] | `IrType::Vector` (parses/prints as `Vec<T>`) or `IrType::Struct { Custom("Vec"), .. }` in a signature, field, or binding type |
 //! | [`VecUseKind::VecCollect`] | `IrExprKind::IterPipeline` with terminal `IterStep::Collect` / `CollectTyped` — materializes a `Vec` |
 //! | [`VecUseKind::VecCtorPath`] | `IrExprKind::Path` resolving to `Vec::new` / `Vec::with_capacity` |
-//!
-//! The Rust parser rejects `vec![...]` in parsed function bodies outright,
-//! so the macro never reaches the IR from source.
+//! | [`VecUseKind::VecRepeat`] | `IrExprKind::VecRepeat` from `vec![elem; len]` |
 //!
 //! # Exemptions
 //!
@@ -73,6 +71,8 @@ pub enum VecUseKind {
     VecCollect,
     /// A `Vec::new` / `Vec::with_capacity` constructor path.
     VecCtorPath,
+    /// A `vec![elem; len]` repetition that materializes a Vec.
+    VecRepeat,
 }
 
 /// Extract the `@volar-allow-vec:` category from `syn` attributes (the
@@ -436,6 +436,15 @@ fn lint_expr<P: Clone>(
             lint_expr(elem, path, exempt, errors);
             lint_expr(len, path, exempt, errors);
         }
+        IrExprKind::VecRepeat { elem, len } => {
+            errors.push(VecLintError {
+                path: path.to_string(),
+                kind: VecUseKind::VecRepeat,
+                note: "vec![elem; len] materializes a runtime-sized Vec".into(),
+            });
+            lint_expr(elem, path, exempt, errors);
+            lint_expr(len, path, exempt, errors);
+        }
         IrExprKind::ArrayGenerate { elem_ty, body, .. } => {
             if let Some(t) = elem_ty {
                 lint_type(t, path, exempt, errors);
@@ -631,6 +640,21 @@ mod tests {
         )));
         let errors = lint_module(&module_with(f), &no_exempt);
         assert!(errors.iter().any(|e| e.kind == VecUseKind::VecCtorPath));
+    }
+
+    #[test]
+    fn vec_repeat_is_flagged() {
+        let mut f = fn_with_param_ty("repeat", IrType::Primitive(PrimitiveType::U32));
+        f.body.expr = Some(Box::new(IrExpr::new(
+            IrExprKind::VecRepeat {
+                elem: Box::new(IrExpr::new(IrExprKind::Lit(IrLit::Bool(false)), (), None)),
+                len: Box::new(IrExpr::new(IrExprKind::Var("n".into()), (), None)),
+            },
+            (),
+            None,
+        )));
+        let errors = lint_module(&module_with(f), &no_exempt);
+        assert!(errors.iter().any(|e| e.kind == VecUseKind::VecRepeat));
     }
 
     #[test]

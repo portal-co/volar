@@ -459,7 +459,7 @@ pub fn collect_vars_in_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
             collect_vars_in_expr(cond, out);
             collect_vars_in_block(body, out);
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_vars_in_expr(elem, out);
             collect_vars_in_expr(len, out);
         }

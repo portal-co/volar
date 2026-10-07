@@ -388,7 +388,7 @@ fn collect_expr(expr: &IrExpr, idx_map: &HashMap<&str, usize>, out: &mut Vec<usi
                 collect_expr(el, idx_map, out);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_expr(elem, idx_map, out);
             collect_expr(len, idx_map, out);
         }
@@ -530,7 +530,7 @@ fn collect_method_names_expr(expr: &IrExpr, out: &mut Vec<String>) {
                 collect_method_names_expr(el, out);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_method_names_expr(elem, out);
             collect_method_names_expr(len, out);
         }

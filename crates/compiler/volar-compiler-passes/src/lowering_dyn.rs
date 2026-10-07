@@ -2004,7 +2004,7 @@ fn substitute_var_with_expr(expr: &mut IrExpr, old: &str, replacement: &IrExpr) 
                 substitute_var_with_expr(e, old, replacement);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             substitute_var_with_expr(elem, old, replacement);
             substitute_var_with_expr(len, old, replacement);
         }
@@ -2498,7 +2498,7 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
             rename_var_in_expr(cond, old, new_name);
             rename_var_in_block(body, old, new_name);
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             rename_var_in_expr(elem, old, new_name);
             rename_var_in_expr(len, old, new_name);
         }
@@ -2712,7 +2712,7 @@ fn collect_placeholder_vars(expr: &IrExpr, bound: &BTreeSet<String>, out: &mut V
                 collect_placeholder_vars(e, bound, out);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_placeholder_vars(elem, bound, out);
             collect_placeholder_vars(len, bound, out);
         }
@@ -2886,6 +2886,9 @@ fn source_expr_type(expr: &IrExpr, scope: &FnScope<'_>, ctx: &LoweringContext) -
                 len: ArrayLength::Const(len),
             })
         }
+        IrExprKind::VecRepeat { elem, .. } => Some(IrType::Vector {
+            elem: Box::new(source_expr_type(elem, scope, ctx)?),
+        }),
         IrExprKind::Tuple(elems) => Some(IrType::Tuple(
             elems
                 .iter()
@@ -4277,6 +4280,10 @@ fn lower_expr_dyn_in_scope(e: &IrExpr, ctx: &LoweringContext, fn_gen: &FnScope<'
                 .collect(),
         )),
         IrExprKind::Repeat { elem, len } => ir_expr(IrExprKind::Repeat {
+            elem: Box::new(lower_expr_dyn_in_scope(elem, ctx, fn_gen)),
+            len: Box::new(lower_expr_dyn_in_scope(len, ctx, fn_gen)),
+        }),
+        IrExprKind::VecRepeat { elem, len } => ir_expr(IrExprKind::VecRepeat {
             elem: Box::new(lower_expr_dyn_in_scope(elem, ctx, fn_gen)),
             len: Box::new(lower_expr_dyn_in_scope(len, ctx, fn_gen)),
         }),
