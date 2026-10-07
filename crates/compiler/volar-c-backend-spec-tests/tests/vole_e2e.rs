@@ -561,9 +561,9 @@ fn dump_vole_galois_c_to_tmp() {
 ///
 /// This test exercises the full pipeline with honest GF(2^8) VOLE correlations:
 ///
-/// 1. The AND-gate prover is woven and lowered with `T = Galois`.  The C backend
-///    emits `volar_gf8_mul` (carry-less multiply) for every `*` on GF values and
-///    `^` for every `+` / `-`.
+/// 1. The AND-gate prover is woven and lowered with `T = Galois`. The C backend
+///    keeps the canonical GF(2^8) extension-field value typed and emits its
+///    descriptor-specific carry-less multiplication helper.
 ///
 /// 2. The C `main` implements OT-based VOLE setup:
 ///    - Δ is sampled uniformly from non-zero GF(2^8) elements.
@@ -578,12 +578,8 @@ fn dump_vole_galois_c_to_tmp() {
 ///    - Calls `vole_and_verifier_check(delta, q_a, q_b, q_and, hat)` → bool
 ///    - All four must return true
 ///
-/// Generated C struct names (with T=Galois → LirType::Native(AES8) → uint8_t):
-///   `Arr_Native_AES8_16`       – [uint8_t; 16]
-///   `Arr_Arr_Native_AES8_16_1` – [[uint8_t; 16]; 1]
-///   `Vope` / `Delta` / `Q`    – wrapping the above
-///   `__Tuple_s0_aan7x16x1`     – prover output (Vope, Arr_Arr_Native_AES8_16_1)
-///   `__Tuple_s3_b`             – verifier output (Q, bool)
+/// Generated C structs retain the canonical extension-field descriptor for
+/// each GF(2^8) lane; the test's host-side OT harness uses those same wrappers.
 #[test]
 fn vole_prover_verifier_ot_setup_e2e() {
     let circuit = make_biir_and();
@@ -598,36 +594,48 @@ fn vole_prover_verifier_ot_setup_e2e() {
     let c_src = b.finish();
 
     assert!(!c_src.is_empty(), "C output should be non-empty");
-    // The generated code must include the GF8 multiply helper.
+    // The generated code must contain the multiplication helper for its
+    // canonical GF(2^8) descriptor (the name deliberately includes that type).
     assert!(
-        c_src.contains("volar_gf8_mul"),
-        "generated C must contain volar_gf8_mul"
+        c_src.contains("volar_mul_Ext_d8_Native_Bit_p11b"),
+        "generated C must contain the GF(2^8) extension-field multiply helper"
     );
 
-    // GF(2^8) inversion helper (a^{254}) — appended after generated code so it
-    // can use `volar_gf8_mul` which is `static` in the generated code.
+    // The generated C ABI represents a field scalar as a typed one-limb value.
+    // These aliases keep the host-side OT test readable while retaining that
+    // type at every field operation.
     let gf8_inv_helper = r#"
-/* GF(2^8) inversion via repeated squaring: a^{254} = a^{128+64+32+16+8+4+2}.
- * Uses volar_gf8_mul defined above in the generated section. */
-static uint8_t volar_gf8_inv(uint8_t a) {
-  if (a == 0) return 0;
-  uint8_t a2   = volar_gf8_mul(a, a);
-  uint8_t a4   = volar_gf8_mul(a2, a2);
-  uint8_t a8   = volar_gf8_mul(a4, a4);
-  uint8_t a16  = volar_gf8_mul(a8, a8);
-  uint8_t a32  = volar_gf8_mul(a16, a16);
-  uint8_t a64  = volar_gf8_mul(a32, a32);
-  uint8_t a128 = volar_gf8_mul(a64, a64);
-  uint8_t r = volar_gf8_mul(a2, a4);
-  r = volar_gf8_mul(r, a8);
-  r = volar_gf8_mul(r, a16);
-  r = volar_gf8_mul(r, a32);
-  r = volar_gf8_mul(r, a64);
-  r = volar_gf8_mul(r, a128);
+typedef Volar_Ext_d8_Native_Bit_p11b Gf8;
+typedef Arr_Ext_d8_Native_Bit_p11b_16 Arr_Gf8_16;
+typedef Arr_Arr_Ext_d8_Native_Bit_p11b_16_1 Arr_Arr_Gf8_16_1;
+typedef __Tuple_s0_aaef8xn0p1_1_0_1_1_0_0_0_1x16x1 VoleProveAndOut;
+
+static Gf8 gf8_from_u8(uint8_t x) {
+  Gf8 value = {0};
+  value.limb[0] = x;
+  return value;
+}
+
+/* GF(2^8) inversion via repeated squaring: a^{254}. */
+static Gf8 volar_gf8_inv(Gf8 a) {
+  if (a.limb[0] == 0) return a;
+  Gf8 a2 = volar_mul_Ext_d8_Native_Bit_p11b(a, a);
+  Gf8 a4 = volar_mul_Ext_d8_Native_Bit_p11b(a2, a2);
+  Gf8 a8 = volar_mul_Ext_d8_Native_Bit_p11b(a4, a4);
+  Gf8 a16 = volar_mul_Ext_d8_Native_Bit_p11b(a8, a8);
+  Gf8 a32 = volar_mul_Ext_d8_Native_Bit_p11b(a16, a16);
+  Gf8 a64 = volar_mul_Ext_d8_Native_Bit_p11b(a32, a32);
+  Gf8 a128 = volar_mul_Ext_d8_Native_Bit_p11b(a64, a64);
+  Gf8 r = volar_mul_Ext_d8_Native_Bit_p11b(a2, a4);
+  r = volar_mul_Ext_d8_Native_Bit_p11b(r, a8);
+  r = volar_mul_Ext_d8_Native_Bit_p11b(r, a16);
+  r = volar_mul_Ext_d8_Native_Bit_p11b(r, a32);
+  r = volar_mul_Ext_d8_Native_Bit_p11b(r, a64);
+  r = volar_mul_Ext_d8_Native_Bit_p11b(r, a128);
   return r;
 }
 "#;
-    // Append inversion helper after generated code (which contains volar_gf8_mul).
+    // Append the typed inversion helper after the generated helper definitions.
     let full_c = format!("{c_src}\n{gf8_inv_helper}");
 
     // C main: OT-based VOLE setup + Quicksilver AND check for all 4 (a,b) pairs.
@@ -647,30 +655,30 @@ static uint8_t volar_gf8_inv(uint8_t a) {
   #define SM_U8() ((uint8_t)(sm_state >> 56))
 
   /* ---- Sample non-zero delta (16 lanes) ---- */
-  Arr_Native_AES8_16 delta_arr;
+  Arr_Gf8_16 delta_arr;
   int di;
   for (di = 0; di < 16; di++) {
     SM_NEXT();
     uint8_t d = SM_U8();
     if (d == 0) d = 1; /* ensure non-zero */
-    delta_arr.data[di] = d;
+    delta_arr.data[di] = gf8_from_u8(d);
   }
   Delta delta; delta.delta = delta_arr;
 
   /* ---- Helper: commit a bit (b=0 or 1) to a VOLE wire ---- */
   /* Uses IdealCot: r0 = random row; q = r0; v = r0 XOR b*delta  */
   #define COMMIT_BIT(bit, vp, qv) do { \
-    Arr_Native_AES8_16 _r0; \
+    Arr_Gf8_16 _r0; \
     int _ci; \
-    for (_ci = 0; _ci < 16; _ci++) { SM_NEXT(); _r0.data[_ci] = SM_U8(); } \
+    for (_ci = 0; _ci < 16; _ci++) { SM_NEXT(); _r0.data[_ci] = gf8_from_u8(SM_U8()); } \
     (qv).q = _r0; \
-    Arr_Native_AES8_16 _v; \
+    Arr_Gf8_16 _v; \
     for (_ci = 0; _ci < 16; _ci++) { \
-      _v.data[_ci] = (bit) ? (_r0.data[_ci] ^ delta_arr.data[_ci]) : _r0.data[_ci]; \
+      _v.data[_ci] = (bit) ? volar_add_Ext_d8_Native_Bit_p11b(_r0.data[_ci], delta_arr.data[_ci]) : _r0.data[_ci]; \
     } \
-    Arr_Native_AES8_16 _u_row; \
-    for (_ci = 0; _ci < 16; _ci++) { _u_row.data[_ci] = (bit) ? 1 : 0; } \
-    Arr_Arr_Native_AES8_16_1 _u; _u.data[0] = _u_row; \
+    Arr_Gf8_16 _u_row; \
+    for (_ci = 0; _ci < 16; _ci++) { _u_row.data[_ci] = gf8_from_u8((bit) ? 1 : 0); } \
+    Arr_Arr_Gf8_16_1 _u; _u.data[0] = _u_row; \
     (vp).u = _u; (vp).v = _v; \
   } while(0)
 
@@ -678,8 +686,9 @@ static uint8_t volar_gf8_inv(uint8_t a) {
   #define DERIVE_AND_Q(qa, qb, ht, qand_out) do { \
     int _qi; \
     for (_qi = 0; _qi < 16; _qi++) { \
-      uint8_t _lhs = volar_gf8_mul((qa).q.data[_qi], (qb).q.data[_qi]) ^ (ht).data[_qi]; \
-      (qand_out).q.data[_qi] = volar_gf8_mul(_lhs, volar_gf8_inv(delta_arr.data[_qi])); \
+      Gf8 _lhs = volar_add_Ext_d8_Native_Bit_p11b( \
+        volar_mul_Ext_d8_Native_Bit_p11b((qa).q.data[_qi], (qb).q.data[_qi]), (ht).data[_qi]); \
+      (qand_out).q.data[_qi] = volar_mul_Ext_d8_Native_Bit_p11b(_lhs, volar_gf8_inv(delta_arr.data[_qi])); \
     } \
   } while(0)
 
@@ -697,9 +706,9 @@ static uint8_t volar_gf8_inv(uint8_t a) {
       COMMIT_BIT(bi,  vope_b,   q_b);
 
       /* Prover step: (vope_c, hat_wrapped) */
-      __Tuple_s0_aan7x16x1 pout = vole_prove_and_prover(vope_one, vope_a, vope_b);
+      VoleProveAndOut pout = vole_prove_and_prover(vope_one, vope_a, vope_b);
       /* hat is pout._1.data[0] */
-      Arr_Native_AES8_16 hat = pout._1.data[0];
+      Arr_Gf8_16 hat = pout._1.data[0];
 
       /* Verifier derives q_and */
       Q q_and;

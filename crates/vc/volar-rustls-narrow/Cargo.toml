@@ -1,0 +1,17 @@
+[package]
+name = "volar-rustls-narrow"
+version = "0.1.0"
+edition = "2024"
+description = "Narrow TLS 1.3 CryptoProvider for MPC-TLS experiments"
+publish = false
+
+[dependencies]
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+hmac = { version = "0.12", default-features = false }
+rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
+rustls = { version = "0.23", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+x25519-dalek = { version = "2", default-features = false, features = ["getrandom"] }
+
+[dev-dependencies]
+rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, features = ["std"] }

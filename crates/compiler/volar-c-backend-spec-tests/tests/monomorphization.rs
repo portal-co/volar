@@ -84,6 +84,32 @@ fn real_spec_helper_multiple_const_instances_to_c() {
     assert_eq!(output.trim(), "165");
 }
 
+/// Explicit generic arguments must distinguish calls whose parameters are the
+/// same but whose return layouts differ.
+#[test]
+fn return_only_const_generic_instances_do_not_collide() {
+    let module = parse_source(
+        r#"
+        fn make<const N: usize>() -> [u8; N] { [7u8; N] }
+        fn root() -> u8 {
+            let three = make::<3>();
+            let two = make::<2>();
+            three[2] + two[0]
+        }
+        "#,
+        "return_only_generics",
+        &[],
+    )
+    .expect("parse return-only const-generic fixture");
+
+    let mut backend = CBackend::new();
+    lower_module_monomorphized(&module, &mut backend, MonoPlanOptions::default())
+        .expect("plan both return-only const-generic instances");
+    let c_source = backend.finish();
+    let output = compile_and_run(&c_source, r#"printf("%u\n", (unsigned)root());"#);
+    assert_eq!(output.trim(), "14", "generated C:\n{c_source}");
+}
+
 /// Two concrete nominal layouts (`Wrap<u8>` and `Wrap<u64>`) must coexist in one
 /// lowering — a bare `StructKind` registry key would collide and corrupt fields.
 #[test]

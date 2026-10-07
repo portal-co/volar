@@ -18,8 +18,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::binfhe::plan::{
-    BootstrapPlan, CellId, FailureBudget, LutId, LutSpec, PlanError, PlanOp,
-    ProfileId, RgswId, WireId,
+    BootstrapPlan, CellId, FailureBudget, LutId, LutSpec, PlanError, PlanOp, ProfileId, RgswId,
+    WireId,
 };
 
 const MAGIC: &[u8; 4] = b"VBP1";
@@ -116,7 +116,12 @@ pub fn encode_plan(plan: &BootstrapPlan) -> Result<Vec<u8>, EncodeError> {
                     put_u32(&mut bytes, *input);
                     put_u32(&mut bytes, *out);
                 }
-                PlanOp::RgswMux { sel, then_cell, else_cell, out } => {
+                PlanOp::RgswMux {
+                    sel,
+                    then_cell,
+                    else_cell,
+                    out,
+                } => {
                     bytes.push(4);
                     put_u32(&mut bytes, *sel);
                     put_u32(&mut bytes, *then_cell);
@@ -154,7 +159,11 @@ pub fn decode_plan(bytes: &[u8]) -> Result<BootstrapPlan, DecodeError> {
         let bit_count = reader.count()?;
         let packed_len = bit_count.div_ceil(8);
         let packed = reader.take(packed_len)?;
-        if bit_count % 8 != 0 && packed.last().is_some_and(|byte| *byte >> (bit_count % 8) != 0) {
+        if bit_count % 8 != 0
+            && packed
+                .last()
+                .is_some_and(|byte| *byte >> (bit_count % 8) != 0)
+        {
             return Err(DecodeError::UnknownTag);
         }
         let mut entries = Vec::with_capacity(bit_count);
@@ -234,25 +243,39 @@ fn read_op(reader: &mut Reader<'_>) -> Result<PlanOp, DecodeError> {
             };
             Ok(PlanOp::Const { out, value })
         }
-        1 => Ok(PlanOp::Not { input: reader.u32()?, out: reader.u32()? }),
+        1 => Ok(PlanOp::Not {
+            input: reader.u32()?,
+            out: reader.u32()?,
+        }),
         2 => {
             let count = reader.count()?;
             let mut ids = alloc::vec::Vec::with_capacity(count);
             for _ in 0..count {
                 ids.push(reader.u32()?);
             }
-            let inputs = crate::binfhe::plan::LutInputs::from_slice(&ids);
+            let mut inputs = vec![0u32; ids.len()];
+            for (i, id) in ids.iter().enumerate() {
+                inputs[i] = *id;
+            }
             let table: LutId = reader.u32()?;
             let out: WireId = reader.u32()?;
             Ok(PlanOp::Lut { inputs, table, out })
         }
-        3 => Ok(PlanOp::CircuitBootstrap { input: reader.u32()?, out: reader.u32()? }),
+        3 => Ok(PlanOp::CircuitBootstrap {
+            input: reader.u32()?,
+            out: reader.u32()?,
+        }),
         4 => {
             let sel: RgswId = reader.u32()?;
             let then_cell = reader.u32()?;
             let else_cell = reader.u32()?;
             let out = reader.u32()?;
-            Ok(PlanOp::RgswMux { sel, then_cell, else_cell, out })
+            Ok(PlanOp::RgswMux {
+                sel,
+                then_cell,
+                else_cell,
+                out,
+            })
         }
         _ => Err(DecodeError::UnknownTag),
     }
@@ -265,8 +288,14 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8], DecodeError> {
-        let end = self.offset.checked_add(count).ok_or(DecodeError::Truncated)?;
-        let bytes = self.bytes.get(self.offset..end).ok_or(DecodeError::Truncated)?;
+        let end = self
+            .offset
+            .checked_add(count)
+            .ok_or(DecodeError::Truncated)?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(DecodeError::Truncated)?;
         self.offset = end;
         Ok(bytes)
     }
@@ -276,7 +305,10 @@ impl<'a> Reader<'a> {
     }
 
     fn u32(&mut self) -> Result<u32, DecodeError> {
-        let bytes: [u8; 4] = self.take(4)?.try_into().map_err(|_| DecodeError::Truncated)?;
+        let bytes: [u8; 4] = self
+            .take(4)?
+            .try_into()
+            .map_err(|_| DecodeError::Truncated)?;
         Ok(u32::from_le_bytes(bytes))
     }
 
@@ -306,13 +338,22 @@ mod tests {
         BootstrapPlan {
             profile: ProfileId::Toy,
             k_max: 2,
-            luts: vec![LutSpec { entries: vec![false, true, true, false] }],
-            layers: vec![vec![PlanOp::Lut { inputs: crate::binfhe::plan::LutInputs::from_slice(&[0,1]), table: 0, out: 2 }]],
+            luts: vec![LutSpec {
+                entries: vec![false, true, true, false],
+            }],
+            layers: vec![vec![PlanOp::Lut {
+                inputs: [0, 1].to_vec(),
+                table: 0,
+                out: 2,
+            }]],
             num_inputs: 2,
             num_cells: 0,
             outputs: vec![2],
             cell_outputs: vec![],
-            budget: FailureBudget { per_bootstrap_log2: 30, total_log2: 30 },
+            budget: FailureBudget {
+                per_bootstrap_log2: 30,
+                total_log2: 30,
+            },
         }
     }
 

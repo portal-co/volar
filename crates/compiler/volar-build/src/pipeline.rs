@@ -24,9 +24,9 @@ use volar_lir_saved::SavedLirModule;
 use crate::{CompileOptions, SavedCircuit};
 
 pub use volar_ir_build::{
-    BoolarCircuitStage, BoolarStage, FoldIr, FromReversible, FuseBoolar, LowerToBoolar,
-    LowerToLir, Movfuscate, PipelinePass, RCircuitStage, StorageToMuxBoolar, StorageToMuxIr,
-    ToReversible, UnrollIrEverything, VaffleStage,
+    BoolarCircuitStage, BoolarStage, FoldIr, FromReversible, FuseBoolar, LowerToBoolar, LowerToLir,
+    Movfuscate, PipelinePass, RCircuitStage, StorageToMuxBoolar, StorageToMuxIr, ToReversible,
+    UnrollIrEverything, VaffleStage,
 };
 
 type BoxError = Box<dyn std::error::Error>;
@@ -177,11 +177,7 @@ impl Pipeline<VolarIrStage> {
 
     /// Execute all passes and emit woven Rust source.
     #[cfg(feature = "weave-rust")]
-    pub fn emit_woven_rust(
-        self,
-        out_path: &Path,
-        weaver: &crate::Weaver,
-    ) -> Result<(), BoxError> {
+    pub fn emit_woven_rust(self, out_path: &Path, weaver: &crate::Weaver) -> Result<(), BoxError> {
         self.emit_rerun();
         let (blocks, types) = self.inner.to_volar_ir();
         weave_volar_ir_in_memory(&blocks, &types, out_path, weaver)
@@ -364,6 +360,43 @@ impl Pipeline<VaffleStage> {
             volar_ir_build::Pipeline::from_command_inlined(cmd, entries)?,
             [],
         ))
+    }
+
+    /// Construct the deterministic baseline Rust-to-LLVM command for a future
+    /// deferred-compute provider, then import it structurally through the
+    /// ordinary LLVM/VAFFLE pipeline. `entries` are the provider's declared
+    /// public ABI names; protocol code must still validate and bind that ABI.
+    ///
+    /// This is intentionally generic: it accepts a reviewed future FHE
+    /// provider or a practical heavy-garbling implementation, but selects
+    /// neither and does not use the historical `FheScheme` integration.
+    // TODO(provider-ledger: FHE-PLUMB-TOOLCHAIN-02): exercise this with a
+    // reviewed deterministic fixture after the target toolchain prerequisite.
+    #[cfg(feature = "provider-llvm-toolchain")]
+    pub fn from_provider_artifact(
+        spec: crate::fhe_provider::ProviderArtifactSpec,
+        rustc: impl AsRef<Path>,
+    ) -> Result<Self, BoxError> {
+        let entries = spec.entry_points.clone();
+        let entry_refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let source = spec.source.clone();
+        let command = spec.command_build(rustc)?;
+        Ok(Self::wrap(
+            volar_ir_build::Pipeline::from_command(command, &entry_refs)?,
+            [source],
+        ))
+    }
+
+    /// [`Self::from_provider_artifact`] plus VAFFLE inline-everything over the
+    /// provider's declared public entry ABI.
+    #[cfg(feature = "provider-llvm-toolchain")]
+    pub fn from_provider_artifact_inlined(
+        spec: crate::fhe_provider::ProviderArtifactSpec,
+        rustc: impl AsRef<Path>,
+    ) -> Result<Self, BoxError> {
+        let entries = spec.entry_points.clone();
+        let entry_refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        Self::from_provider_artifact(spec, rustc)?.inline_vaffle_everything_over(&entry_refs)
     }
 
     /// Inline every non-recursive intra-module VAFFLE call, using every
@@ -574,7 +607,7 @@ fn weave_volar_ir_chunked(
     weaver: &crate::Weaver,
     options: &volar_compiler::chunk_module::ChunkOptions,
 ) -> Result<Vec<std::path::PathBuf>, BoxError> {
-    use volar_compiler::chunk_module::{chunk_module_rust, ChunkConfig};
+    use volar_compiler::chunk_module::{ChunkConfig, chunk_module_rust};
     use volar_compiler_passes::chunk_function_bodies;
 
     let module = match weaver {
@@ -620,8 +653,7 @@ fn weave_volar_ir_to_ir_module(
     blocks: &IRBlocks,
     types: &IRTypes,
     weaver: &crate::Weaver,
-) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, BoxError>
-{
+) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, BoxError> {
     use crate::Weaver;
     let module = match weaver {
         Weaver::VoleProverIr { name, storage_sizes } => {

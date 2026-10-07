@@ -153,7 +153,9 @@ pub fn binfhe_lwe_sub<const N: usize, const LOG_M: u32>(
 }
 
 /// Exact ciphertext negation.
-pub fn binfhe_lwe_neg<const N: usize, const LOG_M: u32>(x: &BinfheLweCiphertext<N>) -> BinfheLweCiphertext<N> {
+pub fn binfhe_lwe_neg<const N: usize, const LOG_M: u32>(
+    x: &BinfheLweCiphertext<N>,
+) -> BinfheLweCiphertext<N> {
     let mut a = [0u32; N];
     for i in 0..N {
         a[i] = torus::torus_neg::<LOG_M>(x.a[i]);
@@ -201,7 +203,10 @@ pub fn binfhe_not<const N: usize, const LOG_M: u32>(
 }
 
 /// Trivial (mask-zero) encryption of a cleartext Boolean at `delta`.
-pub fn binfhe_trivial<const N: usize, const LOG_M: u32>(m: bool, delta: u32) -> BinfheLweCiphertext<N> {
+pub fn binfhe_trivial<const N: usize, const LOG_M: u32>(
+    m: bool,
+    delta: u32,
+) -> BinfheLweCiphertext<N> {
     BinfheLweCiphertext {
         a: [0u32; N],
         b: if m { delta } else { 0 },
@@ -314,8 +319,14 @@ mod tests {
             assert_eq!(nn, ct);
             // Trivial ciphertexts behave like encrypted ones.
             let t = binfhe_trivial::<{ toy::N_LWE }, LOG_Q>(m, delta);
-            assert_eq!(lwe_phase::<{ toy::N_LWE }, LOG_Q>(&t, &sk), if m { delta } else { 0 });
-            assert_eq!(binfhe_lwe_decrypt::<{ toy::N_LWE }, LOG_Q>(&t, &sk, delta), m);
+            assert_eq!(
+                lwe_phase::<{ toy::N_LWE }, LOG_Q>(&t, &sk),
+                if m { delta } else { 0 }
+            );
+            assert_eq!(
+                binfhe_lwe_decrypt::<{ toy::N_LWE }, LOG_Q>(&t, &sk, delta),
+                m
+            );
         }
     }
 

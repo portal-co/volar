@@ -36,6 +36,60 @@ pub trait Group {
     fn write_element<D: Digest>(elt: &Self::Element, h: &mut D);
 }
 
+/// Scalar arithmetic (mod the group order) — needed for the Schnorr-style
+/// consistency proofs that make the base OT malicious-secure.
+///
+/// Separate from [`Group`] so existing `Group` impls that never run the
+/// malicious-secure proofs don't have to provide scalar arithmetic.
+pub trait ScalarOps: Group {
+    /// Additive identity `0`.
+    fn scalar_zero() -> Self::Scalar;
+    /// `a + b` (mod the group order).
+    fn scalar_add(a: &Self::Scalar, b: &Self::Scalar) -> Self::Scalar;
+    /// `a − b` (mod the group order).
+    fn scalar_sub(a: &Self::Scalar, b: &Self::Scalar) -> Self::Scalar;
+    /// `a · b` (mod the group order).
+    fn scalar_mul_scalar(a: &Self::Scalar, b: &Self::Scalar) -> Self::Scalar;
+    /// Scalar equality.
+    fn scalar_eq(a: &Self::Scalar, b: &Self::Scalar) -> bool;
+    /// Fiat–Shamir challenge: hash a finalized digest to a scalar (mod the
+    /// group order). Random-oracle model.
+    fn scalar_from_hash<D: Digest>(h: D) -> Self::Scalar;
+    /// Sample a uniform scalar mod the group order (for proof randomness).
+    fn random_mod_order<R: SpecRng>(rng: &mut R) -> Self::Scalar;
+}
+
+impl ScalarOps for ToyGroup {
+    fn scalar_zero() -> u64 {
+        0
+    }
+    fn scalar_add(a: &u64, b: &u64) -> u64 {
+        let q = TOY_P - 1;
+        (a % q + b % q) % q
+    }
+    fn scalar_sub(a: &u64, b: &u64) -> u64 {
+        let q = TOY_P - 1;
+        (a % q + q - b % q) % q
+    }
+    fn scalar_mul_scalar(a: &u64, b: &u64) -> u64 {
+        let q = TOY_P - 1;
+        ((a % q) * (b % q)) % q
+    }
+    fn scalar_eq(a: &u64, b: &u64) -> bool {
+        a % (TOY_P - 1) == b % (TOY_P - 1)
+    }
+    fn scalar_from_hash<D: Digest>(h: D) -> u64 {
+        let out = h.finalize();
+        let mut le = [0u8; 8];
+        le.copy_from_slice(&out[..8]);
+        u64::from_le_bytes(le) % (TOY_P - 1)
+    }
+    fn random_mod_order<R: SpecRng>(rng: &mut R) -> u64 {
+        let v = ((rng.next_u32() as u64) << 32) | (rng.next_u32() as u64);
+        v % (TOY_P - 1)
+    }
+}
+
 // ============================================================================
 // ToyGroup — Z*_p mod (2^31 - 1)
 //

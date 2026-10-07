@@ -129,4 +129,3 @@ fn component_env() -> volar_lir_codegen::mono::MonoEnv {
         .with_len("KS_BG_LOG", 16)
         .with_type("T", IrType::Primitive(PrimitiveType::U8))
 }
-

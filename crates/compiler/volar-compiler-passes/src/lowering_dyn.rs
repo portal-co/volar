@@ -3625,17 +3625,21 @@ fn lower_expr_dyn_in_scope(e: &IrExpr, ctx: &LoweringContext, fn_gen: &FnScope<'
                 .collect();
             let mut func = lower_expr_dyn_in_scope(func, ctx, fn_gen);
 
-            // If the func is a lowercased length param (like n, k, k2),
-            // and there are no args, just return the variable
+            // Parser normalization may represent a type-level length parameter
+            // (for example `K::USIZE`) as a zero-argument call on its runtime
+            // witness. Resolve that against the actual generic scope; spelling
+            // alone is not enough because ordinary functions like `helper()` are
+            // commonly all-lowercase too.
             if args.is_empty() {
                 if let IrExprKind::Var(name) = &func.kind {
-                    // Check if it looks like a lowercased length param
-                    let is_length_var = name
-                        .chars()
-                        .next()
-                        .map(|c| c.is_lowercase())
-                        .unwrap_or(false)
-                        && name.chars().all(|c| c.is_lowercase() || c.is_ascii_digit());
+                    let is_length_var = fn_gen.iter().any(|param| {
+                        param.name.to_lowercase() == *name
+                            && classify_generic_with_aliases(
+                                param,
+                                &[fn_gen.generics],
+                                &ctx.aliases(),
+                            ) == GenericKind::Length
+                    });
                     if is_length_var {
                         return func;
                     }

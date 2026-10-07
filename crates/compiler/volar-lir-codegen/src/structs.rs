@@ -186,6 +186,28 @@ fn lir_type_tag(ty: &LirType) -> String {
         LirType::Struct(id) => format!("s{}", id),
         LirType::Ptr(elem) => format!("p{}", lir_type_tag(elem)),
         LirType::Native(n) => format!("n{}", *n as u8),
+        LirType::ExtField {
+            wrapped,
+            degree,
+            irreducible,
+        } => format!(
+            "ef{}x{}p{}",
+            degree,
+            lir_type_tag(wrapped),
+            irreducible
+                .iter()
+                .map(|coefficient| format!("{coefficient:x}"))
+                .collect::<Vec<_>>()
+                .join("_")
+        ),
+        LirType::PrimeField { k, n } => format!(
+            "pf{}n{}",
+            k,
+            n.iter()
+                .map(|limb| format!("{limb:x}"))
+                .collect::<Vec<_>>()
+                .join("_")
+        ),
         _ => "x".into(),
     }
 }
@@ -509,7 +531,8 @@ pub fn ensure_type_nominals<T: LirTarget<P>, P: Clone>(
             }
             // `PhantomData<T>` (std): zero-sized marker; synthesize an
             // empty struct so containing structs' field types register.
-            if matches!(&kind, StructKind::Custom(n) if n == "PhantomData") && type_args.len() == 1 {
+            if matches!(&kind, StructKind::Custom(n) if n == "PhantomData") && type_args.len() == 1
+            {
                 let key = nominal_instance_name(&kind, &type_args);
                 if registry.id_for_name(&key).is_none() {
                     let id = target.define_struct(StructDef {
@@ -860,23 +883,74 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
 
 pub fn primitive_to_lir(p: PrimitiveType) -> LirType {
     match p {
-        PrimitiveType::Bool | PrimitiveType::Bit => LirType::Bool,
+        PrimitiveType::Bool => LirType::Bool,
+        PrimitiveType::Bit => LirType::Native(NativeType::Bit),
         PrimitiveType::U8 | PrimitiveType::BitsInBytes => LirType::U8,
-        // Galois maps to Native(AES8) so the C backend can emit GF(2^8) arithmetic
-        // (XOR for add/sub, carry-less multiply for mul) rather than wrapping integers.
-        PrimitiveType::Galois => LirType::Native(NativeType::AES8),
+        PrimitiveType::Galois => ext_field_lir(8, &[0, 1, 3, 4]),
         PrimitiveType::U32 => LirType::U32,
-        PrimitiveType::U64
-        | PrimitiveType::Galois64
-        | PrimitiveType::BitsInBytes64
-        | PrimitiveType::Usize => LirType::U64,
+        PrimitiveType::U64 | PrimitiveType::BitsInBytes64 | PrimitiveType::Usize => LirType::U64,
+        PrimitiveType::Galois64 => ext_field_lir(64, &[0, 1, 3, 4]),
         PrimitiveType::I128 => LirType::I128,
         PrimitiveType::U128 => LirType::U128,
-        // 128-bit and 256-bit fields don't have direct LIR lowerings yet;
-        // map them to the closest available integer type for now.
-        PrimitiveType::Galois128 => LirType::I64, // placeholder
-        PrimitiveType::Galois256 => LirType::I64, // placeholder
-        PrimitiveType::Z3 => LirType::Native(NativeType::Z3),
+        PrimitiveType::Galois128 => ext_field_lir(128, &[0, 1, 2, 7]),
+        PrimitiveType::Galois256 => ext_field_lir(256, &[0, 2, 5, 10]),
+        PrimitiveType::Z3 => LirType::PrimeField { k: 2, n: vec![1] },
+    }
+}
+
+/// Build a bit-coefficient extension-field descriptor for a source primitive.
+/// The high-level primitive definitions currently use polynomial bases over GF(2).
+fn ext_field_lir(degree: u32, low_terms: &[usize]) -> LirType {
+    let mut irreducible = vec![0; degree as usize + 1];
+    for &term in low_terms {
+        irreducible[term] = 1;
+    }
+    irreducible[degree as usize] = 1;
+    LirType::ExtField {
+        wrapped: Box::new(LirType::Native(NativeType::Bit)),
+        degree,
+        irreducible,
+    }
+}
+
+#[cfg(test)]
+mod primitive_lir_tests {
+    use super::*;
+
+    #[test]
+    fn field_primitives_keep_their_canonical_field_parameters() {
+        fn assert_extension_field(
+            primitive: PrimitiveType,
+            degree: u32,
+            nonzero_exponents: &[usize],
+        ) {
+            let LirType::ExtField {
+                wrapped,
+                degree: actual_degree,
+                irreducible,
+            } = primitive_to_lir(primitive)
+            else {
+                panic!("{primitive} must retain an extension-field descriptor");
+            };
+            assert_eq!(*wrapped, LirType::Native(NativeType::Bit));
+            assert_eq!(actual_degree, degree);
+            let actual_exponents = irreducible
+                .iter()
+                .enumerate()
+                .filter_map(|(exponent, coefficient)| (*coefficient != 0).then_some(exponent))
+                .collect::<Vec<_>>();
+            assert_eq!(actual_exponents, nonzero_exponents);
+            assert!(irreducible.iter().all(|coefficient| *coefficient <= 1));
+        }
+
+        assert_extension_field(PrimitiveType::Galois, 8, &[0, 1, 3, 4, 8]);
+        assert_extension_field(PrimitiveType::Galois64, 64, &[0, 1, 3, 4, 64]);
+        assert_extension_field(PrimitiveType::Galois128, 128, &[0, 1, 2, 7, 128]);
+        assert_extension_field(PrimitiveType::Galois256, 256, &[0, 2, 5, 10, 256]);
+        assert_eq!(
+            primitive_to_lir(PrimitiveType::Z3),
+            LirType::PrimeField { k: 2, n: vec![1] }
+        );
     }
 }
 
@@ -1142,7 +1216,6 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
                 field_names,
             });
         }
-
 
         let max_payload_width = variant_entries
             .iter()

@@ -24,7 +24,7 @@ use hashbrown::{HashMap, HashSet};
 
 use syn::PathArguments;
 #[cfg(feature = "parsing")]
-use syn::{parse_file, Expr, FnArg, GenericParam, Item, Pat, ReturnType, Type, Visibility};
+use syn::{Expr, FnArg, GenericParam, Item, Pat, ReturnType, Type, Visibility, parse_file};
 
 /// A named source file to be parsed into IR.
 ///
@@ -241,6 +241,36 @@ mod native_type_tests {
         assert_eq!(volar_native_type_from_str("Galois64"), None);
         assert_eq!(volar_native_type_from_str("Z3"), None);
         assert_eq!(volar_native_type_from_str("U8"), Some(Type::_8));
+    }
+}
+
+#[cfg(test)]
+mod typed_integer_literal_tests {
+    use super::parse_source;
+    use crate::ir::{IrExprKind, IrStmtKind, IrType, PrimitiveType};
+
+    #[test]
+    fn preserves_suffixed_integer_type_in_ir() {
+        let module = parse_source(
+            "fn literal() -> u64 { let value = 7u64; value }",
+            "typed_literal",
+            &[],
+        )
+        .unwrap();
+        let IrStmtKind::Let {
+            init: Some(init), ..
+        } = &module.functions[0].body.stmts[0].kind
+        else {
+            panic!("expected a local initialized from the suffixed integer literal");
+        };
+        let IrExprKind::Cast { expr, ty } = &init.kind else {
+            panic!("the IR must retain a suffixed integer literal's type");
+        };
+        assert_eq!(ty.as_ref(), &IrType::Primitive(PrimitiveType::U64));
+        assert!(matches!(
+            &expr.kind,
+            IrExprKind::Lit(crate::ir::IrLit::Int(7))
+        ));
     }
 }
 
@@ -1126,7 +1156,7 @@ fn ir_expr(kind: IrExprKind) -> IrExpr {
 
 fn convert_expr(expr: &Expr) -> Result<IrExpr> {
     match expr {
-        Expr::Lit(l) => Ok(ir_expr(IrExprKind::Lit(convert_lit(&l.lit)?))),
+        Expr::Lit(l) => convert_literal_expr(&l.lit),
         Expr::Path(p) => {
             // Handle qualified paths like `<D::OutputSize as Unsigned>::to_usize()`
             if p.qself.is_some() {
@@ -1312,7 +1342,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
         Expr::ForLoop(f) => convert_for_loop(&f.pat, &f.expr, &f.body),
         Expr::While(w) => Ok(ir_expr(IrExprKind::WhileLoop {
             cond: Box::new(convert_expr(&w.cond)?),
-            body: convert_block(&w.body)?,
+            body: convert_loop_body(&w.body)?,
         })),
         // `loop { .. }` has no static boundedness proof, but neither does
         // `while cond { .. }` above (`while true { .. }` is accepted
@@ -1322,7 +1352,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
         // and docs/compiler.md's Totality section for the reasoning.
         Expr::Loop(l) => Ok(ir_expr(IrExprKind::WhileLoop {
             cond: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
-            body: convert_block(&l.body)?,
+            body: convert_loop_body(&l.body)?,
         })),
         Expr::Match(m) => Ok(ir_expr(IrExprKind::Match {
             expr: Box::new(convert_expr(&m.expr)?),
@@ -1337,9 +1367,13 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 .inputs
                 .iter()
                 .map(|p| {
+                    let ty = match p {
+                        Pat::Type(typed) => Some(convert_type(&typed.ty)?),
+                        _ => None,
+                    };
                     Ok(IrClosureParam {
                         pattern: convert_pattern(p),
-                        ty: None,
+                        ty,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -2174,14 +2208,29 @@ fn convert_for_loop(pat: &Pat, iter: &Expr, body: &syn::Block) -> Result<IrExpr>
                     .unwrap_or(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
             ),
             inclusive: matches!(r.limits, syn::RangeLimits::Closed(_)),
-            body: convert_block(body)?,
+            body: convert_loop_body(body)?,
         }));
     }
     Ok(ir_expr(IrExprKind::IterLoop {
         pattern: convert_pattern(pat),
         collection: Box::new(convert_expr(iter)?),
-        body: convert_block(body)?,
+        body: convert_loop_body(body)?,
     }))
+}
+
+/// Loop bodies are statement contexts: Rust discards the block's tail value.
+/// Keep a trailing expression in the statement list so backends do not return
+/// it from the enclosing function when lowering it as an expression block.
+fn convert_loop_body(block: &syn::Block) -> Result<IrBlock> {
+    let mut body = convert_block(block)?;
+    if let Some(expr) = body.expr.take() {
+        body.stmts.push(volar_ir_common::Node::new(
+            IrStmtKind::Semi(*expr),
+            (),
+            None,
+        ));
+    }
+    Ok(body)
 }
 
 fn convert_block(block: &syn::Block) -> Result<IrBlock> {
@@ -2381,6 +2430,20 @@ fn extract_ir_pattern(pat: &Pat) -> IrPattern {
         }
         _ => IrPattern::Wild,
     }
+}
+
+fn convert_literal_expr(lit: &syn::Lit) -> Result<IrExpr> {
+    let expr = ir_expr(IrExprKind::Lit(convert_lit(lit)?));
+    let Some(primitive) = (match lit {
+        syn::Lit::Int(int) => PrimitiveType::from_str(int.suffix()),
+        _ => None,
+    }) else {
+        return Ok(expr);
+    };
+    Ok(ir_expr(IrExprKind::Cast {
+        expr: Box::new(expr),
+        ty: Box::new(IrType::Primitive(primitive)),
+    }))
 }
 
 fn convert_lit(lit: &syn::Lit) -> Result<IrLit> {

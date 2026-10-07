@@ -331,9 +331,22 @@ pub struct BinfheLweCiphertextDyn {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LutInputs {
-    pub ids: [u32; MAX_LUT_ARITY],
-    pub len: u8,
+pub struct PlanWorkspaceRequirements {
+    pub wires: usize,
+    pub rgsws: usize,
+    pub cells: usize,
+    pub lut_inputs: usize,
+}
+
+#[derive(Debug, Default)]
+pub struct PlanWorkspaceDyn {
+    pub n_lwe: usize,
+    pub big_n: usize,
+    pub bs_ell: usize,
+    pub wires: Vec<BinfheLweCiphertextDyn>,
+    pub rgsws: Vec<BinfheRgswCiphertextDyn>,
+    pub cells: Vec<BinfheRlweCiphertextDyn>,
+    pub lut_inputs: Vec<BinfheLweCiphertextDyn>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,9 +368,21 @@ pub struct BootstrapPlan {
     pub layers: Vec<Vec<PlanOp>>,
     pub num_inputs: u32,
     pub num_cells: u32,
-    pub outputs: Vec<u32>,
-    pub cell_outputs: Vec<u32>,
+    pub outputs: Vec<WireId>,
+    pub cell_outputs: Vec<CellId>,
     pub budget: FailureBudget,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PlanBoundary<'a> {
+    pub plan: &BootstrapPlan,
+    pub delta: u32,
+}
+
+#[derive(Debug, Default)]
+pub struct CiphertextInputBufferDyn {
+    pub n_lwe: usize,
+    pub ciphertexts: Vec<BinfheLweCiphertextDyn>,
 }
 
 #[derive(Clone, Debug)]
@@ -748,6 +773,16 @@ pub struct LweOtSenderMsgLoweredDyn {
     pub v1: [Zq; L],
 }
 
+#[derive(Debug, Default)]
+pub struct LweOtSenderMsgSecureLoweredDyn {
+    pub n: usize,
+    pub l: usize,
+    pub u0: [[Zq; N]; L],
+    pub v0: [Zq; L],
+    pub u1: [[Zq; N]; L],
+    pub v1: [Zq; L],
+}
+
 #[derive(Clone)]
 pub struct LweOtSenderMsgDyn {
     pub u0: Vec<Zq>,
@@ -758,6 +793,17 @@ pub struct LweOtSenderMsgDyn {
 
 #[derive(Debug, Default)]
 pub struct LweBaseOtDyn(pub usize, pub PhantomData<[(); N]>);
+
+#[derive(Debug, Default)]
+pub struct LweOtSenderMsgSecureDyn {
+    pub u0: Vec<Vec<Zq>>,
+    pub v0: Vec<Zq>,
+    pub u1: Vec<Vec<Zq>>,
+    pub v1: Vec<Zq>,
+}
+
+#[derive(Debug, Default)]
+pub struct LweBaseOtSecureDyn(pub usize, pub PhantomData<[(); N]>);
 
 #[derive(Clone)]
 pub struct SpcotSenderMsg {
@@ -785,6 +831,8 @@ pub struct CotPoolSender {
     pub seed: FerretSenderSeed,
     pub out: VecDeque<Block>,
     pub raise_n: Option<usize>,
+    pub malicious: bool,
+    pub refill_count: u64,
 }
 
 #[derive(Debug, Default)]
@@ -793,6 +841,7 @@ pub struct CotPoolReceiver {
     pub seed: FerretReceiverSeed,
     pub out_x: VecDeque<bool>,
     pub out_z: VecDeque<Block>,
+    pub malicious: bool,
 }
 
 #[derive(Clone)]
@@ -860,6 +909,14 @@ pub struct OtReceiverMsgDyn<G: Group> {
     pub _phantom: PhantomData<G>,
 }
 
+#[derive(Clone)]
+pub struct OtConsistencyProofDyn<S> {
+    pub e0: S,
+    pub e1: S,
+    pub z0: S,
+    pub z1: S,
+}
+
 #[derive(Debug, Default)]
 pub struct IdealCotDyn<T> {
     pub n: usize,
@@ -901,29 +958,43 @@ pub enum Sponge {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlanWorkspaceError {
+    InvalidPlan(PlanError),
+    CapacityOverflow,
+    InputCount {
+        expected: usize,
+        actual: usize,
+    },
+    CellCount {
+        expected: usize,
+        actual: usize,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlanOp {
     Const {
-        out: u32,
+        out: WireId,
         value: bool,
     },
     Not {
-        input: u32,
-        out: u32,
+        input: WireId,
+        out: WireId,
     },
     Lut {
-        inputs: LutInputs,
-        table: u32,
-        out: u32,
+        inputs: Vec<u32>,
+        table: LutId,
+        out: WireId,
     },
     CircuitBootstrap {
-        input: u32,
-        out: u32,
+        input: WireId,
+        out: RgswId,
     },
     RgswMux {
-        sel: u32,
-        then_cell: u32,
-        else_cell: u32,
-        out: u32,
+        sel: RgswId,
+        then_cell: CellId,
+        else_cell: CellId,
+        out: CellId,
     },
 }
 
@@ -938,14 +1009,44 @@ pub enum ProfileId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlanError {
     BadTableShape {
-        table: u32,
+        table: LutId,
     },
     ArityExceedsKMax {
-        table: u32,
+        table: LutId,
     },
     BadReference,
     BadOutput,
     BudgetInconsistent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BoundaryError {
+    InvalidPlan(PlanError),
+    InvalidWireEncoding {
+        k_max: u32,
+        log_q_lwe: u32,
+    },
+    InputCount {
+        expected: usize,
+        actual: usize,
+    },
+    CiphertextInputCount {
+        expected: usize,
+        actual: usize,
+    },
+    InputBufferCapacity {
+        required: usize,
+        actual: usize,
+    },
+    WireArenaTooShort {
+        required: usize,
+        actual: usize,
+    },
+    CellCount {
+        expected: usize,
+        actual: usize,
+    },
+    Workspace(PlanWorkspaceError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1038,6 +1139,12 @@ pub enum FrameError {
     LengthMismatch,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GramOutput {
+    Cleartext,
+    Regarble,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TfheBootstrapTableError {
     AddressWidthOutOfRange,
@@ -1070,9 +1177,6 @@ pub enum PoolSeedError {
         choices: usize,
         values: usize,
     },
-}
-
-pub trait FieldMulBackend: ShlAssign<u32> + ShrAssign<u32> + Default + BitXor<Output = Self> + BitXorAssign + Shl<u32, Output = Self> + BitAnd<Output = Self> + PartialEq + From<u8> + Clone {
 }
 
 pub trait Invert {
@@ -1110,7 +1214,7 @@ pub trait AsKeySwitchingKey {
     fn ksk_rows(&self) -> &[[BinfheLweCiphertextDyn; KS_ELL]];
 }
 
-pub trait AsBootstrappingKey {
+pub trait AsBinfheBootstrappingKey {
     fn bsk_rows(&self) -> &[BinfheRgswCiphertextDyn];
     fn ksk_ref(&self) -> BinfheKeySwitchingKeyRefDyn;
 }
@@ -1156,7 +1260,14 @@ pub trait Group {
     fn write_element<D: Digest>(elt: &Self::Element, h: &mut D);
 }
 
-impl <T: ShlAssign<u32> + ShrAssign<u32> + Default + BitXor<Output = T> + BitXorAssign + Shl<u32, Output = T> + BitAnd<Output = T> + PartialEq + From<u8> + Clone> FieldMulBackend for T {
+pub trait ScalarOps: Group {
+    fn scalar_zero() -> Self::Scalar;
+    fn scalar_add(a: &Self::Scalar, b: &Self::Scalar) -> Self::Scalar;
+    fn scalar_sub(a: &Self::Scalar, b: &Self::Scalar) -> Self::Scalar;
+    fn scalar_mul_scalar(a: &Self::Scalar, b: &Self::Scalar) -> Self::Scalar;
+    fn scalar_eq(a: &Self::Scalar, b: &Self::Scalar) -> bool;
+    fn scalar_from_hash<D: Digest>(h: D) -> Self::Scalar;
+    fn random_mod_order<R: SpecRng>(rng: &mut R) -> Self::Scalar;
 }
 
 impl  U256 {
@@ -1176,7 +1287,7 @@ impl  U256 {
     }
     pub fn shl1(&self) -> Self
     {
-        let mut out = [0; 4];
+        let mut out = [(0 as u64); 4];
         out[0] = (self.0[0] << 1);
         out[1] = ((self.0[1] << 1) | (self.0[0] >> 63));
         out[2] = ((self.0[2] << 1) | (self.0[1] >> 63));
@@ -1185,7 +1296,7 @@ impl  U256 {
     }
     pub fn shr1(&self) -> Self
     {
-        let mut out = [0; 4];
+        let mut out = [(0 as u64); 4];
         out[0] = ((self.0[0] >> 1) | (self.0[1] << 63));
         out[1] = ((self.0[1] >> 1) | (self.0[2] << 63));
         out[2] = ((self.0[2] >> 1) | (self.0[3] << 63));
@@ -1285,7 +1396,7 @@ impl  BitXor<u8> for Galois64 {
     type Output = Self;
     fn bitxor(self, mut rhs: u8) -> Self::Output
     {
-        Galois64((self.0 ^ ((rhs as u64) * 72340172838076673)))
+        Galois64((self.0 ^ ((rhs as u64) * (72340172838076673 as u64))))
     }
 }
 
@@ -1324,7 +1435,7 @@ impl  BitXor<u8> for BitsInBytes64 {
     type Output = Self;
     fn bitxor(self, mut rhs: u8) -> Self::Output
     {
-        BitsInBytes64((self.0 ^ ((rhs as u64) * 72340172838076673)))
+        BitsInBytes64((self.0 ^ ((rhs as u64) * (72340172838076673 as u64))))
     }
 }
 
@@ -1596,8 +1707,8 @@ impl  LengthDoubler for AesCtrLengthDoubler {
     type OutputSize = U16;
     fn double(mut a: Vec<u8>) -> [Vec<u8>; 2]
     {
-        let mut block0 = [0; BLOCK];
-        let mut block1 = [0; BLOCK];
+        let mut block0 = [(0 as u8); BLOCK];
+        let mut block1 = [(0 as u8); BLOCK];
         block1[0] = 1;
         let key: [u8; BLOCK] = a.0;
         let c0 = encrypt_block(&key, &block0);
@@ -1617,8 +1728,8 @@ impl <D: Digest + Digest> LeafCommit<SD_BYTES, COM_BYTES> for RoLeafCommitDyn<D>
         h.update(iv);
         h.update(&tweak.to_le_bytes());
         let digest = h.finalize().to_vec();
-        let mut sd = [0; sd_bytes];
-        let mut com = [0; com_bytes];
+        let mut sd = [(0 as u8); sd_bytes];
+        let mut com = [(0 as u8); com_bytes];
         sd.copy_from_slice(&digest[..sd_bytes]);
         com.copy_from_slice(&digest[sd_bytes..(sd_bytes + com_bytes)]);
         (sd, com)
@@ -1628,12 +1739,12 @@ impl <D: Digest + Digest> LeafCommit<SD_BYTES, COM_BYTES> for RoLeafCommitDyn<D>
 impl  LeafCommit<SD_BYTES, COM_BYTES> for EmLeafCommit {
     fn commit(mut sd_bytes: usize, mut com_bytes: usize, mut r: &[u8; SD_BYTES], mut iv: &[u8; 16], mut tweak: u32) -> ([u8; SD_BYTES], [u8; COM_BYTES])
     {
-        let mut seed_buf = [0; 16];
+        let mut seed_buf = [(0 as u8); 16];
         seed_buf.copy_from_slice(&r[..]);
         let com_vec = aes_ctr_prg(&seed_buf, iv, tweak, com_bytes);
-        let mut sd = [0; sd_bytes];
+        let mut sd = [(0 as u8); sd_bytes];
         sd.copy_from_slice(r);
-        let mut com = [0; com_bytes];
+        let mut com = [(0 as u8); com_bytes];
         com.copy_from_slice(&com_vec[..com_bytes]);
         (sd, com)
     }
@@ -1707,7 +1818,7 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     let (sd, com) = L::commit(&r_leaf, iv, tweak);
     seeds.push(sd);
     commitments.push(com);
-}
+};
 };
         let mut vec_hashes: Vec<Vec<u8>> = Vec::with_capacity(tau);
         for i in 0.. tau{
@@ -1759,7 +1870,7 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     hidden[node] = (hidden[(2 * node) + 1] || hidden[(2 * node) + 2]);
 };
         let mut out: Vec<(usize, [u8; LAMBDA_BYTES])> = Vec::new();
-        walk(0, &hidden, tree, leaf_count, &mut out);
+        collect_open_nodes_walk(0, &hidden, tree, leaf_count, &mut out);
         out
     }
     pub fn reconstruct<D: Digest>(mut com_bytes: usize, mut nodes: &[(usize, [u8; LAMBDA_BYTES])], mut hidden_commits: &[[u8; COM_BYTES]], mut deltas: &[usize], mut iv: &[u8; 16], mut expected_root: &[u8], mut tau: usize, mut n: usize) -> Option<Vec<[u8; LAMBDA_BYTES]>>
@@ -1793,7 +1904,7 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
 },
     _ => {
 },
-}
+};
 };
         let mut leaf_seeds: Vec<[u8; LAMBDA_BYTES]> = Vec::with_capacity(leaf_count);
         let mut leaf_coms: Vec<[u8; COM_BYTES]> = Vec::with_capacity(leaf_count);
@@ -1802,7 +1913,7 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     let leaf_k = (i * n) + j;
     let tree_pos = (leaf_count - 1) + leaf_k;
     if j == deltas[i]{
-    leaf_seeds.push([0; LAMBDA_BYTES]);
+    leaf_seeds.push([(0 as u8); LAMBDA_BYTES]);
     leaf_coms.push(hidden_commits[i]);
 } else {
     let r_leaf = tree[tree_pos]?;
@@ -1810,8 +1921,8 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     let (sd, com) = L::commit(&r_leaf, iv, tweak);
     leaf_seeds.push(sd);
     leaf_coms.push(com);
-}
-}
+};
+};
 };
         let mut vec_hashes: Vec<Vec<u8>> = Vec::with_capacity(tau);
         for i in 0.. tau{
@@ -1872,7 +1983,7 @@ impl <T> PolyDyn<T> {
     for i2 in inputs.indices.iter(){
     for _ in 0.. reduction{
     b = (inputs.inputs[i2[j]].q[i].clone() * b);
-}
+};
 };
     sum = (sum + b);
 };
@@ -1892,7 +2003,7 @@ impl <T> PolyDyn<T> {
     for i2 in inputs.iter(){
     for _ in 0.. reduction{
     b = (i2[j].q[i].clone() * b);
-}
+};
 };
     sum = (sum + b);
 };
@@ -1928,10 +2039,10 @@ impl <T> PolyDyn<T> {
 } else {
     voles.inputs[v[k]].v[i].clone().into()
 });
-}
+};
 };
     sum = (sum + b);
-}
+};
 };
     sum
 }).collect::<Vec<O>>()
@@ -1967,10 +2078,10 @@ impl <T> PolyDyn<T> {
 } else {
     v[k].v[i].clone().into()
 });
-}
+};
 };
     sum = (sum + b);
-}
+};
 };
     sum
 }).collect::<Vec<O>>()
@@ -2071,7 +2182,7 @@ impl <T: Clone + Default + Add<Output = T> + Mul<Output = T>, H: MemoryHasher<T>
     remaining >>= 1;
     if remaining != 0{
     base = (base.clone() + base);
-}
+};
 };
         acc
     }
@@ -2105,8 +2216,8 @@ impl <T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T
     for lane in 0.. n{
     res_u[k - 1][lane] = (res_u[k - 1][lane].clone() + (a_coeff[lane].clone() * b_coeff[lane].clone()));
 }
-}
-}
+};
+};
 };
         VopeDyn { u: res_u, v: res_v, n: 0, k: 1 }
     }
@@ -2255,13 +2366,13 @@ impl <T: PartialEq> PartialEq for VopeDyn<T> {
     for i in 0.. n{
     if u1[l][i] != u2[l][i]{
     return false;
-}
-}
+};
+};
 };
         for i in 0.. n{
     if v1[i] != v2[i]{
     return false;
-}
+};
 };
         true
     }
@@ -2276,7 +2387,7 @@ impl <T: PartialEq> PartialEq for QDyn<T> {
         for i in 0.. n{
     if q1[i] != q2[i]{
     return false;
-}
+};
 };
         true
     }
@@ -2291,7 +2402,7 @@ impl <T: PartialEq> PartialEq for DeltaDyn<T> {
         for i in 0.. n{
     if d1[i] != d2[i]{
     return false;
-}
+};
 };
         true
     }
@@ -2574,7 +2685,7 @@ impl  AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> for BinfheKeySwitchingKeyRefDyn {
     }
 }
 
-impl  AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> for BinfheBootstrappingKeyDyn {
+impl  AsBinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> for BinfheBootstrappingKeyDyn {
     fn bsk_rows(&self) -> &[BinfheRgswCiphertextDyn]
     {
         let n_lwe: usize = self.n_lwe;
@@ -2593,7 +2704,7 @@ impl  AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> for BinfheBootstrappingKe
     }
 }
 
-impl  AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> for BinfheBootstrappingKeyRefDyn {
+impl  AsBinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> for BinfheBootstrappingKeyRefDyn {
     fn bsk_rows(&self) -> &[BinfheRgswCiphertextDyn]
     {
         let n_lwe: usize = self.n_lwe;
@@ -2623,72 +2734,62 @@ impl  BinfheBootstrappingKeyDyn {
     }
 }
 
-impl  LutInputs {
-    pub fn new() -> Self
+impl  BootstrapPlan {
+    pub fn workspace_requirements(&self) -> Result<PlanWorkspaceRequirements, PlanWorkspaceError>
     {
-        LutInputs { ids: [0; MAX_LUT_ARITY], len: 0 }
-    }
-    pub fn from_slice(mut ids: &[u32]) -> Self
-    {
-        let mut out = Self::new();
-        let take = ids.len().min(MAX_LUT_ARITY);
-        out.ids[..take].copy_from_slice(&ids[..take]);
-        out.len = (take as u8);
-        out
-    }
-    pub fn as_slice(&self) -> &[u32]
-    {
-        &self.ids[..(self.len as usize)]
-    }
-    pub fn len(&self) -> usize
-    {
-        self.len as usize
-    }
-    pub fn is_empty(&self) -> bool
-    {
-        self.len == 0
-    }
-}
-
-impl  Default for LutInputs {
-    fn default() -> Self
-    {
-        Self::new()
-    }
-}
-
-impl  AsRef<[u32]> for LutInputs {
-    fn as_ref(&self) -> &[u32]
-    {
-        self.as_slice()
+        self.validate().map_err(PlanWorkspaceError::InvalidPlan)?;
+        let mut wires = self.num_inputs as usize;
+        let mut rgsws = 0 as usize;
+        let mut cells = self.num_cells as usize;
+        let mut lut_inputs = 0 as usize;
+        for layer in &self.layers{
+    for op in layer{
+    match op {
+    .. => {
+    wires = wires.checked_add(1).ok_or(PlanWorkspaceError::CapacityOverflow)?;
+},
+    PlanOp::CircuitBootstrap { .. } => {
+    rgsws = rgsws.checked_add(1).ok_or(PlanWorkspaceError::CapacityOverflow)?;
+},
+    PlanOp::RgswMux { .. } => {
+    cells = cells.checked_add(1).ok_or(PlanWorkspaceError::CapacityOverflow)?;
+},
+};
+    match op {
+    PlanOp::Lut { inputs: inputs, .. } => {
+    lut_inputs = lut_inputs.max(inputs.len());
+},
+    _ => {
+},
+};
+};
+};
+        Ok(PlanWorkspaceRequirements { wires: wires, rgsws: rgsws, cells: cells, lut_inputs: lut_inputs })
     }
 }
 
-impl  From<&[u32]> for LutInputs {
-    fn from(mut ids: &[u32]) -> Self
+impl  PlanWorkspaceDyn {
+    pub fn new(mut n_lwe: usize, mut big_n: usize, mut bs_ell: usize, mut plan: &BootstrapPlan) -> Result<Self, PlanWorkspaceError>
     {
-        Self::from_slice(ids)
+        let required = plan.workspace_requirements()?;
+        Ok(Self { wires: Vec::with_capacity(required.wires), rgsws: Vec::with_capacity(required.rgsws), cells: Vec::with_capacity(required.cells), lut_inputs: Vec::with_capacity(required.lut_inputs) })
     }
-}
-
-impl  From<[u32; N]> for LutInputs {
-    fn from(mut n: usize, mut ids: [u32; N]) -> Self
+    pub fn reset(&mut self)
     {
-        Self::from_slice(&ids)
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        self.wires.clear();
+        self.rgsws.clear();
+        self.cells.clear();
+        self.lut_inputs.clear();
     }
-}
-
-impl  From<Vec<u32>> for LutInputs {
-    fn from(mut ids: Vec<u32>) -> Self
+    pub fn requirements(&self) -> PlanWorkspaceRequirements
     {
-        Self::from_slice(&ids)
-    }
-}
-
-impl  From<&Vec<u32>> for LutInputs {
-    fn from(mut ids: &Vec<u32>) -> Self
-    {
-        Self::from_slice(ids)
+        let n_lwe: usize = self.n_lwe;
+        let big_n: usize = self.big_n;
+        let bs_ell: usize = self.bs_ell;
+        PlanWorkspaceRequirements { wires: self.wires.capacity(), rgsws: self.rgsws.capacity(), cells: self.cells.capacity(), lut_inputs: self.lut_inputs.capacity() }
     }
 }
 
@@ -2708,8 +2809,8 @@ impl  BootstrapPlan {
     wires.push(!wires[*input as usize]);
 },
     PlanOp::Lut { inputs: inputs, table: table, out: out } => {
-    let mut address = 0;
-    for (bit, input) in inputs.as_slice().iter().enumerate(){
+    let mut address = 0 as usize;
+    for (bit, input) in inputs.iter().enumerate(){
     address |= ((wires[*input as usize] as usize) << bit);
 };
     wires.push(self.luts[*table as usize].entries[address]);
@@ -2724,14 +2825,14 @@ impl  BootstrapPlan {
     cell_arena[*else_cell as usize]
 });
 },
-}
-}
+};
+};
 };
         (wires, cell_arena)
     }
     pub fn bootstrap_op_count(&self) -> u64
     {
-        let mut count = 0;
+        let mut count = 0 as u64;
         for layer in &self.layers{
     for op in layer{
     match op {
@@ -2743,8 +2844,8 @@ impl  BootstrapPlan {
     PlanOp::CircuitBootstrap { .. } => count += 1,
     _ => {
 },
-}
-}
+};
+};
 };
         count
     }
@@ -2753,15 +2854,15 @@ impl  BootstrapPlan {
         for (i, spec) in self.luts.iter().enumerate(){
     let len = spec.entries.len();
     if (len == 0) || !len.is_power_of_two(){
-    return Err(PlanError::BadTableShape { table: (i as u32) });
+    return Err(PlanError::BadTableShape { table: (i as LutId) });
 };
     let arity = len.trailing_zeros() as usize;
     if arity > (self.k_max as usize){
-    return Err(PlanError::ArityExceedsKMax { table: (i as u32) });
-}
+    return Err(PlanError::ArityExceedsKMax { table: (i as LutId) });
+};
 };
         let mut wires = self.num_inputs;
-        let mut rgsws = 0;
+        let mut rgsws = 0 as u32;
         let mut cells = self.num_cells;
         for layer in &self.layers{
     for op in layer{
@@ -2783,7 +2884,7 @@ impl  BootstrapPlan {
     return Err(PlanError::BadReference);
 };
     let arity = self.luts[*table as usize].entries.len().trailing_zeros();
-    if (inputs.len() != (arity as usize)) || inputs.as_slice().iter().any(|w| (*w >= wires)) || (*out != wires){
+    if (inputs.len() != (arity as usize)) || inputs.iter().any(|w| (*w >= wires)) || (*out != wires){
     return Err(PlanError::BadReference);
 };
     wires += 1;
@@ -2800,8 +2901,8 @@ impl  BootstrapPlan {
 };
     cells += 1;
 },
-}
-}
+};
+};
 };
         if self.outputs.iter().any(|w| (*w >= wires)) || self.cell_outputs.iter().any(|c| (*c >= cells)){
     return Err(PlanError::BadOutput);
@@ -2817,15 +2918,15 @@ impl  BootstrapPlan {
     }
     pub fn plan_hash(&self) -> u64
     {
-        let mut h = 14695981039346656037;
+        let mut h = 14695981039346656037 as u64;
         for spec in &self.luts{
     for (i, chunk) in spec.entries.chunks(8).enumerate(){
-    let mut byte = 0;
+    let mut byte = 0 as u8;
     for (j, ..) in chunk.iter().enumerate(){
     byte |= ((e as u8) << j);
 };
     let _ = i;
-}
+};
 };
         for layer in &self.layers{
     for op in layer{
@@ -2835,21 +2936,122 @@ impl  BootstrapPlan {
     PlanOp::Not { input: input, out: out } => {
 },
     PlanOp::Lut { inputs: inputs, table: table, out: out } => {
-    for w in inputs.as_slice(){
+    for w in inputs{
 };
 },
     PlanOp::CircuitBootstrap { input: input, out: out } => {
 },
     PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
 },
-}
-}
+};
+};
 };
         for w in &self.outputs{
 };
         for c in &self.cell_outputs{
 };
         h
+    }
+}
+
+impl  CiphertextInputBufferDyn {
+    pub fn as_slice(&self) -> &[BinfheLweCiphertextDyn]
+    {
+        let n_lwe: usize = self.n_lwe;
+        &self.ciphertexts
+    }
+    pub fn capacity(&self) -> usize
+    {
+        let n_lwe: usize = self.n_lwe;
+        self.ciphertexts.capacity()
+    }
+}
+
+impl  PlanBoundary {
+    pub fn new(mut log_q_lwe: usize, mut plan: &BootstrapPlan) -> Result<Self, BoundaryError>
+    {
+        plan.validate().map_err(BoundaryError::InvalidPlan)?;
+        let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, (plan.k_max as usize));
+        Ok(Self { plan: plan, delta: delta })
+    }
+    pub fn plan(&self) -> &BootstrapPlan
+    {
+        self.plan
+    }
+    pub fn delta(&self) -> u32
+    {
+        self.delta
+    }
+    pub fn input_buffer(&self, mut n_lwe: usize) -> CiphertextInputBufferDyn
+    {
+        CiphertextInputBufferDyn { ciphertexts: Vec::with_capacity((self.plan.num_inputs as usize)), n_lwe: 0 }
+    }
+    pub fn encrypt_inputs_into<R: SpecRng>(&self, mut n_lwe: usize, mut log_q_lwe: usize, mut eta: usize, mut inputs: &[bool], mut sk: &BinfheLweSecretKeyDyn, mut rng: &mut R, mut output: &mut CiphertextInputBufferDyn) -> Result<(), BoundaryError>
+    {
+        self.require_input_count(inputs.len())?;
+        if output.ciphertexts.capacity() < inputs.len(){
+    return Err(BoundaryError::InputBufferCapacity { required: inputs.len(), actual: output.ciphertexts.capacity() });
+};
+        output.ciphertexts.clear();
+        output.ciphertexts.extend(inputs.iter().map(|bit| {
+    binfhe_lwe_encrypt::<N_LWE, LOG_Q_LWE, ETA, R>(n_lwe, log_q_lwe, eta, bit, self.delta, sk, rng)
+}));
+        Ok(())
+    }
+    pub fn encrypt_inputs<R: SpecRng>(&self, mut n_lwe: usize, mut log_q_lwe: usize, mut eta: usize, mut inputs: &[bool], mut sk: &BinfheLweSecretKeyDyn, mut rng: &mut R) -> Result<Vec<BinfheLweCiphertextDyn>, BoundaryError>
+    {
+        let mut output = self.input_buffer(n_lwe);
+        self.encrypt_inputs_into(n_lwe, log_q_lwe, eta, inputs, sk, rng, &mut output)?;
+        Ok(output.ciphertexts)
+    }
+    pub fn decrypt_outputs(&self, mut n_lwe: usize, mut log_q_lwe: usize, mut wire_arena: &[BinfheLweCiphertextDyn], mut sk: &BinfheLweSecretKeyDyn) -> Result<Vec<bool>, BoundaryError>
+    {
+        let required = self.plan.outputs.iter().copied().max().into_iter().map(|wire| ((wire as usize) + 1)).collect::<Vec<_>>().unwrap_or(0);
+        if wire_arena.len() < required{
+    return Err(BoundaryError::WireArenaTooShort { required: required, actual: wire_arena.len() });
+};
+        Ok(self.plan.outputs.iter().map(|wire| {
+    binfhe_lwe_decrypt::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &wire_arena[wire as usize], sk, self.delta)
+}).collect::<Vec<_>>())
+    }
+    pub fn execute(&self, mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut inputs: &[BinfheLweCiphertextDyn], mut cells: &[BinfheRlweCiphertextDyn], mut bk: &BinfheBootstrappingKeyDyn, mut cbk: &CircuitBootstrappingKeyDyn) -> Result<(Vec<BinfheLweCiphertextDyn>, Vec<BinfheRlweCiphertextDyn>), BoundaryError>
+    {
+        self.require_ciphertext_input_count(inputs.len())?;
+        self.require_cell_count(cells.len())?;
+        Ok(execute_plan::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, PRIV_ELL, PRIV_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, priv_ell, priv_base_log, self.plan, inputs, cells, bk, cbk))
+    }
+    pub fn execute_in_workspace(&self, mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut inputs: &[BinfheLweCiphertextDyn], mut cells: &[BinfheRlweCiphertextDyn], mut bk: &BinfheBootstrappingKeyDyn, mut cbk: &CircuitBootstrappingKeyDyn, mut workspace: &mut PlanWorkspaceDyn) -> Result<(&[BinfheLweCiphertextDyn], &[BinfheRlweCiphertextDyn]), BoundaryError>
+    {
+        self.require_ciphertext_input_count(inputs.len())?;
+        self.require_cell_count(cells.len())?;
+        execute_plan_in_workspace::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, PRIV_ELL, PRIV_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, priv_ell, priv_base_log, self.plan, inputs, cells, bk, cbk, workspace).map_err(BoundaryError::Workspace)
+    }
+    pub fn require_input_count(&self, mut actual: usize) -> Result<(), BoundaryError>
+    {
+        let expected = self.plan.num_inputs as usize;
+        if actual == expected{
+    Ok(())
+} else {
+    Err(BoundaryError::InputCount { expected: expected, actual: actual })
+}
+    }
+    pub fn require_ciphertext_input_count(&self, mut actual: usize) -> Result<(), BoundaryError>
+    {
+        let expected = self.plan.num_inputs as usize;
+        if actual == expected{
+    Ok(())
+} else {
+    Err(BoundaryError::CiphertextInputCount { expected: expected, actual: actual })
+}
+    }
+    pub fn require_cell_count(&self, mut actual: usize) -> Result<(), BoundaryError>
+    {
+        let expected = self.plan.num_cells as usize;
+        if actual == expected{
+    Ok(())
+} else {
+    Err(BoundaryError::CellCount { expected: expected, actual: actual })
+}
     }
 }
 
@@ -2945,7 +3147,7 @@ impl  LutDyn {
         let log_q: usize = self.log_q;
         let log_q_lwe: usize = self.log_q_lwe;
         let k_max: usize = self.k_max;
-        1 << ((log_q_lwe - 1) - (k_max as u32))
+        (1 as u32) << ((log_q_lwe - 1) - (k_max as u32))
     }
 }
 
@@ -3047,8 +3249,8 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     h.update(&self.openings[0][i][b][..<<D>::OutputSize as Unsigned>::to_usize()]);
 } else {
     h.update(&commit::<D>(&&self.openings[0][i][b][..<<B>::OutputSize as Unsigned>::to_usize()], rand));
-}
-}
+};
+};
 };
         h.finalize().to_vec().as_slice() == commit_.as_slice()
     }
@@ -3064,7 +3266,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     for b in 0.. u{
     let i2 = i | ((b as usize) << t.ilog2());
     h.update(&commit::<D>(&me.per_byte[ci][i2], rand));
-}
+};
 }
 };
     for (idx, this) in this.iter().enumerate(){
@@ -3078,9 +3280,9 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     h.update(&this.openings[ci][i][b][..<<D>::OutputSize as Unsigned>::to_usize()]);
 } else {
     h.update(&commit::<D>(&&this.openings[ci][i][b][..<<B>::OutputSize as Unsigned>::to_usize()], rand));
-}
-}
-}
+};
+};
+};
 };
     h.finalize().to_vec().as_slice() == commit_.as_slice()
 })
@@ -3191,7 +3393,7 @@ impl  EncodedLabelBatch {
     modulus - (zero - one)
 });
     zeroes.push(zero);
-}
+};
 };
         Ok(Self { differences: differences, zeroes: zeroes })
     }
@@ -3282,7 +3484,7 @@ impl  LabelBatchDyn {
         for (index, pair) in pairs.iter().enumerate(){
     if pair.one != (0..n).map(|byte| (pair.zero[byte] ^ offset[byte])).collect::<Vec<_>>(){
     return Err(BatchError::MismatchedPair { index: index });
-}
+};
 };
         Ok(Self { pairs: pairs })
     }
@@ -3336,7 +3538,7 @@ impl  Parameters {
 };
         self.slots()?;
         let modulus = (self.plaintext_modulus as u128) * (self.delta as u128);
-        let mut capacity = 1;
+        let mut capacity = 1 as u128;
         for _ in 0.. self.gadget_digits{
     capacity = capacity.checked_mul((self.gadget_base as u128)).ok_or(Error::InvalidParameters)?;
 };
@@ -3510,7 +3712,7 @@ impl  BatchSelect {
     value.add_assign(&self.ring, &message.scaled(&self.ring, p.gadget_base, digit));
     self.ring.add_noise(&mut value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION)?;
     ciphertext.push(value);
-}
+};
 };
         Ok((state, ciphertext))
     }
@@ -3560,8 +3762,8 @@ impl  BatchSelect {
     for digit in 0.. p.gadget_digits{
     let extra = next.scaled(&self.ring, p.gadget_base, digit);
     ciphertext[base + digit].add_assign(&self.ring, &extra);
-}
-}
+};
+};
 };
         for value in &mut ciphertext{
     self.ring.add_noise(value, noise, SMALL_NOISE_STANDARD_DEVIATION, SMALL_NOISE_MAX_DEVIATION)?;
@@ -3591,7 +3793,7 @@ impl  BatchSelect {
     let digits = self.ring.decompose(&parent)?;
     let base = node * p.gadget_digits;
     tree[base..(base + p.gadget_digits)].clone_from_slice(&digits);
-}
+};
 };
         Ok(Tree { tree: tree, digest: digest })
     }
@@ -3715,7 +3917,7 @@ impl  Ring {
 };
     if combined != 0{
     return Err(Error::Arithmetic);
-}
+};
 };
         for digit in &mut digits{
     self.first_ntt.forward(&mut digit.first);
@@ -3756,7 +3958,7 @@ impl  Ring {
     for (message, correction) in value.first.iter().zip(correction.into_iter()){
     let no_error = sub_mod(*message, correction, self.parameters.plaintext_modulus);
     output.push(mul_mod(no_error, self.inverse_delta_mod_plaintext, self.parameters.plaintext_modulus));
-}
+};
 };
         Ok(output)
     }
@@ -3803,12 +4005,12 @@ impl  Polynomial {
         for value in &mut self.first{
     if *value != 0{
     *value = (ring.parameters.plaintext_modulus - *value);
-}
+};
 };
         for value in &mut self.second{
     if *value != 0{
     *value = (ring.parameters.delta - *value);
-}
+};
 }
     }
     pub fn scaled(&self, mut ring: &Ring, mut base: u64, mut power: usize) -> Self
@@ -3862,7 +4064,7 @@ impl  Ntt {
     values[start + offset] = add_mod(left, right, self.modulus);
     values[start + offset + (length / 2)] = sub_mod(left, right, self.modulus);
     twiddle = mul_mod(twiddle, step, self.modulus);
-}
+};
 };
     length *= 2;
 }
@@ -3909,9 +4111,9 @@ impl  Frame {
     return Err(FrameError::UnsupportedFormat);
 };
         let stage = Stage::try_from(input[10])?;
-        let mut offset = 11;
+        let mut offset: usize = 11;
         let mut take_32 = || {
-    let mut value = [0; 32];
+    let mut value = [(0 as u8); 32];
     value.copy_from_slice(&input[offset..(offset + 32)]);
     offset += 32;
     value
@@ -3944,6 +4146,19 @@ impl  GarbleDyn {
         let mut d = D::new();
         d.update(&self.base);
         d.update(&b.base);
+        let hash = d.finalize().to_vec();
+        GarbleDyn { base: (0..n).map(|i| hash[i]).collect::<Vec<u8>>(), n: 0 }
+    }
+    pub fn action_result_base<D: Digest>(&self, mut args: &[&GarbleDyn], mut bit: usize) -> Self
+    {
+        let n: usize = self.n;
+        let mut d = D::new();
+        d.update(&vec![(172 as u8)]);
+        d.update(&self.base);
+        for arg in args{
+    d.update(&arg.base);
+};
+        d.update(&(bit as u64).to_le_bytes());
         let hash = d.finalize().to_vec();
         GarbleDyn { base: (0..n).map(|i| hash[i]).collect::<Vec<u8>>(), n: 0 }
     }
@@ -4045,6 +4260,11 @@ impl  GlobalSecretDyn {
     pub fn gen_and_table<D: Digest>(&self, mut a: &GarbleDyn, mut b: &GarbleDyn) -> GarbleTableDyn
     {
         let n: usize = self.n;
+        self.gen_and_table_pol(a, b, false, false)
+    }
+    pub fn gen_and_table_pol<D: Digest>(&self, mut a: &GarbleDyn, mut b: &GarbleDyn, mut pa: bool, mut pb: bool) -> GarbleTableDyn
+    {
+        let n: usize = self.n;
         let result_base = a.and_result(b);
         let mut table = (0..n).map(|_| (0..n).map(|_| 0).collect::<Vec<u8>>()).collect::<Vec<_>>();
         for i in 0.. 4{
@@ -4053,7 +4273,7 @@ impl  GlobalSecretDyn {
     let ea = self.encode(a, av);
     let eb = self.encode(b, bv);
     let row = ((ea.target[0] & 1) as usize) | (((eb.target[0] & 1) as usize) << 1);
-    let result_label = self.encode(&result_base, (av & bv));
+    let result_label = self.encode(&result_base, ((av ^ pa) & (bv ^ pb)));
     let mut d = D::new();
     d.update(&ea.target);
     d.update(&eb.target);
@@ -4109,7 +4329,7 @@ impl  TfheBootstrapTableDyn {
         if addr_bits > 2{
     return Err(TfheBootstrapTableError::InputEncodingUnsupported);
 };
-        let domain = 1 << addr_bits;
+        let domain = (1 as usize) << addr_bits;
         if table_len != domain{
     return Err(TfheBootstrapTableError::TableLengthMismatch);
 };
@@ -4141,7 +4361,7 @@ impl  TfheBootstrapTableDyn {
 };
         let half_q4 = Q4 >> 1;
         let poly_step = big_n / (table_len / 2);
-        let mut test_poly = [0; big_n];
+        let mut test_poly = [(0 as u32); big_n];
         index = 0;
         while (index < big_n){
     let entry = index / poly_step;
@@ -4201,8 +4421,8 @@ impl <G: Group, D: Digest> BaseOt<L> for ChouOrlandiDyn<G, D> {
     fn sender_payload<R: SpecRng>(mut l: usize, mut _rng: &mut R, mut state: &Self::SenderState, mut recv_msg: &Self::RecvMsg, mut m0: &[u8; L], mut m1: &[u8; L]) -> Self::PayloadMsg
     {
         let (k0, k1) = ot_send_finish::<G, D>(state, recv_msg);
-        let mut e0 = [0; l];
-        let mut e1 = [0; l];
+        let mut e0 = [(0 as u8); l];
+        let mut e1 = [(0 as u8); l];
         ot_send_payload::<D>(&k0, &k1, m0, m1, &mut e0, &mut e1);
         (e0, e1)
     }
@@ -4214,7 +4434,7 @@ impl <G: Group, D: Digest> BaseOt<L> for ChouOrlandiDyn<G, D> {
 } else {
     &payload.0
 };
-        let mut mc = [0; l];
+        let mut mc = [(0 as u8); l];
         ot_recv_payload::<D>(&kc, chosen, &mut mc);
         mc
     }
@@ -4230,13 +4450,13 @@ impl <G: Group, D: Digest> ChouOrlandiRecvDyn<G, D> {
 impl  LweOtCrsDyn {
     pub fn sample<R: SpecRng>(mut n: usize, mut rng: &mut R) -> Self
     {
-        let mut a = [[0; n]; n];
+        let mut a = [[(0 as u32); n]; n];
         for i in 0.. n{
     for j in 0.. n{
     a[i][j] = sample_zq(rng);
-}
 };
-        let mut h = [0; n];
+};
+        let mut h = [(0 as u32); n];
         for i in 0.. n{
     h[i] = sample_zq(rng);
 };
@@ -4266,7 +4486,35 @@ impl  BaseOt<L> for LweBaseOtDyn {
     fn recv_finish(mut n: usize, mut l: usize, mut state: &Self::ReceiverState, mut payload: &Self::PayloadMsg) -> [u8; L]
     {
         let bytes = lwe_ot_recv_decrypt_bytes(n, state, payload, l);
-        let mut out = [0; l];
+        let mut out = [(0 as u8); l];
+        out.copy_from_slice(&bytes);
+        out
+    }
+}
+
+impl  BaseOt<L> for LweBaseOtSecureDyn {
+    type SenderState = LweOtCrsDyn;
+    type ReceiverState = LweOtReceiverDyn;
+    type SetupMsg = LweOtCrsDyn;
+    type RecvMsg = LweOtRecvMsgDyn;
+    type PayloadMsg = LweOtSenderMsgSecureDyn;
+    fn sender_setup<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R) -> (Self::SenderState, Self::SetupMsg)
+    {
+        let crs = LweOtCrsDyn::<N>::sample(n, rng);
+        (crs.clone(), crs)
+    }
+    fn recv_start<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut setup: &Self::SetupMsg, mut c: bool) -> (Self::ReceiverState, Self::RecvMsg)
+    {
+        lwe_ot_recv(n, rng, setup, c)
+    }
+    fn sender_payload<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut state: &Self::SenderState, mut recv_msg: &Self::RecvMsg, mut m0: &[u8; L], mut m1: &[u8; L]) -> Self::PayloadMsg
+    {
+        lwe_ot_send_bytes_secure(n, rng, state, recv_msg, m0, m1)
+    }
+    fn recv_finish(mut n: usize, mut l: usize, mut state: &Self::ReceiverState, mut payload: &Self::PayloadMsg) -> [u8; L]
+    {
+        let bytes = lwe_ot_recv_decrypt_bytes_secure(n, state, payload, l);
+        let mut out = [(0 as u8); l];
         out.copy_from_slice(&bytes);
         out
     }
@@ -4275,13 +4523,11 @@ impl  BaseOt<L> for LweBaseOtDyn {
 impl  FerretParams {
     pub fn splen(&self) -> usize
     {
-        let max_interval_len = self.n.div_ceil(self.t);
-        max_interval_len.checked_next_power_of_two().expect("Ferret SPCOT interval length overflow")
+        self.n.div_ceil(self.t).checked_next_power_of_two().expect("Ferret SPCOT interval length overflow")
     }
     pub fn log_splen(&self) -> usize
     {
-        let s = self.splen();
-        s.trailing_zeros() as usize
+        self.splen().trailing_zeros() as usize
     }
     pub fn interval_bounds(&self, mut index: usize) -> Option<(usize, usize)>
     {
@@ -4296,12 +4542,13 @@ impl  FerretParams {
     }
     pub fn seed_cot_count(&self, mut malicious: bool) -> usize
     {
-        let body = self.k + (self.t * self.log_splen());
-        if malicious{
-    body + super::KAPPA_BITS
+        let body = self.t.checked_mul(self.log_splen()).and_then(|noise| self.k.checked_add(noise)).expect("Ferret seed-COT count must fit usize");
+        let seed_count = if malicious{
+    body.checked_add(super::KAPPA_BITS).expect("malicious Ferret seed-COT count must fit usize")
 } else {
     body
-}
+};
+        seed_count
     }
     pub fn output_cot_count(&self, mut malicious: bool) -> usize
     {
@@ -4312,11 +4559,19 @@ impl  FerretParams {
 impl  CotPoolSender {
     pub fn from_seed(mut params: FerretParams, mut seed: FerretSenderSeed) -> Result<Self, PoolSeedError>
     {
-        let expected = checked_seed_cot_count(params)?;
+        Self::from_seed_mode(params, seed, false)
+    }
+    pub fn from_seed_malicious(mut params: FerretParams, mut seed: FerretSenderSeed) -> Result<Self, PoolSeedError>
+    {
+        Self::from_seed_mode(params, seed, true)
+    }
+    pub fn from_seed_mode(mut params: FerretParams, mut seed: FerretSenderSeed, mut malicious: bool) -> Result<Self, PoolSeedError>
+    {
+        let expected = checked_seed_cot_count_mode(params, malicious)?;
         if seed.q.len() != expected{
     return Err(PoolSeedError::SenderSeedCount { expected: expected, found: seed.q.len() });
 };
-        Ok(Self { params: params, seed: seed, out: VecDeque::new(), raise_n: None })
+        Ok(Self { params: params, seed: seed, out: VecDeque::new(), raise_n: None, malicious: malicious, refill_count: 0 })
     }
     pub fn remaining(&self) -> usize
     {
@@ -4324,11 +4579,11 @@ impl  CotPoolSender {
     }
     pub fn reprofile(self, mut params: FerretParams) -> Result<Self, PoolSeedError>
     {
-        let old_seed_count = checked_seed_cot_count(self.params)?;
+        let old_seed_count = checked_seed_cot_count_mode(self.params, self.malicious)?;
         if self.seed.q.len() != old_seed_count{
     return Err(PoolSeedError::SenderSeedCount { expected: old_seed_count, found: self.seed.q.len() });
 };
-        let required = checked_seed_cot_count(params)?;
+        let required = checked_seed_cot_count_mode(params, self.malicious)?;
         let available = self.seed.q.len().checked_add(self.out.len()).ok_or(PoolSeedError::InvalidParameters)?;
         if available < required{
     return Err(PoolSeedError::InsufficientCotMaterial { required: required, available: available });
@@ -4348,14 +4603,22 @@ impl  CotPoolSender {
 impl  CotPoolReceiver {
     pub fn from_seed(mut params: FerretParams, mut seed: FerretReceiverSeed) -> Result<Self, PoolSeedError>
     {
-        let expected = checked_seed_cot_count(params)?;
+        Self::from_seed_mode(params, seed, false)
+    }
+    pub fn from_seed_malicious(mut params: FerretParams, mut seed: FerretReceiverSeed) -> Result<Self, PoolSeedError>
+    {
+        Self::from_seed_mode(params, seed, true)
+    }
+    pub fn from_seed_mode(mut params: FerretParams, mut seed: FerretReceiverSeed, mut malicious: bool) -> Result<Self, PoolSeedError>
+    {
+        let expected = checked_seed_cot_count_mode(params, malicious)?;
         if seed.u.len() != expected{
     return Err(PoolSeedError::ReceiverChoiceCount { expected: expected, found: seed.u.len() });
 };
         if seed.w.len() != expected{
     return Err(PoolSeedError::ReceiverSeedCount { expected: expected, found: seed.w.len() });
 };
-        Ok(Self { params: params, seed: seed, out_x: VecDeque::new(), out_z: VecDeque::new() })
+        Ok(Self { params: params, seed: seed, out_x: VecDeque::new(), out_z: VecDeque::new(), malicious: malicious })
     }
     pub fn remaining(&self) -> usize
     {
@@ -4363,7 +4626,7 @@ impl  CotPoolReceiver {
     }
     pub fn reprofile(self, mut params: FerretParams) -> Result<Self, PoolSeedError>
     {
-        let old_seed_count = checked_seed_cot_count(self.params)?;
+        let old_seed_count = checked_seed_cot_count_mode(self.params, self.malicious)?;
         if self.seed.u.len() != old_seed_count{
     return Err(PoolSeedError::ReceiverChoiceCount { expected: old_seed_count, found: self.seed.u.len() });
 };
@@ -4373,7 +4636,7 @@ impl  CotPoolReceiver {
         if self.out_x.len() != self.out_z.len(){
     return Err(PoolSeedError::ReceiverOutputCountMismatch { choices: self.out_x.len(), values: self.out_z.len() });
 };
-        let required = checked_seed_cot_count(params)?;
+        let required = checked_seed_cot_count_mode(params, self.malicious)?;
         let available = self.seed.u.len().checked_add(self.out_x.len()).ok_or(PoolSeedError::InvalidParameters)?;
         if available < required{
     return Err(PoolSeedError::InsufficientCotMaterial { required: required, available: available });
@@ -4413,24 +4676,35 @@ impl <T: Clone + Add<Output = T> + Mul<Output = T> + Default> IdealCotDyn<T> whe
 impl  OtStack {
     pub fn setup<D, R>(mut rng_s: &mut R, mut rng_r: &mut R, mut params: FerretParams) -> Self where D: Digest
     {
-        let m = params.seed_cot_count(false);
+        Self::<D, R, LweBaseOtDyn>::setup_impl(rng_s, rng_r, params, false)
+    }
+    pub fn setup_with_base<D, R, B>(mut rng_s: &mut R, mut rng_r: &mut R, mut params: FerretParams) -> Self where D: Digest, B: BaseOt
+    {
+        Self::<D, R, B>::setup_impl(rng_s, rng_r, params, false)
+    }
+    pub fn setup_malicious<D, R>(mut rng_s: &mut R, mut rng_r: &mut R, mut params: FerretParams) -> Self where D: Digest
+    {
+        Self::<D, R, LweBaseOtSecureDyn>::setup_impl(rng_s, rng_r, params, true)
+    }
+    pub fn setup_impl<D, R, B>(mut rng_s: &mut R, mut rng_r: &mut R, mut params: FerretParams, mut malicious: bool) -> Self where D: Digest, B: BaseOt
+    {
+        let m = params.seed_cot_count(malicious);
         let mut bits = vec![];
         for b in &mut bits{
     *b = ((rng_r.next_u32() & 1) == 1);
 };
-        let mut delta_msg = [0; 16];
+        let mut delta_msg = [(0 as u8); 16];
         for chunk in delta_msg.chunks_mut(4){
     chunk.copy_from_slice(&rng_s.next_u32().to_le_bytes()[..chunk.len()]);
 };
-        let out = softspoken_cot_extend_base::<LweBaseOtDyn, D, R, 16>(16, rng_s, rng_r, &bits, &delta_msg);
+        let out = softspoken_cot_extend_base::<B, D, R, 16>(16, rng_s, rng_r, &bits, &delta_msg);
         let mut q = Vec::with_capacity(m);
         let mut w = Vec::with_capacity(m);
         for j in 0.. m{
     q.push(out.sender_r0[j]);
     w.push(out.receiver_v[j]);
 };
-        let mut stack = Self { sender: CotPoolSender { params: params, seed: crate::ot::ferret::cot::FerretSenderSeed { delta: delta_msg, q: q }, out: alloc::collections::VecDeque::new(), raise_n: None }, receiver: CotPoolReceiver { params: params, seed: crate::ot::ferret::cot::FerretReceiverSeed { u: bits, w: w }, out_x: alloc::collections::VecDeque::new(), out_z: alloc::collections::VecDeque::new() } };
-        crate::ot::ferret::pool::refill(rng_s, &mut stack.sender, &mut stack.receiver);
+        let mut stack = Self { sender: CotPoolSender { params: params, seed: crate::ot::ferret::cot::FerretSenderSeed { delta: delta_msg, q: q }, out: alloc::collections::VecDeque::new(), raise_n: None, malicious: malicious, refill_count: 0 }, receiver: CotPoolReceiver { params: params, seed: crate::ot::ferret::cot::FerretReceiverSeed { u: bits, w: w }, out_x: alloc::collections::VecDeque::new(), out_z: alloc::collections::VecDeque::new(), malicious: malicious } };
         let _ = rng_r;
         stack
     }
@@ -4441,7 +4715,7 @@ impl  OtStack {
     }
     pub fn commit_bits<R: SpecRng>(&mut self, mut rng: &mut R, mut bits: &[bool]) -> Vec<(VopeDyn<Galois128>, QDyn<Galois128>)>
     {
-        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, bits.len());
+        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, bits.len()).expect("Ferret pool refill failed; abort protocol");
         let delta = self.sender.seed.delta;
         let mut out = Vec::with_capacity(bits.len());
         for j in 0.. bits.len(){
@@ -4457,11 +4731,49 @@ impl  OtStack {
 impl  CotSource<U1, Galois128> for OtStack {
     fn cot<R: SpecRng>(&mut self, mut rng: &mut R, mut _sample_t: impl Fn, mut bit: bool) -> (Vec<Galois128>, Vec<Galois128>)
     {
-        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, 1);
+        let (r0s, xs, zs) = take_random(rng, &mut self.sender, &mut self.receiver, 1).expect("Ferret pool refill failed; abort protocol");
         let (r0, z, _d) = bea95_chosen_bit(&self.sender.seed.delta, r0s[0], xs[0], zs[0], bit);
         let r0_t = (0..1).map(|_| Galois128(u128::from_le_bytes(r0))).collect::<Vec<Galois128>>();
         let v_t = (0..1).map(|_| Galois128(u128::from_le_bytes(z))).collect::<Vec<Galois128>>();
         (r0_t, v_t)
+    }
+}
+
+impl  ScalarOps for ToyGroup {
+    fn scalar_zero() -> u64
+    {
+        0
+    }
+    fn scalar_add(mut a: &u64, mut b: &u64) -> u64
+    {
+        let q = TOY_P - 1;
+        ((a % q) + (b % q)) % q
+    }
+    fn scalar_sub(mut a: &u64, mut b: &u64) -> u64
+    {
+        let q = TOY_P - 1;
+        (((a % q) + q) - (b % q)) % q
+    }
+    fn scalar_mul_scalar(mut a: &u64, mut b: &u64) -> u64
+    {
+        let q = TOY_P - 1;
+        ((a % q) * (b % q)) % q
+    }
+    fn scalar_eq(mut a: &u64, mut b: &u64) -> bool
+    {
+        (a % (TOY_P - 1)) == (b % (TOY_P - 1))
+    }
+    fn scalar_from_hash<D: Digest>(mut h: D) -> u64
+    {
+        let out = h.finalize().to_vec();
+        let mut le = [(0 as u8); 8];
+        le.copy_from_slice(&out[..8]);
+        u64::from_le_bytes(le) % (TOY_P - 1)
+    }
+    fn random_mod_order<R: SpecRng>(mut rng: &mut R) -> u64
+    {
+        let v = ((rng.next_u32() as u64) << 32) | (rng.next_u32() as u64);
+        v % (TOY_P - 1)
     }
 }
 
@@ -4503,7 +4815,7 @@ impl  Fe25519 {
     }
     pub fn to_bytes(self) -> [u8; 32]
     {
-        let mut out = [0; 32];
+        let mut out = [(0 as u8); 32];
         for i in 0.. 4{
     out[(i * 8)..((i * 8) + 8)].copy_from_slice(&self.0[i].to_le_bytes());
 };
@@ -4580,7 +4892,7 @@ impl  Group for Ed25519 {
     }
     fn random_scalar<R: SpecRng>(mut rng: &mut R) -> [u8; 32]
     {
-        let mut k = [0; 32];
+        let mut k = [(0 as u8); 32];
         for byte in k.iter_mut(){
     *byte = rng.next_u8();
 };
@@ -4607,53 +4919,57 @@ impl  Group for Ed25519 {
     }
 }
 
-pub fn field_mul<T: FieldMulBackend>(mut a: T, mut b: T, mut c: T) -> T
-{
-    let mut p: T = T::default();
-    let mut a = a;
-    let mut b = b;
-    let h = T::from(1) << (((size_of_val(&p) << 3) - 1) as u32);
-    for _ in 0.. size_of_val(&p) << 3{
-    if (b.clone() & T::from(1)) != T::default(){
-    p ^= a.clone();
+impl  ScalarOps for Ed25519 {
+    fn scalar_zero() -> [u8; 32]
+    {
+        [(0 as u8); 32]
+    }
+    fn scalar_add(mut a: &[u8; 32], mut b: &[u8; 32]) -> [u8; 32]
+    {
+        limbs_to_bytes(&add_mod_l(&bytes_to_limbs(a), &bytes_to_limbs(b)))
+    }
+    fn scalar_sub(mut a: &[u8; 32], mut b: &[u8; 32]) -> [u8; 32]
+    {
+        limbs_to_bytes(&sub_mod_l(&bytes_to_limbs(a), &bytes_to_limbs(b)))
+    }
+    fn scalar_mul_scalar(mut a: &[u8; 32], mut b: &[u8; 32]) -> [u8; 32]
+    {
+        let prod = mul4(&bytes_to_limbs(a), &bytes_to_limbs(b));
+        limbs_to_bytes(&reduce512(&prod))
+    }
+    fn scalar_eq(mut a: &[u8; 32], mut b: &[u8; 32]) -> bool
+    {
+        let ra = reduce512(&vec![{
+    let l = bytes_to_limbs(a);
+    l[0]
+}, bytes_to_limbs(a)[1], bytes_to_limbs(a)[2], bytes_to_limbs(a)[3], 0, 0, 0, 0]);
+        let rb = reduce512(&vec![{
+    let l = bytes_to_limbs(b);
+    l[0]
+}, bytes_to_limbs(b)[1], bytes_to_limbs(b)[2], bytes_to_limbs(b)[3], 0, 0, 0, 0]);
+        cmp4(&ra, &rb) == core::cmp::Ordering::Equal
+    }
+    fn scalar_from_hash<D: Digest>(mut h: D) -> [u8; 32]
+    {
+        let out = h.finalize().to_vec();
+        let mut wide = [(0 as u64); 8];
+        let n = out.len().min(64);
+        for (i, chunk) in out[..n].chunks(8).enumerate(){
+    let mut le = [(0 as u8); 8];
+    le[..chunk.len()].copy_from_slice(chunk);
+    wide[i] = u64::from_le_bytes(le);
 };
-    let high_bit = a.clone() & h.clone();
-    a <<= 1;
-    if high_bit != T::default(){
-    a ^= c.clone();
+        limbs_to_bytes(&reduce512(&wide))
+    }
+    fn random_mod_order<R: SpecRng>(mut rng: &mut R) -> [u8; 32]
+    {
+        let mut k = [(0 as u8); 32];
+        for byte in k.iter_mut(){
+    *byte = rng.next_u8();
 };
-    b >>= 1;
-};
-    p
-}
-
-pub fn field_square<T: FieldMulBackend>(mut a: T, mut c: T) -> T
-{
-    field_mul(a.clone(), a, c)
-}
-
-pub fn field_invert<T: FieldMulBackend>(mut a: T, mut c: T, mut w: u32) -> T
-{
-    if a == T::default(){
-    return T::default();
-};
-    let e = w - 1;
-    let mut r = a.clone();
-    let mut k: u32 = 1;
-    let msb = 31 - e.leading_zeros();
-    for bit_pos in 0..msb.rev(){
-    let mut tmp = r.clone();
-    for _ in 0.. k{
-    tmp = field_square(tmp, c.clone());
-};
-    r = field_mul(tmp, r, c.clone());
-    k *= 2;
-    if ((e >> bit_pos) & 1) == 1{
-    r = field_mul(field_square(r, c.clone()), a.clone(), c.clone());
-    k += 1;
-}
-};
-    field_square(r, c)
+        k[31] &= 15;
+        k
+    }
 }
 
 pub fn gf_mul_u8(mut a: u8, mut b: u8, mut c: u8) -> u8
@@ -4680,7 +4996,7 @@ pub fn gf_mul_u64(mut a: u64, mut b: u64, mut c: u64) -> u64
     let mut p: u64 = 0;
     let mut a = a;
     let mut b = b;
-    let h: u64 = 1 << 63;
+    let h: u64 = (1 as u64) << 63;
     for _ in 0.. 64{
     if (b & 1) != 0{
     p ^= a;
@@ -4700,7 +5016,7 @@ pub fn gf_mul_u128(mut a: u128, mut b: u128, mut c: u128) -> u128
     let mut p: u128 = 0;
     let mut a = a;
     let mut b = b;
-    let h: u128 = 1 << 127;
+    let h: u128 = (1 as u128) << 127;
     for _ in 0.. 128{
     if (b & 1) != 0{
     p ^= a;
@@ -4735,7 +5051,7 @@ pub fn gf_invert_u8(mut a: u8, mut c: u8) -> u8
     if ((e >> bit_pos) & 1) == 1{
     r = gf_mul_u8(gf_mul_u8(r, r, c), a, c);
     k += 1;
-}
+};
 };
     gf_mul_u8(r, r, c)
 }
@@ -4760,7 +5076,7 @@ pub fn gf_invert_u64(mut a: u64, mut c: u64) -> u64
     if ((e >> bit_pos) & 1) == 1{
     r = gf_mul_u64(gf_mul_u64(r, r, c), a, c);
     k += 1;
-}
+};
 };
     gf_mul_u64(r, r, c)
 }
@@ -4785,7 +5101,7 @@ pub fn gf_invert_u128(mut a: u128, mut c: u128) -> u128
     if ((e >> bit_pos) & 1) == 1{
     r = gf_mul_u128(gf_mul_u128(r, r, c), a, c);
     k += 1;
-}
+};
 };
     gf_mul_u128(r, r, c)
 }
@@ -4829,7 +5145,7 @@ pub fn gf_invert_256(mut a: U256, mut c: U256) -> U256
     if ((e >> bit_pos) & 1) == 1{
     r = gf_mul_256(gf_mul_256(r, r, c), a, c);
     k += 1;
-}
+};
 };
     gf_mul_256(r, r, c)
 }
@@ -4904,7 +5220,7 @@ pub fn add_round_key(mut state: &mut [u8; BLOCK], mut round_key: &[u8; BLOCK])
 
 pub fn key_expansion(mut key: &[u8; BLOCK]) -> [[u8; BLOCK]; NK_ROUND_KEYS]
 {
-    let mut words = [[0; 4]; (4 * NK_ROUND_KEYS)];
+    let mut words = [[(0 as u8); 4]; (4 * NK_ROUND_KEYS)];
     for i in 0.. 4{
     words[i] = vec![key[4 * i], key[(4 * i) + 1], key[(4 * i) + 2], key[(4 * i) + 3]];
 };
@@ -4923,9 +5239,9 @@ pub fn key_expansion(mut key: &[u8; BLOCK]) -> [[u8; BLOCK]; NK_ROUND_KEYS]
 };
     for b in 0.. 4{
     words[i][b] = (words[i - 4][b] ^ temp[b]);
-}
 };
-    let mut round_keys = [[0; BLOCK]; NK_ROUND_KEYS];
+};
+    let mut round_keys = [[(0 as u8); BLOCK]; NK_ROUND_KEYS];
     for r in 0.. NK_ROUND_KEYS{
     for c in 0.. 4{
     let w = words[(4 * r) + c];
@@ -4933,7 +5249,7 @@ pub fn key_expansion(mut key: &[u8; BLOCK]) -> [[u8; BLOCK]; NK_ROUND_KEYS]
     round_keys[r][(4 * c) + 1] = w[1];
     round_keys[r][(4 * c) + 2] = w[2];
     round_keys[r][(4 * c) + 3] = w[3];
-}
+};
 };
     round_keys
 }
@@ -4965,7 +5281,7 @@ pub fn vole_hash(mut key: &UniversalHashKey, mut input: &[u8]) -> UniversalHashO
     let mut pow1 = key.r1;
     for i in 0.. n_full{
     let block = &input[(i * 16)..((i + 1) * 16)];
-    let mut bytes = [0; 16];
+    let mut bytes = [(0 as u8); 16];
     bytes.copy_from_slice(block);
     let s = Galois128(u128::from_le_bytes(bytes));
     h0 = (h0 + (s * pow0));
@@ -4975,7 +5291,7 @@ pub fn vole_hash(mut key: &UniversalHashKey, mut input: &[u8]) -> UniversalHashO
     pow1 = (pow1 * key.r1);
 };
     if !tail.is_empty(){
-    let mut bytes = [0; 8];
+    let mut bytes = [(0 as u8); 8];
     let n = tail.len().min(8);
     bytes[..n].copy_from_slice(&tail[..n]);
     let t = Galois64(u64::from_le_bytes(bytes));
@@ -5103,7 +5419,7 @@ pub fn grind_chall3(mut chall_2: &[u8], mut a_hat: &[u8], mut b_hat: &[u8], mut 
     let candidate = chall3(chall_2, a_hat, b_hat, &c_hat_grind, lambda, use_shake256);
     if has_trailing_zero_bits(&candidate, w_grind){
     return Some((candidate, counter));
-}
+};
 };
     None
 }
@@ -5126,10 +5442,10 @@ pub fn has_trailing_zero_bits(mut bytes: &[u8], mut n: u32) -> bool
     for i in bytes.len() - full_bytes.. bytes.len(){
     if bytes[i] != 0{
     return false;
-}
+};
 };
     if rem_bits > 0{
-    let mask = (1 << rem_bits) - 1;
+    let mask = ((1 as u8) << rem_bits) - 1;
     let byte_idx = (bytes.len() - full_bytes) - 1;
     if (bytes[byte_idx] & mask) != 0{
     return false;
@@ -5148,7 +5464,7 @@ pub fn convert_to_vole(mut seeds: &[Option<[u8; LAMBDA_BYTES]>], mut iv: &[u8; 1
     match s {
     Some(seed) => r.push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)),
     None => r.push(zero_block.clone()),
-}
+};
 };
     let mut v: Vec<Vec<u8>> = (0..d).map(|_| vec![]).collect::<Vec<_>>();
     let mut level: Vec<Vec<u8>> = r;
@@ -5172,7 +5488,7 @@ pub fn concat_small_voles(mut outs: Vec<ConvertOutput>) -> BigVoleProver
     let l_hat = outs[0].u.len();
     for o in &outs{
     for vj in &o.v{
-}
+};
 };
     let u = outs[0].u.clone();
     let mut c: Vec<Vec<u8>> = Vec::with_capacity((outs.len() - 1));
@@ -5185,7 +5501,7 @@ pub fn concat_small_voles(mut outs: Vec<ConvertOutput>) -> BigVoleProver
     for o in outs{
     for vj in o.v{
     v_columns.push(vj);
-}
+};
 };
     BigVoleProver { u: u, c: c, v_columns: v_columns }
 }
@@ -5218,19 +5534,32 @@ pub fn xor_in_place(mut a: &mut [u8], mut b: &[u8])
 }
 }
 
+pub fn collect_open_nodes_walk(mut node: usize, mut hidden: &[bool], mut tree: &[[u8; LAMBDA_BYTES]], mut leaf_count: usize, mut out: &mut Vec<(usize, [u8; LAMBDA_BYTES])>)
+{
+    if !hidden[node]{
+    out.push((node, tree[node]));
+    return;
+};
+    if node >= (leaf_count - 1){
+    return;
+};
+    collect_open_nodes_walk(((2 * node) + 1), hidden, tree, leaf_count, out);
+    collect_open_nodes_walk(((2 * node) + 2), hidden, tree, leaf_count, out);
+}
+
 pub fn keygen(mut rng: &mut impl SpecRng) -> (FaestSecretKey, FaestPublicKey)
 {
-    let mut sk = [0; LAMBDA_BYTES];
+    let mut sk = [(0 as u8); LAMBDA_BYTES];
     for b in sk.iter_mut(){
     *b = rng.next_u8();
 };
-    let pk = aes128_encrypt(&sk, &[0; LAMBDA_BYTES]);
+    let pk = aes128_encrypt(&sk, &[(0 as u8); LAMBDA_BYTES]);
     (FaestSecretKey(sk), FaestPublicKey(pk))
 }
 
 pub fn sign(mut sk: &FaestSecretKey, mut pk: &FaestPublicKey, mut message: &[u8], mut iv_seed: [u8; LAMBDA_BYTES], mut prover: &impl FaestAesProver) -> FaestSignature
 {
-    let iv: [u8; LAMBDA_BYTES] = aes128_encrypt(&iv_seed, &[0; LAMBDA_BYTES]);
+    let iv: [u8; LAMBDA_BYTES] = aes128_encrypt(&iv_seed, &[(0 as u8); LAMBDA_BYTES]);
     let r: [u8; LAMBDA_BYTES] = aes128_encrypt(&sk.0, &iv);
     let commitment: BavcCommitmentDyn = BavcDyn::<EmLeafCommit, COM_BYTES, Sha3_256>::commit(32, r, &iv, TAU, SUB_VOLE_N);
     let mu: Vec<u8> = {
@@ -5335,10 +5664,10 @@ pub fn recompute_tree(mut r: [u8; LAMBDA_BYTES], mut total_leaves: usize) -> Vec
 
 pub fn hash_key_from_chall(mut chall: &[u8]) -> UniversalHashKey
 {
-    let mut r0_bytes = [0; 16];
+    let mut r0_bytes = [(0 as u8); 16];
     let n = chall.len().min(16);
     r0_bytes[..n].copy_from_slice(&chall[..n]);
-    let mut r1_bytes = [0; 8];
+    let mut r1_bytes = [(0 as u8); 8];
     let off = n;
     let m = (chall.len() - off).min(8);
     r1_bytes[..m].copy_from_slice(&chall[off..(off + m)]);
@@ -5363,10 +5692,10 @@ pub fn has_trailing_zero_bits(mut bytes: &[u8], mut n: u32) -> bool
     for i in bytes.len() - full_bytes.. bytes.len(){
     if bytes[i] != 0{
     return false;
-}
+};
 };
     if rem > 0{
-    let mask = (1 << rem) - 1;
+    let mask = ((1 as u8) << rem) - 1;
     let idx = (bytes.len() - full_bytes) - 1;
     if (bytes[idx] & mask) != 0{
     return false;
@@ -5585,7 +5914,7 @@ pub fn random_nonzero_delta<N, T, R>(mut n: usize, mut rng: &mut R, mut sample_t
 {
     DeltaDyn { delta: (0..n).map(|_| {
     let mut x = sample_t(rng);
-    let mut tries = 0;
+    let mut tries = 0 as usize;
     while (is_zero(&x) && (tries < 64)){
     x = sample_t(rng);
     tries += 1;
@@ -5654,7 +5983,7 @@ pub fn binfhe_gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usi
 pub fn binfhe_key_switch<K: AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> + Sized>(mut n_lwe: usize, mut big_n: usize, mut log_mod_ks: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut ksk: &K) -> BinfheLweCiphertextDyn
 {
     let ksk_rows = ksk.ksk_rows();
-    let mut out_a = [0; n_lwe];
+    let mut out_a = [(0 as u32); n_lwe];
     let mut out_b = ct.b;
     for i in 0.. big_n{
     let digits = gadget::<LOG_MOD_KS, KS_ELL, KS_BASE_LOG>::gadget_decompose(log_mod_ks, ks_ell, ks_base_log, ct.a[i]);
@@ -5668,7 +5997,7 @@ pub fn binfhe_key_switch<K: AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> + Sized>(mut
     out_a[k] = out_a[k].wrapping_sub(d.wrapping_mul(entry.a[k]));
 };
     out_b = out_b.wrapping_sub(d.wrapping_mul(entry.b));
-}
+};
 };
     for k in 0.. n_lwe{
     out_a[k] = torus::<LOG_MOD_KS>::reduce(log_mod_ks, out_a[k]);
@@ -5697,8 +6026,8 @@ pub fn binfhe_external_product(mut n: usize, mut log: usize, mut ell: usize, mut
 {
     let a_dec = gadget::<N, LOG, ELL, BASE_LOG>::gadget_poly_decompose(n, log, ell, base_log, &ct.a);
     let b_dec = gadget::<N, LOG, ELL, BASE_LOG>::gadget_poly_decompose(n, log, ell, base_log, &ct.b);
-    let mut out_a = [0; n];
-    let mut out_b = [0; n];
+    let mut out_a = [(0 as u32); n];
+    let mut out_b = [(0 as u32); n];
     for j in 0.. ell{
     let row = &c.rows[j];
     let a0 = binfhe_poly_mul_neg::<N, LOG>(n, log, &a_dec[j], &row.rlwe0.a);
@@ -5708,7 +6037,7 @@ pub fn binfhe_external_product(mut n: usize, mut log: usize, mut ell: usize, mut
     for k in 0.. n{
     out_a[k] = out_a[k].wrapping_add(a0[k]).wrapping_add(b0[k]);
     out_b[k] = out_b[k].wrapping_add(a1[k]).wrapping_add(b1[k]);
-}
+};
 };
     for k in 0.. n{
     out_a[k] = torus::<LOG>::reduce(log, out_a[k]);
@@ -5726,7 +6055,7 @@ pub fn binfhe_rgsw_cmux(mut n: usize, mut log: usize, mut ell: usize, mut base_l
 
 pub fn binfhe_gen_rlwe_secret_key<R: SpecRng>(mut n: usize, mut rng: &mut R) -> BinfheRlweSecretKeyDyn
 {
-    let mut key = [0; n];
+    let mut key = [(0 as u32); n];
     for k in key.iter_mut(){
     *k = ((rng.next_u32() & 1) as u32);
 };
@@ -5735,7 +6064,7 @@ pub fn binfhe_gen_rlwe_secret_key<R: SpecRng>(mut n: usize, mut rng: &mut R) -> 
 
 pub fn binfhe_poly_mul_neg(mut n: usize, mut log: usize, mut a: &[u32; N], mut b: &[u32; N]) -> [u32; N]
 {
-    let mut result = [0; n];
+    let mut result = [(0 as u32); n];
     for i in 0.. n{
     for j in 0.. n{
     let deg = i + j;
@@ -5744,8 +6073,8 @@ pub fn binfhe_poly_mul_neg(mut n: usize, mut log: usize, mut a: &[u32; N], mut b
     result[deg] = result[deg].wrapping_add(term);
 } else {
     result[deg - n] = result[deg - n].wrapping_sub(term);
-}
-}
+};
+};
 };
     for r in result.iter_mut(){
     *r = torus::<LOG>::reduce(log, *r);
@@ -5756,7 +6085,7 @@ pub fn binfhe_poly_mul_neg(mut n: usize, mut log: usize, mut a: &[u32; N], mut b
 pub fn binfhe_poly_rotate(mut n: usize, mut log: usize, mut p: &[u32; N], mut exp: usize) -> [u32; N]
 {
     let exp = exp % (2 * n);
-    let mut result = [0; n];
+    let mut result = [(0 as u32); n];
     for (i, ..) in p.iter().enumerate(){
     let dest = i + exp;
     if dest < n{
@@ -5765,7 +6094,7 @@ pub fn binfhe_poly_rotate(mut n: usize, mut log: usize, mut p: &[u32; N], mut ex
     result[dest - n] = result[dest - n].wrapping_sub(coeff);
 } else {
     result[dest - (2 * n)] = result[dest - (2 * n)].wrapping_add(coeff);
-}
+};
 };
     for r in result.iter_mut(){
     *r = torus::<LOG>::reduce(log, *r);
@@ -5785,7 +6114,7 @@ pub fn binfhe_rlwe_encrypt_poly<R: SpecRng>(mut n: usize, mut log: usize, mut et
 
 pub fn binfhe_rlwe_encrypt_scalar<R: SpecRng>(mut n: usize, mut log: usize, mut eta: usize, mut m: u32, mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRlweCiphertextDyn
 {
-    let mut msg = [0; n];
+    let mut msg = [(0 as u32); n];
     msg[0] = m;
     binfhe_rlwe_encrypt_poly::<N, LOG, ETA, R>(n, log, eta, &msg, sk, rng)
 }
@@ -5793,7 +6122,7 @@ pub fn binfhe_rlwe_encrypt_scalar<R: SpecRng>(mut n: usize, mut log: usize, mut 
 pub fn binfhe_rlwe_phase(mut n: usize, mut log: usize, mut ct: &BinfheRlweCiphertextDyn, mut sk: &BinfheRlweSecretKeyDyn) -> [u32; N]
 {
     let product = binfhe_poly_mul_neg::<N, LOG>(n, log, &ct.a, &sk.key);
-    let mut phase = [0; n];
+    let mut phase = [(0 as u32); n];
     for i in 0.. n{
     phase[i] = torus::<LOG>::torus_sub(log, ct.b[i], product[i]);
 };
@@ -5802,7 +6131,7 @@ pub fn binfhe_rlwe_phase(mut n: usize, mut log: usize, mut ct: &BinfheRlweCipher
 
 pub fn binfhe_sample_extract(mut n: usize, mut log: usize, mut ct: &BinfheRlweCiphertextDyn) -> BinfheLweCiphertextDyn
 {
-    let mut a_lwe = [0; n];
+    let mut a_lwe = [(0 as u32); n];
     a_lwe[0] = ct.a[0];
     for i in 1.. n{
     a_lwe[i] = torus::<LOG>::torus_neg(log, ct.a[n - i]);
@@ -5837,7 +6166,7 @@ pub fn binfhe_rlwe_rotate(mut n: usize, mut log: usize, mut ct: &BinfheRlweCiphe
 
 pub fn binfhe_rlwe_trivial(mut n: usize, mut log: usize, mut msg: &[u32; N]) -> BinfheRlweCiphertextDyn
 {
-    BinfheRlweCiphertextDyn { a: [0; n], b: *msg, n: 0 }
+    BinfheRlweCiphertextDyn { a: [(0 as u32); n], b: *msg, n: 0 }
 }
 
 pub fn mask(mut log: usize) -> u32
@@ -5845,7 +6174,7 @@ pub fn mask(mut log: usize) -> u32
     if log >= 32{
     u32::MAX
 } else {
-    (1 << log) - 1
+    ((1 as u32) << log) - 1
 }
 }
 
@@ -5896,20 +6225,20 @@ pub fn binfhe_blind_rotate(mut n_lwe: usize, mut big_n: usize, mut log_q: usize,
     let a_exp = exponent::<LOG_Q_LWE, BIG_N>(log_q_lwe, big_n, ct.a[i]);
     if a_exp != 0{
     let rotated = binfhe_rlwe_rotate::<BIG_N, LOG_Q>(big_n, log_q, &acc, a_exp);
-    acc = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(big_n, log_q, bs_ell, bs_base_log, row, &rotated, &acc);
-}
+    acc = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(row, &rotated, &acc);
+};
 };
     acc
 }
 
 pub fn wire_delta(mut log_q_lwe: usize, mut k_max: usize) -> u32
 {
-    1 << ((log_q_lwe - 1) - (k_max as u32))
+    (1 as u32) << ((log_q_lwe - 1) - (k_max as u32))
 }
 
 pub fn binfhe_gen_lwe_secret_key<R: SpecRng>(mut n: usize, mut rng: &mut R) -> BinfheLweSecretKeyDyn
 {
-    let mut key = [0; n];
+    let mut key = [(0 as u8); n];
     let mut i = 0;
     while (i < n){
     let mut word = rng.next_u32();
@@ -5918,7 +6247,7 @@ pub fn binfhe_gen_lwe_secret_key<R: SpecRng>(mut n: usize, mut rng: &mut R) -> B
     key[i] = ((word & 1) as u8);
     word >>= 1;
     i += 1;
-}
+};
 };
     BinfheLweSecretKeyDyn { key: key, n: 0 }
 }
@@ -5935,11 +6264,11 @@ pub fn binfhe_lwe_encrypt<R: SpecRng>(mut n: usize, mut log_m: usize, mut eta: u
 
 pub fn binfhe_lwe_encrypt_raw<R: SpecRng>(mut n: usize, mut log_m: usize, mut eta: usize, mut msg: u32, mut sk: &BinfheLweSecretKeyDyn, mut rng: &mut R) -> BinfheLweCiphertextDyn
 {
-    let mut a = [0; n];
+    let mut a = [(0 as u32); n];
     for ai in a.iter_mut(){
     *ai = torus::<LOG_M>::reduce(log_m, rng.next_u32());
 };
-    let mut dot = 0;
+    let mut dot = 0 as u32;
     for i in 0.. n{
     dot = dot.wrapping_add(a[i].wrapping_mul((sk.key[i] as u32)));
 };
@@ -5950,7 +6279,7 @@ pub fn binfhe_lwe_encrypt_raw<R: SpecRng>(mut n: usize, mut log_m: usize, mut et
 
 pub fn lwe_phase(mut n: usize, mut log_m: usize, mut ct: &BinfheLweCiphertextDyn, mut sk: &BinfheLweSecretKeyDyn) -> u32
 {
-    let mut dot = 0;
+    let mut dot = 0 as u32;
     for i in 0.. n{
     dot = dot.wrapping_add(ct.a[i].wrapping_mul((sk.key[i] as u32)));
 };
@@ -5969,7 +6298,7 @@ pub fn binfhe_lwe_decrypt(mut n: usize, mut log_m: usize, mut ct: &BinfheLweCiph
 
 pub fn binfhe_lwe_add(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut y: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
 {
-    let mut a = [0; n];
+    let mut a = [(0 as u32); n];
     for i in 0.. n{
     a[i] = torus::<LOG_M>::torus_add(log_m, x.a[i], y.a[i]);
 };
@@ -5978,7 +6307,7 @@ pub fn binfhe_lwe_add(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertex
 
 pub fn binfhe_lwe_sub(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut y: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
 {
-    let mut a = [0; n];
+    let mut a = [(0 as u32); n];
     for i in 0.. n{
     a[i] = torus::<LOG_M>::torus_sub(log_m, x.a[i], y.a[i]);
 };
@@ -5987,7 +6316,7 @@ pub fn binfhe_lwe_sub(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertex
 
 pub fn binfhe_lwe_neg(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
 {
-    let mut a = [0; n];
+    let mut a = [(0 as u32); n];
     for i in 0.. n{
     a[i] = torus::<LOG_M>::torus_neg(log_m, x.a[i]);
 };
@@ -5996,7 +6325,7 @@ pub fn binfhe_lwe_neg(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertex
 
 pub fn binfhe_lwe_scale(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut c: u32) -> BinfheLweCiphertextDyn
 {
-    let mut a = [0; n];
+    let mut a = [(0 as u32); n];
     for i in 0.. n{
     a[i] = torus::<LOG_M>::mul_exact(log_m, x.a[i], c);
 };
@@ -6017,7 +6346,7 @@ pub fn binfhe_not(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn
 
 pub fn binfhe_trivial(mut n: usize, mut log_m: usize, mut m: bool, mut delta: u32) -> BinfheLweCiphertextDyn
 {
-    BinfheLweCiphertextDyn { a: [0; n], b: if m{
+    BinfheLweCiphertextDyn { a: [(0 as u32); n], b: if m{
     delta
 } else {
     0
@@ -6034,8 +6363,8 @@ pub fn selector_margin(mut log_q_lwe: u32, mut k: usize, mut input_noise_bound: 
     if ((k as u32) + 2) >= log_q_lwe{
     return false;
 };
-    let margin = 1 << ((log_q_lwe - (k as u32)) - 2);
-    let weight = ((1 << k) - 1) as u32;
+    let margin = (1 as u32) << ((log_q_lwe - (k as u32)) - 2);
+    let weight = (((1 as u64) << k) - 1) as u32;
     weight.saturating_mul(input_noise_bound) < margin
 }
 
@@ -6045,45 +6374,62 @@ pub fn check_profile(mut n_lwe: usize, mut big_n: usize, mut log_q: u32, mut log
 
 pub fn execute_plan(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut plan: &BootstrapPlan, mut inputs: &[BinfheLweCiphertextDyn], mut cells: &[BinfheRlweCiphertextDyn], mut bk: &BinfheBootstrappingKeyDyn, mut cbk: &CircuitBootstrappingKeyDyn) -> (Vec<BinfheLweCiphertextDyn>, Vec<BinfheRlweCiphertextDyn>)
 {
+    let mut workspace = PlanWorkspaceDyn::<N_LWE, BIG_N, BS_ELL>::new(n_lwe, big_n, bs_ell, plan).expect("execute_plan: invalid or overflowing workspace requirements");
+    execute_plan_in_workspace::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, PRIV_ELL, PRIV_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, priv_ell, priv_base_log, plan, inputs, cells, bk, cbk, &mut workspace).into_iter().map(|(wires, cells)| (wires.to_vec(), cells.to_vec())).collect::<Vec<_>>().expect("execute_plan: invalid input/cell shape")
+}
+
+pub fn execute_plan_in_workspace(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut plan: &BootstrapPlan, mut inputs: &[BinfheLweCiphertextDyn], mut cells: &[BinfheRlweCiphertextDyn], mut bk: &BinfheBootstrappingKeyDyn, mut cbk: &CircuitBootstrappingKeyDyn, mut workspace: &mut PlanWorkspaceDyn) -> Result<(&[BinfheLweCiphertextDyn], &[BinfheRlweCiphertextDyn]), PlanWorkspaceError>
+{
+    plan.validate().map_err(PlanWorkspaceError::InvalidPlan)?;
+    if inputs.len() != (plan.num_inputs as usize){
+    return Err(PlanWorkspaceError::InputCount { expected: (plan.num_inputs as usize), actual: inputs.len() });
+};
+    if cells.len() != (plan.num_cells as usize){
+    return Err(PlanWorkspaceError::CellCount { expected: (plan.num_cells as usize), actual: cells.len() });
+};
+    let required = plan.workspace_requirements()?;
+    if (workspace.wires.capacity() < required.wires) || (workspace.rgsws.capacity() < required.rgsws) || (workspace.cells.capacity() < required.cells) || (workspace.lut_inputs.capacity() < required.lut_inputs){
+    return Err(PlanWorkspaceError::CapacityOverflow);
+};
+    workspace.reset();
+    workspace.wires.extend_from_slice(inputs);
+    workspace.cells.extend_from_slice(cells);
     let delta = wire_delta::<LOG_Q_LWE>(log_q_lwe, (plan.k_max as usize));
-    let mut wires: Vec<BinfheLweCiphertextDyn> = inputs.to_vec();
-    let mut rgsws: Vec<BinfheRgswCiphertextDyn> = Vec::new();
-    let mut cell_arena: Vec<BinfheRlweCiphertextDyn> = cells.to_vec();
     for layer in &plan.layers{
     for op in layer{
     match op {
     PlanOp::Const { out: out, value: value } => {
-    wires.push(binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, *value, delta));
+    workspace.wires.push(binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, *value, delta));
 },
     PlanOp::Not { input: input, out: out } => {
-    wires.push(binfhe_not::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &wires[*input as usize], delta));
+    let input = workspace.wires[*input as usize];
+    workspace.wires.push(binfhe_not::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &input, delta));
 },
     PlanOp::Lut { inputs: inputs, table: table, out: out } => {
     let spec = &plan.luts[*table as usize];
     let arity = spec.entries.len().trailing_zeros() as usize;
-    let mut cts: [BinfheLweCiphertextDyn; MAX_LUT_ARITY] = [binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, false, 0); MAX_LUT_ARITY];
-    for (j, w) in inputs.as_slice().iter().enumerate(){
-    cts[j] = wires[*w as usize];
-};
-    wires.push(binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &cts[..arity], &spec.entries, (plan.k_max as usize), bk));
+    workspace.lut_inputs.clear();
+    workspace.lut_inputs.extend(inputs.iter().map(|w| workspace.wires[*w as usize]));
+    workspace.wires.push(binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &workspace.lut_inputs, &spec.entries, (plan.k_max as usize), bk));
 },
     PlanOp::CircuitBootstrap { input: input, out: out } => {
-    rgsws.push(circuit_bootstrap::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG, KS_ELL, PRIV_ELL, PRIV_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, ks_ell, priv_ell, priv_base_log, &wires[*input as usize], cbk, (plan.k_max as usize)));
+    let input = workspace.wires[*input as usize];
+    workspace.rgsws.push(circuit_bootstrap::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG, KS_ELL, PRIV_ELL, PRIV_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, ks_ell, priv_ell, priv_base_log, &input, cbk, (plan.k_max as usize)));
 },
     PlanOp::RgswMux { sel: sel, then_cell: then_cell, else_cell: else_cell, out: out } => {
-    let out_cell = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(big_n, log_q, bs_ell, bs_base_log, &rgsws[*sel as usize], &cell_arena[*then_cell as usize], &cell_arena[*else_cell as usize]);
-    cell_arena.push(out_cell);
+    let out_cell = binfhe_rgsw_cmux::<BIG_N, LOG_Q, BS_ELL, BS_BASE_LOG>(&workspace.rgsws[*sel as usize], &workspace.cells[*then_cell as usize], &workspace.cells[*else_cell as usize]);
+    workspace.cells.push(out_cell);
 },
-}
-}
 };
-    (wires, cell_arena)
+};
+};
+    Ok((&workspace.wires, &workspace.cells))
 }
 
 pub fn encrypt_scaled_poly<R: SpecRng>(mut big_n: usize, mut log_q: usize, mut eta: usize, mut msg: &[u32; BIG_N], mut level: usize, mut base_log: u32, mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRlweCiphertextDyn
 {
     let g = gadget::<LOG_Q>::level_factor(log_q, base_log, level);
-    let mut scaled = [0; big_n];
+    let mut scaled = [(0 as u32); big_n];
     for i in 0.. big_n{
     scaled[i] = torus::<LOG_Q>::mul_exact(log_q, msg[i], g);
 };
@@ -6093,15 +6439,15 @@ pub fn encrypt_scaled_poly<R: SpecRng>(mut big_n: usize, mut log_q: usize, mut e
 pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut priv_ell: usize, mut priv_base_log: usize, mut eta: usize, mut lwe_sk: &BinfheLweSecretKeyDyn, mut rlwe_sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> CircuitBootstrappingKeyDyn
 {
     let bk = binfhe_gen_bootstrapping_key::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG, ETA, R>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, eta, lwe_sk, rlwe_sk, rng);
-    let zero = [0; big_n];
+    let zero = [(0 as u32); big_n];
     let neg_one_const: [u32; BIG_N] = {
-    let mut p = [0; big_n];
+    let mut p = [(0 as u32); big_n];
     p[0] = torus::<LOG_Q>::torus_neg(log_q, 1);
     p
 };
     let neg_sk: [u32; BIG_N] = (0..big_n).map(|i| torus::<LOG_Q>::torus_neg(log_q, rlwe_sk.key[i])).collect::<Vec<_>>();
     let one_const: [u32; BIG_N] = {
-    let mut p = [0; big_n];
+    let mut p = [(0 as u32); big_n];
     p[0] = 1;
     p
 };
@@ -6138,7 +6484,7 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
 
 pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv_base_log: usize, mut src: &BinfheLweCiphertextDyn, mut col: &[[BinfheRlweCiphertextDyn; PRIV_ELL]], mut body: &[BinfheRlweCiphertextDyn; PRIV_ELL]) -> BinfheRlweCiphertextDyn
 {
-    let mut out = BinfheRlweCiphertextDyn { a: [0; big_n], b: [0; big_n], n: 0 };
+    let mut out = BinfheRlweCiphertextDyn { a: [(0 as u32); big_n], b: [(0 as u32); big_n], n: 0 };
     for i in 0.. big_n{
     let digits = gadget::<LOG_Q, PRIV_ELL, PRIV_BASE_LOG>::gadget_decompose(log_q, priv_ell, priv_base_log, src.a[i]);
     for (l, ..) in digits.iter().enumerate(){
@@ -6149,8 +6495,8 @@ pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv
     for k in 0.. big_n{
     out.a[k] = out.a[k].wrapping_add(d.wrapping_mul(entry.a[k]));
     out.b[k] = out.b[k].wrapping_add(d.wrapping_mul(entry.b[k]));
-}
-}
+};
+};
 };
     let digits = gadget::<LOG_Q, PRIV_ELL, PRIV_BASE_LOG>::gadget_decompose(log_q, priv_ell, priv_base_log, src.b);
     for (l, ..) in digits.iter().enumerate(){
@@ -6161,7 +6507,7 @@ pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv
     for k in 0.. big_n{
     out.a[k] = out.a[k].wrapping_add(d.wrapping_mul(entry.a[k]));
     out.b[k] = out.b[k].wrapping_add(d.wrapping_mul(entry.b[k]));
-}
+};
 };
     for k in 0.. big_n{
     out.a[k] = torus::<LOG_Q>::reduce(log_q, out.a[k]);
@@ -6174,7 +6520,7 @@ pub fn level_test_poly(mut big_n: usize, mut log_q: usize, mut level: usize, mut
 {
     let width = big_n >> k_max;
     let g = gadget::<LOG_Q>::level_factor(log_q, bs_base_log, level);
-    let mut poly = [0; big_n];
+    let mut poly = [(0 as u32); big_n];
     for p in width.. 2 * width{
     poly[p] = g;
 };
@@ -6196,7 +6542,7 @@ pub fn circuit_bootstrap(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, m
     BinfheRgswCiphertextDyn { rows: rows, n: 0, ell: 0 }
 }
 
-pub fn binfhe_pbs_core<BK: crate::binfhe::keys::AsBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + Sized>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut test_poly: &[u32; BIG_N], mut bk: &BK) -> BinfheLweCiphertextDyn
+pub fn binfhe_pbs_core<BK: crate::binfhe::keys::AsBinfheBootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> + Sized>(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut ct: &BinfheLweCiphertextDyn, mut test_poly: &[u32; BIG_N], mut bk: &BK) -> BinfheLweCiphertextDyn
 {
     let acc = binfhe_blind_rotate::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, BS_ELL, BS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, bs_ell, bs_base_log, ct, test_poly, bk.bsk_rows());
     let extracted = binfhe_sample_extract::<BIG_N, LOG_Q>(big_n, log_q, &acc);
@@ -6213,7 +6559,7 @@ pub fn binfhe_lut_read(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut
 };
     let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, false, 0);
     for (j, bit) in addr.iter().enumerate(){
-    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, bit, (1 << j));
+    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, bit, ((1 as u32) << j));
     combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &combined, &scaled);
 };
     combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &combined, (delta / 2));
@@ -6230,7 +6576,7 @@ pub fn binfhe_lut_read_dyn(mut n_lwe: usize, mut big_n: usize, mut log_q: usize,
     let test_poly = fill_test_poly::<BIG_N>(big_n, table, arity, (k_max as usize), log_q, log_q_lwe);
     let mut combined = binfhe_trivial::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, false, 0);
     for (j, bit) in inputs.iter().enumerate(){
-    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, bit, (1 << j));
+    let scaled = binfhe_lwe_scale::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, bit, ((1 as u32) << j));
     combined = binfhe_lwe_add::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &combined, &scaled);
 };
     combined = binfhe_lwe_add_const::<N_LWE, LOG_Q_LWE>(n_lwe, log_q_lwe, &combined, (delta / 2));
@@ -6252,7 +6598,7 @@ pub fn binfhe_gate_xor(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut
     binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![a, b], &vec![false, true, true, false], k_max, bk)
 }
 
-pub fn binfhe_cmux(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut sel: BinfheLweCiphertextDyn, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
+pub fn binfhe_rgsw_cmux(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut sel: BinfheLweCiphertextDyn, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
     let TABLE: [bool; 8] = vec![false, false, false, true, true, false, true, true];
     binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![sel, a, b], &TABLE, k_max, bk)
@@ -6264,7 +6610,7 @@ pub fn mod_switch(mut from: usize, mut to: usize, mut x: u32) -> u32
     super::torus::<FROM, TO>::embed_up(from, to, x)
 } else {
     let shift = from - to;
-    let half = 1 << (shift - 1);
+    let half = (1 as u32) << (shift - 1);
     let rounded = (((x as u64) + (half as u64)) >> shift) as u32;
     super::torus::<TO>::reduce(to, rounded)
 }
@@ -6272,7 +6618,7 @@ pub fn mod_switch(mut from: usize, mut to: usize, mut x: u32) -> u32
 
 pub fn mod_switch_lwe(mut n: usize, mut from: usize, mut to: usize, mut ct: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
 {
-    let mut a = [0; n];
+    let mut a = [(0 as u32); n];
     for i in 0.. n{
     a[i] = mod_switch::<FROM, TO>(from, to, ct.a[i]);
 };
@@ -6298,12 +6644,12 @@ pub fn encode_plan(mut plan: &BootstrapPlan) -> Result<Vec<u8>, EncodeError>
     for lut in &plan.luts{
     put_u32(&mut bytes, (lut.entries.len() as u32));
     for chunk in lut.entries.chunks(8){
-    let mut packed = 0;
+    let mut packed = 0 as u8;
     for (bit, entry) in chunk.iter().enumerate(){
     packed |= ((*entry as u8) << bit);
 };
     bytes.push(packed);
-}
+};
 };
     put_u32(&mut bytes, (plan.layers.len() as u32));
     for layer in &plan.layers{
@@ -6341,8 +6687,8 @@ pub fn encode_plan(mut plan: &BootstrapPlan) -> Result<Vec<u8>, EncodeError>
     put_u32(&mut bytes, *else_cell);
     put_u32(&mut bytes, *out);
 },
-}
-}
+};
+};
 };
     put_ids(&mut bytes, &plan.outputs);
     put_ids(&mut bytes, &plan.cell_outputs);
@@ -6451,7 +6797,10 @@ pub fn read_op(mut reader: &mut Reader) -> Result<PlanOp, DecodeError>
     for _ in 0.. count{
     ids.push(reader.u32()?);
 };
-    let inputs = crate::binfhe::plan::LutInputs::from_slice(&ids);
+    let mut inputs = vec![];
+    for (i, id) in ids.iter().enumerate(){
+    inputs[i] = *id;
+};
     let table: LutId = reader.u32()?;
     let out: WireId = reader.u32()?;
     Ok(PlanOp::Lut { inputs: inputs, table: table, out: out })
@@ -6476,7 +6825,7 @@ pub fn cbd<R: SpecRng>(mut eta: usize, mut rng: &mut R) -> i32
     let mask = if eta >= 32{
     u32::MAX
 } else {
-    (1 << eta) - 1
+    ((1 as u32) << eta) - 1
 };
     let a = (rng.next_u32() & mask).count_ones() as i32;
     let b = (rng.next_u32() & mask).count_ones() as i32;
@@ -6505,19 +6854,19 @@ pub fn level_bits(mut log: u32, mut base_log: u32, mut j: usize) -> u32
 
 pub fn level_factor(mut log: usize, mut base_log: u32, mut j: usize) -> u32
 {
-    torus::<LOG>::reduce(log, (1 << level_shift(log, base_log, j)))
+    torus::<LOG>::reduce(log, ((1 as u32) << level_shift(log, base_log, j)))
 }
 
 pub fn gadget_decompose(mut log: usize, mut ell: usize, mut base_log: usize, mut x: u32) -> [u32; ELL]
 {
-    let mut digits = [0; ell];
+    let mut digits = [(0 as u32); ell];
     for (j, d) in digits.iter_mut().enumerate(){
     let shift = level_shift(log, base_log, j);
     let bits = level_bits(log, base_log, j);
     let m = if bits >= 32{
     u32::MAX
 } else {
-    (1 << bits) - 1
+    ((1 as u32) << bits) - 1
 };
     *d = ((x >> shift) & m);
 };
@@ -6526,12 +6875,12 @@ pub fn gadget_decompose(mut log: usize, mut ell: usize, mut base_log: usize, mut
 
 pub fn gadget_poly_decompose(mut n: usize, mut log: usize, mut ell: usize, mut base_log: usize, mut p: &[u32; N]) -> [[u32; N]; ELL]
 {
-    let mut out = [[0; n]; ell];
+    let mut out = [[(0 as u32); n]; ell];
     for i in 0.. n{
     let digits = gadget_decompose::<LOG, ELL, BASE_LOG>(log, ell, base_log, p[i]);
     for j in 0.. ell{
     out[j][i] = digits[j];
-}
+};
 };
     out
 }
@@ -6541,13 +6890,13 @@ pub fn check_lut_shape(mut addr_bits: usize, mut table_len: usize, mut big_n: us
     if (addr_bits == 0) || (addr_bits >= (usize::BITS as usize)){
     return Err(LutError::AddressShapeInvalid);
 };
-    if table_len != (1 << addr_bits){
+    if table_len != ((1 as usize) << addr_bits){
     return Err(LutError::AddressShapeInvalid);
 };
     if addr_bits > k_max{
     return Err(LutError::ArityExceedsCircuitMax);
 };
-    if (((k_max as u32) + 2) > log_q_lwe) || !big_n.is_power_of_two() || ((1 << k_max) > big_n) || ((1 << log_q_lwe) != (2 * big_n)) || (log_q_lwe > log_q) || (log_q > 32){
+    if (((k_max as u32) + 2) > log_q_lwe) || !big_n.is_power_of_two() || (((1 as usize) << k_max) > big_n) || (((1 as usize) << log_q_lwe) != (2 * big_n)) || (log_q_lwe > log_q) || (log_q > 32){
     return Err(LutError::ShapeUnsupported);
 };
     Ok((big_n >> k_max))
@@ -6567,13 +6916,13 @@ pub fn table_is_constant(mut logical: &[bool]) -> bool
 
 pub fn fill_test_poly(mut big_n: usize, mut logical: &[bool], mut addr_bits: usize, mut k_max: usize, mut log_q: u32, mut log_q_lwe: u32) -> [u32; BIG_N]
 {
-    let table_len = 1 << addr_bits;
+    let table_len = (1 as usize) << addr_bits;
     let is_constant = table_is_constant(logical);
     let delta_shift = (log_q_lwe - 1) - (k_max as u32);
     let value = if log_q >= 32{
     delta_out_full_width(delta_shift, (log_q - log_q_lwe))
 } else {
-    (1 << (delta_shift + (log_q - log_q_lwe))) & ((1 << log_q) - 1)
+    ((1 as u32) << (delta_shift + (log_q - log_q_lwe))) & (((1 as u32) << log_q) - 1)
 };
     let width = big_n >> k_max;
     let used = if is_constant{
@@ -6581,7 +6930,7 @@ pub fn fill_test_poly(mut big_n: usize, mut logical: &[bool], mut addr_bits: usi
 } else {
     table_len * width
 };
-    let mut test_poly = [0; big_n];
+    let mut test_poly = [(0 as u32); big_n];
     let mut p = 0;
     while (p < used){
     test_poly[p] = if logical[p / width]{
@@ -6596,7 +6945,7 @@ pub fn fill_test_poly(mut big_n: usize, mut logical: &[bool], mut addr_bits: usi
 
 pub fn delta_out_full_width(mut delta_shift: u32, mut upscale: u32) -> u32
 {
-    1 << (delta_shift + upscale)
+    (1 as u32) << (delta_shift + upscale)
 }
 
 pub fn in_interval_mod(mut x: u64, mut lo: u64, mut hi: u64, mut q: u64) -> bool
@@ -6709,13 +7058,13 @@ pub fn decode_label_16(mut elements: [u64; 3]) -> Result<[u8; 16], LabelEncoding
 {
     let WIDTHS: [u32; 3] = vec![48, 48, 32];
     let modulus = ring_lwe::REFERENCE_PLAINTEXT_MODULUS;
-    let mut label = [0; 16];
-    let mut offset = 0;
+    let mut label = [(0 as u8); 16];
+    let mut offset = 0 as usize;
     for (index, (.., ..)) in elements.iter().zip(WIDTHS.iter()).enumerate(){
     if element >= modulus{
     return Err(LabelEncodingError::FieldElementOutOfRange { index: index });
 };
-    if element >= (1 << width){
+    if element >= ((1 as u64) << width){
     return Err(LabelEncodingError::NonCanonicalElement { index: index });
 };
     let bytes = element.to_le_bytes();
@@ -6745,7 +7094,7 @@ pub fn bit_reverse(mut values: &mut [u64])
     let reversed = index.reverse_bits() >> (usize::BITS - bits);
     if index < reversed{
     values.swap(index, reversed);
-}
+};
 }
 }
 
@@ -6756,7 +7105,7 @@ pub fn find_negacyclic_root(mut degree: usize, mut modulus: u64) -> Option<u64>
     let root = pow_mod(candidate, (exponent as usize), modulus);
     if pow_mod(root, degree, modulus) == (modulus - 1){
     return Some(root);
-}
+};
 };
     None
 }
@@ -6766,14 +7115,14 @@ pub fn sample_uniform(mut random: &mut impl RandomSource, mut modulus: u64, mut 
     let threshold = u64::MAX - (u64::MAX % modulus);
     for value in output{
     while true{
-    let mut bytes = [0; 8];
+    let mut bytes = [(0 as u8); 8];
     random.fill_bytes(&mut bytes)?;
     let candidate = u64::from_le_bytes(bytes);
     if candidate < threshold{
     *value = (candidate % modulus);
     break;
-}
-}
+};
+};
 };
     Ok(())
 }
@@ -6836,8 +7185,8 @@ pub fn inverse_mod(mut value: u64, mut modulus: u64) -> Option<u64>
 };
     let mut old_r = value as i128;
     let mut r = modulus as i128;
-    let mut old_s = 1;
-    let mut s = 0;
+    let mut old_s = 1 as i128;
+    let mut s = 0 as i128;
     while (r != 0){
     let quotient = old_r / r;
     (old_r, r) = (r, (old_r - (quotient * r)));
@@ -6849,14 +7198,24 @@ pub fn inverse_mod(mut value: u64, mut modulus: u64) -> Option<u64>
     Some((old_s.rem_euclid((modulus as i128)) as u64))
 }
 
+pub fn gram_decode_label(mut n: usize, mut label: &EvalDyn, mut base: &GarbleDyn) -> bool
+{
+    (label.open(base.t, base.u, base.m, base)[0] & 1) != 0
+}
+
+pub fn gram_regarble(mut n: usize, mut secret: &GlobalSecretDyn, mut base: &GarbleDyn, mut bit: bool) -> EvalDyn
+{
+    secret.encode(base, bit)
+}
+
 pub fn tfhe_trivial_zero(mut n_lwe: usize) -> LweCiphertextDyn
 {
-    LweCiphertextDyn { a: [0; n_lwe], b: 0, n_lwe: 0 }
+    LweCiphertextDyn { a: [(0 as u32); n_lwe], b: 0, n_lwe: 0 }
 }
 
 pub fn tfhe_trivial_one(mut n_lwe: usize) -> LweCiphertextDyn
 {
-    LweCiphertextDyn { a: [0; n_lwe], b: Q4, n_lwe: 0 }
+    LweCiphertextDyn { a: [(0 as u32); n_lwe], b: Q4, n_lwe: 0 }
 }
 
 pub fn tfhe_trivial_encrypt(mut n_lwe: usize, mut b: bool) -> LweCiphertextDyn
@@ -6870,7 +7229,7 @@ pub fn tfhe_trivial_encrypt(mut n_lwe: usize, mut b: bool) -> LweCiphertextDyn
 
 pub fn tfhe_not(mut n_lwe: usize, mut a: LweCiphertextDyn) -> LweCiphertextDyn
 {
-    let mut out_a = [0; n_lwe];
+    let mut out_a = [(0 as u32); n_lwe];
     for i in 0.. n_lwe{
     out_a[i] = a.a[i].wrapping_neg();
 };
@@ -6919,11 +7278,11 @@ pub fn tfhe_lut_read(mut n_lwe: usize, mut big_n: usize, mut bs_ell: usize, mut 
     if table.is_constant{
     return tfhe_trivial_encrypt(n_lwe, table.logical[0]);
 };
-    let delta = (1 << 32) / (table_len as u64);
-    let mut combined = LweCiphertextDyn { a: [0; n_lwe], b: 0, n_lwe: 0 };
+    let delta = ((1 as u64) << 32) / (table_len as u64);
+    let mut combined = LweCiphertextDyn { a: [(0 as u32); n_lwe], b: 0, n_lwe: 0 };
     for j in 0.. addr_bits{
     let addr_ct = &encrypted_addr_bits[j];
-    let target = (1 << j) * delta;
+    let target = ((1 as u64) << j) * delta;
     for i in 0.. n_lwe{
     let scaled = (addr_ct.a[i] as u64).wrapping_mul(target) / (Q4 as u64);
     combined.a[i] = combined.a[i].wrapping_add((scaled as u32));
@@ -6939,7 +7298,7 @@ pub fn tfhe_lut_read(mut n_lwe: usize, mut big_n: usize, mut bs_ell: usize, mut 
 
 pub fn lwe_encrypt<R: SpecRng>(mut n_lwe: usize, mut m: bool, mut sk: &LweSecretKeyDyn, mut noise_bits: u32, mut rng: &mut R) -> LweCiphertextDyn
 {
-    let mut a = [0; n_lwe];
+    let mut a = [(0 as u32); n_lwe];
     for ai in a.iter_mut(){
     *ai = rng.next_u32();
 };
@@ -6951,7 +7310,7 @@ pub fn lwe_encrypt<R: SpecRng>(mut n_lwe: usize, mut m: bool, mut sk: &LweSecret
     let msg = if m{
     Q4
 } else {
-    0
+    0 as u32
 };
     let b = dot.wrapping_add(e).wrapping_add(msg);
     LweCiphertextDyn { a: a, b: b, n_lwe: 0 }
@@ -6971,7 +7330,7 @@ pub fn lwe_decrypt(mut n_lwe: usize, mut ct: &LweCiphertextDyn, mut sk: &LweSecr
 
 pub fn gen_lwe_secret_key<R: SpecRng>(mut n_lwe: usize, mut rng: &mut R) -> LweSecretKeyDyn
 {
-    let mut key = [0; n_lwe];
+    let mut key = [(0 as u8); n_lwe];
     for k in key.iter_mut(){
     *k = ((rng.next_u8() & 1) as u8);
 };
@@ -6980,7 +7339,7 @@ pub fn gen_lwe_secret_key<R: SpecRng>(mut n_lwe: usize, mut rng: &mut R) -> LweS
 
 pub fn gen_rlwe_secret_key<R: SpecRng>(mut big_n: usize, mut rng: &mut R) -> RlweSecretKeyDyn
 {
-    let mut key = [0; big_n];
+    let mut key = [(0 as u32); big_n];
     for k in key.iter_mut(){
     *k = ((rng.next_u8() & 1) as u32);
 };
@@ -6996,7 +7355,7 @@ pub fn gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usize, mut
     let ksk_array: [[LweCiphertextDyn; KS_ELL]; BIG_N] = (0..big_n).map(|i| {
     let s_bit = rlwe_sk.key[i];
     (0..ks_ell).map(|j| {
-    let shift = 32.saturating_sub(((ks_bg_log * (j + 1)) as u32));
+    let shift = (32 as u32).saturating_sub(((ks_bg_log * (j + 1)) as u32));
     let msg_val = s_bit.wrapping_shl(shift);
     lwe_encrypt_raw(n_lwe, msg_val, lwe_sk, ks_noise_bits, rng)
 }).collect::<Vec<_>>()
@@ -7026,13 +7385,13 @@ pub fn rlwe_encrypt_poly<R: SpecRng>(mut big_n: usize, mut msg_poly: &[u32; BIG_
 pub fn rgsw_encrypt<R: SpecRng>(mut big_n: usize, mut bs_ell: usize, mut bs_bg_log: usize, mut m: bool, mut sk: &RlweSecretKeyDyn, mut noise_bits: u32, mut rng: &mut R) -> RgswCiphertextDyn
 {
     let msg_bit = if m{
-    1
+    1 as u32
 } else {
-    0
+    0 as u32
 };
     let rows = (0..bs_ell).map(|j| {
-    let shift = 32.saturating_sub(((bs_bg_log * (j + 1)) as u32));
-    let g_factor = 1.wrapping_shl(shift);
+    let shift = (32 as u32).saturating_sub(((bs_bg_log * (j + 1)) as u32));
+    let g_factor = (1 as u32).wrapping_shl(shift);
     let contrib = msg_bit.wrapping_mul(g_factor);
     let mut rlwe0 = rlwe_encrypt_scalar(big_n, 0, sk, noise_bits, rng);
     rlwe0.a[0] = rlwe0.a[0].wrapping_add(contrib);
@@ -7044,10 +7403,10 @@ pub fn rgsw_encrypt<R: SpecRng>(mut big_n: usize, mut bs_ell: usize, mut bs_bg_l
 
 pub fn blind_rotate_with_poly(mut n_lwe: usize, mut big_n: usize, mut bs_ell: usize, mut ks_ell: usize, mut bs_bg_log: usize, mut ks_bg_log: usize, mut ct: &LweCiphertextDyn, mut test_poly: [u32; BIG_N], mut bk: &BootstrappingKeyDyn) -> RlweCiphertextDyn
 {
-    let mut acc = RlweCiphertextDyn { a: [0; big_n], b: test_poly, big_n: 0 };
+    let mut acc = RlweCiphertextDyn { a: [(0 as u32); big_n], b: test_poly, big_n: 0 };
     let two_n = 2 * big_n;
     let log2_two_n = two_n.trailing_zeros();
-    let scale_shift = 32.saturating_sub(log2_two_n);
+    let scale_shift = (32 as u32).saturating_sub(log2_two_n);
     let b_exp = torus_to_exp(ct.b, scale_shift, two_n);
     if b_exp != 0{
     acc = rlwe_rotate(big_n, &acc, (two_n - b_exp));
@@ -7057,14 +7416,14 @@ pub fn blind_rotate_with_poly(mut n_lwe: usize, mut big_n: usize, mut bs_ell: us
     if a_exp != 0{
     let acc_rotated = rlwe_rotate(big_n, &acc, a_exp);
     acc = cmux::<BIG_N, BS_ELL, BS_BG_LOG>(big_n, bs_ell, bs_bg_log, &bk.bsk[i], &acc_rotated, &acc);
-}
+};
 };
     acc
 }
 
 pub fn and_test_poly(mut big_n: usize) -> [u32; BIG_N]
 {
-    let mut v = [0; big_n];
+    let mut v = [(0 as u32); big_n];
     let half_q4 = Q4 >> 1;
     for k in 0.. big_n / 2{
     v[k] = half_q4.wrapping_neg();
@@ -7083,7 +7442,7 @@ pub fn blind_rotate(mut n_lwe: usize, mut big_n: usize, mut bs_ell: usize, mut k
 pub fn torus_to_exp(mut x: u32, mut scale_shift: u32, mut two_n: usize) -> usize
 {
     let half = if scale_shift > 0{
-    1 << (scale_shift - 1)
+    (1 as u32) << (scale_shift - 1)
 } else {
     0
 };
@@ -7093,7 +7452,7 @@ pub fn torus_to_exp(mut x: u32, mut scale_shift: u32, mut two_n: usize) -> usize
 
 pub fn sample_extract(mut big_n: usize, mut rlwe: &RlweCiphertextDyn) -> LweCiphertextDyn
 {
-    let mut a_lwe = [0; big_n];
+    let mut a_lwe = [(0 as u32); big_n];
     a_lwe[0] = rlwe.a[0];
     for i in 1.. big_n{
     a_lwe[i] = rlwe.a[big_n - i].wrapping_neg();
@@ -7103,7 +7462,7 @@ pub fn sample_extract(mut big_n: usize, mut rlwe: &RlweCiphertextDyn) -> LweCiph
 
 pub fn key_switch(mut n_lwe: usize, mut big_n: usize, mut ks_ell: usize, mut ks_bg_log: usize, mut ct_big: &LweCiphertextDyn, mut ksk: &KeySwitchingKeyDyn) -> LweCiphertextDyn
 {
-    let mut out_a = [0; n_lwe];
+    let mut out_a = [(0 as u32); n_lwe];
     let mut out_b = ct_big.b;
     for i in 0.. big_n{
     let digits = ks_decompose::<KS_ELL, KS_BG_LOG>(ks_ell, ks_bg_log, ct_big.a[i]);
@@ -7117,27 +7476,27 @@ pub fn key_switch(mut n_lwe: usize, mut big_n: usize, mut ks_ell: usize, mut ks_
     out_a[k] = out_a[k].wrapping_sub(d.wrapping_mul(ksk_ct.a[k]));
 };
     out_b = out_b.wrapping_sub(d.wrapping_mul(ksk_ct.b));
-}
+};
 };
     LweCiphertextDyn { a: out_a, b: out_b, n_lwe: 0 }
 }
 
 pub fn ks_decompose(mut ks_ell: usize, mut ks_bg_log: usize, mut x: u32) -> [u32; KS_ELL]
 {
-    let bg = 1 << ks_bg_log;
+    let bg = (1 as u64) << ks_bg_log;
     let mask = bg - 1;
     let mut rem = x as u64;
-    let tail_shift = 32.saturating_sub(((ks_bg_log * ks_ell) as u32));
+    let tail_shift = (32 as u32).saturating_sub(((ks_bg_log * ks_ell) as u32));
     if (tail_shift > 0) && (tail_shift < 32){
-    let half_tail = 1 << (tail_shift - 1);
+    let half_tail = (1 as u64) << (tail_shift - 1);
     rem = rem.wrapping_add(half_tail);
 };
-    let mut digits = [0; ks_ell];
+    let mut digits = [(0 as u32); ks_ell];
     for j in 0..ks_ell.rev(){
-    let shift = 32.saturating_sub(((ks_bg_log * (j + 1)) as u32));
+    let shift = (32 as u32).saturating_sub(((ks_bg_log * (j + 1)) as u32));
     if shift < 32{
     digits[j] = (((rem >> shift) & mask) as u32);
-}
+};
 };
     digits
 }
@@ -7153,8 +7512,8 @@ pub fn external_product(mut big_n: usize, mut bs_ell: usize, mut bs_bg_log: usiz
 {
     let a_decomp = poly_decompose::<BIG_N, BS_ELL, BS_BG_LOG>(big_n, bs_ell, bs_bg_log, &rlwe.a);
     let b_decomp = poly_decompose::<BIG_N, BS_ELL, BS_BG_LOG>(big_n, bs_ell, bs_bg_log, &rlwe.b);
-    let mut out_a = [0; big_n];
-    let mut out_b = [0; big_n];
+    let mut out_a = [(0 as u32); big_n];
+    let mut out_b = [(0 as u32); big_n];
     for j in 0.. bs_ell{
     let row = &rgsw.rows[j];
     let prod_a0 = poly_mul_neg(big_n, &a_decomp[j], &row.rlwe0.a);
@@ -7164,32 +7523,32 @@ pub fn external_product(mut big_n: usize, mut bs_ell: usize, mut bs_bg_log: usiz
     for k in 0.. big_n{
     out_a[k] = out_a[k].wrapping_add(prod_a0[k]).wrapping_add(prod_b0[k]);
     out_b[k] = out_b[k].wrapping_add(prod_a1[k]).wrapping_add(prod_b1[k]);
-}
+};
 };
     RlweCiphertextDyn { a: out_a, b: out_b, big_n: 0 }
 }
 
 pub fn poly_decompose(mut big_n: usize, mut bs_ell: usize, mut bs_bg_log: usize, mut p: &[u32; BIG_N]) -> [[u32; BIG_N]; BS_ELL]
 {
-    let bg = 1 << bs_bg_log;
+    let bg = (1 as u64) << bs_bg_log;
     let mask = (bg - 1) as u32;
-    let mut result = [[0; big_n]; bs_ell];
+    let mut result = [[(0 as u32); big_n]; bs_ell];
     for i in 0.. big_n{
     let x = p[i];
-    let tail_bits = 32.saturating_sub(((bs_bg_log * bs_ell) as u32));
+    let tail_bits = (32 as u32).saturating_sub(((bs_bg_log * bs_ell) as u32));
     let rounded = if (tail_bits > 0) && (tail_bits < 32){
-    x.wrapping_add((1 << (tail_bits - 1)))
+    x.wrapping_add(((1 as u32) << (tail_bits - 1)))
 } else {
     x
 };
     for j in 0.. bs_ell{
-    let shift = 32.saturating_sub(((bs_bg_log * (j + 1)) as u32));
+    let shift = (32 as u32).saturating_sub(((bs_bg_log * (j + 1)) as u32));
     result[j][i] = if shift < 32{
     (rounded >> shift) & mask
 } else {
     0
 };
-}
+};
 };
     result
 }
@@ -7211,7 +7570,7 @@ pub fn rlwe_rotate(mut big_n: usize, mut ct: &RlweCiphertextDyn, mut exp: usize)
 
 pub fn lwe_add(mut n_lwe: usize, mut a: LweCiphertextDyn, mut b: LweCiphertextDyn) -> LweCiphertextDyn
 {
-    let mut out_a = [0; n_lwe];
+    let mut out_a = [(0 as u32); n_lwe];
     for i in 0.. n_lwe{
     out_a[i] = a.a[i].wrapping_add(b.a[i]);
 };
@@ -7220,7 +7579,7 @@ pub fn lwe_add(mut n_lwe: usize, mut a: LweCiphertextDyn, mut b: LweCiphertextDy
 
 pub fn lwe_encrypt_raw<R: SpecRng>(mut n_lwe: usize, mut msg: u32, mut sk: &LweSecretKeyDyn, mut noise_bits: u32, mut rng: &mut R) -> LweCiphertextDyn
 {
-    let mut a = [0; n_lwe];
+    let mut a = [(0 as u32); n_lwe];
     for ai in a.iter_mut(){
     *ai = rng.next_u32();
 };
@@ -7235,7 +7594,7 @@ pub fn lwe_encrypt_raw<R: SpecRng>(mut n_lwe: usize, mut msg: u32, mut sk: &LweS
 
 pub fn poly_mul_neg(mut n: usize, mut a: &[u32; N], mut b: &[u32; N]) -> [u32; N]
 {
-    let mut result = [0; n];
+    let mut result = [(0 as u32); n];
     for i in 0.. n{
     for j in 0.. n{
     let deg = i + j;
@@ -7243,15 +7602,15 @@ pub fn poly_mul_neg(mut n: usize, mut a: &[u32; N], mut b: &[u32; N]) -> [u32; N
     result[deg] = result[deg].wrapping_add(a[i].wrapping_mul(b[j]));
 } else {
     result[deg - n] = result[deg - n].wrapping_sub(a[i].wrapping_mul(b[j]));
-}
-}
+};
+};
 };
     result
 }
 
 pub fn poly_add_neg(mut n: usize, mut a: &[u32; N], mut b: &[u32; N]) -> [u32; N]
 {
-    let mut result = [0; n];
+    let mut result = [(0 as u32); n];
     for i in 0.. n{
     result[i] = a[i].wrapping_add(b[i]);
 };
@@ -7260,7 +7619,7 @@ pub fn poly_add_neg(mut n: usize, mut a: &[u32; N], mut b: &[u32; N]) -> [u32; N
 
 pub fn poly_sub_neg(mut n: usize, mut a: &[u32; N], mut b: &[u32; N]) -> [u32; N]
 {
-    let mut result = [0; n];
+    let mut result = [(0 as u32); n];
     for i in 0.. n{
     result[i] = a[i].wrapping_sub(b[i]);
 };
@@ -7273,7 +7632,7 @@ pub fn poly_rotate(mut n: usize, mut p: &[u32; N], mut exp: usize) -> [u32; N]
     if exp == 0{
     return *p;
 };
-    let mut result = [0; n];
+    let mut result = [(0 as u32); n];
     for i in 0.. n{
     let new_pos = i + exp;
     if new_pos < n{
@@ -7282,7 +7641,7 @@ pub fn poly_rotate(mut n: usize, mut p: &[u32; N], mut exp: usize) -> [u32; N]
     result[new_pos - n] = result[new_pos - n].wrapping_sub(p[i]);
 } else {
     result[new_pos - (2 * n)] = result[new_pos - (2 * n)].wrapping_add(p[i]);
-}
+};
 };
     result
 }
@@ -7293,7 +7652,7 @@ pub fn small_noise<R: SpecRng>(mut noise_bits: u32, mut rng: &mut R) -> u32
     return rng.next_u32();
 };
     let raw: u32 = rng.next_u32();
-    let mask = (1 << noise_bits).wrapping_sub(1);
+    let mask = ((1 as u32) << noise_bits).wrapping_sub(1);
     let small = raw & mask;
     if (noise_bits > 0) && ((small >> (noise_bits - 1)) != 0){
     small | !mask
@@ -7393,7 +7752,7 @@ pub fn fold_commit_e(mut comm_e1: &EdPoint, mut comm_t: &EdPoint, mut comm_e2: &
 pub fn pedersen_commit(mut gens: &[EdPoint], mut h: &EdPoint, mut x: &[[u8; 32]], mut blind: &[u8; 32]) -> EdPoint
 {
     let mut acc = ed_scalar_mul(h, blind);
-    let mut i = 0;
+    let mut i = 0 as usize;
     while (i < x.len()){
     acc = ed_add(&acc, &ed_scalar_mul(&gens[i], &x[i]));
     i += 1;
@@ -7436,7 +7795,7 @@ pub fn prg_to_bools<D: Digest>(mut seed: &[u8], mut out: &mut [bool])
 };
     out[pos] = (((byte >> bit) & 1) == 1);
     pos += 1;
-}
+};
 };
     counter += 1;
 }
@@ -7444,11 +7803,11 @@ pub fn prg_to_bools<D: Digest>(mut seed: &[u8], mut out: &mut [bool])
 
 pub fn pack_kappa(mut bits: &[bool; IKNP_KAPPA]) -> [u8; IKNP_KAPPA_BYTES]
 {
-    let mut out = [0; IKNP_KAPPA_BYTES];
+    let mut out = [(0 as u8); IKNP_KAPPA_BYTES];
     for i in 0.. IKNP_KAPPA{
     if bits[i]{
     out[i / 8] |= (1 << (i % 8));
-}
+};
 };
     out
 }
@@ -7456,8 +7815,8 @@ pub fn pack_kappa(mut bits: &[bool; IKNP_KAPPA]) -> [u8; IKNP_KAPPA_BYTES]
 pub fn iknp_cot_extend<G, D, R>(mut m: usize, mut l: usize, mut rng_s: &mut R, mut rng_r: &mut R, mut receiver_bits: &[bool; M], mut delta_msg: &[u8; L]) -> ([[u8; L]; M], [[u8; L]; M]) where D: Digest
 {
     let (r0, v) = iknp_cot_extend_base::<ChouOrlandiDyn<G, D>, D, R, L>(l, rng_s, rng_r, receiver_bits.as_slice(), delta_msg);
-    let mut sender_r0 = [[0; l]; m];
-    let mut receiver_v = [[0; l]; m];
+    let mut sender_r0 = [[(0 as u8); l]; m];
+    let mut receiver_v = [[(0 as u8); l]; m];
     for j in 0.. m{
     sender_r0[j] = r0[j];
     receiver_v[j] = v[j];
@@ -7473,15 +7832,15 @@ pub fn iknp_cot_extend_base<B, D, R>(mut l: usize, mut rng_s: &mut R, mut rng_r:
     delta_ot[i] = ((rng_s.next_u32() & 1) == 1);
 };
     let delta_ot_bytes = pack_kappa(&delta_ot);
-    let mut seeds_0 = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
-    let mut seeds_1 = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
+    let mut seeds_0 = [[(0 as u8); IKNP_KAPPA_BYTES]; IKNP_KAPPA];
+    let mut seeds_1 = [[(0 as u8); IKNP_KAPPA_BYTES]; IKNP_KAPPA];
     for i in 0.. IKNP_KAPPA{
     for b in 0.. IKNP_KAPPA_BYTES{
     seeds_0[i][b] = ((rng_r.next_u32() & 255) as u8);
     seeds_1[i][b] = ((rng_r.next_u32() & 255) as u8);
-}
 };
-    let mut chosen_seeds = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
+};
+    let mut chosen_seeds = [[(0 as u8); IKNP_KAPPA_BYTES]; IKNP_KAPPA];
     for i in 0.. IKNP_KAPPA{
     let (s_state, setup) = B::sender_setup(rng_r);
     let (r_state, recv_msg) = B::recv_start(rng_s, &setup, delta_ot[i]);
@@ -7525,7 +7884,7 @@ pub fn iknp_sender_from_u<D: Digest>(mut l: usize, mut m: usize, mut delta_msg: 
     q_col[j] = (prg_chosen[j] ^ u_msg.u_cols[i][j]);
 } else {
     q_col[j] = prg_chosen[j];
-}
+};
 };
     q_cols.push(q_col);
 };
@@ -7537,15 +7896,15 @@ pub fn iknp_sender_from_u<D: Digest>(mut l: usize, mut m: usize, mut delta_msg: 
     q_row[i] = q_cols[i][j];
 };
     let q_bytes = pack_kappa(&q_row);
-    let mut r0 = [0; l];
+    let mut r0 = [(0 as u8); l];
     prg_with_index::<D>(&q_bytes, (j as u32), &mut r0);
     let mut q_xor_delta = q_bytes;
     for b in 0.. IKNP_KAPPA_BYTES{
     q_xor_delta[b] ^= delta_ot_bytes[b];
 };
-    let mut r1 = [0; l];
+    let mut r1 = [(0 as u8); l];
     prg_with_index::<D>(&q_xor_delta, (j as u32), &mut r1);
-    let mut correction = [0; l];
+    let mut correction = [(0 as u8); l];
     for b in 0.. l{
     correction[b] = ((r0[b] ^ r1[b]) ^ delta_msg[b]);
 };
@@ -7565,9 +7924,9 @@ pub fn iknp_receiver_finish<D: Digest>(mut l: usize, mut receiver_bits: &[bool],
     t_row[i] = t_cols[i][j];
 };
     let t_bytes = pack_kappa(&t_row);
-    let mut v_pre = [0; l];
+    let mut v_pre = [(0 as u8); l];
     prg_with_index::<D>(&t_bytes, (j as u32), &mut v_pre);
-    let mut vj = [0; l];
+    let mut vj = [(0 as u8); l];
     if receiver_bits[j]{
     for b in 0.. l{
     vj[b] = (v_pre[b] ^ corrections[j][b]);
@@ -7582,7 +7941,7 @@ pub fn iknp_receiver_finish<D: Digest>(mut l: usize, mut receiver_bits: &[bool],
 
 pub fn sample_bytes<R: SpecRng>(mut l: usize, mut rng: &mut R) -> [u8; L]
 {
-    let mut b = [0; l];
+    let mut b = [(0 as u8); l];
     for chunk in b.chunks_mut(4){
     chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
 };
@@ -7606,7 +7965,7 @@ pub fn ssp_receiver_tag(mut delta_msg: &[u8; 16], mut bits: &[bool], mut v: &[[u
     hr.update(TAG_DOMAIN);
     hr.update(delta_msg);
     for j in 0.. bits.len(){
-    let mut r0r = [0; 16];
+    let mut r0r = [(0 as u8); 16];
     if bits[j]{
     for b in 0.. 16{
     r0r[b] = (v[j][b] ^ delta_msg[b]);
@@ -7621,7 +7980,17 @@ pub fn ssp_receiver_tag(mut delta_msg: &[u8; 16], mut bits: &[bool], mut v: &[[u
 
 pub fn stack_setup_sender<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: FerretParams, mut io: &mut Io) -> CotPoolSender
 {
-    let m = params.seed_cot_count(false);
+    stack_setup_sender_m(rng, params, io, false)
+}
+
+pub fn stack_setup_sender_malicious<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: FerretParams, mut io: &mut Io) -> CotPoolSender
+{
+    stack_setup_sender_m(rng, params, io, true)
+}
+
+pub fn stack_setup_sender_m<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: FerretParams, mut io: &mut Io, mut malicious: bool) -> CotPoolSender
+{
+    let m = params.seed_cot_count(malicious);
     let delta_msg = sample_bytes::<R, 16>(16, rng);
     io.send(TAG_DELTA, &delta_msg);
     let mut delta_ot = [false; IKNP_KAPPA];
@@ -7629,7 +7998,7 @@ pub fn stack_setup_sender<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: 
     delta_ot[i] = ((rng.next_u32() & 1) == 1);
 };
     let delta_ot_bytes = pack_kappa(&delta_ot);
-    let mut chosen_seeds = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
+    let mut chosen_seeds = [[(0 as u8); IKNP_KAPPA_BYTES]; IKNP_KAPPA];
     for i in 0.. IKNP_KAPPA{
     let setup = decode_lwe_crs::<LWE_N>(16, &io.recv(TAG_LWE_SETUP));
     let (r_state, recv_msg) = Base::<IKNP_KAPPA_BYTES>::recv_start(rng, &setup, delta_ot[i]);
@@ -7647,23 +8016,37 @@ pub fn stack_setup_sender<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: 
     for row in sender_r0{
     q.push(row);
 };
-    let mut sender = CotPoolSender { params: params, seed: FerretSenderSeed { delta: delta_msg, q: q }, out: alloc::collections::VecDeque::new(), raise_n: None };
+    let mut sender = CotPoolSender { params: params, seed: FerretSenderSeed { delta: delta_msg, q: q }, out: alloc::collections::VecDeque::new(), raise_n: None, malicious: malicious, refill_count: 0 };
+    if malicious{
+    stack_refill_sender_malicious(rng, &mut sender, io);
+} else {
     stack_refill_sender(rng, &mut sender, io);
+};
     sender
 }
 
 pub fn stack_setup_receiver<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: FerretParams, mut io: &mut Io) -> CotPoolReceiver
 {
-    let m = params.seed_cot_count(false);
+    stack_setup_receiver_m(rng, params, io, false)
+}
+
+pub fn stack_setup_receiver_malicious<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: FerretParams, mut io: &mut Io) -> CotPoolReceiver
+{
+    stack_setup_receiver_m(rng, params, io, true)
+}
+
+pub fn stack_setup_receiver_m<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params: FerretParams, mut io: &mut Io, mut malicious: bool) -> CotPoolReceiver
+{
+    let m = params.seed_cot_count(malicious);
     let delta_raw = io.recv(TAG_DELTA);
-    let mut delta_msg = [0; 16];
+    let mut delta_msg = [(0 as u8); 16];
     delta_msg.copy_from_slice(&delta_raw);
     let mut bits = vec![];
     for b in &mut bits{
     *b = ((rng.next_u32() & 1) == 1);
 };
-    let mut seeds_0 = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
-    let mut seeds_1 = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
+    let mut seeds_0 = [[(0 as u8); IKNP_KAPPA_BYTES]; IKNP_KAPPA];
+    let mut seeds_1 = [[(0 as u8); IKNP_KAPPA_BYTES]; IKNP_KAPPA];
     for i in 0.. IKNP_KAPPA{
     seeds_0[i] = sample_bytes(rng);
     seeds_1[i] = sample_bytes(rng);
@@ -7686,8 +8069,11 @@ pub fn stack_setup_receiver<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut params
     for row in receiver_v{
     w.push(row);
 };
-    let mut receiver = CotPoolReceiver { params: params, seed: FerretReceiverSeed { u: bits, w: w }, out_x: alloc::collections::VecDeque::new(), out_z: alloc::collections::VecDeque::new() };
+    let mut receiver = CotPoolReceiver { params: params, seed: FerretReceiverSeed { u: bits, w: w }, out_x: alloc::collections::VecDeque::new(), out_z: alloc::collections::VecDeque::new(), malicious: malicious };
+    if malicious{
+} else {
     stack_refill_receiver(rng, &mut receiver, io);
+};
     receiver
 }
 
@@ -7697,25 +8083,24 @@ pub fn stack_refill_sender<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut sender:
     let (lpn_seed, choices) = decode_ferret_open(&raw);
     let (s, mpcot) = ferret_sender_mpcot(rng, sender.params, &sender.seed, &choices);
     io.send(TAG_FERRET_MPCOT, &encode_mpcot_reg(&mpcot));
-    let out_full = encode_sender_only(sender, lpn_seed, &s);
+    let out_full = encode_sender_only(sender, lpn_seed, &s, sender.params.seed_cot_count(false));
     sender.seed.q = out_full.seed_q;
     sender.out.extend(out_full.emit);
 }
 
 pub fn xor_block(mut a: &[u8; 16], mut b: &[u8; 16]) -> [u8; 16]
 {
-    let mut o = [0; 16];
+    let mut o = [(0 as u8); 16];
     for i in 0.. 16{
     o[i] = (a[i] ^ b[i]);
 };
     o
 }
 
-pub fn encode_sender_only(mut sender: &CotPoolSender, mut lpn_seed: [u8; 16], mut s: &[[u8; 16]]) -> SenderLpn
+pub fn encode_sender_only(mut sender: &CotPoolSender, mut lpn_seed: [u8; 16], mut s: &[[u8; 16]], mut m: usize) -> SenderLpn
 {
     let k = sender.params.k;
     let n = sender.params.n;
-    let m = sender.params.seed_cot_count(false);
     let y_lpn = encode_blocks(&lpn_seed, k, n, &sender.seed.q[..k]);
     let mut y = Vec::with_capacity(n);
     for j in 0.. n{
@@ -7730,17 +8115,91 @@ pub fn stack_refill_receiver<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut recei
     io.send(TAG_FERRET_OPEN, &encode_ferret_open(&prep.lpn_seed, &prep.choices));
     let mpcot = decode_mpcot_reg(&io.recv(TAG_FERRET_MPCOT));
     let r = ferret_receiver_mpcot(receiver.params, &prep, &receiver.seed, &mpcot);
-    let rec = encode_receiver_only(receiver, &prep, &r);
+    let rec = encode_receiver_only(receiver, &prep, &r, receiver.params.seed_cot_count(false));
     receiver.seed = rec.seed;
     receiver.out_x.extend(rec.x);
     receiver.out_z.extend(rec.z);
 }
 
-pub fn encode_receiver_only(mut receiver: &CotPoolReceiver, mut prep: &FerretPrep, mut r: &[[u8; 16]]) -> RecvLpn
+pub fn stack_refill_sender_malicious<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut sender: &mut CotPoolSender, mut io: &mut Io)
+{
+    let params = sender.params;
+    let k = params.k;
+    let t = params.t;
+    let extra_off = k + (t * params.log_splen());
+    let raw = io.recv(TAG_FERRET_OPEN);
+    let (lpn_seed, choices) = decode_ferret_open(&raw);
+    let (s_padded, mpcot) = mpcot_reg_sender_padded(rng, &sender.seed.delta, params.n, t, &sender.seed.q[k..extra_off], &choices);
+    let mpcot_bytes = encode_mpcot_reg(&mpcot);
+    io.send(TAG_FERRET_MPCOT, &mpcot_bytes);
+    let x_star_prime = decode_bools(&io.recv(TAG_FERRET_CHECK_MASK)).0;
+    let mut transcript = raw.clone();
+    transcript.extend_from_slice(&mpcot_bytes);
+    let lens = vec![];
+    let chis = spcot_batched_fs_chis(&lens, &transcript);
+    let vs: Vec<&[Block]> = s_padded.iter().map(Vec::as_slice).collect();
+    let extra_q = &sender.seed.q[extra_off..(extra_off + KAPPA_BITS)];
+    let hv = spcot_batched_sender_hash_v(&sender.seed.delta, &vs, extra_q, &x_star_prime, &chis);
+    io.send(TAG_FERRET_CHECK_HV, &hv);
+    let s = mpcot_reg_flatten_outputs(params.n, t, &s_padded);
+    let m = params.seed_cot_count(true);
+    let out_full = encode_sender_only(sender, lpn_seed, &s, m);
+    sender.seed.q = out_full.seed_q;
+    sender.out.extend(out_full.emit);
+    sender.refill_count += 1;
+}
+
+pub fn stack_refill_receiver_malicious<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut receiver: &mut CotPoolReceiver, mut io: &mut Io) -> bool
+{
+    let params = receiver.params;
+    let k = params.k;
+    let n = params.n;
+    let t = params.t;
+    let extra_off = k + (t * params.log_splen());
+    let alphas = sample_regular_noise(rng, n, t);
+    let mut e = vec![];
+    for (i, ..) in alphas.iter().enumerate(){
+    let (start, end) = params.interval_bounds(i).expect("regular noise interval index must be valid");
+    e[start + a] = true;
+};
+    let lpn_seed = sample_seed(rng);
+    let choices = mpcot_reg_choice_bits(n, t, &alphas, &receiver.seed.u[k..extra_off]);
+    let open_bytes = encode_ferret_open(&lpn_seed, &choices);
+    io.send(TAG_FERRET_OPEN, &open_bytes);
+    let mpcot_bytes = io.recv(TAG_FERRET_MPCOT);
+    let mpcot = decode_mpcot_reg(&mpcot_bytes);
+    let r_padded = mpcot_reg_receiver_padded(n, t, &alphas, &receiver.seed.w[k..extra_off], &mpcot);
+    let mut transcript = open_bytes.clone();
+    transcript.extend_from_slice(&mpcot_bytes);
+    let lens = vec![];
+    let chis = spcot_batched_fs_chis(&lens, &transcript);
+    let extra_r = &receiver.seed.u[extra_off..(extra_off + KAPPA_BITS)];
+    let extra_t = &receiver.seed.w[extra_off..(extra_off + KAPPA_BITS)];
+    let x_star_prime = spcot_batched_masked_choice(&alphas, extra_r, &chis);
+    io.send(TAG_FERRET_CHECK_MASK, &encode_bools(&x_star_prime));
+    let hv = io.recv(TAG_FERRET_CHECK_HV);
+    let ws: Vec<&[Block]> = r_padded.iter().map(Vec::as_slice).collect();
+    let hw = spcot_batched_receiver_hash_w(&ws, extra_t, &chis);
+    let mut hv_arr = [(0 as u8); 32];
+    hv_arr.copy_from_slice(&hv);
+    let check = hv_arr == hw;
+    if !check{
+    return false;
+};
+    let prep = FerretPrep { alphas: alphas, e: e, lpn_seed: lpn_seed, choices: choices };
+    let m = params.seed_cot_count(true);
+    let r = mpcot_reg_flatten_outputs(n, t, &r_padded);
+    let rec = encode_receiver_only(receiver, &prep, &r, m);
+    receiver.seed = rec.seed;
+    receiver.out_x.extend(rec.x);
+    receiver.out_z.extend(rec.z);
+    true
+}
+
+pub fn encode_receiver_only(mut receiver: &CotPoolReceiver, mut prep: &FerretPrep, mut r: &[[u8; 16]], mut m: usize) -> RecvLpn
 {
     let k = receiver.params.k;
     let n = receiver.params.n;
-    let m = receiver.params.seed_cot_count(false);
     let x_bits = encode_bits(&prep.lpn_seed, k, n, &receiver.seed.u[..k]);
     let z_lpn = encode_blocks(&prep.lpn_seed, k, n, &receiver.seed.w[..k]);
     let mut x = Vec::with_capacity(n);
@@ -7754,17 +8213,24 @@ pub fn encode_receiver_only(mut receiver: &CotPoolReceiver, mut prep: &FerretPre
 
 pub fn ensure_sender<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut sender: &mut CotPoolSender, mut io: &mut Io, mut need: usize)
 {
-    let watermark = sender.params.seed_cot_count(false);
+    let watermark = sender.params.seed_cot_count(sender.malicious);
     while ((sender.remaining() < need) || (sender.remaining().saturating_sub(need) < watermark)){
+    if sender.malicious{
+    stack_refill_sender_malicious(rng, sender, io);
+} else {
     stack_refill_sender(rng, sender, io);
+};
 }
 }
 
 pub fn ensure_receiver<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut receiver: &mut CotPoolReceiver, mut io: &mut Io, mut need: usize)
 {
-    let watermark = receiver.params.seed_cot_count(false);
+    let watermark = receiver.params.seed_cot_count(receiver.malicious);
     while ((receiver.remaining() < need) || (receiver.remaining().saturating_sub(need) < watermark)){
+    if receiver.malicious{
+} else {
     stack_refill_receiver(rng, receiver, io);
+};
 }
 }
 
@@ -7785,7 +8251,7 @@ pub fn stack_bea95_receiver<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut receiv
     ensure_receiver(rng, receiver, io, 1);
     let x = receiver.out_x.pop_front().unwrap();
     let z = receiver.out_z.pop_front().unwrap();
-    let (_r0, zc, d) = bea95_chosen_bit(&[0; 16], [0; 16], x, z, bit);
+    let (_r0, zc, d) = bea95_chosen_bit(&[(0 as u8); 16], [(0 as u8); 16], x, z, bit);
     let _ = _r0;
     io.send(TAG_BEA95, &vec![(d as u8)]);
     zc
@@ -7805,7 +8271,7 @@ pub fn softspoken_cot_extend<G, D, R>(mut k: usize, mut m: usize, mut l: usize, 
     hr.update(TAG_DOMAIN);
     hr.update(delta_msg);
     for j in 0.. m{
-    let mut r0_reconstructed = [0; l];
+    let mut r0_reconstructed = [(0 as u8); l];
     if receiver_bits[j]{
     for b in 0.. l{
     r0_reconstructed[b] = (receiver_v[j][b] ^ delta_msg[b]);
@@ -7833,7 +8299,7 @@ pub fn softspoken_cot_extend_base<B, D, R>(mut l: usize, mut rng_s: &mut R, mut 
     hr.update(TAG_DOMAIN);
     hr.update(delta_msg);
     for j in 0.. receiver_bits.len(){
-    let mut r0_reconstructed = [0; l];
+    let mut r0_reconstructed = [(0 as u8); l];
     if receiver_bits[j]{
     for b in 0.. l{
     r0_reconstructed[b] = (receiver_v[j][b] ^ delta_msg[b]);
@@ -7890,11 +8356,11 @@ pub fn sample_zq<R: SpecRng>(mut rng: &mut R) -> Zq
 
 pub fn lwe_ot_recv<R: SpecRng>(mut n: usize, mut rng: &mut R, mut crs: &LweOtCrsDyn, mut c: bool) -> (LweOtReceiverDyn, LweOtRecvMsgDyn)
 {
-    let mut s = [0; n];
+    let mut s = [(0 as u32); n];
     for i in 0.. n{
     s[i] = sample_noise(rng);
 };
-    let mut pk_real = [0; n];
+    let mut pk_real = [(0 as u32); n];
     for i in 0.. n{
     let mut acc: Zq = 0;
     for j in 0.. n{
@@ -7904,7 +8370,7 @@ pub fn lwe_ot_recv<R: SpecRng>(mut n: usize, mut rng: &mut R, mut crs: &LweOtCrs
     pk_real[i] = acc;
 };
     let pk0 = if c{
-    let mut pk0 = [0; n];
+    let mut pk0 = [(0 as u32); n];
     for i in 0.. n{
     pk0[i] = zq_sub(crs.h[i], pk_real[i]);
 };
@@ -7917,11 +8383,11 @@ pub fn lwe_ot_recv<R: SpecRng>(mut n: usize, mut rng: &mut R, mut crs: &LweOtCrs
 
 pub fn encrypt_branch<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut crs: &LweOtCrsDyn, mut pk: &[Zq; N], mut msg: &[u8; L]) -> ([Zq; N], [Zq; L])
 {
-    let mut r = [0; n];
+    let mut r = [(0 as u32); n];
     for i in 0.. n{
     r[i] = sample_noise(rng);
 };
-    let mut u = [0; n];
+    let mut u = [(0 as u32); n];
     for j in 0.. n{
     let mut acc: Zq = 0;
     for i in 0.. n{
@@ -7935,7 +8401,7 @@ pub fn encrypt_branch<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, m
     base = zq_add(base, zq_mul(pk[i], r[i]));
 };
     let half_q = LWE_Q / 2;
-    let mut v = [0; l];
+    let mut v = [(0 as u32); l];
     for k in 0.. l{
     let plain = if (msg[k] & 1) == 1{
     half_q
@@ -7949,7 +8415,7 @@ pub fn encrypt_branch<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, m
 
 pub fn encrypt_branch_dyn<R: SpecRng>(mut n: usize, mut rng: &mut R, mut crs: &LweOtCrsDyn, mut pk: &[Zq; N], mut msg_bits: &[u8]) -> (Vec<Zq>, Vec<Zq>)
 {
-    let mut r = [0; n];
+    let mut r = [(0 as u32); n];
     for i in 0.. n{
     r[i] = sample_noise(rng);
 };
@@ -7979,10 +8445,79 @@ pub fn encrypt_branch_dyn<R: SpecRng>(mut n: usize, mut rng: &mut R, mut crs: &L
     (u, v)
 }
 
+pub fn encrypt_branch_secure<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut crs: &LweOtCrsDyn, mut pk: &[Zq; N], mut msg: &[u8; L]) -> ([[Zq; N]; L], [Zq; L])
+{
+    let half_q = LWE_Q / 2;
+    let mut u = [[(0 as u32); n]; l];
+    let mut v = [(0 as u32); l];
+    for k in 0.. l{
+    let mut r = [(0 as u32); n];
+    for i in 0.. n{
+    r[i] = sample_noise(rng);
+};
+    for j in 0.. n{
+    let mut acc: Zq = 0;
+    for i in 0.. n{
+    acc = zq_add(acc, zq_mul(crs.a[i][j], r[i]));
+};
+    acc = zq_add(acc, sample_noise(rng));
+    u[k][j] = acc;
+};
+    let mut base: Zq = 0;
+    for i in 0.. n{
+    base = zq_add(base, zq_mul(pk[i], r[i]));
+};
+    let plain = if (msg[k] & 1) == 1{
+    half_q
+} else {
+    0
+};
+    v[k] = zq_add(zq_add(base, sample_noise(rng)), plain);
+};
+    (u, v)
+}
+
+pub fn lwe_ot_send_secure<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut crs: &LweOtCrsDyn, mut recv_msg: &LweOtRecvMsgDyn, mut m0: &[u8; L], mut m1: &[u8; L]) -> LweOtSenderMsgSecureLoweredDyn
+{
+    let pk0 = recv_msg.pk0;
+    let mut pk1 = [(0 as u32); n];
+    for i in 0.. n{
+    pk1[i] = zq_sub(crs.h[i], pk0[i]);
+};
+    let (u0, v0) = encrypt_branch_secure::<R, N, L>(n, l, rng, crs, &pk0, m0);
+    let (u1, v1) = encrypt_branch_secure::<R, N, L>(n, l, rng, crs, &pk1, m1);
+    LweOtSenderMsgSecureLoweredDyn { u0: u0, v0: v0, u1: u1, v1: v1, n: 0, l: 0 }
+}
+
+pub fn lwe_ot_recv_decrypt_secure(mut n: usize, mut l: usize, mut receiver: &LweOtReceiverDyn, mut msg: &LweOtSenderMsgSecureLoweredDyn) -> [u8; L]
+{
+    let (us, vs) = if receiver.c{
+    (&msg.u1, &msg.v1)
+} else {
+    (&msg.u0, &msg.v0)
+};
+    let quarter = LWE_Q / 4;
+    let three_quarter = 3 * quarter;
+    let mut out = [(0 as u8); l];
+    for k in 0.. l{
+    let mut s_dot_u: Zq = 0;
+    for i in 0.. n{
+    s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[i], us[k][i]));
+};
+    let raw = zq_sub(vs[k], s_dot_u);
+    out[k] = if (raw > quarter) && (raw <= three_quarter){
+    1
+} else {
+    0
+};
+};
+    out
+}
+
 pub fn lwe_ot_send<R: SpecRng>(mut n: usize, mut l: usize, mut rng: &mut R, mut crs: &LweOtCrsDyn, mut recv_msg: &LweOtRecvMsgDyn, mut m0: &[u8; L], mut m1: &[u8; L]) -> LweOtSenderMsgLoweredDyn
 {
     let pk0 = recv_msg.pk0;
-    let mut pk1 = [0; n];
+    let mut pk1 = [(0 as u32); n];
     for i in 0.. n{
     pk1[i] = zq_sub(crs.h[i], pk0[i]);
 };
@@ -7996,7 +8531,7 @@ pub fn lwe_ot_send_bytes<R: SpecRng>(mut n: usize, mut rng: &mut R, mut crs: &Lw
     let bits0 = bytes_to_bits(m0);
     let bits1 = bytes_to_bits(m1);
     let pk0 = recv_msg.pk0;
-    let mut pk1 = [0; n];
+    let mut pk1 = [(0 as u32); n];
     for i in 0.. n{
     pk1[i] = zq_sub(crs.h[i], pk0[i]);
 };
@@ -8011,7 +8546,7 @@ pub fn bytes_to_bits(mut bytes: &[u8]) -> Vec<u8>
     for .. in bytes{
     for bit in 0.. 8{
     bits.push(((b >> bit) & 1));
-}
+};
 };
     bits
 }
@@ -8020,12 +8555,12 @@ pub fn bits_to_bytes(mut bits: &[u8], mut nbytes: usize) -> Vec<u8>
 {
     let mut out = vec![];
     for i in 0.. nbytes{
-    let mut acc = 0;
+    let mut acc = 0 as u8;
     for bit in 0.. 8{
     let idx = (i * 8) + bit;
     if (idx < bits.len()) && (bits[idx] != 0){
     acc |= (1 << bit);
-}
+};
 };
     out[i] = acc;
 };
@@ -8050,7 +8585,7 @@ pub fn decrypt_coords(mut n: usize, mut l: usize, mut receiver: &LweOtReceiverDy
 };
     let quarter = LWE_Q / 4;
     let three_quarter = 3 * quarter;
-    let mut out = [0; l];
+    let mut out = [(0 as u8); l];
     for k in 0.. l{
     let raw = zq_sub(v[k], s_dot_u);
     out[k] = if (raw > quarter) && (raw <= three_quarter){
@@ -8087,9 +8622,80 @@ pub fn lwe_ot_recv_decrypt_bytes(mut n: usize, mut receiver: &LweOtReceiverDyn, 
     bits_to_bytes(&bits, nbytes)
 }
 
+pub fn lwe_ot_send_bytes_secure<R: SpecRng>(mut n: usize, mut rng: &mut R, mut crs: &LweOtCrsDyn, mut recv_msg: &LweOtRecvMsgDyn, mut m0: &[u8], mut m1: &[u8]) -> LweOtSenderMsgSecureDyn
+{
+    let bits0 = bytes_to_bits(m0);
+    let bits1 = bytes_to_bits(m1);
+    let pk0 = recv_msg.pk0;
+    let mut pk1 = [(0 as u32); n];
+    for i in 0.. n{
+    pk1[i] = zq_sub(crs.h[i], pk0[i]);
+};
+    let half_q = LWE_Q / 2;
+    let enc = |rng, pk, bits| {
+    let mut u = Vec::with_capacity(bits.len());
+    let mut v = Vec::with_capacity(bits.len());
+    for .. in bits{
+    let mut r = [(0 as u32); n];
+    for i in 0.. n{
+    r[i] = sample_noise(rng);
+};
+    let mut uk = vec![];
+    for j in 0.. n{
+    let mut acc: Zq = 0;
+    for i in 0.. n{
+    acc = zq_add(acc, zq_mul(crs.a[i][j], r[i]));
+};
+    acc = zq_add(acc, sample_noise(rng));
+    uk[j] = acc;
+};
+    let mut base: Zq = 0;
+    for i in 0.. n{
+    base = zq_add(base, zq_mul(pk[i], r[i]));
+};
+    let plain = if (bit & 1) == 1{
+    half_q
+} else {
+    0
+};
+    v.push(zq_add(zq_add(base, sample_noise(rng)), plain));
+    u.push(uk);
+};
+    (u, v)
+};
+    let (u0, v0) = enc(rng, &pk0, &bits0);
+    let (u1, v1) = enc(rng, &pk1, &bits1);
+    LweOtSenderMsgSecureDyn { u0: u0, v0: v0, u1: u1, v1: v1 }
+}
+
+pub fn lwe_ot_recv_decrypt_bytes_secure(mut n: usize, mut receiver: &LweOtReceiverDyn, mut sender_msg: &LweOtSenderMsgSecureDyn, mut nbytes: usize) -> Vec<u8>
+{
+    let (us, vs) = if receiver.c{
+    (&sender_msg.u1[..], &sender_msg.v1[..])
+} else {
+    (&sender_msg.u0[..], &sender_msg.v0[..])
+};
+    let quarter = LWE_Q / 4;
+    let three_quarter = 3 * quarter;
+    let mut bits = vec![];
+    for k in 0.. vs.len(){
+    let mut s_dot_u: Zq = 0;
+    for i in 0.. n{
+    s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[i], us[k][i]));
+};
+    let raw = zq_sub(vs[k], s_dot_u);
+    bits[k] = if (raw > quarter) && (raw <= three_quarter){
+    1
+} else {
+    0
+};
+};
+    bits_to_bytes(&bits, nbytes)
+}
+
 pub fn xor_block(mut a: &Block, mut b: &Block) -> Block
 {
-    let mut o = [0; KAPPA_BYTES];
+    let mut o = [(0 as u8); KAPPA_BYTES];
     for i in 0.. KAPPA_BYTES{
     o[i] = (a[i] ^ b[i]);
 };
@@ -8109,7 +8715,7 @@ pub fn crhf(mut input: &Block, mut tweak: u64) -> Block
     h.update(input);
     h.update(tweak.to_le_bytes());
     let out = h.finalize().to_vec();
-    let mut b = [0; KAPPA_BYTES];
+    let mut b = [(0 as u8); KAPPA_BYTES];
     b.copy_from_slice(&out[..KAPPA_BYTES]);
     b
 }
@@ -8120,14 +8726,14 @@ pub fn hash_prime(mut v: &Block) -> [u8; 32]
     h.update(b"[102, 101, 114, 114, 101, 116, 45, 115, 112, 99, 111, 116, 45, 104, 112, 45, 118, 49]");
     h.update(v);
     let out = h.finalize().to_vec();
-    let mut b = [0; 32];
+    let mut b = [(0 as u8); 32];
     b.copy_from_slice(&out);
     b
 }
 
 pub fn sample_block<R: SpecRng>(mut rng: &mut R) -> Block
 {
-    let mut b = [0; KAPPA_BYTES];
+    let mut b = [(0 as u8); KAPPA_BYTES];
     for chunk in b.chunks_mut(4){
     let x = rng.next_u32().to_le_bytes();
     chunk.copy_from_slice(&x[..chunk.len()]);
@@ -8151,8 +8757,8 @@ pub fn expand_full(mut depth: usize, mut seed: Block) -> (Vec<Block>, Vec<[Block
     let mut sums = Vec::with_capacity(depth);
     for _d in 0.. depth{
     let mut next = Vec::with_capacity((level.len() * 2));
-    let mut k0 = [0; KAPPA_BYTES];
-    let mut k1 = [0; KAPPA_BYTES];
+    let mut k0 = [(0 as u8); KAPPA_BYTES];
+    let mut k1 = [(0 as u8); KAPPA_BYTES];
     for node in &level{
     let (l, r) = g_double(*node);
     for i in 0.. KAPPA_BYTES{
@@ -8173,10 +8779,10 @@ pub fn recover_sibling(mut layer: &mut [Block], mut sum: Block, mut offset: usiz
     let on = offset + (select as usize);
     let off = offset + (!select as usize);
     if on < layer.len(){
-    layer[on] = [0; KAPPA_BYTES];
+    layer[on] = [(0 as u8); KAPPA_BYTES];
 };
     if off < layer.len(){
-    layer[off] = [0; KAPPA_BYTES];
+    layer[off] = [(0 as u8); KAPPA_BYTES];
 };
     let mut value = sum;
     let mut i = !select as usize;
@@ -8189,9 +8795,9 @@ pub fn recover_sibling(mut layer: &mut [Block], mut sum: Block, mut offset: usiz
 
 pub fn expand_partial(mut depth: usize, mut sums: &[Block], mut alpha: usize) -> Vec<Block>
 {
-    let n = 1 << depth;
+    let n = (1 as usize) << depth;
     let mut level: Vec<Block> = vec![];
-    let mut offset = 0;
+    let mut offset = 0 as usize;
     for d in 0.. depth{
     let select = bit_msb(alpha, depth, d);
     recover_sibling(&mut level, sums[d], offset, select);
@@ -8256,7 +8862,7 @@ pub fn spcot_receiver_extend(mut alpha: usize, mut n: usize, mut cot_t: &[Block]
     for (i, wi) in w.iter().enumerate(){
     if i != alpha{
     acc = xor_block(&acc, wi);
-}
+};
 };
     w[alpha] = acc;
     w
@@ -8286,15 +8892,13 @@ pub fn spcot_in_process<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut n: u
     (v, w)
 }
 
-pub fn spcot_consistency_check(mut delta: &Block, mut v: &[Block], mut w: &[Block], mut extra_q: &[Block], mut extra_r: &[bool], mut extra_t: &[Block], mut transcript: &[u8]) -> bool
+pub fn spcot_fs_chis(mut n: usize, mut transcript: &[u8]) -> Vec<Block>
 {
-    let _ = (extra_q, extra_r, extra_t);
-    let n = v.len();
     let mut h = Sha3_256::new();
     h.update(b"[102, 101, 114, 114, 101, 116, 45, 115, 112, 99, 111, 116, 45, 102, 115, 45, 118, 49]");
     h.update(transcript);
     let seed = h.finalize().to_vec();
-    let mut chi = [0; KAPPA_BYTES];
+    let mut chi = [(0 as u8); KAPPA_BYTES];
     chi.copy_from_slice(&seed[..KAPPA_BYTES]);
     let mut chi_pow = field_from_block(&chi);
     let mut chis = Vec::with_capacity(n);
@@ -8302,6 +8906,58 @@ pub fn spcot_consistency_check(mut delta: &Block, mut v: &[Block], mut w: &[Bloc
     chis.push(block_from_field(&chi_pow));
     chi_pow = field_mul(&chi_pow, &field_from_block(&chi));
 };
+    chis
+}
+
+pub fn poly_eval_at_x(mut blocks: &[Block]) -> Galois128
+{
+    let x_elem = crate::field::Galois128(2);
+    let mut acc = crate::field::Galois128(0);
+    let mut x_pow = crate::field::Galois128(1);
+    for b in blocks{
+    acc = (acc + field_mul(&field_from_block(b), &x_pow));
+    x_pow = field_mul(&x_pow, &x_elem);
+};
+    acc
+}
+
+pub fn spcot_masked_choice(mut alpha: usize, mut extra_r: &[bool], mut chis: &[Block]) -> Vec<bool>
+{
+    let phi_bits = u128::from_le_bytes(chis[alpha]);
+    (0..KAPPA_BITS).map(|i| (extra_r[i] ^ (((phi_bits >> i) & 1) == 1))).collect::<Vec<_>>()
+}
+
+pub fn spcot_sender_hash_v(mut delta: &Block, mut v: &[Block], mut extra_q: &[Block], mut x_star_prime: &[bool], mut chis: &[Block]) -> [u8; 32]
+{
+    let yp: Vec<Block> = (0..KAPPA_BITS).map(|i| {
+    if x_star_prime[i]{
+    xor_block(&extra_q[i], delta)
+} else {
+    extra_q[i]
+}
+}).collect::<Vec<_>>();
+    let y = poly_eval_at_x(&yp);
+    let mut ip = crate::field::Galois128(0);
+    for i in 0.. v.len(){
+    ip = (ip + field_mul(&field_from_block(&chis[i]), &field_from_block(&v[i])));
+};
+    hash_prime(&block_from_field(&(ip + y)))
+}
+
+pub fn spcot_receiver_hash_w(mut w: &[Block], mut extra_t: &[Block], mut chis: &[Block]) -> [u8; 32]
+{
+    let z = poly_eval_at_x(extra_t);
+    let mut ip = crate::field::Galois128(0);
+    for i in 0.. w.len(){
+    ip = (ip + field_mul(&field_from_block(&chis[i]), &field_from_block(&w[i])));
+};
+    hash_prime(&block_from_field(&(ip + z)))
+}
+
+pub fn spcot_consistency_check(mut delta: &Block, mut v: &[Block], mut w: &[Block], mut extra_q: &[Block], mut extra_r: &[bool], mut extra_t: &[Block], mut transcript: &[u8]) -> bool
+{
+    let n = v.len();
+    let chis = spcot_fs_chis(n, transcript);
     let mut alpha = None;
     for i in 0.. n{
     if v[i] != w[i]{
@@ -8309,23 +8965,66 @@ pub fn spcot_consistency_check(mut delta: &Block, mut v: &[Block], mut w: &[Bloc
     return false;
 };
     alpha = Some(i);
-}
+};
 };
     let Some(a) = alpha else {
-    return false;
+    return false
 };
     if xor_block(&v[a], &w[a]) != *delta{
     return false;
 };
-    let mut ip_v = [0; KAPPA_BYTES];
-    let mut ip_w = [0; KAPPA_BYTES];
-    for i in 0.. n{
-    ip_v = xor_block(&ip_v, &field_mul_block(&chis[i], &v[i]));
-    ip_w = xor_block(&ip_w, &field_mul_block(&chis[i], &w[i]));
-};
-    let hv = hash_prime(&ip_v);
-    let hw = hash_prime(&xor_block(&ip_w, &field_mul_block(&chis[a], delta)));
+    let x_star_prime = spcot_masked_choice(a, extra_r, &chis);
+    let hv = spcot_sender_hash_v(delta, v, extra_q, &x_star_prime, &chis);
+    let hw = spcot_receiver_hash_w(w, extra_t, &chis);
     hv == hw
+}
+
+pub fn spcot_batched_fs_chis(mut lens: &[usize], mut transcript: &[u8]) -> Vec<Vec<Block>>
+{
+    lens.iter().enumerate().map(|(l, n)| {
+    let mut t = transcript.to_vec();
+    t.extend_from_slice(&(l as u64).to_le_bytes());
+    spcot_fs_chis(n, &t)
+}).collect::<Vec<_>>()
+}
+
+pub fn spcot_batched_masked_choice(mut alphas: &[usize], mut extra_r: &[bool], mut chis: &[Vec<Block>]) -> Vec<bool>
+{
+    let mut phi = crate::field::Galois128(0);
+    for (l, ..) in alphas.iter().enumerate(){
+    phi = (phi + field_from_block(&chis[l][a]));
+};
+    let phi_bits = phi.0;
+    (0..KAPPA_BITS).map(|i| (extra_r[i] ^ (((phi_bits >> i) & 1) == 1))).collect::<Vec<_>>()
+}
+
+pub fn spcot_batched_sender_hash_v(mut delta: &Block, mut vs: &[&[Block]], mut extra_q: &[Block], mut x_star_prime: &[bool], mut chis: &[Vec<Block>]) -> [u8; 32]
+{
+    let yp: Vec<Block> = (0..KAPPA_BITS).map(|i| {
+    if x_star_prime[i]{
+    xor_block(&extra_q[i], delta)
+} else {
+    extra_q[i]
+}
+}).collect::<Vec<_>>();
+    let mut acc = poly_eval_at_x(&yp);
+    for (l, v) in vs.iter().enumerate(){
+    for i in 0.. v.len(){
+    acc = (acc + field_mul(&field_from_block(&chis[l][i]), &field_from_block(&v[i])));
+};
+};
+    hash_prime(&block_from_field(&acc))
+}
+
+pub fn spcot_batched_receiver_hash_w(mut ws: &[&[Block]], mut extra_t: &[Block], mut chis: &[Vec<Block>]) -> [u8; 32]
+{
+    let mut acc = poly_eval_at_x(extra_t);
+    for (l, w) in ws.iter().enumerate(){
+    for i in 0.. w.len(){
+    acc = (acc + field_mul(&field_from_block(&chis[l][i]), &field_from_block(&w[i])));
+};
+};
+    hash_prime(&block_from_field(&acc))
 }
 
 pub fn field_from_block(mut b: &Block) -> Galois128
@@ -8350,9 +9049,14 @@ pub fn field_mul_block(mut a: &Block, mut b: &Block) -> Block
 
 pub fn column_rows(mut seed: &[u8; 16], mut k: usize, mut j: usize) -> [usize; LOCALITY]
 {
-    let mut rows = [0; LOCALITY];
-    let mut fill = 0;
-    let mut counter = 0;
+    column_rows_for_valid_k(seed, k, j)
+}
+
+pub fn column_rows_for_valid_k(mut seed: &[u8; 16], mut k: usize, mut j: usize) -> [usize; LOCALITY]
+{
+    let mut rows = [(0 as usize); LOCALITY];
+    let mut fill = 0 as usize;
+    let mut counter = 0 as u32;
     while (fill < LOCALITY){
     let mut h = Sha3_256::new();
     h.update(b"[102, 101, 114, 114, 101, 116, 45, 108, 112, 110, 45, 49, 48, 108, 111, 99, 97, 108, 45, 118, 49]");
@@ -8369,7 +9073,7 @@ pub fn column_rows(mut seed: &[u8; 16], mut k: usize, mut j: usize) -> [usize; L
     if !rows[..fill].contains(&row){
     rows[fill] = row;
     fill += 1;
-}
+};
 };
     counter += 1;
 };
@@ -8380,12 +9084,12 @@ pub fn encode_blocks(mut seed: &[u8; 16], mut k: usize, mut n: usize, mut v: &[B
 {
     let mut y = vec![];
     for j in 0.. n{
-    let rows = column_rows(seed, k, j);
-    let mut acc = [0; 16];
+    let rows = column_rows_for_valid_k(seed, k, j);
+    let mut acc = [(0 as u8); 16];
     for row in rows{
     for b in 0.. 16{
     acc[b] ^= v[row][b];
-}
+};
 };
     y[j] = acc;
 };
@@ -8396,7 +9100,7 @@ pub fn encode_bits(mut seed: &[u8; 16], mut k: usize, mut n: usize, mut u: &[boo
 {
     let mut x = vec![];
     for j in 0.. n{
-    let rows = column_rows(seed, k, j);
+    let rows = column_rows_for_valid_k(seed, k, j);
     let mut acc = false;
     for row in rows{
     acc ^= u[row];
@@ -8404,6 +9108,34 @@ pub fn encode_bits(mut seed: &[u8; 16], mut k: usize, mut n: usize, mut u: &[boo
     x[j] = acc;
 };
     x
+}
+
+pub fn encode_ferret_outputs(mut seed: &[u8; 16], mut k: usize, mut n: usize, mut v: &[Block], mut u: &[bool], mut w: &[Block], mut s: &[Block], mut e: &[bool], mut r: &[Block]) -> (Vec<Block>, Vec<bool>, Vec<Block>)
+{
+    let mut y = Vec::with_capacity(n);
+    let mut x = Vec::with_capacity(n);
+    let mut z = Vec::with_capacity(n);
+    for j in 0.. n{
+    let rows = column_rows_for_valid_k(seed, k, j);
+    let mut y_col = [(0 as u8); 16];
+    let mut x_bit = false;
+    let mut z_col = [(0 as u8); 16];
+    for row in rows{
+    x_bit ^= u[row];
+    for b in 0.. 16{
+    y_col[b] ^= v[row][b];
+    z_col[b] ^= w[row][b];
+};
+};
+    for b in 0.. 16{
+    y_col[b] ^= s[j][b];
+    z_col[b] ^= r[j][b];
+};
+    y.push(y_col);
+    x.push((x_bit ^ e[j]));
+    z.push(z_col);
+};
+    (y, x, z)
 }
 
 pub fn cuckoo_table_size(mut t: usize) -> usize
@@ -8430,7 +9162,7 @@ pub fn unique_bins(mut seed: &[u8; 16], mut x: usize, mut m: usize) -> Vec<usize
     let j = hash_i(seed, i, x, m);
     if !js.contains(&j){
     js.push(j);
-}
+};
 };
     js
 }
@@ -8450,7 +9182,7 @@ pub fn cuckoo_insert(mut seed: &[u8; 16], mut n: usize, mut t: usize, mut points
     table[j] = Some(x);
     placed = true;
     break;
-}
+};
 };
     if placed{
     break;
@@ -8458,7 +9190,7 @@ pub fn cuckoo_insert(mut seed: &[u8; 16], mut n: usize, mut t: usize, mut points
     let i = kick % TAU;
     let j = hash_i(seed, i, x, m);
     x = table[j].replace(x).unwrap();
-}
+};
 };
     table
 }
@@ -8470,7 +9202,7 @@ pub fn build_buckets(mut seed: &[u8; 16], mut n: usize, mut m: usize) -> Vec<Vec
     for i in 0.. TAU{
     let j = hash_i(seed, i, x, m);
     buckets[j].push(x);
-}
+};
 };
     for b in &mut buckets{
     b.sort_unstable();
@@ -8484,7 +9216,7 @@ pub fn next_pow2(mut x: usize) -> usize
     x.next_power_of_two().max(2)
 }
 
-pub fn mpcot_uni_sender<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut params: FerretParams, mut hash_seed: [u8; 16], mut cot_q_chunks: &[Vec<Block>], mut choices_chunks: &[Vec<bool>]) -> (Vec<Block>, MpcotUniSenderMsg)
+pub fn mpcot_uni_sender<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut params: FerretParams, mut hash_seed: [u8; 16], mut cot_q_chunks: &[Vec<Block>], mut choices_chunks: &[Vec<bool>]) -> (Vec<Block>, Vec<Vec<Block>>, MpcotUniSenderMsg)
 {
     let n = params.n;
     let m = cuckoo_table_size(params.t);
@@ -8500,19 +9232,19 @@ pub fn mpcot_uni_sender<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut para
 };
     let mut s = vec![];
     for x in 0.. n{
-    let mut acc = [0; 16];
+    let mut acc = [(0 as u8); 16];
     for j in unique_bins(&hash_seed, x, m){
     let pos = buckets[j].iter().position(|..| (y == x)).unwrap();
     for b in 0.. 16{
     acc[b] ^= s_bins[j][pos][b];
-}
+};
 };
     s[x] = acc;
 };
-    (s, MpcotUniSenderMsg { hash_seed: hash_seed, blocks: blocks })
+    (s, s_bins, MpcotUniSenderMsg { hash_seed: hash_seed, blocks: blocks })
 }
 
-pub fn mpcot_uni_receiver(mut params: FerretParams, mut table: &[Option<usize>], mut cot_t_chunks: &[Vec<Block>], mut msg: &MpcotUniSenderMsg) -> Vec<Block>
+pub fn mpcot_uni_receiver(mut params: FerretParams, mut table: &[Option<usize>], mut cot_t_chunks: &[Vec<Block>], mut msg: &MpcotUniSenderMsg) -> (Vec<Block>, Vec<Vec<Block>>)
 {
     let n = params.n;
     let m = cuckoo_table_size(params.t);
@@ -8530,16 +9262,47 @@ pub fn mpcot_uni_receiver(mut params: FerretParams, mut table: &[Option<usize>],
 };
     let mut r = vec![];
     for x in 0.. n{
-    let mut acc = [0; 16];
+    let mut acc = [(0 as u8); 16];
     for j in unique_bins(&msg.hash_seed, x, m){
     let pos = buckets[j].iter().position(|..| (y == x)).unwrap();
     for b in 0.. 16{
     acc[b] ^= r_bins[j][pos][b];
-}
+};
 };
     r[x] = acc;
 };
-    r
+    (r, r_bins)
+}
+
+pub fn mpcot_uni_bucket_params(mut params: FerretParams, mut hash_seed: &[u8; 16], mut table: &[Option<usize>]) -> (Vec<usize>, Vec<usize>)
+{
+    let n = params.n;
+    let m = cuckoo_table_size(params.t);
+    let buckets = build_buckets(hash_seed, n, m);
+    let mut alphas = Vec::with_capacity(m);
+    let mut lens = Vec::with_capacity(m);
+    for j in 0.. m{
+    let need = buckets[j].len() + 1;
+    let splen = next_pow2(need);
+    let p = match table[j] {
+    None => buckets[j].len(),
+    Some(val) => buckets[j].iter().position(|..| (y == val)).unwrap(),
+};
+    alphas.push(p);
+    lens.push(splen);
+};
+    (alphas, lens)
+}
+
+pub fn mpcot_uni_consistency_check(mut delta: &Block, mut s_bins: &[Vec<Block>], mut r_bins: &[Vec<Block>], mut alphas: &[usize], mut lens: &[usize], mut extra_q: &[Block], mut extra_r: &[bool], mut extra_t: &[Block], mut transcript: &[u8]) -> bool
+{
+    let chis = spcot_batched_fs_chis(lens, transcript);
+    let x_star_prime = spcot_batched_masked_choice(alphas, extra_r, &chis);
+    let vs: Vec<&[Block]> = s_bins.iter().map(|b| b.as_slice()).collect::<Vec<_>>();
+    let ws: Vec<&[Block]> = r_bins.iter().map(|b| b.as_slice()).collect::<Vec<_>>();
+    let hv = spcot_batched_sender_hash_v(delta, &vs, extra_q, &x_star_prime, &chis);
+    let hw = spcot_batched_receiver_hash_w(&ws, extra_t, &chis);
+    hv == hw
 }
 
 pub fn mpcot_uni_choice_bits(mut params: FerretParams, mut hash_seed: &[u8; 16], mut table: &[Option<usize>], mut cot_r_chunks: &[Vec<bool>]) -> Vec<Vec<bool>>
@@ -8573,6 +9336,11 @@ pub fn uni_seed_cot_count(mut hash_seed: &[u8; 16], mut params: FerretParams) ->
     params.k + uni_spcot_heights(hash_seed, params.n, params.t).iter().copied().sum()
 }
 
+pub fn uni_seed_cot_count_malicious(mut hash_seed: &[u8; 16], mut params: FerretParams) -> usize
+{
+    uni_seed_cot_count(hash_seed, params) + KAPPA_BITS
+}
+
 pub fn sample_uniform_points<R: SpecRng>(mut rng: &mut R, mut n: usize, mut t: usize) -> Vec<usize>
 {
     let mut pts = Vec::with_capacity(t);
@@ -8580,7 +9348,7 @@ pub fn sample_uniform_points<R: SpecRng>(mut rng: &mut R, mut n: usize, mut t: u
     let x = (rng.next_u32() as usize) % n;
     if !pts.contains(&x){
     pts.push(x);
-}
+};
 };
     pts.sort_unstable();
     pts
@@ -8588,7 +9356,7 @@ pub fn sample_uniform_points<R: SpecRng>(mut rng: &mut R, mut n: usize, mut t: u
 
 pub fn xor_block(mut a: &Block, mut b: &Block) -> Block
 {
-    let mut o = [0; 16];
+    let mut o = [(0 as u8); 16];
     for i in 0.. 16{
     o[i] = (a[i] ^ b[i]);
 };
@@ -8597,60 +9365,127 @@ pub fn xor_block(mut a: &Block, mut b: &Block) -> Block
 
 pub fn checked_seed_cot_count(mut params: FerretParams) -> Result<usize, PoolSeedError>
 {
-    if (params.t == 0) || (params.n < params.t) || (params.k == 0){
+    checked_seed_cot_count_mode(params, false)
+}
+
+pub fn checked_seed_cot_count_malicious(mut params: FerretParams) -> Result<usize, PoolSeedError>
+{
+    checked_seed_cot_count_mode(params, true)
+}
+
+pub fn checked_seed_cot_count_mode(mut params: FerretParams, mut malicious: bool) -> Result<usize, PoolSeedError>
+{
+    if (params.t == 0) || (params.n < params.t) || (params.k < super::lpn::LOCALITY){
     return Err(PoolSeedError::InvalidParameters);
 };
     let max_interval_len = params.n.div_ceil(params.t);
     let splen = max_interval_len.checked_next_power_of_two().ok_or(PoolSeedError::InvalidParameters)?;
-    let log_splen = splen.trailing_zeros() as usize;
-    let body = params.t.checked_mul(log_splen).and_then(|extra| params.k.checked_add(extra)).ok_or(PoolSeedError::InvalidParameters)?;
-    if body >= params.n{
+    let body = params.t.checked_mul((splen.trailing_zeros() as usize)).and_then(|extra| params.k.checked_add(extra)).ok_or(PoolSeedError::InvalidParameters)?;
+    let seed_count = if malicious{
+    body.checked_add(KAPPA_BITS).ok_or(PoolSeedError::InvalidParameters)?
+} else {
+    body
+};
+    if seed_count >= params.n{
     return Err(PoolSeedError::InvalidParameters);
 };
-    Ok(body)
+    Ok(seed_count)
 }
 
 pub fn new_pool<R: SpecRng>(mut rng: &mut R, mut params: FerretParams) -> (CotPoolSender, CotPoolReceiver)
 {
-    let m = params.seed_cot_count(false);
-    let (seed_s, seed_r) = sample_seed_cots(rng, m);
-    (CotPoolSender { params: params, seed: seed_s, out: VecDeque::new(), raise_n: None }, CotPoolReceiver { params: params, seed: seed_r, out_x: VecDeque::new(), out_z: VecDeque::new() })
+    new_pool_mode(rng, params, false)
 }
 
-pub fn refill<R: SpecRng>(mut rng: &mut R, mut sender: &mut CotPoolSender, mut receiver: &mut CotPoolReceiver)
+pub fn new_pool_malicious<R: SpecRng>(mut rng: &mut R, mut params: FerretParams) -> (CotPoolSender, CotPoolReceiver)
 {
+    new_pool_mode(rng, params, true)
+}
+
+pub fn new_pool_mode<R: SpecRng>(mut rng: &mut R, mut params: FerretParams, mut malicious: bool) -> (CotPoolSender, CotPoolReceiver)
+{
+    let m = params.seed_cot_count(malicious);
+    let (seed_s, seed_r) = sample_seed_cots(rng, m);
+    (CotPoolSender { params: params, seed: seed_s, out: VecDeque::new(), raise_n: None, malicious: malicious, refill_count: 0 }, CotPoolReceiver { params: params, seed: seed_r, out_x: VecDeque::new(), out_z: VecDeque::new(), malicious: malicious })
+}
+
+pub fn refill<R: SpecRng>(mut rng: &mut R, mut sender: &mut CotPoolSender, mut receiver: &mut CotPoolReceiver) -> bool
+{
+    let malicious = sender.malicious;
+    if (malicious != receiver.malicious) || (sender.params != receiver.params){
+    return false;
+};
     let mut params = sender.params;
+    let current_seed_count = match checked_seed_cot_count_mode(params, malicious) {
+    Ok(count) => count,
+    Err(_) => return false,
+};
+    if (sender.seed.q.len() != current_seed_count) || (receiver.seed.u.len() != current_seed_count) || (receiver.seed.w.len() != current_seed_count) || (sender.out.len() != receiver.out_x.len()) || (sender.out.len() != receiver.out_z.len()){
+    return false;
+};
     match sender.raise_n.take() {
     Some(n) => {
     let mut raised = params;
     raised.n = n;
-    params.n = n;
+    let raised_seed_count = match checked_seed_cot_count_mode(raised, malicious) {
+    Ok(count) => count,
+    Err(_) => return false,
+};
+    if (raised_seed_count != current_seed_count) || (raised_seed_count != sender.seed.q.len()) || (raised_seed_count != receiver.seed.u.len()) || (raised_seed_count != receiver.seed.w.len()){
+    return false;
+};
+    params = raised;
     sender.params = params;
     receiver.params = params;
 },
     _ => {
 },
 };
+    if malicious{
+    let Some(next_refill_count) = sender.refill_count.checked_add(1) else {
+    return false;
+};
+    let mut transcript = b"[118, 111, 108, 97, 114, 45, 102, 101, 114, 114, 101, 116, 45, 112, 111, 111, 108, 45, 114, 101, 102, 105, 108, 108, 45, 118, 49]".to_vec();
+    transcript.extend_from_slice(&sender.refill_count.to_le_bytes());
+    let (out, check) = ferret_extend_malicious(rng, params, &sender.seed, &receiver.seed, &transcript);
+    if !check{
+    return false;
+};
+    sender.refill_count = next_refill_count;
+    sender.seed = out.sender_seed;
+    receiver.seed = out.receiver_seed;
+    sender.out.extend(out.sender_out);
+    receiver.out_x.extend(out.recv_x);
+    receiver.out_z.extend(out.recv_z);
+    true
+} else {
     let out = ferret_extend(rng, params, &sender.seed, &receiver.seed);
     sender.seed = out.sender_seed;
     receiver.seed = out.receiver_seed;
     sender.out.extend(out.sender_out);
     receiver.out_x.extend(out.recv_x);
     receiver.out_z.extend(out.recv_z);
+    true
+}
 }
 
-pub fn ensure<R: SpecRng>(mut rng: &mut R, mut sender: &mut CotPoolSender, mut receiver: &mut CotPoolReceiver, mut need: usize)
+pub fn ensure<R: SpecRng>(mut rng: &mut R, mut sender: &mut CotPoolSender, mut receiver: &mut CotPoolReceiver, mut need: usize) -> bool
 {
-    let watermark = sender.params.seed_cot_count(false);
+    let watermark = sender.params.seed_cot_count(sender.malicious);
     while ((sender.remaining() < need) || (sender.remaining().saturating_sub(need) < watermark)){
     let before = sender.remaining();
-    refill(rng, sender, receiver);
-}
+    if !refill(rng, sender, receiver){
+    return false;
+};
+};
+    true
 }
 
-pub fn take_random<R: SpecRng>(mut rng: &mut R, mut sender: &mut CotPoolSender, mut receiver: &mut CotPoolReceiver, mut need: usize) -> (Vec<Block>, Vec<bool>, Vec<Block>)
+pub fn take_random<R: SpecRng>(mut rng: &mut R, mut sender: &mut CotPoolSender, mut receiver: &mut CotPoolReceiver, mut need: usize) -> Option<(Vec<Block>, Vec<bool>, Vec<Block>)>
 {
-    ensure(rng, sender, receiver, need);
+    if !ensure(rng, sender, receiver, need){
+    return None;
+};
     let mut r0 = Vec::with_capacity(need);
     let mut x = Vec::with_capacity(need);
     let mut z = Vec::with_capacity(need);
@@ -8659,7 +9494,7 @@ pub fn take_random<R: SpecRng>(mut rng: &mut R, mut sender: &mut CotPoolSender, 
     x.push(receiver.out_x.pop_front().unwrap());
     z.push(receiver.out_z.pop_front().unwrap());
 };
-    (r0, x, z)
+    Some((r0, x, z))
 }
 
 pub fn bea95_chosen_bit(mut delta: &Block, mut r0: Block, mut x: bool, mut z: Block, mut b: bool) -> (Block, Block, bool)
@@ -8694,7 +9529,7 @@ pub fn sample_below<R: SpecRng>(mut rng: &mut R, mut upper: usize) -> usize
     let value = rng.next_u32();
     if value < zone{
     return ((value % upper) as usize);
-}
+};
 }
 }
 
@@ -8715,6 +9550,22 @@ pub fn mpcot_reg_sender<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut n: u
     (s, MpcotRegSenderMsg { blocks: blocks })
 }
 
+pub fn mpcot_reg_sender_padded<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut n: usize, mut t: usize, mut cot_q: &[Block], mut choices: &[bool]) -> (Vec<Vec<Block>>, MpcotRegSenderMsg)
+{
+    let splen = padded_interval_len(n, t);
+    let h = splen.trailing_zeros() as usize;
+    let mut outputs = Vec::with_capacity(t);
+    let mut blocks = Vec::with_capacity(t);
+    for i in 0.. t{
+    let q = &cot_q[(i * h)..((i + 1) * h)];
+    let ch = &choices[(i * h)..((i + 1) * h)];
+    let (v, msg) = spcot_sender_extend(rng, delta, splen, q, ch);
+    outputs.push(v);
+    blocks.push(msg);
+};
+    (outputs, MpcotRegSenderMsg { blocks: blocks })
+}
+
 pub fn mpcot_reg_receiver(mut n: usize, mut t: usize, mut alphas: &[usize], mut cot_t: &[Block], mut msg: &MpcotRegSenderMsg) -> Vec<Block>
 {
     let splen = padded_interval_len(n, t);
@@ -8727,6 +9578,28 @@ pub fn mpcot_reg_receiver(mut n: usize, mut t: usize, mut alphas: &[usize], mut 
     r.extend(w.into_iter().take((end - start)));
 };
     r
+}
+
+pub fn mpcot_reg_receiver_padded(mut n: usize, mut t: usize, mut alphas: &[usize], mut cot_t: &[Block], mut msg: &MpcotRegSenderMsg) -> Vec<Vec<Block>>
+{
+    let splen = padded_interval_len(n, t);
+    let h = splen.trailing_zeros() as usize;
+    let mut outputs = Vec::with_capacity(t);
+    for i in 0.. t{
+    let t_rows = &cot_t[(i * h)..((i + 1) * h)];
+    outputs.push(spcot_receiver_extend(alphas[i], splen, t_rows, &msg.blocks[i]));
+};
+    outputs
+}
+
+pub fn mpcot_reg_flatten_outputs(mut n: usize, mut t: usize, mut buckets: &[Vec<Block>]) -> Vec<Block>
+{
+    let mut output = Vec::with_capacity(n);
+    for (index, bucket) in buckets.iter().enumerate(){
+    let (start, end) = interval_bounds(n, t, index);
+    output.extend(bucket.iter().take((end - start)).copied());
+};
+    output
 }
 
 pub fn mpcot_reg_choice_bits(mut n: usize, mut t: usize, mut alphas: &[usize], mut cot_r: &[bool]) -> Vec<bool>
@@ -8749,9 +9622,62 @@ pub fn sample_regular_noise<R: SpecRng>(mut rng: &mut R, mut n: usize, mut t: us
 }).collect::<Vec<_>>()
 }
 
+pub fn mpcot_reg_consistency_check(mut delta: &Block, mut s: &[Block], mut r: &[Block], mut alphas: &[usize], mut extra_q: &[Block], mut extra_r: &[bool], mut extra_t: &[Block], mut transcript: &[u8]) -> bool
+{
+    let t = alphas.len();
+    if (t == 0) || (s.len() != r.len()) || (s.len() < t){
+    return false;
+};
+    let n = s.len();
+    let mut vs = Vec::with_capacity(t);
+    let mut ws = Vec::with_capacity(t);
+    for (index, ..) in alphas.iter().enumerate(){
+    let (start, end) = interval_bounds(n, t, index);
+    if alpha >= (end - start){
+    return false;
+};
+    vs.push(&s[start..end]);
+    ws.push(&r[start..end]);
+};
+    mpcot_reg_consistency_check_slices(delta, &vs, &ws, alphas, extra_q, extra_r, extra_t, transcript)
+}
+
+pub fn mpcot_reg_consistency_check_padded(mut delta: &Block, mut s: &[Vec<Block>], mut r: &[Vec<Block>], mut alphas: &[usize], mut extra_q: &[Block], mut extra_r: &[bool], mut extra_t: &[Block], mut transcript: &[u8]) -> bool
+{
+    let Some(first) = s.first() else {
+    return false;
+};
+    if !first.len().is_power_of_two() || s.iter().any(|bucket| (bucket.len() != first.len())) || r.iter().any(|bucket| (bucket.len() != first.len())){
+    return false;
+};
+    let vs: Vec<&[Block]> = s.iter().map(Vec::as_slice).collect();
+    let ws: Vec<&[Block]> = r.iter().map(Vec::as_slice).collect();
+    mpcot_reg_consistency_check_slices(delta, &vs, &ws, alphas, extra_q, extra_r, extra_t, transcript)
+}
+
+pub fn mpcot_reg_consistency_check_slices(mut delta: &Block, mut vs: &[&[Block]], mut ws: &[&[Block]], mut alphas: &[usize], mut extra_q: &[Block], mut extra_r: &[bool], mut extra_t: &[Block], mut transcript: &[u8]) -> bool
+{
+    let t = alphas.len();
+    if (t == 0) || (vs.len() != t) || (ws.len() != t) || (extra_q.len() != KAPPA_BITS) || (extra_r.len() != KAPPA_BITS) || (extra_t.len() != KAPPA_BITS){
+    return false;
+};
+    let mut lens = Vec::with_capacity(t);
+    for (.., (v, w)) in alphas.iter().zip(vs.iter().zip(ws.into_iter())){
+    if (v.len() != w.len()) || (alpha >= v.len()){
+    return false;
+};
+    lens.push(v.len());
+};
+    let chis = spcot_batched_fs_chis(&lens, transcript);
+    let x_star_prime = spcot_batched_masked_choice(alphas, extra_r, &chis);
+    let hv = spcot_batched_sender_hash_v(delta, vs, extra_q, &x_star_prime, &chis);
+    let hw = spcot_batched_receiver_hash_w(ws, extra_t, &chis);
+    hv == hw
+}
+
 pub fn xor_block(mut a: &Block, mut b: &Block) -> Block
 {
-    let mut o = [0; 16];
+    let mut o = [(0 as u8); 16];
     for i in 0.. 16{
     o[i] = (a[i] ^ b[i]);
 };
@@ -8760,7 +9686,7 @@ pub fn xor_block(mut a: &Block, mut b: &Block) -> Block
 
 pub fn sample_seed<R: SpecRng>(mut rng: &mut R) -> [u8; 16]
 {
-    let mut s = [0; 16];
+    let mut s = [(0 as u8); 16];
     for chunk in s.chunks_mut(4){
     chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
 };
@@ -8798,26 +9724,23 @@ pub fn ferret_receiver_mpcot(mut params: FerretParams, mut prep: &FerretPrep, mu
 
 pub fn ferret_finish(mut params: FerretParams, mut sender_seed: &FerretSenderSeed, mut receiver_seed: &FerretReceiverSeed, mut prep: &FerretPrep, mut s: &[Block], mut r: &[Block]) -> FerretExtendOut
 {
+    ferret_finish_m(params, sender_seed, receiver_seed, prep, s, r, params.seed_cot_count(false))
+}
+
+pub fn ferret_finish_m(mut params: FerretParams, mut sender_seed: &FerretSenderSeed, mut receiver_seed: &FerretReceiverSeed, mut prep: &FerretPrep, mut s: &[Block], mut r: &[Block], mut m: usize) -> FerretExtendOut
+{
     let n = params.n;
     let k = params.k;
-    let m = params.seed_cot_count(false);
     let v_lpn = &sender_seed.q[..k];
     let u_lpn = &receiver_seed.u[..k];
     let w_lpn = &receiver_seed.w[..k];
-    let y_lpn = encode_blocks(&prep.lpn_seed, k, n, v_lpn);
-    let x_bits = encode_bits(&prep.lpn_seed, k, n, u_lpn);
-    let z_lpn = encode_blocks(&prep.lpn_seed, k, n, w_lpn);
-    let mut y = Vec::with_capacity(n);
-    let mut x = Vec::with_capacity(n);
-    let mut z = Vec::with_capacity(n);
-    for j in 0.. n{
-    y.push(xor_block(&y_lpn[j], &s[j]));
-    x.push((x_bits[j] ^ prep.e[j]));
-    z.push(xor_block(&z_lpn[j], &r[j]));
-};
-    let sender_seed = FerretSenderSeed { delta: sender_seed.delta, q: y[..m].to_vec() };
-    let receiver_seed = FerretReceiverSeed { u: x[..m].to_vec(), w: z[..m].to_vec() };
-    FerretExtendOut { sender_out: y[m..].to_vec(), recv_x: x[m..].to_vec(), recv_z: z[m..].to_vec(), sender_seed: sender_seed, receiver_seed: receiver_seed }
+    let (mut y, mut x, mut z) = encode_ferret_outputs(&prep.lpn_seed, k, n, v_lpn, u_lpn, w_lpn, s, &prep.e, r);
+    let sender_out = y.split_off(m);
+    let recv_x = x.split_off(m);
+    let recv_z = z.split_off(m);
+    let sender_seed = FerretSenderSeed { delta: sender_seed.delta, q: y };
+    let receiver_seed = FerretReceiverSeed { u: x, w: z };
+    FerretExtendOut { sender_out: sender_out, recv_x: recv_x, recv_z: recv_z, sender_seed: sender_seed, receiver_seed: receiver_seed }
 }
 
 pub fn ferret_extend<R: SpecRng>(mut rng: &mut R, mut params: FerretParams, mut sender_seed: &FerretSenderSeed, mut receiver_seed: &FerretReceiverSeed) -> FerretExtendOut
@@ -8829,10 +9752,39 @@ pub fn ferret_extend<R: SpecRng>(mut rng: &mut R, mut params: FerretParams, mut 
     ferret_finish(params, sender_seed, receiver_seed, &prep, &s, &r)
 }
 
+pub fn ferret_extend_malicious<R: SpecRng>(mut rng: &mut R, mut params: FerretParams, mut sender_seed: &FerretSenderSeed, mut receiver_seed: &FerretReceiverSeed, mut transcript: &[u8]) -> (FerretExtendOut, bool)
+{
+    let m = params.seed_cot_count(true);
+    let k = params.k;
+    let n = params.n;
+    let t = params.t;
+    let spcot_cots = t * params.log_splen();
+    let extra_off = k + spcot_cots;
+    let alphas = sample_regular_noise(rng, n, t);
+    let mut e = vec![];
+    for (i, ..) in alphas.iter().enumerate(){
+    let (start, end) = params.interval_bounds(i).expect("regular noise interval index must be valid");
+    e[start + a] = true;
+};
+    let lpn_seed = sample_seed(rng);
+    let choices = mpcot_reg_choice_bits(n, t, &alphas, &receiver_seed.u[k..extra_off]);
+    let (s_padded, mpcot) = mpcot_reg_sender_padded(rng, &sender_seed.delta, n, t, &sender_seed.q[k..extra_off], &choices);
+    let r_padded = mpcot_reg_receiver_padded(n, t, &alphas, &receiver_seed.w[k..extra_off], &mpcot);
+    let extra_q = &sender_seed.q[extra_off..(extra_off + KAPPA_BITS)];
+    let extra_r = &receiver_seed.u[extra_off..(extra_off + KAPPA_BITS)];
+    let extra_t = &receiver_seed.w[extra_off..(extra_off + KAPPA_BITS)];
+    let check = mpcot_reg_consistency_check_padded(&sender_seed.delta, &s_padded, &r_padded, &alphas, extra_q, extra_r, extra_t, transcript);
+    let s = mpcot_reg_flatten_outputs(n, t, &s_padded);
+    let r = mpcot_reg_flatten_outputs(n, t, &r_padded);
+    let prep = FerretPrep { alphas: alphas, e: e, lpn_seed: lpn_seed, choices: Vec::new() };
+    let out = ferret_finish_m(params, sender_seed, receiver_seed, &prep, &s, &r, m);
+    (out, check)
+}
+
 pub fn split_cot_chunks<T: Clone>(mut flat: &[T], mut heights: &[usize]) -> Vec<Vec<T>>
 {
     let mut out = Vec::with_capacity(heights.len());
-    let mut off = 0;
+    let mut off = 0 as usize;
     for .. in heights{
     out.push(flat[off..(off + h)].to_vec());
     off += h;
@@ -8855,14 +9807,14 @@ pub fn ferret_extend_uni<R: SpecRng>(mut rng: &mut R, mut params: FerretParams, 
 },
     _ => {
 },
-}
+};
 };
     let cot_r = split_cot_chunks(&receiver_seed.u[k..], &heights);
     let choices = mpcot_uni_choice_bits(params, &hash_seed, &table, &cot_r);
     let cot_q = split_cot_chunks(&sender_seed.q[k..], &heights);
-    let (s, mpcot) = mpcot_uni_sender(rng, &sender_seed.delta, params, hash_seed, &cot_q, &choices);
+    let (s, _s_bins, mpcot) = mpcot_uni_sender(rng, &sender_seed.delta, params, hash_seed, &cot_q, &choices);
     let cot_t = split_cot_chunks(&receiver_seed.w[k..], &heights);
-    let r = mpcot_uni_receiver(params, &table, &cot_t, &mpcot);
+    let (r, _r_bins) = mpcot_uni_receiver(params, &table, &cot_t, &mpcot);
     let prep = FerretPrep { alphas: points, e: e, lpn_seed: sample_seed(rng), choices: Vec::new() };
     let n = params.n;
     let v_lpn = &sender_seed.q[..k];
@@ -8882,9 +9834,59 @@ pub fn ferret_extend_uni<R: SpecRng>(mut rng: &mut R, mut params: FerretParams, 
     FerretExtendOut { sender_out: y[m_seed..].to_vec(), recv_x: x[m_seed..].to_vec(), recv_z: z[m_seed..].to_vec(), sender_seed: FerretSenderSeed { delta: sender_seed.delta, q: y[..m_seed].to_vec() }, receiver_seed: FerretReceiverSeed { u: x[..m_seed].to_vec(), w: z[..m_seed].to_vec() } }
 }
 
+pub fn ferret_extend_uni_malicious<R: SpecRng>(mut rng: &mut R, mut params: FerretParams, mut hash_seed: [u8; 16], mut sender_seed: &FerretSenderSeed, mut receiver_seed: &FerretReceiverSeed, mut transcript: &[u8]) -> (FerretExtendOut, bool)
+{
+    let m_seed = uni_seed_cot_count_malicious(&hash_seed, params);
+    let k = params.k;
+    let heights = uni_spcot_heights(&hash_seed, params.n, params.t);
+    let spcot_cots: usize = heights.iter().sum();
+    let extra_off = k + spcot_cots;
+    let points = sample_uniform_points(rng, params.n, params.t);
+    let table = super::mpcot_uni::cuckoo_insert(&hash_seed, params.n, params.t, &points);
+    let mut e = vec![];
+    for slot in &table{
+    match slot {
+    Some(x) => {
+    e[*x] = true;
+},
+    _ => {
+},
+};
+};
+    let cot_r = split_cot_chunks(&receiver_seed.u[k..extra_off], &heights);
+    let choices = mpcot_uni_choice_bits(params, &hash_seed, &table, &cot_r);
+    let cot_q = split_cot_chunks(&sender_seed.q[k..extra_off], &heights);
+    let (s, s_bins, mpcot) = mpcot_uni_sender(rng, &sender_seed.delta, params, hash_seed, &cot_q, &choices);
+    let cot_t = split_cot_chunks(&receiver_seed.w[k..extra_off], &heights);
+    let (r, r_bins) = mpcot_uni_receiver(params, &table, &cot_t, &mpcot);
+    let (alphas, lens) = mpcot_uni_bucket_params(params, &hash_seed, &table);
+    let extra_q = &sender_seed.q[extra_off..(extra_off + KAPPA_BITS)];
+    let extra_r = &receiver_seed.u[extra_off..(extra_off + KAPPA_BITS)];
+    let extra_t = &receiver_seed.w[extra_off..(extra_off + KAPPA_BITS)];
+    let check = mpcot_uni_consistency_check(&sender_seed.delta, &s_bins, &r_bins, &alphas, &lens, extra_q, extra_r, extra_t, transcript);
+    let prep = FerretPrep { alphas: points, e: e, lpn_seed: sample_seed(rng), choices: Vec::new() };
+    let n = params.n;
+    let v_lpn = &sender_seed.q[..k];
+    let u_lpn = &receiver_seed.u[..k];
+    let w_lpn = &receiver_seed.w[..k];
+    let y_lpn = encode_blocks(&prep.lpn_seed, k, n, v_lpn);
+    let x_bits = encode_bits(&prep.lpn_seed, k, n, u_lpn);
+    let z_lpn = encode_blocks(&prep.lpn_seed, k, n, w_lpn);
+    let mut y = Vec::with_capacity(n);
+    let mut x = Vec::with_capacity(n);
+    let mut z = Vec::with_capacity(n);
+    for j in 0.. n{
+    y.push(xor_block(&y_lpn[j], &s[j]));
+    x.push((x_bits[j] ^ prep.e[j]));
+    z.push(xor_block(&z_lpn[j], &r[j]));
+};
+    let out = FerretExtendOut { sender_out: y[m_seed..].to_vec(), recv_x: x[m_seed..].to_vec(), recv_z: z[m_seed..].to_vec(), sender_seed: FerretSenderSeed { delta: sender_seed.delta, q: y[..m_seed].to_vec() }, receiver_seed: FerretReceiverSeed { u: x[..m_seed].to_vec(), w: z[..m_seed].to_vec() } };
+    (out, check)
+}
+
 pub fn sample_seed_cots<R: SpecRng>(mut rng: &mut R, mut m: usize) -> (FerretSenderSeed, FerretReceiverSeed)
 {
-    let mut delta = [0; 16];
+    let mut delta = [(0 as u8); 16];
     for chunk in delta.chunks_mut(4){
     chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
 };
@@ -8892,7 +9894,7 @@ pub fn sample_seed_cots<R: SpecRng>(mut rng: &mut R, mut m: usize) -> (FerretSen
     let mut u = Vec::with_capacity(m);
     let mut w = Vec::with_capacity(m);
     for _ in 0.. m{
-    let mut row = [0; 16];
+    let mut row = [(0 as u8); 16];
     for chunk in row.chunks_mut(4){
     chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
 };
@@ -8955,6 +9957,74 @@ pub fn ot_recv_finish<G: Group, D: Digest>(mut state: &BaseOtReceiverDyn<G, D>) 
 pub fn ot_recv_choice<G: Group, D: Digest>(mut state: &BaseOtReceiverDyn<G, D>) -> bool
 {
     state.c
+}
+
+pub fn or_proof_challenge<G: ScalarOps, D: Digest>(mut s: &<G as _>::Element, mut r: &<G as _>::Element, mut a0: &<G as _>::Element, mut a1: &<G as _>::Element) -> <G as _>::Scalar
+{
+    let g = G::generator();
+    let mut h = D::new();
+    h.update(b"[118, 111, 108, 97, 114, 45, 99, 104, 111, 117, 45, 111, 114, 108, 97, 110, 100, 105, 45, 111, 114, 45, 112, 114, 111, 111, 102, 45, 118, 49]");
+    G::<D>::write_element(&g, &mut h);
+    G::<D>::write_element(s, &mut h);
+    G::<D>::write_element(r, &mut h);
+    G::<D>::write_element(a0, &mut h);
+    G::<D>::write_element(a1, &mut h);
+    G::<D>::scalar_from_hash(h)
+}
+
+pub fn ot_recv_prove<G: ScalarOps, D: Digest, R: SpecRng>(mut rng: &mut R, mut s: &<G as _>::Element, mut r: &<G as _>::Element, mut x: &<G as _>::Scalar, mut c: bool) -> OtConsistencyProofDyn<<G as _>::Scalar>
+{
+    let g = G::generator();
+    let r1_stmt = G::add(r, &G::neg(s));
+    let rr = G::random_mod_order(rng);
+    let e_sim = G::random_mod_order(rng);
+    let z_sim = G::random_mod_order(rng);
+    let a_real = G::scalar_mul(&g, &rr);
+    let r_sim_stmt = if c{
+    r
+} else {
+    &r1_stmt
+};
+    let a_sim = G::add(&G::scalar_mul(&g, &z_sim), &G::neg(&G::scalar_mul(r_sim_stmt, &e_sim)));
+    let (a0, a1) = if c{
+    (a_sim, a_real)
+} else {
+    (a_real, a_sim)
+};
+    let e = or_proof_challenge::<G, D>(s, r, &a0, &a1);
+    let e_real = G::scalar_sub(&e, &e_sim);
+    let z_real = G::scalar_add(&rr, &G::scalar_mul_scalar(&e_real, x));
+    let (e0, z0, e1, z1) = if c{
+    (e_sim, z_sim, e_real, z_real)
+} else {
+    (e_real, z_real, e_sim, z_sim)
+};
+    OtConsistencyProofDyn { e0: e0, e1: e1, z0: z0, z1: z1 }
+}
+
+pub fn ot_send_verify<G: ScalarOps, D: Digest>(mut s: &<G as _>::Element, mut r: &<G as _>::Element, mut proof: &OtConsistencyProofDyn<<G as _>::Scalar>) -> bool
+{
+    let g = G::generator();
+    let r1_stmt = G::add(r, &G::neg(s));
+    let a0 = G::add(&G::scalar_mul(&g, &proof.z0), &G::neg(&G::scalar_mul(r, &proof.e0)));
+    let a1 = G::add(&G::scalar_mul(&g, &proof.z1), &G::neg(&G::scalar_mul(&r1_stmt, &proof.e1)));
+    let e = or_proof_challenge::<G, D>(s, r, &a0, &a1);
+    G::scalar_eq(&e, &G::scalar_add(&proof.e0, &proof.e1))
+}
+
+pub fn ot_recv_malicious<G: ScalarOps, D: Digest, R: SpecRng>(mut rng: &mut R, mut s: <G as _>::Element, mut c: bool) -> (BaseOtReceiverDyn<G, D>, OtReceiverMsgDyn<G>, OtConsistencyProofDyn<<G as _>::Scalar>)
+{
+    let (state, msg) = ot_recv::<G, D, R>(rng, s, c);
+    let proof = ot_recv_prove::<G, D, R>(rng, &state.s, &msg.r, &state.x, state.c);
+    (state, msg, proof)
+}
+
+pub fn ot_send_finish_malicious<G: ScalarOps, D: Digest>(mut state: &BaseOtSenderDyn<G, D>, mut msg: &OtReceiverMsgDyn<G>, mut proof: &OtConsistencyProofDyn<<G as _>::Scalar>) -> Option<(Output<D>, Output<D>)>
+{
+    if !ot_send_verify::<G, D>(&state.s, &msg.r, proof){
+    return None;
+};
+    Some(ot_send_finish::<G, D>(state, msg))
 }
 
 pub fn ot_send_payload<D: Digest>(mut k0: &Output<D>, mut k1: &Output<D>, mut m0: &[u8], mut m1: &[u8], mut e0: &mut [u8], mut e1: &mut [u8])
@@ -9022,7 +10092,7 @@ pub fn push_block(mut buf: &mut Vec<u8>, mut b: &Block)
 
 pub fn take_block(mut bytes: &[u8], mut off: &mut usize) -> Block
 {
-    let mut b = [0; 16];
+    let mut b = [(0 as u8); 16];
     b.copy_from_slice(&bytes[*off..(*off + 16)]);
     *off += 16;
     b
@@ -9038,7 +10108,7 @@ pub fn encode_bools(mut bits: &[bool]) -> Vec<u8>
 
 pub fn decode_bools(mut bytes: &[u8]) -> (Vec<bool>, usize)
 {
-    let mut off = 0;
+    let mut off = 0 as usize;
     let n = take_u32(bytes, &mut off) as usize;
     let bits = bytes[off..(off + n)].iter().map(|b| (b != 0)).collect::<Vec<_>>();
     off += n;
@@ -9061,7 +10131,7 @@ pub fn encode_spcot(mut msg: &SpcotSenderMsg) -> Vec<u8>
 
 pub fn decode_spcot(mut bytes: &[u8]) -> (SpcotSenderMsg, usize)
 {
-    let mut off = 0;
+    let mut off = 0 as usize;
     let h = take_u32(bytes, &mut off) as usize;
     let mut ms = Vec::with_capacity(h);
     for _ in 0.. h{
@@ -9090,7 +10160,7 @@ pub fn encode_mpcot_reg(mut msg: &MpcotRegSenderMsg) -> Vec<u8>
 
 pub fn decode_mpcot_reg(mut bytes: &[u8]) -> MpcotRegSenderMsg
 {
-    let mut off = 0;
+    let mut off = 0 as usize;
     let n = take_u32(bytes, &mut off) as usize;
     let mut blocks = Vec::with_capacity(n);
     for _ in 0.. n{
@@ -9112,7 +10182,7 @@ pub fn encode_ferret_open(mut lpn_seed: &[u8; 16], mut choices: &[bool]) -> Vec<
 
 pub fn decode_ferret_open(mut bytes: &[u8]) -> ([u8; 16], Vec<bool>)
 {
-    let mut seed = [0; 16];
+    let mut seed = [(0 as u8); 16];
     seed.copy_from_slice(&bytes[..16]);
     let (choices, _) = decode_bools(&bytes[16..]);
     (seed, choices)
@@ -9125,7 +10195,7 @@ pub fn encode_lwe_crs(mut n: usize, mut crs: &LweOtCrsDyn) -> Vec<u8>
     for i in 0.. n{
     for j in 0.. n{
     buf.extend_from_slice(&crs.a[i][j].to_le_bytes());
-}
+};
 };
     for i in 0.. n{
     buf.extend_from_slice(&crs.h[i].to_le_bytes());
@@ -9135,16 +10205,16 @@ pub fn encode_lwe_crs(mut n: usize, mut crs: &LweOtCrsDyn) -> Vec<u8>
 
 pub fn decode_lwe_crs(mut n: usize, mut bytes: &[u8]) -> LweOtCrsDyn
 {
-    let mut off = 0;
+    let mut off = 0 as usize;
     let n = take_u32(bytes, &mut off) as usize;
-    let mut a = [[0; n]; n];
+    let mut a = [[(0 as u32); n]; n];
     for i in 0.. n{
     for j in 0.. n{
     a[i][j] = u32::from_le_bytes(bytes[off..(off + 4)].try_into().unwrap());
     off += 4;
-}
 };
-    let mut h = [0; n];
+};
+    let mut h = [(0 as u32); n];
     for i in 0.. n{
     h[i] = u32::from_le_bytes(bytes[off..(off + 4)].try_into().unwrap());
     off += 4;
@@ -9163,7 +10233,7 @@ pub fn encode_lwe_recv(mut n: usize, mut msg: &LweOtRecvMsgDyn) -> Vec<u8>
 
 pub fn decode_lwe_recv(mut n: usize, mut bytes: &[u8]) -> LweOtRecvMsgDyn
 {
-    let mut pk0 = [0; n];
+    let mut pk0 = [(0 as u32); n];
     for i in 0.. n{
     pk0[i] = u32::from_le_bytes(bytes[(i * 4)..((i * 4) + 4)].try_into().unwrap());
 };
@@ -9203,7 +10273,7 @@ pub fn encode_lwe_payload(mut msg: &LweOtSenderMsgDyn) -> Vec<u8>
 
 pub fn decode_lwe_payload(mut bytes: &[u8]) -> LweOtSenderMsgDyn
 {
-    let mut off = 0;
+    let mut off = 0 as usize;
     let u0 = decode_zq_vec(bytes, &mut off);
     let v0 = decode_zq_vec(bytes, &mut off);
     let u1 = decode_zq_vec(bytes, &mut off);
@@ -9223,7 +10293,7 @@ pub fn encode_iknp_u(mut msg: &IknpUMsg) -> Vec<u8>
 
 pub fn decode_iknp_u(mut bytes: &[u8]) -> IknpUMsg
 {
-    let mut off = 0;
+    let mut off = 0 as usize;
     let n = take_u32(bytes, &mut off) as usize;
     let mut u_cols = Vec::with_capacity(n);
     for _ in 0.. n{
@@ -9246,11 +10316,11 @@ pub fn encode_iknp_corr(mut rows: &[[u8; IKNP_KAPPA_BYTES]]) -> Vec<u8>
 
 pub fn decode_iknp_corr(mut bytes: &[u8]) -> Vec<[u8; IKNP_KAPPA_BYTES]>
 {
-    let mut off = 0;
+    let mut off = 0 as usize;
     let n = take_u32(bytes, &mut off) as usize;
     let mut rows = Vec::with_capacity(n);
     for _ in 0.. n{
-    let mut r = [0; IKNP_KAPPA_BYTES];
+    let mut r = [(0 as u8); IKNP_KAPPA_BYTES];
     r.copy_from_slice(&bytes[off..(off + IKNP_KAPPA_BYTES)]);
     off += IKNP_KAPPA_BYTES;
     rows.push(r);
@@ -9260,7 +10330,7 @@ pub fn decode_iknp_corr(mut bytes: &[u8]) -> Vec<[u8; IKNP_KAPPA_BYTES]>
 
 pub fn mul_4x4(mut a: &[u64; 4], mut b: &[u64; 4]) -> [u64; 8]
 {
-    let mut r = [0; 8];
+    let mut r = [(0 as u64); 8];
     for i in 0.. 4{
     let mut carry: u64 = 0;
     for j in 0.. 4{
@@ -9275,7 +10345,7 @@ pub fn mul_4x4(mut a: &[u64; 4], mut b: &[u64; 4]) -> [u64; 8]
 
 pub fn reduce_wide(mut t: &[u64; 8]) -> Fe25519
 {
-    let mut acc = [0; 5];
+    let mut acc = [(0 as u64); 5];
     let mut c: u128 = 0;
     for i in 0.. 4{
     let v = (t[i] as u128) + ((t[4 + i] as u128) * 38) + c;
@@ -9283,7 +10353,7 @@ pub fn reduce_wide(mut t: &[u64; 8]) -> Fe25519
     c = (v >> 64);
 };
     acc[4] = (c as u64);
-    let mut out = [0; 4];
+    let mut out = [(0 as u64); 4];
     let mut c: u128 = (acc[4] as u128) * 38;
     for i in 0.. 4{
     let v = (acc[i] as u128) + c;
@@ -9305,7 +10375,7 @@ pub fn fe_canonicalize(mut a: [u64; 4]) -> Fe25519
 {
     let mut x = a;
     for _ in 0.. 2{
-    let mut tmp = [0; 4];
+    let mut tmp = [(0 as u64); 4];
     let mut borrow: u64 = 0;
     for i in 0.. 4{
     let (r1, b1) = x[i].overflowing_sub(P_LIMBS[i]);
@@ -9315,14 +10385,14 @@ pub fn fe_canonicalize(mut a: [u64; 4]) -> Fe25519
 };
     if borrow == 0{
     x = tmp;
-}
+};
 };
     Fe25519(x)
 }
 
 pub fn fe_add(mut a: &Fe25519, mut b: &Fe25519) -> Fe25519
 {
-    let mut r = [0; 4];
+    let mut r = [(0 as u64); 4];
     let mut c: u64 = 0;
     for i in 0.. 4{
     let v = (a.0[i] as u128) + (b.0[i] as u128) + (c as u128);
@@ -9342,7 +10412,7 @@ pub fn fe_add(mut a: &Fe25519, mut b: &Fe25519) -> Fe25519
 
 pub fn fe_sub(mut a: &Fe25519, mut b: &Fe25519) -> Fe25519
 {
-    let mut neg_b = [0; 4];
+    let mut neg_b = [(0 as u64); 4];
     let mut borrow: u64 = 0;
     for i in 0.. 4{
     let (r1, br1) = P_LIMBS[i].overflowing_sub(b.0[i]);
@@ -9358,7 +10428,7 @@ pub fn fe_neg(mut a: &Fe25519) -> Fe25519
     if a.is_zero(){
     Fe25519::ZERO
 } else {
-    let mut neg = [0; 4];
+    let mut neg = [(0 as u64); 4];
     let mut borrow: u64 = 0;
     for i in 0.. 4{
     let (r1, br1) = P_LIMBS[i].overflowing_sub(a.0[i]);
@@ -9389,8 +10459,8 @@ pub fn fe_pow(mut base: &Fe25519, mut exp: &[u64; 4]) -> Fe25519
     acc = fe_sq(&acc);
     if ((exp[limb_idx] >> bit) & 1) == 1{
     acc = fe_mul(&acc, base);
-}
-}
+};
+};
 };
     acc
 }
@@ -9422,9 +10492,9 @@ pub fn is_square(mut w: &Fe25519) -> bool
 
 pub fn fe_from_bytes_le(mut b: &[u8; 32]) -> Fe25519
 {
-    let mut limbs = [0; 4];
+    let mut limbs = [(0 as u64); 4];
     for i in 0.. 4{
-    let mut chunk = [0; 8];
+    let mut chunk = [(0 as u8); 8];
     chunk.copy_from_slice(&b[(i * 8)..((i * 8) + 8)]);
     limbs[i] = u64::from_le_bytes(chunk);
 };
@@ -9441,8 +10511,8 @@ pub fn fe_invert(mut a: &Fe25519) -> Fe25519
     let b = (exp_limbs[limb_idx] >> bit) & 1;
     if b == 1{
     acc = fe_mul(&acc, a);
-}
-}
+};
+};
 };
     acc
 }
@@ -9493,8 +10563,8 @@ pub fn ed_scalar_mul(mut p: &EdPoint, mut k: &[u8; 32]) -> EdPoint
     let b = (k[byte_idx] >> bit) & 1;
     if b == 1{
     acc = ed_add(&acc, p);
-}
-}
+};
+};
 };
     acc
 }
@@ -9506,13 +10576,13 @@ pub fn ed_mul_cofactor(mut p: &EdPoint) -> EdPoint
 
 pub fn hash_to_curve(mut domain: &[u8], mut index: u64) -> EdPoint
 {
-    for ctr in 0.. 0{
+    for ctr in 0 as u64.. 0{
     let mut h = Sha3_256::new();
     h.update(domain);
     h.update(index.to_le_bytes());
     h.update(ctr.to_le_bytes());
     let out = h.finalize().to_vec();
-    let mut xb = [0; 32];
+    let mut xb = [(0 as u8); 32];
     xb.copy_from_slice(&out);
     let sign = (xb[31] >> 7) & 1;
     xb[31] &= 127;
@@ -9538,5 +10608,117 @@ pub fn hash_to_curve(mut domain: &[u8], mut index: u64) -> EdPoint
     return p8;
 };
     unreachable!()
+}
+
+pub fn bytes_to_limbs(mut b: &[u8; 32]) -> [u64; 4]
+{
+    let mut out = [(0 as u64); 4];
+    for i in 0.. 4{
+    let mut le = [(0 as u8); 8];
+    le.copy_from_slice(&b[(i * 8)..((i * 8) + 8)]);
+    out[i] = u64::from_le_bytes(le);
+};
+    out
+}
+
+pub fn limbs_to_bytes(mut l: &[u64; 4]) -> [u8; 32]
+{
+    let mut out = [(0 as u8); 32];
+    for i in 0.. 4{
+    out[(i * 8)..((i * 8) + 8)].copy_from_slice(&l[i].to_le_bytes());
+};
+    out
+}
+
+pub fn cmp4(mut a: &[u64; 4], mut b: &[u64; 4]) -> Ordering
+{
+    for i in 0..4.rev(){
+    if a[i] != b[i]{
+    return a[i].cmp(&b[i]);
+};
+};
+    core::cmp::Ordering::Equal
+}
+
+pub fn sub4(mut a: &[u64; 4], mut b: &[u64; 4]) -> [u64; 4]
+{
+    let mut out = [(0 as u64); 4];
+    let mut borrow = 0 as u128;
+    for i in 0.. 4{
+    let d = ((((1 as u128) << 64) + (a[i] as u128)) - (b[i] as u128)) - borrow;
+    out[i] = (d as u64);
+    borrow = (1 - (d >> 64));
+};
+    out
+}
+
+pub fn add4(mut a: &[u64; 4], mut b: &[u64; 4]) -> [u64; 4]
+{
+    let mut out = [(0 as u64); 4];
+    let mut carry = 0 as u128;
+    for i in 0.. 4{
+    let s = (a[i] as u128) + (b[i] as u128) + carry;
+    out[i] = (s as u64);
+    carry = (s >> 64);
+};
+    out
+}
+
+pub fn add_mod_l(mut a: &[u64; 4], mut b: &[u64; 4]) -> [u64; 4]
+{
+    let mut s = add4(a, b);
+    if cmp4(&s, &L_LIMBS) != core::cmp::Ordering::Less{
+    s = sub4(&s, &L_LIMBS);
+};
+    s
+}
+
+pub fn sub_mod_l(mut a: &[u64; 4], mut b: &[u64; 4]) -> [u64; 4]
+{
+    if cmp4(a, b) != core::cmp::Ordering::Less{
+    sub4(a, b)
+} else {
+    sub4(&add4(a, &L_LIMBS), b)
+}
+}
+
+pub fn mul4(mut a: &[u64; 4], mut b: &[u64; 4]) -> [u64; 8]
+{
+    let mut out = [(0 as u64); 8];
+    for i in 0.. 4{
+    let mut carry = 0 as u128;
+    for j in 0.. 4{
+    let idx = i + j;
+    let cur = (out[idx] as u128) + ((a[i] as u128) * (b[j] as u128)) + carry;
+    out[idx] = (cur as u64);
+    carry = (cur >> 64);
+};
+    let mut k = i + 4;
+    while ((carry > 0) && (k < 8)){
+    let cur = (out[k] as u128) + carry;
+    out[k] = (cur as u64);
+    carry = (cur >> 64);
+    k += 1;
+};
+};
+    out
+}
+
+pub fn reduce512(mut x: &[u64; 8]) -> [u64; 4]
+{
+    let mut r = [(0 as u64); 4];
+    for bit in 0..512.rev(){
+    let xbit = (x[bit / 64] >> (bit % 64)) & 1;
+    let mut carry = xbit;
+    for limb in r.iter_mut(){
+    let new_carry = *limb >> 63;
+    *limb = ((*limb << 1) | carry);
+    carry = new_carry;
+};
+    if cmp4(&r, &L_LIMBS) != core::cmp::Ordering::Less{
+    r = sub4(&r, &L_LIMBS);
+};
+};
+    r
 }
 

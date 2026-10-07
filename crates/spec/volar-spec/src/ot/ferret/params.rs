@@ -23,23 +23,21 @@ pub struct FerretParams {
 impl FerretParams {
     /// Padded SPCOT block length for the largest regular-noise interval.
     ///
-    /// The `t` intervals partition `[0,n)` at `floor(i*n/t)`. When `n/t` is
-    /// not a power of two (including the official Ferret-Reg setup set), each
-    /// interval is padded to the next power of two and unused leaves are
-    /// discarded by regular MPCOT.
+    /// The `t` intervals partition `[0,n)` at `floor(i*n/t)`. Each interval
+    /// is padded to the next power of two, and unused leaves are discarded by
+    /// regular MPCOT. This supports uneven intervals such as Ferret-Reg setup.
     pub fn splen(&self) -> usize {
-        debug_assert!(self.t > 0 && self.n >= self.t);
-        let max_interval_len = self.n.div_ceil(self.t);
-        max_interval_len
+        assert!(self.t > 0, "regular MPCOT requires t > 0");
+        assert!(self.n >= self.t, "regular MPCOT requires n >= t");
+        self.n
+            .div_ceil(self.t)
             .checked_next_power_of_two()
             .expect("Ferret SPCOT interval length overflow")
     }
 
-    /// `h = ceil(log2(ceil(n/t)))`.
+    /// `h = log2(splen)`, where `splen` is the padded interval length.
     pub fn log_splen(&self) -> usize {
-        let s = self.splen();
-        debug_assert!(s.is_power_of_two());
-        s.trailing_zeros() as usize
+        self.splen().trailing_zeros() as usize
     }
 
     /// Bounds of a regular-noise interval, partitioning `[0,n)` at
@@ -59,12 +57,26 @@ impl FerretParams {
     /// `h = ceil(log2(ceil(n/t)))`, plus `κ` if the SPCOT consistency check
     /// is enabled (Fig. 6 steps 6–9).
     pub fn seed_cot_count(&self, malicious: bool) -> usize {
-        let body = self.k + self.t * self.log_splen();
-        if malicious {
-            body + super::KAPPA_BITS
+        assert!(
+            self.k >= super::lpn::LOCALITY,
+            "10-local Ferret LPN dimension k must be at least 10"
+        );
+        let body = self
+            .t
+            .checked_mul(self.log_splen())
+            .and_then(|noise| self.k.checked_add(noise))
+            .expect("Ferret seed-COT count must fit usize");
+        let seed_count = if malicious {
+            body.checked_add(super::KAPPA_BITS)
+                .expect("malicious Ferret seed-COT count must fit usize")
         } else {
             body
-        }
+        };
+        assert!(
+            self.n > seed_count,
+            "Ferret iteration must emit at least one COT beyond its retained seed"
+        );
+        seed_count
     }
 
     /// COTs emitted per iteration after keeping the next seed (`n − M`).
@@ -139,5 +151,16 @@ mod tests {
         assert_eq!(FERRET_REG_MAIN.seed_cot_count(true), 607_035);
         assert_eq!(FERRET_REG_TOY.seed_cot_count(false), 32 + 4 * 6);
         assert_eq!(FERRET_REG_TOY.output_cot_count(false), 256 - 56);
+        assert_eq!(FERRET_REG_SETUP.n, 609_728);
+        assert_eq!(FERRET_REG_SETUP.k, 36_288);
+        assert_eq!(FERRET_REG_SETUP.t, 1_269);
+        assert_ne!(FERRET_REG_SETUP.n % FERRET_REG_SETUP.t, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "10-local Ferret LPN dimension k must be at least 10")]
+    fn ferret_rejects_too_small_lpn_dimension() {
+        let params = FerretParams { n: 256, k: 9, t: 4 };
+        let _ = params.seed_cot_count(false);
     }
 }

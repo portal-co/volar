@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use volar_compiler::{parse_sources, IrFunction, IrModule, SourceInput};
+use volar_compiler::{IrFunction, IrModule, SourceInput, parse_sources};
 use volar_compiler_passes::{print_module_rust_dyn, print_module_typescript};
 
 fn main() {
@@ -176,12 +176,23 @@ fn collect_rs_files(dir: &Path) -> Vec<(String, String)> {
     sources
 }
 
+const CODEGEN_EXCLUDE_MARKER: &str = "//! @volar-codegen-exclude:";
+
+fn is_codegen_excluded(source: &str) -> bool {
+    source
+        .lines()
+        .any(|line| line.trim_start().starts_with(CODEGEN_EXCLUDE_MARKER))
+}
+
 fn collect_rs_files_inner(dir: &Path, out: &mut Vec<(String, String)>) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() && path.extension().map_or(false, |e| e == "rs") {
                 if let Ok(content) = fs::read_to_string(&path) {
+                    if is_codegen_excluded(&content) {
+                        continue;
+                    }
                     let name = path.file_stem().unwrap().to_string_lossy().to_string();
                     out.push((content, name));
                 }
@@ -189,5 +200,21 @@ fn collect_rs_files_inner(dir: &Path, out: &mut Vec<(String, String)>) {
                 collect_rs_files_inner(&path, out);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_codegen_excluded;
+
+    #[test]
+    fn codegen_exclusion_requires_an_explicit_module_doc_marker() {
+        assert!(is_codegen_excluded(
+            "//! Module documentation.\n//! @volar-codegen-exclude: target-specific implementation."
+        ));
+        assert!(!is_codegen_excluded("//! Ordinary generated spec module."));
+        assert!(!is_codegen_excluded(
+            "// @volar-codegen-exclude: not a module-level documentation marker"
+        ));
     }
 }

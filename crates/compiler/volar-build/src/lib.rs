@@ -45,6 +45,9 @@
 //!     .with_cpu("cortex-a55");
 //! ```
 
+#[cfg(feature = "provider-llvm-toolchain")]
+pub mod fhe_provider;
+
 #[cfg(any(feature = "weave-rust", feature = "pipeline"))]
 mod circuit;
 #[cfg(any(feature = "weave-rust", feature = "pipeline"))]
@@ -59,7 +62,7 @@ pub use volar_weaver::StorageSizes;
 #[cfg(feature = "weave-chunked")]
 pub use weave::emit_woven_rust_chunked;
 #[cfg(feature = "weave-rust")]
-pub use weave::{emit_woven_rust, serialize_boolar_circuit, serialize_volar_circuit, Weaver};
+pub use weave::{Weaver, emit_woven_rust, serialize_boolar_circuit, serialize_volar_circuit};
 #[cfg(feature = "weave-ts")]
 pub use weave::{emit_woven_typescript, emit_woven_typescript_chunked};
 
@@ -67,30 +70,30 @@ pub use weave::{emit_woven_typescript, emit_woven_typescript_chunked};
 mod pipeline;
 #[cfg(feature = "pipeline")]
 pub use pipeline::{
-    BoolarCircuitStage, BoolarStage, FoldIr, FromReversible, FuseBoolar, LowerToBoolar,
-    LowerToLir, Movfuscate, Pipeline, PipelinePass, RCircuitStage, StorageToMuxBoolar,
-    StorageToMuxIr, ToReversible, UnrollIrEverything, VaffleStage,
+    BoolarCircuitStage, BoolarStage, FoldIr, FromReversible, FuseBoolar, LowerToBoolar, LowerToLir,
+    Movfuscate, Pipeline, PipelinePass, RCircuitStage, StorageToMuxBoolar, StorageToMuxIr,
+    ToReversible, UnrollIrEverything, VaffleStage,
 };
-#[cfg(feature = "pipeline")]
-pub use volar_ir_build::{LirStage, PipelineStage, VolarIrStage, volar_ir_passes};
-#[cfg(feature = "pipeline-vaffle")]
-pub use volar_ir_build::{InlineVaffleEverything, LowerToVolarIr};
-#[cfg(feature = "pipeline-vaffle")]
-pub use volar_ir_build::serialize_vaffle_module;
 #[cfg(feature = "pipeline-llvm")]
 pub use volar_ir_build::CommandBuild;
+#[cfg(feature = "pipeline-vaffle")]
+pub use volar_ir_build::serialize_vaffle_module;
+#[cfg(feature = "pipeline-vaffle")]
+pub use volar_ir_build::{InlineVaffleEverything, LowerToVolarIr};
+#[cfg(feature = "pipeline")]
+pub use volar_ir_build::{LirStage, PipelineStage, VolarIrStage, volar_ir_passes};
 #[cfg(feature = "pipeline-wasm")]
 pub use volar_ir_build::{WaffleImportConfig, WaffleImportKind};
 
 use std::path::Path;
 
 use inkwell::{
+    OptimizationLevel,
     context::Context,
     passes::PassBuilderOptions,
     targets::{
         CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
     },
-    OptimizationLevel,
 };
 use volar_lir_saved::SavedLirModule;
 use volar_llvm_backend::LlvmBackend;

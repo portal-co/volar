@@ -37,7 +37,9 @@ pub struct BinfheRlweCiphertext<const N: usize> {
 }
 
 /// Generate a binary RLWE secret key.
-pub fn binfhe_gen_rlwe_secret_key<const N: usize, R: SpecRng>(rng: &mut R) -> BinfheRlweSecretKey<N> {
+pub fn binfhe_gen_rlwe_secret_key<const N: usize, R: SpecRng>(
+    rng: &mut R,
+) -> BinfheRlweSecretKey<N> {
     let mut key = [0u32; N];
     for k in key.iter_mut() {
         *k = (rng.next_u32() & 1) as u32;
@@ -97,8 +99,7 @@ pub fn binfhe_rlwe_encrypt_poly<const N: usize, const LOG: u32, const ETA: u32, 
     let mut b = binfhe_poly_mul_neg::<N, LOG>(&a, &sk.key);
     for i in 0..N {
         b[i] = torus::reduce::<LOG>(
-            b[i]
-                .wrapping_add(sampler::sample_error::<LOG, ETA, R>(rng))
+            b[i].wrapping_add(sampler::sample_error::<LOG, ETA, R>(rng))
                 .wrapping_add(msg[i]),
         );
     }
@@ -183,7 +184,9 @@ pub fn binfhe_rlwe_rotate<const N: usize, const LOG: u32>(
 }
 
 /// Trivial encryption of a polynomial (`a = 0`); the phase is the message.
-pub fn binfhe_rlwe_trivial<const N: usize, const LOG: u32>(msg: &[u32; N]) -> BinfheRlweCiphertext<N> {
+pub fn binfhe_rlwe_trivial<const N: usize, const LOG: u32>(
+    msg: &[u32; N],
+) -> BinfheRlweCiphertext<N> {
     BinfheRlweCiphertext {
         a: [0u32; N],
         b: *msg,
@@ -223,7 +226,11 @@ mod tests {
         for (i, &c) in p.iter().enumerate() {
             let dest = i + base;
             let sign = (dest / N) % 2 == 1;
-            let v = if sign { 256u32.wrapping_sub(c) & 0xFF } else { c };
+            let v = if sign {
+                256u32.wrapping_sub(c) & 0xFF
+            } else {
+                c
+            };
             let slot = dest % N;
             out[slot] = (out[slot] + v) & 0xFF;
         }
@@ -252,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn rlwe_encrypt_decrypt_roundtrip() {
+    fn rbinfhe_lwe_encrypt_decrypt_roundtrip() {
         let mut rng = TestRng::new(0xB0B);
         let sk = binfhe_gen_rlwe_secret_key::<{ toy::BIG_N }, _>(&mut rng);
         let msg: [u32; toy::BIG_N] = core::array::from_fn(|i| (i as u32 * 7 + 3) & 0xFF);

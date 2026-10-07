@@ -92,6 +92,29 @@ pub struct BavcOpening<const COM_BYTES: usize> {
     pub nodes: Vec<(usize, [u8; LAMBDA_BYTES])>,
 }
 
+fn collect_open_nodes_walk(
+    node: usize,
+    hidden: &[bool],
+    tree: &[[u8; LAMBDA_BYTES]],
+    leaf_count: usize,
+    out: &mut Vec<(usize, [u8; LAMBDA_BYTES])>,
+) {
+    // If this node is fully opened, emit its seed and stop.
+    if !hidden[node] {
+        out.push((node, tree[node]));
+        return;
+    }
+    // Else recurse into children (we're hidden = some descendant
+    // is unrevealed). Don't descend below leaves.
+    if node >= leaf_count - 1 {
+        // Hidden leaf — nothing to emit; verifier gets its
+        // commitment via `hidden_commits`.
+        return;
+    }
+    collect_open_nodes_walk(2 * node + 1, hidden, tree, leaf_count, out);
+    collect_open_nodes_walk(2 * node + 2, hidden, tree, leaf_count, out);
+}
+
 /// Stateless BAVC over a leaf-commit choice `L`.
 ///
 /// Typical use: `<BavcCommitment<EmLeafCommit, 32>>::commit(...)`.
@@ -302,32 +325,11 @@ where
         }
 
         // Collect the highest non-hidden nodes — i.e. nodes whose entire
-        // subtree is opened. Walk top-down; for each internal node, if
-        // it is hidden we recurse, otherwise we emit its seed and stop.
+        // subtree is opened. Walk top-down; for each internal node, if it is
+        // hidden we recurse, otherwise we emit its seed and stop. Keeping this
+        // helper at module scope also makes it visible to the TS spec backend.
         let mut out: Vec<(usize, [u8; LAMBDA_BYTES])> = Vec::new();
-        fn walk(
-            node: usize,
-            hidden: &[bool],
-            tree: &[[u8; LAMBDA_BYTES]],
-            leaf_count: usize,
-            out: &mut Vec<(usize, [u8; LAMBDA_BYTES])>,
-        ) {
-            // If this node is fully opened, emit its seed and stop.
-            if !hidden[node] {
-                out.push((node, tree[node]));
-                return;
-            }
-            // Else recurse into children (we're hidden = some descendant
-            // is unrevealed). Don't descend below leaves.
-            if node >= leaf_count - 1 {
-                // Hidden leaf — nothing to emit; verifier gets its
-                // commitment via `hidden_commits`.
-                return;
-            }
-            walk(2 * node + 1, hidden, tree, leaf_count, out);
-            walk(2 * node + 2, hidden, tree, leaf_count, out);
-        }
-        walk(0, &hidden, tree, leaf_count, &mut out);
+        collect_open_nodes_walk(0, &hidden, tree, leaf_count, &mut out);
         out
     }
 

@@ -72,11 +72,11 @@ pub fn binfhe_blind_rotate<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SpecRng;
     use crate::binfhe::keys;
+    use crate::binfhe::lwe::{BinfheLweSecretKey, binfhe_gen_lwe_secret_key};
     use crate::binfhe::params::toy;
     use crate::binfhe::rlwe::BinfheRlweSecretKey;
-    use crate::binfhe::lwe::{BinfheLweSecretKey, binfhe_gen_lwe_secret_key};
-    use crate::SpecRng;
 
     struct TestRng(u64);
     impl TestRng {
@@ -97,7 +97,10 @@ mod tests {
 
     /// Independent clear decryption: per-coefficient phase via a directly
     /// written negacyclic convolution (shares no code with rlwe.rs).
-    fn clear_phase(ct: &BinfheRlweCiphertext<{ toy::BIG_N }>, key: &[u32; toy::BIG_N]) -> [u32; toy::BIG_N] {
+    fn clear_phase(
+        ct: &BinfheRlweCiphertext<{ toy::BIG_N }>,
+        key: &[u32; toy::BIG_N],
+    ) -> [u32; toy::BIG_N] {
         let mut phase = [0u32; toy::BIG_N];
         for i in 0..toy::BIG_N {
             let mut product = 0u32;
@@ -123,7 +126,11 @@ mod tests {
         for (i, &c) in poly.iter().enumerate() {
             let dest = i + base;
             let sign = (dest / n) % 2 == 1;
-            let v = if sign { 256u32.wrapping_sub(c) & 0xFF } else { c };
+            let v = if sign {
+                256u32.wrapping_sub(c) & 0xFF
+            } else {
+                c
+            };
             let slot = dest % n;
             out[slot] = (out[slot] + v) & 0xFF;
         }
@@ -151,8 +158,7 @@ mod tests {
         >(&lwe_sk, &rlwe_sk, &mut rng);
 
         // Arbitrary test polynomial content.
-        let test_poly: [u32; toy::BIG_N] =
-            core::array::from_fn(|i| (i as u32 * 13 + 5) & 0xFF);
+        let test_poly: [u32; toy::BIG_N] = core::array::from_fn(|i| (i as u32 * 13 + 5) & 0xFF);
 
         // Hand-crafted ciphertexts on the exact exponent grid (every value
         // of Z_128 is an exact exponent because q = 2N).

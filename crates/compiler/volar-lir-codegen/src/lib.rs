@@ -25,16 +25,16 @@ use volar_compiler::ir::{
 use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 
 use mono::{
-    mono_len, mono_type, normalized_args, type_args_to_len, typenum_usize, FunctionInstanceKey,
-    MonoEnv, MonoPlan,
+    FunctionInstanceKey, MonoEnv, MonoPlan, mono_len, mono_type, normalized_args, type_args_to_len,
+    typenum_usize,
 };
 use structs::{
-    flatten_count, flatten_scalar_types, primitive_to_lir, struct_field_scalar_offset,
-    struct_field_scalar_width, EnumRegistry, StructRegistry,
+    EnumRegistry, StructRegistry, flatten_count, flatten_scalar_types, primitive_to_lir,
+    struct_field_scalar_offset, struct_field_scalar_width,
 };
 use volar_compiler::ir::IrEnum;
 
-pub use mono::{plan_flat_module, MonoError};
+pub use mono::{MonoError, plan_flat_module};
 
 // Unwrap a single-element Vec into a scalar, panicking if the vec has != 1 element.
 fn into_scalar<V: Clone>(vals: Vec<V>, context: &str) -> V {
@@ -303,7 +303,6 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 ..
             } => {
                 if let (Some(plan), Some(caller)) = (self.mono_plan, self.current_instance) {
-                    let generic_key = normalized_args(type_args, self.mono);
                     let arg_types_key: String = std::iter::once(receiver.as_ref())
                         .chain(args.iter())
                         .map(|a| {
@@ -317,10 +316,8 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                         })
                         .collect::<Vec<_>>()
                         .join("|");
-                    // Keys match the planner's canonical arg-types string
-                    // (no generic prefix; see mono.rs calls insert).
-                    let args_key = arg_types_key;
-                    if let Some(callee) = plan.local_call_deduce(caller, name, &args_key) {
+                    let call_key = crate::mono::call_site_key(type_args, self.mono, &arg_types_key);
+                    if let Some(callee) = plan.local_call_deduce(caller, name, &call_key) {
                         return self
                             .ir_func_ret_types
                             .get(plan.emitted_name(callee))
@@ -331,9 +328,19 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             }
 
             IrExprKind::Unary {
-                op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
+                op: SpecUnaryOp::Ref,
                 expr: inner,
-            } => self.infer_type(inner),
+            } => self.infer_type(inner).map(|elem| IrType::Reference {
+                mutable: false,
+                elem: Box::new(elem),
+            }),
+            IrExprKind::Unary {
+                op: SpecUnaryOp::RefMut,
+                expr: inner,
+            } => self.infer_type(inner).map(|elem| IrType::Reference {
+                mutable: true,
+                elem: Box::new(elem),
+            }),
 
             // Operator overload on a struct with a declared `Mul` impl
             // (e.g. `let q = vope * delta;`): the result is the impl method's
@@ -411,7 +418,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             // Call: resolve the planned local specialization before falling back
             // to an unmangled source-name lookup. This preserves the concrete
             // return layout for `let value = helper::<N>(...)`.
-            IrExprKind::Call { func, .. } => {
+            IrExprKind::Call { func, args } => {
                 let (name, type_args): (String, &[IrType]) = match &func.kind {
                     IrExprKind::Path {
                         segments,
@@ -427,12 +434,19 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                         if segments.last().map(String::as_str) == Some("default")
                 );
                 if let (Some(plan), Some(caller)) = (self.mono_plan, self.current_instance) {
-                    // Mirror the planning-side key: canonical argument types
-                    // with no generic prefix (see mono.rs calls.insert). Args
-                    // are not available here, so the key is empty and deduce
-                    // falls back to the unique (caller, callee) entry.
-                    let args = String::new();
-                    if let Some(callee) = plan.local_call_deduce(caller, &name, &args) {
+                    // Mirror the planning/lowering key. Explicit turbofish
+                    // arguments also distinguish return-only generic instances.
+                    let arg_types_key = args
+                        .iter()
+                        .map(|arg| {
+                            self.infer_type(arg)
+                                .map(|ty| crate::mono::canonical_type(&mono_type(&ty, self.mono)))
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    let call_key = crate::mono::call_site_key(type_args, self.mono, &arg_types_key);
+                    if let Some(callee) = plan.local_call_deduce(caller, &name, &call_key) {
                         return self
                             .ir_func_ret_types
                             .get(plan.emitted_name(callee))
@@ -468,6 +482,14 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 self.ir_func_ret_types.get(&name).cloned()
             }
 
+            // Array generation retains its element type and length in IR;
+            // expose that shape to subsequent indexed reads and bindings.
+            IrExprKind::ArrayGenerate { elem_ty, len, .. } => Some(IrType::Array {
+                kind: ArrayKind::FixedArray,
+                elem: Box::new(mono_type(elem_ty.as_deref()?, &self.mono)),
+                len: mono_len(len, &self.mono),
+            }),
+
             // Default value: the type is carried by the expression itself
             // (e.g. `Array::<_, K2::Output>::default()`).
             IrExprKind::DefaultValue { ty } => ty.as_deref().cloned(),
@@ -483,6 +505,10 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 .as_deref()
                 .and_then(|e| self.infer_type(e))
                 .or_else(|| else_branch.as_deref().and_then(|e| self.infer_type(e))),
+
+            // Explicit casts, including parser-preserved suffixed integer
+            // literals, carry their result type directly in the IR.
+            IrExprKind::Cast { ty, .. } => Some(mono_type(ty, self.mono)),
 
             // Literal: infer primitive type from the literal variant.
             IrExprKind::Lit(lit) => match lit {
@@ -1193,29 +1219,11 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     let mut func_sigs = BTreeMap::new();
     let mut ir_func_ret_types = BTreeMap::new();
     for (key, env) in &plan.instances {
-        let func = plan.materialized.get(key).unwrap_or_else(|| {
-            module
-                .functions
-                .iter()
-                .find(|func| func.name == key.source_name)
-                .unwrap_or_else(|| {
-                    // Impl methods live outside `module.functions`.
-                    module
-                        .impls
-                        .iter()
-                        .find_map(|ir_impl| {
-                            ir_impl.items.iter().find_map(|item| match item {
-                                volar_compiler::ir::IrImplItem::Method(m)
-                                    if m.name == key.source_name =>
-                                {
-                                    Some(m)
-                                }
-                                _ => None,
-                            })
-                        })
-                        .expect("planned source function exists")
-                })
-        });
+        let func = plan
+            .materialized
+            .get(key)
+            .or_else(|| mono::find_source_function(module, &key.source_name))
+            .expect("planned source function exists");
         let emitted = plan.emitted_name(key).to_owned();
         let memory_capable = target.stack_alloc_ext().is_some();
         func_sigs.insert(
@@ -1240,13 +1248,11 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     for (key, env) in &plan.instances {
         // Materialized method instances lower from their derived definition
         // (receiver promoted to a typed `self` param).
-        let func = plan.materialized.get(key).unwrap_or_else(|| {
-            module
-                .functions
-                .iter()
-                .find(|func| func.name == key.source_name)
-                .expect("planned source function exists")
-        });
+        let func = plan
+            .materialized
+            .get(key)
+            .or_else(|| mono::find_source_function(module, &key.source_name))
+            .expect("planned source function exists");
         lower_function_instance(
             func,
             plan.emitted_name(key),
@@ -1657,15 +1663,6 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                 // For tuple patterns, split by element widths derived from the type.
                 if let IrPattern::Tuple(sub_pats) = pattern {
                     let tuple_ty = ty.clone().or_else(|| ctx.infer_type(init_expr));
-                    if std::env::var("VOLAR_LIR_DEBUG").is_ok() && tuple_ty.is_none() {
-                        eprintln!(
-                            "[tuple-let] untyped tuple-pattern let ({} sub-pats, {} vals), init_disc={:?} caller={:?}",
-                            sub_pats.len(),
-                            vals.len(),
-                            std::mem::discriminant(&init_expr.kind),
-                            ctx.current_instance.map(|k| k.source_name.as_str())
-                        );
-                    }
                     bind_tuple_pattern(sub_pats, vals, tuple_ty.as_ref(), ctx);
                     return;
                 }
@@ -4551,7 +4548,7 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     }
     let base_ir_ty = ctx.infer_type(base).unwrap_or_else(|| {
         panic!(
-            "Index: could not infer base type, base {}, caller={:?}",
+            "Index: could not infer base type, base {}, caller={:?}, typed vars={:?}",
             match &base.kind {
                 IrExprKind::Var(n) => format!("var '{n}'"),
                 IrExprKind::Field {
@@ -4566,6 +4563,7 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
                 other => format!("kind {:?}", std::mem::discriminant(other)),
             },
             ctx.current_instance.map(|k| k.source_name.clone()),
+            ctx.env_types.keys().collect::<Vec<_>>(),
         )
     });
 
@@ -4642,6 +4640,25 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     }
 
     let arr_vals = lower_expr(base, ctx); // n * elem_width scalars
+    let expected_scalars = n
+        .checked_mul(elem_width)
+        .expect("LIR index: array scalar count overflow");
+    let base_desc = match &base.kind {
+        IrExprKind::Var(name) => format!("variable '{name}'"),
+        IrExprKind::Field { field, .. } => format!("field .{field}"),
+        IrExprKind::Index { .. } => "indexed expression".to_owned(),
+        other => format!("expression kind {:?}", std::mem::discriminant(other)),
+    };
+    let caller = ctx
+        .current_instance
+        .map(|key| key.source_name.as_str())
+        .unwrap_or("<unknown>");
+    assert_eq!(
+        arr_vals.len(),
+        expected_scalars,
+        "LIR index: {base_desc} in '{caller}' flattened to {} scalars, expected {expected_scalars} for {n} elements of width {elem_width}",
+        arr_vals.len()
+    );
 
     // Constant index: select the element directly instead of building an
     // n-way select mux. The weave's per-gate hat/r_and/bundle accesses are
@@ -4654,26 +4671,15 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
         _ => None,
     };
     if let Some(k) = const_idx {
+        assert!(
+            k < n,
+            "LIR index: constant index {k} is out of bounds for array length {n}"
+        );
         let base = k * elem_width;
         return arr_vals.into_iter().skip(base).take(elem_width).collect();
     }
 
     let idx_val = into_scalar(lower_expr(index, ctx), "array index");
-    if std::env::var("VOLAR_LIR_DEBUG").is_ok() && arr_vals.len() < n * elem_width {
-        let base_desc = match &base.kind {
-            IrExprKind::Var(v) => format!("Var({v})"),
-            IrExprKind::Field { field, .. } => format!("Field .{field}"),
-            IrExprKind::Index { .. } => "Index".to_string(),
-            IrExprKind::Block(_) => "Block".to_string(),
-            other => format!("disc {:?}", std::mem::discriminant(other)),
-        };
-        eprintln!(
-            "[index-short] base={base_desc} n={n} elem_width={elem_width} vals={} ty={}",
-            arr_vals.len(),
-            crate::mono::canonical_type(&base_ir_ty)
-        );
-    }
-
     // Build a select mux tree for each scalar position within the element.
     // result[j] = select chain over arr_vals[0*ew+j], arr_vals[1*ew+j], ...
     (0..elem_width)
@@ -4704,10 +4710,18 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
         // Assignment to an indexed location: base[index] = rhs
         IrExprKind::Index { base, index } => {
             let base_ir_ty = ctx.infer_type(base).unwrap_or_else(|| {
-                panic!(
-                    "Assign: could not infer indexed base type, base kind {:?}",
-                    std::mem::discriminant(&base.kind)
-                )
+                let detail = match &base.kind {
+                    IrExprKind::Var(name) => format!(
+                        "variable '{name}', typed variables {:?}",
+                        ctx.env_types.keys().collect::<Vec<_>>()
+                    ),
+                    other => format!("expression kind {:?}", std::mem::discriminant(other)),
+                };
+                let caller = ctx
+                    .current_instance
+                    .map(|key| key.source_name.as_str())
+                    .unwrap_or("<unknown>");
+                panic!("Assign: could not infer indexed base type in '{caller}' ({detail})")
             });
 
             if is_slice_ref(&base_ir_ty) {
@@ -5242,7 +5256,6 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
     // monomorphization plan exactly like a free-function call, with the
     // receiver as the first argument.
     if let (Some(plan), Some(caller)) = (ctx.mono_plan, ctx.current_instance) {
-        let generic_key = crate::mono::normalized_args(type_args, ctx.mono);
         let arg_types_key: String = std::iter::once(receiver)
             .chain(args.iter())
             .map(|a| {
@@ -5252,10 +5265,8 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
             })
             .collect::<Vec<_>>()
             .join("|");
-        // Keys match the planner's canonical arg-types string (no generic
-        // prefix; see mono.rs calls insert).
-        let args_key = arg_types_key;
-        if let Some(callee) = plan.local_call_deduce(caller, method_name, &args_key) {
+        let call_key = crate::mono::call_site_key(type_args, ctx.mono, &arg_types_key);
+        if let Some(callee) = plan.local_call_deduce(caller, method_name, &call_key) {
             let emitted_name = plan.emitted_name(callee);
             let sig = ctx.func_sigs.get(emitted_name);
             let ret_ty = sig.and_then(|sig| sig.return_type.clone());
@@ -5314,6 +5325,29 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     args: &[IrExpr<P>],
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
+    if let IrExprKind::Var(name) = &func.kind {
+        match ctx.env_types.get(name) {
+            Some(IrType::FnPtr { .. }) => {
+                panic!("LIR lower: indirect call through function pointer '{name}' is unsupported")
+            }
+            Some(IrType::Existential { bounds })
+                if bounds.iter().any(|bound| {
+                    matches!(&bound.trait_kind, volar_compiler::ir::TraitKind::Fn(_, _))
+                        || matches!(
+                            &bound.trait_kind,
+                            volar_compiler::ir::TraitKind::Custom(name)
+                                if matches!(name.as_str(), "Fn" | "FnMut" | "FnOnce")
+                        )
+                }) =>
+            {
+                panic!(
+                    "LIR lower: call through opaque Fn parameter '{name}' is unsupported; closure ABI is not implemented"
+                )
+            }
+            _ => {}
+        }
+    }
+
     // Handle Array::from_fn(|i| body) — convert on the fly to ArrayGenerate.
     if let IrExprKind::Path {
         segments,
@@ -5592,9 +5626,8 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     // The plan owns specialization resolution, so a source-name collision
     // cannot accidentally call a differently-instantiated local function.
     if let (Some(plan), Some(caller)) = (ctx.mono_plan, ctx.current_instance) {
-        // Keys match the planner's canonical arg-types string (no generic
-        // prefix; see mono.rs calls insert).
-        let args_key: String = args
+        // Match the planner's key, including explicit turbofish arguments.
+        let arg_types_key: String = args
             .iter()
             .map(|a| {
                 ctx.infer_type(a)
@@ -5603,7 +5636,8 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
             })
             .collect::<Vec<_>>()
             .join("|");
-        if let Some(callee) = plan.local_call_deduce(caller, &func_name, &args_key) {
+        let call_key = mono::call_site_key(type_args, ctx.mono, &arg_types_key);
+        if let Some(callee) = plan.local_call_deduce(caller, &func_name, &call_key) {
             let emitted_name = plan.emitted_name(callee);
             let sig = ctx.func_sigs.get(emitted_name);
             let ret_ty = sig.and_then(|sig| sig.return_type.clone());
@@ -5663,29 +5697,6 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         flat_args.extend(lower_expr(a, ctx));
     }
 
-    if std::env::var("VOLAR_LIR_DEBUG").is_ok() {
-        let argdesc = args
-            .iter()
-            .map(|a| match &a.kind {
-                IrExprKind::Var(v) => format!("Var({v})"),
-                IrExprKind::Block(_) => "Block".to_string(),
-                IrExprKind::Index { base, .. } => match &base.kind {
-                    IrExprKind::Var(v) => format!("Idx({v})"),
-                    _ => "Idx".to_string(),
-                },
-                other => format!("disc{:?}", std::mem::discriminant(other)),
-            })
-            .collect::<std::vec::Vec<_>>()
-            .join(",");
-        eprintln!(
-            "[call-fallback] fn={func_name} caller={:?} args=[{argdesc}] arg_tys={:?}",
-            ctx.current_instance.map(|k| k.source_name.as_str()),
-            arg_tys
-                .iter()
-                .map(|t| format!("{t:?}"))
-                .collect::<std::vec::Vec<_>>()
-        );
-    }
     ctx.target
         .call_extern(&func_name, &arg_tys, &flat_args, ret_ty)
 }

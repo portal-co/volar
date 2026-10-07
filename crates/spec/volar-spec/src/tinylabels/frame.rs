@@ -123,7 +123,7 @@ impl Frame {
             return Err(FrameError::UnsupportedFormat);
         }
         let stage = Stage::try_from(input[10])?;
-        let mut offset = 11;
+        let mut offset: usize = 11;
         let mut take_32 = || {
             let mut value = [0u8; 32];
             value.copy_from_slice(&input[offset..offset + 32]);

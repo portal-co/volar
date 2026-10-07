@@ -5,7 +5,9 @@
 > **Status**: historical generic-weaver design. The former TFHE integration
 > references removed legacy XOR surfaces and is not a Track-S compatibility
 > target. Treat it as Unpinned and Very unstable; any future Track-S weaving is
-> a separately evidenced experiment.
+> a separately evidenced experiment. Generic provider/toolchain work must follow
+> [`future-provider-integration-ledger.md`](future-provider-integration-ledger.md)
+> and does not use this trait as validation until a reviewed provider is selected.
 
 ---
 

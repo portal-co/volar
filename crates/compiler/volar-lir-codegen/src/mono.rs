@@ -265,12 +265,133 @@ impl MonoEnv {
 pub(crate) fn canonical_type(ty: &IrType) -> String {
     format!("{ty:?}")
 }
+
+fn resolve_explicit_type_arg(ty: &IrType, structs: &StructTable) -> IrType {
+    match ty {
+        IrType::TypeParam(name) if structs.contains_key(name) => IrType::Struct {
+            kind: StructKind::Custom(name.clone()),
+            type_args: Vec::new(),
+        },
+        IrType::Tuple(types) => IrType::Tuple(
+            types
+                .iter()
+                .map(|ty| resolve_explicit_type_arg(ty, structs))
+                .collect(),
+        ),
+        IrType::Array { kind, elem, len } => IrType::Array {
+            kind: *kind,
+            elem: Box::new(resolve_explicit_type_arg(elem, structs)),
+            len: len.clone(),
+        },
+        IrType::Struct { kind, type_args } => IrType::Struct {
+            kind: kind.clone(),
+            type_args: type_args
+                .iter()
+                .map(|ty| resolve_explicit_type_arg(ty, structs))
+                .collect(),
+        },
+        IrType::Reference { mutable, elem } => IrType::Reference {
+            mutable: *mutable,
+            elem: Box::new(resolve_explicit_type_arg(elem, structs)),
+        },
+        _ => ty.clone(),
+    }
+}
+
+/// Resolve a planned source key to its definition, including the qualified
+/// keys used for static associated methods (`Type_method`).
+pub(crate) fn find_source_function<'a, P: Clone>(
+    module: &'a IrModule<IrFunction<P>, P>,
+    source_name: &str,
+) -> Option<&'a IrFunction<P>> {
+    module
+        .functions
+        .iter()
+        .find(|function| function.name == source_name)
+        .or_else(|| {
+            module.impls.iter().find_map(|ir_impl| {
+                ir_impl.items.iter().find_map(|item| match item {
+                    IrImplItem::Method(method) if method.name == source_name => Some(method),
+                    _ => None,
+                })
+            })
+        })
+        .or_else(|| {
+            module.impls.iter().find_map(|ir_impl| {
+                let IrType::Struct { kind, .. } = &ir_impl.self_ty else {
+                    return None;
+                };
+                let prefix = format!("{}_", kind_name(kind));
+                let method_name = source_name.strip_prefix(&prefix)?;
+                ir_impl.items.iter().find_map(|item| match item {
+                    IrImplItem::Method(method)
+                        if method.receiver.is_none() && method.name == method_name =>
+                    {
+                        Some(method)
+                    }
+                    _ => None,
+                })
+            })
+        })
+}
+
+/// Return a static associated method with its enclosing impl generics attached.
+/// The parser keeps impl generics on `IrImpl`, but the method's explicit
+/// turbofish includes both impl and method arguments.
+fn static_associated_definition<P: Clone>(
+    module: &IrModule<IrFunction<P>, P>,
+    source_name: &str,
+    method: &IrFunction<P>,
+) -> Option<IrFunction<P>> {
+    module.impls.iter().find_map(|ir_impl| {
+        let IrType::Struct { kind, .. } = &ir_impl.self_ty else {
+            return None;
+        };
+        if source_name != format!("{}_{}", kind_name(kind), method.name) {
+            return None;
+        }
+        let owner_method = ir_impl.items.iter().any(|item| {
+            matches!(
+                item,
+                IrImplItem::Method(candidate)
+                    if candidate.receiver.is_none() && std::ptr::eq(candidate, method)
+            )
+        });
+        if !owner_method {
+            return None;
+        }
+        let mut derived = method.clone();
+        let mut generics = ir_impl.generics.clone();
+        generics.extend(derived.generics);
+        derived.generics = generics;
+        Some(derived)
+    })
+}
 pub(crate) fn normalized_args(type_args: &[IrType], env: &MonoEnv) -> String {
     type_args
         .iter()
         .map(|arg| canonical_type(&mono_type(arg, env)))
         .collect::<Vec<_>>()
         .join("|")
+}
+
+/// Build the monomorphization-plan lookup key shared by planning, inference,
+/// and lowering. Explicit turbofish arguments distinguish otherwise identical
+/// calls whose generic parameters affect only the return type; inferred calls
+/// continue to key by their canonical argument types.
+pub(crate) fn call_site_key(
+    explicit_type_args: &[IrType],
+    env: &MonoEnv,
+    arg_types_key: &str,
+) -> String {
+    if explicit_type_args.is_empty() {
+        arg_types_key.to_owned()
+    } else {
+        format!(
+            "type_args:{};arg_types:{arg_types_key}",
+            normalized_args(explicit_type_args, env)
+        )
+    }
 }
 fn instance_key(name: &str, env: &MonoEnv) -> FunctionInstanceKey {
     FunctionInstanceKey {
@@ -312,6 +433,17 @@ pub fn plan_flat_module<P: Clone>(
         for item in &ir_impl.items {
             if let volar_compiler::ir::IrImplItem::Method(method) = item {
                 definitions.entry(method.name.clone()).or_insert(method);
+                // Static associated calls are represented as paths such as
+                // `Type::new()` rather than MethodCall nodes. Register a
+                // qualified local key so the planner emits the body instead
+                // of treating it as an unresolved extern.
+                if method.receiver.is_none() {
+                    if let IrType::Struct { kind, .. } = &ir_impl.self_ty {
+                        definitions
+                            .entry(format!("{}_{}", kind_name(kind), method.name))
+                            .or_insert(method);
+                    }
+                }
             }
         }
     }
@@ -477,14 +609,24 @@ pub fn plan_flat_module<P: Clone>(
         for (callee, type_args, arg_tys, expected) in
             direct_calls(definition, &env, &definitions, &struct_table)
         {
+            let explicit_type_args = type_args.clone();
             let Some(callee_def) = definitions.get(&callee) else {
                 continue;
             };
             if callee_def.external_kind != volar_compiler::ir::ExternalKind::Normal {
                 continue;
             }
-            let mut derived_for_binding: Option<std::rc::Rc<IrFunction<P>>> = None;
-            let mut derived_held: Option<std::rc::Rc<IrFunction<P>>> = None;
+            let type_args: Vec<IrType> = type_args
+                .iter()
+                .map(|ty| resolve_explicit_type_arg(ty, &struct_table))
+                .collect();
+            // Static associated methods are keyed by `Type_method`. Their
+            // impl-level generics are not present on the parsed method, so
+            // restore them ahead of method generics to bind the full path
+            // turbofish (`Type::<...>::method::<...>`).
+            let mut derived_held =
+                static_associated_definition(module, &callee, callee_def).map(std::rc::Rc::new);
+            let source_def = derived_held.as_deref().unwrap_or(callee_def);
             // Impl method with a receiver: the parser records the receiver's
             // ref kind but not its type, so `params` excludes `self`. For
             // this call site, derive a definition with `self` promoted to an
@@ -492,7 +634,7 @@ pub fn plan_flat_module<P: Clone>(
             // that type participates in unification (binding impl-level
             // parameters like `K`) and becomes the instance's first C param.
             let (callee_def, arg_tys): (&IrFunction<P>, Vec<Option<IrType>>) =
-                match (&callee_def.receiver, callee_def.params.len()) {
+                match (&source_def.receiver, source_def.params.len()) {
                     (Some(receiver_kind), n) if arg_tys.len() == n + 1 => {
                         let Some(recv_ty) = arg_tys[0].clone() else {
                             continue;
@@ -525,7 +667,7 @@ pub fn plan_flat_module<P: Clone>(
                         if let Some(recv_k) = trailing_numeric_slot(&recv_ty) {
                             env.const_params.insert("#recv_k".to_owned(), recv_k);
                         }
-                        let mut derived = (*callee_def).clone();
+                        let mut derived = (*source_def).clone();
                         derived.receiver = None;
                         derived.params.insert(
                             0,
@@ -665,7 +807,7 @@ pub fn plan_flat_module<P: Clone>(
                         // 1:1 param/arg alignment lost by the parser.
                         (derived_held.as_deref().unwrap(), arg_tys)
                     }
-                    _ => (callee_def, arg_tys),
+                    _ => (source_def, arg_tys),
                 };
             let mut callee_env =
                 bind_call_args(callee_def, &type_args, &arg_tys, &env, expected.as_ref())?;
@@ -704,30 +846,6 @@ pub fn plan_flat_module<P: Clone>(
                 }
                 materialized.insert(instance_key(&callee, &callee_env), (**derived).clone());
             }
-            derived_for_binding = None;
-            let args = normalized_args(
-                &if type_args.is_empty() {
-                    // Prefer inferred concrete args for the call key when turbofish
-                    // was omitted.
-                    callee_def
-                        .generics
-                        .iter()
-                        .filter_map(|parameter| match parameter.kind {
-                            volar_compiler::ir::IrGenericParamKind::Const => callee_env
-                                .const_params
-                                .get(&parameter.name)
-                                .map(|&n| IrType::TypeParam(n.to_string())),
-                            volar_compiler::ir::IrGenericParamKind::Type => {
-                                callee_env.type_params.get(&parameter.name).cloned()
-                            }
-                            volar_compiler::ir::IrGenericParamKind::Lifetime => None,
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    type_args.clone()
-                },
-                &env,
-            );
             let callee_key = instance_key(&callee, &callee_env);
             // The plain generic-args key can collide when two sites differ
             // only in impl-level receiver parameters (e.g. `self: Vope<..,K>`
@@ -743,13 +861,11 @@ pub fn plan_flat_module<P: Clone>(
                 })
                 .collect::<Vec<_>>()
                 .join("|");
-            // Key on the canonical arg-types string alone. The generic-args
-            // prefix mismatches the lowering side whenever the turbofish is
-            // omitted (lowering computes an empty generic key), and identical
-            // arg types already imply identical instantiation — the receiver's
-            // impl-level generics show up in the receiver arg's type.
-            let args = arg_types_key;
-            calls.insert((key.clone(), callee.clone(), args), callee_key.clone());
+            // Explicit turbofish arguments disambiguate return-only generic
+            // instances; calls without turbofish use argument types, which
+            // already carry the inferred generic layout.
+            let call_key = call_site_key(&explicit_type_args, &env, &arg_types_key);
+            calls.insert((key.clone(), callee.clone(), call_key), callee_key.clone());
             if !instances.contains_key(&callee_key) {
                 queue.push_back((callee_key, callee_env));
             }
@@ -913,7 +1029,14 @@ fn bind_call_args<P: Clone>(
                     Some(ty) if is_concrete_type(ty) => {}
                     // Cross-module nominal shadowing its own generic slot
                     // (`BigVoleProver`): the registry resolves the layout.
-                    Some(IrType::TypeParam(self_name)) if self_name == &parameter.name => {}
+                    Some(IrType::TypeParam(name))
+                        if name.len() > 2
+                            && name.chars().next().map(char::is_uppercase).unwrap_or(false) =>
+                    {
+                        // Cross-crate nominal types are represented as bare
+                        // TypeParams when their declarations are not in this
+                        // parsed module (e.g. `Sha3_256`).
+                    }
                     Some(ty) => {
                         return Err(MonoError::new(format!(
                             "generic local call '{}': type parameter '{}' inferred non-concrete ({ty:?})",
@@ -1033,7 +1156,15 @@ fn concrete_usize(ty: &IrType) -> Option<usize> {
 
 fn is_concrete_type(ty: &IrType) -> bool {
     match ty {
-        IrType::TypeParam(name) => name.parse::<usize>().is_ok() || typenum_usize(name).is_some(),
+        IrType::TypeParam(name) => {
+            name.parse::<usize>().is_ok()
+                || typenum_usize(name).is_some()
+                || (name.len() > 2
+                    && name.chars().next().map(char::is_uppercase).unwrap_or(false)
+                    && !name
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()))
+        }
         IrType::Primitive(_) | IrType::Unit | IrType::Never => true,
         IrType::Array { elem, len, .. } => {
             is_concrete_type(elem) && matches!(len, ArrayLength::Const(_) | ArrayLength::TypeNum(_))
@@ -1297,6 +1428,11 @@ fn infer_expr_type<P: Clone>(
                 len: ArrayLength::Const(elems.len()),
             })
         }
+        IrExprKind::ArrayGenerate { elem_ty, len, .. } => Some(IrType::Array {
+            kind: ArrayKind::FixedArray,
+            elem: Box::new(mono_type(elem_ty.as_deref()?, env)),
+            len: mono_len(len, env),
+        }),
         IrExprKind::Array(elems) => {
             let elem_ty = elems
                 .first()
@@ -1881,6 +2017,34 @@ fn pattern_idents(pattern: &IrPattern, out: &mut Vec<String>) {
     }
 }
 
+/// Associate a pattern's individual bindings with their corresponding types.
+/// In particular, destructuring a tuple must not assign the whole tuple type
+/// to every identifier; call-argument inference depends on the element types.
+fn bind_pattern_types(pattern: &IrPattern, ty: &IrType, vars: &mut VarTypes) {
+    match (pattern, ty) {
+        (IrPattern::Ident { name, .. }, ty) => {
+            vars.insert(name.clone(), ty.clone());
+        }
+        (IrPattern::Tuple(patterns), IrType::Tuple(types)) if patterns.len() == types.len() => {
+            for (pattern, ty) in patterns.iter().zip(types) {
+                bind_pattern_types(pattern, ty, vars);
+            }
+        }
+        (IrPattern::Ref { pat, .. }, IrType::Reference { elem, .. }) => {
+            bind_pattern_types(pat, elem, vars);
+        }
+        // Preserve useful conservative information for patterns whose type
+        // shape is not represented in the current IR type model.
+        (pattern, ty) => {
+            let mut names = Vec::new();
+            pattern_idents(pattern, &mut names);
+            for name in names {
+                vars.insert(name, ty.clone());
+            }
+        }
+    }
+}
+
 fn direct_calls<P: Clone>(
     function: &IrFunction<P>,
     env: &MonoEnv,
@@ -1913,23 +2077,78 @@ fn call_result_type<P: Clone>(
     var_types: &VarTypes,
     structs: &StructTable,
 ) -> Option<IrType> {
-    let IrExprKind::Call { func, args } = &expr.kind else {
-        return None;
-    };
-    let name = match &func.kind {
-        IrExprKind::Path { segments, .. } => segments.join("_"),
-        IrExprKind::Var(name) => name.clone(),
+    let (name, type_args, args, receiver) = match &expr.kind {
+        IrExprKind::Call { func, args } => {
+            let name = match &func.kind {
+                IrExprKind::Path { segments, .. } => segments.join("_"),
+                IrExprKind::Var(name) => name.clone(),
+                _ => return None,
+            };
+            let type_args = match &func.kind {
+                IrExprKind::Path { type_args, .. } => type_args.clone(),
+                _ => Vec::new(),
+            };
+            (name, type_args, args.as_slice(), None)
+        }
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Other(name),
+            type_args,
+            args,
+        } => (
+            name.clone(),
+            type_args.clone(),
+            args.as_slice(),
+            Some(receiver.as_ref()),
+        ),
         _ => return None,
     };
     let callee = *defs.get(&name)?;
-    let type_args = match &func.kind {
-        IrExprKind::Path { type_args, .. } => type_args.clone(),
-        _ => Vec::new(),
-    };
-    let arg_tys: Vec<Option<IrType>> = args
-        .iter()
-        .map(|a| infer_expr_type(a, env, Some(var_types), Some(structs)))
+    let mut arg_tys: Vec<Option<IrType>> = receiver
+        .map(|receiver| infer_expr_type(receiver, env, Some(var_types), Some(structs)))
+        .into_iter()
         .collect();
+    arg_tys.extend(
+        args.iter()
+            .map(|arg| infer_expr_type(arg, env, Some(var_types), Some(structs))),
+    );
+    if receiver.is_some() && callee.receiver.is_some() && arg_tys.len() == callee.params.len() + 1 {
+        // Match planner behavior: make an implicit receiver explicit so
+        // impl-level generics participate in the same unification.
+        let receiver_ty = arg_tys[0].as_ref()?;
+        let self_ty = match (&callee.receiver, receiver_ty) {
+            (Some(volar_compiler::ir::IrReceiver::Ref), ty @ IrType::Reference { .. }) => {
+                ty.clone()
+            }
+            (Some(volar_compiler::ir::IrReceiver::RefMut), ty @ IrType::Reference { .. }) => {
+                ty.clone()
+            }
+            (Some(volar_compiler::ir::IrReceiver::Ref), ty) => IrType::Reference {
+                mutable: false,
+                elem: Box::new(ty.clone()),
+            },
+            (Some(volar_compiler::ir::IrReceiver::RefMut), ty) => IrType::Reference {
+                mutable: true,
+                elem: Box::new(ty.clone()),
+            },
+            (Some(volar_compiler::ir::IrReceiver::Value), ty) => ty.clone(),
+            (None, _) => unreachable!(),
+        };
+        let mut derived = callee.clone();
+        derived.receiver = None;
+        derived.params.insert(
+            0,
+            IrParam {
+                name: "self".to_owned(),
+                ty: self_ty,
+            },
+        );
+        let callee_env = bind_call_args(&derived, &type_args, &arg_tys, env, None).ok()?;
+        return derived
+            .return_type
+            .as_ref()
+            .map(|ret| mono_type(ret, &callee_env));
+    }
     let callee_env = bind_call_args(callee, &type_args, &arg_tys, env, None).ok()?;
     callee
         .return_type
@@ -1977,11 +2196,7 @@ fn collect_stmt_calls<P: Clone>(
                             .clone()
                             .or_else(|| call_result_type(expr, env, defs, var_types, structs));
                         if let Some(binding) = binding {
-                            let mut idents = Vec::new();
-                            pattern_idents(pattern, &mut idents);
-                            for name in idents {
-                                var_types.insert(name, binding.clone());
-                            }
+                            bind_pattern_types(pattern, &binding, var_types);
                         }
                         return;
                     }
@@ -1991,14 +2206,10 @@ fn collect_stmt_calls<P: Clone>(
                 // init type — enough for call-argument inference downstream.
                 let binding = ty
                     .clone()
-                    .or_else(|| infer_expr_type(expr, env, Some(var_types), Some(structs)))
-                    .or_else(|| call_result_type(expr, env, defs, var_types, structs));
+                    .or_else(|| call_result_type(expr, env, defs, var_types, structs))
+                    .or_else(|| infer_expr_type(expr, env, Some(var_types), Some(structs)));
                 if let Some(binding) = binding {
-                    let mut idents = Vec::new();
-                    pattern_idents(pattern, &mut idents);
-                    for name in idents {
-                        var_types.insert(name, binding.clone());
-                    }
+                    bind_pattern_types(pattern, &binding, var_types);
                 }
             }
         }
@@ -2013,13 +2224,10 @@ fn collect_stmt_calls<P: Clone>(
                 collect_expr_calls(expr, env, defs, structs, var_types, calls);
                 if let Some(binding) = ty
                     .clone()
+                    .or_else(|| call_result_type(expr, env, defs, var_types, structs))
                     .or_else(|| infer_expr_type(expr, env, Some(var_types), Some(structs)))
                 {
-                    let mut idents = Vec::new();
-                    pattern_idents(pattern, &mut idents);
-                    for name in idents {
-                        var_types.insert(name, binding.clone());
-                    }
+                    bind_pattern_types(pattern, &binding, var_types);
                 }
             }
             collect_expr_calls(else_expr, env, defs, structs, var_types, calls);
@@ -2877,4 +3085,127 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
         other => other.clone(),
     };
     IrExpr::new(kind, expr.prov.clone(), expr.side)
+}
+
+#[cfg(test)]
+mod associated_call_tests {
+    use super::*;
+    use crate::MonoRoot;
+    use volar_compiler::ir::{
+        ExternalKind, IrBlock, IrGenericParam, IrGenericParamKind, IrImplItem, IrType,
+    };
+
+    fn generic(name: &str) -> IrGenericParam {
+        IrGenericParam {
+            name: name.to_owned(),
+            kind: IrGenericParamKind::Type,
+            const_ty: None,
+            bounds: Vec::new(),
+            default: None,
+        }
+    }
+
+    #[test]
+    fn static_associated_call_binds_impl_and_method_generics() {
+        let pair = IrType::Struct {
+            kind: StructKind::Custom("Pair".to_owned()),
+            type_args: vec![
+                IrType::TypeParam("A".to_owned()),
+                IrType::TypeParam("B".to_owned()),
+            ],
+        };
+        let method = IrFunction {
+            name: "make".to_owned(),
+            module_path: Vec::new(),
+            generics: vec![generic("C")],
+            receiver: None,
+            params: Vec::new(),
+            return_type: Some(pair),
+            where_clause: Vec::new(),
+            body: IrBlock::default(),
+            external_kind: ExternalKind::Normal,
+            no_inline: false,
+        };
+        let impl_ = IrImpl {
+            generics: vec![generic("A"), generic("B")],
+            trait_: None,
+            self_ty: IrType::Struct {
+                kind: StructKind::Custom("Pair".to_owned()),
+                type_args: vec![
+                    IrType::TypeParam("A".to_owned()),
+                    IrType::TypeParam("B".to_owned()),
+                ],
+            },
+            where_clause: Vec::new(),
+            items: vec![IrImplItem::Method(method)],
+        };
+        let call = IrExpr::new(
+            IrExprKind::Call {
+                func: Box::new(IrExpr::new(
+                    IrExprKind::Path {
+                        segments: vec!["Pair".to_owned(), "make".to_owned()],
+                        type_args: vec![
+                            IrType::Primitive(volar_compiler::ir::PrimitiveType::U8),
+                            IrType::Primitive(volar_compiler::ir::PrimitiveType::U32),
+                            IrType::Primitive(volar_compiler::ir::PrimitiveType::U64),
+                        ],
+                    },
+                    (),
+                    None,
+                )),
+                args: Vec::new(),
+            },
+            (),
+            None,
+        );
+        let root = IrFunction {
+            name: "root".to_owned(),
+            module_path: Vec::new(),
+            generics: Vec::new(),
+            receiver: None,
+            params: Vec::new(),
+            return_type: None,
+            where_clause: Vec::new(),
+            body: IrBlock {
+                stmts: Vec::new(),
+                expr: Some(Box::new(call)),
+            },
+            external_kind: ExternalKind::Normal,
+            no_inline: false,
+        };
+        let mut module = IrModule::<IrFunction>::default();
+        module.functions.push(root);
+        module.impls.push(impl_);
+
+        let plan =
+            plan_flat_module(&module, &[MonoRoot::new("root", MonoEnv::new(""))], 16).unwrap();
+        let root_key = plan
+            .instances
+            .keys()
+            .find(|key| key.source_name == "root")
+            .unwrap();
+        assert!(
+            plan.calls
+                .keys()
+                .any(|(caller, callee, _)| caller == root_key && callee == "Pair_make")
+        );
+        let instance = plan
+            .instances
+            .iter()
+            .find(|(key, _)| key.source_name == "Pair_make")
+            .map(|(_, env)| env)
+            .expect("static associated method should be planned locally");
+        assert_eq!(
+            instance.type_params.get("A"),
+            Some(&IrType::Primitive(volar_compiler::ir::PrimitiveType::U8))
+        );
+        assert_eq!(
+            instance.type_params.get("B"),
+            Some(&IrType::Primitive(volar_compiler::ir::PrimitiveType::U32))
+        );
+        assert_eq!(
+            instance.type_params.get("C"),
+            Some(&IrType::Primitive(volar_compiler::ir::PrimitiveType::U64))
+        );
+    }
 }

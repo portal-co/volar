@@ -716,6 +716,12 @@ fn read_volar_spec_sources() -> Vec<(String, String)> {
                 let path = entry.path();
                 if path.is_file() && path.extension().map_or(false, |e| e == "rs") {
                     if let Ok(content) = fs::read_to_string(&path) {
+                        if content
+                            .lines()
+                            .any(|line| line.trim_start().starts_with("//! @volar-codegen-exclude:"))
+                        {
+                            continue;
+                        }
                         let name = path.file_stem().unwrap().to_string_lossy().to_string();
                         sources.push((content, name));
                     }
@@ -899,7 +905,13 @@ fn test_display_rust_module_writer() {
         pub struct Foo { pub x: u8 }
     "#;
     let module = parse_source(source, "test", &[]).unwrap();
-    let s = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
+    let s = format!(
+        "{}",
+        DisplayRust(ModuleWriter {
+            module: &module,
+            emit_async: false
+        })
+    );
     assert!(s.contains("pub struct Foo"));
     assert!(s.contains("pub x: u8"));
 }
@@ -911,7 +923,13 @@ fn test_display_rust_expr_writer() {
         (),
         None,
     );
-    let s = format!("{}", DisplayRust(ExprWriter { expr: &expr, ctx: None }));
+    let s = format!(
+        "{}",
+        DisplayRust(ExprWriter {
+            expr: &expr,
+            ctx: None
+        })
+    );
     assert_eq!(s, "42");
 }
 
@@ -935,7 +953,13 @@ fn test_module_writer_no_preamble() {
         pub struct Baz { pub z: u32 }
     "#;
     let module = parse_source(source, "test", &[]).unwrap();
-    let s = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
+    let s = format!(
+        "{}",
+        DisplayRust(ModuleWriter {
+            module: &module,
+            emit_async: false
+        })
+    );
     // Should NOT contain the preamble
     assert!(!s.contains("Auto-generated"));
     assert!(!s.contains("extern crate"));

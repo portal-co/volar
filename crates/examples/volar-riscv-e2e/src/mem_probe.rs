@@ -310,7 +310,10 @@ pub(crate) mod tests {
                 break;
             }
         }
-        assert!(terminated, "probe must eventually return its termination flag");
+        assert!(
+            terminated,
+            "probe must eventually return its termination flag"
+        );
 
         // The real committed byte (storage 33, address 0) must increment
         // 0 -> 1 -> 2 -> 3 exactly as `mem_probe_wat_matches_expected_via_wasmtime`

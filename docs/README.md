@@ -65,6 +65,7 @@ where applicable.
 | Document | What it covers |
 |---|---|
 | [spec.md](spec.md) | `volar-spec`: VOLE ZK, garbled circuits, MPC types, byte generation, `volar-common`, `volar-primitives` |
+| [adr/0002-semi-honest-pq-cot-ferret.md](adr/0002-semi-honest-pq-cot-ferret.md) | Selected common semi-honest KEM-OT → Ferret correlation-provider architecture, with explicit security and performance gates |
 | [vole-weaving.md](vole-weaving.md) | VOLE prover/verifier code generation from boolean circuits (Quicksilver-style) |
 | [prove-the-verifier-iop.md](prove-the-verifier-iop.md) | Prove-the-verifier: native `GF(2^k)` fold + a Merkle+Fiat–Shamir finalization proof (`volar-iop`), including the memory-accumulator boundary, and the ZK↔non-ZK discipline that gates it |
 | [garbling-pipeline.md](garbling-pipeline.md) | Garbler/evaluator code generation for half-gate garbled circuits |
@@ -107,6 +108,9 @@ where applicable.
 | Document | Status |
 |---|---|
 | [external-primitives-plan.md](external-primitives-plan.md) | Oracles, Actions, and Native RNG — partial implementation; ActionCall is in use |
+| [mpc-external-actions-oracles-plan.md](mpc-external-actions-oracles-plan.md) | Proposed cross-MPC action executor, deferred pure-oracle, external-boundary batching, and generic optimizer plan |
+| [mpc-external-actions-oracles-ledger.md](mpc-external-actions-oracles-ledger.md) | Authoritative external-MPC executor/oracle/boundary implementation and evidence ledger |
+| [secret-shared-volar-mpc-plan.md](secret-shared-volar-mpc-plan.md) | Proposed multi-party secret-shared Volar IR, stateful LIR protocol actions, and oblivious multi-key storage plan |
 | [fhe/README.md](fhe/README.md) | FHE / TFHE plans, evidence records, reviews, and generic-weaver material |
 | [fhe/tfhe-steady-state-evidence.md](fhe/tfhe-steady-state-evidence.md) | Authoritative Track-S speculative legacy corpus and evidence ledger |
 | [spec-static-shapes-plan.md](spec-static-shapes-plan.md) | Static TFHE shapes landed; dynamic and LIR/C validation gaps are recorded |

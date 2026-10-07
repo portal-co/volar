@@ -230,7 +230,8 @@ pub trait FheScheme {
     ///
     /// - `Bit` → `wire_type()` (single ciphertext).
     /// - `Vec(N, Bit)` or packed bitvector of width W → `[wire_type(); W]`.
-    /// - Field elements (`AES8`, `Galois64`) → unsupported; panics.
+    /// - `ExtField` and `PrimeField` values → unsupported; fail closed rather
+    ///   than treating typed field arithmetic as packed integer arithmetic.
     ///
     /// Default implementation uses `ir_type_bit_width` to compute W.
     fn wire_type_for_ir(&self, ir_ty: IRTypeId, types: &IRTypes) -> IrType {
@@ -1743,17 +1744,18 @@ where
 /// Other forms (Block, Func) are unsupported.
 fn ir_type_bit_width(ty_id: IRTypeId, types: &IRTypes) -> usize {
     match &types.0[ty_id.0 as usize] {
-        IRType::Primitive(PrimType::Bit)    => 1,
-        IRType::Primitive(PrimType::_8)
-        | IRType::Primitive(PrimType::AES8) => 8,
-        IRType::Primitive(PrimType::_16)    => 16,
-        IRType::Primitive(PrimType::_32)    => 32,
-        IRType::Primitive(PrimType::_64)
-        | IRType::Primitive(PrimType::Galois64) => 64,
-        IRType::Primitive(PrimType::_128)   => 128,
-        IRType::Primitive(PrimType::_256)   => 256,
+        IRType::Primitive(PrimType::Bit) => 1,
+        IRType::Primitive(PrimType::_8) => 8,
+        IRType::Primitive(PrimType::_16) => 16,
+        IRType::Primitive(PrimType::_32) => 32,
+        IRType::Primitive(PrimType::_64) => 64,
+        IRType::Primitive(PrimType::_128) => 128,
+        IRType::Primitive(PrimType::_256) => 256,
         IRType::Vec(n, elem_ty) => n * ir_type_bit_width(*elem_ty, types),
         IRType::Tuple(fields) => fields.iter().map(|f| ir_type_bit_width(*f, types)).sum(),
+        IRType::ExtField { .. } | IRType::PrimeField { .. } => {
+            panic!("FHE CFG path does not support typed field values")
+        }
         other => panic!("ir_type_bit_width: unsupported IR type {:?}", other),
     }
 }
@@ -3802,6 +3804,27 @@ mod tests {
     }
 
     // ---- CFG tests ----------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "FHE CFG path does not support typed field values")]
+    fn cfg_wire_width_rejects_extension_fields() {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let field = types.intern(IRType::ExtField {
+            wrapped: bit,
+            degree: 8,
+            irreducible: vec![1, 1, 0, 1, 1, 0, 0, 0, 1],
+        });
+        TfheScheme::cfg().wire_type_for_ir(field, &types);
+    }
+
+    #[test]
+    #[should_panic(expected = "FHE CFG path does not support typed field values")]
+    fn cfg_wire_width_rejects_prime_fields() {
+        let mut types = IRTypes::new();
+        let field = types.intern(IRType::PrimeField { k: 2, n: vec![1] });
+        TfheScheme::cfg().wire_type_for_ir(field, &types);
+    }
 
     /// Compile-check TFHE-CFG generated code by prepending the necessary `use` glob.
     fn run_compile_check_tfhe_cfg(code: &str, test_name: &str) {

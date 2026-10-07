@@ -138,6 +138,7 @@ fn component_env() -> MonoEnv {
         .with_len("BS_BG_LOG", 16)
         .with_len("KS_BG_LOG", 16)
         .with_type("T", IrType::Primitive(PrimitiveType::U8))
+        .with_type("R", IrType::Primitive(PrimitiveType::U64))
 }
 
 /// Lower only the functions reachable from `seeds` and assert no panic.
@@ -219,4 +220,34 @@ lir_component! {
         "verify",
         "keygen",
     ],
+}
+
+#[test]
+fn static_associated_call_with_impl_generics_compiles_and_runs() {
+    let module = parse_source(
+        r#"
+        struct Pair<T> { value: T }
+        impl<T> Pair<T> {
+            fn make(value: T) -> Pair<T> { Pair { value } }
+        }
+        fn root() -> u8 {
+            Pair::<u8>::make(42).value
+        }
+        "#,
+        "static_associated_call",
+        &[],
+    )
+    .expect("parse static associated call fixture");
+
+    let mut backend = CBackend::new();
+    lower_module_seeded(
+        &module,
+        &mut backend,
+        &MonoEnv::new("static_associated_call"),
+        &["root"],
+    );
+    let c_source = backend.finish();
+    let output =
+        volar_lir_test_corpus::compile_and_run(&c_source, r#"printf("%u\n", (unsigned)root());"#);
+    assert_eq!(output.trim(), "42", "generated C:\n{c_source}");
 }

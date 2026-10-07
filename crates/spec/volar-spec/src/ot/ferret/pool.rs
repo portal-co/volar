@@ -1,18 +1,18 @@
 // @pinnedness: unpinned
 // @stability: very-unstable
 //! @ai: assisted
-//! @volar-allow-vec: runtime-boundary: OT/VOLE/FAEST protocol material,
-//! transcripts, and batched commitments are runtime-sized host protocol
-//! buffers, not weaver-known compiled-program shapes; this module-level
-//! exemption applies to the whole file.
 //! Refillable COT pool (Ferret §6.2 bootstrap) and Bea95 chosen-bit conversion.
+//! @volar-allow-vec: runtime-boundary: Ferret seeds and buffered COT rows are
+//! runtime-sized host protocol material.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-use super::cot::{FerretReceiverSeed, FerretSenderSeed, ferret_extend, sample_seed_cots};
+use super::cot::{
+    FerretReceiverSeed, FerretSenderSeed, ferret_extend, ferret_extend_malicious, sample_seed_cots,
+};
 use super::params::FerretParams;
-use super::spcot::Block;
+use super::spcot::{Block, KAPPA_BITS};
 use crate::SpecRng;
 
 fn xor_block(a: &Block, b: &Block) -> Block {
@@ -30,6 +30,11 @@ pub struct CotPoolSender {
     pub(crate) out: VecDeque<Block>,
     /// If set, the next refill uses this `n` (must stay compatible with `t`).
     pub raise_n: Option<usize>,
+    /// Whether refills run the malicious-secure extend (with the SPCOT
+    /// consistency check). Semi-honest consumers use `false`.
+    pub malicious: bool,
+    /// Refill counter, mixed into the malicious consistency-check transcript.
+    pub(crate) refill_count: u64,
 }
 
 /// Receiver's random-COT buffer `(x, z)`.
@@ -38,6 +43,7 @@ pub struct CotPoolReceiver {
     pub seed: FerretReceiverSeed,
     pub(crate) out_x: VecDeque<bool>,
     pub(crate) out_z: VecDeque<Block>,
+    pub malicious: bool,
 }
 
 /// Why independently provisioned Ferret seeds cannot initialize a pool.
@@ -57,31 +63,64 @@ pub enum PoolSeedError {
     ReceiverOutputCountMismatch { choices: usize, values: usize },
 }
 
-/// Validate regular Ferret parameters and return the seed COT count.
+/// Validate regular Ferret parameters and return the semi-honest seed COT count.
 pub fn checked_seed_cot_count(params: FerretParams) -> Result<usize, PoolSeedError> {
-    if params.t == 0 || params.n < params.t || params.k == 0 {
+    checked_seed_cot_count_mode(params, false)
+}
+
+/// Validate regular Ferret parameters and return the malicious-mode seed COT count.
+pub fn checked_seed_cot_count_malicious(params: FerretParams) -> Result<usize, PoolSeedError> {
+    checked_seed_cot_count_mode(params, true)
+}
+
+fn checked_seed_cot_count_mode(
+    params: FerretParams,
+    malicious: bool,
+) -> Result<usize, PoolSeedError> {
+    if params.t == 0 || params.n < params.t || params.k < super::lpn::LOCALITY {
         return Err(PoolSeedError::InvalidParameters);
     }
     let max_interval_len = params.n.div_ceil(params.t);
     let splen = max_interval_len
         .checked_next_power_of_two()
         .ok_or(PoolSeedError::InvalidParameters)?;
-    let log_splen = splen.trailing_zeros() as usize;
     let body = params
         .t
-        .checked_mul(log_splen)
+        .checked_mul(splen.trailing_zeros() as usize)
         .and_then(|extra| params.k.checked_add(extra))
         .ok_or(PoolSeedError::InvalidParameters)?;
-    if body >= params.n {
+    let seed_count = if malicious {
+        body.checked_add(KAPPA_BITS)
+            .ok_or(PoolSeedError::InvalidParameters)?
+    } else {
+        body
+    };
+    if seed_count >= params.n {
         return Err(PoolSeedError::InvalidParameters);
     }
-    Ok(body)
+    Ok(seed_count)
 }
 
 impl CotPoolSender {
     /// Initialize one protocol side from an independently produced Ferret seed.
     pub fn from_seed(params: FerretParams, seed: FerretSenderSeed) -> Result<Self, PoolSeedError> {
-        let expected = checked_seed_cot_count(params)?;
+        Self::from_seed_mode(params, seed, false)
+    }
+
+    /// Initialize a malicious-mode sender from an independently produced Ferret seed.
+    pub fn from_seed_malicious(
+        params: FerretParams,
+        seed: FerretSenderSeed,
+    ) -> Result<Self, PoolSeedError> {
+        Self::from_seed_mode(params, seed, true)
+    }
+
+    fn from_seed_mode(
+        params: FerretParams,
+        seed: FerretSenderSeed,
+        malicious: bool,
+    ) -> Result<Self, PoolSeedError> {
+        let expected = checked_seed_cot_count_mode(params, malicious)?;
         if seed.q.len() != expected {
             return Err(PoolSeedError::SenderSeedCount {
                 expected,
@@ -93,6 +132,8 @@ impl CotPoolSender {
             seed,
             out: VecDeque::new(),
             raise_n: None,
+            malicious,
+            refill_count: 0,
         })
     }
 
@@ -107,14 +148,14 @@ impl CotPoolSender {
     /// `n`-COT sequence; queued outputs follow it. The first target `M` COTs
     /// become the main seed, and the rest remain available in this pool.
     pub fn reprofile(mut self, params: FerretParams) -> Result<Self, PoolSeedError> {
-        let old_seed_count = checked_seed_cot_count(self.params)?;
+        let old_seed_count = checked_seed_cot_count_mode(self.params, self.malicious)?;
         if self.seed.q.len() != old_seed_count {
             return Err(PoolSeedError::SenderSeedCount {
                 expected: old_seed_count,
                 found: self.seed.q.len(),
             });
         }
-        let required = checked_seed_cot_count(params)?;
+        let required = checked_seed_cot_count_mode(params, self.malicious)?;
         let available = self
             .seed
             .q
@@ -145,7 +186,23 @@ impl CotPoolReceiver {
         params: FerretParams,
         seed: FerretReceiverSeed,
     ) -> Result<Self, PoolSeedError> {
-        let expected = checked_seed_cot_count(params)?;
+        Self::from_seed_mode(params, seed, false)
+    }
+
+    /// Initialize a malicious-mode receiver from independently produced Ferret seeds.
+    pub fn from_seed_malicious(
+        params: FerretParams,
+        seed: FerretReceiverSeed,
+    ) -> Result<Self, PoolSeedError> {
+        Self::from_seed_mode(params, seed, true)
+    }
+
+    fn from_seed_mode(
+        params: FerretParams,
+        seed: FerretReceiverSeed,
+        malicious: bool,
+    ) -> Result<Self, PoolSeedError> {
+        let expected = checked_seed_cot_count_mode(params, malicious)?;
         if seed.u.len() != expected {
             return Err(PoolSeedError::ReceiverChoiceCount {
                 expected,
@@ -163,6 +220,7 @@ impl CotPoolReceiver {
             seed,
             out_x: VecDeque::new(),
             out_z: VecDeque::new(),
+            malicious,
         })
     }
 
@@ -177,7 +235,7 @@ impl CotPoolReceiver {
     /// `n`-COT sequence; queued outputs follow it. The first target `M` COTs
     /// become the main seed, and the rest remain available in this pool.
     pub fn reprofile(mut self, params: FerretParams) -> Result<Self, PoolSeedError> {
-        let old_seed_count = checked_seed_cot_count(self.params)?;
+        let old_seed_count = checked_seed_cot_count_mode(self.params, self.malicious)?;
         if self.seed.u.len() != old_seed_count {
             return Err(PoolSeedError::ReceiverChoiceCount {
                 expected: old_seed_count,
@@ -196,7 +254,7 @@ impl CotPoolReceiver {
                 values: self.out_z.len(),
             });
         }
-        let required = checked_seed_cot_count(params)?;
+        let required = checked_seed_cot_count_mode(params, self.malicious)?;
         let available = self
             .seed
             .u
@@ -226,9 +284,27 @@ impl CotPoolReceiver {
     }
 }
 
-/// Allocate a pool from `m` ideal seed COTs (tests / one-time setup stand-in).
+/// Allocate a pool from `m` ideal seed COTs (tests / one-time setup stand-in),
+/// semi-honest mode. See [`new_pool_malicious`] for the malicious-secure pool.
 pub fn new_pool<R: SpecRng>(rng: &mut R, params: FerretParams) -> (CotPoolSender, CotPoolReceiver) {
-    let m = params.seed_cot_count(false);
+    new_pool_mode(rng, params, false)
+}
+
+/// Allocate a malicious-secure pool: the seed carries the extra κ
+/// consistency-check COTs and refills run the malicious-secure extend.
+pub fn new_pool_malicious<R: SpecRng>(
+    rng: &mut R,
+    params: FerretParams,
+) -> (CotPoolSender, CotPoolReceiver) {
+    new_pool_mode(rng, params, true)
+}
+
+fn new_pool_mode<R: SpecRng>(
+    rng: &mut R,
+    params: FerretParams,
+    malicious: bool,
+) -> (CotPoolSender, CotPoolReceiver) {
+    let m = params.seed_cot_count(malicious);
     let (seed_s, seed_r) = sample_seed_cots(rng, m);
     (
         CotPoolSender {
@@ -236,36 +312,93 @@ pub fn new_pool<R: SpecRng>(rng: &mut R, params: FerretParams) -> (CotPoolSender
             seed: seed_s,
             out: VecDeque::new(),
             raise_n: None,
+            malicious,
+            refill_count: 0,
         },
         CotPoolReceiver {
             params,
             seed: seed_r,
             out_x: VecDeque::new(),
             out_z: VecDeque::new(),
+            malicious,
         },
     )
 }
 
-/// Run one Ferret iteration and append `n−M` COTs to both pools.
-pub fn refill<R: SpecRng>(rng: &mut R, sender: &mut CotPoolSender, receiver: &mut CotPoolReceiver) {
+/// Run one Ferret iteration and append output COTs to both pools. Returns the
+/// refill's consistency-check result — always `true` for a semi-honest pool; for
+/// a malicious pool it is the batched SPCOT consistency check, and the caller
+/// must abort the protocol on `false`.
+pub fn refill<R: SpecRng>(
+    rng: &mut R,
+    sender: &mut CotPoolSender,
+    receiver: &mut CotPoolReceiver,
+) -> bool {
+    let malicious = sender.malicious;
+    if malicious != receiver.malicious || sender.params != receiver.params {
+        return false;
+    }
     let mut params = sender.params;
+    let current_seed_count = match checked_seed_cot_count_mode(params, malicious) {
+        Ok(count) => count,
+        Err(_) => return false,
+    };
+    if sender.seed.q.len() != current_seed_count
+        || receiver.seed.u.len() != current_seed_count
+        || receiver.seed.w.len() != current_seed_count
+        || sender.out.len() != receiver.out_x.len()
+        || sender.out.len() != receiver.out_z.len()
+    {
+        return false;
+    }
     if let Some(n) = sender.raise_n.take() {
-        debug_assert!(n % params.t == 0);
-        debug_assert!((n / params.t).is_power_of_two());
         let mut raised = params;
         raised.n = n;
-        // New `M` must fit in the current seed (raising `n` grows `log(n/t)`).
-        debug_assert!(raised.seed_cot_count(false) <= sender.seed.q.len());
-        params.n = n;
+        let raised_seed_count = match checked_seed_cot_count_mode(raised, malicious) {
+            Ok(count) => count,
+            Err(_) => return false,
+        };
+        // The current seed vectors must still have exactly the target profile's
+        // retained length; otherwise the extend's seed layout would be invalid.
+        if raised_seed_count != current_seed_count
+            || raised_seed_count != sender.seed.q.len()
+            || raised_seed_count != receiver.seed.u.len()
+            || raised_seed_count != receiver.seed.w.len()
+        {
+            return false;
+        }
+        params = raised;
         sender.params = params;
         receiver.params = params;
     }
-    let out = ferret_extend(rng, params, &sender.seed, &receiver.seed);
-    sender.seed = out.sender_seed;
-    receiver.seed = out.receiver_seed;
-    sender.out.extend(out.sender_out);
-    receiver.out_x.extend(out.recv_x);
-    receiver.out_z.extend(out.recv_z);
+    if malicious {
+        // Bind the consistency check's FS coefficients to this refill.
+        let Some(next_refill_count) = sender.refill_count.checked_add(1) else {
+            return false;
+        };
+        let mut transcript = b"volar-ferret-pool-refill-v1".to_vec();
+        transcript.extend_from_slice(&sender.refill_count.to_le_bytes());
+        let (out, check) =
+            ferret_extend_malicious(rng, params, &sender.seed, &receiver.seed, &transcript);
+        if !check {
+            return false;
+        }
+        sender.refill_count = next_refill_count;
+        sender.seed = out.sender_seed;
+        receiver.seed = out.receiver_seed;
+        sender.out.extend(out.sender_out);
+        receiver.out_x.extend(out.recv_x);
+        receiver.out_z.extend(out.recv_z);
+        true
+    } else {
+        let out = ferret_extend(rng, params, &sender.seed, &receiver.seed);
+        sender.seed = out.sender_seed;
+        receiver.seed = out.receiver_seed;
+        sender.out.extend(out.sender_out);
+        receiver.out_x.extend(out.recv_x);
+        receiver.out_z.extend(out.recv_z);
+        true
+    }
 }
 
 fn ensure<R: SpecRng>(
@@ -273,23 +406,30 @@ fn ensure<R: SpecRng>(
     sender: &mut CotPoolSender,
     receiver: &mut CotPoolReceiver,
     need: usize,
-) {
-    let watermark = sender.params.seed_cot_count(false);
+) -> bool {
+    let watermark = sender.params.seed_cot_count(sender.malicious);
     while sender.remaining() < need || sender.remaining().saturating_sub(need) < watermark {
         let before = sender.remaining();
-        refill(rng, sender, receiver);
+        if !refill(rng, sender, receiver) {
+            return false;
+        }
         debug_assert!(sender.remaining() > before, "ΠCOT emitted no output COTs");
     }
+    true
 }
 
-/// Take `need` random COTs, refilling until the buffer can serve them.
+/// Take `need` random COTs, refilling until the buffer can serve them. Returns
+/// `None` if a malicious refill's consistency check failed (the caller must
+/// abort the protocol).
 pub fn take_random<R: SpecRng>(
     rng: &mut R,
     sender: &mut CotPoolSender,
     receiver: &mut CotPoolReceiver,
     need: usize,
-) -> (Vec<Block>, Vec<bool>, Vec<Block>) {
-    ensure(rng, sender, receiver, need);
+) -> Option<(Vec<Block>, Vec<bool>, Vec<Block>)> {
+    if !ensure(rng, sender, receiver, need) {
+        return None;
+    }
     let mut r0 = Vec::with_capacity(need);
     let mut x = Vec::with_capacity(need);
     let mut z = Vec::with_capacity(need);
@@ -298,7 +438,7 @@ pub fn take_random<R: SpecRng>(
         x.push(receiver.out_x.pop_front().unwrap());
         z.push(receiver.out_z.pop_front().unwrap());
     }
-    (r0, x, z)
+    Some((r0, x, z))
 }
 
 /// Bea95: convert one random COT into a chosen-bit COT.
@@ -339,7 +479,7 @@ mod tests {
         let (mut s, mut r) = new_pool(&mut rng, FERRET_REG_TOY);
         assert_eq!(s.remaining(), 0);
         let need = FERRET_REG_TOY.output_cot_count(false) + 10;
-        let (r0, x, z) = take_random(&mut rng, &mut s, &mut r, need);
+        let (r0, x, z) = take_random(&mut rng, &mut s, &mut r, need).expect("refill");
         assert_eq!(r0.len(), need);
         let delta = s.seed.delta;
         for j in 0..need {
@@ -366,7 +506,7 @@ mod tests {
         let mut sender = CotPoolSender::from_seed(setup_params, sender_seed).unwrap();
         let mut receiver = CotPoolReceiver::from_seed(setup_params, receiver_seed).unwrap();
 
-        refill(&mut rng, &mut sender, &mut receiver);
+        assert!(refill(&mut rng, &mut sender, &mut receiver));
         let sender = sender.reprofile(main_params).unwrap();
         let receiver = receiver.reprofile(main_params).unwrap();
         assert_eq!(sender.remaining(), 512 - main_params.seed_cot_count(false));
@@ -388,6 +528,41 @@ mod tests {
         {
             assert_eq!(*z, if choice { xor_block(q, &delta) } else { *q });
         }
+    }
+
+    #[test]
+    fn malicious_pool_refills_and_checks() {
+        let mut rng = TestRng(0xB0B0);
+        let (mut s, mut r) = new_pool_malicious(&mut rng, FERRET_REG_TOY);
+        // Malicious pool seeds carry the extra κ check COTs.
+        assert_eq!(s.seed.q.len(), FERRET_REG_TOY.seed_cot_count(true));
+        let need = FERRET_REG_TOY.output_cot_count(true) + 10;
+        let (r0, x, z) =
+            take_random(&mut rng, &mut s, &mut r, need).expect("honest malicious refill passes");
+        assert_eq!(r0.len(), need);
+        let delta = s.seed.delta;
+        for j in 0..need {
+            let expected = if x[j] {
+                xor_block(&r0[j], &delta)
+            } else {
+                r0[j]
+            };
+            assert_eq!(z[j], expected, "row {j}");
+        }
+    }
+
+    #[test]
+    fn malicious_pool_catches_tampered_receiver_seed() {
+        let mut rng = TestRng(0xC0C0);
+        let (mut s, mut r) = new_pool_malicious(&mut rng, FERRET_REG_TOY);
+        // Tamper with the receiver's seed so the COT relation is inconsistent;
+        // the malicious consistency check must catch it on the next refill.
+        let k = FERRET_REG_TOY.k;
+        r.seed.w[k][0] ^= 1;
+        assert!(
+            !refill(&mut rng, &mut s, &mut r),
+            "tampered receiver seed fails the consistency check"
+        );
     }
 
     #[test]

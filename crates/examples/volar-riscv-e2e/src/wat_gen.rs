@@ -934,7 +934,10 @@ mod tests {
     #[test]
     #[ignore]
     fn measure_post_movfuscation_baseline() {
-        eprintln!("woven verifier AND count: {}", real_interpreter_and_count(false));
+        eprintln!(
+            "woven verifier AND count: {}",
+            real_interpreter_and_count(false)
+        );
     }
 
     /// Release benchmark candidate: fold plus store-forward after
@@ -943,7 +946,10 @@ mod tests {
     #[test]
     #[ignore]
     fn measure_post_movfuscation_fold_store_forward() {
-        eprintln!("woven verifier AND count: {}", real_interpreter_and_count(true));
+        eprintln!(
+            "woven verifier AND count: {}",
+            real_interpreter_and_count(true)
+        );
     }
 
     /// Milestone 1.5 Step B measurement: does the split verifier/prover

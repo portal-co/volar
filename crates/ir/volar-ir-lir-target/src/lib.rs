@@ -9,8 +9,10 @@
 //!
 //! # Type representation
 //!
-//! All LIR values are represented as flat lists of `Bit`-typed [`IRVarId`]s,
-//! one per bit, LSB first:
+//! Integer and aggregate LIR values are represented as flat lists of
+//! `Bit`-typed [`IRVarId`]s, one per bit, LSB first. Native primitives and
+//! explicit extension/prime fields are each represented by one typed
+//! [`IRVarId`], preserving their scalar semantics:
 //!
 //! | `LirType` | bits |
 //! |-----------|------|
@@ -73,14 +75,14 @@ use volar_lir::{
 /// A SSA value in `VolarIrTarget`: a flat list of block-local `IRVarId`s.
 ///
 /// For standard integer types (`U8`, `U32`, …) there is one `Bit`-typed
-/// `IRVarId` per bit (LSB at index 0).  For [`LirType::Native`] types there
-/// is exactly **one** `IRVarId` whose `IrType` is the corresponding
-/// `IrType::Primitive(t)` — it is **not** decomposed into bits.
+/// `IRVarId` per bit (LSB at index 0). For native primitive, extension-field,
+/// and prime-field LIR values there is exactly **one** `IRVarId` whose
+/// `IrType` preserves that scalar's type.
 ///
 /// The `ty` field carries the authoritative [`LirType`] for this value group,
-/// which is needed to distinguish `LirType::Bool` (1 `Bit` var) from
-/// `LirType::Native(Type::Bit)` (1 native var) and to round-trip correctly
-/// through `value_scalar_type` → `add_block_param`.
+/// which is needed to distinguish `LirType::Bool` (1 `Bit` var) from a
+/// one-var field value and to round-trip correctly through
+/// `value_scalar_type` → `add_block_param`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VolarValue {
     /// Block-local [`IRVarId`]s representing this value.
@@ -241,6 +243,20 @@ impl<P: Clone> VolarIrTarget<P> {
         match ty {
             LirType::Bool => self.bit_tid,
             LirType::Native(t) => self.types.intern(IrType::Primitive(*t)),
+            LirType::ExtField {
+                wrapped,
+                degree,
+                irreducible,
+            } => {
+                let wrapped = self.lir_to_ir_type(wrapped);
+                self.types
+                    .ext_field(wrapped, *degree, irreducible.clone())
+                    .unwrap_or_else(|error| panic!("invalid LIR extension field type: {error:?}"))
+            }
+            LirType::PrimeField { k, n } => self
+                .types
+                .prime_field(*k, n.clone())
+                .unwrap_or_else(|error| panic!("invalid LIR prime field type: {error:?}")),
             LirType::Ptr(_) => panic!(
                 "VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"
             ),
@@ -250,6 +266,77 @@ impl<P: Clone> VolarIrTarget<P> {
                 // for now the oracle/action output is a single IR var.
                 self.bit_tid
             }
+        }
+    }
+
+    fn is_single_ir_field(ty: &LirType) -> bool {
+        matches!(
+            ty,
+            LirType::Native(_) | LirType::ExtField { .. } | LirType::PrimeField { .. }
+        )
+    }
+
+    /// Expand a single typed IR scalar into its LSB-first Boolean bit view.
+    /// `Shuffle` uses an 8-bit source index, so wider tower fields fail closed.
+    fn scalar_bits(&mut self, value: &VolarValue) -> Vec<IRVarId> {
+        if !Self::is_single_ir_field(&value.ty) {
+            return value.bits.clone();
+        }
+        assert_eq!(
+            value.bits.len(),
+            1,
+            "typed IR scalar must occupy one variable"
+        );
+        let width = value.ty.bit_width() as usize;
+        assert!(
+            width <= 256,
+            "typed IR scalar wider than Shuffle's 256-bit address space"
+        );
+        if width == 1 {
+            return value.bits.clone();
+        }
+        (0..width)
+            .map(|index| self.extract_bit(value.bits[0], index as u8))
+            .collect()
+    }
+
+    /// Pack Boolean bits into one typed IR scalar when `ty` requires it.
+    fn value_from_bits(&mut self, bits: Vec<IRVarId>, ty: LirType) -> VolarValue {
+        if !Self::is_single_ir_field(&ty) {
+            return VolarValue { bits, ty };
+        }
+        let width = ty.bit_width() as usize;
+        assert_eq!(bits.len(), width, "typed IR scalar bit width mismatch");
+        if width == 1 {
+            return VolarValue { bits, ty };
+        }
+        let type_id = self.lir_to_ir_type(&ty);
+        let id = self.emit(IRStmt::Merge {
+            parts: bits,
+            ty: type_id,
+        });
+        VolarValue { bits: vec![id], ty }
+    }
+
+    fn emit_field_poly(&mut self, ty: &LirType, coeffs: PolyCoeffs<IRVarId>) -> VolarValue {
+        let type_id = self.lir_to_ir_type(ty);
+        let id = self.emit(IRStmt::Poly {
+            ty: type_id,
+            coeffs,
+            constant: Constant { hi: 0, lo: 0 },
+        });
+        VolarValue {
+            bits: vec![id],
+            ty: ty.clone(),
+        }
+    }
+
+    fn field_zero(&mut self, ty: &LirType) -> VolarValue {
+        let type_id = self.lir_to_ir_type(ty);
+        let id = self.emit(IRStmt::Const(Constant { hi: 0, lo: 0 }, type_id));
+        VolarValue {
+            bits: vec![id],
+            ty: ty.clone(),
         }
     }
 
@@ -817,10 +904,10 @@ impl<P: Clone> VolarIrTarget<P> {
         // ---- Continuation block (receives callee return values) -----------
         let cont_block = self.create_block();
         let mut cont_params = Vec::with_capacity(ret_n);
-        // For Native return types add one native-typed param; for all other
+        // For native and field return types add one typed param; for all other
         // types (including multi-bit) add Bool params (one per bit).
         let cont_param_ty = ret_ty
-            .filter(|t| matches!(t, LirType::Native(_)))
+            .filter(|ty| Self::is_single_ir_field(ty))
             .cloned()
             .unwrap_or(LirType::Bool);
         for _ in 0..ret_n {
@@ -999,7 +1086,7 @@ fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
         LirType::Arr(elem, n) => n * bits_for_lir_type(elem, struct_widths),
         LirType::Struct(id) => struct_widths[*id as usize],
         // Native field elements occupy exactly one IRVarId slot (not N bits).
-        LirType::Native(_) => 1,
+        LirType::Native(_) | LirType::ExtField { .. } | LirType::PrimeField { .. } => 1,
         LirType::Ptr(_) => panic!(
             "VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"
         ),
@@ -1249,9 +1336,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
         let mut groups: Vec<Vec<VolarValue>> = Vec::new();
 
         for ty in params {
-            if let LirType::Native(native_ty) = ty {
-                // One native-typed IRVarId, not N Bit vars.
-                let type_id = self.types.intern(IrType::Primitive(*native_ty));
+            if Self::is_single_ir_field(ty) {
+                // Primitive and explicit field values are one typed IR var,
+                // not a list of unrelated Bit vars.
+                let type_id = self.lir_to_ir_type(ty);
                 let id = block.params.len() as u32;
                 block.params.push(type_id);
                 groups.push(vec![VolarValue {
@@ -1319,8 +1407,8 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     }
 
     fn add_block_param(&mut self, block: VolarBlock, ty: LirType) -> VolarValue {
-        if let LirType::Native(native_ty) = &ty {
-            let type_id = self.types.intern(IrType::Primitive(*native_ty));
+        if Self::is_single_ir_field(&ty) {
+            let type_id = self.lir_to_ir_type(&ty);
             let f = self.func.as_mut().unwrap();
             let blk = &mut f.blocks[block.0];
             let id = blk.params.len() as u32;
@@ -1350,8 +1438,8 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     // ---- Constants ---------------------------------------------------------
 
     fn iconst(&mut self, ty: LirType, val: i64) -> VolarValue {
-        if let LirType::Native(native_ty) = &ty {
-            let type_id = self.types.intern(IrType::Primitive(*native_ty));
+        if Self::is_single_ir_field(&ty) {
+            let type_id = self.lir_to_ir_type(&ty);
             let id = self.emit(IRStmt::Const(
                 Constant {
                     hi: 0,
@@ -1372,6 +1460,19 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
 
     fn add(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
+        if Self::is_single_ir_field(&ty) {
+            assert_eq!(ty, rhs.ty, "field addition requires matching operand types");
+            let a = lhs.bits[0];
+            let b = rhs.bits[0];
+            let mut coeffs = PolyCoeffs::new();
+            if matches!(&ty, LirType::PrimeField { .. }) && a == b {
+                coeffs.insert(vec![a], 2);
+            } else if a != b {
+                coeffs.insert(vec![a], 1);
+                coeffs.insert(vec![b], 1);
+            }
+            return self.emit_field_poly(&ty, coeffs);
+        }
         VolarValue {
             bits: bc_add(self, &lhs.bits, &rhs.bits, false),
             ty,
@@ -1379,6 +1480,32 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     }
     fn sub(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
+        if Self::is_single_ir_field(&ty) {
+            assert_eq!(
+                ty, rhs.ty,
+                "field subtraction requires matching operand types"
+            );
+            let a = lhs.bits[0];
+            let b = rhs.bits[0];
+            if a == b {
+                return self.field_zero(&ty);
+            }
+            let mut coeffs = PolyCoeffs::new();
+            coeffs.insert(vec![a], 1);
+            let negative_one = match &ty {
+                LirType::PrimeField { k, n } if *k <= 8 && n.len() <= 1 => {
+                    let modulus = (1u16 << *k) - n.first().copied().unwrap_or(0) as u16;
+                    u8::try_from(modulus - 1)
+                        .expect("prime-field -1 coefficient must fit the Poly coefficient")
+                }
+                LirType::PrimeField { .. } => panic!(
+                    "VolarIrTarget: prime-field subtraction currently requires a modulus <= 256"
+                ),
+                _ => 1,
+            };
+            coeffs.insert(vec![b], negative_one);
+            return self.emit_field_poly(&ty, coeffs);
+        }
         VolarValue {
             bits: bc_sub(self, &lhs.bits, &rhs.bits),
             ty,
@@ -1386,12 +1513,30 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     }
     fn mul(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
+        if Self::is_single_ir_field(&ty) {
+            assert_eq!(
+                ty, rhs.ty,
+                "field multiplication requires matching operand types"
+            );
+            let mut monomial = vec![lhs.bits[0], rhs.bits[0]];
+            monomial.sort();
+            let mut coeffs = PolyCoeffs::new();
+            coeffs.insert(monomial, 1);
+            return self.emit_field_poly(&ty, coeffs);
+        }
         VolarValue {
             bits: bc_mul(self, &lhs.bits, &rhs.bits),
             ty,
         }
     }
     fn udiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
+        assert!(
+            !matches!(
+                &lhs.ty,
+                LirType::ExtField { .. } | LirType::PrimeField { .. }
+            ),
+            "division is not defined for extension or prime fields"
+        );
         let ty = lhs.ty.clone();
         VolarValue {
             bits: bc_udiv(self, &lhs.bits, &rhs.bits),
@@ -1399,6 +1544,13 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
         }
     }
     fn sdiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
+        assert!(
+            !matches!(
+                &lhs.ty,
+                LirType::ExtField { .. } | LirType::PrimeField { .. }
+            ),
+            "division is not defined for extension or prime fields"
+        );
         let ty = lhs.ty.clone();
         VolarValue {
             bits: bc_sdiv(self, &lhs.bits, &rhs.bits),
@@ -1408,6 +1560,22 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
 
     fn and(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
+        if Self::is_single_ir_field(&ty) {
+            assert!(
+                !matches!(&ty, LirType::PrimeField { .. }),
+                "bitwise AND is not defined for prime fields"
+            );
+            assert_eq!(ty, rhs.ty, "field bitwise AND requires matching types");
+            let lhs_bits = self.scalar_bits(&lhs);
+            let rhs_bits = self.scalar_bits(&rhs);
+            assert_eq!(
+                lhs_bits.len(),
+                rhs_bits.len(),
+                "field bitwise AND width mismatch"
+            );
+            let bits = bc_and_vec(self, &lhs_bits, &rhs_bits);
+            return self.value_from_bits(bits, ty);
+        }
         VolarValue {
             bits: bc_and_vec(self, &lhs.bits, &rhs.bits),
             ty,
@@ -1415,6 +1583,22 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     }
     fn or(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
+        if Self::is_single_ir_field(&ty) {
+            assert!(
+                !matches!(&ty, LirType::PrimeField { .. }),
+                "bitwise OR is not defined for prime fields"
+            );
+            assert_eq!(ty, rhs.ty, "field bitwise OR requires matching types");
+            let lhs_bits = self.scalar_bits(&lhs);
+            let rhs_bits = self.scalar_bits(&rhs);
+            assert_eq!(
+                lhs_bits.len(),
+                rhs_bits.len(),
+                "field bitwise OR width mismatch"
+            );
+            let bits = bc_or_vec(self, &lhs_bits, &rhs_bits);
+            return self.value_from_bits(bits, ty);
+        }
         VolarValue {
             bits: bc_or_vec(self, &lhs.bits, &rhs.bits),
             ty,
@@ -1422,6 +1606,22 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     }
     fn xor(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
+        if Self::is_single_ir_field(&ty) {
+            assert!(
+                !matches!(&ty, LirType::PrimeField { .. }),
+                "bitwise XOR is not defined for prime fields"
+            );
+            assert_eq!(ty, rhs.ty, "field bitwise XOR requires matching types");
+            let lhs_bits = self.scalar_bits(&lhs);
+            let rhs_bits = self.scalar_bits(&rhs);
+            assert_eq!(
+                lhs_bits.len(),
+                rhs_bits.len(),
+                "field bitwise XOR width mismatch"
+            );
+            let bits = bc_xor_vec(self, &lhs_bits, &rhs_bits);
+            return self.value_from_bits(bits, ty);
+        }
         VolarValue {
             bits: bc_xor_vec(self, &lhs.bits, &rhs.bits),
             ty,
@@ -1429,6 +1629,15 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     }
     fn not(&mut self, val: VolarValue) -> VolarValue {
         let ty = val.ty.clone();
+        if Self::is_single_ir_field(&ty) {
+            assert!(
+                !matches!(&ty, LirType::PrimeField { .. }),
+                "bitwise NOT is not defined for prime fields"
+            );
+            let bits = self.scalar_bits(&val);
+            let bits = bc_not_vec(self, &bits);
+            return self.value_from_bits(bits, ty);
+        }
         VolarValue {
             bits: bc_not_vec(self, &val.bits),
             ty,
@@ -1436,20 +1645,30 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     }
     fn shl(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
         let ty = val.ty.clone();
-        VolarValue {
-            bits: bc_shl(self, &val.bits, &shift.bits),
-            ty,
-        }
+        assert!(
+            !matches!(&ty, LirType::PrimeField { .. }),
+            "bitwise shifts are not defined for prime fields"
+        );
+        let value_bits = self.scalar_bits(&val);
+        let bits = bc_shl(self, &value_bits, &shift.bits);
+        self.value_from_bits(bits, ty)
     }
     fn lshr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
         let ty = val.ty.clone();
-        VolarValue {
-            bits: bc_lshr(self, &val.bits, &shift.bits),
-            ty,
-        }
+        assert!(
+            !matches!(&ty, LirType::PrimeField { .. }),
+            "bitwise shifts are not defined for prime fields"
+        );
+        let value_bits = self.scalar_bits(&val);
+        let bits = bc_lshr(self, &value_bits, &shift.bits);
+        self.value_from_bits(bits, ty)
     }
     fn ashr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
         let ty = val.ty.clone();
+        assert!(
+            !Self::is_single_ir_field(&ty),
+            "arithmetic shifts are not defined for typed scalars"
+        );
         VolarValue {
             bits: bc_ashr(self, &val.bits, &shift.bits),
             ty,
@@ -1459,17 +1678,27 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     // ---- Comparisons -------------------------------------------------------
 
     fn icmp(&mut self, pred: IcmpPred, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
+        let (lhs_bits, rhs_bits) =
+            if Self::is_single_ir_field(&lhs.ty) || Self::is_single_ir_field(&rhs.ty) {
+                assert_eq!(
+                    lhs.ty, rhs.ty,
+                    "typed scalar comparison requires matching types"
+                );
+                (self.scalar_bits(&lhs), self.scalar_bits(&rhs))
+            } else {
+                (lhs.bits.clone(), rhs.bits.clone())
+            };
         let bit = match pred {
-            IcmpPred::Eq => bc_eq(self, &lhs.bits, &rhs.bits),
-            IcmpPred::Ne => bc_ne(self, &lhs.bits, &rhs.bits),
-            IcmpPred::Ult => bc_ult(self, &lhs.bits, &rhs.bits),
-            IcmpPred::Ule => bc_ule(self, &lhs.bits, &rhs.bits),
-            IcmpPred::Ugt => bc_ult(self, &rhs.bits, &lhs.bits),
-            IcmpPred::Uge => bc_ule(self, &rhs.bits, &lhs.bits),
-            IcmpPred::Slt => bc_slt(self, &lhs.bits, &rhs.bits),
-            IcmpPred::Sle => bc_sle(self, &lhs.bits, &rhs.bits),
-            IcmpPred::Sgt => bc_slt(self, &rhs.bits, &lhs.bits),
-            IcmpPred::Sge => bc_sle(self, &rhs.bits, &lhs.bits),
+            IcmpPred::Eq => bc_eq(self, &lhs_bits, &rhs_bits),
+            IcmpPred::Ne => bc_ne(self, &lhs_bits, &rhs_bits),
+            IcmpPred::Ult => bc_ult(self, &lhs_bits, &rhs_bits),
+            IcmpPred::Ule => bc_ule(self, &lhs_bits, &rhs_bits),
+            IcmpPred::Ugt => bc_ult(self, &rhs_bits, &lhs_bits),
+            IcmpPred::Uge => bc_ule(self, &rhs_bits, &lhs_bits),
+            IcmpPred::Slt => bc_slt(self, &lhs_bits, &rhs_bits),
+            IcmpPred::Sle => bc_sle(self, &lhs_bits, &rhs_bits),
+            IcmpPred::Sgt => bc_slt(self, &rhs_bits, &lhs_bits),
+            IcmpPred::Sge => bc_sle(self, &rhs_bits, &lhs_bits),
         };
         VolarValue {
             bits: vec![bit],
@@ -1480,27 +1709,37 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     // ---- Conversions -------------------------------------------------------
 
     fn zext(&mut self, val: VolarValue, dst_ty: LirType) -> VolarValue {
-        let dst_n = bits_for_lir_type(&dst_ty, &self.struct_widths);
-        let mut bits = val.bits;
+        let dst_n = if Self::is_single_ir_field(&dst_ty) {
+            dst_ty.bit_width() as usize
+        } else {
+            bits_for_lir_type(&dst_ty, &self.struct_widths)
+        };
+        let mut bits = self.scalar_bits(&val);
         while bits.len() < dst_n {
             let z = self.bit_const(false);
             bits.push(z);
         }
-        VolarValue { bits, ty: dst_ty }
+        self.value_from_bits(bits, dst_ty)
     }
     fn sext(&mut self, val: VolarValue, dst_ty: LirType) -> VolarValue {
-        let dst_n = bits_for_lir_type(&dst_ty, &self.struct_widths);
-        let sign = *val.bits.last().expect("sext of zero-bit value");
-        let mut bits = val.bits;
+        let dst_n = if Self::is_single_ir_field(&dst_ty) {
+            dst_ty.bit_width() as usize
+        } else {
+            bits_for_lir_type(&dst_ty, &self.struct_widths)
+        };
+        let mut bits = self.scalar_bits(&val);
+        let sign = *bits.last().expect("sext of zero-bit value");
         bits.resize(dst_n, sign);
-        VolarValue { bits, ty: dst_ty }
+        self.value_from_bits(bits, dst_ty)
     }
     fn trunc(&mut self, val: VolarValue, dst_ty: LirType) -> VolarValue {
-        let dst_n = bits_for_lir_type(&dst_ty, &self.struct_widths);
-        VolarValue {
-            bits: val.bits[..dst_n].to_vec(),
-            ty: dst_ty,
-        }
+        let dst_n = if Self::is_single_ir_field(&dst_ty) {
+            dst_ty.bit_width() as usize
+        } else {
+            bits_for_lir_type(&dst_ty, &self.struct_widths)
+        };
+        let bits = self.scalar_bits(&val);
+        self.value_from_bits(bits[..dst_n].to_vec(), dst_ty)
     }
 
     // ---- Select ------------------------------------------------------------
@@ -1513,8 +1752,14 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     ) -> VolarValue {
         let cond_bit = cond.bits[0];
         let ty = then_val.ty.clone();
-        let bits = self.select_vec(cond_bit, &then_val.bits, &else_val.bits);
-        VolarValue { bits, ty }
+        assert_eq!(ty, else_val.ty, "select branches must have matching types");
+        let (then_bits, else_bits) = if Self::is_single_ir_field(&ty) {
+            (self.scalar_bits(&then_val), self.scalar_bits(&else_val))
+        } else {
+            (then_val.bits, else_val.bits)
+        };
+        let bits = self.select_vec(cond_bit, &then_bits, &else_bits);
+        self.value_from_bits(bits, ty)
     }
 
     // ---- Type query --------------------------------------------------------
@@ -1523,8 +1768,8 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
     ///
     /// For `VolarIrTarget` all type information is stored directly in
     /// `VolarValue::ty`, so this is a trivial projection.  The `ty` field is
-    /// set correctly at every construction site, including for
-    /// [`LirType::Native`] values that cannot be inferred from `bits.len()`.
+    /// set correctly at every construction site, including native and field
+    /// values that cannot be inferred from `bits.len()`.
     fn value_scalar_type(&self, val: &VolarValue) -> LirType {
         val.ty.clone()
     }
@@ -1660,7 +1905,9 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
             let covered: std::collections::BTreeSet<u128> =
                 cases.iter().map(|(k, _, _)| *k as u128).collect();
             let type_width = match &index.ty {
-                LirType::Native(_) => 1usize,
+                LirType::Native(_) | LirType::ExtField { .. } | LirType::PrimeField { .. } => {
+                    index.ty.bit_width() as usize
+                }
                 other => bits_for_lir_type(other, &self.struct_widths),
             };
             let domain = 1u128 << type_width.min(12);
@@ -2166,6 +2413,134 @@ mod tests {
             t.end_function();
         });
         assert!(blocks.is_circuit());
+    }
+
+    #[test]
+    fn extension_field_lir_type_is_preserved_and_multiplies_with_poly() {
+        let ty = LirType::ExtField {
+            wrapped: std::boxed::Box::new(LirType::Native(NativeType::Bit)),
+            degree: 8,
+            irreducible: std::vec![1, 1, 0, 1, 1, 0, 0, 0, 1],
+        };
+        let mut target = VolarIrTarget::<()>::new();
+        let (entry, params) = target.begin_function("gf8_mul", &[ty.clone(), ty.clone()], None);
+        target.switch_to_block(entry);
+        let result = target.mul(params[0][0].clone(), params[1][0].clone());
+        assert_eq!(result.bits.len(), 1);
+        target.ret(&[result]);
+        target.end_function();
+
+        let field_id = target
+            .types
+            .0
+            .iter()
+            .position(|ty| {
+                matches!(
+                    ty,
+                    IrType::ExtField { degree: 8, irreducible, .. }
+                        if irreducible == &std::vec![1, 1, 0, 1, 1, 0, 0, 0, 1]
+                )
+            })
+            .expect("the canonical AES extension field must be interned");
+        let output = &target.completed[0].1.blocks[0].stmts[0].kind;
+        match output {
+            IRStmt::Poly { ty, coeffs, .. } => {
+                assert_eq!(ty.0 as usize, field_id);
+                assert_eq!(coeffs.len(), 1);
+                assert_eq!(coeffs.iter().next().unwrap().0.len(), 2);
+            }
+            other => panic!("field multiplication must stay typed Poly, got {other:?}"),
+        }
+
+        let bits = |value: u8| (0..8).map(|bit| value & (1 << bit) != 0).collect();
+        let actual = volar_fuzz::interpreter::ir::eval_ir(
+            &target.completed[0].1,
+            &target.types,
+            &[bits(0x57), bits(0x13)],
+        )
+        .expect("GF(2^8) multiplication should evaluate");
+        assert_eq!(actual, vec![bits(0xfe)]);
+    }
+
+    #[test]
+    fn galois_primitive_polynomials_are_valid_canonical_extension_fields() {
+        fn polynomial(degree: u32, exponents: &[usize]) -> std::vec::Vec<u64> {
+            let mut coefficients = std::vec![0; degree as usize + 1];
+            for &exponent in exponents {
+                coefficients[exponent] = 1;
+            }
+            coefficients
+        }
+
+        let expected = std::vec![
+            (8, polynomial(8, &[0, 1, 3, 4, 8])),
+            (64, polynomial(64, &[0, 1, 3, 4, 64])),
+            (128, polynomial(128, &[0, 1, 2, 7, 128])),
+            (256, polynomial(256, &[0, 2, 5, 10, 256])),
+        ];
+        let fields = expected
+            .iter()
+            .map(|(degree, irreducible)| LirType::ExtField {
+                wrapped: std::boxed::Box::new(LirType::Native(NativeType::Bit)),
+                degree: *degree,
+                irreducible: irreducible.clone(),
+            })
+            .collect::<std::vec::Vec<_>>();
+        let mut target = VolarIrTarget::<()>::new();
+        target.begin_function("fields", &fields, None);
+
+        let mut actual = target
+            .types
+            .0
+            .iter()
+            .filter_map(|ty| match ty {
+                IrType::ExtField {
+                    degree,
+                    irreducible,
+                    ..
+                } => Some((*degree, irreducible.clone())),
+                _ => None,
+            })
+            .collect::<std::vec::Vec<_>>();
+        actual.sort_by_key(|(degree, _)| *degree);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn prime_field_lir_subtraction_uses_prime_field_coefficient() {
+        let ty = LirType::PrimeField {
+            k: 2,
+            n: std::vec![1],
+        };
+        let mut target = VolarIrTarget::<()>::new();
+        let (entry, params) = target.begin_function("gf3_sub", &[ty.clone(), ty.clone()], None);
+        target.switch_to_block(entry);
+        let result = target.sub(params[0][0].clone(), params[1][0].clone());
+        target.ret(&[result]);
+        target.end_function();
+
+        let output = &target.completed[0].1.blocks[0].stmts[0].kind;
+        match output {
+            IRStmt::Poly { ty, coeffs, .. } => {
+                assert!(matches!(
+                    target.types.0[ty.0 as usize],
+                    IrType::PrimeField { k: 2, .. }
+                ));
+                assert_eq!(
+                    coeffs.iter().map(|(_, coeff)| *coeff).collect::<Vec<_>>(),
+                    std::vec![1, 2]
+                );
+            }
+            other => panic!("prime-field subtraction must emit typed Poly, got {other:?}"),
+        }
+
+        let actual = volar_fuzz::interpreter::ir::eval_ir(
+            &target.completed[0].1,
+            &target.types,
+            &[std::vec![true, false], std::vec![false, true]],
+        )
+        .expect("GF(3) subtraction should evaluate");
+        assert_eq!(actual, vec![std::vec![false, true]]);
     }
 
     // ---- value_scalar_type -------------------------------------------------
