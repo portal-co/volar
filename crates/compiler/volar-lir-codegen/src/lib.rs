@@ -2577,13 +2577,31 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
 
         // ---- Compound assignment (x op= rhs) --------------------------------
         IrExprKind::AssignOp { op, left, right } => {
-            let lv = into_scalar(lower_expr(left, ctx), "assignop lhs");
-            let rv = into_scalar(lower_expr(right, ctx), "assignop rhs");
-            let result = lower_binop(*op, lv, rv, ctx);
-            if let IrExprKind::Var(name) = &left.kind {
-                ctx.env.insert(name.clone(), vec![result]);
+            // A scalar `x op= rhs` on a plain variable updates `env` directly.
+            // Indexed (`a[i] op= b`), field (`s.f op= b`), and dereference
+            // (`*p op= b`) targets reuse `lower_assign`'s writeback machinery,
+            // which already handles every aggregate shape; compute `lhs op rhs`
+            // as a synthesized binary expression and assign it back.
+            if matches!(&left.kind, IrExprKind::Var(_)) {
+                let lv = into_scalar(lower_expr(left, ctx), "assignop lhs");
+                let rv = into_scalar(lower_expr(right, ctx), "assignop rhs");
+                let result = lower_binop(*op, lv, rv, ctx);
+                if let IrExprKind::Var(name) = &left.kind {
+                    ctx.env.insert(name.clone(), vec![result]);
+                }
             } else {
-                unimplemented!("AssignOp on non-variable lhs");
+                let prov = expr.prov.clone();
+                let side = expr.side;
+                let combined = volar_ir_common::Node::new(
+                    IrExprKind::Binary {
+                        op: *op,
+                        left: Box::new((**left).clone()),
+                        right: Box::new((**right).clone()),
+                    },
+                    prov,
+                    side,
+                );
+                lower_assign(left, &combined, ctx);
             }
             vec![]
         }
