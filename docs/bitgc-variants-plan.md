@@ -449,6 +449,42 @@ paper's §4 figures and the artifact's `small` mode easiest.
 4.4. Bit-packed stitching stream codec in a `frame.rs`, versioned, with
      malformed-frame rejection tests.
 
+### Phase 4.5 — Paper-pinned gate equations and DD gadget (landed 2026-10-08)
+
+The ePrint PDFs (`2024/1988`, `2025/1810`) were supplied and archived in
+`docs/research/papers/`; the exact construction is extracted and
+cross-checked against the artifact in
+`docs/research/bitgc-paper-pinning.md`. A new `volar_spec::bitgc::pinned`
+module lands the paper-pinned pieces:
+
+- **Exact gate algebra** (unit-tested): `masked_table` (ẑ[i,j]),
+  `row_multipliers` (t₁,t₂,t₃), `fast_mask_bits` / `fast_unmask_coeffs`,
+  `determination_bit`.
+- **A reference DD gadget** (`ReferenceDd`) whose `DD_i`/`DD_{i,j}`/
+  `HssMul` satisfy the paper's DD identities **exactly** over `R_p`
+  (verified by `dd_linear_identity`, `dd_correlated_identity`,
+  `hss_mul_product_share` tests). It is cryptographically hollow (no
+  lattice noise) and exists to pin the garbling algebra; the production
+  DD gadget is the lattice SWHEwDD instantiation of [ZLL+26] App. A,
+  plugged into the same seam.
+- The `DdGadget` trait is the seam for the production lattice gadget.
+
+**Confirmed structure (paper):** wire labels are additive key-shares over
+`R_p` with `W^π = W⁰ + π·Δ`, Δ = the ternary SWHE secret key
+(`LSB(Δ)=1`); per-gate communication is the determination bit
+`d_γ = LSB(W⁰_γ) ⊕ π_γ` (plus 4 PRG mask bits per AND under fast). The
+per-wire offline value is **one permutation bit π** (N = |I|+|W| for
+small, 4·|W_AND| for fast), not the (A0, π) pair the first-cut
+`ReferenceEquation` assumed.
+
+**Remaining for a faithful implementation** (next milestone, tracked by
+BITGC-LEDGER-04): port the production SWHEwDD gadget — RLWE'
+gadget-product ciphertexts for k=1 DD and the CP-RLWE triple for k=2 —
+over the coefficient-form SWHE ring, implement the full circuit drivers
+(`garble_circuit`/`evaluate_circuit` against `ReferenceDd` first, then
+the lattice gadget), and run the artifact conformance vectors
+(BITGC-LEDGER-01/02).
+
 ### Phase 5 — Hardening, benchmarks, docs
 
 > **Status after implementation round (2026-10-08):** Phases 0–4
