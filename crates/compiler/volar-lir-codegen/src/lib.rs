@@ -783,6 +783,12 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                         .copied()
                         .map(ArrayLength::Const)
                         .unwrap_or_else(|| ArrayLength::TypeParam(name.clone())),
+                    // Constant arithmetic over resolved lengths
+                    // (`4 * NK_ROUND_KEYS`) resolves to a concrete count.
+                    IrExprKind::Binary { .. } => {
+                        let n = resolve_const_expr_len(len, self.mono);
+                        ArrayLength::Const(n)
+                    }
                     _ => return None,
                 };
                 Some(IrType::Array {
