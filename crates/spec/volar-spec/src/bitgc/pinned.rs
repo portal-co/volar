@@ -427,8 +427,8 @@ impl GateRecord {
 // Circuit drivers (garble / evaluate whole circuits)
 // ─────────────────────────────────────────────────────────────────────
 
-use super::common::{Circuit, Gate};
 use super::Variant;
+use super::common::{Circuit, Gate};
 use crate::SpecRng;
 
 /// The garbler's per-circuit PRF key ([ZLL+26] Fig. 4 `PRF_K(γ)`). The
@@ -472,7 +472,9 @@ fn scale_row(row: &RowCt, k: i64, p: u64) -> RowCt {
         poly.iter().map(|&c| ring::mul_mod(c, k, p)).collect()
     };
     let neg = |poly: LabelPoly| -> LabelPoly {
-        poly.iter().map(|&c| if c == 0 { 0 } else { p - c }).collect()
+        poly.iter()
+            .map(|&c| if c == 0 { 0 } else { p - c })
+            .collect()
     };
     if k >= 0 {
         RowCt {
@@ -854,7 +856,9 @@ pub fn evaluate_circuit(
                     Some(_) => return Err(DriverError::WrongRecord),
                     None => return Err(DriverError::MissingRecord),
                 };
-                let out = eval_gate(dd, &labels[a], masked[a], &labels[b], masked[b], taus, prf, w, degree, p);
+                let out = eval_gate(
+                    dd, &labels[a], masked[a], &labels[b], masked[b], taus, prf, w, degree, p,
+                );
                 let m = label_lsb(&out) ^ d;
                 labels.push(out);
                 masked.push(m);
@@ -866,7 +870,9 @@ pub fn evaluate_circuit(
                     None => return Err(DriverError::MissingRecord),
                 };
                 let taus = xor_rows(delta_ct, d, p);
-                let out = eval_gate(dd, &labels[a], masked[a], &labels[b], masked[b], &taus, prf, w, degree, p);
+                let out = eval_gate(
+                    dd, &labels[a], masked[a], &labels[b], masked[b], &taus, prf, w, degree, p,
+                );
                 labels.push(out);
                 masked.push(masked[a] ^ masked[b] ^ d);
             }
@@ -882,7 +888,9 @@ pub fn evaluate_circuit(
                     None => return Err(DriverError::MissingRecord),
                 };
                 let taus = fast_and_rows(delta_ct, r_rows, &masks, p);
-                let out = eval_gate(dd, &labels[a], masked[a], &labels[b], masked[b], &taus, prf, w, degree, p);
+                let out = eval_gate(
+                    dd, &labels[a], masked[a], &labels[b], masked[b], &taus, prf, w, degree, p,
+                );
                 let m = label_lsb(&out) ^ det;
                 labels.push(out);
                 masked.push(m);
@@ -896,7 +904,9 @@ pub fn evaluate_circuit(
                     None => return Err(DriverError::MissingRecord),
                 }
                 let taus = xor_rows(delta_ct, false, p);
-                let out = eval_gate(dd, &labels[a], masked[a], &labels[b], masked[b], &taus, prf, w, degree, p);
+                let out = eval_gate(
+                    dd, &labels[a], masked[a], &labels[b], masked[b], &taus, prf, w, degree, p,
+                );
                 labels.push(out);
                 masked.push(masked[a] ^ masked[b]);
             }
@@ -941,7 +951,12 @@ mod tests {
     }
 
     fn test_prf() -> PrfKey {
-        PrfKey([0x0123_4567_89ab_cdef, 0x0fed_cba9_8765_4321, 0xaaaa_bbbb_cccc_dddd, 0x1111_2222_3333_4444])
+        PrfKey([
+            0x0123_4567_89ab_cdef,
+            0x0fed_cba9_8765_4321,
+            0xaaaa_bbbb_cccc_dddd,
+            0x1111_2222_3333_4444,
+        ])
     }
 
     /// Full garble+evaluate round-trip for one variant over all 8 inputs.
@@ -972,10 +987,12 @@ mod tests {
             .iter()
             .filter(|g| matches!(g, Gate::And { .. }))
             .count();
-        let prg_bits: Vec<bool> = (0..4 * and_count).map(|_| (rng.next_u32() & 1) == 1).collect();
+        let prg_bits: Vec<bool> = (0..4 * and_count)
+            .map(|_| (rng.next_u32() & 1) == 1)
+            .collect();
 
-        let garbling =
-            garble_circuit(variant, &circuit, &dd, &pis, &prf, &prg_bits, &mut rng).expect("garble");
+        let garbling = garble_circuit(variant, &circuit, &dd, &pis, &prf, &prg_bits, &mut rng)
+            .expect("garble");
         let encoded =
             encode_inputs(&garbling, dd.delta(), &inputs, circuit.inputs).expect("encode");
         let masked_out = evaluate_circuit(
@@ -1001,7 +1018,11 @@ mod tests {
             for x1 in [false, true] {
                 for x2 in [false, true] {
                     let inputs = [x0, x1, x2];
-                    assert_eq!(roundtrip(Variant::Small, inputs), expect(inputs), "{inputs:?}");
+                    assert_eq!(
+                        roundtrip(Variant::Small, inputs),
+                        expect(inputs),
+                        "{inputs:?}"
+                    );
                 }
             }
         }
@@ -1014,7 +1035,11 @@ mod tests {
             for x1 in [false, true] {
                 for x2 in [false, true] {
                     let inputs = [x0, x1, x2];
-                    assert_eq!(roundtrip(Variant::Fast, inputs), expect(inputs), "{inputs:?}");
+                    assert_eq!(
+                        roundtrip(Variant::Fast, inputs),
+                        expect(inputs),
+                        "{inputs:?}"
+                    );
                 }
             }
         }
@@ -1041,7 +1066,9 @@ mod tests {
             .iter()
             .filter(|g| matches!(g, Gate::And { .. }))
             .count();
-        let prg_bits: Vec<bool> = (0..4 * and_count).map(|_| (rng.next_u32() & 1) == 1).collect();
+        let prg_bits: Vec<bool> = (0..4 * and_count)
+            .map(|_| (rng.next_u32() & 1) == 1)
+            .collect();
 
         for (variant, want) in [(Variant::Small, 2usize), (Variant::Fast, 5usize)] {
             let g = garble_circuit(variant, &circuit, &dd, &pis, &prf, &prg_bits, &mut rng)

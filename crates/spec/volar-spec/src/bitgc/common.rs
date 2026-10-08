@@ -553,7 +553,10 @@ impl ReferenceEquation {
         // coefficient. Zero coefficients are skipped so level-0 `embed`
         // of an all-zero plaintext never fires.
         let level = m.level();
-        let mut acc = ctx.mul_plain(&ctx.encrypt_one_like(m)?, &ctx.constant_slots(coeffs[k_max]))?;
+        let mut acc = ctx.mul_plain(
+            &ctx.encrypt_one_like(m)?,
+            &ctx.constant_slots(coeffs[k_max]),
+        )?;
         for i in (0..k_max).rev() {
             acc = ctx.switch_to(&ctx.mul(&acc, m, ksk)?, level)?;
             if coeffs[i] != 0 {
