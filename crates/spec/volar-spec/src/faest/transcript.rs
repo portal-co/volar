@@ -142,7 +142,9 @@ pub fn chall1(
         FaestTranscript::new_shake128()
     };
     t.absorb(mu);
-    t.absorb(iv.as_ref());
+    // `iv: &[u8; 16]` is already a byte-slice reference; a redundant
+    // `.as_ref()` would re-wrap it and lose the slice-pointer flattening.
+    t.absorb(iv);
     t.absorb(com_bytes);
     t.squeeze(lambda_plus_b)
 }
