@@ -191,7 +191,7 @@ pub fn sign(
     let _ = opening; // structural — used implicitly below for signature bytes
 
     // ── 7. ConvertToVOLE (prover: all seeds present) ──────────────────────────
-    let mut sub_voles = Vec::with_capacity(TAU);
+    let mut sub_voles: Vec<super::convert_to_vole::ConvertOutput> = Vec::with_capacity(TAU);
     for i in 0..TAU {
         let seeds_i: Vec<Option<[u8; LAMBDA_BYTES]>> = (0..SUB_VOLE_N)
             .map(|j| Some(commitment.seeds[i * SUB_VOLE_N + j]))
@@ -284,7 +284,7 @@ pub fn verify(pk: &FaestPublicKey, message: &[u8], sig: &FaestSignature) -> bool
     };
 
     // ── 4. ConvertToVOLE (verifier: one seed missing per sub-VOLE) ──────────
-    let mut sub_voles_v = Vec::with_capacity(TAU);
+    let mut sub_voles_v: Vec<super::convert_to_vole::ConvertOutput> = Vec::with_capacity(TAU);
     for i in 0..TAU {
         // Verifier seeds: apply the Proposition 5.2 permutation.
         // sd'_j = sd_{j XOR delta_i}; sd'_0 = None (hidden).
