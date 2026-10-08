@@ -370,12 +370,15 @@ pub fn verify(pk: &FaestPublicKey, message: &[u8], sig: &FaestSignature) -> bool
 /// FAEST uses a more precise domain-separated expansion; this is structurally
 /// equivalent for the round-trip tests.
 fn expand_challenge_to_deltas(chall_1: &[u8], tau: usize, n: usize) -> Vec<usize> {
-    (0..tau)
-        .map(|i| {
-            let byte = chall_1[i % chall_1.len()] as usize;
-            byte % n
-        })
-        .collect()
+    // Bounded loop rather than `(0..tau).map(..).collect()`: the LIR
+    // iterator-chain lowering needs a concrete range end, and `tau` is a
+    // runtime param here (the const-generic `TAU` erases at the call).
+    let mut out: Vec<usize> = Vec::with_capacity(tau);
+    for i in 0..tau {
+        let byte = chall_1[i % chall_1.len()] as usize;
+        out.push(byte % n);
+    }
+    out
 }
 
 /// Re-expand the GGM tree from root seed `r` to get all `total_leaves * 2 - 1`
