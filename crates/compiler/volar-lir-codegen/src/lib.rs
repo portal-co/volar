@@ -138,6 +138,9 @@ struct LowerCtx<'t, T: LirTarget<P>, P: Clone = ()> {
     /// Original IrModule impl blocks (for method return-type lookup at
     /// extern-fallback call sites that the plan did not specialize).
     module_impls: &'t [volar_compiler::ir::IrImpl<P>],
+    /// Declared types of module-level constants (`SBOX`, `RCON`), so
+    /// indexing a constant array infers its element type.
+    module_const_types: &'t BTreeMap<String, IrType>,
     /// Functions annotated `#[oracle]`, `#[action]`, or `#[rng]`.
     /// Populated from the module at `lower_module_with_opts` time.
     external_fns: &'t BTreeMap<String, ExternalFnInfo>,
@@ -177,6 +180,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
         module_structs: &'t [volar_compiler::ir::IrStruct],
         module_enums: &'t [IrEnum],
         module_impls: &'t [volar_compiler::ir::IrImpl<P>],
+        module_const_types: &'t BTreeMap<String, IrType>,
     ) -> Self {
         let mut env = BTreeMap::new();
         let mut env_types = BTreeMap::new();
@@ -195,6 +199,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             module_structs,
             module_enums,
             module_impls,
+            module_const_types,
             external_fns: &EMPTY_EXTERNAL_FNS,
             func_sigs: &EMPTY_FUNC_SIGS,
             ir_func_ret_types: &EMPTY_IR_RET_TYPES,
@@ -242,7 +247,11 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
     /// Returns `None` for unsupported or uninferable expressions.
     fn infer_type(&self, expr: &IrExpr<P>) -> Option<IrType> {
         match &expr.kind {
-            IrExprKind::Var(name) => self.env_types.get(name).cloned(),
+            IrExprKind::Var(name) => self
+                .env_types
+                .get(name)
+                .cloned()
+                .or_else(|| self.module_const_types.get(name).cloned()),
 
             IrExprKind::Field { base, field } => {
                 let base_ty = self.infer_type(base)?;
@@ -821,6 +830,7 @@ static EMPTY_EXTERNAL_FNS: LazyLock<BTreeMap<String, ExternalFnInfo>> =
     LazyLock::new(BTreeMap::new);
 static EMPTY_FUNC_SIGS: LazyLock<BTreeMap<String, FuncSigInfo>> = LazyLock::new(BTreeMap::new);
 static EMPTY_IR_RET_TYPES: LazyLock<BTreeMap<String, IrType>> = LazyLock::new(BTreeMap::new);
+static EMPTY_CONST_TYPES: LazyLock<BTreeMap<String, IrType>> = LazyLock::new(BTreeMap::new);
 static EMPTY_ENUMS: LazyLock<Vec<IrEnum>> = LazyLock::new(Vec::new);
 static EMPTY_ENUM_REGISTRY: LazyLock<EnumRegistry> = LazyLock::new(EnumRegistry::empty);
 
@@ -1488,6 +1498,13 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
 
     let mut func_sigs = BTreeMap::new();
     let mut ir_func_ret_types = BTreeMap::new();
+    // Module-level constant array types (`SBOX`, `RCON`) so indexing a
+    // constant infers its element type during lowering.
+    let module_const_types: BTreeMap<String, IrType> = module
+        .consts
+        .iter()
+        .map(|c| (c.name.clone(), c.ty.clone()))
+        .collect();
     for (key, env) in &plan.instances {
         let func = plan
             .materialized
@@ -1535,6 +1552,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
             &module.structs,
             &module.enums,
             &module.impls,
+            &module_const_types,
             &external_fns,
             &func_sigs,
             &ir_func_ret_types,
@@ -1557,6 +1575,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     module_structs: &[volar_compiler::ir::IrStruct],
     module_enums: &[IrEnum],
     module_impls: &[volar_compiler::ir::IrImpl<P>],
+    module_const_types: &BTreeMap<String, IrType>,
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
@@ -1635,6 +1654,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
         module_structs,
         module_enums,
         module_impls,
+        module_const_types,
     );
     for (name, slot) in param_promotions {
         ctx.promoted.insert(name, slot);
@@ -1706,6 +1726,7 @@ fn lower_function_in_module<T: LirTarget<P>, P: Clone>(
         module_structs,
         module_enums,
         module_impls,
+        &EMPTY_CONST_TYPES,
     );
     ctx.external_fns = external_fns;
     ctx.func_sigs = func_sigs;
@@ -1801,6 +1822,7 @@ fn lower_function_with_registry_opts<T: LirTarget>(
         module_structs,
         &EMPTY_ENUMS,
         module_impls,
+        &EMPTY_CONST_TYPES,
     );
     ctx.loop_mode = loop_lowering;
 
@@ -7733,6 +7755,7 @@ fn lower_cfg_function<T: LirTarget<P>, P: Clone>(
             module_structs,
             module_enums,
             module_impls,
+            &EMPTY_CONST_TYPES,
         );
         ctx.external_fns = external_fns;
         ctx.func_sigs = func_sigs;
