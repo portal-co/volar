@@ -265,35 +265,29 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 }
                 // A bare `TypeParam` naming a module struct (a nominal the
                 // parser left unresolved, e.g. `Vec<ConvertOutput>`'s element
-                // type surfacing through an index) resolves to that struct.
-                let resolved_base;
-                let base_ty = match &base_ty {
-                    IrType::TypeParam(name)
-                        if self
-                            .module_structs
-                            .iter()
-                            .any(|s| s.kind.to_string() == *name) =>
-                    {
-                        resolved_base = IrType::Struct {
-                            kind: StructKind::Custom(name.clone()),
-                            type_args: Vec::new(),
-                        };
-                        &resolved_base
+                // type surfacing through an index) resolves to that struct,
+                // whether bare or behind a reference.
+                let as_struct = |ty: &IrType| -> Option<(StructKind, Vec<IrType>)> {
+                    match ty {
+                        IrType::Struct { kind, type_args } => {
+                            Some((kind.clone(), type_args.clone()))
+                        }
+                        IrType::TypeParam(name)
+                            if self
+                                .module_structs
+                                .iter()
+                                .any(|s| s.kind.to_string() == *name) =>
+                        {
+                            Some((StructKind::Custom(name.clone()), Vec::new()))
+                        }
+                        _ => None,
                     }
-                    other => other,
                 };
-                let (struct_kind, type_args) = match base_ty {
-                    IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
-                    IrType::Reference { elem, .. } => match elem.as_ref() {
-                        IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
-                        _ => return None,
-                    },
-                    _ => return None,
+                let (struct_kind, type_args) = match &base_ty {
+                    IrType::Reference { elem, .. } => as_struct(elem)?,
+                    other => as_struct(other)?,
                 };
-                let ir_struct = self
-                    .module_structs
-                    .iter()
-                    .find(|s| s.kind == *struct_kind)?;
+                let ir_struct = self.module_structs.iter().find(|s| s.kind == struct_kind)?;
                 let field_def = ir_struct.fields.iter().find(|f| &f.name == field)?;
                 // Substitute the struct's own generics from the use-site type args.
                 let mut local = MonoEnv::new(self.mono.hash_suffix.clone());
