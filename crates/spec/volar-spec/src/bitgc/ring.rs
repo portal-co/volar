@@ -406,6 +406,39 @@ fn find_negacyclic_root(degree: usize, modulus: u64) -> Option<u64> {
     None
 }
 
+/// Schoolbook negacyclic convolution `a · b mod (X^N + 1, p)` on
+/// coefficient vectors.
+///
+/// The NTT path in [`Ring`] requires an NTT-friendly modulus; this helper
+/// works for any `p` and is the reference for the BitGC label layer's
+/// ring products (DD/HSS terms over `R_p`). `O(N²)`, reference-grade.
+pub fn negacyclic_mul_coeffs(a: &[u64], b: &[u64], modulus: u64) -> Vec<u64> {
+    assert_eq!(a.len(), b.len(), "negacyclic_mul: degree mismatch");
+    let n = a.len();
+    let mut out = alloc::vec![0_u64; n];
+    for (i, &ai) in a.iter().enumerate() {
+        for (j, &bj) in b.iter().enumerate() {
+            let k = i + j;
+            if k < n {
+                out[k] = add_mod(out[k], mul_mod(ai, bj, modulus), modulus);
+            } else {
+                out[k - n] = sub_mod(out[k - n], mul_mod(ai, bj, modulus), modulus);
+            }
+        }
+    }
+    out
+}
+
+/// Coefficient-wise modular subtraction on vectors.
+pub fn sub_coeffs(a: &[u64], b: &[u64], modulus: u64) -> Vec<u64> {
+    a.iter().zip(b).map(|(&x, &y)| sub_mod(x, y, modulus)).collect()
+}
+
+/// Coefficient-wise modular addition on vectors.
+pub fn add_coeffs(a: &[u64], b: &[u64], modulus: u64) -> Vec<u64> {
+    a.iter().zip(b).map(|(&x, &y)| add_mod(x, y, modulus)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
