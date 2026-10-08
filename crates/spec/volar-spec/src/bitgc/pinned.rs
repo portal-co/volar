@@ -258,8 +258,7 @@ pub trait DdGadget {
     /// `DD_{i,j}(A, B, τ)` (k=2).
     fn dd_ij(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, tau: &RowCt) -> LabelPoly;
     /// The gate evaluator `Eval_{i,j}(A,B,τ)`.
-    fn eval(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, taus: &[RowCt; 3])
-    -> LabelPoly;
+    fn eval(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, taus: &[RowCt; 3]) -> LabelPoly;
 }
 
 /// The reference DD gadget over `R_p` (exact DD identities; see module

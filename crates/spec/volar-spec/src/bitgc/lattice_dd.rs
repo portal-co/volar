@@ -137,14 +137,7 @@ impl DdGadget for LatticeDd {
         }
     }
 
-    fn eval(
-        &self,
-        a: &LabelPoly,
-        i: bool,
-        b: &LabelPoly,
-        j: bool,
-        taus: &[RowCt; 3],
-    ) -> LabelPoly {
+    fn eval(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, taus: &[RowCt; 3]) -> LabelPoly {
         let mut out = DdGadget::dd_i(self, a, i, &taus[0]);
         out = ring::add_coeffs(&out, &DdGadget::dd_i(self, b, j, &taus[1]), self.p);
         ring::add_coeffs(&out, &DdGadget::dd_ij(self, a, i, b, j, &taus[2]), self.p)
@@ -206,12 +199,7 @@ impl LatticeDd {
     /// `q` must be an odd multiple of the odd `p` (so the mod-`p`
     /// reduction of the phase is exact). `random` must be a CSPRNG for
     /// any non-test use.
-    pub fn new(
-        n: usize,
-        p: u64,
-        q: u64,
-        random: &mut dyn SpecRng,
-    ) -> Result<Self, LatticeError> {
+    pub fn new(n: usize, p: u64, q: u64, random: &mut dyn SpecRng) -> Result<Self, LatticeError> {
         if n == 0 || p < 3 || p % 2 == 0 || q % p != 0 || q % 2 == 0 {
             return Err(LatticeError::InvalidParameters);
         }
@@ -230,7 +218,15 @@ impl LatticeDd {
         // Δ as an R_q element (centered: −1 ↦ q−1) for phase arithmetic.
         let delta_q: RqPoly = delta
             .iter()
-            .map(|&c| if c == 0 { 0 } else if c == 1 { 1 } else { q - 1 })
+            .map(|&c| {
+                if c == 0 {
+                    0
+                } else if c == 1 {
+                    1
+                } else {
+                    q - 1
+                }
+            })
             .collect();
 
         // CP-RLWE triple over R_q:
@@ -315,7 +311,15 @@ impl LatticeDd {
         let delta_q: RqPoly = self
             .delta
             .iter()
-            .map(|&c| if c == 0 { 0 } else if c == 1 { 1 } else { q - 1 })
+            .map(|&c| {
+                if c == 0 {
+                    0
+                } else if c == 1 {
+                    1
+                } else {
+                    q - 1
+                }
+            })
             .collect();
         let u2d = negacyclic_mul_rq(&u2, &delta_q, q);
         // t·Δ over R_q (t may be ±2 for the XOR τ₃ row).
@@ -339,7 +343,15 @@ impl LatticeDd {
         let delta_q: RqPoly = self
             .delta
             .iter()
-            .map(|&c| if c == 0 { 0 } else if c == 1 { 1 } else { q - 1 })
+            .map(|&c| {
+                if c == 0 {
+                    0
+                } else if c == 1 {
+                    1
+                } else {
+                    q - 1
+                }
+            })
             .collect();
         let u2d = negacyclic_mul_rq(&tau.u2, &delta_q, q);
         let phase = add_rq(&tau.u1, &u2d, q);
@@ -478,7 +490,9 @@ fn negacyclic_mul_rq(a: &[u64], b: &[u64], q: u64) -> RqPoly {
             }
         }
     }
-    out.iter().map(|&c| c.rem_euclid(q as i128) as u64).collect()
+    out.iter()
+        .map(|&c| c.rem_euclid(q as i128) as u64)
+        .collect()
 }
 
 fn add_rq(a: &[u64], b: &[u64], q: u64) -> RqPoly {
@@ -643,8 +657,16 @@ mod tests {
         let m = dd.dec_row(&tau);
         let base = dd.dd_ij(&a0, false, &b0, false, &tau);
         for (i, j) in [(false, false), (true, false), (false, true), (true, true)] {
-            let a = if i { add_delta(&a0, dd.delta(), p) } else { a0.clone() };
-            let b = if j { add_delta(&b0, dd.delta(), p) } else { b0.clone() };
+            let a = if i {
+                add_delta(&a0, dd.delta(), p)
+            } else {
+                a0.clone()
+            };
+            let b = if j {
+                add_delta(&b0, dd.delta(), p)
+            } else {
+                b0.clone()
+            };
             let lhs = dd.dd_ij(&a, i, &b, j, &tau);
             let corr = if i && j {
                 m.clone()
@@ -665,8 +687,16 @@ mod tests {
         let b0 = sample_rp(dd.degree(), p, 0x8888);
         let base_share = dd.hss_mul(&a0, false, &b0, false);
         for (i, j) in [(true, false), (false, true), (true, true)] {
-            let a = if i { add_delta(&a0, dd.delta(), p) } else { a0.clone() };
-            let b = if j { add_delta(&b0, dd.delta(), p) } else { b0.clone() };
+            let a = if i {
+                add_delta(&a0, dd.delta(), p)
+            } else {
+                a0.clone()
+            };
+            let b = if j {
+                add_delta(&b0, dd.delta(), p)
+            } else {
+                b0.clone()
+            };
             let got = dd.hss_mul(&a, i, &b, j);
             let expect = if i && j {
                 add_rp(&base_share, dd.delta(), p)
@@ -734,7 +764,11 @@ mod tests {
             for x1 in [false, true] {
                 for x2 in [false, true] {
                     let inputs = [x0, x1, x2];
-                    assert_eq!(circuit_roundtrip(Variant::Small, inputs), expect(inputs), "{inputs:?}");
+                    assert_eq!(
+                        circuit_roundtrip(Variant::Small, inputs),
+                        expect(inputs),
+                        "{inputs:?}"
+                    );
                 }
             }
         }
@@ -747,7 +781,11 @@ mod tests {
             for x1 in [false, true] {
                 for x2 in [false, true] {
                     let inputs = [x0, x1, x2];
-                    assert_eq!(circuit_roundtrip(Variant::Fast, inputs), expect(inputs), "{inputs:?}");
+                    assert_eq!(
+                        circuit_roundtrip(Variant::Fast, inputs),
+                        expect(inputs),
+                        "{inputs:?}"
+                    );
                 }
             }
         }
@@ -770,8 +808,16 @@ mod tests {
         let b0 = sample_rp(dd.degree(), p, 0xbbbb);
         let base = dd.eval(&a0, false, &b0, false, &taus);
         for (i, j) in [(false, false), (true, false), (false, true), (true, true)] {
-            let a = if i { add_delta(&a0, dd.delta(), p) } else { a0.clone() };
-            let b = if j { add_delta(&b0, dd.delta(), p) } else { b0.clone() };
+            let a = if i {
+                add_delta(&a0, dd.delta(), p)
+            } else {
+                a0.clone()
+            };
+            let b = if j {
+                add_delta(&b0, dd.delta(), p)
+            } else {
+                b0.clone()
+            };
             let got = dd.eval(&a, i, &b, j, &taus);
             // Correction = (i·t1 + j·t2 + ij·t3)·Δ
             let k = (i as i64) * t[0] + (j as i64) * t[1] + ((i && j) as i64) * t[2];

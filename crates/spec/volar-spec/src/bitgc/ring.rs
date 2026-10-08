@@ -431,12 +431,18 @@ pub fn negacyclic_mul_coeffs(a: &[u64], b: &[u64], modulus: u64) -> Vec<u64> {
 
 /// Coefficient-wise modular subtraction on vectors.
 pub fn sub_coeffs(a: &[u64], b: &[u64], modulus: u64) -> Vec<u64> {
-    a.iter().zip(b).map(|(&x, &y)| sub_mod(x, y, modulus)).collect()
+    a.iter()
+        .zip(b)
+        .map(|(&x, &y)| sub_mod(x, y, modulus))
+        .collect()
 }
 
 /// Coefficient-wise modular addition on vectors.
 pub fn add_coeffs(a: &[u64], b: &[u64], modulus: u64) -> Vec<u64> {
-    a.iter().zip(b).map(|(&x, &y)| add_mod(x, y, modulus)).collect()
+    a.iter()
+        .zip(b)
+        .map(|(&x, &y)| add_mod(x, y, modulus))
+        .collect()
 }
 
 #[cfg(test)]
