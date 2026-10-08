@@ -354,6 +354,40 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 Some(IrType::Primitive(PrimitiveType::Usize))
             }
 
+            // Wrapping/saturating arithmetic preserves the receiver type.
+            IrExprKind::MethodCall {
+                receiver,
+                method:
+                    MethodKind::Known(
+                        StdMethod::WrappingAdd
+                        | StdMethod::WrappingSub
+                        | StdMethod::WrappingMul
+                        | StdMethod::WrappingNeg
+                        | StdMethod::SaturatingAdd
+                        | StdMethod::SaturatingSub,
+                    ),
+                ..
+            } => self.infer_type(receiver),
+
+            // `value.to_le_bytes()` / `to_be_bytes()` returns a fixed byte
+            // array whose length is the receiver's byte width.
+            IrExprKind::MethodCall {
+                receiver,
+                method: MethodKind::Known(StdMethod::ToLeBytes | StdMethod::ToBeBytes),
+                ..
+            } => {
+                let recv_ty = self.infer_type(receiver)?;
+                let bits = match &recv_ty {
+                    IrType::Primitive(p) => lir_int_bits(&primitive_to_lir(*p))?,
+                    _ => return None,
+                };
+                Some(IrType::Array {
+                    kind: ArrayKind::FixedArray,
+                    elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
+                    len: ArrayLength::Const((bits / 8) as usize),
+                })
+            }
+
             IrExprKind::MethodCall {
                 receiver,
                 method: MethodKind::Known(StdMethod::Finalize),
@@ -506,6 +540,27 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 if args.is_empty() {
                     if let Some(ty) = self.infer_digest_new_type(func) {
                         return Some(ty);
+                    }
+                }
+                // `uN::from_le_bytes` / `from_be_bytes` returns the head int type.
+                if let IrExprKind::Path { segments, .. } = &func.kind {
+                    if segments.len() == 2
+                        && args.len() == 1
+                        && matches!(
+                            segments.last().map(String::as_str),
+                            Some("from_le_bytes" | "from_be_bytes")
+                        )
+                    {
+                        if let Some(lir) = primitive_int_lir_from_path(&segments[0]) {
+                            return Some(match lir {
+                                LirType::U8 => IrType::Primitive(PrimitiveType::U8),
+                                LirType::U32 => IrType::Primitive(PrimitiveType::U32),
+                                LirType::U64 => IrType::Primitive(PrimitiveType::U64),
+                                LirType::U128 => IrType::Primitive(PrimitiveType::U128),
+                                LirType::I128 => IrType::Primitive(PrimitiveType::I128),
+                                _ => IrType::Primitive(PrimitiveType::U64),
+                            });
+                        }
                     }
                 }
                 if args.len() == 1 {
@@ -3539,6 +3594,126 @@ fn lower_fixed_array<T: LirTarget<P>, P: Clone>(
     elems.iter().flat_map(|e| lower_expr(e, ctx)).collect()
 }
 
+/// Parse a primitive-integer path head (`u8`, `u32`, `usize`, ...) into its
+/// `LirType`. Returns `None` for non-integer heads.
+fn primitive_int_lir_from_path(head: &str) -> Option<LirType> {
+    let prim = match head {
+        "u8" => PrimitiveType::U8,
+        "u16" => return Some(LirType::U16),
+        "u32" => PrimitiveType::U32,
+        "u64" => PrimitiveType::U64,
+        "u128" => return Some(LirType::U128),
+        "usize" => PrimitiveType::Usize,
+        "i32" => return Some(LirType::I32),
+        "i64" => return Some(LirType::I64),
+        "i128" => PrimitiveType::I128,
+        _ => return None,
+    };
+    Some(primitive_to_lir(prim))
+}
+
+/// Bit width of a scalar integer `LirType`; `None` for non-integer types.
+fn lir_int_bits(ty: &LirType) -> Option<u32> {
+    match ty {
+        LirType::Bool => Some(1),
+        LirType::U8 | LirType::I8 => Some(8),
+        LirType::U16 | LirType::I16 => Some(16),
+        LirType::U32 | LirType::I32 => Some(32),
+        LirType::U64 | LirType::I64 => Some(64),
+        LirType::U128 | LirType::I128 => Some(128),
+        _ => None,
+    }
+}
+
+/// Pack a fixed byte array into an integer (`uN::from_le_bytes` /
+/// `from_be_bytes`). Each byte is zero-extended to the target width, shifted
+/// by its bit position, and OR-ed (the bytes are disjoint, so OR == add).
+fn lower_bytes_to_int<T: LirTarget<P>, P: Clone>(
+    head: &str,
+    bytes_expr: &IrExpr<P>,
+    little: bool,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let target_lir = primitive_int_lir_from_path(head)
+        .unwrap_or_else(|| panic!("from_le_bytes/from_be_bytes: non-integer head '{head}'"));
+    let bits = lir_int_bits(&target_lir)
+        .unwrap_or_else(|| panic!("from_le_bytes/from_be_bytes: '{head}' is not a scalar integer"));
+    let n_bytes = (bits / 8) as usize;
+
+    let byte_vals = lower_expr(bytes_expr, ctx);
+    assert_eq!(
+        byte_vals.len(),
+        n_bytes,
+        "from_le_bytes/from_be_bytes: source has {} bytes, expected {n_bytes} for {head}",
+        byte_vals.len()
+    );
+
+    let mut acc: Option<T::Value> = None;
+    for k in 0..n_bytes {
+        // Little-endian: byte k occupies bits 8k. Big-endian: byte k
+        // occupies bits 8*(n-1-k).
+        let shift_bits = if little {
+            8 * k as u32
+        } else {
+            8 * (n_bytes as u32 - 1 - k as u32)
+        };
+        let byte = ctx.target.zext(byte_vals[k].clone(), target_lir.clone());
+        let shifted = if shift_bits == 0 {
+            byte
+        } else {
+            let sh = ctx.target.iconst(target_lir.clone(), shift_bits as i64);
+            ctx.target.shl(byte, sh)
+        };
+        acc = Some(match acc {
+            None => shifted,
+            Some(a) => ctx.target.or(a, shifted),
+        });
+    }
+    vec![acc.expect("at least one byte")]
+}
+
+/// Decompose an integer into its byte array (`value.to_le_bytes()` /
+/// `to_be_bytes`). Each byte extracts its 8-bit window with a logical shift
+/// and a truncate.
+fn lower_int_to_bytes<T: LirTarget<P>, P: Clone>(
+    receiver: &IrExpr<P>,
+    little: bool,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let recv_ir_ty = ctx.infer_type(receiver).unwrap_or_else(|| {
+        panic!(
+            "to_le_bytes/to_be_bytes: cannot infer receiver type; receiver_kind={:?}, caller={:?}",
+            std::mem::discriminant(&receiver.kind),
+            ctx.current_instance.map(|k| &k.source_name)
+        )
+    });
+    let recv_lir = match &recv_ir_ty {
+        IrType::Primitive(p) => primitive_to_lir(*p),
+        other => panic!("to_le_bytes/to_be_bytes: receiver must be an integer, got {other:?}"),
+    };
+    let bits = lir_int_bits(&recv_lir)
+        .unwrap_or_else(|| panic!("to_le_bytes/to_be_bytes: receiver is not a scalar integer"));
+    let n_bytes = (bits / 8) as usize;
+
+    let val = into_scalar(lower_expr(receiver, ctx), "to_le_bytes receiver");
+    (0..n_bytes)
+        .map(|k| {
+            let shift_bits = if little {
+                8 * k as u32
+            } else {
+                8 * (n_bytes as u32 - 1 - k as u32)
+            };
+            let shifted = if shift_bits == 0 {
+                val.clone()
+            } else {
+                let sh = ctx.target.iconst(recv_lir.clone(), shift_bits as i64);
+                ctx.target.lshr(val.clone(), sh)
+            };
+            ctx.target.trunc(shifted, LirType::U8)
+        })
+        .collect()
+}
+
 /// Return the element IR type for an owned `Vec<T>` (possibly behind refs).
 fn vec_elem_type(ty: &IrType) -> Option<&IrType> {
     match ty {
@@ -6437,6 +6612,11 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
             let zero = ctx.target.iconst(LirType::U64, 0);
             vec![ctx.target.select(negative, zero, diff)]
         }
+        // `value.to_le_bytes()` / `value.to_be_bytes()` — decompose the
+        // integer into its byte array. Byte order is fixed by the method.
+        MethodKind::Known(StdMethod::ToLeBytes) => lower_int_to_bytes(receiver, true, ctx),
+        MethodKind::Known(StdMethod::ToBeBytes) => lower_int_to_bytes(receiver, false, ctx),
+
         MethodKind::Known(StdMethod::TrailingZeros) => {
             // Unrolled select chain over the 64 bit positions:
             // result = lowest set bit index, or 64 when the value is zero.
@@ -6591,6 +6771,23 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
                 )
             }
             _ => {}
+        }
+    }
+
+    // `uN::from_le_bytes([b0, ...])` / `uN::from_be_bytes([...])` — pack a
+    // fixed byte array into an integer. The path head (`u32`, ...) carries
+    // the target width; the byte order is fixed by the method name.
+    if let IrExprKind::Path { segments, .. } = &func.kind {
+        if segments.len() == 2 && args.len() == 1 {
+            let method = segments.last().map(String::as_str);
+            let little = match method {
+                Some("from_le_bytes") => Some(true),
+                Some("from_be_bytes") => Some(false),
+                _ => None,
+            };
+            if let Some(little) = little {
+                return lower_bytes_to_int(&segments[0], &args[0], little, ctx);
+            }
         }
     }
 

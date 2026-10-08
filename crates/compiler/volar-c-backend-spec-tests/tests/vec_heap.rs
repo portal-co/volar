@@ -254,3 +254,43 @@ fn copy_from_slice_into_vec_from_whole_slice() {
     // 4 + 23 + 42 = 69
     assert_eq!(output.trim(), "69", "generated C:\n{c_source}");
 }
+
+#[test]
+fn from_le_bytes_and_to_le_bytes_round_trip() {
+    let c_source = lower_root(
+        r#"
+        fn root() -> u64 {
+            let bytes = [0x78u8, 0x56, 0x34, 0x12];
+            let word = u32::from_le_bytes(bytes);
+            let back = word.to_le_bytes();
+            (back[0] as u64) + (back[3] as u64) + (word >> 16) as u64
+        }
+        "#,
+    );
+    let output = compile_and_run(
+        &c_source,
+        r#"printf("%llu\n", (unsigned long long)root());"#,
+    );
+    // 0x78 + 0x12 + 0x1234 = 120 + 18 + 4660 = 4798
+    assert_eq!(output.trim(), "4798", "generated C:\n{c_source}");
+}
+
+#[test]
+fn from_be_bytes_and_to_be_bytes_round_trip() {
+    let c_source = lower_root(
+        r#"
+        fn root() -> u64 {
+            let bytes = [0x12u8, 0x34, 0x56, 0x78];
+            let word = u32::from_be_bytes(bytes);
+            let back = word.to_be_bytes();
+            (back[0] as u64) + (back[3] as u64) + (word >> 16) as u64
+        }
+        "#,
+    );
+    let output = compile_and_run(
+        &c_source,
+        r#"printf("%llu\n", (unsigned long long)root());"#,
+    );
+    // 0x12 + 0x78 + 0x1234 = 18 + 120 + 4660 = 4798
+    assert_eq!(output.trim(), "4798", "generated C:\n{c_source}");
+}
