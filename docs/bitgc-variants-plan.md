@@ -513,38 +513,27 @@ the lattice gadget), and run the artifact conformance vectors
 5.3. Docs: update `docs/garbling-pipeline.md` with the bitgc branch of the
      pipeline diagram; write `docs/research/bitgc-variants-research.md`
      capturing the paper notes behind the pinning table.
-5.5. **Pre-existing volar-ir drift (blocks full workspace builds).**
-     `volar-compiler`, `volar-lir-codegen`, and Cirrus's
-     `cirrus-volar-boolar` reference `Type::AES8`/`Galois64`/`Z3`, which
-     the patched `volar-ir` checkout no longer has (replaced by
-     `ExtField` in volar-ir `80b0f82`). Until that migration completes,
-     the BitGC integration tests cannot *run* in either repo (the
-     construction lib tests run and pass). Fix the migration
-     independently of BitGC; then re-run the Cirrus
-     `bitgc_roundtrip` test and the weaver tests.
+5.5. **Pre-existing volar-ir drift (mostly resolved by merging `main`).**
+     The `Type::AES8`/`Galois64`/`Z3` → `ExtField` migration landed on
+     `main` in both repos. Merging `main` into `feat/mpc` (volar commit
+     after `434cea9`, cirrus `9ad9441`) resolved it:
+       - **volar** workspace builds; `parser.rs` and `structs.rs` now
+         lower field types to `LirType::ExtField`/`PrimeField`.
+       - **cirrus** `cirrus-volar-boolar` compiles (main's `types.rs`
+         matches `IRType::ExtField`/`PrimeField`); the
+         `bitgc_roundtrip` integration test now **runs and passes**
+         both small and fast truth tables (after fixing a
+         `ReferencePrg::new(2)`→`new(1)` slot-discipline issue,
+         committed `fba383c`).
 
-     **Migration direction is consumer-side** (confirmed with the
-     volar-ir worktree via the pi link): the IR's `Type` enum is now
-     only `Bit/_8/_16/_32/_64/_128/_256`; field types are constructed
-     as `IrType::ExtField { wrapped, degree, irreducible }` (AES8 =
-     GF(2^8) degree-1 over the AES polynomial, Galois64 = GF(2^64),
-     Z3 = `PrimeField(3)`) via `volar-ir-common/src/field.rs`. Each
-     consumer must lower `IrType::ExtField`/`PrimeField` to its own
-     internal field type instead of matching the removed `Type`
-     variants:
-       - `cirrus-volar-boolar/src/types.rs` (lines 86-88): lower
-         `IrType::ExtField`/`PrimeField` to `VolarType::Aes8` /
-         `VolarType::Galois64` / `VolarTypeMapError::Z3`.
-       - `volar-compiler/src/parser.rs` (`volar_native_type_from_str`,
-         lines 217-229): returns `Type`, which no longer has the field
-         variants — must produce `IrType` (or the caller must construct
-         the `ExtField`/`PrimeField`) for `"AES8"/"Galois64"/"Z3"`.
-       - `volar-lir-codegen/src/structs.rs` (lines 867-879): uses
-         `NativeType::AES8`/`NativeType::Z3` from the compiler's
-         `PrimitiveType` mapping layer, which the volar-ir worktree
-         confirmed is the correct canonical mapping — this file may be
-         fine once `NativeType` itself is decoupled from the removed
-         IR `Type` variants; verify against the compiler's `NativeType`.
+     **One residual gap:** `volar-lir-codegen`/`volar-weaver` now
+     reference `LirType::ExtField`/`PrimeField`, which exist on
+     volar-ir `main` but **not** on the patched sibling checkout's
+     `feat/mpc` branch (the parent `.cargo/config.toml` patches
+     `volar-lir` to that checkout). volar-ir `feat/mpc` needs to merge
+     `main` (coordinated with that worktree's owner over the pi link).
+     Until then the weaver tests still can't build. BitGC's own
+     construction and integration tests are unaffected and green.
 5.4. Cut-and-choose interaction review: `cirrus-volar-garble` has an
      existing `cut_and_choose.rs` for the half-gate backend; record
      explicitly whether/how BitGC garblings participate (likely: not at
