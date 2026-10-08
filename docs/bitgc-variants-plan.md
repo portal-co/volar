@@ -1,7 +1,12 @@
 # BitGC-fast / BitGC-small / BitGC-tiny as an optional garbling substitute
 
 **Status:** implementation in progress, 2026-10-08. Phase 0 (pinning setup,
-ledger, ADR `docs/adr/0003-bitgc-ring-substrate.md`) committed. `bitgc-tiny`
+ledger, ADR `docs/adr/0003-bitgc-ring-substrate.md`) committed. **Structural
+finding (2026-10-08, artifact read):** the real construction is HSS-based with
+per-gate distributed decryption and 1-bit determination, not the
+self-contained SWHE table assembly the current `ReferenceEquation` implements
+— see `docs/research/bitgc-artifact-notes.md`. The reference adapter is a
+transport/stream placeholder to be replaced, per BITGC-LEDGER-04. `bitgc-tiny`
 is deferred by maintainer decision (ledger row BITGC-LEDGER-06). Maintainer
 constraint: no external libraries in `volar-spec`; all ring/SWHE arithmetic
 is in-crate (ADR 0003). The ePrint PDFs were not retrievable from this host
@@ -583,14 +588,14 @@ checks get ledger IDs in `future-provider-integration-ledger.md` with
 
 | ID | Element | Paper anchor | Status |
 |---|---|---|---|
-| BITGC-PIN-01 | Even-modulus barrier removal; permutation-bit decoupling | [ZLL+26] §3 | PINNED (structure): explicit `pi` per wire, `L1 = L0 + Δ` over the plaintext space; implementation Phase 2 |
-| BITGC-PIN-02 | SIMD slot mapping / NTT-friendly modulus choice | [ZLL+26] §3 | PINNED (structure): evaluation-form slot codec + modulus-switch chain; implementation Phase 1 |
-| BITGC-PIN-03 | Low-depth PRG choice + expansion depth | [LWYY25b] + [ZLL+26] §3 | PARTIAL: expansion driver with explicit depth accounting lands Phase 1; exact PRG circuit awaits BITGC-LEDGER-04 evidence |
-| BITGC-PIN-04 | Free-XOR permutation-bit rule | [ZLL+26] free-XOR section | PINNED (structure): `π_out = π_a ⊕ π_b`, Δ-additive labels; implementation Phase 2/4 |
-| BITGC-PIN-05 | BitGC-small garble procedure | [ZLL+26] §4.1 Fig. 4 | PARTIAL: 1-bit AND + 1-bit XOR records with SWHE-assembled table (Phase 2); exact equations pending BITGC-LEDGER-04 |
-| BITGC-PIN-06 | BitGC-small eval procedure | [ZLL+26] §4.1 Fig. 5 | PARTIAL: same status as BITGC-PIN-05 |
-| BITGC-PIN-07 | BitGC-fast 5-bit AND record + garble | [ZLL+26] §5.1 | PARTIAL: 5-bit record format + no-online-mult garble (Phase 4); exact equation pending BITGC-LEDGER-04 |
-| BITGC-PIN-08 | BitGC-fast eval (no online mults) | [ZLL+26] §5.1 | PARTIAL: same status as BITGC-PIN-07 |
+| BITGC-PIN-01 | Even-modulus barrier removal; permutation-bit decoupling | [ZLL+26] §3 | PARTIAL: structure identified (decoupled π, Δ = SWHE secret key embedded in Rp, LSB(Δ)=1, sign from label LSB) — see `docs/research/bitgc-artifact-notes.md`; the current `GlobalDelta` (small odd constant) is a placeholder |
+| BITGC-PIN-02 | SIMD slot mapping / NTT-friendly modulus choice | [ZLL+26] §3 | PINNED (structure): evaluation-form slot codec + modulus-switch chain landed Phase 1 |
+| BITGC-PIN-03 | Low-depth PRG choice + expansion depth | [LWYY25b] + [ZLL+26] §3 | PARTIAL: artifact uses a Goldreich-style low-depth PRG + SIMD unpack pipeline (`src/he/goldreich_prg.*`, `src/unpack/*`); `ExpansionPrg` seam landed Phase 1; the pinned PRG circuit is the remaining work |
+| BITGC-PIN-04 | Free-XOR permutation-bit rule | [ZLL+26] free-XOR section | PINNED (structure): `π_out = π_a ⊕ π_b` confirmed in artifact `fast_gen.cc::HandleXorGate`; reference adapter implements it |
+| BITGC-PIN-05 | BitGC-small garble procedure | [ZLL+26] §4.1 Fig. 4 | **IDENTIFIED (artifact):** monomial 3-ciphertext table `s·{u0,u1,u2}` + RGSW external-mul + HSS DD chain + 1-bit `DetermineGen` — equations recorded in `docs/research/bitgc-artifact-notes.md`; pending paper-PDF cross-check (BITGC-LEDGER-04) |
+| BITGC-PIN-06 | BitGC-small eval procedure | [ZLL+26] §4.1 Fig. 5 | **IDENTIFIED (artifact):** evaluator runs the same DD/HSSMul chain + `DetermineEva(garble_bit)`; XOR charged 1 bit (`π_a⊕π_b⊕π_c`) |
+| BITGC-PIN-07 | BitGC-fast 5-bit AND record + garble | [ZLL+26] §5.1 | **IDENTIFIED (artifact):** 4 offline mask bits corrected to the AND truth table (4 communicated bits) + subtraction-only 3-entry table + 1 determination bit = 5 bits/AND |
+| BITGC-PIN-08 | BitGC-fast eval (no online mults) | [ZLL+26] §5.1 | **IDENTIFIED (artifact):** evaluator flips offline mask cts per the 4 mask bits, builds the subtraction table, runs the DD chain; no online HE multiplication |
 | BITGC-PIN-09 | BitGC-tiny garble/eval | [ZLL+26] §5.2 | DEFERRED (maintainer decision 2026-10-08; ledger BITGC-LEDGER-06) |
 | BITGC-PIN-10 | Parameter sets (both variants, 128-bit claim) | [ZLL+26] eval section + artifact cross-check | PARTIAL: artifact CLI shapes recorded (§1); paper parameter table pending BITGC-LEDGER-04 evidence |
 | BITGC-PIN-11 | Table 1 reconciliation (sizes, timings) | [ZLL+26] Table 1 | TODO |
