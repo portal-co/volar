@@ -131,12 +131,7 @@ impl Parameters {
             // NTT-friendly, distinct, and ≡ 1 (mod p) so the BGV modulus
             // switch preserves messages (`q ≡ 1 mod p` keeps
             // `m + p·e` intact through `c' = (c − δ)/q`).
-            if q < 3
-                || (q - 1) % n2 != 0
-                || (q - 1) % p != 0
-                || q == p
-                || seen.contains(&q)
-            {
+            if q < 3 || (q - 1) % n2 != 0 || (q - 1) % p != 0 || q == p || seen.contains(&q) {
                 return Err(Error::InvalidParameters);
             }
             seen.push(q);
@@ -518,7 +513,10 @@ impl Context {
             .zip(r.parts.iter())
             .map(|(a, b)| self.add_rns(a, b))
             .collect();
-        Ok(Ciphertext { level: l.level, parts })
+        Ok(Ciphertext {
+            level: l.level,
+            parts,
+        })
     }
 
     /// Subtract right from left (levels aligned as in [`Self::add`]).

@@ -28,7 +28,9 @@ use alloc::vec::Vec;
 
 use super::common::ExpandedWire;
 use super::prg::{ExpansionPlan, ExpansionPrg};
-use super::swhe::{Ciphertext, Context, Error, KeySwitchKeySet, NoiseSource, RandomSource, SecretKey};
+use super::swhe::{
+    Ciphertext, Context, Error, KeySwitchKeySet, NoiseSource, RandomSource, SecretKey,
+};
 
 /// Everything the garbler keeps after the offline phase.
 #[derive(Clone, Debug)]
