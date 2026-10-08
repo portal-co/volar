@@ -1,0 +1,2454 @@
+=== PAGE 1 ===
+BitGC: Garbled Circuits with 1 Bit per Gate
+Hanlin Liu ID
+Northwestern University
+hanlin.liu@northwestern.edu
+Xiao Wang ID
+Northwestern University
+wangxiao@northwestern.edu
+Kang Yang ID
+State Key Laboratory of Cryptology
+yangk@sklc.org
+Yu Yu ID
+Shanghai Jiao Tong University
+Shanghai Qi Zhi Institute
+yuyu@yuyu.hk
+Abstract
+We present BitGC, a garbling scheme for Boolean circuits with 1 bit per gate communication based
+on either ring learning with errors (RLWE) or NTRU assumption, with key-dependent message security.
+The garbling consists of 1) a homomorphically encrypted seed that can be expanded to encryption of
+many pseudo-random bits and 2) one-bit stitching information per gate to reconstruct garbled tables from
+the expanded ciphertexts. By using low-complexity PRGs, both the garbling and evaluation of each gate
+require onlyO(1) homomorphic addition/multiplication operations without bootstrapping.
+1 Introduction
+Garbled circuits (GCs), first introduced by Yao [Yao86] in the 1980s, are of central importance in cryptography
+and have been used in secure two-party computation [LP09], zero-knowledge proofs [JKO13], identity-
+based encryption [DG17], etc. Optimizing the size of GCs has been an important task both concretely and
+asymptotically. For concrete optimizations, significant efforts [BMR90, NPS99, KS08, PSSW09, KMR14,
+ZRE15, GLNP15, RR21] have been made to reduce the size of GCs, leading to notable improvements.
+Among these garbling schemes, Rosulek and Roy [RR21] achieve the lowest communication, requiring only
+1.5λ + 5 bits per AND gate and no communication for XOR gates, whereλ is the computational security
+parameter. On the other hand, GCs with asymptotically sublinear size can be achieved through reusable
+GCs [GKP+13, GGH+13b, BGG+14, Agr17] based on computation-heavy cryptographic primitives, such as
+(leveled) FHE or multilinear maps. However, concrete communication savings only emerge when the circuit
+is astronomically large due to the hidden constant in the asymptotic complexity. In summary, traditional
+GCs use symmetric-key techniques and needO(λ|C|) bits of communication, while “fancy” garbled circuits
+can achieve poly(log|C|,λ ) bits of communication with unclear concrete efficiency, where|C| is the circuit
+size. There is a huge gap between practically efficientO(λ|C|)-sized solutions and completely impractical
+poly(log|C|,λ )-sized solutions. In this paper, we present concretely efficient GCs from the super-polynomial
+hardness of lattice assumptions. We aim to achieve concrete communication savings compared to traditional
+GCs without using heavy mechanisms such as attribute-based encryption, functional encryption, or fully
+homomorphic encryption.
+1.1 Our Contributions
+We introduce BitGC, a garbling scheme based on lattice assumption, achieving just 1 bit of communication
+per gate. From a high-level view, our garbling scheme uses a specialized somewhat homomorphic encryption
+1
+=== PAGE 2 ===
+(SWHE) scheme to assemble garbled circuits, with the garbled tables divided into two parts:
+• Ciphertext that encrypts a random seed. The garbler sends an encrypted random bit for each gate to the
+evaluator using our special SWHE scheme. Sending encrypted bits directly leads to a large communication
+cost. To optimize this, we first generate an encrypted random seed and then expand it using homomorphic
+evaluation of a low-depth pseudo-random generator (PRG).
+• “Stitching information”, 1 bit per gate. The second part includes “stitching information” that converts
+pseudo-random encrypted bits into a garbled circuit. Our scheme uses this “stitching information” to flip
+the encrypted bit for each gate with only one bit of communication per gate.
+We prove the security of our garbling scheme in the simulation-based model. Our SWHE scheme requires
+key-dependent message (KDM) security to achieve the special distributed decryption properties. We present
+two efficient instantiations under either the ring learning with errors (RL WE) assumption [LPR10] (building
+upon prior work [GSW13]) or the NTRU assumption [HPS98, PS21] (building upon prior works [LTV12,
+BLLN13, Klu22, BIP+22]).
+Our scheme is highly efficient in communication. In particular, the GC size is as small as|C| + eO(λ2)
+bits (more specifically,|C| bits plusλ GSW ciphertexts, each of sizeO(λ· poly logλ) bits), significantly less
+than the state-of-the-art classical garbling scheme that needs 1.5λ + 5 bits per AND gate [RR21]. Using a
+low-complexity PRG (e.g., [App12, AIK04, AIK08, AK19, CM01]), the computational cost is dominated by
+onlyO(1) homomorphic addition/multiplication operations per gate, without any FHE bootstrapping.
+1.2 Comparison with Other Solutions
+Succinct/reusable garbling and randomized encoding.Succinct garbling/randomized encoding schemes [LP14,
+CHJV15, BGL+15, KLW15, AL18] and reusable garbling schemes [GKP+13, GGH+13b, BGG+14, Agr17]
+rely on computation-heavy cryptographic primitives or strong assumptions, such as indistinguishability ob-
+fuscation (iO) for P/poly, (leveled) FHE, or multilinear map-related assumptions. Kempka et al. [KKKS15]
+proposed a garbling scheme such that when garbling formulas, it only requires four bits per gate. A recent and
+concurrent work [ILL24] focuses on optimizing communication when a subcircuit does not use private inputs.
+They achieve succinctness for the portion of public computation but the garbling for private computation still
+requires a size as large as classical GCs.
+Fully homomorphic encryption. Fully homomorphic encryption (FHE) [Gen09] is an alternative approach
+to design constant-round secure two-party computation (2PC). The communication is linear in the input
+size and independent of the circuit size by encrypting the input bits. Another related line is Laconic
+function-hiding functional encryption (LFE) [QWW18, HLL23], which also employs (F)HE techniques with
+computation-heavy bootstrapping. However, the computation cost is high, primarily due to the expensive
+bootstrapping process required. In contrast, our scheme does not need bootstrapping and involves onlyO(1)
+homomorphic addition/multiplication operations. In addition, there exists the efficient black-box approach
+(e.g., the “cut-and-choose” technique [LP15]) to transform a semi-honest 2PC protocol based on our garbling
+scheme into a maliciously secure protocol. However, using a FHE scheme to design a maliciously secure
+2PC protocol requires the use of homomorphic message authentication codes [GW13, CF13, FGP14] or
+zero-knowledge proofs [FNP20, BCFK21, GNS23], which brings significantly more computational overhead.
+Indeed, in a follow-up work [LWYY25], it has been shown that our protocol can be strengthened against
+malicious security by just paying a small cost. This shows the advantage of working under the garbled-circuit
+framework.
+2
+=== PAGE 3 ===
+2 Technical Overview
+In this section, we provide a high-level explanation of our garbling scheme. As a warm-up, we present an
+intermediate garbling scheme in the random oracle (RO) model. Next, we explain how to adapt the same idea
+but replace RO with a special homomorphic encryption (HE) scheme, reducing communication size to 1 bit
+per gate. Finally, we show how to instantiate the HE scheme under the RLWE assumption. Below, we use
+R = Z[X]/(Xn + 1) to denote a polynomial ring with integer coefficients modulo a polynomialXn + 1,
+and defineRp =R/pR = Zp[X]/(Xn + 1) andRq =R/qR = Zq[X]/(Xn + 1).
+2.1 Constructing Garbled Circuits from Random Oracle
+We present a garbling scheme in the RO model for Boolean circuits, but the labels are ring elements over
+Rp, with an even p. Given a ring element A, we define LSB(A) = A[1] mod 2 , where A[1] is the first
+coefficient of A. Since p is even, for any X,Y ∈ Rp, we have LSB(X +Y ) = LSB(X)⊕ LSB(Y )
+and LSB(−X) = LSB(X). Similar to classic garbling schemes, we have a global offset ∆∈R such
+that LSB(∆) = 1 . We also assign each wire a pair of elements over Rp, namely A0 and A1, as the 0-
+label and 1-label of this wire. For each wire, the 0-labelA0 is uniform while the 1-label is defined to be
+A1 = A0 + (−1)a· ∆, where the wire mask a = LSB(A0). Given these definitions, we can obtain the
+following quick facts. For anyv∈{ 0, 1},
+I Av =A0 + (−1)a·v· ∆.
+We prove this in two cases: forv = 0, it simplifies toA0 =A0, which is obviously true. Forv = 1, it
+simplifies toA1 =A0 + (−1)a· ∆, which is true based on the definition ofA1.
+II LSB(Av) =a⊕v.
+Applying LSB() to I, we get LSB(Av) = LSB(A0 + (−1)a·v· ∆). Since p is even, it equals to
+LSB(A0)⊕ LSB((−1)a·v· ∆) =a⊕ ((−1)a·v mod 2) = a⊕v.
+III Av =Aa + LSB(Av)· ∆.
+From I, we haveAv−Aa = (−1)a· (v−a)· ∆. It can be verified case by case that (−1)a· (v−a)
+always equalsv⊕a.
+For a gate that computes a functiong :{0, 1}2→{ 0, 1}, there are two pairs of garbled labels, (A0,A 1) and
+(B0,B 1), one for each input wire, and a pair of garbled labels,(C0,C 1), for the output wire. Correspondingly,
+the three wire masks area = LSB(A0),b = LSB(B0), andc = LSB(C0). We maintain the invariant that if
+the underlying wire value isv for a wire with labels (A0,A 1), then the evaluator should obtainAv.
+For any pair of masked bitsi,j ∈{ 0, 1}, the underlying real input values area⊕i andb⊕j, the real
+output bitzi,j =g(a⊕i,b⊕j)∈{ 0, 1} and the garbled output label would beCzi,j =C0 + (−1)c·zi,j· ∆
+(due to I). LetH :R2
+p→R p be a hash function modeled as a random oracle. The garbled table of this gate
+is defined below, where the gate index is omitted for simplicity.
+Masked bits Input labels Output labels Garbled table
+(0, 0) (Aa,Bb) Cg(a,b) τ0 =H(Aa,Bb)−Cg(a,b)
+(1, 0) (Aa⊕1,Bb) Cg(a⊕1,b) τ1 =H(Aa⊕1,Bb)−Cg(a⊕1,b)
+(0, 1) (Aa,Bb⊕1) Cg(a,b⊕1) τ2 =H(Aa,Bb⊕1)−Cg(a,b⊕1)
+(1, 1) (Aa⊕1,Bb⊕1) Cg(a⊕1,b⊕1) τ3 =H(Aa⊕1,Bb⊕1)−Cg(a⊕1,b⊕1)
+The evaluator, given input labels A∈ {A0,A 1} and B ∈ {B0,B 1}, computes the masked values
+α = LSB(A) andβ = LSB(B), and then calculates the output labelC =H(A,B )−τα+2β. The invariant II
+implies thatA =Aa⊕α andB =Bb⊕β, soC =H(Aa⊕α,Bb⊕β)−τα+2β =Cg(a⊕α,b⊕β) =Czα,β.
+3
+=== PAGE 4 ===
+Note that we use ring elements to represent the labels instead of bit strings for later lattice-based
+optimization. Previous works that used ring elements for garbled labels focused on arithmetic garbling,
+whereas we still concentrate on Boolean circuits, which leads to more complex label definitions.
+Optimization via garbled row reduction. We can optimize the scheme above by setting τ0 = 0 and
+deriving the output labels accordingly, following the garbled row reduction (GRR) technique [NPS99].
+Specifically, we first get Cz0,0 = H(Aa,Bb) wherez0,0 = g(a,b ). Taking LSB() on both sides, we get
+c = LSB(H(Aa,Bb))⊕z0,0 using II. Then we can obtainC0 =Cz0,0− (−1)c·z0,0· ∆ (I). Now we can
+compute, for anyi,j ∈{ 0, 1},Czi,j =C0 + (−1)c·zi,j· ∆ =H(Aa,Bb) + (−1)c· (zi,j−z0,0)· ∆ and
+the garbled table is shown as below. The gate-evaluation process is the same as that of the previous scheme.
+Input labels Truth table Garbled table
+(Aa,Bb) z0,0 =g(a,b ) τ0 = 0
+(Aa⊕1,Bb) z1,0 =g(a⊕ 1,b ) τ1 =H(Aa⊕1,Bb)−H(Aa,Bb)− (−1)c· (z1,0−z0,0)· ∆
+(Aa,Bb⊕1) z0,1 =g(a,b⊕ 1) τ2 =H(Aa,Bb⊕1)−H(Aa,Bb)− (−1)c· (z0,1−z0,0)· ∆
+(Aa⊕1,Bb⊕1) z1,1 =g(a⊕ 1,b⊕ 1) τ3 =H(Aa⊕1,Bb⊕1)−H(Aa,Bb)− (−1)c· (z1,1−z0,0)· ∆
+Abstracting our optimizations via homomorphic RO. To build towards our final scheme, we introduce
+another garbling scheme that uses a random oracleH with a special homomorphic property. Note that while
+our final scheme leverages properties similar to this homomorphic RO, we do not directly instantiate this RO.
+More specifically, given a global key∆∈R with LSB(∆) = 1, the special homomorphism states that for
+anyX,Y ∈R p with LSB(X) = LSB(Y ) = 0 and anyi,j ∈{ 0, 1}, we have
+H(X +i· ∆,Y +j· ∆) =H(X,Y ) +i·H(∆, 0) +j·H(0, ∆) +i·j·H(∆, ∆).
+We introduce this homomorphism to make the garbled table independent of input labels but still dependent
+on wire masks. Thus, this makes it possible to connect independent garbled tables without sending correction
+information linear to the size of garbled labels eventually.
+We now apply this homomorphic RO to the above GRR scheme. We have already known from II and III
+thatAa⊕i = Aa + LSB(Aa⊕i)· ∆ = Aa + (a⊕ (a⊕i))· ∆ = Aa +i· ∆ and thatBb⊕j = Bb +j· ∆.
+Now, due to the homomorphic property ofH and that LSB(Aa) = LSB(Bb) = 0 (II), we have that for any
+i,j ∈{ 0, 1},
+H(Aa⊕i,Bb⊕j) =H(Aa,Bb) +i·H(∆, 0) +j·H(0, ∆) +i·j·H(∆, ∆).
+Plugging it back to the GRR garbled table above, we can simplify the three rows as follows.
+τ1 =H(Aa⊕1,Bb)−H(Aa,Bb)− (−1)c· (z1,0−z0,0)· ∆
+=H(∆, 0)− (−1)c· (z1,0−z0,0)· ∆,
+τ2 =H(Aa,Bb⊕1)−H(Aa,Bb)− (−1)c· (z0,1−z0,0)· ∆
+=H(0, ∆)− (−1)c· (z0,1−z0,0)· ∆,
+τ′
+3 =H(Aa⊕1,Bb⊕1)−H(Aa,Bb)− (−1)c· (z1,1−z0,0)· ∆
+=H(∆, 0) +H(0, ∆) +H(∆, ∆)− (−1)c· (z1,1−z0,0)· ∆,
+where τ1 and τ2 are in the same format but not τ′
+3. To align all of them, we instead define τ3 slightly
+differently:
+τ3 =τ′
+3−τ1−τ2 =H(∆, ∆)− (−1)c· (z0,0 +z1,1−z0,1−z1,0)· ∆.
+Now withτ1,τ2, andτ3, both parties can reconstruct the garbled table equivalent to the GRR garbled table
+above by computingτ′
+3 =τ1 +τ2 +τ3.
+4
+=== PAGE 5 ===
+Input labels Truth table Garbled table
+(Aa,Bb) z0,0 =g(a,b ) τ0 = 0
+(Aa⊕1,Bb) z1,0 =g(a⊕ 1,b ) τ1 =H(∆, 0)− (−1)c· (z1,0−z0,0)· ∆
+(Aa,Bb⊕1) z0,1 =g(a,b⊕ 1) τ2 =H(0, ∆)− (−1)c· (z0,1−z0,0)· ∆
+(Aa⊕1,Bb⊕1) z1,1 =g(a⊕ 1,b⊕ 1) τ3 =H(∆, ∆)− (−1)c· (z0,0 +z1,1−z0,1−z1,0)· ∆
+The gate-evaluation process works as follows: given input labelsA andB, the evaluator first computes
+the masked bitsα = LSB(A) andβ = LSB(B), and then computes the output labelC =H(A,B )− (α·
+τ1 +β·τ2 +αβ·τ3). To verify correctness, we use the fact thatA =Aa⊕α andB =Bb⊕β (II), which leads
+toC =Czα,β, since
+C−H(Aa,Bb)
+=H(Aa⊕α,Bb⊕β)−H(Aa,Bb)− (α·τ1 +β·τ2 +αβ·τ3)
+=H(Aa +α∆,Bb +β∆)−H(Aa,Bb)− (α·τ1 +β·τ2 +αβ·τ3)
+=α·H(∆, 0) +β·H(0, ∆) +αβ·H(∆, ∆)− (α·τ1 +β·τ2 +αβ·τ3)
+=(−1)c· ∆·
+
+α· (z1,0−z0,0) +β· (z0,1−z0,0) +αβ· (z0,0 +z1,1−z0,1−z1,0)
+
+=(−1)c· (zα,β−z0,0)· ∆.
+Note that all three garbled rows can now be viewed as “encryptions” of bits. For example,τ1 can be viewed
+as the encryption of the bit (−1)c· (z1,0−z0,0) using the key (∆, 0). Homomorphic RO enables the evaluator
+to assemble a valid GC using these encrypted bits and evaluate it easily. Once we reduce the GC to a set
+of encrypted bits, intuitively, we can send many encrypted random bits and correct them with very small
+communication.
+2.2 Imitating a Homomorphic RO
+Our final garbling scheme is conceptually similar to the one based on a homomorphic RO; however, we use a
+specialized homomorphic encryption (HE) scheme instead. Below, we first introduce the properties of this
+specialized HE scheme
+Defining SWHE with distributed decryption. We define a private-key somewhat homomorphic encryption
+(SWHE) scheme with distributed decryption, consisting of three polynomial-time algorithms(Gen, Enc, Dec).
+Here, the key-generation algorithm Gen and the encryption algorithm Enc follow the standard definition.
+However, in contrast to the standard decryption, given a secret keysk and a ciphertextτ = Enc(sk,m ), the
+decryption algorithm Dec(sk,τ ) outputsm·sk instead ofm, following the GSW scheme [GSW13].
+We assume that a secret key sk∈R with LSB(sk) = 1 is used, where sk plays the role of ∆ in the
+application of the above garbling scheme. This scheme must satisfy the following properties of message
+homomorphism and distributed decryption, which are informally defined below.
+1. Message homomorphism. Given the ciphertextsτ1,...,τ ℓ on messagesm1,...,m ℓ and a low-depth
+circuitf, the following property holds:
+Dec
+
+sk,ef(τ1,...,τ ℓ)
+
+=f(m1,...,m ℓ)·sk,
+where ef represents the homomorphic computation of f over the ciphertexts and can be performed in
+polynomial time.
+2. Distributed decryption. For a ciphertextτ on a messagem, the following properties hold:
+5
+=== PAGE 6 ===
+• Linear distributed decryption. Letsk0∈R p be a uniform element such that LSB(sk0) = 0, and set
+sk1 =sk0 +sk mod p, where LSB(sk1) = 1 for an evenp. Then, with overwhelming probability, we
+have
+Dec(ski,τ ) =−Dec(ski,−τ) fori∈{ 0, 1},
+Dec(sk1,τ ) = Dec(sk0,τ ) + Dec(sk,τ ).
+The above two equations also imply Dec(sk,τ ) =−Dec(sk,−τ).
+• Correlated-key distributed decryption. Let sk0,sk′
+0 ∈ Rp be two uniform elements such that
+LSB(sk0) = LSB(sk′
+0) = 0 . Let sk1 = sk0 +sk mod p and sk′
+1 = sk′
+0 +sk mod p, where
+LSB(sk1) = LSB(sk′
+1) = 1 given thatp is even. There exists a polynomial-time algorithmdDec such
+that with overwhelming probability,
+dDec(sk0,sk′
+0,τ ) =−dDec(sk0,sk′
+0,−τ)
+dDec(ski,sk′
+j,τ )−dDec(sk0,sk′
+0,τ ) =i·j· Dec(sk,τ ) , for anyi,j ∈{ 0, 1}.
+We present a high-level idea to instantiate the SWHE scheme with the above properties in Section 2.5.
+Using SWHE with distributed decryption for garbled circuits. Given any SWHE (with distributed
+decryption) ciphertextsτ1,τ2 andτ3 encrypted with secret keysk, we introduce a function Eval to achieve
+the functionality of the homomorphic random oracleH. This function Eval is specified as follows:
+Eval(X,Y ) def= Dec(X,τ 1) + Dec(Y,τ 2) +dDec(X,Y,τ 3),
+whereX,Y ∈R p. Here, τ1, τ2 andτ3 are inputs to Eval, omitted for simplicity. Based on distributed
+decryption properties, we show that for eachi,j ∈{ 0, 1}, for two uniform elementsX,Y with LSB(X) =
+LSB(Y ) = 0, with overwhelming probability, we have
+Eval(X +i·sk,Y +j·sk)− Eval(X,Y )
+=Dec(X +i·sk,τ 1) + Dec(Y +j·sk,τ 2) +dDec(X +i·sk,Y +j·sk,τ 3)
+−
+
+Dec(X,τ 1) + Dec(Y,τ 2) +dDec(X,Y,τ 3)
+
+=
+
+Dec(X +i·sk,τ 1)− Dec(X,τ 1)
+
++
+
+Dec(Y +j·sk,τ 2)− Dec(Y,τ 2)
+
++
+
+dDec(X +i·sk,Y +j·sk,τ 3)−dDec(X,Y,τ 3)
+
+=i· Dec(sk,τ 1) +j· Dec(sk,τ 2) +i·j· Dec(sk,τ 3),
+(1)
+where the third equation holds because correlated-key distributed decryption and fori,j ∈{ 0, 1}, we have
+Dec(X +i·sk,τ 1)− Dec(X,τ 1) =i· Dec(sk,τ 1)
+Dec(Y +j·sk,τ 2)− Dec(Y,τ 2) =j· Dec(sk,τ 2).
+Ifi = 0, the first equation is clear, i.e., it reduces to Dec(X,τ 1) = Dec(X,τ 1); otherwise, it follows from
+linear distributed decryption. The same reasoning applies to the second equation.
+The SWHE with distributed decryption and the homomorphic ROH have slightly different properties
+but serve the same purpose. The evaluator uses the homomorphic ROH to ensure that for anyi,j ∈{ 0, 1}:
+H(X +i· ∆,Y +j· ∆) =H(X,Y ) +i·H(∆, 0) +j·H(0, ∆) +i·j·H(∆, ∆),
+where ∆ plays the same role assk. This property is similar to the one that SWHE with distributed decryption
+satisfies, as seen in Equation (1); the only caveat is that we use Dec(sk,τ 1), Dec(sk,τ 2), and Dec(sk,τ 3) to
+achieve the same goal ofH(∆, 0),H(0, ∆), andH(∆, ∆), respectively.
+6
+=== PAGE 7 ===
+2.3 Constructing Garbled Circuits from HE Ciphertexts
+Now we demonstrate how to use a SWHE scheme with distributed decryption to achieve the same functionality
+as the homomorphic random oracleH in the previous scheme, where communication requires three ciphertexts
+per gate. The garbled table of a gateg consists of
+τ1 = Enc(∆, (−1)c· (z1,0−z0,0)),
+τ2 = Enc(∆, (−1)c· (z0,1−z0,0)),
+τ3 = Enc(∆, (−1)c· (z0,0 +z1,1−z0,1−z1,0)),
+(2)
+where ∆ is the secret key of the SWHE scheme,zi,j =g(a⊕i,b⊕j) for eachi,j ∈{ 0, 1}, anda = LSB(A0),
+b = LSB(B0) andc = LSB(C0) represent the three wire masks. We define the gate-evaluation function Eval
+as
+Eval(A,B,τ 1,τ 2,τ 3) def= Dec(A,τ 1) + Dec(B,τ 2) +dDec(A,B,τ 3),
+omittingτ1,τ 2,τ 3 when clear from context.
+Garbling. SinceA0 andB0 are known before garbling a gate, the garbler can computezi,j =g(LSB(A0)⊕
+i, LSB(B0)⊕j) for eachi,j ∈{ 0, 1}. However, computing the wire maskc is more challenging. Recall
+thatc is determined based on c⊕z0,0 = LSB(Cz0,0) from (II), and we obtain the label based on GRR
+asCz0,0 = Eval(Aa,Bb,τ 1,τ 2,τ 3). However, since the garbled rows {τi} cannot be computed without
+knowledge ofc, the garbler cannot yet perform the Eval operation. This leads to a deadlock: to obtain τi, we
+need to knowc first; however, to determinec, we need to knowτi. In classical GRR, this issue does not arise,
+asCz0,0 =H(Aa,Bb) can be computed without needingτ1,τ 2,τ 3.
+Fortunately, a method exists to computec without the final garbled rows. Specifically, the garbler first
+computes
+eτ1 = Enc(∆, (z1,0−z0,0)),
+eτ2 = Enc(∆, (z0,1−z0,0)),
+eτ3 = Enc(∆, (z0,0 +z1,1−z0,1−z1,0)),
+then determinesc = LSB
+
+Eval(Aa,Bb,eτ1,eτ2,eτ3)
+
+⊕z0,0 and setsτi = (−1)c·eτi. This approach works
+because
+LSB(Eval(Aa,Bb,eτ1,eτ2,eτ3)) =LSB(Dec(Aa,eτ1) + Dec(Bb,eτ2) +dDec(Aa,Bb,eτ3))
+=LSB
+
+(−1)c·
+
+Dec(Aa,τ 1) + Dec(Bb,τ 2) +dDec(Aa,Bb,τ 3)
+
+=LSB((−1)c· Eval(Aa,Bb,τ 1,τ 2,τ 3))
+=LSB(Eval(Aa,Bb,τ 1,τ 2,τ 3)) = LSB(Cz0,0),
+using the fact that for any x∈ Zp,−x = x mod 2 when p is even. This means that the garbler can
+computec by evaluating oneτi’s, which are computable with justAa andBb regardless of the actual value
+ofc. It is important to emphasize that the garbler cannot directly adopt Equation (2) with c to compute
+τi via fresh encryption, sincec may not align with the freshly encryptedτi. Finally, the garbler computes
+Cz0,0 = Eval(Aa,Bb,τ 1,τ 2,τ 3) and obtains C0 and Cc as follows: C0 = Cz0,0− (−1)c·z0,0· ∆ (I)
+andCc = C0− LSB(C0)· ∆ = C0−c· ∆ (III). The pair of labels (C0,C 1) may be used as the input
+labels for subsequent gates. Therefore, we must ensure that C0 is uniform over Rp in order that the
+distributed decryption property still holds for subsequent gates. To do this, we use a random element R
+overRp to randomize the pair of labels (C0,C 1) as (C0 +R,C 1 +R). This approach works because
+Equation (1) still holds after randomization (see Appendix A.1 for detailed correctness analysis). Following
+prior work [BKS19], we employ a pseudo-random function (PRF) to generate the random element R for
+7
+=== PAGE 8 ===
+each gate, and thus the communication, to transmit the random elements for all gates from the garbler to the
+evaluator, can be compressed into onlyλ bits. For the sake of simplicity, we omit the PRF and randomization
+in the following, and refer the reader to Section 4.2 for details.
+Gate-Evaluation. For each gate g, given the HE ciphertexts τ1,τ 2,τ 3, as well as the input labels (A,B )
+with the masked bits α = LSB(A) and β = LSB(B), the evaluator can compute the output label as
+C = Eval(A,B ). The correctness follows from the analysis below. According to Equation (1), we have
+Eval(A,B ) =Eval(Aa +α· ∆,Bb +β· ∆)
+=Eval(Aa,Bb) +α· Dec(∆,τ 1) +β· Dec(∆,τ 2) +αβ· Dec(∆,τ 3)
+=Eval(Aa,Bb) + (−1)c· (zα,β−z0,0)· ∆ =C0 + (−1)c·zα,β· ∆ =Czα,β,
+where Cz0,0 = Eval(Aa,Bb) and 0-label C0 = Cz0,0− (−1)c·z0,0· ∆ (I). We use the fact that A =
+Aa + LSB(A)· ∆ =Aa +α· ∆ andB =Bb +β· ∆, which follow from II and III.
+2.4 Reducing Communication of Generating HE Ciphertexts
+So far, we have converted the garbled table into bit ciphertexts, where these bits are correlated. Now, we
+show that, for garbling a circuit of sizeN, the garbled circuits can be compressed toλ ciphertexts plusN bits.
+This is achieved by breaking down all ciphertexts intoN ciphertexts, each encrypting an independent random
+bit, plusN bits of “stitching information”. The former is then compressed using the homomorphic evaluation
+of a PRG. Specifically, the garbler sends the evaluator HE ciphertextsσi← Enc(∆,si) fori∈ [λ], where
+(s1,...,s λ) constitutes a uniform PRG seed. Both parties then homomorphically compute the PRG over the
+ciphertextsσ1,...,σ λ to generate Enc(∆,rw) for each wirew. Next, the garbler integrates these ciphertexts
+Enc(∆,rw) for each wirew into the garbled circuits by sending one extra bit per wire. This process occurs
+in three steps for each gate, while maintaining the invariant that both parties hold the ciphertext of the wire
+mask for each input wire.
+1. Given the invariant, the garbler has input labelsA0 andB0 for each gate, and both parties have Enc(∆,a )
+and Enc(∆,b ), wherea = LSB(A0) andb = LSB(B0). Both parties perform homomorphic evaluations
+on ciphertexts Enc(∆,a ), Enc(∆,b ) and Enc(∆,rc) to obtain:
+eτ1 = Enc(∆, (−1)rc· (z1,0−z0,0)),
+eτ2 = Enc(∆, (−1)rc· (z0,1−z0,0)),
+eτ3 = Enc(∆, (−1)rc· (z0,0 +z1,1−z0,1−z1,0)).
+Here,zi,j =g(a⊕i,b⊕j) for eachi,j ∈{ 0, 1},rc represents the pseudo-random bit associated with
+the output wire and Enc(∆,rc) is its encryption. This process requires both parties to homomorphically
+compute a circuit with a multiplication depth of2, where (−1)rc is expressed as the linear function1−2rc.
+Then, the garbler obtainsc = LSB(Eval(Aa,Bb,eτ1,eτ2,eτ3))⊕z0,0 similar to the scheme in the previous
+section.
+2. To maintain the invariant and construct the garbled circuit, the garbler sends a single bitvc =rc⊕c. Both
+parties can now obtain Enc(∆,c ) using Enc(∆,rc) andvc.
+3. Both parties can reconstruct the final garbled table as follows:
+τ1 = (−1)vc·eτ1 = Enc(∆, (−1)vc⊕rc· (z1,0−z0,0))
+= Enc(∆, (−1)c· (z1,0−z0,0)),
+with similar computations forτ2,τ3.
+8
+=== PAGE 9 ===
+In total,d + 2 levels of homomorphic multiplications are required, whered is the multiplication depth of the
+PRG. The noise does not accumulate between gates, as each gate uses fresh ciphertexts generated from the
+homomorphic evaluation of the PRG.
+2.5 SWHE with Distributed Decryption from RLWE
+Our final task is to construct an SWHE scheme that supports distributed decryption properties. Here, we
+provide an intuitive overview of our RLWE-based instantiation, inspired by the GSW HE scheme [GSW13],
+which is detailed in Section 5. Additionally, we demonstrate in Appendix D how the same properties can be
+achieved based on the NTRU assumption.
+Overview of RLWE-based GSW Scheme. The ring learning with errors (RL WE) assumption states that it
+is hard to distinguish uniform samples inR2
+q from LWE samples of the form (ai,bi =ai·sk +ei), where
+ai∈R q is sampled uniformly, andsk,ei∈R are drawn from an error distribution (particularly, a discrete
+Gaussian distribution), with∥sk∥∞ and∥ei∥∞ being small with overwhelming probability. In the context of
+our garbling application, we set the first coefficient of the secret keysk assk[1] = 1, with LSB(sk) = 1 1.
+Additionally, similar to the GSW scheme [GSW13], we set the second coefficient of the secret key sk as
+sk[2] =q/p to simplify decryption in the garbling scheme 2.
+A GSW ciphertextτ∈R 2×2
+q for a messagem∈ Zp is given by:
+τ =
+ a1 b1 =a1·sk +e1−m·sk
+a2 b2 =a2·sk +e2 +m
+
+,
+wherea1,a 2∈R q are uniformly sampled ande1,e 2∈R are sampled from an error distribution. We observe
+thatτ· v− e =m· v, where we define v = [−sk 1]T and e = [e1e2]T. To decrypt, we compute
+x =
+b1−a1·sk
+q/p
+
+≈
+−m·sk
+q/p
+
+,
+and output the second coefficient of the polynomial−x as the messagem, where⌊u⌉ denotes the rounding
+function that maps each real-number coefficient of a polynomial-ring element u to the closest integer.
+Additionally, we can partially decrypt τ using only an inner product operation, ignoring the rounding
+operation. Specifically, we compute ⟨[a1 b1], v⟩ = (b1−a1·sk) to directly obtain approximations of
+(q/p)·m.
+The GSW scheme allows homomorphic additions and multiplications becauseτ· v≈m· v. Suppose
+we have two ciphertexts,τ1 andτ2, encrypting messagesm1 andm2, respectively. Then,τ1 +τ2 is a valid
+ciphertext form1 +m2, because (τ1 +τ2)· v≈ (m1 +m2)· v. Similarly,τ1·τ2 is a valid ciphertext for
+m1·m2, if∥τ1∥∞ is sufficiently small to control noise growth. In this case,τ1·τ2·v≈τ1·m2·v≈m1·m2·v.
+To ensure∥τ1∥∞ remains small, the GSW scheme employs the bit decomposition technique, as detailed in
+Section 5.1. Here, we omit the bit decomposition technique for clarity.
+We adopt two lemmas (i.e., the lifting and rounding lemmas) from [BKS19] to support distributed
+decryption. Informally, the lifting lemma shows that, ifz0 is uniform inRp andz1 =z0 +m mod p, then
+z1 =z0 +m (without modulop) holds with overwhelming probability, provided that∥m∥∞/p is sufficiently
+small. The rounding lemma states that, ift0 is uniform inRq andt1 =t0 + (q/p)·m +e∈R q, the equation
+⌊(p/q)·t1⌉ =⌊(p/q)·t0⌉ +m holds with overwhelming probability, provided thatp·∥e∥∞/q is sufficiently
+small.
+1Our NTRU-based scheme can relax the restriction on sk[1] = 1 to sk[1] mod 2 = 1 .
+2For simplicity, we w.l.o.g. assume p | q, as in prior work [BKS19]. When the bit decomposition technique is applied, the
+restriction on sk[2] can be eliminated [GSW13].
+9
+=== PAGE 10 ===
+The GSW ciphertexts can directly support linear distributed decryption when both ∥m∥∞/p andp·
+∥e∥∞/q are relatively small. Letsk0∈R p be sampled uniformly such thatLSB(sk0) = 0 andsk1 =sk0+sk
+mod p with LSB(sk1) = 1. According to the lifting lemma,sk1 =sk0 +sk (i.e., the operation of “modp”
+can be removed) with overwhelming probability. Thus, we have:
+b1−a1·sk1 =b1−a1· (sk0 +sk) =−a1·sk0 + (b1−a1·sk).
+Then, based on the rounding lemma, we have, with overwhelming probability:
+b1−a1·sk1
+q/p
+
+| {z }
+Dec(sk1,τ)
+=
+−a1·sk0
+q/p
+
+| {z }
+Dec(sk0,τ)
++
+b1−a1·sk
+q/p
+
+| {z }
+Dec(sk,τ)
+.
+Extended GSW. Before discussing how to support correlated-key distributed decryption, we introduce
+an extended GSW (eGSW) scheme, which incorporates an additional secret keycsk∈R and a ciphertext
+bτ∈R 4
+q. The eGSW encryption algorithm, denoted as dEnc(sk,csk,m ), uses both sk andcsk to encrypt a
+messagem∈ Zp, wheresk,csk follow an error distribution. This process generates an eGSW ciphertext:
+bτ =
+
+a, b1 =a·sk +e1, b2 =a·csk +e2, b3 =b1·csk +e3 + (q/p)·m·csk
+
+,
+wherea∈R q is sampled uniformly ande1,e 2,e 3 follow an error distribution. It can be verified that eGSW
+ciphertexts are additively homomorphic (see Section 5.2 for details). Below, we introduce two additional
+properties of the eGSW scheme.
+• It is cheap to convert a GSW ciphertext to an eGSW ciphertext. This is achieved by homomorphically
+evaluating the GSW partial decryption (i.e., the inner product only) on the ciphertext
+
+a, b1 = a·sk + e1, b2 = a·csk + e2, b3 = b1·csk + e3 + v·csk
+
+,
+which encrypts the GSW key-related vector v = [−sk 1]T. Here, a is uniform inR2
+q and e1, e2, e3∈R 2
+are sampled from an error distribution. This ciphertext is very close to the eGSW ciphertextdEnc(sk,csk,sk ),
+except that b3 lacks the factor of (q/p). We denote the above process as [τ]gsw→egsw for a GSW ciphertext
+τ∈R 2×2
+q . It first finds s∈R 2
+q such that sT·τ· v≈ (q/p)·m, and then outputs an eGSW ciphertext
+shown as follows:
+
+a =⟨u, a⟩, b1 =⟨u, b1⟩, b2 =⟨u, b2⟩, b3 =⟨u, b3⟩≈ b1·csk + (q/p)·m·csk
+
+.
+where u = sT·τ. It is easy to observe−[τ]gsw→egsw = [−τ]gsw→egsw.
+• It is also easy to non-interactively convert from an additive secret sharing ofsk to that ofcsk, or vice versa.
+We use [·]sk→csk to denote the conversion from the sharing of sk into the sharing ofcsk, and [·]csk→sk to
+denote the opposite conversion. Specifically, given two additive secret sharings(sk0,sk 1), (csk0,csk1)∈R 2
+p
+such thatsk0,csk0∈R p be two uniform elements with LSB(sk0) = LSB(csk0) = 1,sk1 =sk0 +sk and
+csk1 =csk0 +csk overRp, these conversions ensure
+
+sk1
+
+sk→csk =
+
+sk0
+
+sk→csk +csk. (3)
+csk1
+
+csk→sk =
+csk0
+
+csk→sk +sk. (4)
+10
+=== PAGE 11 ===
+Both conversions can be realized following a similar idea used in linear distributed decryption. For example,
+given a ciphertext (a,b =a·sk +e + (q/p)·csk), according to the lifting lemma, we havesk1 =sk0 +sk
+andsk1[1] =sk0[1] + 1 (without modulop) with overwhelming probability. This results in
+sk1[1]·b−a·sk1 = (sk0[1] + 1)·b−a· (sk0 +sk)
+= (sk0[1]·b−a·sk0) + (b−a·sk).
+From the rounding lemma, with overwhelming probability, this conversion associated with equation (3)
+can be done using the following observation:
+sk1[1]·b−a·sk1
+q/p
+
+| {z }
+[sk1]sk→csk
+=
+sk0[1]·b−a·sk0
+q/p
+
+| {z }
+[sk0]sk→csk
++
+b−a·sk
+q/p
+
+| {z }
+csk
+.
+The conversion related to the equation (4) can be performed similarly. Due to
+j
+−x
+q/p
+m
+=−
+j
+x
+q/p
+m
+, it is easy
+to see that for anyy∈R p,−[y]sk→csk = [−y]sk→csk.
+Supporting correlated-key distributed decryption. We now present the construction of thedDec algorithm.
+Letsk0,sk′
+0∈R p be sampled uniformly such that LSB(sk0) = LSB(sk′
+0) = 0,sk1 = sk0 +sk mod p
+and sk′
+1 = sk′
+0 +sk mod p with LSB(sk1) = LSB(sk′
+1) = 1 . Given a ciphertext τ ← Enc(sk,m ),
+dDec(ski,sk′
+j,τ ) is defined as follows:
+1. Switch the second additive secret sharing, by computing cskj =
+h
+sk′
+j
+i
+sk→csk
+.
+2. Convert τ to an eGSW ciphertext by computing (a,b 1,b 2,b 3) = [τ]gsw→egsw.
+3. Set i = LSB(ski) andj = LSB(sk′
+j), and compute
+x =ski·cskj·a−i·cskj·b1−j·ski·b2 +i·j·b3 mod q.
+4. Set y =⌊(p/q)·x⌉ and switch it back to an additive secret sharing ofsk by computing [y]csk→sk.
+It is easy to observe thatdDec(sk0,sk′
+0,τ ) =−dDec(sk0,sk′
+0,−τ) holds with overwhelming probability,
+since (1) for any GSW ciphertext τ,−[τ]gsw→egsw = [−τ]gsw→egsw; (2) for any x∈R q and y∈R p,
+(p/q)· (−x)
+
+=−
+
+(p/q)·x
+
+and−[y]csk→sk = [−y]csk→sk. Then, with overwhelming probability, we
+have thatdDec(ski,sk′
+j,τ )−dDec(sk0,sk′
+0,τ ) = i·j· Dec(sk,τ ) for anyi,j ∈{ 0, 1}, whose analysis is
+postponed to Theorem 2 of Section 5.2.
+3 Preliminaries
+In this section, we present the notation and definitions used in our garbling scheme and instantiations of
+SWHE with distributed decryption.
+Notation. We will useλ to denote the computational security parameter. Given a,b∈ N witha≤b, we
+write [a,b ] ={a,...,b } and [n] ={1,...,n }. We usex $← −S(resp.,x←D ) to denote samplingx from
+a setS uniformly at random (resp., according to a distribution D). For two distributions X andY , we
+denote byX
+c
+≈Y thatX is computationally indistinguishable fromY . We use bold lower-case letters like
+a to denote column vectors. For a vector a, we use a[i] to denote thei-th component of a, where a[1] is
+the first component. For a vector v of length n, the Euclidean norm is∥v∥2
+def=
+qP
+i∈[n](v[i])2 and the
+11
+=== PAGE 12 ===
+infinity norm is denoted by∥v∥∞
+def= maxi∈[n]|v[i]|. For two vectors x and y, we use x≈ y to denote
+that∥x− y∥∞ is relatively small. LetR def= Z[X]/(Xn + 1) be a polynomial ring with integer coefficients
+modulo a polynomialXn + 1. We defineRq
+def=R/qR = Zq[X]/(Xn + 1) for some integerq. Viewing a
+polynomial inR as a vector in Zn
+q is natural, and vice versa. Thus, we usea[i] to denote thei-th coefficient
+of a polynomial a∈R . For a polynomial x∈R , we define LSB(x) = x[1] mod 2 . We use negl(·) to
+denote an unspecified negligible function such that negl(λ) = o(λ−c) for every constantc, and poly(·) to
+denote a polynomial function with poly(λ) =O(λc) for some constantc. We denote the rounding function
+by⌊·⌉ : R→ Z, which mapsx∈ R to the closest integery∈ Z.
+Boolean circuits. Following the notation in [BHR12], we define a Boolean circuit that is a 5-tuplef =
+(n,m,|f|, Gateinputs,G ), where n is the number of inputs, m is the number of outputs, and |f| is the
+number of gates. We use N = n +|f| to denote the number of wires. We write Inputs(f) ={1,...,n },
+GateIndex(f) ={n + 1,...,N }, WireIndex(f) ={1,...,N } and Ouputs(f) ={N−m + 1,...,N }.
+For a given circuitf and a gate indexi, the function{α,β}← Gateinputs(f,i ) outputs the indices of the
+two incoming wires for thei-th gate within the circuitf. The functionG : GateIndex(f)×{ 0, 1}2→{ 0, 1}
+determines the functionality of each gate by mapping a gate index and two input bits to an output bit. We
+employvi to represent the real bit associated with thei-th wire.
+3.1 Low-Depth Pseudo-Random Generator
+A pseudo-random generator (PRG) expands a short seed into longer randomness. This PRG should be
+implemented with a low-depth circuit to support efficient homomorphic evaluation over SWHE ciphertexts.
+Specifically, PRG :{0, 1}λ→{ 0, 1}m uses a λ-bit secret seed to produce m > λbits, matching our
+circuit size. We require that PRG satisfies two conditions: (1) the standard pseudo-randomness, i.e., the
+PRG output should be computationally indistinguishable from a random string; (2) the PRG needs to be
+implemented in a circuit with a depth of O(log(λ)). We also consider weak pseudo-random functions
+(weak PRFs), since for any weak PRF, wPRFx(·), combined with a random oracle,H(·), allows PRG(x) =
+(wPRFx(H(1)),··· , wPRFx(H(m))) is a PRG.
+• Low-depth PRG using AES. AES is widely recognized as a fixed-depth PRG. That is, for a secret seed
+s∈{ 0, 1}λ, PRG(s) can be computed as (AESs(1),··· , AESs(m)), usings as the AES secret key. AES
+can be represented as a Boolean circuit with 2-fan-in gates and a fixed depth, such as 40, for a security
+parameter ofλ = 128 [BLO16]. Note that the multiplication depth of 40 can be easily supported by SWHE
+schemes, e.g, our instantiations (shown in Section 5 and Appendix D).
+• PRG in NC1 from LWE. Banerjee, Peikert, and Rosen [BPR12] introduced the Learning with Rounding
+(LWR) problem and proposed a reduction from LWR to LWE. The LWR problem facilitates the construction
+of a simple and practical PRG, representable by circuits in NC1 [BPR12].
+• PRG in NC0. Constructing PRG in NC0 has been studied over two decades [CM01, AIK04, IKOS08,
+AIK08, ABW10, Gol11, App12, AK19]. For example, Applebaum [App12] proposed a PRG inNC0 from a
+variant of Goldreich’s one-way function [Gol11]. Furthermore, Applebaum, Ishai, and Kushilevitz [AIK08]
+constructed a PRG in NC0 from the hardness of decoding “sparsely generated” linear code [Ale03].
+• Constant-depth weak PRF from LPN. The recent works [BIP+18, DGH+21, APRR24] propose weak
+PRF constructions based on a variant of the Learning Parity with Noise (LPN) problem and show that these
+constructions can be implemented using constant-depth circuits with unbounded fan-in gates.
+12
+=== PAGE 13 ===
+Real World Expprv,Φ
+real,A(1λ,f,x )
+1. (F,e,d )← Garble(1λ,f );
+2. X← Encode(e,x );
+3. b←A (F,X,d ).
+Ideal World Expprv,Φ
+ideal,A,S(1λ,f,x )
+1. (F,X,d )←S (1λ, Φ(f),f (x))
+2. b←A (F,X,d ).
+Figure 1: Experiments for privacy with respect to a side-information function Φ.
+3.2 Definition of Garbling Schemes
+We recall the definition of a garbling scheme from [RR21], which modifies the original definition from [BHR12]
+with two changes. First, the correctness is adjusted to allow a negligible probability of failure. Second,
+the authenticity property is enhanced by allowing the adversary to obtain extra decoding information d.
+We defer the definition of authenticity to Appendix B.1. Following the prior work [BHR12], we define a
+side-information function Φ(·) that deterministically maps a circuitf into a string Φ(f) indicating which side
+information off is revealed. In this paper, we focus on the classical setting, i.e., Φcirc(f) =f, which reveals
+the entire circuitf. The garbler executes the Garble and Encode algorithms, and the evaluator executes the
+Eval and Decode algorithms. These algorithms are defined as below.
+Definition 1 (Syntax). A garbling scheme consists of the following polynomial-time algorithms:
+• (F,e,d )← Garble(1λ,f ): This probabilistic algorithm takes as input a security parameterλ and a circuit
+f, and outputs a garbled circuitF , an encoding informatione and a decoding informationd.
+• X← Encode(e,x ): This deterministic algorithm takes as input the encoding informatione and an input
+x, and outputs a garbled inputX.
+• Y ← Eval(F,X ): This deterministic algorithm takes as inputF andX, and outputs a garbled outputY .
+• y← Decode(d,Y ): This deterministic algorithm takes as inputd andY , and outputs a circuit outputy.
+Correctness: For any circuit f and input x, for (F,e,d )← Garble(1λ,f ), the following equality holds
+except with probability negl(λ),
+Decode
+
+d, Eval
+
+F, Encode(e,x )
+
+=f(x).
+Privacy. The privacy property of garbling schemes is to guarantee that the input is private against the
+evaluator, even if it obtains the transcript(F,X,d ). We have the following definition for privacy.
+Definition 2 (Privacy). There exists a probabilistic polynomial time (PPT) simulatorS such that, for any
+PPT adversaryA, for any function f and inputx, there exists a negligible function negl(·) such that the
+following holds:
+Pr
+h
+Expprv,Φ
+real,A(1λ,f,x ) = 1
+i
+− Pr
+h
+Expprv,Φ
+ideal,A,S(1λ,f,x ) = 1
+i≤ negl(λ),
+where Expprv,Φ
+real,A and Expprv,Φ
+ideal,A,S are defined in Figure 1.
+Obliviousness. The obliviousness also guarantees the privacy of inputs against the evaluator, even if it obtains
+the information (F,X ). Different from privacy, obliviousness does not let the adversary obtain the decoding
+informationd, and thus it cannot learn the outputf(x). Obliviousness is useful when the garbling scheme is
+used as a part of a large system where the evaluator should not obtain the output.
+13
+=== PAGE 14 ===
+Real World Expobv,Φ
+real,A(1λ,f,x )
+1. (F,e,d )← Garble(1λ,f );
+2. X← Encode(e,x );
+3. b←A (F,X ).
+Ideal World Expobv,Φ
+ideal,A,S(1λ,f,x )
+1. (F,X )←S (1λ, Φ(f))
+2. b←A (F,X ).
+Figure 2: Experiments for obliviousness w.r.t. a side-information function Φ.
+Definition 3 (Obliviousness). There exists a PPT simulatorS such that, for any PPT adversaryA, for any
+functionf and inputx, there exists a negligible function negl(·) such that the following holds:
+Pr
+h
+Expobv,Φ
+real,A(1λ,f,x ) = 1
+i
+− Pr
+h
+Expobv,Φ
+ideal,A,S(1λ,f,x ) = 1
+i≤ negl(λ),
+where Expobv,Φ
+real,A and Expobv,Φ
+ideal,A,S are defined in Figure 2.
+3.3 Basic Definitions and Lemmas for Lattice-based Cryptography
+Below, we recall the basic definitions and lemmas used in our SWHE instantiations with distributed decryp-
+tion.
+Definition 4 (Discrete Gaussian Distribution) . Let Dm
+σ be a discrete Gaussian distribution over Zm
+centered at 0 with standard deviation σ, i.e.,∀x∈ Zm, Dm
+σ (x) = ρm
+σ (x)/ρm
+σ (Zm), where ρm
+σ (x) =
+
+1√
+2πσ2
+m
+e−
+P
+i∈[m](x[i])2
+2σ2 is the corresponding continuous normal distribution over Rm andρm
+σ (Zm) =P
+z∈Zm
+ρm
+σ (z).
+Modular rounding. We utilize the notation⌊·⌉ to denote rounding real numbers to the nearest integers. For
+integersp andq where 2≤p≤q, we define the “modular rounding” function as follows:
+⌊·⌉p : Zq→ Zp that mapsx→⌊ (p/q)·x⌉.
+This function can be extended element-wise to vectors and matrices over Zq. A probability distributionS
+overR is said to be B-bounded if it satisfies that Prx←S[∥x∥∞ > B] is negligible inλ. We denote byDB
+a distribution such that if e←D , then each coefficient of e∈R is independently bounded by B. In our
+SWHE instantiations, we use a discrete Gaussian distribution to defineDB, while other error distributions
+may also be applicable.
+Lemma 1 (Lifting Lemma [BKS19]). Letp∈ N be a modulus withp≥nω(1)and letz0∈R be a uniformly
+random ring element such that all coefficients are in Zp. For anym∈R , letz1 =z0 +m mod p, and we
+have
+Pr [z1 =z0 +m]≥ 1−n· (∥m∥∞ + 1)/p.
+Lemma 2 (Rounding Lemma [BKS19]). Letp,q∈ N be modulus values withq/p≥nω(1) andp|q. Let
+t0∈R q be a uniformly random ring element, andt1 =t0 + (q/p)·m +e overRq for somem∈R p and
+e∈R . Then, we have
+Pr
+
+⌊t1⌉p =⌊t0⌉p +m
+
+≥ 1−n· (∥e∥∞ + 1)·p/q.
+14
+=== PAGE 15 ===
+RLWE. The ring learning with errors ( RL WE) problem was introduced by Lyubaskevsky, Peikert, and
+Regev [LPR10], and is defined as below. To assess its hardness, the Blockwise Korkine-Zolotarev (BKZ)
+algorithm [SE94] is always used. Specifically, we use the state-of-the-art BKZ algorithm [MV10] to estimate
+the asymptotic hardness of the RL WEproblem as stated in Claim 1.
+Definition 1 (Decisional RLWE [LPR10]). LetRq = Zq[X]/ (Xn + 1). For dimension n∈ N, number
+of samplesm∈ N andq∈ N, the RL WE(n,m, B,q ) problem is to distinguish between the following two
+distributions:
+n
+ai
+$← −Rq,bi
+def
+= ai·s +ei
+o
+i∈[m]
+and
+n
+ai
+$← −Rq,ui
+$← −Rq
+o
+i∈[m]
+,
+wheres,ei←D B.
+Claim 1 ([HKM18, MV10]). The BKZ algorithm solves the RL WEproblem with a modulusq =nQ and an
+error norm∥ei∥2 =nS in time 2O(β), where the block sizeβ =O
+
+Q
+(Q−S)2·n
+
+andn is the dimension.
+4 Garbling Scheme with Communication of 1-Bit per Gate
+Firstly, we present the formal definition of somewhat homomorphic encryption (SWHE) schemes with
+distributed decryption. Then, we give the details of our garbling scheme that communicates only 1 bit per
+gate, using SWHE with distributed decryption as a building block. Finally, we demonstrate that our garbling
+scheme ensures both privacy and obliviousness. The extension of this scheme to support authenticity is
+detailed in Appendix B.
+4.1 Somewhat Homomorphic Encryption with Distributed Decryption
+Inspired by the notion of encryption schemes with nearly linear decryption [BKS19], we propose a private-key
+somewhat homomorphic encryption scheme with distributed decryption. Without loss of generality, we adopt
+two polynomial rings,R andRp (with evenp), in the following definition. Note that this definition can be
+easily extended to other finite fields and rings.
+Definition 5 (SWHE with Distributed Decryption) . A somewhat homomorphic encryption scheme with
+distributed decryption in the private-key setting, denoted by SWHE = (Gen, Enc, Dec), consists of three
+polynomial-time algorithms and satisfies the message homomorphism and distributed decryption properties.
+LetK be the space of secret keys generated by Gen,Rp be the space of key shares,M⊆R p be the message
+space, andC be the ciphertext space.
+• Key Generation: (params,sk )← Gen(1λ, 1L). The key generation algorithm takes as input a security
+parameterλ and a maximum multiplication depthL. It outputs a set of parameters params, along with a
+secret keysk∈K such that LSB(sk) = 1. Here, params is an implicit input to the following algorithms,
+omitted for simplicity.
+• Encryption:τ← Enc(sk,m ). The encryption algorithm takes as input a secret keysk∈K and a message
+m∈M , and outputs a ciphertextτ∈C .
+• Decryption:m·sk← Dec(sk,τ ). The decryption algorithm takes as input a secret keysk and a ciphertext
+τ, and outputsm·sk overRp. It is w.l.o.g. assumed thatm can be recovered fromm·sk overRp with
+secret keysk.
+The SWHE scheme needs to satisfy the following properties.
+15
+=== PAGE 16 ===
+1. Message homomorphism. For any (params,sk ) ← Gen(1λ, 1L), any message mi ∈ M, and its
+corresponding ciphertextτi = Enc(sk,mi), for eachi∈ [ℓ], where integerℓ≥ 1, the following holds
+with probability 1− negl(λ), for any polynomial-sized circuitf with a low depthL (e.g.,f is in NC1) :
+Dec
+
+sk,ef(τ1,...,τ ℓ)
+
+=f(m1,...,m ℓ)·sk,
+where ef denotes the homomorphic evaluation of circuitf on the ciphertexts, which can be performed in
+time poly(λ).
+2. Distributed decryption. For each (params,sk )← Gen(1λ, 1L) and ciphertextτ = Enc(sk,m ) on any
+messagem∈M , the following properties hold:
+• Linear distributed decryption. Letsk0 be an element sampled uniformly fromRp such that LSB(sk0) =
+0. Letsk1 =sk0 +sk overRp. Then, the following equations hold with probability 1− negl(λ),
+Dec(ski,τ ) =−Dec(ski,−τ) fori∈{ 0, 1}
+Dec(sk1,τ ) = Dec(sk0,τ ) + Dec(sk,τ ).
+The first equation is not equivalent to Dec(sk,τ ) = −Dec(sk,−τ), since neither sk0 norsk1 is a
+secret key. However, the two equations described as above implyDec(sk,τ ) =−Dec(sk,−τ).
+• Correlated-key distributed decryption. Letsk0,sk′
+0 be two elements sampled uniformly fromRp such
+that LSB(sk0) = 0 and LSB(sk′
+0) = 0 . Let sk1 = sk0 +sk overRp andsk′
+1 = sk′
+0 +sk overRp.
+There exists a polynomial-time algorithmdDec such that the following equations hold with probability
+1− negl(λ),
+dDec(sk0,sk′
+0,τ ) =−dDec(sk0,sk′
+0,−τ)
+dDec(ski,sk′
+j,τ )−dDec(sk0,sk′
+0,τ ) =i·j· Dec(sk,τ ) for eachi,j ∈{ 0, 1}.
+The message homomorphism and distributed decryption properties, as described above, have implied the
+correctness of the decryption algorithm. Below, we focus on defining the security.
+CPA security for SWHE with distributed decryption. We require that the SWHE scheme satisfies the
+indistinguishability under chosen-plaintext attacks (i.e., IND-CPA in short). Specifically, an IND-CPA
+experiment Expcpa
+A (1λ,b ) interacts with a probabilistic polynomial time (PPT) adversaryA as follows:
+1. Run (params,sk )← Gen(1λ, 1L) and send params toA.
+2.A has access to an encryption oracle Enc(sk,·) and outputs two messages m0,m 1∈M with|m0| =
+|m1|.
+3. Run τ∗← Enc(sk,mb), and send it toA.
+4.A continues to query Enc(sk,·), and then outputs a bitb′.
+We say that an SWHE scheme is IND-CPA secure, if
+Pr
+h
+Expcpa
+A (1λ, 0) = 1
+i
+− Pr
+h
+Expcpa
+A (1λ, 1) = 1
+i≤ negl(λ).
+In Section 5 and Appendix D, we present two efficient instantiations of the SWHE scheme with distributed
+decryption from the RLWE and NTRU assumptions, respectively, both with KDM security. The KDM security
+is crucial for instantiating thedDec algorithm with key-dependent ciphertexts.
+16
+=== PAGE 17 ===
+Garble(1λ,f ): The garbler executes the garble algorithm as follows:
+1. Run (params, ∆)← Gen(1λ, 1L) with LSB(∆) = 1, where ∆ is the secret key. Sample K
+$
+← −{0, 1}λ as a
+PRF key.
+2. For each i ∈ [λ], sample si
+$
+← − {0, 1}, run σi ← Enc(∆,si), and then set s = (s1,··· ,sλ) and σ =
+(σ1,··· ,σλ).
+3. Compute (br1,··· ,brN)← PRG(s) withbri∈{ 0, 1}, and homomorphically compute gPRG(σ) to generate
+(bτ1,··· ,bτN) withbτi = Enc(∆,bri) fori∈ [N], whereN =|WireIndex(f)|.
+4. For each i∈ Inputs(f), sample a 0-labelW 0
+i
+$
+← −Rp, set πi := LSB(W 0
+i ), and compute a 1-labelW 1
+i :=
+W 0
+i + (−1)πi· ∆∈R p. Then, for eachi∈ Inputs(f), setvi :=bri⊕πi and homomorphically computevi⊕bτi
+to obtaineτi := Enc(∆,πi).
+5. For eachg∈ GateIndex(f) in topological order, set (α,β )← Gateinputs(f,g ),Wπα
+α =W 0
+α−πα· ∆∈R p
+andWπβ
+β =W 0
+β−πβ· ∆∈R p, then do the following:
+(a) For eachi,j ∈{ 0, 1}, computezg,i,j =G(g,πα⊕i,πβ⊕j) and homomorphically computeeτg,i,j←
+(1− 2bτg)·G(g,eτα⊕i,eτβ⊕j), resulting in the ciphertexteτg,i,j that encrypts (−1)brg·zg,i,j.
+(b) Homomorphically compute HE ciphertexts eτg,1 := eτg,1,0−eτg,0,0,eτg,2 := eτg,0,1−eτg,0,0 andeτg,3 :=
+eτg,0,0 +eτg,1,1−eτg,1,0−eτg,0,1.
+(c) Run eLg,0,0← Dec(Wπα
+α ,eτg,1) +Dec(Wπβ
+β ,eτg,2) +dDec(Wπα
+α ,W πβ
+β ,eτg,3) +PRF(K,g ). Then, compute
+πg := LSB(eLg,0,0)⊕zg,0,0 andvg :=brg⊕πg.
+(d) Compute τg,1 := (−1)vg·eτg,1, τg,2 := (−1)vg·eτg,2 and τg,3 := (−1)vg·eτg,3 andLg,0,0 ←
+Dec(Wπα
+α ,τg,1) +Dec(Wπβ
+β ,τg,2) +dDec(Wπα
+α ,W πβ
+β ,τg,3) +PRF(K,g ). Then, homomorphically com-
+putevg⊕bτg to obtain a ciphertexteτg := Enc(∆,πg).
+(e) Compute the 0-label on the output wireW 0
+g :=Lg,0,0− (−1)πg·zg,0,0· ∆.
+6. Output a garbled circuit F =
+
+params,K,σ,{vi}i∈WireIndex(f )
+
+, an encoding information e =
+{W 0
+i}i∈Inputs(f ), ∆
+
+and a decoding informationd ={πi}i∈Ouputs(f ).
+Encode(e,x ): The garbler computes πi := LSB(W 0
+i ) andXi :=W 0
+i + (−1)πi·xi· ∆ for eachi∈ Inputs(f),
+and outputsX ={Xi}i∈Inputs(f ).
+Eval(F,X ): The evaluator performs the following steps:
+1. For each i∈ Inputs(f), setWi :=Xi.
+2. Homomorphically compute gPRG(σ) to generate (bτ1,··· ,bτN), where each bτi = Enc(∆,bri) and N =
+|WireIndex(f)|.
+3. For each i∈ WireIndex(f), homomorphically computevi⊕bτi to obtain an HE ciphertexteτi := Enc(∆,πi).
+4. For each g∈ GateIndex(f) in topological order, set (α,β )← Gateinputs(f,g ), and then do the following:
+(a) For eachi,j ∈{ 0, 1}, homomorphically compute an HE ciphertexteτg,i,j← (1−2bτg)·G(g,eτα⊕i,eτβ⊕j).
+(b) Homomorphically compute HE ciphertexts eτg,1 := eτg,1,0−eτg,0,0,eτg,2 := eτg,0,1−eτg,0,0 andeτg,3 :=
+eτg,0,0 +eτg,1,1−eτg,1,0−eτg,0,1.
+(c) Computeτg,1 := (−1)vg·eτg,1,τg,2 := (−1)vg·eτg,2 andτg,3 := (−1)vg·eτg,3. RunWg← Dec(Wα,τg,1)+
+Dec(Wβ,τg,2) +dDec(Wα,Wβ,τg,3) + PRF(K,g ).
+5. Output Y ={Wi}i∈Ouputs(f ).
+Decode(d,Y ): The evaluator computesyi := LSB(Yi)⊕πi for eachi∈ Ouputs(f), and outputsy.
+Figure 3: The Garble, Encode, Eval, Decode algorithms in our garbling scheme.
+17
+=== PAGE 18 ===
+4.2 Our Garbling Scheme from SWHE with Distributed Decryption
+Based on a somewhat homomorphic encryption (SWHE) scheme with distributed decryption, we construct a
+communication-efficient garbling scheme, as shown in Figure 3. We use ∆∈K , where LSB(∆) = 1, as the
+secret key for this SWHE scheme. Both parties homomorphically compute a low-depth PRG, as described in
+Section 3.1, on the ciphertexts of a random seed to generateN ciphertexts, each encrypting a pseudo-random
+bit, whereN denotes the number of all wires. If the PRG has a multiplication depth of a small integer d, the
+SWHE scheme needs to support d + 2 levels of homomorphic multiplications. We use a pseudo-random
+function PRF :{0, 1}λ×{ 0, 1}λ→R p to randomize the output labels on each gate, where the key K is
+involved in the garbled circuitF following the previous approach [BKS19]. Note that PRF is not used to
+protect the privacy, and instead guarantees the correctness by making the distributed decryption property
+hold for each gate. Based on the technical overview in Section 2, it is easy to analyze the correctness of our
+garbling scheme by going through each algorithm, and for completeness, we provide the correctness analysis
+of our scheme in Appendix A.1.
+The garbler can send some public parameters in params to the evaluator in advance. These parameters,
+which do not rely on the secret key, can be reused for generating multiple garbled circuits. Our garbling
+scheme (see Figure 3) can be further optimized as follows: for each i∈ Inputs(f), the garbler directly
+setsπi =bri (i.e., settingvi = 0), and then samples a 0-labelW 0
+i
+$← −Rp such that LSB(W 0
+i ) = πi. This
+optimization can reduce the communication of the garbled table by|Inputs(f)| bits, requiring onlyλ·|ct|+|C|
+bits, where|ct| =O(λ· polylogλ) represents the size of a single HE ciphertext and|C| is the circuit size.
+Complexity analysis. To analyze the communication cost, we focus on the size of the garbled circuitF , as it
+dominates the communication. The size ofF is given byλ·|ct| +|C| +λ bits. Thus, our scheme essentially
+achieves a total communication cost of just 1 bit per gate.
+For the computational cost, we focus on the number of homomorphic operations which dominate the com-
+putation. Let PRG :{0, 1}λ→{ 0, 1}|C| be a PRG requiringn additions,m multiplications. Consequently,
+the ciphertextsbτ1,··· ,bτ|C| are generated usingn homomorphic additions andm homomorphic multiplica-
+tions. Thus, when selecting a low-complexity PRG (e.g., [App12, AIK04, AIK08, AK19, CM01]), we have
+thatn+m =O(|C|), leading to an amortized computation cost ofO(1) homomorphic addition/multiplication
+operations per gate. In addition to homomorphic operations associated with the PRG, for each gate, both
+parties performO(1) homomorphic addition/multiplication operations to produce a constant number of HE
+ciphertexts, and executeO(1) instances of the algorithms Dec anddDec to generate (eLg,0,0,Lg,0,0) orWg. As
+detailed in Section 5 and Appendix D, for our RL WE-based and NTRU-based instantiations, both Dec and
+dDec require onlyO(1) normal addition/multiplication operations over a polynomial ring, which is a small
+part of the total computation. In conclusion, the amortized computation cost per gate is primarily determined
+byO(1) homomorphic addition/multiplication operations.
+Proof of security. We show that our garbling scheme satisfies both privacy and obliviousness, as defined in
+Section 3.2. Similar to the proof approach of the classical garbling scheme half-gates [ZRE15], we replace all
+garbled tables with uniform elements in one hybrid. In particular, our garbled tables consist of HE ciphertexts
+on uniform bits, as well as the XOR of uniform bits and wire masks. Note that for an evenp, LSB(W ) is a
+uniform bit ifW∈R p is a random element.
+The security of our scheme is fairly intuitive because our GC is more compact than classical GCs.
+The garbler only sends (1) an encrypted seed and (2) PRG-masked bits, which remain computationally
+indistinguishable from all-zero ciphertexts and uniform bits, even with the evaluator’s input labels. Thus,
+the obliviousness simulator can generate uniform labels as the garbled inputX and use the uniform bits as
+the garbled circuitF . The privacy simulator additionally provides carefully designed decoding information
+based on the circuit output and the evaluator’s output-wire labels.
+Theorem 1. Our garbling scheme (Figure 3) satisfies both privacy (Definition 2) and obliviousness (Defini-
+18
+=== PAGE 19 ===
+tion 3), provided that the SWHE scheme with distributed decryption is CPA secure,PRG is a pseudorandom
+generator, and PRF is a pseudorandom function.
+The proof of Theorem 1 is deferred to Appendix A.2.
+5 SWHE with Distributed Decryption from RLWE
+In this section, we present a somewhat homomorphic encryption (SWHE) scheme with distributed decryption
+under the RL WEassumption, building on the GSW scheme [GSW13]. We first give an overview of the
+original GSW-SWHE scheme and then show how to achieve the distributed decryption property.
+5.1 GSW-SWHE from RLWE
+Firstly, we recall some useful functions used in the GSW scheme [GSW13], includingBitDecomp, BitDecomp−1,
+Flatten and Powersof2. Fora∈R q, BitDecomp(a) outputs anℓ-dimension row vector (a0,a 1,...,a ℓ−1),
+representing the bit decomposition ofa, whereℓ =⌊log(q)⌋ + 1, andai∈R 2 is a ring element such that
+each coefficient is thei-bit component of the binary representation of thea’s corresponding coefficient. Here
+we writeR2 = Z2[X]/(Xn + 1). For an ℓ-dimension row vector a = (a0,a 1,...,a ℓ−1), the inverse of
+BitDecomp(a), denoted by BitDecomp−1(a), is defined byPℓ−1
+i=0(2i·ai) overRq. For anℓ-dimension row
+vector a, Flatten(a) is defined as BitDecomp(BitDecomp−1(a)) and outputs anℓ-dimension row vector,
+where all coefficients of each component are bits. Forb∈R q, Powersof2(b) generates anℓ-dimension row
+vector
+
+20·b, 21·b,..., 2ℓ−1·b
+
+. For any a∈R ℓ
+q andb∈R q, we have
+⟨ a, Powersof2(b)⟩ = BitDecomp−1(a)·b =⟨ Flatten(a), Powersof2(b)⟩ ,
+where for any two vectors x, y,⟨x, y⟩ denotes their inner product. All the above operations can be applied to
+matrices as well. For example, for a matrix A∈R m×n
+q , where Ai,j represents the entry in thei-th row and
+j-th column of A, BitDecomp(A) is defined as:
+BitDecomp(A) def=
+
+
+BitDecomp(A1,1) ··· BitDecomp(A1,n)
+... ... ...
+BitDecomp(Am,1) ··· BitDecomp(Am,n)
+
+∈R m×(nℓ)
+2 .
+The GSW-SWHE scheme in the private-key setting consists of the following three algorithms:
+• Key generation. Gen(1λ, 1L) samples a secret key sk ← DB, and outputs sk along with a set of
+parameters params = (n,p,q, B,ℓ,N,s ), whereℓ =⌊log(q)⌋ + 1,N = 2ℓ,q >4B·p· (N + 1)L·nL
+ands =⌊log(q/p)⌋.
+• Encryption. On input a secret keysk and a messagem∈ Zp, Enc(sk,m ) samples a $← −RN
+q and e←D N
+B ,
+computes b := a·sk + e, and then outputs
+τ← Flatten
+
+m· IN + BitDecomp
+
+a b
+
+,
+where IN is theN×N identity matrix.
+• Decryption. On input a secret key sk and a ciphertext τ ∈R N×N
+2 , Dec(sk,τ ) sets a vector vT :=
+Powersof2
+
+−sk 1
+
+, and then computes
+τ· v :=
+
+m· IN + BitDecomp
+
+a b
+
+· v =m· v + b− a·sk≈m· v. (5)
+Observe that the last ℓ components of vT are Powersof2(1) =
+
+1 2 ··· 2ℓ−1
+. Then, it extracts the
+(ℓ +s + 1)-th component ofτ· v, denoted as (τ· v) [ℓ +s + 1], and outputsm :=
+j
+(τ·v)[ℓ+s+1]
+2s
+m
+.
+19
+=== PAGE 20 ===
+Following the analysis in [GSW13], the error of the final ciphertext in GSW-SWHE is bounded by
+(N + 1)L·nL· B, whereL represents the multiplication depth of a circuit. For anysk← Gen(1λ, 1L), two
+messagesm1 andm2, and their ciphertexts τ1 = Enc(sk,m 1) andτ2 = Enc(sk,m 2), the homomorphic
+addition and multiplication operations Add and Mult are respectively defined as follows:
+• Add(τ1,τ 2): To add ciphertextsτ1,τ 2∈R N×N
+2 , output Flatten(τ1 +τ2). The correctness of this operation
+is obvious.
+• Mult(τ1,τ 2): To multiply ciphertextsτ1,τ 2∈R N×N
+2 , output Flatten(τ1·τ2). To verify the correctness,
+we decrypt Mult(τ1,τ 2) as Mult(τ1,τ 2)· v:
+Mult(τ1,τ 2)· v =τ1·τ2· v≈τ1·m2· v =m2·τ1· v≈m1·m2· v,
+where the approximate equality “≈” is due to Equation (5).
+5.2 Our SWHE Scheme with Distributed Decryption from RLWE
+Our SWHE scheme extends the GSW scheme to support distributed decryption. Inspired by prior work [BKS19],
+the linear distributed decryption can be directly applied to GSW ciphertexts. However, supporting the
+correlated-key distributed decryption property is more challenging. To address this, we introduce an extended
+GSW (eGSW) scheme based on the KDM security.
+Compared to the GSW scheme, the eGSW scheme additionally introduces a secret keycsk and an extended
+encryption algorithmbτ←dEnc(sk,csk,m ). We are able to convert a GSW ciphertextEnc(sk,m ) to an eGSW
+ciphertextdEnc(sk,csk,m ), and can also non-interactively convert between an additive secret sharing ofsk
+and that ofcsk. Both conversions have been explained in Section 2.5, and their details are shown as below.
+In addition, eGSW samplessk,csk←D B such thatsk[1] =csk[1] = 1. Furthermore, eGSW modifies the
+decryption algorithm Dec to realize linear distributed decryption as follows:
+1. Dec now outputsm·sk rather thanm.
+2. Dec computes an inner product to approximately yield (q/p)·m·sk, and then performs the rounding.
+The encryption algorithm Enc, homomorphic addition Add, and homomorphic multiplication Mult of
+the eGSW scheme are the same as the GSW scheme, and thus they are omitted. The other algorithms of our
+eGSW scheme are as follows:
+• Key generation. Gen(1λ, 1L) samples two secret keys sk,csk←D B such thatsk[1] = csk[1] = 1 , and
+then generates a set of public parameters params ={n,p,q, B,ℓ,N,τ sk→csk,τ csk→sk,τ gsw→egsw} as below:
+– B = poly(λ),p|q,p =λω(1) is an even,q/p2 =λω(1)· (N + 1)L·nL,ℓ =⌊log(q)⌋ + 1 andN = 2ℓ.
+– Samplea,ba $← −Rq ande,be←D B, and then compute two key-switching ciphertextsτsk→csk andτcsk→sk
+as follows:
+τsk→csk = (a, b=a·sk +e + (q/p)·csk ),
+τcsk→sk = (ba, bb =ba·csk +be + (q/p)·sk ).
+– Sample a $← −RN
+q and e1, e2, e3←D N
+B , and then compute a GSW-to-eGSW ciphertextτgsw→egsw as
+follows:
+τgsw→egsw =
+
+a, b1 = a·sk + e1, b2 = a·csk + e2, b3 = b1·csk + e3 + v·csk
+
+,
+where v def= Powersof2
+
+−sk 1
+T.
+20
+=== PAGE 21 ===
+• Decryption. On input a key x∈R (it is either the secret key sk or an additive share of sk for our
+instantiation) and a ciphertextτ∈R N×N
+2 , Dec(x,τ ) computes overRq
+(α,β ) := BitDecomp−1
+−BitDecomp
+
+(q/p) 0
+
+·τ
+
+,
+and then output
+
+LSB(x)·β−α·x
+
+p. Note that ifx =sk with LSB(sk) = 1, then we haveβ−α·sk≈
+(q/p)·m·sk and thus
+
+β−α·sk
+
+p =m·sk.
+• Extended encryption. On input two secret keys sk,csk as well as a message m∈ Zp,dEnc(sk,csk,m )
+samplesa $← −Rq ande1,e 2,e 3←D B, and then outputs an eGSW ciphertext
+bτ =
+
+a, b1 =a·sk +e1, b2 =a·csk +e2, b3 =b1·csk +e3 + (q/p)·m·csk
+
+.
+• GSW-to-eGSW conversion [·]gsw→egsw. Given a GSW ciphertextτ = Enc(sk,m ) for a messagem∈ Zp
+and the GSW-to-eGSW ciphertextτgsw→egsw = (a, b1, b2, b3), the GSW-to-eGSW conversion function
+τ
+
+gsw→egsw generates an eGSW ciphertext on the messagem as
+
+a =⟨u, a⟩, b1 =⟨u, b1⟩, b2 =⟨u, b2⟩, b3 =⟨u, b3⟩≈ b1·csk + (q/p)·m·csk
+
+,
+where u = BitDecomp
+
+0 ( q/p)
+
+·τ.
+• Key-switching. Given the key-switching ciphertextsτsk→csk andτcsk→sk, we define two key-switching
+functions [·]sk→csk and [·]csk→sk. In particular, for anyy∈R p, we have
+[y]sk→csk outputs
+
+y[1]·b−a·y
+
+p, and [y]csk→sk outputs
+
+y[1]·bb−ba·y
+
+p.
+Letsk0,csk0∈R p be two uniform elements such that LSB(sk0) = 0 and LSB(csk0) = 0 . Let sk1 =
+sk0 +sk andcsk1 =csk0 +csk overRp. For correctness, we have
+
+sk1
+
+sk→csk =
+
+sk0
+
+sk→csk +csk andcsk1
+
+csk→sk =
+csk0
+
+csk→sk +sk overRp. See Section 2.5 and the following Theorem 2 for the correctness
+analysis.
+• Algorithm dDec for correlated-key distributed decryption. Given a ciphertext τ = Enc(sk,m ) as
+well as two additive secret sharings (sk0,sk 1) and (sk′
+0,sk′
+1) such that LSB(sk0) = LSB(sk′
+0) = 0 ,
+sk1 = sk0 +sk and sk′
+1 = sk′
+0 +sk overRp, for any i,j ∈{ 0, 1}, dDec(ski,sk′
+j,τ ) performs the
+following steps:
+1. Perform a key-switching operation cskj :=
+h
+sk′
+j
+i
+sk→csk
+.
+2. Convert τ into an eGSW ciphertext by computing (a,b 1,b 2,b 3) :=
+
+τ
+
+gsw→egsw.
+3. Computex := ski·cskj·a−i·cskj·b1−j·ski·b2 +i·j·b3 overRq, wherei = LSB(ski) and
+j = LSB(sk′
+j).
+4. Set y :=⌊x⌉p and perform another key-switching operationz := [y]csk→sk. Outputz∈R p.
+Theorem 2. Our eGSW scheme is a somewhat homomorphic encryption scheme with distributed decryption
+under the RLWE assumption and the assumption that the eGSW scheme is key-dependent message (KDM)
+secure.
+The proof of Theorem 2 is postponed to Appendix C.
+21
+=== PAGE 22 ===
+Acknowledgements
+We would like to thank the reviewers of Eurocrypt 2024, Crypto 2024, and Eurocrypt 2025 for their
+constructive comments. Work of Yu Yu is supported by the National Natural Science Foundation of China
+(Grant Nos. 62125204 and 92270201) and Innovation Program for Quantum Science and Technology (No.
+2021ZD0302901 / 2021ZD0302902). Work of Kang Yang is supported by the National Natural Science
+Foundation of China (Grant No. 62102037). Work of Xiao Wang is supported by NSF award #2236819. Yu
+Yu’s work has also been supported by the New Corner-stone Science Foundation through the XPLORER
+PRIZE.
+References
+[ABD16] Martin R. Albrecht, Shi Bai, and L´eo Ducas. A subfield lattice attack on overstretched NTRU
+assumptions - cryptanalysis of some FHE and graded encoding schemes. In Matthew Robshaw
+and Jonathan Katz, editors, CRYPTO 2016, Part I, volume 9814 of LNCS, pages 153–178.
+Springer, Berlin, Heidelberg, August 2016.
+[ABW10] Benny Applebaum, Boaz Barak, and Avi Wigderson. Public-key cryptography from different
+assumptions. In Leonard J. Schulman, editor, 42nd ACM STOC, pages 171–180. ACM Press,
+June 2010.
+[Agr17] Shweta Agrawal. Stronger security for reusable garbled circuits, general definitions and attacks.
+In Jonathan Katz and Hovav Shacham, editors, CRYPTO 2017, Part I, volume 10401 of LNCS,
+pages 3–35. Springer, Cham, August 2017.
+[AIK04] Benny Applebaum, Yuval Ishai, and Eyal Kushilevitz. Cryptography in NC0. In 45th FOCS,
+pages 166–175. IEEE Computer Society Press, October 2004.
+[AIK08] Benny Applebaum, Yuval Ishai, and Eyal Kushilevitz. On pseudorandom generators with linear
+stretch in nc0. Comput. Complex., 17(1):38–69, 2008.
+[AK19] Benny Applebaum and Eliran Kachlon. Sampling graphs without forbidden subgraphs and
+unbalanced expanders with negligible error. In David Zuckerman, editor, 60th FOCS, pages
+171–179. IEEE Computer Society Press, November 2019.
+[AL18] Prabhanjan Ananth and Alex Lombardi. Succinct garbling schemes from functional encryption
+through a local simulation paradigm. In Amos Beimel and Stefan Dziembowski, editors,
+TCC 2018, Part II, volume 11240 of LNCS, pages 455–472. Springer, Cham, November 2018.
+[Ale03] Michael Alekhnovich. More on average case vs approximation complexity. In 44th FOCS,
+pages 298–307. IEEE Computer Society Press, October 2003.
+[App12] Benny Applebaum. Pseudorandom generators with long stretch and low locality from random
+local one-way functions. In Howard J. Karloff and Toniann Pitassi, editors, 44th ACM STOC,
+pages 805–816. ACM Press, May 2012.
+[APRR24] Navid Alamati, Guru-Vamsi Policharla, Srinivasan Raghuraman, and Peter Rindal. Improved
+alternating-moduli PRFs and post-quantum signatures. In Leonid Reyzin and Douglas Stebila,
+editors, CRYPTO 2024, Part VIII, volume 14927 of LNCS, pages 274–308. Springer, Cham,
+August 2024.
+22
+=== PAGE 23 ===
+[BCFK21] Alexandre Bois, Ignacio Cascudo, Dario Fiore, and Dongwoo Kim. Flexible and efficient
+verifiable computation on encrypted data. In Juan Garay, editor, PKC 2021, Part II, volume
+12711 of LNCS, pages 528–558. Springer, Cham, May 2021.
+[BGG+14] Dan Boneh, Craig Gentry, Sergey Gorbunov, Shai Halevi, Valeria Nikolaenko, Gil Segev,
+Vinod Vaikuntanathan, and Dhinakaran Vinayagamurthy. Fully key-homomorphic encryption,
+arithmetic circuit ABE and compact garbled circuits. In Phong Q. Nguyen and Elisabeth
+Oswald, editors, EUROCRYPT 2014, volume 8441 of LNCS, pages 533–556. Springer, Berlin,
+Heidelberg, May 2014.
+[BGL+15] Nir Bitansky, Sanjam Garg, Huijia Lin, Rafael Pass, and Sidharth Telang. Succinct randomized
+encodings and their applications. In Rocco A. Servedio and Ronitt Rubinfeld, editors, 47th
+ACM STOC, pages 439–448. ACM Press, June 2015.
+[BHR12] Mihir Bellare, Viet Tung Hoang, and Phillip Rogaway. Foundations of garbled circuits. In
+Ting Yu, George Danezis, and Virgil D. Gligor, editors,ACM CCS 2012, pages 784–796. ACM
+Press, October 2012.
+[BIP+18] Dan Boneh, Yuval Ishai, Alain Passel`egue, Amit Sahai, and David J. Wu. Exploring crypto
+dark matter: New simple PRF candidates and their applications. In Amos Beimel and Stefan
+Dziembowski, editors, TCC 2018, Part II, volume 11240 of LNCS, pages 699–729. Springer,
+Cham, November 2018.
+[BIP+22] Charlotte Bonte, Ilia Iliashenko, Jeongeun Park, Hilder V . L. Pereira, and Nigel P. Smart.
+FINAL: Faster FHE instantiated with NTRU and LWE. In Shweta Agrawal and Dongdai Lin,
+editors, ASIACRYPT 2022, Part II, volume 13792 of LNCS, pages 188–215. Springer, Cham,
+December 2022.
+[BKS19] Elette Boyle, Lisa Kohl, and Peter Scholl. Homomorphic secret sharing from lattices without
+FHE. In Yuval Ishai and Vincent Rijmen, editors, EUROCRYPT 2019, Part II, volume 11477
+of LNCS, pages 3–33. Springer, Cham, May 2019.
+[BLLN13] Joppe W. Bos, Kristin Lauter, Jake Loftus, and Michael Naehrig. Improved security for a ring-
+based fully homomorphic encryption scheme. In Martijn Stam, editor, 14th IMA International
+Conference on Cryptography and Coding, volume 8308 ofLNCS, pages 45–64. Springer, Berlin,
+Heidelberg, December 2013.
+[BLO16] Aner Ben-Efraim, Yehuda Lindell, and Eran Omri. Optimizing semi-honest secure multiparty
+computation for the internet. In Edgar R. Weippl, Stefan Katzenbeisser, Christopher Kruegel,
+Andrew C. Myers, and Shai Halevi, editors, ACM CCS 2016, pages 578–590. ACM Press,
+October 2016.
+[BMR90] Donald Beaver, Silvio Micali, and Phillip Rogaway. The round complexity of secure protocols
+(extended abstract). In 22nd ACM STOC, pages 503–513. ACM Press, May 1990.
+[BPR12] Abhishek Banerjee, Chris Peikert, and Alon Rosen. Pseudorandom functions and lattices. In
+David Pointcheval and Thomas Johansson, editors, EUROCRYPT 2012, volume 7237 of LNCS,
+pages 719–737. Springer, Berlin, Heidelberg, April 2012.
+[CF13] Dario Catalano and Dario Fiore. Practical homomorphic MACs for arithmetic circuits. In
+Thomas Johansson and Phong Q. Nguyen, editors, EUROCRYPT 2013, volume 7881 of LNCS,
+pages 336–352. Springer, Berlin, Heidelberg, May 2013.
+23
+=== PAGE 24 ===
+[CHJV15] Ran Canetti, Justin Holmgren, Abhishek Jain, and Vinod Vaikuntanathan. Succinct garbling
+and indistinguishability obfuscation for RAM programs. In Rocco A. Servedio and Ronitt
+Rubinfeld, editors, 47th ACM STOC, pages 429–437. ACM Press, June 2015.
+[CJL16] Jung Hee Cheon, Jinhyuck Jeong, and Changmin Lee. An algorithm for ntru problems and
+cryptanalysis of the ggh multilinear map without a low-level encoding of zero. LMS Journal of
+Computation and Mathematics, 19(A):255–266, 2016.
+[CM01] Mary Cryan and Peter Bro Miltersen. On pseudorandom generators in nc0. In Jir´ı Sgall, Ales
+Pultr, and Petr Kolman, editors, MFCS 2001, volume 2136 of LNCS, pages 272–284. Springer,
+2001.
+[DG17] Nico D¨ottling and Sanjam Garg. Identity-based encryption from the Diffie-Hellman assumption.
+In Jonathan Katz and Hovav Shacham, editors, CRYPTO 2017, Part I, volume 10401 of LNCS,
+pages 537–569. Springer, Cham, August 2017.
+[DGH+21] Itai Dinur, Steven Goldfeder, Tzipora Halevi, Yuval Ishai, Mahimna Kelkar, Vivek Sharma, and
+Greg Zaverucha. MPC-friendly symmetric cryptography from alternating moduli: Candidates,
+protocols, and applications. In Tal Malkin and Chris Peikert, editors, CRYPTO 2021, Part IV,
+volume 12828 of LNCS, pages 517–547, Virtual Event, August 2021. Springer, Cham.
+[DvW21] L´eo Ducas and Wessel P. J. van Woerden. NTRU fatigue: How stretched is overstretched? In
+Mehdi Tibouchi and Huaxiong Wang, editors, ASIACRYPT 2021, Part IV, volume 13093 of
+LNCS, pages 3–32. Springer, Cham, December 2021.
+[FGP14] Dario Fiore, Rosario Gennaro, and Valerio Pastro. Efficiently verifiable computation on
+encrypted data. In Gail-Joon Ahn, Moti Yung, and Ninghui Li, editors, ACM CCS 2014, pages
+844–855. ACM Press, November 2014.
+[FNO15] Tore Kasper Frederiksen, Jesper Buus Nielsen, and Claudio Orlandi. Privacy-free garbled
+circuits with applications to efficient zero-knowledge. In Elisabeth Oswald and Marc Fischlin,
+editors, EUROCRYPT 2015, Part II, volume 9057 of LNCS, pages 191–219. Springer, Berlin,
+Heidelberg, April 2015.
+[FNP20] Dario Fiore, Anca Nitulescu, and David Pointcheval. Boosting verifiable computation on
+encrypted data. In Aggelos Kiayias, Markulf Kohlweiss, Petros Wallden, and Vassilis Zikas,
+editors, PKC 2020, Part II, volume 12111 of LNCS, pages 124–154. Springer, Cham, May
+2020.
+[FP83] Ulrich Fincke and Michael Pohst. A procedure for determining algebraic integers of given
+norm. In European Computer Algebra Conference 1983, pages 194–202. Springer, 1983.
+[Gen09] Craig Gentry. Fully homomorphic encryption using ideal lattices. In Michael Mitzenmacher,
+editor, 41st ACM STOC, pages 169–178. ACM Press, May / June 2009.
+[GGH13a] Sanjam Garg, Craig Gentry, and Shai Halevi. Candidate multilinear maps from ideal lattices. In
+Thomas Johansson and Phong Q. Nguyen, editors, EUROCRYPT 2013, volume 7881 of LNCS,
+pages 1–17. Springer, Berlin, Heidelberg, May 2013.
+[GGH+13b] Craig Gentry, Sergey Gorbunov, Shai Halevi, Vinod Vaikuntanathan, and Dhinakaran Vinayaga-
+murthy. How to compress (reusable) garbled circuits. Cryptology ePrint Archive, Report
+2013/687, 2013.
+24
+=== PAGE 25 ===
+[GGP10] Rosario Gennaro, Craig Gentry, and Bryan Parno. Non-interactive verifiable computing:
+Outsourcing computation to untrusted workers. In Tal Rabin, editor, CRYPTO 2010, volume
+6223 of LNCS, pages 465–482. Springer, Berlin, Heidelberg, August 2010.
+[GKP+13] Shafi Goldwasser, Yael Tauman Kalai, Raluca A. Popa, Vinod Vaikuntanathan, and Nickolai
+Zeldovich. Reusable garbled circuits and succinct functional encryption. In Dan Boneh, Tim
+Roughgarden, and Joan Feigenbaum, editors, 45th ACM STOC, pages 555–564. ACM Press,
+June 2013.
+[GLNP15] Shay Gueron, Yehuda Lindell, Ariel Nof, and Benny Pinkas. Fast garbling of circuits under
+standard assumptions. In Indrajit Ray, Ninghui Li, and Christopher Kruegel, editors, ACM CCS
+2015, pages 567–578. ACM Press, October 2015.
+[GNS23] Chaya Ganesh, Anca Nitulescu, and Eduardo Soria-Vazquez. Rinocchio: SNARKs for ring
+arithmetic. Journal of Cryptology, 36(4):41, October 2023.
+[Gol11] Oded Goldreich. Candidate one-way functions based on expander graphs. In Oded Goldreich,
+editor, Studies in Complexity and Cryptography, volume 6650 of LNCS, pages 76–87. Springer,
+2011.
+[GSW13] Craig Gentry, Amit Sahai, and Brent Waters. Homomorphic encryption from learning with
+errors: Conceptually-simpler, asymptotically-faster, attribute-based. In Ran Canetti and Juan A.
+Garay, editors, CRYPTO 2013, Part I, volume 8042 of LNCS, pages 75–92. Springer, Berlin,
+Heidelberg, August 2013.
+[GW13] Rosario Gennaro and Daniel Wichs. Fully homomorphic message authenticators. In Kazue
+Sako and Palash Sarkar, editors, ASIACRYPT 2013, Part II, volume 8270 of LNCS, pages
+301–320. Springer, Berlin, Heidelberg, December 2013.
+[HK20] David Heath and Vladimir Kolesnikov. Stacked garbling for disjunctive zero-knowledge proofs.
+In Anne Canteaut and Yuval Ishai, editors, EUROCRYPT 2020, Part III, volume 12107 of
+LNCS, pages 569–598. Springer, Cham, May 2020.
+[HKE12] Yan Huang, Jonathan Katz, and David Evans. Quid-Pro-Quo-tocols: Strengthening semi-honest
+protocols with dual execution. In 2012 IEEE Symposium on Security and Privacy , pages
+272–284. IEEE Computer Society Press, May 2012.
+[HKM18] Gottfried Herold, Elena Kirshanova, and Alexander May. On the asymptotic complexity of
+solving LWE. Designs, Codes, and Cryptography, 86(1):55–83, 2018.
+[HLL23] Yao-Ching Hsieh, Huijia Lin, and Ji Luo. Attribute-based encryption for circuits of unbounded
+depth from lattices. In 64th FOCS, pages 415–434. IEEE Computer Society Press, November
+2023.
+[HPS98] Jeffrey Hoffstein, Jill Pipher, and Joseph H Silverman. Ntru: A ring-based public key cryp-
+tosystem. In International algorithmic number theory symposium, pages 267–288. Springer,
+1998.
+[HPS11] Guillaume Hanrot, Xavier Pujol, and Damien Stehl´e. Analyzing blockwise lattice algorithms
+using dynamical systems. In Phillip Rogaway, editor, CRYPTO 2011, volume 6841 of LNCS,
+pages 447–464. Springer, Berlin, Heidelberg, August 2011.
+25
+=== PAGE 26 ===
+[IKOS08] Yuval Ishai, Eyal Kushilevitz, Rafail Ostrovsky, and Amit Sahai. Cryptography with constant
+computational overhead. In Richard E. Ladner and Cynthia Dwork, editors, 40th ACM STOC,
+pages 433–442. ACM Press, May 2008.
+[ILL24] Yuval Ishai, Hanjun Li, and Huijia Lin. Succinct partial garbling from groups and applications.
+Cryptology ePrint Archive, Paper 2024/2073, 2024.
+[JKO13] Marek Jawurek, Florian Kerschbaum, and Claudio Orlandi. Zero-knowledge using garbled
+circuits: how to prove non-algebraic statements efficiently. In Ahmad-Reza Sadeghi, Virgil D.
+Gligor, and Moti Yung, editors,ACM CCS 2013, pages 955–966. ACM Press, November 2013.
+[Kan83] Ravi Kannan. Improved algorithms for integer programming and related lattice problems. In
+15th ACM STOC, pages 193–206. ACM Press, April 1983.
+[KF17] Paul Kirchner and Pierre-Alain Fouque. Revisiting lattice attacks on overstretched NTRU
+parameters. In Jean-S ´ebastien Coron and Jesper Buus Nielsen, editors, EUROCRYPT 2017,
+Part I, volume 10210 of LNCS, pages 3–26. Springer, Cham, April / May 2017.
+[KKKS15] Carmen Kempka, Ryo Kikuchi, Susumu Kiyoshima, and Koutarou Suzuki. Garbling scheme
+for formulas with constant size of garbled gates. In Tetsu Iwata and Jung Hee Cheon, editors,
+ASIACRYPT 2015, Part I, volume 9452 of LNCS, pages 758–782. Springer, Berlin, Heidelberg,
+November / December 2015.
+[Klu22] Kamil Kluczniak. NTRU-v-um: Secure fully homomorphic encryption from NTRU with small
+modulus. In Heng Yin, Angelos Stavrou, Cas Cremers, and Elaine Shi, editors, ACM CCS
+2022, pages 1783–1797. ACM Press, November 2022.
+[KLW15] Venkata Koppula, Allison Bishop Lewko, and Brent Waters. Indistinguishability obfuscation
+for Turing machines with unbounded memory. In Rocco A. Servedio and Ronitt Rubinfeld,
+editors, 47th ACM STOC, pages 419–428. ACM Press, June 2015.
+[KMR14] Vladimir Kolesnikov, Payman Mohassel, and Mike Rosulek. FleXOR: Flexible garbling for
+XOR gates that beats free-XOR. In Juan A. Garay and Rosario Gennaro, editors,CRYPTO 2014,
+Part II, volume 8617 of LNCS, pages 440–457. Springer, Berlin, Heidelberg, August 2014.
+[KP17] Yashvanth Kondi and Arpita Patra. Privacy-free garbled circuits for formulas: Size zero and
+information-theoretic. In Jonathan Katz and Hovav Shacham, editors, CRYPTO 2017, Part I,
+volume 10401 of LNCS, pages 188–222. Springer, Cham, August 2017.
+[KS08] Vladimir Kolesnikov and Thomas Schneider. Improved garbled circuit: Free XOR gates and
+applications. In Luca Aceto, Ivan Damg ˚ard, Leslie Ann Goldberg, Magn´us M. Halld´orsson,
+Anna Ing´olfsd´ottir, and Igor Walukiewicz, editors,ICALP 2008, Part II, volume 5126 of LNCS,
+pages 486–498. Springer, Berlin, Heidelberg, July 2008.
+[LLL82] Arjen K Lenstra, Hendrik Willem Lenstra, and L ´aszl´o Lov´asz. Factoring polynomials with
+rational coefficients. Mathematische annalen, 261(ARTICLE):515–534, 1982.
+[LP09] Yehuda Lindell and Benny Pinkas. A proof of security of Yao’s protocol for two-party
+computation. Journal of Cryptology, 22(2):161–188, April 2009.
+[LP14] Huijia Lin and Rafael Pass. Succinct garbling schemes and applications. Cryptology ePrint
+Archive, Report 2014/766, 2014.
+26
+=== PAGE 27 ===
+[LP15] Yehuda Lindell and Benny Pinkas. An efficient protocol for secure two-party computation in
+the presence of malicious adversaries. Journal of Cryptology, 28(2):312–350, April 2015.
+[LPR10] Vadim Lyubashevsky, Chris Peikert, and Oded Regev. On ideal lattices and learning with errors
+over rings. In Henri Gilbert, editor, EUROCRYPT 2010, volume 6110 of LNCS, pages 1–23.
+Springer, Berlin, Heidelberg, May / June 2010.
+[LTV12] Adriana L´opez-Alt, Eran Tromer, and Vinod Vaikuntanathan. On-the-fly multiparty computation
+on the cloud via multikey fully homomorphic encryption. In Howard J. Karloff and Toniann
+Pitassi, editors, 44th ACM STOC, pages 1219–1234. ACM Press, May 2012.
+[LWYY25] Hanlin Liu, Xiao Wang, Kang Yang, and Yu Yu. Authenticated BitGC for Actively Secure
+Rate-One 2PC. Cryptology ePrint Archive, Paper 2025/232, 2025.
+[MV10] Daniele Micciancio and Panagiotis V oulgaris. A deterministic single exponential time algorithm
+for most lattice problems based on voronoi cell computations. In Leonard J. Schulman, editor,
+42nd ACM STOC, pages 351–358. ACM Press, June 2010.
+[NPS99] Moni Naor, Benny Pinkas, and Reuban Sumner. Privacy preserving auctions and mechanism
+design. In Proceedings of the First ACM Conference on Electronic Commerce (EC-99), pages
+129–139. ACM, 1999.
+[Pei16] Chris Peikert. A decade of lattice cryptography. Found. Trends Theor. Comput. Sci., 10(4):283–
+424, 2016.
+[PS21] Alice Pellet-Mary and Damien Stehl ´e. On the hardness of the NTRU problem. In Mehdi
+Tibouchi and Huaxiong Wang, editors,ASIACRYPT 2021, Part I, volume 13090 of LNCS, pages
+3–35. Springer, Cham, December 2021.
+[PSSW09] Benny Pinkas, Thomas Schneider, Nigel P. Smart, and Stephen C. Williams. Secure two-party
+computation is practical. In Mitsuru Matsui, editor, ASIACRYPT 2009, volume 5912 of LNCS,
+pages 250–267. Springer, Berlin, Heidelberg, December 2009.
+[QWW18] Willy Quach, Hoeteck Wee, and Daniel Wichs. Laconic function evaluation and applications.
+In Mikkel Thorup, editor, 59th FOCS, pages 859–870. IEEE Computer Society Press, October
+2018.
+[RR21] Mike Rosulek and Lawrence Roy. Three halves make a whole? Beating the half-gates lower
+bound for garbled circuits. In Tal Malkin and Chris Peikert, editors, CRYPTO 2021, Part I,
+volume 12825 of LNCS, pages 94–124, Virtual Event, August 2021. Springer, Cham.
+[SE94] Claus-Peter Schnorr and M. Euchner. Lattice basis reduction: Improved practical algorithms
+and solving subset sum problems. Math. Program., 66:181–199, 1994.
+[SSTX09] Damien Stehl ´e, Ron Steinfeld, Keisuke Tanaka, and Keita Xagawa. Efficient public key
+encryption based on ideal lattices. In Mitsuru Matsui, editor, ASIACRYPT 2009, volume 5912
+of LNCS, pages 617–635. Springer, Berlin, Heidelberg, December 2009.
+[Yao86] Andrew Chi-Chih Yao. How to generate and exchange secrets (extended abstract). In 27th
+FOCS, pages 162–167. IEEE Computer Society Press, October 1986.
+27
+=== PAGE 28 ===
+[ZRE15] Samee Zahur, Mike Rosulek, and David Evans. Two halves make a whole - reducing data
+transfer in garbled circuits using half gates. In Elisabeth Oswald and Marc Fischlin, editors,EU-
+ROCRYPT 2015, Part II, volume 9057 of LNCS, pages 220–250. Springer, Berlin, Heidelberg,
+April 2015.
+A Correctness Analysis and Security Proof of Our Garbling Scheme
+A.1 Correctness Analysis
+In this section, we prove correctness of our garbling scheme shown in Figure 3 via a hybrid argument. Let
+ϵ0 denote the probability that the correctness holds. First, for each gate g∈ GateIndex(f), we replace
+PRF(K,g ) with a uniform element inRp. After the replacement, we use ϵ1 to denote the probability that the
+correctness holds, and will proveϵ1 = 1− negl(λ). Following prior work [BKS19], if the probabilitiesϵ0
+andϵ1 differ noticeably, then we can construct an adversaryA, who breaks the pseudorandomness of PRF
+outputs with noticeable probability. Specifically,A executes the Garble algorithm, except that instead of
+evaluating PRF(K,g ), it queries its PRF oracle. If the correctness does not hold,A outputs real. Otherwise,
+it outputs random. Therefore, the difference|ϵ0−ϵ1| is bounded by the successful probability attacking the
+pseudorandomness of PRF outputs. Fromϵ1 = 1− negl(λ), we obtainϵ0 = 1− negl(λ). Below, we replace
+PRF(K,g ) with a uniform elementRg∈R p for each gateg∈ GateIndex(f), and proveϵ1 = 1− negl(λ).
+In this case, we have thatWπg
+g is uniform inRp for each gateg∈ GateIndex(f).
+Second, we show that the Garble algorithm correctly computes each wire mask, i.e., LSB(W 0
+g ) =πg for
+eachg∈ GateIndex(f), whereW 0
+g is the 0-label. By definition, for each input wirei∈ Inputs(f), it trivially
+holds that LSB(W 0
+i ) =πi. For each gateg∈ GateIndex(f), according to the definitions of eLg,0,0 andLg,0,0,
+we have
+eLg,0,0 = Dec(Wπα
+α ,eτg,1) + Dec(Wπβ
+β ,eτg,2) +dDec(Wπα
+α ,W πβ
+β ,eτg,3) +Rg,
+Lg,0,0 = Dec(Wπα
+α ,τg,1) + Dec(Wπβ
+β ,τg,2) +dDec(Wπα
+α ,W πβ
+β ,τg,3) +Rg,
+whereτg,1 = (−1)vg·eτg,1,τg,2 = (−1)vg·eτg,2 andτg,3 = (−1)vg·eτg,3. The ciphertext triples (τg,1,τg,2,τg,3)
+and (eτg,1,eτg,2,eτg,3) exhibit two possible relationships: for j ∈ [3], either τg,j = eτg,j or τg,j =−eτg,j,
+depending on the value ofvg. Whenvg = 0, we haveτg,j =eτg,j and thus LSB(eLg,0,0) = LSB(Lg,0,0). When
+vg = 1, we haveτg,j =−eτg,j, and in the following, we prove that LSB(eLg,0,0) = LSB(Lg,0,0) holds except
+with probability negl(λ). Based on the distributed decryption property, we have
+LSB
+
+Dec(Wπα
+α ,eτg,1) + Dec(Wπβ
+β ,eτg,2) +dDec(Wπα
+α ,W πβ
+β ,eτg,3) +Rg
+
+=LSB
+
+−Dec(Wπα
+α ,τg,1)− Dec(Wπβ
+β ,τg,2)−dDec(Wπα
+α ,W πβ
+β ,τg,3) +Rg
+
+.
+Using the fact that for anyX,Y ∈R p, LSB(X +Y ) = LSB(X)⊕LSB(Y ) and LSB(−X) = LSB(X) when
+p is even, we haveLSB(eLg,0,0) = LSB(Lg,0,0). Therefore,πg = LSB(Lg,0,0)⊕zg,0,0 = LSB(eLg,0,0)⊕zg,0,0.
+Furthermore, since the garbler computesW 0
+g asLg,0,0− (−1)πg·zg,0,0· ∆, we obtain LSB(W 0
+g ) = (πg⊕
+zg,0,0)− (−1)πg· zg,0,0. If zg,0,0 = 0 , then it is obvious that LSB(W 0
+g ) = πg. If zg,0,0 = 1 , then
+LSB(W 0
+g ) = (πg⊕ 1)− (−1)πg = 1−πg− (−1)πg =πg.
+Finally, we show that the Eval algorithm produces the labelWg =W 0
+g + (−1)πg·xg· ∆ for each gate
+g∈ GateIndex(f) wherexg∈{ 0, 1} is the real value on the output wire of the gate g. We prove it using
+an induction, and it is obvious for input wires, i.e., Wi = W 0
+i + (−1)πi·xi· ∆ for each i∈ Inputs(f).
+For each g∈ GateIndex(f) in topological order, we give the following analysis. Based on the message
+homomorphism property, for eachg∈ GateIndex(f), we havebτg = Enc(∆,brg) andeτg = Enc(∆,πg) and
+28
+=== PAGE 29 ===
+thus for each (i,j )∈{ 0, 1}2, the ciphertexteτg,i,j satisfies
+Dec(∆,eτg,i,j) = Dec (∆, (1− 2bτg)·G(g,eτα⊕i,eτβ⊕j))
+= (1− 2brg)·G(g,πα⊕i,πβ⊕j)· ∆ = (−1)brg·zg,i,j· ∆,
+where zg,i,j = G(g,πα⊕i,πβ⊕j) for i,j ∈{ 0, 1} represent the truth table for the gate g. Then, the
+ciphertextseτg,1 =eτg,1,0−eτg,0,0,eτg,2 =eτg,0,1−eτg,0,0 andeτg,3 =eτg,0,0 +eτg,1,1−eτg,1,0−eτg,0,1 are computed
+such that
+Dec(∆,eτg,1) = (−1)brg· (zg,1,0−zg,0,0)· ∆
+Dec(∆,eτg,2) = (−1)brg· (zg,0,1−zg,0,0)· ∆
+Dec(∆,eτg,3) = (−1)brg· (zg,0,0 +zg,1,1−zg,0,1−zg,1,0)· ∆.
+For each gateg∈ GateIndex(f), according tovg =brg⊕πg along withτg,1 = (−1)vg·eτg,1,τg,2 = (−1)vg·eτg,2
+andτg,3 = (−1)vg·eτg,3, we obtain
+Dec(∆,τg,1) = (−1)πg· (zg,1,0−zg,0,0)· ∆
+Dec(∆,τg,2) = (−1)πg· (zg,0,1−zg,0,0)· ∆
+Dec(∆,τg,3) = (−1)πg· (zg,0,0 +zg,1,1−zg,0,1−zg,1,0)· ∆.
+For each gateg∈ GateIndex(f), let (sα,sβ) = (LSB(Wα), LSB(Wβ)) for a pair of input wires(α,β )←
+Gateinputs(f,g ), where (Wα,Wβ) is a pair of input labels. According to the induction, we have Wα =
+W 0
+α + (−1)πα·xα· ∆ and Wβ = W 0
+β + (−1)πβ·xβ· ∆. Furthermore, we know sα = xα⊕πα and
+sβ =xβ⊕πβ, and also rewriteWα =Wπα
+α +sα· ∆ andWβ =Wπβ
+β +sβ· ∆. We show that there exists
+a 0-labelW 0
+g , such thatWg =W 0
+g + (−1)πg·xg· ∆. Based on the distributed decryption property, with
+probability 1− negl(λ), we have
+Wg = Dec(Wα,τg,1) + Dec(Wβ,τg,2) +dDec(Wα,Wβ,τg,3) +Rg
+= Dec(Wπα
+α +sα· ∆,τg,1) + Dec(Wπβ
+β +sβ· ∆,τg,2)
++dDec(Wπα
+α +sα· ∆,W πβ
+β +sβ· ∆,τg,3) +Rg
+= Dec(Wπα
+α ,τg,1) + Dec(Wπβ
+β ,τg,2) +dDec(Wπα
+α ,W πβ
+β ,τg,3) +Rg
++sα· Dec(∆,τg,1) +sβ· Dec(∆,τg,2) +sαsβ· Dec(∆,τg,3)
+=Lg,0,0 + (−1)πg· (xg−zg,0,0)· ∆.
+ComputingW 0
+g =Lg,0,0− (−1)πg·zg,0,0· ∆, we obtainWg =W 0
+g + (−1)πg·xg· ∆ for a real valuexg on
+the output wire of the gateg.
+From the above analysis, for each i∈ Ouputs(f), we have Yi = W 0
+i + (−1)πi·yi· ∆ evaluated by
+Eval(F,X ) and the decoding informationdi =πi = LSB(W 0
+i ), wherey =f(x). Therefore, Decode(d,Y )
+outputs LSB(Yi)⊕πi = (πi⊕yi)⊕πi =yi for eachi∈ Ouputs(f), which completes the correctness proof.
+A.2 Security Proof
+Theorem 3 (Theorem 1, restated). Our garbling scheme (Figure 3) satisfies both privacy (Definition 2) and
+obliviousness (Definition 3), provided that the SWHE scheme with distributed decryption is CPA secure,PRG
+is a pseudo-random generator, andPRF is a pseudo-random function.
+29
+=== PAGE 30 ===
+S(1λ,f,f (x)): Simulate the Garble and Encode algorithms as follows:
+1. Run (params, ∆)← Gen(1λ, 1L) with LSB(∆) = 1, where ∆ is the secret key. Sample K
+$
+← −{0, 1}λ as a
+PRF key.
+2. For each i∈ [λ], runσi← Enc(∆, 0), and then setσ = (σ1,··· ,σλ).
+3. Homomorphically compute gPRG(σ) to generate (bτ1,··· ,bτN), whereN =|WireIndex(f)|.
+4. For eachi∈ Inputs(f), sample a garbled labelWi
+$
+← −Rp and a random bitvi
+$
+← −{0, 1}, and homomorphically
+compute an HE ciphertexteτi :=vi⊕bτi.
+5. For each g∈ GateIndex(f) in topological order, set (α,β )← Gateinputs(f,g ), and then do the following:
+(a) For eachi,j ∈{ 0, 1}, homomorphically compute an HE ciphertexteτg,i,j← (1−2bτg)·G(g,eτα⊕i,eτβ⊕j).
+(b) Homomorphically compute HE ciphertexts eτg,1 := eτg,1,0−eτg,0,0,eτg,2 := eτg,0,1−eτg,0,0 andeτg,3 :=
+eτg,0,0 +eτg,1,1−eτg,1,0−eτg,0,1.
+(c) Samplevg
+$
+← −{0, 1}, and computeτg,1 := (−1)vg·eτg,1,τg,2 := (−1)vg·eτg,2,τg,3 := (−1)vg·eτg,3 and
+Wg← Dec(Wα,τg,1) + Dec(Wβ,τg,2) +dDec(Wα,Wβ,τg,3) + PRF(K,g ). Then, homomorphically
+compute an HE ciphertexteτg :=vg⊕bτg.
+6. For each i∈ Inputs(f), set Xi := Wi. For each i∈ Ouputs(f), compute di := LSB(Wi)⊕yi where
+(yi)i∈Ouputs(f ) constitute the circuit outputf(x).
+7. Output a garbled circuitF =
+
+params,K,{vi}i∈WireIndex(f ),σ
+
+, a set of input labelsX ={Xi}i∈Inputs(f ) and
+a decoding informationd ={di}i∈Ouputs(f ).
+Figure 4: The construction of simulatorS for privacy.
+Proof. The proof for obliviousness is identical to that for privacy, with the exception that the simulator does
+not receive the circuit outputy =f(x) and does not need to compute the decoding informationd. Therefore,
+we focus on the proof for privacy, and construct a probabilistic polynomial time (PPT) simulator shown in
+Figure 4. We use a sequence of hybrids to establish the computational indistinguishability between the real
+world and the ideal world.
+Hybrid 0. This is the real world and denoted byG0. This hybrid generates the transcript (F,X,d ) as shown
+in Figure 3.
+Hybrid 1. This hybrid, denoted byG1, is the same asG0, except that using the Garble and Encode algorithms
+described in Figure 5 to generate a transcript (F,X,d ). In Figure 5, the steps 4, 5 and 6 change the
+computation of all labels, all wire masks and the decoding information to eliminate the dependence of secret
+key ∆. This hybrid still knows the inputx.
+The differences betweenG0 andG1 are listed as follows:
+1. For eachi∈ Inputs(f),Xi is sampled uniformly fromRp inG1, whileXi =W 0
+i + (−1)πi·xi· ∆ for a
+uniform elementW 0
+i ∈R p inG0.
+2. For eachi∈ Inputs(f), the wire maskπi = LSB(Wi)⊕xi inG1, whileπi = LSB(W 0
+i ) inG0. Here, both
+Wi andW 0
+i are uniform inRp.
+3. For each g ∈ GateIndex(f), the wire mask πg = LSB(fWg)⊕xg for a real value xg inG1, while
+πg = LSB(eLg,0,0)⊕zg,0,0 withzg,0,0 =G(g,πα,πβ) inG0.
+4. For eachg∈ GateIndex(f), the label Wg, associated with real value xg, is computed inG1, while the
+0-labelW 0
+g is computed inG0.
+30
+=== PAGE 31 ===
+G1(1λ,f,x ): Simulate the Garble and Encode algorithms as follows:
+1. Run (params, ∆)← Gen(1λ, 1L) with LSB(∆) = 1, where ∆ is the secret key. Sample K
+$
+← −{0, 1}λ as a
+PRF key.
+2. For each i ∈ [λ], sample si
+$
+← − {0, 1}, run σi ← Enc(∆,si), and then set s = (s1,··· ,sλ) and σ =
+(σ1,··· ,σλ).
+3. Compute (br1,··· ,brN)← PRG(s) withbri ∈{ 0, 1} and homomorphically compute gPRG(σ) to generate
+(bτ1,··· ,bτN) = (Enc(∆,br1),··· , Enc(∆,brN)), whereN =|WireIndex(f)|.
+4. For eachi∈ Inputs(f), sample a garbled labelWi
+$
+← −Rp and set a wire maskπi := LSB(Wi)⊕xi. Then, for
+eachi∈ Inputs(f), setvi :=bri⊕πi and homomorphically computeeτi :=vi⊕bτi.
+5. For each g ∈ GateIndex(f) in topological order, set (α,β )← Gateinputs(f,g ), compute the real value
+xg∈{ 0, 1} with (f,x ), and then do the following:
+(a) For eachi,j ∈{ 0, 1}, homomorphically compute an HE ciphertexteτg,i,j← (1−2bτg)·G(g,eτα⊕i,eτβ⊕j).
+(b) Homomorphically compute HE ciphertexts eτg,1 := eτg,1,0−eτg,0,0,eτg,2 := eτg,0,1−eτg,0,0 andeτg,3 :=
+eτg,0,0 +eτg,1,1−eτg,1,0−eτg,0,1.
+(c) ComputefWg← Dec(Wα,eτg,1) + Dec(Wβ,eτg,2) +dDec(Wα,Wβ,eτg,3) + PRF(K,g ). Then, compute a
+wire maskπg := LSB(fWg)⊕xg, and setvg :=brg⊕πg.
+(d) Compute τg,1 := (−1)vg·eτg,1, τg,2 := (−1)vg·eτg,2, τg,3 := (−1)vg·eτg,3 and compute Wg ←
+Dec(Wα,τg,1) + Dec(Wβ,τg,2) +dDec(Wα,Wβ,τg,3) + PRF(K,g ). Then, homomorphically compute
+vg⊕bτg to obtain an HE ciphertexteτg.
+6. For eachi∈ Inputs(f), setXi :=Wi. For eachi∈ Ouputs(f), computey =f(x) anddi := LSB(Wi)⊕yi.
+7. Output a garbled circuitF =
+
+params,K,{vi}i∈WireIndex(f ),σ
+
+, a set of input labelsX ={Xi}i∈Inputs(f ) and
+a decoding informationd ={di}i∈Ouputs(f ).
+Figure 5: The hybridG1 used in the proof, where the differences are marked in blue compared to the real
+worldG0.
+5. For eachi∈ Ouputs(f), the decoding informationdi = LSB(Wi)⊕yi inG1, whiledi is directly set as
+πi inG0.
+First of all, we analyze the first two differences. InG0, for eachi∈ Inputs(f),Xi =W 0
+i + (−1)πi·xi· ∆ is
+uniform inRp, sinceW 0
+i is sampled uniformly fromRp. InG1, for eachi∈ Inputs(f),Xi =Wi∈R p is
+directly sampled at random. Thus, for each i∈ Inputs(f),Xi inG0 andG1 has the identical distribution. For
+eachi∈ Inputs(f), due to the uniformity ofWi (inG1) andW 0
+i (inG0), the wire maskπi has the identical
+distribution in two hybrids. Furthermore,Wi inG1 plays the role of the label on the real valuexi, and has the
+identical distribution asXi output by Encode inG0. In other words, for hybridG1, there exists a uniformly
+random 0-labelW 0
+i ∈R p such thatWi =W 0
+i + (−1)πi·xi· ∆ and LSB(W 0
+i ) =πi.
+In the following, we analyze the third and fourth differences by an induction. From the above analysis,
+we obtain that two hybrids have no difference for each input wirei∈ Inputs(f). For eachg∈ GateIndex(f),
+according to the induction, we obtain that both (Wα,πα) and (Wβ,πβ) have the identical distribution in two
+hybrids for a pair of gate-input wires(α,β ) = Gateinputs(f,g ). In addition, there exists two 0-labelsW 0
+α and
+W 0
+β such thatWα =W 0
+α+(−1)πα·xα·∆,Wβ =W 0
+β +(−1)πβ·xβ·∆, LSB(W 0
+α) =πα and LSB(W 0
+β) =πβ.
+Note that the identical distribution of wire masksπα andπβ implies that the ciphertextseτg,1,eτg,2,eτg,3 has
+the same distribution in two hybrids. We rewrite Wα = Wπα
+α +sα· ∆ andWβ = Wπβ
+β +sβ· ∆, where
+sα = πα⊕xα andsβ = πβ⊕xβ. Similar to the correctness analysis shown in Appendix A.1 (requiring
+the pseudorandomness of PRF outputs), we havefWg = eLg,0,0 + (xg−zg,0,0)· ∆, except with probability
+31
+=== PAGE 32 ===
+G2(1λ,f,x )// G3(1λ,f,x ) : Simulate the Garble and Encode algorithms as follows:
+1. Run (params, ∆)← Gen(1λ, 1L) with LSB(∆) = 1, where ∆ is the secret key. Sample K
+$
+← −{0, 1}λ as a
+PRF key.
+2. For each i∈ [λ], sample si
+$
+← −{0, 1} and run σi← Enc(∆, 0), and then set s = (s1,··· ,sλ) and σ =
+(σ1,··· ,σλ).
+3. Compute (br1,··· ,brN)← PRG(s).// Samplebri
+$
+← −{0, 1} for eachi∈ [N].
+Homomorphically compute gPRG(σ) to generate (bτ1,··· ,bτN), whereN =|WireIndex(f)|.
+4. For eachi∈ Inputs(f), sample a garbled labelWi
+$
+← −Rp and set a wire maskπi := LSB(Wi)⊕xi. Then, for
+eachi∈ Inputs(f), setvi :=bri⊕πi and homomorphically computeeτi :=vi⊕bτi.
+5. For each g ∈ GateIndex(f) in topological order, set (α,β )← Gateinputs(f,g ), compute the real value
+xg∈{ 0, 1} with (f,x ), and then do the following:
+(a) For eachi,j ∈{ 0, 1}, homomorphically compute an HE ciphertexteτg,i,j← (1−2bτg)·G(g,eτα⊕i,eτβ⊕j).
+(b) Homomorphically compute HE ciphertexts eτg,1 := eτg,1,0−eτg,0,0,eτg,2 := eτg,0,1−eτg,0,0 andeτg,3 :=
+eτg,0,0 +eτg,1,1−eτg,1,0−eτg,0,1.
+(c) ComputefWg← Dec(Wα,eτg,1) + Dec(Wβ,eτg,2) +dDec(Wα,Wβ,eτg,3) + PRF(K,g ). Then, compute a
+wire maskπg := LSB(fWg)⊕xg, and setvg :=brg⊕πg.
+(d) Computeτg,1 := (−1)vg·eτg,1,τg,2 := (−1)vg·eτg,2,τg,3 := (−1)vg·eτg,3 andWg← Dec(Wα,τg,1) +
+Dec(Wβ,τg,2) +dDec(Wα,Wβ,τg,3) + PRF(K,g ). Then, homomorphically computevg⊕bτg to obtain
+an HE ciphertexteτg.
+6. For each i∈ Inputs(f), setXi :=Wi. For eachi∈ Ouputs(f), computey =f(x) anddi := LSB(Wi)⊕yi.
+7. Output a garbled circuitF =
+
+params,K,{vi}i∈WireIndex(f ),σ
+
+, a set of input labelsX ={Xi}i∈Inputs(f ) and
+a decoding informationd ={di}i∈Ouputs(f ).
+Figure 6: The hybridsG2 andG3 used in the proof, where the differences are marked in blue compared toG1.
+The difference betweenG2 andG3 is marked by a rectangular box.
+negl(λ), where eLg,0,0 = Dec(Wπα
+α ,eτg,1) + Dec(Wπβ
+β ,eτg,2) +dDec(Wπα
+α ,W πβ
+β ,eτg,3) + PRF(K,g ).
+Fromπg = LSB(eLg,0,0)⊕zg,0,0, we have LSB(fWg) =xg⊕πg, and vice versa. Therefore, except with
+probability negl(λ), the wire maskπg inG1 has the same distribution as that inG0, and so isvg =brg⊕πg.
+Sinceτg,1 = (−1)vg·eτg,1, τg,2 = (−1)vg·eτg,2, τg,3 = (−1)vg·eτg,3 have the same distribution in two
+hybrids, we have thatWg = Dec(Wα,τg,1) + Dec(Wβ,τg,2) +dDec(Wα,Wβ,τg,3) + PRF(K,g ) inG1 has
+the identical distribution as that inG0. According to the correctness analysis shown in Appendix A.1, with
+probability 1− negl(λ), we haveWg =Lg,0,0 + (−1)πg· (xg−zg,0,0)· ∆, whereLg,0,0 = Dec(Wπα
+α ,τg,1) +
+Dec(Wπβ
+β ,τg,2) +dDec(Wπα
+α ,W πβ
+β ,τg,3) + PRF(K,g ). By defining W 0
+g =Lg,0,0− (−1)πg·zg,0,0· ∆
+inG1, we obtain Wg = W 0
+g + (−1)πg·xg· ∆, which has the same distribution as in G0. Based on
+the correctness analysis, we know LSB(Lg,0,0) = LSB(eLg,0,0). From LSB(eLg,0,0) = πg⊕zg,0,0 and
+LSB(W 0
+g ) = LSB(Lg,0,0)− (−1)πg·zg,0,0 mod 2, we have LSB(W 0
+g ) =πg.
+Finally, we analyze the fifth difference. For each i∈ Ouputs(f), except with probability negl(λ),
+LSB(Wi) is the XOR of real valueyi andπi, and thusdi = LSB(Wi)⊕yi inG1 has the same distribution as
+πi inG0, as the wire maskπi has the identical distribution in two hybrids. In conclusion,G1 is indistinguishable
+fromG0.
+Hybrid 2. This hybrid, denoted byG2, is the same asG1, except that each ciphertextσi is replaced with a
+32
+=== PAGE 33 ===
+fresh ciphertext Enc(∆, 0), as shown in Figure 6. Even if all ciphertextsσ1,...,σ λ encrypt zero, the tuple
+(F,X,d ) is still computed as a circuit outputf(x).
+The only difference between two hybridsG1 andG2 is the generation of ciphertextsσ = (σ1,··· ,σλ).
+InG1, each ciphertext σi is generated using the secret key ∆ to encrypt a random bit si. In G2, each σi
+encrypts a fixed bit 0. We can bound the difference betweenG1 andG2 by a reduction to the CPA security
+of the SWHE scheme with distributed decryption. It is well-known that a single challenge ciphertext is
+polynomially equivalent to multiple challenge ciphertexts for CPA security. For the sake of simplicity, we use
+the multi-challenge version of CPA security to construct the reduction.
+Specifically, letA be a PPT adversary who attempts to distinguish (F,X,d ) inG2 from that in G1.
+We construct a PPT algorithm B, who is given params∗, to attack the CPA security. Firstly, B samples
+si
+$← −{0, 1} fori∈ [λ], sends (si, 0) for each i∈ [λ] to its CPA experiment, then obtains λ challenge
+ciphertextsσ∗
+1,··· ,σ∗
+λ. Then,B generates (F∗,X∗,d∗) just as inG1, except that usingσ∗ = (σ∗
+1,··· ,σ∗
+λ)
+as the ciphertexts on random bits s1,...,s λ and params∗ as the set of public parameters. Then, B sends
+(F∗,X∗,d∗) toA, and outputs a bit according to the output of A. If σ∗
+i = Enc(∆,si) for each i∈ [λ],
+(F∗,X∗,d∗) has the same distribution as that in G1; otherwise (i.e., σ∗
+i = Enc(∆, 0) for each i∈ [λ]),
+(F∗,X∗,d∗) has the identical distribution as that in G2. Therefore, if A distinguishesG1 fromG2 with
+probabilityϵ, thenB breaks the CPA security of the SWHE scheme with the same probability.
+Hybrid 3. This hybrid, denoted byG3, is the same asG2, except that each bitbri withi∈ [N] is replaced with
+a random bit, as shown in Figure 6.
+The only difference between two hybridsG2 andG3 is:G2 generates the bitsbr1,..., brN by PRG(s), while
+G3 samples them uniformly at random. Note that the seeds = (s1··· ,sλ) is now uniform and independent
+of ciphertexts σ1,··· ,σλ. Thus, it is straightforward to bound the difference between G2 andG3 by the
+pseudorandomness of the output of PRG.
+Hybrid 4. This hybrid, denoted byG4, is the same asG3, except that for eachg∈ WireIndex(f), replacing
+vg with a random bit and removing the computation ofπg andfWg. Specifically, the hybridG4 generates the
+transcript (F,X,d ), as shown in Figure 4.
+Whenvg∈{ 0, 1} is sampled at random, the computation ofπg andfWg is redundant and can be removed.
+Thus, the difference betweenG3 andG4 lies in the generation of{vg}. InG3, eachvg∈{ 0, 1} is computed
+asvg =πg⊕brg for a uniform bitbrg∈{ 0, 1}. InG4, eachvg∈{ 0, 1} is sampled uniformly. Therefore,G3
+has the same distribution asG4.
+HybridG4 behaves exactly as in the ideal world, which completes the proof.
+B Our Garbling Scheme for Authenticity
+In this section, we show how to modify our garbling scheme from privacy and obliviousness to authenticity,
+following the standard approach [HKE12, ZRE15]. We first recall the security definition of garbling schemes
+for authenticity. Then, we describe the detailed modifications of our garbling scheme to realize authenticity.
+B.1 Definition for Authenticity
+Following prior works [GGP10, BHR12, RR21], we give the definition of the authenticity property. The
+authenticity allows the adversary to learn the circuitf and inputx, i.e., no privacy is guaranteed. However,
+the authenticity guarantees that the adversary cannot forge a garbled outputbY such thatbY is successful in
+being decoded butbY ̸= Eval(F,X ), even if it obtains the information (F,X,d ). The authenticity property is
+useful for designing constant-round zero-knowledge proofs, e.g., [JKO13, FNO15, KP17, HK20].
+33
+=== PAGE 34 ===
+Expauth
+A (1λ,f,x )
+1. (F,e,d )← Garble(1λ,f );X← Encode(e,x );bY ←A (F,X,d );
+2. If Decode(d,bY )̸=⊥ andbY ̸= Eval(F,X ), then output 1, else output 0.
+Figure 7: Experiment for authenticity.
+Definition 6 (Authenticity). For any PPT adversary A, for any function f and input x, there exists a
+negligible function negl(·) such that
+Pr
+h
+Expauth
+A (1λ,f,x ) = 1
+i
+≤ negl(λ),
+where Expauth
+A (1λ,f,x ) is defined in Figure 7.
+B.2 Concrete Construction of Garbling for Authenticity
+We modify the garbling scheme shown in Figure 3 to realize authenticity. In Figure 8, we describe the
+modifications of the Garble and Decode algorithms (marked in blue) using a cryptographic hash function
+H :Rq→{ 0, 1}λ modeled as a non-programmable random oracle.
+Theorem 4. Our modified scheme (Figure 8) satisfies the authenticity property (Definition 6), provided that
+the SWHE scheme with distributed decryption is CPA secure,PRG is a pseudorandom generator,PRF is a
+pseudorandom function, andH is a non-programmable random oracle.
+Sketch. For the interaction with a PPT adversaryA, we run the simulatorS (shown in Figure 4) to generate
+(F,X,d ) and send it toA, whereS changes the computation of the decoding informationd, i.e., for each
+i∈ Ouputs(f),S computesdi as follows:
+• If yi = 0, thenS sets
+di =
+
+H (Yi),Vi
+$← −{0, 1}λ
+
+.
+• If yi = 1, thenS computes
+di =
+
+Vi
+$← −{0, 1}λ,H (Yi)
+
+.
+In the above computation,Yi is the label on the output wire i computed byS, andy =f(x) known byS.
+In the non-programmable random oracle model, the probability, thatA finds a ring elementUi∈R p such
+thatH(Ui) =Vi for somei∈ Ouputs(f), is negligible inλ. Therefore, the probability, thatA succeeds in
+violating authenticity, is bounded by negl(λ).
+Below, we use a sequence of hybrids to prove that the adversary’s view constructed by the aboveS is
+computationally indistinguishable from the real view. Specifically, for eachi∈ Ouputs(f), we first replace
+a random elementVi withH(Zi) in the first hybrid, where Zi = Yi− (−1)yi· ∆ is another label on the
+output wirei. According to the construction ofS, the adversary cannot learn secret key ∆ from the transcript
+(F,X,d ), under the assumption that the SWHE scheme is CPA secure. That is, for eachi∈ Ouputs(f),Zi is
+kept secret against adversaryA. Therefore, for eachi∈ Ouputs(f), a uniform elementVi is computationally
+indistinguishable fromH(Zi) in the non-programmable random oracle model. The rest of the proof follows
+the same sequence of hybrids as the proof of Theorem 1. Eventually, we reach the real game. We have
+already proved that the subsequent hybrids are computationally indistinguishable in Theorem 1. Overall, the
+adversary’s view output byS is computationally indistinguishable from the real view, which completes the
+proof.
+34
+=== PAGE 35 ===
+Garble(1λ,f ): The garbler executes the garble algorithm as follows:
+1. Run (params, ∆)← Gen(1λ, 1L) with LSB(∆) = 1, where ∆ is the secret key. Sample K
+$
+← −{0, 1}λ as a
+PRF key.
+2. For each i ∈ [λ], sample si
+$
+← − {0, 1}, run σi ← Enc(∆,si), and then set s = (s1,··· ,sλ) and σ =
+(σ1,··· ,σλ).
+3. Compute (br1,··· ,brN)← PRG(s) withbri∈{ 0, 1}, and homomorphically compute gPRG(σ) to generate
+(bτ1,··· ,bτN) withbτi = Enc(∆,bri) fori∈ [N], whereN =|WireIndex(f)|.
+4. For each i∈ Inputs(f), sample a 0-labelW 0
+i
+$
+← −Rp, set πi := LSB(W 0
+i ), and compute a 1-labelW 1
+i :=
+W 0
+i + (−1)πi· ∆∈R p. Then, for eachi∈ Inputs(f), setvi :=bri⊕πi and homomorphically computevi⊕bτi
+to obtaineτi := Enc(∆,πi).
+5. For eachg∈ GateIndex(f) in topological order, set (α,β )← Gateinputs(f,g ),Wπα
+α =W 0
+α−πα· ∆∈R p
+andWπβ
+β =W 0
+β−πβ· ∆∈R p, then do the following:
+(a) For eachi,j ∈{ 0, 1}, computezg,i,j =G(g,πα⊕i,πβ⊕j) and homomorphically computeeτg,i,j←
+(1− 2bτg)·G(g,eτα⊕i,eτβ⊕j), resulting in the ciphertexteτg,i,j that encrypts (−1)brg·zg,i,j.
+(b) Homomorphically compute HE ciphertexts eτg,1 := eτg,1,0−eτg,0,0,eτg,2 := eτg,0,1−eτg,0,0 andeτg,3 :=
+eτg,0,0 +eτg,1,1−eτg,1,0−eτg,0,1.
+(c) Run eLg,0,0← Dec(Wπα
+α ,eτg,1) +Dec(Wπβ
+β ,eτg,2) +dDec(Wπα
+α ,W πβ
+β ,eτg,3) +PRF(K,g ). Then, compute
+πg := LSB(eLg,0,0)⊕zg,0,0 andvg :=brg⊕πg.
+(d) Compute τg,1 := (−1)vg·eτg,1, τg,2 := (−1)vg·eτg,2 and τg,3 := (−1)vg·eτg,3 andLg,0,0 ←
+Dec(Wπα
+α ,τg,1) +Dec(Wπβ
+β ,τg,2) +dDec(Wπα
+α ,W πβ
+β ,τg,3) +PRF(K,g ). Then, homomorphically com-
+putevg⊕bτg to obtain a ciphertexteτg := Enc(∆,πg).
+(e) Compute the 0-label on the output wireW 0
+g :=Lg,0,0− (−1)πg·zg,0,0· ∆.
+6. For each i∈ Ouputs(f), computedi =
+
+H(W 0
+i ),H (W 1
+i )
+
+.
+7. Output a garbled circuit F =
+
+params,K,σ,{vi}i∈WireIndex(f )
+
+, an encoding information e =
+{W 0
+i}i∈Inputs(f ), ∆
+
+and a decoding informationd ={di}i∈Ouputs(f ).
+Decode(d,Y ): The evaluator performs the following steps:
+1. For eachi∈ Ouputs(f), parsedi as (Vi,0,Vi,1). If H(Yi) = Vi,0, setyi := 0; ifH(Yi) = Vi,1, setyi := 1;
+otherwise, abort and output⊥.
+2. Set y =
+
+yi
+
+i∈Ouputs(f ). Then, outputy.
+Figure 8: Our garbling scheme with authenticity, where the differences are marked in blue compared to the
+garbling scheme with privacy and obliviousness shown in Figure 3.
+C Proof of RL WEbased instantiation
+Theorem 5 (Theorem 2, restated) . Our eGSW scheme is a somewhat homomorphic encryption scheme
+with distributed decryption under the RLWE assumption and the assumption that the eGSW scheme is
+key-dependent message (KDM) secure.
+Proof. We first analyze the correctness of the decryption algorithm when the input is secret key sk. In
+35
+=== PAGE 36 ===
+particular, we have
+β−α·sk =
+
+α β
+
+·
+−sk
+1
+
+= BitDecomp
+
+α β
+
+· v
+=−BitDecomp
+
+(q/p) 0
+
+·τ· v
+≈− BitDecomp
+
+(q/p) 0
+
+·m· v
+= (q/p)·m·sk,
+where v def= Powersof2
+
+−sk 1
+T andτ· v≈m· v based on Equation (5). Then, taking the rounding
+⌊·⌉p on both sides of the above equation, we get
+
+β−α·sk
+
+p =m·sk.
+Following the GSW scheme [GSW13], GSW ciphertexts support homomorphic addition and multiplica-
+tion operations for a maximum multiplication depthL. It is straightforward to see that eGSW ciphertexts
+support homomorphic addition operations. That is, given two messages m1,m2 along with their eGSW
+ciphertextsbτ1 = dEnc(sk,csk,m 1) andbτ2 = dEnc(sk,csk,m 2), we havebτ1 +bτ2 = dEnc(sk,csk,m 1 +m2).
+Therefore, given a GSW ciphertextτ = Enc(sk,m ), the GSW-to-eGSW conversion[τ]gsw→egsw outputs an
+eGSW ciphertext on the messagem. Additionally, we can easily see that−[τ]gsw→egsw = [−τ]gsw→egsw.
+CPA security. We use a sequence of hybrids to prove that Enc(sk,m 0) is computationally indistinguishable
+from Enc(sk,m 1) for two messagesm0,m 1∈ Zp chosen by a PPT adversaryA.
+Hybrid 0. This is the real game and denoted byG0. This hybrid sends params and Enc(sk,mc) toA for a
+random bitc.
+Hybrid 1. This hybrid, denoted byG1, is the same asG0, except that replacing three ciphertexts in params
+with the ciphertexts on the message 0.
+The eGSW scheme as described above employs three encryption algorithms: Enc(sk,·), Enc(csk,·),
+anddEnc(sk,csk,·). It includes three ciphertexts on key-dependent messages: two key-switching ciphertexts
+τsk→csk andτcsk→sk as well as one GSW-to-eGSW ciphertextτgsw→egsw. Based on the assumption that the
+eGSW scheme is KDM secure, the adversary cannot distinguish these ciphertexts on secret keyssk,csk from
+three ciphertexts on zero. Therefore,G1 is computationally indistinguishable fromG0.
+Hybrid 2. This hybrid, denoted byG2, is the same asG1, except for replacing the ciphertexts on zero in
+params with random vectors or matrices overRq.
+InG1, the key-switching ciphertexts τsk→csk = (a,b = a·sk +e) andτcsk→sk = (ba,bb =ba·csk +be).
+Under the RL WEassumption, they are computationally indistinguishable from random vectors inR2
+q. The
+GSW-to-eGSW ciphertextτgsw→egsw =
+
+a, b1 = a·sk + e1, b2 = a·csk + e2, b3 = b1·csk + e3
+in
+G1. Under the RL WEassumption, we can first replace b1 with a uniform vector u1 $← −RN
+q . Then, we can
+replace (b2, b3) with two uniform vectors u2, u3 $← −RN
+q under the RL WEassumption. Therefore, G2 is
+computationally indistinguishable fromG1.
+Hybrid 3. This hybrid, denoted by G3, is the same as G2, except that replacing a, b used to generate
+Enc(sk,mc) with random vectors inRN
+q .
+It is easy to see thatG3 is computationally indistinguishable fromG2 under the RL WEassumption. In
+hybridG3, the challenge ciphertext is produced with random vectors a, b∈R N
+q , which makes the ciphertext
+be independent of bit c. Therefore, the advantage of A to guess the bit c inG3 is 0. Due to that G0 is
+computationally indistinguishable fromG3 via the sequence of hybrids, we obtain that the advantage ofA
+(guessingc) inG0 is negligible inλ.
+Linear distributed decryption. Letsk0∈R p be a uniform element withLSB(sk0) = 0. Letsk1 =sk0+sk
+overRp. Based on Lemma 1, we have
+Pr [sk1 =sk0 +sk (without modulop) ]≥ 1−n· (∥sk∥∞ + 1)/p = 1− negl(λ).
+36
+=== PAGE 37 ===
+Given a GSW ciphertextτ = Enc(sk,m ), the Dec algorithm first computes
+(α,β ) = BitDecomp−1
+−BitDecomp
+
+(q/p) 0
+
+·τ
+
+.
+Then, we have β−α·sk1 = −α·sk0 +β−α·sk. Based on Lemma 2, with probability at least
+1−n· (∥e∥∞ + 1)·p/q = 1− negl(λ), we have
+Dec(sk1,τ ) = Dec(sk0,τ ) + Dec(sk,τ ),
+where Dec(x,τ ) =⌊LSB(x)·β−α·x⌉p forx∈{sk0,sk 1,sk}, and that LSB(sk0) = 0 and LSB(sk) = 1
+imply LSB(sk1) = 1 for an evenp. Fori∈{ 0, 1}, we observe
+Dec(ski,τ ) =−Dec(ski,−τ) ,
+because, for any x∈R q and y∈R N
+q ,⌊−x⌉p =−⌊x⌉p and−BitDecomp−1(y) = BitDecomp−1(−y).
+The correctness of key-switching functions can be analyzed similarly (see also Section 2.5 for the correctness
+analysis).
+Correlated-key distributed decryption. Letsk0,sk′
+0∈R p be two uniform elements such that LSB(sk0) =
+0 and LSB(sk′
+0) = 0 . Let sk1 = sk0 +sk andsk′
+1 = sk′
+0 +sk overRp. Given any GSW ciphertext τ
+as well as any x∈R q andy∈R p, we have that−[τ]gsw→egsw = [−τ]gsw→egsw,⌊−x⌉p =−⌊x⌉p and
+−[y]csk→sk = [−y]csk→sk, except with probability negl(λ). Therefore, except with probability negl(λ), for
+anyi,j ∈{ 0, 1}, we have
+dDec(ski,sk′
+j,τ ) =−dDec(ski,sk′
+j,−τ).
+Below, we show that for anyi,j ∈{ 0, 1}, with probability 1− negl(λ),
+dDec(ski,sk′
+j,τ ) =dDec(sk0,sk′
+0,τ ) +i·j· Dec(sk,τ ).
+Based on Lemma 1, we obtain sk1 = sk0 +sk and sk′
+1 = sk′
+0 +sk (without modulop), except with
+probability negl(λ). The eGSW ciphertext (a,b 1,b 2,b 3) = [τ]gsw→egsw satisfies the following relation:
+
+a, b1≈a·sk, b2≈a·csk, b3≈a·sk·csk + (q/p)·m·csk
+
+,
+where the errors are omitted. For eachi,j ∈{ 0, 1}, we have the following:
+• If (i,j ) = (0, 0), this is a trivial case. Letx00 =sk0·csk0·a.
+• If (i,j ) = (1, 0), fromsk1 =sk0 +sk, we have
+x10 =sk1·csk0·a−csk0·b1 =csk0· (a·sk0 +a·sk−b1)≈sk0·csk0·a =x00.
+Based on Lemma 2, we have⌊x10⌉p =⌊x00⌉p except with probabilitynegl(λ), which impliesdDec(sk1,sk′
+0,τ ) =
+dDec(sk0,sk′
+0,τ ).
+• If (i,j ) = (0, 1), fromcsk1 =csk0 +csk, we have
+x01 =sk0·csk1·a−sk0·b2 =sk0· (a·csk0 +a·csk−b2)≈sk0·csk0·a =x00.
+Based on Lemma 2, we obtain⌊x01⌉p =⌊x00⌉p except with probabilitynegl(λ), meaning thatdDec(sk0,sk′
+1,τ ) =
+dDec(sk0,sk′
+0,τ ).
+37
+=== PAGE 38 ===
+• If (i,j ) = (1, 1), fromsk1 =sk0 +sk andcsk1 =csk0 +csk, we obtain
+sk1·csk1 =sk0·csk0 +sk·csk0 +sk0·csk +sk·csk =sk0·csk0 +sk·csk1 +sk1·csk−sk·csk.
+Therefore, we have
+x11 =sk1·csk1·a−csk1·b1−sk1·b2 +b3
+= (sk0·csk0 +sk·csk1 +sk1·csk−sk·csk)·a−csk1·b1−sk1·b2 +b3
+=sk0·csk0·a +csk1· (a·sk−b1) +sk1· (a·csk−b2) + (b3−a·sk·csk)
+≈sk0·csk0·a + (q/p)·m·csk =x00 + (q/p)·m·csk.
+Lety11 =
+
+x11
+
+p andy00 =
+
+x00
+
+p. From Lemma 2, we get y11 =y00 +m·csk overRp, except with
+probability negl(λ). Then, based on the key-switching property, we have
+
+y11
+
+csk→sk =
+
+y00
+
+csk→sk +m·sk,
+which impliesdDec(sk1,sk′
+1,τ ) =dDec(sk0,sk′
+0,τ ) + Dec(sk,τ ).
+We complete the proof by combining all the above analyses.
+D SWHE with Distributed Decryption from NTRU
+D.1 NTRU Problem and Lattice Basis Reduction
+The NTRU cryptosystem, pioneered by Hoffstein, Pipher, and Silverman [HPS98], has been applied in more
+advanced cryptographic constructions [LTV12, GGH13a]. The NTRU problem is defined as follows.
+Definition 2 (Decisional NTRU [PS21]). LetRq = Zq[X]/ (Xn + 1). For dimension n∈ N, number of
+samplesm∈ N, and modulusq∈ N, the NTRU(n,m, B,q ) problem is to distinguish between the following
+two distributions: n
+hi
+def
+= fi/g
+o
+i∈[m]
+and
+n
+ui
+$← −Rq
+o
+i∈[m]
+,
+wheref1,...,f m,g←D B, with thatg is invertible inRq.
+Hardness of NTRU problem. A reduction from the decisional NTRU problem to the computational
+RL WEproblem was presented in [SSTX09, LPR10] and detailed in [Pei16, Section 4.4.4]. Pellet-Mary and
+Stehl´e [PS21] have introduced a reduction from the worst-case approximate shortest vector problem over
+ideal lattices to an average-case version of the computational NTRU problem. Additionally, they gave a
+reduction from another average-case variant of the computational NTRU problem to the decisional NTRU
+problem.
+Lattice basis reduction and the overstretched regime. Lattice basis reduction algorithms aim to min-
+imize the length and orthogonality of an input basis. In practical applications, the Blockwise Korkine-
+Zolotare (BKZ) algorithm [SE94] is highly relevant, which is a block-wise generalization of the LLL
+algorithm [LLL82]. To express the complexity of the BKZ algorithm, we follow the approach outlined
+in [HKM18] and relate its runtime to the block size β. Within BKZ, an SVP solver is called for a sub-
+lattice of dimensionβ. Guillaume Hanrot, Pujol, and Stehl´e [HPS11] have demonstrated that by invoking
+a polynomial number of SVP solver, the BKZ algorithm yields a basis in which the first (i.e., shortest)
+vector becomes progressively shorter as the β increases. Consequently, the running time of BKZ can be
+denoted as TBKZ = poly(n)·TSVP(β), where TSVP(β) signifies the running time of an SVP-solver in
+38
+=== PAGE 39 ===
+dimensionβ. Current algorithms exhibit exponential runtime inβ, ranging from the earlier 2O(β2) [FP83], to
+2O(β logβ) [Kan83], and recently to 2O(β) [MV10] (but the memory complexity of 2O(β)).
+More recently, as shown in prior works such as [ABD16, CJL16, KF17, DvW21], lattice reduction attacks
+on NTRU lattices, particularly for a large modulusq, exhibit a significant deviation from their behavior on
+(ring-)LWE lattices with equivalent parameters. These works leverage the specific algebraic structure of the
+NTRU lattice to enhance the effectiveness of lattice reduction attacks. Notably, they have conducted their
+analyses with larger modulusq and smaller parameter B, revealing that the NTRU problem is considerably
+more tractable than previously believed. Especially, their findings indicate that the NTRU problem can
+be classified as an easy problem when log2(q)≥ eΩ(n), which deviates from the previously established
+condition of log(q)≥ eΩ(n), as detailed in Claim 2. To resist lattice reduction attacks, our NTRU-based
+SWHE scheme slightly increases the modulusq, keeping it a small superpolynomial. As stated in Claim 2,
+the NTRU assumption holds for such parameter choice.
+Claim 2 ([DvW21]). The BKZ algorithm solves the NTRU problem with a modulusq =nQ and an norm
+∥fi∥2 =nS in time 2O(β), where the block sizeβ =O
+
+8S
+Q2+1·n
+
+andn is the dimension.
+D.2 GSW-SWHE from NTRU
+In the following, we recall the GSW-SWHE scheme [GSW13] under the NTRU assumption. We utilize
+the operations defined in Section 5, including BitDecomp, BitDecomp−1, Flatten and Powersof2. The
+NTRU-based GSW-SWHE scheme in the private-key setting consists of the following three algorithms:
+• Key generation. Gen(1λ, 1L) samples a secret keysk←D B such that it is invertible inRq, and outputssk
+along with a set of parameters params = (n,p,q, B,N,s ), whereN =⌊log(q)⌋ + 1 ands =⌊log(q/p)⌋.
+• Encryption. On input a secret keysk and a messagem∈ Zp, Enc(sk,m ) samples e←D N
+B , and outputs
+a ciphertext
+τ := Flatten
+
+m· IN + BitDecomp
+
+e/sk
+
+,
+where IN is theN×N identity matrix.
+• Decryption. On input a secret key sk and a ciphertext τ ∈R N×N
+2 , Dec(sk,τ ) sets a vector vT =
+Powersof2(sk), and then computes
+τ· v =
+
+m· IN + BitDecomp
+
+e/sk
+
+· v =m· v + e≈m· v. (6)
+Then, it extracts the (s+ 1)-th element ofτ· v, denoted as (τ· v) [s+ 1]and outputsm =
+j
+(τ·v)[s+1]
+2s
+m
+/sk.
+The NTRU-based GSW scheme supports homomorphic addition and multiplication operations, and the error
+of the final ciphertext is bounded by(N +1)L·nL· B, whereL represents the multiplication depth of a circuit.
+For any (params,sk )← Gen(1λ, 1L) along with two messages m1 and m2 as well as their ciphertexts
+τ1 = Enc(sk,m 1) andτ2 = Enc(sk,m 2), the homomorphic addition operation Add and homomorphic
+multiplication operation Mult are defined as follows:
+• Add(τ1,τ 2): To add ciphertextsτ1,τ 2∈R N×N
+2 , output Flatten(τ1 +τ2). The correctness of this operation
+is obvious.
+• Mult(τ1,τ 2). To multiply ciphertextsτ1,τ 2∈R N×N
+2 , output Flatten(τ1·τ2). To verify the correctness,
+we decrypt Mult(τ1,τ 2) as Mult(τ1,τ 2)· v:
+Mult(τ1,τ 2)· v =τ1·τ2· v≈τ1·m2· v =m2·τ1· v≈m1·m2· v,
+where the approximate equality “≈” is due to Equation (6).
+39
+=== PAGE 40 ===
+D.3 Our SWHE Scheme with Distributed Decryption from NTRU
+We propose a NTRU-based SWHE scheme with distributed decryption via extending the above GSW scheme,
+and denote the extended scheme as eGSW. The encryption algorithm Enc, homomorphic addition Add and
+homomorphic multiplication Mult of the eGSW scheme are identical to the NTRU-based GSW scheme, and
+thus they are omitted. The other algorithms of our NTRU-based eGSW scheme are described as follows:
+• Key generation. Gen(1λ, 1L) samples a secret keyssk←D B such that LSB(sk) = 1 andsk is invertible
+inRq, and then generates a set of public parameters params = (n,p,q, B,N,mk ) as below:
+– p|q,p =λω(1) is an even,q/p2 =λω(1)· (N + 1)L·nL andN =⌊log(q)⌋ + 1;
+– Samplee←D B and computemk := (e +q/p)/sk overRq.
+It outputs (params,sk ).
+• Decryption. On input a key x∈R (it is either the secret key sk or an additive share of sk for our
+instantiation) and a ciphertextτ∈R N×N
+2 , Dec(x,τ ) computes overRq
+t = BitDecomp−1 (BitDecomp(q/p)·τ) ,
+then outputs⌊t·x⌉p. If we usesk to decryptτ, we havet·sk≈ (q/p)·m·sk and⌊t·sk⌉p =m·sk.
+• Algorithm dDec for correlated-key distributed decryption. Given a ciphertext τ = Enc(sk,m ) as
+well as two additive secret sharings (sk0,sk 1) and (sk′
+0,sk′
+1) such that LSB(sk0) = LSB(sk′
+0) = 0 ,
+sk1 = sk0 +sk and sk′
+1 = sk′
+0 +sk overRp, for any i,j ∈{ 0, 1}, dDec(ski,sk′
+j,τ ) performs the
+following steps:
+1. Compute x :=ski·sk′
+j·mk overRq, wherei = LSB(ski) andj = LSB(sk′
+j).
+2. Compute y :=⌊x⌉p−j·ski−i·sk′
+j overRp.
+3. Run z← Dec(y,−τ) and outputz∈R p.
+In Theorem 6, we show thatdDec(ski,sk′
+j,τ ) satisfies the correlated-key distributed decryption property.
+Theorem 6. Our eGSW scheme is a somewhat homomorphic encryption scheme with distributed decryption
+under the NTRU assumption and the assumption that the eGSW scheme is the key-dependent message (KDM)
+secure.
+Proof. We begin by analyzing the correctness of Dec(sk,τ ) for the secret key sk and a ciphertext τ =
+Enc(sk,m ). Specifically,
+t·sk = BitDecomp−1 (BitDecomp(q/p)·τ)·sk
+= BitDecomp(q/p)·τ· v
+≈ BitDecomp (q/p)·m· v
+= (q/p)·m·sk,
+where vT def= Powersof2(sk) andτ·v≈m·v based on Equation (6). Applying the rounding⌊·⌉p to both sides
+of the above equation, we obtain
+
+t·sk
+
+p =m·sk, meaning that Dec(sk,τ ) =m·sk. Following the GSW
+scheme [GSW13], the NTRU-based GSW ciphertexts support homomorphic addition and multiplication
+operations for a maximum multiplication depthL.
+CPA security. We use a sequence of hybrids to prove that Enc(sk,m 0) is computationally indistinguishable
+from Enc(sk,m 1) for two messagesm0,m 1∈ Zp chosen by a PPT adversaryA.
+40
+=== PAGE 41 ===
+Hybrid 0. This is the real game and denoted byG0. This hybrid sends params and Enc(sk,mb) toA for a
+random bitb.
+Hybrid 1. This hybrid, denoted byG1, is the same asG0, except that replacingmk in params with a random
+elementr∈R q.
+We rewritemk =e/sk + (q/p)/sk. Based on the assumption that the eGSW scheme is KDM secure,
+it is infeasible to distinguishmk frommk′ =e/sk. Under the NTRU assumption,mk′ is computationally
+indistinguishable from a random elementr∈R q. Therefore,G1 is computationally indistinguishable from
+G0.
+Hybrid 2. This hybrid, denoted byG2, is the same asG1, except that replacing e/sk used in the computation
+of Enc(sk,mb) with a random vector inRN
+q .
+It is straighforward to observe thatG2 is computationally indistinguishable fromG1 under the NTRU
+assumption. Following a similar analysis in the proof of Theorem 2, we have that the advantage of A
+(guessing the bitb) inG0 is negligible inλ.
+Linear distributed decryption. Letsk0∈R p be a uniform element withLSB(sk0) = 0. Letsk1 =sk0+sk
+overRp. Based on Lemma 1, we obtain
+Pr[sk1 =sk0 +sk (without modulop) ]≥ 1−n· (∥sk∥∞ + 1)/p≥ 1− negl(λ).
+For a ciphertext τ ← Enc(sk,m ), we define t := BitDecomp−1 (BitDecomp(q/p)·τ). Thus, we have
+sk1·t = (sk0 +sk)·t =sk0·t +sk·t. Based on Lemma 2, we have the following, except with probability
+negl(λ),
+Dec(sk1,τ ) = Dec(sk0,τ ) + Dec(sk,τ ).
+One can observe that for anyi∈{ 0, 1},
+Dec(ski,τ ) =−Dec(ski,−τ) ,
+since, for anyx∈R q and y∈R N
+q ,⌊−x⌉p =−⌊x⌉p and−BitDecomp−1(y) = BitDecomp−1(−y).
+Correlated-key distributed decryption. Letsk0,sk′
+0∈R p be two uniform elements such that LSB(sk0) =
+0 and LSB(sk′
+0) = 0. Letsk1 =sk0 +sk andsk′
+1 =sk′
+0 +sk overRp.
+Given a ciphertextτ← Enc(sk,m ), we have, with probability 1− negl(λ),
+dDec(ski,sk′
+j,τ ) =−dDec(ski,sk′
+j,−τ) ,
+because, for anyx∈R q and y∈R N
+q ,⌊−x⌉p =−⌊x⌉p and−BitDecomp−1(y) = BitDecomp−1(−y). In
+the following, we show that for anyi,j ∈{ 0, 1}, with probability 1− negl(λ),
+dDec(ski,sk′
+j,τ ) =dDec(sk0,sk′
+0,τ ) +i·j· Dec(sk,τ ).
+Based on Lemma 1, except with probability negl(λ), we have
+sk1 =sk0 +sk (without modulop) and sk′
+1 =sk′
+0 +sk (without modulop).
+For eachi,j ∈{ 0, 1}, we have the following:
+• If (i,j ) = (0, 0), this is a trivial case. Letx00 =sk0·sk′
+0·mk andy00 =⌊x00⌉p.
+• If (i,j ) = (1, 0), fromsk1 =sk0 +sk, we have
+x10 =sk1·sk′
+0·mk =sk0·sk′
+0·mk +sk·mk·sk′
+0
+≈sk0·sk′
+0·mk + (q/p)·sk′
+0 =x00 + (q/p)·sk′
+0.
+41
+=== PAGE 42 ===
+Based on Lemma 2, except with probability negl(λ), we have
+y10 =⌊x10⌉p−sk′
+0 =⌊x00⌉p +sk′
+0−sk′
+0 =y00,
+which impliesdDec(sk1,sk′
+0,τ ) =dDec(sk0,sk′
+0,τ ).
+• If (i,j ) = (0, 1), fromsk′
+1 =sk′
+0 +sk, we have
+x01 =sk0·sk′
+1·mk =sk0·sk′
+0·mk +sk·mk·sk0
+≈sk0·sk′
+0·mk + (q/p)·sk0 =x00 + (q/p)·sk0.
+Based on Lemma 2, except with probability negl(λ), we obtain
+y01 =⌊x01⌉p−sk0 =⌊x00⌉p +sk0−sk0 =y00,
+which impliesdDec(sk0,sk′
+1,τ ) =dDec(sk0,sk′
+0,τ ).
+• If (i,j ) = (1, 1), fromsk1 =sk0 +sk andsk′
+1 =sk′
+0 +sk, we have
+x11 =sk1·sk′
+1·mk =
+
+sk0·sk′
+0 +sk·sk′
+0 +sk0·sk +sk·sk
+
+·mk
+=
+
+sk0·sk′
+0 +sk·sk′
+1 +sk1·sk−sk·sk
+
+·mk
+=sk0·sk′
+0·mk +sk·mk· (sk1 +sk′
+1−sk)
+≈x00 + (q/p)· (sk1 +sk′
+1−sk).
+From Lemma 2, except with probability negl(λ), we have
+y11 =⌊x11⌉p−sk1−sk′
+1 =
+
+x00 + (q/p)· (sk1 +sk′
+1−sk)
+
+p−sk1−sk′
+1
+=⌊x00⌉p−sk =y00−sk.
+Therefore, based on Lemma 2, except with probability negl(λ), we obtain
+dDec(sk1,sk′
+1,τ ) = Dec(y11,−τ) =⌊−y00·t +sk·t⌉p
+=⌊−y00·t⌉p +m·sk
+=dDec(sk0,sk′
+0,τ ) + Dec(sk,τ ),
+wheret = BitDecomp−1 (BitDecomp(q/p)·τ) andsk·t≈ (q/p)·m·sk.
+In conclusion, for anyi,j ∈{ 0, 1}, with probability 1− negl(λ), we have
+dDec(ski,sk′
+j,τ ) =dDec(sk0,sk′
+0,τ ) +i·j· Dec(sk,τ ),
+which completes the proof.
+42
