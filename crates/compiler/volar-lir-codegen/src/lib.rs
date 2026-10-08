@@ -311,7 +311,32 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 Some(mono_type(&field_def.ty, &local))
             }
 
-            IrExprKind::Index { base, .. } => {
+            IrExprKind::Index { base, index } => {
+                // A range index (`base[..]`, `base[start..end]`) yields a
+                // slice of the base's element type, not an element. Return
+                // the slice type so `copy_from_slice` / method receivers see
+                // a slice, not the element.
+                if let IrExprKind::Range { .. } = &index.kind {
+                    let base_ty = self.infer_type(base)?;
+                    let elem = vec_elem_type(&base_ty)
+                        .cloned()
+                        .or_else(|| match &base_ty {
+                            IrType::Array { elem, .. } => Some(*elem.clone()),
+                            IrType::Reference { elem, .. } => match elem.as_ref() {
+                                IrType::Array { elem: inner, .. } => Some(*inner.clone()),
+                                _ => None,
+                            },
+                            _ => None,
+                        })?;
+                    return Some(IrType::Reference {
+                        mutable: false,
+                        elem: Box::new(IrType::Array {
+                            kind: ArrayKind::Slice,
+                            elem: Box::new(elem),
+                            len: ArrayLength::Const(0),
+                        }),
+                    });
+                }
                 let base_ty = self.infer_type(base)?;
                 if let Some(elem) = vec_elem_type(&base_ty) {
                     return Some(elem.clone());
@@ -4358,9 +4383,20 @@ fn lower_iter_chain<T: LirTarget<P>, P: Clone>(
                 .collect()
         }
         IterChainSource::Range { start, end, .. } => {
-            let s =
-                concrete_usize_expr(start, ctx).expect("IterChain range start must be concrete");
-            let e = concrete_usize_expr(end, ctx).expect("IterChain range end must be concrete");
+            let s = concrete_usize_expr(start, ctx).unwrap_or_else(|| {
+                panic!(
+                    "IterChain range start must be concrete (in {:?})",
+                    ctx.current_instance.map(|k| &k.source_name)
+                )
+            });
+            let e = concrete_usize_expr(end, ctx).unwrap_or_else(|| {
+                panic!(
+                    "IterChain range end must be concrete (start={:?}, end_kind={:?}, in {:?})",
+                    std::mem::discriminant(&start.kind),
+                    std::mem::discriminant(&end.kind),
+                    ctx.current_instance.map(|k| &k.source_name)
+                )
+            });
             (s..e)
                 .map(|i| {
                     (
@@ -6421,6 +6457,12 @@ fn lower_copy_from_slice<T: LirTarget<P>, P: Clone>(
     let dest_ir_ty = ctx
         .infer_type(receiver)
         .unwrap_or_else(|| panic!("copy_from_slice: cannot infer destination receiver type"));
+    if std::env::var("VOLAR_CFS_PROBE").is_ok() {
+        eprintln!(
+            "[cfs] dest_ty={dest_ir_ty:?} in {:?}",
+            ctx.current_instance.map(|k| &k.source_name)
+        );
+    }
     let (_elem_ir_ty, dest_len) = if let Some(elem) = vec_elem_type(&dest_ir_ty) {
         // Vec destination: runtime length read from its handle.
         (elem.clone(), None)
