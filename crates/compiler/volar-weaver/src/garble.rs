@@ -2198,3 +2198,53 @@ mod tests {
         }
     }
 }
+
+// ============================================================================
+// BitGC geometry export (Phase 4 minimum)
+// ============================================================================
+
+/// The circuit geometry a BitGC offline phase needs: input/gate counts
+/// and the AND/XOR split, in circuit order.
+///
+/// This is the compiler-facing shape `volar_spec::bitgc::small::garble`'s
+/// streaming integration consumes; it carries no provenance and no
+/// cryptographic material. See `docs/bitgc-variants-plan.md` §4.3.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BitGcGeometry {
+    /// Circuit input wire count.
+    pub inputs: usize,
+    /// Total wire count (`inputs + gates`).
+    pub wires: usize,
+    /// AND-gate count (drives the online record stream for small/fast).
+    pub and_gates: usize,
+    /// XOR-gate count (charged under small, free under fast).
+    pub xor_gates: usize,
+}
+
+/// Extract the BitGC geometry from a boolean circuit.
+///
+/// The circuit must satisfy `is_circuit()` (single block, Return
+/// terminator). OR gates are expanded as in the weaving passes
+/// (`expand_ors`), so `xor_gates`/`and_gates` reflect the expanded form.
+pub fn bitgc_geometry<P: Clone>(circuit: &BIrBlocks<P>) -> BitGcGeometry {
+    assert!(
+        circuit.is_circuit(),
+        "bitgc_geometry: circuit must satisfy is_circuit()"
+    );
+    let block = &circuit.blocks[0];
+    let expanded = expand_ors(block);
+    let and_gates = expanded
+        .iter()
+        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
+        .count();
+    let xor_gates = expanded
+        .iter()
+        .filter(|(_, s, _)| matches!(s, BIrStmt::Xor(..)))
+        .count();
+    BitGcGeometry {
+        inputs: block.params as usize,
+        wires: block.params as usize + expanded.len(),
+        and_gates,
+        xor_gates,
+    }
+}
