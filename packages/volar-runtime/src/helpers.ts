@@ -174,6 +174,10 @@ export function asRefU8(x: unknown): bigint[] {
 }
 
 // Rust-style integer byte conversions (little-endian).
+export function u16_from_le_bytes(b: bigint[]): bigint {
+  return (b[0] & 0xFFn) | ((b[1] & 0xFFn) << 8n);
+}
+
 export function u32_from_le_bytes(b: bigint[]): bigint {
   return (b[0] & 0xFFn) | ((b[1] & 0xFFn) << 8n) | ((b[2] & 0xFFn) << 16n) | ((b[3] & 0xFFn) << 24n);
 }

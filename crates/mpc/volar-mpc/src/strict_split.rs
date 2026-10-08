@@ -54,8 +54,8 @@ pub enum SplitOutput {
 pub struct SplitGarblerResult<N: VoleArray<u8>> {
     /// One false-label base per circuit output. No evaluator labels occur here.
     pub output_bases: Vec<Garble<N>>,
-    /// Authenticated bits for the `Reveal` entries, in output order restricted
-    /// to revealed outputs.
+    /// Authenticated bits for `Reveal` and `GarblerReveal` entries, in output
+    /// order restricted to outputs revealed to the garbler.
     pub revealed: Vec<bool>,
 }
 
@@ -172,7 +172,9 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
         };
         let reveal_count = outputs
             .iter()
-            .filter(|output| **output == SplitOutput::Reveal)
+            .filter(|output| {
+                **output == SplitOutput::Reveal || **output == SplitOutput::GarblerReveal
+            })
             .count();
         if labels.len() != reveal_count {
             return Err(MpcError::UnexpectedMessage);
@@ -180,7 +182,7 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
         let mut revealed = Vec::with_capacity(reveal_count);
         let mut label_i = 0usize;
         for (index, output) in outputs.iter().enumerate() {
-            if *output == SplitOutput::Reveal {
+            if *output == SplitOutput::Reveal || *output == SplitOutput::GarblerReveal {
                 let label = vec_to_arr::<N>(&labels[label_i]).ok_or(MpcError::MalformedSchedule)?;
                 label_i += 1;
                 let base = &full.exec.output_labels[index];
@@ -256,8 +258,10 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
         )
     }
 
-    /// Execute a circuit, transmitting only output labels the shared script
-    /// explicitly marks `Reveal`.
+    /// Execute a circuit and return active labels for each output.
+    ///
+    /// Use [`Self::run_with_outputs_and_reveals`] when evaluator-only output
+    /// dispositions must also be decoded and returned as bits.
     pub fn run_with_outputs<D: Digest>(
         &self,
         schedule: &GateSchedule,
@@ -267,6 +271,28 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
         transport: &mut dyn Transport,
         ot: &mut dyn OtChannel<N>,
     ) -> Result<Vec<Eval<N>>, MpcError> {
+        self.run_with_outputs_and_reveals::<D>(
+            schedule,
+            partition,
+            evaluator_bits,
+            outputs,
+            transport,
+            ot,
+        )
+        .map(|(labels, _)| labels)
+    }
+
+    /// Execute a circuit, returning active output labels and decoded bits for
+    /// outputs marked `EvaluatorReveal`.
+    pub fn run_with_outputs_and_reveals<D: Digest>(
+        &self,
+        schedule: &GateSchedule,
+        partition: &[InputOwner],
+        evaluator_bits: &[bool],
+        outputs: &[SplitOutput],
+        transport: &mut dyn Transport,
+        ot: &mut dyn OtChannel<N>,
+    ) -> Result<(Vec<Eval<N>>, Vec<bool>), MpcError> {
         if partition.len() != schedule.num_inputs || outputs.len() != schedule.output_wires().len()
         {
             return Err(MpcError::BadPartition);
@@ -309,12 +335,41 @@ impl<N: VoleArray<u8>> SplitEvaluator<N> {
             .iter()
             .zip(outputs)
             .filter_map(|(label, disposition)| {
-                (*disposition == SplitOutput::Reveal).then(|| arr_to_vec(&label.target))
+                (*disposition == SplitOutput::Reveal || *disposition == SplitOutput::GarblerReveal)
+                    .then(|| arr_to_vec(&label.target))
             })
             .collect();
         transport.send(&SessionFrame::OutputLabels(revealed_labels).encode());
+        let evaluator_outputs: Vec<&Eval<N>> = output_labels
+            .iter()
+            .zip(outputs)
+            .filter_map(|(label, disposition)| {
+                (*disposition == SplitOutput::EvaluatorReveal).then_some(label)
+            })
+            .collect();
+        let decodes = match SessionFrame::decode(&transport.recv()) {
+            Some(SessionFrame::OutputDecodes(decodes))
+                if decodes.len() == evaluator_outputs.len() =>
+            {
+                decodes
+            }
+            _ => return Err(MpcError::UnexpectedMessage),
+        };
+        let mut evaluator_revealed = Vec::with_capacity(decodes.len());
+        for (label, [zero, one]) in evaluator_outputs.into_iter().zip(decodes) {
+            if label.target.as_slice() == zero.as_slice() {
+                evaluator_revealed.push(false);
+            } else if label.target.as_slice() == one.as_slice() {
+                evaluator_revealed.push(true);
+            } else {
+                return Err(MpcError::DecodeFailure);
+            }
+        }
         match SessionFrame::decode(&transport.recv()) {
-            Some(SessionFrame::VerdictBits(_)) => Ok(output_labels),
+            Some(SessionFrame::VerdictBits(mut revealed)) => {
+                revealed.extend(evaluator_revealed);
+                Ok((output_labels, revealed))
+            }
             Some(SessionFrame::Verdict(Err(()))) => Err(MpcError::DecodeFailure),
             _ => Err(MpcError::UnexpectedMessage),
         }
@@ -461,10 +516,18 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
             })
             .collect();
         transport.send(&SessionFrame::OutputDecodes(evaluator_decodes).encode());
+        let mut reveal_i = 0;
         let public_revealed: Vec<bool> = outputs
             .iter()
-            .zip(&revealed)
-            .filter_map(|(output, &bit)| (*output == SplitOutput::Reveal).then_some(bit))
+            .filter_map(|output| {
+                if *output == SplitOutput::Reveal || *output == SplitOutput::GarblerReveal {
+                    let bit = revealed[reveal_i];
+                    reveal_i += 1;
+                    (*output == SplitOutput::Reveal).then_some(bit)
+                } else {
+                    None
+                }
+            })
             .collect();
         transport.send(&SessionFrame::VerdictBits(public_revealed).encode());
         Ok(SplitGarblerResult {

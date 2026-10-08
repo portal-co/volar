@@ -716,6 +716,12 @@ fn read_volar_spec_sources() -> Vec<(String, String)> {
                 let path = entry.path();
                 if path.is_file() && path.extension().map_or(false, |e| e == "rs") {
                     if let Ok(content) = fs::read_to_string(&path) {
+                        if content
+                            .lines()
+                            .any(|line| line.trim_start().starts_with("//! @volar-codegen-exclude:"))
+                        {
+                            continue;
+                        }
                         let name = path.file_stem().unwrap().to_string_lossy().to_string();
                         sources.push((content, name));
                     }

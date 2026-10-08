@@ -2,6 +2,8 @@
 // @stability: very-unstable
 // @ai: assisted
 //! Bounded static allocator for a no-std `wasm32v1-none` BinFHE module.
+//! @volar-codegen-exclude: target-specific GlobalAlloc implementation uses raw
+//! pointers and is not part of the generated spec/runtime mirrors.
 //!
 //! `binfhe::plan::PlanWorkspace` and `CiphertextInputBuffer` make the plan
 //! executor's allocations explicit. A wasm provider may install this allocator

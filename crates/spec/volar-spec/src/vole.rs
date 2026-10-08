@@ -64,13 +64,13 @@ impl<N: ArraySize, T> Delta<N, T> {
     where
         T: Clone,
     {
-        self.remap(|a| a.wrapping_sub(n))
+        self.remap(|a: usize| a.wrapping_sub(n))
     }
     pub fn rotate_right(&self, n: usize) -> Self
     where
         T: Clone,
     {
-        self.remap(|a| a.wrapping_add(n))
+        self.remap(|a: usize| a.wrapping_add(n))
     }
     pub fn r#static<U: Mul<T, Output = O> + Clone, O>(&self, val: Array<U, N>) -> Q<N, O>
     where
@@ -95,13 +95,13 @@ impl<N: ArraySize, T> Q<N, T> {
     where
         T: Clone,
     {
-        self.remap(|a| a.wrapping_sub(n))
+        self.remap(|a: usize| a.wrapping_sub(n))
     }
     pub fn rotate_right(&self, n: usize) -> Self
     where
         T: Clone,
     {
-        self.remap(|a| a.wrapping_add(n))
+        self.remap(|a: usize| a.wrapping_add(n))
     }
 }
 pub mod vope;

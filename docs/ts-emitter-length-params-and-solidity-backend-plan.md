@@ -305,9 +305,13 @@ criterion is updated accordingly in §2.6.
 
 #### 1.3.9 Progress on the strict-error surface (during Part 1 implementation)
 
-Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397** (and seeded
-components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
-*syntax* errors are fixed; the remainder are semantic. Bug classes fixed:
+Full-module `tsc --strict` count, cumulative: **848 → 780 → 776 → 718 → 691 → 650 → 579 → 565 → 537 → 524 → 509 → … → 469 → 430 → 422 → 394 → 397 → 362 → 350 → 315 → 304 → 283 → 279 → 269 → 265 → 263 → 261 → 252 → 251** (and seeded components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
+*syntax* errors are fixed; the remainder are semantic. The 279 → 269 batch
+resolves enum-variant constructors by IR metadata; 269 → 265 erases zero-sized
+PhantomData values; and 265 → 263 lowers type-alias targets through dyn-lowering.
+The 261 → 252 batch resolves reads/method calls on mutable iterator refs
+through their backing-array indices; 252 → 251 stops mistaking enum-associated
+function calls for variant constructors. Bug classes fixed:
 
 - **Module-path qualifiers not stripped** (`torus::reduce` → `torus.reduce`,
   never defined): `TsContext::is_type_head` + leading-module-segment stripping
@@ -328,29 +332,55 @@ components improved correspondingly, e.g. vole_prover/verifier 14 → 4). All
   }`): `ts_emit_pattern_bindings` gained an `IrPattern::Struct` arm.
 - **Function-local `const` items dropped** by `convert_block`'s catch-all:
   now parsed as `let` bindings.
+- **Trait-method resolution in dyn-lowering**: `L::commit(...)` now retains
+  trait dispatch and routes through the corresponding class witness.
+- **Result `?` propagation** now evaluates once, returns error-enum instances,
+  and narrows the success value (397 → 362).
+- **`iter_mut()` write-back through zip loops** now writes through indexed
+  references rather than rebinding loop locals (362 → 350); mutable-reference
+  reads and method receivers also resolve to the backing element (261 → 252).
+- **Enum variant construction** now resolves struct-like variants to the
+  emitted `Enum_Variant` class with declaration-ordered positional fields,
+  and resolves unique bare unit variants (279 → 269).
+- **`PhantomData` marker values** no longer leak into generated expressions;
+  these Rust zero-sized markers are erased from struct initializers (269 → 265).
+- **Type-alias targets bypassed dyn-lowering**: aliases that referenced a
+  dyn-lowered struct with const generics now use the `*Dyn` name and omit erased
+  const arguments (`LweBaseOt<LWE_N>` → `LweBaseOtDyn`; 265 → 263).
+- **Enum-associated calls confused with variants**: the printer now confirms
+  variant identity from IR metadata before constructing `Enum_Variant`, so
+  `Stage::try_from(...)` remains a call to the flattened `try_from` function
+  (252 → 251).
+- **Primitive integer conversions**: `u16::from_le_bytes` and `uN/iN::from`
+  now map to runtime byte decoding and `BigInt` conversion helpers (263 → 261).
+- **Witness-context forwarding**: unqualified free-function calls represented
+  as `Var` now forward a caller's `ctx`; method calls use exact receiver types
+  where available and only fall back to a uniquely matching method witness
+  when receiver type inference is unavailable. The focused generated-code test
+  passes, and the full strict count reached **187** (196 → 187). Current
+  `Option<T>` `?` sites now propagate `None` via a nullish check instead of
+  testing the value against `__VolarError`; the targeted strict-compile test
+  passes and full-module errors fell 187 → **186**. Leading categories are
+  TS2322 (52), TS2345 (37), TS2339 (23), TS2554 (9), and TS2304 (8).
 
 **Remaining error classes** (each a deeper emitter/lowering feature, not a
 one-line fix):
 
-- **TS2554 arity / overload merging (largest, ~184)**: distinct functions
-  sharing a bare name (e.g. free `commit<D>(msg, rand)` vs trait
-  `LeafCommit::commit(r, iv, tweak)` vs `Bavc::commit(r, iv, tau, n)`)
-  collapse to one emission; and length-witness params aren't threaded
-  consistently between definitions and call sites. The latter is the
-  *documented* `lowering_dyn` call-site length-forwarding limitation
-  (pipeline.md) whose named fix is the deferred "weak type inference pass".
-- **Trait-method resolution in dyn-lowering**: `L::commit(...)` (`L:
-  LeafCommit`) is lowered to a bare `commit::<D>(...)`, losing the trait/impl
-  identity and resolving to the wrong `commit`.
-- **Static-method length witnesses**: `Array.from({length: Number(n)})` inside
-  a `static` method references `n`, which is never in scope there.
+- **TS2554 arity (91)**: remaining mismatches primarily need call-site
+  const-generic inference (infer concrete `N` from argument types) rather than
+  forwarding a runtime witness the caller does not have. The previously
+  misresolved `L::commit` trait dispatch and several ctx/length-witness
+  forwarding cases have been fixed. See the dedicated call-site inference
+  handoff below.
+- **Static-method length witnesses — fixed**: projection lengths used by static
+  methods are now inferred from return/use types and carried through the
+  corresponding context witness; no unbound `n` remains.
 - **Function-local `fn` items** (recursive helpers like bavc's `walk`):
   dropped by the parser; representing them needs a new `IrStmtKind` variant.
-- **`from_fn` length placeholders without turbofish** (the parser emits a bare
-  `N` → `n` when `core::array::from_fn(|i| ..)` has no explicit length): the
-  lowering must infer the intended length. **Fully fixed** (commits bed080b →
-  7da5ff2): a bounded use-site inference pass resolves the placeholder across
-  all five use-site shapes — let-annotation (`let x: [u32; BIG_N]`), struct-field
+- **`from_fn` length placeholders without turbofish — fixed**: the parser emits
+  a placeholder when `core::array::from_fn(|i| ..)` has no explicit length.
+  The bounded use-site inference pass (commits bed080b → 7da5ff2) resolves it
+  across all five use-site shapes — let-annotation (`let x: [u32; BIG_N]`), struct-field
   (`Struct { x }`), return-position array literals (against the original return
   type, keeping projections like `D::OutputSize` alive → `ctx.D_OutputSize`),
   nested element-of-element producers (KSK's `Vec<[LweCiphertext; KS_ELL]>` →
@@ -394,29 +424,19 @@ one-line fix):
   21 → 0). This is *more correct* than the old `= T` erasure and surfaced the two
   genuine semantic gaps below (previously hidden by the erasure):
 
-  - **`?` (`IrExprKind::Try`) is a no-op in the TS emitter** (~line 4369): it emits
-    the inner expr with no early-return-on-error / unwrap. So `let ring =
-    Ring::new(p)?;` leaves `ring: Result<Ring, Error>` and `ring.uniform(..)` fails
-    (TS2339 `uniform does not exist on Result<..>`). This is a *runtime* bug too —
-    errors are silently dropped, not propagated. A correct desugar needs an error
-    discriminant (`instanceof` against the fn's error enum variant classes) plus an
-    early `return`; ~all `?` sites.
-  - **Deref-assign through `iter_mut().zip(..)` loses write-back** (TS2588, 24):
-    `for (left, right) in self.first.iter_mut().zip(other) { *left = add_mod(*left,
-    *right, ..) }` emits `for (const [left, right] of first.map(zip..)) { left =
-    add_mod(..) }` — a `const` reassignment that ALSO discards the write (never
-    writes back to the array). The existing `iter_mut` indexed-write-back handling
-    (printer_ts.rs ~3231) only fires for a *bare* `arr.iter_mut()` collection, not
-    when `iter_mut()` is nested inside `.zip(..)`. The fix must track the loop index
-    through the zip and emit `first[i] = ..`. Affects correctness (discarded
-    writes), not just types.
-- **Associated consts on impls** (`impl Fe25519 { pub const ONE: Self = ... }`,
-  referenced as `Fe25519::ONE`): the parser's `convert_impl_item` drops
-  `ImplItem::Const`, so `Type::CONST` references emit as the undefined
-  `Type.CONST`. A proper fix needs an `IrImplItem::AssociatedConst` variant
-  (touches ~15 files) OR lifting to module consts — the latter was prototyped
-  and reverted because the const *value* can reference `Self` and other lifted
-  consts, requiring Self-resolution during the lift. ~10 errors.
+  - **`?` (`IrExprKind::Try`) — fixed**: statement-level lowering evaluates
+    the operand once, checks the shared `__VolarError` base, returns errors
+    immediately, and leaves a narrowed success value. This fixed both the
+    silent runtime error-drop and the Result-union type leaks (397 → 362).
+  - **Deref-assign through `iter_mut()` zip loops — fixed**: lowering now tracks
+    indexed mutable references through nested source-level and pipeline zip
+    shapes, so assignments write back to the source array. The original 24
+    TS2588 errors fell to 6; the remaining cases include enumerate/nested mutable
+    iterator patterns and are not assumed fixed.
+- **Associated constants**: the current concrete curve constants (`Fe25519::{ZERO,ONE}`,
+  `U256::ZERO`, `EdPoint::IDENTITY`) are emitted directly and no longer
+  contribute strict errors. General IR representation of arbitrary impl-level
+  associated constants remains unsupported.
 
 #### 1.3.10 The Rust-dyn reference backend is also broken (found during Part 1)
 

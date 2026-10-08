@@ -151,7 +151,9 @@ fn expr_refs_any(expr: &IrExpr, names: &HashSet<String>) -> bool {
         IrExprKind::WhileLoop { cond, body } => {
             expr_refs_any(cond, names) || block_refs_any(body, names)
         }
-        IrExprKind::Repeat { elem, len } => expr_refs_any(elem, names) || expr_refs_any(len, names),
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
+            expr_refs_any(elem, names) || expr_refs_any(len, names)
+        }
         IrExprKind::RawMap { receiver, body, .. } => {
             expr_refs_any(receiver, names) || expr_refs_any(body, names)
         }
@@ -202,6 +204,15 @@ fn block_refs_any(block: &IrBlock, names: &HashSet<String>) -> bool {
                     if expr_refs_any(e, names) {
                         return true;
                     }
+                }
+            }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if init.as_ref().is_some_and(|e| expr_refs_any(e, names))
+                    || expr_refs_any(else_expr, names)
+                {
+                    return true;
                 }
             }
             IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
@@ -332,6 +343,18 @@ fn rename_var_in_stmt(stmt: &mut IrStmt, old: &str, new_name: &str) {
                 rename_var_in_expr(e, old, new_name);
             }
         }
+        IrStmtKind::LetElse {
+            pattern,
+            init,
+            else_expr,
+            ..
+        } => {
+            rename_in_pattern(pattern, old, new_name);
+            if let Some(e) = init {
+                rename_var_in_expr(e, old, new_name);
+            }
+            rename_var_in_expr(else_expr, old, new_name);
+        }
         IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
             rename_var_in_expr(e, old, new_name);
         }
@@ -451,7 +474,7 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
             rename_var_in_expr(cond, old, new_name);
             rename_var_in_block(body, old, new_name);
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             rename_var_in_expr(elem, old, new_name);
             rename_var_in_expr(len, old, new_name);
         }
@@ -598,12 +621,22 @@ fn deshadow_stmts(
                     deshadow_expr(e, scope);
                 }
             }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(e) = init {
+                    deshadow_expr(e, scope);
+                }
+                deshadow_expr(else_expr, scope);
+            }
         }
 
         // Now check for shadowing in Let bindings.
         // We collect renames in a separate pass to avoid holding borrows
         // across the rename step.
-        let renames: Vec<(String, String)> = if let IrStmtKind::Let { pattern, .. } = &stmts[i].kind
+        let renames: Vec<(String, String)> = if let IrStmtKind::Let { pattern, .. }
+        | IrStmtKind::LetElse { pattern, .. } =
+            &stmts[i].kind
         {
             let bound = pattern_names(pattern);
             let mut out = Vec::new();
@@ -623,7 +656,9 @@ fn deshadow_stmts(
 
         if !renames.is_empty() {
             // Rename the pattern bindings in stmts[i]
-            if let IrStmtKind::Let { pattern, .. } = &mut stmts[i].kind {
+            if let IrStmtKind::Let { pattern, .. } | IrStmtKind::LetElse { pattern, .. } =
+                &mut stmts[i].kind
+            {
                 for (old, new_name) in &renames {
                     rename_in_pattern(pattern, old, new_name);
                 }
@@ -645,7 +680,9 @@ fn deshadow_stmts(
         }
 
         // Add all bound names (after possible rename) to scope
-        if let IrStmtKind::Let { pattern, .. } = &stmts[i].kind {
+        if let IrStmtKind::Let { pattern, .. } | IrStmtKind::LetElse { pattern, .. } =
+            &stmts[i].kind
+        {
             let bound_after = pattern_names(pattern);
             for name in bound_after {
                 scope.insert(name);
@@ -775,7 +812,7 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
             inner.insert(index_var.clone());
             deshadow_expr(body, &mut inner);
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             deshadow_expr(elem, scope);
             deshadow_expr(len, scope);
         }

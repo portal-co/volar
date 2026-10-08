@@ -1427,6 +1427,15 @@ pub enum IrStmtKind<P: Clone = ()> {
         #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         init: Option<IrExpr<P>>,
     },
+    /// A refutable `let PAT = EXPR else { ... }` statement.
+    LetElse {
+        pattern: IrPattern,
+        ty: Option<IrType>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        init: Option<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        else_expr: IrExpr<P>,
+    },
     Semi(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrExpr<P>),
     Expr(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrExpr<P>),
 }
@@ -1721,8 +1730,9 @@ pub enum IrExprKind<P: Clone = ()> {
         rest: Option<Box<IrExpr<P>>>,
     },
     Tuple(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrExpr<P>>),
+    /// A Vec literal (`vec![a, b, c]`); fixed-size Rust arrays use `FixedArray`.
     Array(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrExpr<P>>),
-    /// A fixed-size array literal `[a, b, c]` (as opposed to `Array`, which prints as `vec![...]`).
+    /// A fixed-size Rust array literal `[a, b, c]`.
     FixedArray(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrExpr<P>>),
     Repeat {
         #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
@@ -1872,6 +1882,15 @@ pub enum IrExprKind<P: Clone = ()> {
     },
     Unreachable,
     Try(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Box<IrExpr<P>>),
+    /// A dynamic vector repetition `vec![elem; len]` (distinct from the
+    /// fixed-size array expression `[elem; len]` in `Repeat`). Appended to
+    /// preserve the archive discriminants of existing expression variants.
+    VecRepeat {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        elem: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        len: Box<IrExpr<P>>,
+    },
 }
 
 /// An expression, with its own provenance and [side](volar_side::SideId)
@@ -2806,6 +2825,10 @@ impl<P: Clone, Q: Clone> MapKind<P, Q> for IrExprKind<P> {
                 elem: Box::new(elem.map_kind_prov(f)),
                 len: Box::new(len.map_kind_prov(f)),
             },
+            IrExprKind::VecRepeat { elem, len } => IrExprKind::VecRepeat {
+                elem: Box::new(elem.map_kind_prov(f)),
+                len: Box::new(len.map_kind_prov(f)),
+            },
             IrExprKind::ArrayGenerate {
                 elem_ty,
                 len,
@@ -3047,6 +3070,17 @@ impl<P: Clone, Q: Clone> MapKind<P, Q> for IrStmtKind<P> {
                 pattern,
                 ty,
                 init: init.map(|e| e.map_kind_prov(f)),
+            },
+            IrStmtKind::LetElse {
+                pattern,
+                ty,
+                init,
+                else_expr,
+            } => IrStmtKind::LetElse {
+                pattern,
+                ty,
+                init: init.map(|e| e.map_kind_prov(f)),
+                else_expr: else_expr.map_kind_prov(f),
             },
             IrStmtKind::Semi(e) => IrStmtKind::Semi(e.map_kind_prov(f)),
             IrStmtKind::Expr(e) => IrStmtKind::Expr(e.map_kind_prov(f)),

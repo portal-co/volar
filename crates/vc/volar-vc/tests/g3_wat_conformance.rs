@@ -217,7 +217,7 @@ fn run_gram<const A: usize>(l: &Lowered, x: u32) -> u32 {
 /// each arg's vc visibility.
 #[test]
 fn wat_conformance_all_visibilities() {
-    const A: usize = 186; // this guest's AND count (see probe)
+    const A: usize = 169; // this guest's optimized schedule AND count
     for vis in [
         volar_vaffle_target::VcArg::Private,
         volar_vaffle_target::VcArg::Blind,

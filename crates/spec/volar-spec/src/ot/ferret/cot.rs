@@ -3,16 +3,20 @@
 //! @ai: assisted
 //! Bootstrapped COT extension ΠCOT (Ferret Fig. 9 + §6.2).
 //!
-//! Consumes `M = k + t log(n/t)` seed COTs (same global `Δ`), runs regular
-//! MPCOT of length `n`, LPN-encodes with the 10-local code, keeps the first
-//! `M` output COTs as the next seed, and emits `n − M` fresh random COTs.
+//! Consumes `M = k + t·h` seed COTs (same global `Δ`), where `h` is the
+//! padded regular-interval SPCOT height. It runs regular MPCOT of length `n`,
+//! LPN-encodes with the 10-local code, keeps the first `M` output COTs as the
+//! next seed, and emits `n − M` fresh random COTs.
+//! @volar-allow-vec: runtime-boundary: Ferret seeds, MPCOT outputs, and
+//! transcripts have sizes determined by runtime protocol parameters.
 
 use alloc::vec::Vec;
 
 use super::lpn::{encode_bits, encode_blocks, encode_ferret_outputs};
 use super::mpcot_reg::{
-    MpcotRegSenderMsg, mpcot_reg_choice_bits, mpcot_reg_consistency_check, mpcot_reg_receiver,
-    mpcot_reg_sender, sample_regular_noise,
+    MpcotRegSenderMsg, mpcot_reg_choice_bits, mpcot_reg_consistency_check_padded,
+    mpcot_reg_flatten_outputs, mpcot_reg_receiver, mpcot_reg_receiver_padded, mpcot_reg_sender,
+    mpcot_reg_sender_padded, sample_regular_noise,
 };
 use super::params::FerretParams;
 use super::spcot::{Block, KAPPA_BITS};
@@ -88,7 +92,11 @@ pub fn ferret_prepare_receiver<R: SpecRng>(
     let alphas = sample_regular_noise(rng, n, t);
     let mut e = alloc::vec![false; n];
     for (i, &a) in alphas.iter().enumerate() {
-        e[i * params.splen() + a] = true;
+        let (start, end) = params
+            .interval_bounds(i)
+            .expect("regular noise interval index must be valid");
+        debug_assert!(a < end - start);
+        e[start + a] = true;
     }
     let lpn_seed = sample_seed(rng);
     let cot_r = &receiver_seed.u[k..];
@@ -230,13 +238,17 @@ pub fn ferret_extend_malicious<R: SpecRng>(
     let alphas = sample_regular_noise(rng, n, t);
     let mut e = alloc::vec![false; n];
     for (i, &a) in alphas.iter().enumerate() {
-        e[i * params.splen() + a] = true;
+        let (start, end) = params
+            .interval_bounds(i)
+            .expect("regular noise interval index must be valid");
+        debug_assert!(a < end - start);
+        e[start + a] = true;
     }
     let lpn_seed = sample_seed(rng);
     let choices = mpcot_reg_choice_bits(n, t, &alphas, &receiver_seed.u[k..extra_off]);
 
     // Sender + receiver MPCOT (SPCOT COT range only).
-    let (s, mpcot) = mpcot_reg_sender(
+    let (s_padded, mpcot) = mpcot_reg_sender_padded(
         rng,
         &sender_seed.delta,
         n,
@@ -244,22 +256,25 @@ pub fn ferret_extend_malicious<R: SpecRng>(
         &sender_seed.q[k..extra_off],
         &choices,
     );
-    let r = mpcot_reg_receiver(n, t, &alphas, &receiver_seed.w[k..extra_off], &mpcot);
+    let r_padded = mpcot_reg_receiver_padded(n, t, &alphas, &receiver_seed.w[k..extra_off], &mpcot);
 
-    // Batched consistency check using the κ extra COTs.
+    // Batched consistency check over complete padded SPCOT outputs using the κ
+    // extra COTs. The unused padded leaves are checked before we discard them.
     let extra_q = &sender_seed.q[extra_off..extra_off + KAPPA_BITS];
     let extra_r = &receiver_seed.u[extra_off..extra_off + KAPPA_BITS];
     let extra_t = &receiver_seed.w[extra_off..extra_off + KAPPA_BITS];
-    let check = mpcot_reg_consistency_check(
+    let check = mpcot_reg_consistency_check_padded(
         &sender_seed.delta,
-        &s,
-        &r,
+        &s_padded,
+        &r_padded,
         &alphas,
         extra_q,
         extra_r,
         extra_t,
         transcript,
     );
+    let s = mpcot_reg_flatten_outputs(n, t, &s_padded);
+    let r = mpcot_reg_flatten_outputs(n, t, &r_padded);
 
     // LPN finish; keep M = seed_cot_count(true) so the next iteration has its
     // extra check COTs.
@@ -532,9 +547,13 @@ mod tests {
     }
 
     #[test]
-    fn ferret_reg_malicious_iteration_consistency_check_passes() {
+    fn ferret_reg_malicious_iteration_consistency_check_passes_uneven_padded() {
         let mut rng = TestRng(0xDEAD_0001_5555);
-        let p = FERRET_REG_TOY;
+        let p = FerretParams {
+            n: 512,
+            k: 32,
+            t: 7,
+        };
         // Malicious seeds carry the extra κ consistency-check COTs.
         let m = p.seed_cot_count(true);
         let (ss, rs) = sample_seed_cots(&mut rng, m);

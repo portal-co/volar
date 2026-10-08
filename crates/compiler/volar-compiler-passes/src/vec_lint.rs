@@ -19,9 +19,8 @@
 //! | [`VecUseKind::VecType`] | `IrType::Vector` (parses/prints as `Vec<T>`) or `IrType::Struct { Custom("Vec"), .. }` in a signature, field, or binding type |
 //! | [`VecUseKind::VecCollect`] | `IrExprKind::IterPipeline` with terminal `IterStep::Collect` / `CollectTyped` — materializes a `Vec` |
 //! | [`VecUseKind::VecCtorPath`] | `IrExprKind::Path` resolving to `Vec::new` / `Vec::with_capacity` |
-//!
-//! The Rust parser rejects `vec![...]` in parsed function bodies outright,
-//! so the macro never reaches the IR from source.
+//! | [`VecUseKind::VecLiteral`] | `IrExprKind::Array` from `vec![a, b]` |
+//! | [`VecUseKind::VecRepeat`] | `IrExprKind::VecRepeat` from `vec![elem; len]` |
 //!
 //! # Exemptions
 //!
@@ -39,10 +38,10 @@
 //! invoking [`lint_module`]; [`parse_allow_vec`] extracts the category from
 //! `syn` attributes at parse time (same mechanism as `@volar-native:`).
 
-#[cfg(feature = "std")]
-use std::{format, string::ToString, vec::Vec};
 #[cfg(not(feature = "std"))]
 use alloc::{format, string::ToString, vec::Vec};
+#[cfg(feature = "std")]
+use std::{format, string::ToString, vec::Vec};
 
 use volar_compiler::ir::*;
 
@@ -73,6 +72,10 @@ pub enum VecUseKind {
     VecCollect,
     /// A `Vec::new` / `Vec::with_capacity` constructor path.
     VecCtorPath,
+    /// A `vec![a, b]` literal that materializes a Vec.
+    VecLiteral,
+    /// A `vec![elem; len]` repetition that materializes a Vec.
+    VecRepeat,
 }
 
 /// Extract the `@volar-allow-vec:` category from `syn` attributes (the
@@ -110,12 +113,17 @@ pub fn parse_allow_vec(attrs: &[syn::Attribute]) -> Option<&'static str> {
 
 /// Extract the `@volar-allow-vec:` category from plain doc-comment strings
 /// (the IR-independent form, for callers that already hold doc text).
-pub fn allow_vec_category_in_docs<'a>(docs: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
+pub fn allow_vec_category_in_docs<'a>(
+    docs: impl IntoIterator<Item = &'a str>,
+) -> Option<&'static str> {
     for doc in docs {
         let text = doc.trim();
         // Accept both `/// @volar-allow-vec: ...` (real doc comment) and
         // the already-stripped `@volar-allow-vec: ...` form.
-        let text = text.strip_prefix("///").map(str::trim_start).unwrap_or(text);
+        let text = text
+            .strip_prefix("///")
+            .map(str::trim_start)
+            .unwrap_or(text);
         if let Some(rest) = text.strip_prefix("@volar-allow-vec:") {
             let rest = rest.trim();
             let category = rest.split(':').next().unwrap_or("").trim();
@@ -220,7 +228,12 @@ impl<P: Clone> LintItem<P> for IrFunction<P> {
             return;
         }
         for (i, p) in self.params.iter().enumerate() {
-            lint_type(&p.ty, &format!("{}:param[{}]", self.name, i), exempt, errors);
+            lint_type(
+                &p.ty,
+                &format!("{}:param[{}]", self.name, i),
+                exempt,
+                errors,
+            );
         }
         if let Some(rt) = &self.return_type {
             lint_type(rt, &format!("{}:return", self.name), exempt, errors);
@@ -245,6 +258,20 @@ fn lint_block<P: Clone>(
                 if let Some(init) = init {
                     lint_expr(init, &spath, exempt, errors);
                 }
+            }
+            IrStmtKind::LetElse {
+                ty,
+                init,
+                else_expr,
+                ..
+            } => {
+                if let Some(ty) = ty {
+                    lint_type(ty, &spath, exempt, errors);
+                }
+                if let Some(init) = init {
+                    lint_expr(init, &spath, exempt, errors);
+                }
+                lint_expr(else_expr, &spath, exempt, errors);
             }
             IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => lint_expr(e, &spath, exempt, errors),
             // Catch-all for future statement kinds (repo rule 4).
@@ -315,7 +342,10 @@ fn lint_expr<P: Clone>(
     errors: &mut Vec<VecLintError>,
 ) {
     match &expr.kind {
-        IrExprKind::Path { segments, type_args } => {
+        IrExprKind::Path {
+            segments,
+            type_args,
+        } => {
             let joined = segments.join("::");
             if joined == "Vec::new" || joined == "Vec::with_capacity" {
                 errors.push(VecLintError {
@@ -334,7 +364,8 @@ fn lint_expr<P: Clone>(
                     errors.push(VecLintError {
                         path: path.to_string(),
                         kind: VecUseKind::VecCollect,
-                        note: "IterPipeline .collect() materializes a Vec; keep it lazy or presize".into(),
+                        note: "IterPipeline .collect() materializes a Vec; keep it lazy or presize"
+                            .into(),
                     });
                 }
                 IterTerminal::CollectTyped(ty) => {
@@ -371,7 +402,12 @@ fn lint_expr<P: Clone>(
         IrExprKind::Unary { expr, .. } | IrExprKind::Cast { expr, .. } => {
             lint_expr(expr, path, exempt, errors)
         }
-        IrExprKind::MethodCall { receiver, args, type_args, .. } => {
+        IrExprKind::MethodCall {
+            receiver,
+            args,
+            type_args,
+            ..
+        } => {
             lint_expr(receiver, path, exempt, errors);
             for a in args {
                 lint_expr(a, path, exempt, errors);
@@ -394,12 +430,31 @@ fn lint_expr<P: Clone>(
                 lint_expr(e, path, exempt, errors);
             }
         }
-        IrExprKind::Tuple(es) | IrExprKind::Array(es) | IrExprKind::FixedArray(es) => {
+        IrExprKind::Tuple(es) | IrExprKind::FixedArray(es) => {
+            for e in es {
+                lint_expr(e, path, exempt, errors);
+            }
+        }
+        IrExprKind::Array(es) => {
+            errors.push(VecLintError {
+                path: path.to_string(),
+                kind: VecUseKind::VecLiteral,
+                note: "vec![a, b] materializes a Vec; use a fixed array or presized storage".into(),
+            });
             for e in es {
                 lint_expr(e, path, exempt, errors);
             }
         }
         IrExprKind::Repeat { elem, len } => {
+            lint_expr(elem, path, exempt, errors);
+            lint_expr(len, path, exempt, errors);
+        }
+        IrExprKind::VecRepeat { elem, len } => {
+            errors.push(VecLintError {
+                path: path.to_string(),
+                kind: VecUseKind::VecRepeat,
+                note: "vec![elem; len] materializes a runtime-sized Vec".into(),
+            });
             lint_expr(elem, path, exempt, errors);
             lint_expr(len, path, exempt, errors);
         }
@@ -410,14 +465,21 @@ fn lint_expr<P: Clone>(
             lint_expr(body, path, exempt, errors);
         }
         IrExprKind::Block(b) => lint_block(b, path, exempt, errors),
-        IrExprKind::If { cond, then_branch, else_branch } => {
+        IrExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             lint_expr(cond, path, exempt, errors);
             lint_block(then_branch, path, exempt, errors);
             if let Some(e) = else_branch {
                 lint_expr(e, path, exempt, errors);
             }
         }
-        IrExprKind::Match { expr: scrutinee, arms } => {
+        IrExprKind::Match {
+            expr: scrutinee,
+            arms,
+        } => {
             lint_expr(scrutinee, path, exempt, errors);
             for arm in arms {
                 if let Some(g) = &arm.guard {
@@ -493,7 +555,10 @@ mod tests {
             module_path: vec![],
             generics: vec![],
             receiver: None,
-            params: vec![IrParam { name: "x".into(), ty }],
+            params: vec![IrParam {
+                name: "x".into(),
+                ty,
+            }],
             return_type: None,
             where_clause: vec![],
             body: IrBlock {
@@ -588,6 +653,45 @@ mod tests {
         )));
         let errors = lint_module(&module_with(f), &no_exempt);
         assert!(errors.iter().any(|e| e.kind == VecUseKind::VecCtorPath));
+    }
+
+    #[test]
+    fn vec_literal_macro_is_flagged() {
+        let module = volar_compiler::parser::parse_source(
+            "fn make() { let values = vec![1u8, 2u8]; }",
+            "vec_literal",
+            &[],
+        )
+        .unwrap();
+        let errors = lint_module(&module, &no_exempt);
+        assert!(errors.iter().any(|e| e.kind == VecUseKind::VecLiteral));
+    }
+
+    #[test]
+    fn parsed_fixed_array_literal_is_clean() {
+        let module = volar_compiler::parser::parse_source(
+            "fn make() -> [u8; 2] { [1u8, 2u8] }",
+            "fixed_array_literal",
+            &[],
+        )
+        .unwrap();
+        let errors = lint_module(&module, &no_exempt);
+        assert!(errors.is_empty(), "fixed arrays are allowed: {errors:?}");
+    }
+
+    #[test]
+    fn vec_repeat_is_flagged() {
+        let mut f = fn_with_param_ty("repeat", IrType::Primitive(PrimitiveType::U32));
+        f.body.expr = Some(Box::new(IrExpr::new(
+            IrExprKind::VecRepeat {
+                elem: Box::new(IrExpr::new(IrExprKind::Lit(IrLit::Bool(false)), (), None)),
+                len: Box::new(IrExpr::new(IrExprKind::Var("n".into()), (), None)),
+            },
+            (),
+            None,
+        )));
+        let errors = lint_module(&module_with(f), &no_exempt);
+        assert!(errors.iter().any(|e| e.kind == VecUseKind::VecRepeat));
     }
 
     #[test]

@@ -2,6 +2,8 @@
 // @stability: very-unstable
 //! @ai: assisted
 //! Role-separated LWE → SoftSpoken → Ferret-Reg pool over a byte transport.
+//! @volar-allow-vec: runtime-boundary: OT messages, seeds, and output COTs are
+//! runtime-sized host protocol buffers.
 
 use alloc::vec::Vec;
 
@@ -15,7 +17,8 @@ use super::ferret::cot::{
     ferret_receiver_mpcot, ferret_sender_mpcot, sample_seed,
 };
 use super::ferret::mpcot_reg::{
-    mpcot_reg_choice_bits, mpcot_reg_receiver, mpcot_reg_sender, sample_regular_noise,
+    mpcot_reg_choice_bits, mpcot_reg_flatten_outputs, mpcot_reg_receiver_padded,
+    mpcot_reg_sender_padded, sample_regular_noise,
 };
 use super::ferret::pool::{CotPoolReceiver, CotPoolSender, bea95_chosen_bit};
 use super::ferret::spcot::{
@@ -249,8 +252,11 @@ fn stack_setup_receiver_m<R: SpecRng, Io: StackIo>(
         malicious,
     };
     if malicious {
-        // The seed is honest at setup, so the malicious refill check passes.
-        debug_assert!(stack_refill_receiver_malicious(rng, &mut receiver, io));
+        // Do not expose a receiver pool if its consistency check rejects setup.
+        assert!(
+            stack_refill_receiver_malicious(rng, &mut receiver, io),
+            "malicious Ferret consistency check failed during setup"
+        );
     } else {
         stack_refill_receiver(rng, &mut receiver, io);
     }
@@ -336,11 +342,10 @@ pub fn stack_refill_sender_malicious<R: SpecRng, Io: StackIo>(
     let params = sender.params;
     let k = params.k;
     let t = params.t;
-    let splen = params.splen();
     let extra_off = k + t * params.log_splen();
     let raw = io.recv(TAG_FERRET_OPEN);
     let (lpn_seed, choices) = decode_ferret_open(&raw);
-    let (s, mpcot) = mpcot_reg_sender(
+    let (s_padded, mpcot) = mpcot_reg_sender_padded(
         rng,
         &sender.seed.delta,
         params.n,
@@ -354,13 +359,13 @@ pub fn stack_refill_sender_malicious<R: SpecRng, Io: StackIo>(
     let x_star_prime = decode_bools(&io.recv(TAG_FERRET_CHECK_MASK)).0;
     let mut transcript = raw.clone();
     transcript.extend_from_slice(&mpcot_bytes);
-    let lens = alloc::vec![splen; t];
+    let lens = alloc::vec![params.splen(); t];
     let chis = spcot_batched_fs_chis(&lens, &transcript);
-    let vs: alloc::vec::Vec<&[super::ferret::spcot::Block]> =
-        (0..t).map(|l| &s[l * splen..(l + 1) * splen]).collect();
+    let vs: Vec<&[super::ferret::spcot::Block]> = s_padded.iter().map(Vec::as_slice).collect();
     let extra_q = &sender.seed.q[extra_off..extra_off + KAPPA_BITS];
     let hv = spcot_batched_sender_hash_v(&sender.seed.delta, &vs, extra_q, &x_star_prime, &chis);
     io.send(TAG_FERRET_CHECK_HV, &hv);
+    let s = mpcot_reg_flatten_outputs(params.n, t, &s_padded);
     let m = params.seed_cot_count(true);
     let out_full = encode_sender_only(sender, lpn_seed, &s, m);
     sender.seed.q = out_full.seed_q;
@@ -380,13 +385,16 @@ pub fn stack_refill_receiver_malicious<R: SpecRng, Io: StackIo>(
     let k = params.k;
     let n = params.n;
     let t = params.t;
-    let splen = params.splen();
     let extra_off = k + t * params.log_splen();
     // Prepare over the SPCOT COT range.
     let alphas = sample_regular_noise(rng, n, t);
     let mut e = alloc::vec![false; n];
     for (i, &a) in alphas.iter().enumerate() {
-        e[i * splen + a] = true;
+        let (start, end) = params
+            .interval_bounds(i)
+            .expect("regular noise interval index must be valid");
+        debug_assert!(a < end - start);
+        e[start + a] = true;
     }
     let lpn_seed = sample_seed(rng);
     let choices = mpcot_reg_choice_bits(n, t, &alphas, &receiver.seed.u[k..extra_off]);
@@ -394,19 +402,18 @@ pub fn stack_refill_receiver_malicious<R: SpecRng, Io: StackIo>(
     io.send(TAG_FERRET_OPEN, &open_bytes);
     let mpcot_bytes = io.recv(TAG_FERRET_MPCOT);
     let mpcot = decode_mpcot_reg(&mpcot_bytes);
-    let r = mpcot_reg_receiver(n, t, &alphas, &receiver.seed.w[k..extra_off], &mpcot);
+    let r_padded = mpcot_reg_receiver_padded(n, t, &alphas, &receiver.seed.w[k..extra_off], &mpcot);
     // Batched consistency check: send x*′, recv H'(V), verify.
     let mut transcript = open_bytes.clone();
     transcript.extend_from_slice(&mpcot_bytes);
-    let lens = alloc::vec![splen; t];
+    let lens = alloc::vec![params.splen(); t];
     let chis = spcot_batched_fs_chis(&lens, &transcript);
     let extra_r = &receiver.seed.u[extra_off..extra_off + KAPPA_BITS];
     let extra_t = &receiver.seed.w[extra_off..extra_off + KAPPA_BITS];
     let x_star_prime = spcot_batched_masked_choice(&alphas, extra_r, &chis);
     io.send(TAG_FERRET_CHECK_MASK, &encode_bools(&x_star_prime));
     let hv = io.recv(TAG_FERRET_CHECK_HV);
-    let ws: alloc::vec::Vec<&[super::ferret::spcot::Block]> =
-        (0..t).map(|l| &r[l * splen..(l + 1) * splen]).collect();
+    let ws: Vec<&[super::ferret::spcot::Block]> = r_padded.iter().map(Vec::as_slice).collect();
     let hw = spcot_batched_receiver_hash_w(&ws, extra_t, &chis);
     let mut hv_arr = [0u8; 32];
     hv_arr.copy_from_slice(&hv);
@@ -421,6 +428,7 @@ pub fn stack_refill_receiver_malicious<R: SpecRng, Io: StackIo>(
         choices,
     };
     let m = params.seed_cot_count(true);
+    let r = mpcot_reg_flatten_outputs(n, t, &r_padded);
     let rec = encode_receiver_only(receiver, &prep, &r, m);
     receiver.seed = rec.seed;
     receiver.out_x.extend(rec.x);
@@ -712,8 +720,12 @@ mod tests {
     }
 
     #[test]
-    fn two_thread_malicious_pool_refills() {
-        let params = FERRET_REG_TOY;
+    fn two_thread_malicious_pool_refills_with_uneven_intervals() {
+        let params = FerretParams {
+            n: 512,
+            k: 32,
+            t: 7,
+        };
         let (io_s, io_r) = pair_io();
         let need = params.output_cot_count(true) + 20;
         let sender = thread::spawn(move || {

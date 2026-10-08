@@ -38,6 +38,7 @@ export {
   commit,
   doubleVec,
   asRefU8,
+  u16_from_le_bytes,
   u32_from_le_bytes,
   u64_from_le_bytes,
   u128_from_le_bytes,

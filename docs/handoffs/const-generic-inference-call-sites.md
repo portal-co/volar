@@ -1,11 +1,13 @@
-# Task: call-site const-generic inference for static method calls
+# Task: call-site const-generic inference for dyn-lowered functions
 
-> **Status:** scoped, not started. **Base commit:** `1bc0fd7` (strict-TS count 469,
-> TS2554 = 91). **Owner:** pick up when ready. **Effort:** ~1 focused change
-> (a param-type context threaded through the lowering) + the matching logic.
-> **Risk:** medium — touches the shared lowering path used by BOTH the TS and
-> Rust-dyn backends, so verify `volar-spec-dyn --features generated` error count
-> (currently **1463**) does not regress, and the npm build still loads 641 exports.
+> **Status:** implemented for static calls, module-qualified free calls, local
+> call-result type propagation, and unique integer const-generic turbofish
+> values; the remaining TS2554 cases have other causes. Historical base:
+> `1bc0fd7` (469 errors, TS2554 = 91). The original current-tree progression
+> reached 190 errors (TS2554 = 24). With independent Ferret source edits now
+> present in the worktree, fresh-generation strict TS is 196 errors (TS2554 = 18);
+> reference-field inference reduced this updated surface from 202 to 196. The
+> role-separated Ferret APIs are not part of the compiler milestone.
 
 ## Problem
 
@@ -48,57 +50,41 @@ case as param propagation (forwarding a param the caller cannot produce) and
 regressed the strict count 469 → 483. Do not resurrect that approach. The correct
 model is const-value resolution, not param threading.
 
-## Implementation sketch
+## Implementation status
 
-The machinery lives in `crates/compiler/volar-compiler-passes/src/lowering_dyn.rs`.
+The machinery is in `crates/compiler/volar-compiler-passes/src/lowering_dyn.rs`:
 
-1. **Callee-signature registry.** Add a field to `LoweringContext`:
-   ```rust
-   /// Bare fn/static-method name → param types (generic placeholders like `N` intact).
-   pub fn param_tys: BTreeMap<String, Vec<IrType>>,
-   ```
-   Built once in `new_with_deps` from `module.functions` and `module.impls[*].items`
-   (`f.params.iter().map(|p| p.ty.clone())`). (This was written once already and
-   reverted only because the consumer wasn't ready — it compiles fine.)
+- `LoweringContext` stores source signatures for unambiguous inherent static
+  methods (`Type::method`) and uniquely named free functions. Conflicting
+  signatures are marked ambiguous and are not guessed. Bare and module-qualified
+  free-function paths are supported; module qualifiers are not emitted as values.
+  Static signatures retain impl- and method-generic order, so const turbofish
+  arguments can be matched to the exact length parameter. Direct integer module
+  constants are used only when their names are unique.
+- A function-scoped `FnScope` carries source generic parameters and parameter
+  types. Sequential block lowering adds local `let` types from annotations or
+  uniquely-resolved call return types; scopes do not leak bindings out of nested
+  blocks.
+- Argument type recovery covers variables, references/dereferences, casts,
+  struct expressions/fields (including struct generic substitution through
+  references), indexing, array/repeat literals, and tuples. Call return types are
+  recovered only from unambiguous signatures, substituting explicit turbofish
+  generic arguments; this lets later calls infer lengths through local producer
+  bindings.
+- Type unification matches array lengths and nested struct/tuple/vector/reference
+  types. It can infer either a concrete const or forward a differently named
+  in-scope length generic. A call receives injected leading length arguments only
+  when the complete prefix is resolvable, avoiding partial argument shifts.
+- The canonical `EncodedLabelBatch::from_pairs` call now emits
+  `LabelBatchDyn.new(16n, pairs, offset)`; it does not add a spurious witness to
+  `from_pairs` itself. Qualified turbofish calls such as
+  `torus::torus_add::<LOG_M>` now emit the caller witness before source arguments.
 
-2. **Thread the caller's param-type map into expression lowering.** The call-site
-   forwarding lives in `lower_expr_dyn` (~73 call sites) / `lower_block_dyn` (~7).
-   The clean way is to add a small struct threaded alongside `fn_gen`:
-   ```rust
-   struct FnScope<'a> { gen: &'a [IrGenericParam], var_tys: BTreeMap<String, IrType> }
-   ```
-   where `var_tys` is seeded from `f.params` (and `let`-bindings with annotations as
-   the block is lowered). To avoid editing 73 sites by hand, either:
-   - (preferred) bundle `gen` + `var_tys` into one new context type and rename the
-     parameter, so the mechanical change is a single type substitution; or
-   - keep `lower_expr_dyn`'s signature and store the current fn's param map in a
-     field the forwarding reads (least invasive, but the context is shared across
-     functions, so it must be set/restored per function — error-prone).
-
-3. **Solve the const generic at the static call.** In the call-forwarding block
-   (the `IrExprKind::Call` handling that already does turbofish/static forwarding,
-   ~line 2854-2930), for a 2-segment `Type::method(args)` whose head is a
-   dyn-lowered generic struct and whose method has leading length params
-   (`ctx.get_fn_length_params(method)`):
-   - Get the callee's param types from `fn_param_tys[method]`.
-   - The callee's leading length params correspond to the *first* `k` params after
-     lowering, but the *source* params (in `fn_param_tys`) do NOT include them — so
-     match `args[i]` against source `params[i]` for the source arity.
-   - For each source param type that mentions a length generic `N` (e.g.
-     `IrType::Array { len: ArrayLength::TypeParam("N"), .. }` or a struct
-     `LabelPair<N>`), and each corresponding arg whose type is known (a `Var` resolved
-     via `var_tys`, an array literal `[..; K]`, or a `Repeat` with a const count),
-     unify to get `N = K`.
-   - Emit the leading length arg as a literal `IrExpr::Lit(Usize(K))` (or the
-     resolved expr) instead of a `Var`.
-
-4. **Unification helper.** A small `fn unify_len(param_ty: &IrType, arg_ty: &IrType,
-   out: &mut BTreeMap<String, usize>)` that walks both types in parallel and, where
-   `param_ty` has `ArrayLength::TypeParam(N)` / `ArrayLength::Const(k)` mismatches,
-   records `N -> k` when `arg_ty` carries a `Const(k)`. Recurse into `Array.elem`,
-   `Vector.elem`, `Struct.type_args`, `Reference.elem`, `Tuple`. (Note: `Vec<E>` may
-   parse as `Struct{Custom("Vec"), [E]}` — reuse the `array_like_elem` helper added
-   in the placeholder-inference work.)
+The registries and scope are broader than the original static-method-only sketch:
+unique free-function signatures are eligible too. Still unsupported: instance-
+method return inference, call-result generic inference from argument types when
+turbofish is absent, ambiguous signatures, and projection-based consts. Do not
+guess in these cases.
 
 ## Verification loop (same as the rest of this work)
 
@@ -110,12 +96,23 @@ cp ../volar-spec-ts/generated.ts src/.chk.ts && sed -i '' '/^\/\/ @ts-nocheck/d'
 ../../node_modules/.bin/tsc --noEmit --strict --moduleResolution bundler --target esnext --module esnext src/.chk.ts 2>&1 | grep -cE 'error TS'
 rm -f src/.chk.ts
 ```
-Confirm: total drops from 469, TS2554 drops from 91, AND
-`cargo build -p volar-spec-dyn --features generated` stays at 1463 errors (no
-regression), `npm test --workspace @portal-solutions/volar-spec-ts` still loads 641
-exports, and `cargo xtask check-specs` reports 0 stale.
+Verified: `cargo test -p volar-compiler-passes --features parsing --lib` passes
+(61 tests, including direct const-length inference, qualified-call forwarding,
+local producer propagation, reference-field inference, shadowed-name
+invalidation, unique/ambiguous const resolution, and trait-path
+non-misclassification regressions);
+`cargo xtask gen-specs` followed by `cargo xtask check-specs` reports all four
+artifacts fresh. On this worktree, generated TypeScript remains red at 196
+errors (TS2554 = 18); an A/B run with only the six reference-field call witnesses
+removed reports 202 errors (TS2554 = 24). The six-error delta is entirely
+TS2554. Independent uncommitted Ferret source changes are preserved and excluded
+from the compiler commit. `cargo check -p volar-spec-dyn --features
+generated` still fails with its pre-existing 1486-error generated-Rust surface;
+the Rust diagnostic count was unchanged by the forwarding work. Runtime
+export-count checks have not been rerun for this implementation.
 
-Watch for: `LabelBatchDyn.new(16, pairs, offset)` should appear; the
+Watch for: `LabelBatchDyn.new(16, pairs, offset)` and
+`BavcDyn.commit(ctx, 32, ...)` should receive their concrete witnesses; the
 `from_pairs`-style callers should NOT gain a spurious `n` param.
 
 ## Out of scope

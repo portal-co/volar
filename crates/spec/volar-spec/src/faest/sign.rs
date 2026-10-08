@@ -55,7 +55,7 @@ use sha3::{
 };
 
 use super::{
-    aes::encrypt_block as aes128_encrypt,
+    aes::encrypt_block,
     bavc::{Bavc, BavcCommitment, BavcOpening},
     convert_to_vole::{BigVoleProver, concat_small_voles, convert_to_vole},
     leaf_commit::EmLeafCommit,
@@ -124,10 +124,12 @@ pub struct FaestSignature {
 /// `sk ← {0,1}^λ` uniformly; `pk = AES_{sk}(0^128)`.
 pub fn keygen(rng: &mut impl SpecRng) -> (FaestSecretKey, FaestPublicKey) {
     let mut sk = [0u8; LAMBDA_BYTES];
-    for b in sk.iter_mut() {
-        *b = rng.next_u8();
+    // Index-based fill rather than `sk.iter_mut()`: the LIR lowering has no
+    // fixed-array iter_mut idiom, and the indexed form lowers directly.
+    for i in 0..LAMBDA_BYTES {
+        sk[i] = rng.next_u8();
     }
-    let pk = aes128_encrypt(&sk, &[0u8; LAMBDA_BYTES]);
+    let pk = encrypt_block(&sk, &[0u8; LAMBDA_BYTES]);
     (FaestSecretKey(sk), FaestPublicKey(pk))
 }
 
@@ -147,10 +149,10 @@ pub fn sign(
     // ── 1. Derive IV ────────────────────────────────────────────────────────
     // IV = AES_{iv_seed}(counter=0) as a simple PRF.  Real FAEST uses a
     // dedicated SHAKE-based derivation; this is a structural stand-in.
-    let iv: [u8; LAMBDA_BYTES] = aes128_encrypt(&iv_seed, &[0u8; LAMBDA_BYTES]);
+    let iv: [u8; LAMBDA_BYTES] = encrypt_block(&iv_seed, &[0u8; LAMBDA_BYTES]);
 
     // ── 2. Derive BAVC root seed from (sk, iv) ───────────────────────────
-    let r: [u8; LAMBDA_BYTES] = aes128_encrypt(&sk.0, &iv);
+    let r: [u8; LAMBDA_BYTES] = encrypt_block(&sk.0, &iv);
 
     // ── 3. BAVC commit ───────────────────────────────────────────────────────
     let commitment: BavcCommitment<COM_BYTES> =
@@ -191,7 +193,7 @@ pub fn sign(
     let _ = opening; // structural — used implicitly below for signature bytes
 
     // ── 7. ConvertToVOLE (prover: all seeds present) ──────────────────────────
-    let mut sub_voles = Vec::with_capacity(TAU);
+    let mut sub_voles: Vec<super::convert_to_vole::ConvertOutput> = Vec::with_capacity(TAU);
     for i in 0..TAU {
         let seeds_i: Vec<Option<[u8; LAMBDA_BYTES]>> = (0..SUB_VOLE_N)
             .map(|j| Some(commitment.seeds[i * SUB_VOLE_N + j]))
@@ -284,7 +286,7 @@ pub fn verify(pk: &FaestPublicKey, message: &[u8], sig: &FaestSignature) -> bool
     };
 
     // ── 4. ConvertToVOLE (verifier: one seed missing per sub-VOLE) ──────────
-    let mut sub_voles_v = Vec::with_capacity(TAU);
+    let mut sub_voles_v: Vec<super::convert_to_vole::ConvertOutput> = Vec::with_capacity(TAU);
     for i in 0..TAU {
         // Verifier seeds: apply the Proposition 5.2 permutation.
         // sd'_j = sd_{j XOR delta_i}; sd'_0 = None (hidden).
@@ -370,12 +372,15 @@ pub fn verify(pk: &FaestPublicKey, message: &[u8], sig: &FaestSignature) -> bool
 /// FAEST uses a more precise domain-separated expansion; this is structurally
 /// equivalent for the round-trip tests.
 fn expand_challenge_to_deltas(chall_1: &[u8], tau: usize, n: usize) -> Vec<usize> {
-    (0..tau)
-        .map(|i| {
-            let byte = chall_1[i % chall_1.len()] as usize;
-            byte % n
-        })
-        .collect()
+    // Bounded loop rather than `(0..tau).map(..).collect()`: the LIR
+    // iterator-chain lowering needs a concrete range end, and `tau` is a
+    // runtime param here (the const-generic `TAU` erases at the call).
+    let mut out: Vec<usize> = Vec::with_capacity(tau);
+    for i in 0..tau {
+        let byte = chall_1[i % chall_1.len()] as usize;
+        out.push(byte % n);
+    }
+    out
 }
 
 /// Re-expand the GGM tree from root seed `r` to get all `total_leaves * 2 - 1`
@@ -461,7 +466,7 @@ mod tests {
         let mut rng = TestRng(0xDEADBEEFCAFEBABE);
         let (sk, pk) = keygen(&mut rng);
         // pk = AES_{sk}(0^128)
-        let expected = aes128_encrypt(&sk.0, &[0u8; LAMBDA_BYTES]);
+        let expected = encrypt_block(&sk.0, &[0u8; LAMBDA_BYTES]);
         assert_eq!(pk.0, expected);
     }
 

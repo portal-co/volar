@@ -128,16 +128,25 @@ pub fn aes_ctr_prg(
     let n_full = out_bytes / BLOCK;
     let rem = out_bytes % BLOCK;
 
-    let mut out = alloc::vec::Vec::with_capacity(out_bytes);
+    let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(out_bytes);
+    // Explicit element pushes rather than `extend_from_slice`: the LIR
+    // lowering has no slice-of-array extension idiom, and the byte-wise form
+    // keeps each counter block's bytes visible to the loop machinery.
     for i in 0..n_full {
         let block_in = add_to_lower_word(&iv_tweaked, i as u32);
         let ct = encrypt_block(seed, &block_in);
-        out.extend_from_slice(&ct);
+        for b in 0..BLOCK {
+            out.push(ct[b]);
+        }
     }
     if rem > 0 {
         let block_in = add_to_lower_word(&iv_tweaked, n_full as u32);
         let ct = encrypt_block(seed, &block_in);
-        out.extend_from_slice(&ct[..rem]);
+        let mut b = 0;
+        while b < rem {
+            out.push(ct[b]);
+            b += 1;
+        }
     }
     out
 }

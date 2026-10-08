@@ -13,10 +13,15 @@ use std::{string::String, vec::Vec};
 #[cfg(not(feature = "std"))]
 use alloc::collections::{BTreeMap as HashMap, BTreeSet as HashSet, VecDeque};
 #[cfg(not(feature = "std"))]
+use alloc::format;
+#[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
+#[cfg(feature = "std")]
+use std::format;
 
 use crate::ir::{
-    IrBlock, IrExpr, IrExprKind, IrFunction, IrImplItem, IrModule, IrStmt, IrStmtKind, MethodKind,
+    IrBlock, IrExpr, IrExprKind, IrFunction, IrImplItem, IrIterChain, IrModule, IrStmt, IrStmtKind,
+    IterChainSource, IterStep, IterTerminal, MethodKind,
 };
 use crate::printer_ts::is_namespace_prefix;
 
@@ -55,12 +60,24 @@ pub fn compute_reachable(module: &IrModule<IrFunction>, seeds: &[&str]) -> Reach
     for imp in &module.impls {
         for item in &imp.items {
             if let IrImplItem::Method(func) = item {
+                let class_name = crate::printer_ts::self_ty_name(&imp.self_ty);
+                let qualified_name = format!("{class_name}.{}", func.name);
                 let fn_callees = collect_callees_fn(func, &name_to_idx);
                 let method_calls = collect_method_calls_fn(func);
-                let entry = method_to_fn_callees.entry(func.name.clone()).or_default();
-                entry.extend(fn_callees);
+                method_to_fn_callees
+                    .entry(func.name.clone())
+                    .or_default()
+                    .extend(fn_callees.iter().copied());
+                method_to_fn_callees
+                    .entry(qualified_name.clone())
+                    .or_default()
+                    .extend(fn_callees);
                 method_to_method_calls
                     .entry(func.name.clone())
+                    .or_default()
+                    .extend(method_calls.iter().cloned());
+                method_to_method_calls
+                    .entry(qualified_name)
                     .or_default()
                     .extend(method_calls);
             }
@@ -128,11 +145,69 @@ pub fn compute_reachable(module: &IrModule<IrFunction>, seeds: &[&str]) -> Reach
         }
     }
 
-    // Collect method names called by all reachable standalone functions.
-    let method_names: HashSet<String> = visited
+    // Collect methods called by reachable standalone functions. Methods called
+    // from a reachable impl method are followed within that impl, keeping helper
+    // methods such as `splen` when a reachable `log_splen` calls them without
+    // pulling in same-named methods from unrelated types.
+    let mut method_names: HashSet<String> = visited
         .iter()
         .flat_map(|&idx| collect_method_calls_fn(&module.functions[idx]))
         .collect();
+    let mut methods_by_class: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut method_calls_by_key: HashMap<String, Vec<String>> = HashMap::new();
+    for imp in &module.impls {
+        let class_name = crate::printer_ts::self_ty_name(&imp.self_ty);
+        for item in &imp.items {
+            let IrImplItem::Method(func) = item else {
+                continue;
+            };
+            methods_by_class
+                .entry(class_name.clone())
+                .or_default()
+                .insert(func.name.clone());
+            method_calls_by_key.insert(
+                format!("{class_name}.{}", func.name),
+                collect_method_calls_fn(func),
+            );
+        }
+    }
+
+    let mut method_queue = VecDeque::new();
+    for (class_name, names) in &methods_by_class {
+        for name in names {
+            let key = format!("{class_name}.{name}");
+            if (method_names.contains(name) || method_names.contains(&key))
+                && method_names.insert(key.clone())
+            {
+                method_queue.push_back(key);
+            }
+        }
+    }
+    while let Some(method_key) = method_queue.pop_front() {
+        let Some((class_name, _)) = method_key.split_once('.') else {
+            continue;
+        };
+        let Some(callees) = method_calls_by_key.get(&method_key) else {
+            continue;
+        };
+        for callee in callees {
+            let callee_key = if callee.contains('.') {
+                callee.clone()
+            } else if methods_by_class
+                .get(class_name)
+                .is_some_and(|names| names.contains(callee))
+            {
+                format!("{class_name}.{callee}")
+            } else {
+                continue;
+            };
+            if method_calls_by_key.contains_key(&callee_key)
+                && method_names.insert(callee_key.clone())
+            {
+                method_queue.push_back(callee_key);
+            }
+        }
+    }
 
     let mut fns: HashSet<String> = visited
         .into_iter()
@@ -174,6 +249,14 @@ fn collect_block(block: &IrBlock, idx_map: &HashMap<&str, usize>, out: &mut Vec<
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 collect_expr(e, idx_map, out);
             }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_expr(init, idx_map, out);
+                }
+                collect_expr(else_expr, idx_map, out);
+            }
             _ => {}
         }
     }
@@ -187,6 +270,14 @@ fn collect_method_names_block(block: &IrBlock, out: &mut Vec<String>) {
         match &stmt.kind {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 collect_method_names_expr(e, out);
+            }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_method_names_expr(init, out);
+                }
+                collect_method_names_expr(else_expr, out);
             }
             _ => {}
         }
@@ -232,6 +323,7 @@ fn collect_expr(expr: &IrExpr, idx_map: &HashMap<&str, usize>, out: &mut Vec<usi
             }
         }
         IrExprKind::Block(b) => collect_block(b, idx_map, out),
+        IrExprKind::IterPipeline(chain) => collect_iter_chain(chain, idx_map, out),
         IrExprKind::If {
             cond,
             then_branch,
@@ -296,7 +388,7 @@ fn collect_expr(expr: &IrExpr, idx_map: &HashMap<&str, usize>, out: &mut Vec<usi
                 collect_expr(el, idx_map, out);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_expr(elem, idx_map, out);
             collect_expr(len, idx_map, out);
         }
@@ -352,12 +444,26 @@ fn collect_method_names_expr(expr: &IrExpr, out: &mut Vec<String>) {
             }
         }
         IrExprKind::Call { func, args } => {
+            if let IrExprKind::Path { segments, .. } = &func.kind {
+                let path: Vec<&str> = segments
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|segment| !is_namespace_prefix(segment))
+                    .collect();
+                if path.len() >= 2 {
+                    // Qualified paths such as `Factory::make()` are associated
+                    // functions, not receiver method calls. Record a class-qualified
+                    // name so same-named methods on unrelated types stay unreachable.
+                    out.push(format!("{}.{}", path[path.len() - 2], path[path.len() - 1]));
+                }
+            }
             collect_method_names_expr(func, out);
             for a in args {
                 collect_method_names_expr(a, out);
             }
         }
         IrExprKind::Block(b) => collect_method_names_block(b, out),
+        IrExprKind::IterPipeline(chain) => collect_iter_chain_method_names(chain, out),
         IrExprKind::If {
             cond,
             then_branch,
@@ -424,7 +530,7 @@ fn collect_method_names_expr(expr: &IrExpr, out: &mut Vec<String>) {
                 collect_method_names_expr(el, out);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_method_names_expr(elem, out);
             collect_method_names_expr(len, out);
         }
@@ -460,6 +566,72 @@ fn collect_method_names_expr(expr: &IrExpr, out: &mut Vec<String>) {
             collect_method_names_expr(body, out);
         }
         _ => {}
+    }
+}
+
+fn collect_iter_chain(chain: &IrIterChain, idx_map: &HashMap<&str, usize>, out: &mut Vec<usize>) {
+    match &chain.source {
+        IterChainSource::Method { collection, .. } => collect_expr(collection, idx_map, out),
+        IterChainSource::Range { start, end, .. } => {
+            collect_expr(start, idx_map, out);
+            collect_expr(end, idx_map, out);
+        }
+        IterChainSource::Zip { left, right } => {
+            collect_iter_chain(left, idx_map, out);
+            collect_iter_chain(right, idx_map, out);
+        }
+    }
+
+    for step in &chain.steps {
+        match step {
+            IterStep::Map { body, .. }
+            | IterStep::Filter { body, .. }
+            | IterStep::FilterMap { body, .. }
+            | IterStep::FlatMap { body, .. } => collect_expr(body, idx_map, out),
+            IterStep::Take { count } | IterStep::Skip { count } => {
+                collect_expr(count, idx_map, out);
+            }
+            IterStep::Chain { other } => collect_iter_chain(other, idx_map, out),
+            IterStep::Enumerate => {}
+        }
+    }
+
+    if let IterTerminal::Fold { init, body, .. } = &chain.terminal {
+        collect_expr(init, idx_map, out);
+        collect_expr(body, idx_map, out);
+    }
+}
+
+fn collect_iter_chain_method_names(chain: &IrIterChain, out: &mut Vec<String>) {
+    match &chain.source {
+        IterChainSource::Method { collection, .. } => collect_method_names_expr(collection, out),
+        IterChainSource::Range { start, end, .. } => {
+            collect_method_names_expr(start, out);
+            collect_method_names_expr(end, out);
+        }
+        IterChainSource::Zip { left, right } => {
+            collect_iter_chain_method_names(left, out);
+            collect_iter_chain_method_names(right, out);
+        }
+    }
+
+    for step in &chain.steps {
+        match step {
+            IterStep::Map { body, .. }
+            | IterStep::Filter { body, .. }
+            | IterStep::FilterMap { body, .. }
+            | IterStep::FlatMap { body, .. } => collect_method_names_expr(body, out),
+            IterStep::Take { count } | IterStep::Skip { count } => {
+                collect_method_names_expr(count, out);
+            }
+            IterStep::Chain { other } => collect_iter_chain_method_names(other, out),
+            IterStep::Enumerate => {}
+        }
+    }
+
+    if let IterTerminal::Fold { init, body, .. } = &chain.terminal {
+        collect_method_names_expr(init, out);
+        collect_method_names_expr(body, out);
     }
 }
 

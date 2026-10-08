@@ -92,6 +92,29 @@ pub struct BavcOpening<const COM_BYTES: usize> {
     pub nodes: Vec<(usize, [u8; LAMBDA_BYTES])>,
 }
 
+fn collect_open_nodes_walk(
+    node: usize,
+    hidden: &[bool],
+    tree: &[[u8; LAMBDA_BYTES]],
+    leaf_count: usize,
+    out: &mut Vec<(usize, [u8; LAMBDA_BYTES])>,
+) {
+    // If this node is fully opened, emit its seed and stop.
+    if !hidden[node] {
+        out.push((node, tree[node]));
+        return;
+    }
+    // Else recurse into children (we're hidden = some descendant
+    // is unrevealed). Don't descend below leaves.
+    if node >= leaf_count - 1 {
+        // Hidden leaf — nothing to emit; verifier gets its
+        // commitment via `hidden_commits`.
+        return;
+    }
+    collect_open_nodes_walk(2 * node + 1, hidden, tree, leaf_count, out);
+    collect_open_nodes_walk(2 * node + 2, hidden, tree, leaf_count, out);
+}
+
 /// Stateless BAVC over a leaf-commit choice `L`.
 ///
 /// Typical use: `<BavcCommitment<EmLeafCommit, 32>>::commit(...)`.
@@ -158,8 +181,8 @@ where
         // across the BFS layout. We use the simple linear layout
         // leaf k at tree position (leaf_count - 1 + k), and map
         // (i, j) -> k = i * n + j. Will need swapping for KAT.
-        let mut seeds = Vec::with_capacity(leaf_count);
-        let mut commitments = Vec::with_capacity(leaf_count);
+        let mut seeds: Vec<[u8; LAMBDA_BYTES]> = Vec::with_capacity(leaf_count);
+        let mut commitments: Vec<[u8; COM_BYTES]> = Vec::with_capacity(leaf_count);
         for i in 0..tau {
             for j in 0..n {
                 let leaf_k = i * n + j;
@@ -212,7 +235,8 @@ where
         n: usize,
     ) -> BavcOpening<COM_BYTES> {
         assert_eq!(deltas.len(), tau, "BAVC: deltas.len() must equal tau");
-        for (i, &d) in deltas.iter().enumerate() {
+        for i in 0..tau {
+            let d = deltas[i];
             assert!(d < n, "BAVC: deltas[{}] = {} out of range (n={})", i, d, n);
         }
         let leaf_count = tau * n;
@@ -220,13 +244,15 @@ where
 
         // Mark leaves that are hidden.
         let mut hidden = vec![false; total_nodes];
-        for (i, &d) in deltas.iter().enumerate() {
-            let leaf_k = i * n + d;
+        for i in 0..tau {
+            let leaf_k = i * n + deltas[i];
             let tree_pos = leaf_count - 1 + leaf_k;
             hidden[tree_pos] = true;
         }
         // Propagate "any descendant hidden" upward.
-        for node in (0..(leaf_count - 1)).rev() {
+        let mut node = leaf_count - 1;
+        while node > 0 {
+            node -= 1;
             let left = 2 * node + 1;
             let right = 2 * node + 2;
             hidden[node] = hidden[left] || hidden[right];
@@ -289,45 +315,27 @@ where
         tau: usize,
         n: usize,
     ) -> Vec<(usize, [u8; LAMBDA_BYTES])> {
+        assert_eq!(deltas.len(), tau, "BAVC: deltas.len() must equal tau");
         let leaf_count = tau * n;
         let total_nodes = 2 * leaf_count - 1;
         let mut hidden = vec![false; total_nodes];
-        for (i, &d) in deltas.iter().enumerate() {
-            let leaf_k = i * n + d;
+        for i in 0..tau {
+            let leaf_k = i * n + deltas[i];
             let tree_pos = leaf_count - 1 + leaf_k;
             hidden[tree_pos] = true;
         }
-        for node in (0..(leaf_count - 1)).rev() {
+        let mut node = leaf_count - 1;
+        while node > 0 {
+            node -= 1;
             hidden[node] = hidden[2 * node + 1] || hidden[2 * node + 2];
         }
 
         // Collect the highest non-hidden nodes — i.e. nodes whose entire
-        // subtree is opened. Walk top-down; for each internal node, if
-        // it is hidden we recurse, otherwise we emit its seed and stop.
+        // subtree is opened. Walk top-down; for each internal node, if it is
+        // hidden we recurse, otherwise we emit its seed and stop. Keeping this
+        // helper at module scope also makes it visible to the TS spec backend.
         let mut out: Vec<(usize, [u8; LAMBDA_BYTES])> = Vec::new();
-        fn walk(
-            node: usize,
-            hidden: &[bool],
-            tree: &[[u8; LAMBDA_BYTES]],
-            leaf_count: usize,
-            out: &mut Vec<(usize, [u8; LAMBDA_BYTES])>,
-        ) {
-            // If this node is fully opened, emit its seed and stop.
-            if !hidden[node] {
-                out.push((node, tree[node]));
-                return;
-            }
-            // Else recurse into children (we're hidden = some descendant
-            // is unrevealed). Don't descend below leaves.
-            if node >= leaf_count - 1 {
-                // Hidden leaf — nothing to emit; verifier gets its
-                // commitment via `hidden_commits`.
-                return;
-            }
-            walk(2 * node + 1, hidden, tree, leaf_count, out);
-            walk(2 * node + 2, hidden, tree, leaf_count, out);
-        }
-        walk(0, &hidden, tree, leaf_count, &mut out);
+        collect_open_nodes_walk(0, &hidden, tree, leaf_count, &mut out);
         out
     }
 
@@ -341,7 +349,7 @@ where
     /// Returns `Some(seeds)` on success, `None` if the recomputed root
     /// doesn't match `expected`.
     pub fn reconstruct<D: Digest>(
-        nodes: &[(usize, [u8; LAMBDA_BYTES])],
+        nodes: &Vec<(usize, [u8; LAMBDA_BYTES])>,
         hidden_commits: &[[u8; COM_BYTES]],
         deltas: &[usize],
         iv: &[u8; 16],
@@ -349,17 +357,25 @@ where
         tau: usize,
         n: usize,
     ) -> Option<Vec<[u8; LAMBDA_BYTES]>> {
+        assert_eq!(deltas.len(), tau, "BAVC: deltas.len() must equal tau");
+        assert_eq!(
+            hidden_commits.len(),
+            tau,
+            "BAVC: hidden_commits.len() must equal tau"
+        );
         let leaf_count = tau * n;
         let total_nodes = 2 * leaf_count - 1;
 
         // Mark hidden nodes (same logic as open).
         let mut hidden = vec![false; total_nodes];
-        for (i, &d) in deltas.iter().enumerate() {
-            let leaf_k = i * n + d;
+        for i in 0..tau {
+            let leaf_k = i * n + deltas[i];
             let tree_pos = leaf_count - 1 + leaf_k;
             hidden[tree_pos] = true;
         }
-        for node in (0..(leaf_count - 1)).rev() {
+        let mut node = leaf_count - 1;
+        while node > 0 {
+            node -= 1;
             hidden[node] = hidden[2 * node + 1] || hidden[2 * node + 2];
         }
 
@@ -420,11 +436,18 @@ where
         }
         let root = h.finalize().to_vec();
 
-        if root.as_slice() == expected_root {
-            Some(leaf_seeds)
-        } else {
-            None
+        // Explicit element comparison: slice `==` has no LIR lowering (a
+        // slice param is a bare pointer; a Vec-derived slice carries its
+        // handle), so compare length and elements directly.
+        let mut matches = root.len() == expected_root.len();
+        let mut k = 0;
+        while k < root.len() {
+            if root[k] != expected_root[k] {
+                matches = false;
+            }
+            k += 1;
         }
+        if matches { Some(leaf_seeds) } else { None }
     }
 }
 

@@ -9,7 +9,7 @@
 //
 // Run via `npm test` (after `npm run build` has produced dist/).
 
-import { wrappingAdd, wrappingSub, wrappingNeg } from "../dist/index.js";
+import { wrappingAdd, wrappingSub, wrappingNeg, u16_from_le_bytes } from "../dist/index.js";
 
 let failures = 0;
 
@@ -51,6 +51,9 @@ check(
 const U128_MAX = (1n << 128n) - 1n;
 check("u128 add wraps", wrappingAdd(U128_MAX, 1n, 128), 0n);
 check("u128 sub wraps", wrappingSub(0n, 1n, 128), U128_MAX);
+
+// Little-endian conversion used by Rust's u16::from_le_bytes.
+check("u16 from_le_bytes", u16_from_le_bytes([0x34n, 0x12n]), 0x1234n);
 
 // number-typed inputs (callers may pass either representation).
 check("number inputs", wrappingAdd(250, 10, 8), 4n);

@@ -4,8 +4,10 @@
 //! Regular-indices MPCOT (Ferret §5, last paragraph).
 //!
 //! Noise is regular: exactly one puncture in each interval
-//! `U_i = [i·n/t, (i+1)·n/t)`. Instantiated as `t` independent SPCOT calls
-//! of length `n/t`, concatenated.
+//! `U_i = [floor(i·n/t), floor((i+1)·n/t))`. Each interval is padded to the
+//! next power of two for its SPCOT call; padded leaves are discarded.
+//! @volar-allow-vec: runtime-boundary: MPCOT rows, punctures, and batched
+//! transcript material have sizes determined by runtime Ferret parameters.
 
 use alloc::vec::Vec;
 
@@ -15,6 +17,30 @@ use super::spcot::{
     spcot_receiver_extend, spcot_sender_extend,
 };
 use crate::SpecRng;
+
+fn interval_bounds(n: usize, t: usize, index: usize) -> (usize, usize) {
+    let n = n as u128;
+    let t = t as u128;
+    let index = index as u128;
+    ((index * n / t) as usize, ((index + 1) * n / t) as usize)
+}
+
+fn padded_interval_len(n: usize, t: usize) -> usize {
+    n.div_ceil(t)
+        .checked_next_power_of_two()
+        .expect("regular MPCOT interval length overflow")
+}
+
+fn sample_below<R: SpecRng>(rng: &mut R, upper: usize) -> usize {
+    let upper = u32::try_from(upper).expect("regular MPCOT interval exceeds RNG range");
+    let zone = u32::MAX - (u32::MAX % upper);
+    loop {
+        let value = rng.next_u32();
+        if value < zone {
+            return (value % upper) as usize;
+        }
+    }
+}
 
 /// Sender message: one SPCOT transcript per interval.
 #[derive(Clone)]
@@ -31,8 +57,8 @@ pub fn mpcot_reg_sender<R: SpecRng>(
     cot_q: &[Block],
     choices: &[bool],
 ) -> (Vec<Block>, MpcotRegSenderMsg) {
-    debug_assert!(n % t == 0);
-    let splen = n / t;
+    debug_assert!(t > 0 && n >= t);
+    let splen = padded_interval_len(n, t);
     let h = splen.trailing_zeros() as usize;
     debug_assert_eq!(cot_q.len(), t * h);
     debug_assert_eq!(choices.len(), t * h);
@@ -42,15 +68,44 @@ pub fn mpcot_reg_sender<R: SpecRng>(
     for i in 0..t {
         let q = &cot_q[i * h..(i + 1) * h];
         let ch = &choices[i * h..(i + 1) * h];
+        let (start, end) = interval_bounds(n, t, i);
         let (v, msg) = spcot_sender_extend(rng, delta, splen, q, ch);
-        s.extend(v);
+        s.extend(v.into_iter().take(end - start));
         blocks.push(msg);
     }
     (s, MpcotRegSenderMsg { blocks })
 }
 
-/// Regular MPCOT receiver. `alphas[i]` is the puncture inside interval `i`
-/// (global index = `i·splen + alphas[i]`).
+/// Sender MPCOT outputs before each interval's padded leaves are discarded.
+/// Malicious-consistency checks use these complete SPCOT vectors.
+pub fn mpcot_reg_sender_padded<R: SpecRng>(
+    rng: &mut R,
+    delta: &Block,
+    n: usize,
+    t: usize,
+    cot_q: &[Block],
+    choices: &[bool],
+) -> (Vec<Vec<Block>>, MpcotRegSenderMsg) {
+    debug_assert!(t > 0 && n >= t);
+    let splen = padded_interval_len(n, t);
+    let h = splen.trailing_zeros() as usize;
+    debug_assert_eq!(cot_q.len(), t * h);
+    debug_assert_eq!(choices.len(), t * h);
+
+    let mut outputs = Vec::with_capacity(t);
+    let mut blocks = Vec::with_capacity(t);
+    for i in 0..t {
+        let q = &cot_q[i * h..(i + 1) * h];
+        let ch = &choices[i * h..(i + 1) * h];
+        let (v, msg) = spcot_sender_extend(rng, delta, splen, q, ch);
+        outputs.push(v);
+        blocks.push(msg);
+    }
+    (outputs, MpcotRegSenderMsg { blocks })
+}
+
+/// Regular MPCOT receiver. `alphas[i]` is the puncture's local offset inside
+/// interval `i` (global index = `interval_bounds(n, t, i).0 + alphas[i]`).
 pub fn mpcot_reg_receiver(
     n: usize,
     t: usize,
@@ -59,20 +114,61 @@ pub fn mpcot_reg_receiver(
     msg: &MpcotRegSenderMsg,
 ) -> Vec<Block> {
     debug_assert_eq!(alphas.len(), t);
-    let splen = n / t;
+    debug_assert!(t > 0 && n >= t);
+    let splen = padded_interval_len(n, t);
     let h = splen.trailing_zeros() as usize;
     let mut r = Vec::with_capacity(n);
     for i in 0..t {
+        let (start, end) = interval_bounds(n, t, i);
         let t_rows = &cot_t[i * h..(i + 1) * h];
         let w = spcot_receiver_extend(alphas[i], splen, t_rows, &msg.blocks[i]);
-        r.extend(w);
+        r.extend(w.into_iter().take(end - start));
     }
     r
 }
 
+/// Receiver MPCOT outputs before each interval's padded leaves are discarded.
+/// Malicious-consistency checks use these complete SPCOT vectors.
+pub fn mpcot_reg_receiver_padded(
+    n: usize,
+    t: usize,
+    alphas: &[usize],
+    cot_t: &[Block],
+    msg: &MpcotRegSenderMsg,
+) -> Vec<Vec<Block>> {
+    debug_assert_eq!(alphas.len(), t);
+    debug_assert!(t > 0 && n >= t);
+    let splen = padded_interval_len(n, t);
+    let h = splen.trailing_zeros() as usize;
+    let mut outputs = Vec::with_capacity(t);
+    for i in 0..t {
+        let t_rows = &cot_t[i * h..(i + 1) * h];
+        outputs.push(spcot_receiver_extend(
+            alphas[i],
+            splen,
+            t_rows,
+            &msg.blocks[i],
+        ));
+    }
+    outputs
+}
+
+/// Flatten padded MPCOT buckets, discarding leaves outside each regular interval.
+pub fn mpcot_reg_flatten_outputs(n: usize, t: usize, buckets: &[Vec<Block>]) -> Vec<Block> {
+    debug_assert_eq!(buckets.len(), t);
+    let mut output = Vec::with_capacity(n);
+    for (index, bucket) in buckets.iter().enumerate() {
+        let (start, end) = interval_bounds(n, t, index);
+        debug_assert!(bucket.len() >= end - start);
+        output.extend(bucket.iter().take(end - start).copied());
+    }
+    output
+}
+
 /// Build receiver choice bits for regular punctures `alphas`.
 pub fn mpcot_reg_choice_bits(n: usize, t: usize, alphas: &[usize], cot_r: &[bool]) -> Vec<bool> {
-    let splen = n / t;
+    debug_assert!(t > 0 && n >= t);
+    let splen = padded_interval_len(n, t);
     let h = splen.trailing_zeros() as usize;
     let mut out = Vec::with_capacity(t * h);
     for i in 0..t {
@@ -84,15 +180,18 @@ pub fn mpcot_reg_choice_bits(n: usize, t: usize, alphas: &[usize], cot_r: &[bool
 
 /// Sample a regular weight-`t` noise vector: one uniform index per interval.
 pub fn sample_regular_noise<R: SpecRng>(rng: &mut R, n: usize, t: usize) -> Vec<usize> {
-    let splen = n / t;
-    (0..t).map(|_| (rng.next_u32() as usize) % splen).collect()
+    debug_assert!(t > 0 && n >= t);
+    (0..t)
+        .map(|i| {
+            let (start, end) = interval_bounds(n, t, i);
+            sample_below(rng, end - start)
+        })
+        .collect()
 }
 
-/// Malicious-security batched consistency check over the `t` SPCOT executions
-/// that make up one regular MPCOT (Ferret Appendix C). `s` is the sender's
-/// concatenated MPCOT output, `r` the receiver's, `alphas` the receiver's
-/// punctures, and `extra_q`/`extra_r`/`extra_t` are κ consistent extra COTs
-/// (`t_i = q_i ⊕ r_i·Δ`). Returns `true` iff the receiver accepts.
+/// Batched consistency check over the emitted (unpadded) regular-MPCOT
+/// outputs. Prefer [`mpcot_reg_consistency_check_padded`] when the full SPCOT
+/// vectors are available, so discarded leaves are checked too.
 pub fn mpcot_reg_consistency_check(
     delta: &Block,
     s: &[Block],
@@ -104,19 +203,84 @@ pub fn mpcot_reg_consistency_check(
     transcript: &[u8],
 ) -> bool {
     let t = alphas.len();
-    debug_assert_eq!(s.len(), r.len());
-    debug_assert_eq!(s.len() % t, 0);
-    debug_assert_eq!(extra_q.len(), KAPPA_BITS);
-    debug_assert_eq!(extra_r.len(), KAPPA_BITS);
-    debug_assert_eq!(extra_t.len(), KAPPA_BITS);
-    let splen = s.len() / t;
-    let lens = alloc::vec![splen; t];
+    if t == 0 || s.len() != r.len() || s.len() < t {
+        return false;
+    }
+    let n = s.len();
+    let mut vs = Vec::with_capacity(t);
+    let mut ws = Vec::with_capacity(t);
+    for (index, &alpha) in alphas.iter().enumerate() {
+        let (start, end) = interval_bounds(n, t, index);
+        if alpha >= end - start {
+            return false;
+        }
+        vs.push(&s[start..end]);
+        ws.push(&r[start..end]);
+    }
+    mpcot_reg_consistency_check_slices(
+        delta, &vs, &ws, alphas, extra_q, extra_r, extra_t, transcript,
+    )
+}
+
+/// Malicious-security batched check over complete, padded SPCOT executions.
+/// This checks even leaves discarded from the logical regular-MPCOT output.
+pub fn mpcot_reg_consistency_check_padded(
+    delta: &Block,
+    s: &[Vec<Block>],
+    r: &[Vec<Block>],
+    alphas: &[usize],
+    extra_q: &[Block],
+    extra_r: &[bool],
+    extra_t: &[Block],
+    transcript: &[u8],
+) -> bool {
+    let Some(first) = s.first() else {
+        return false;
+    };
+    if !first.len().is_power_of_two()
+        || s.iter().any(|bucket| bucket.len() != first.len())
+        || r.iter().any(|bucket| bucket.len() != first.len())
+    {
+        return false;
+    }
+    let vs: Vec<&[Block]> = s.iter().map(Vec::as_slice).collect();
+    let ws: Vec<&[Block]> = r.iter().map(Vec::as_slice).collect();
+    mpcot_reg_consistency_check_slices(
+        delta, &vs, &ws, alphas, extra_q, extra_r, extra_t, transcript,
+    )
+}
+
+fn mpcot_reg_consistency_check_slices(
+    delta: &Block,
+    vs: &[&[Block]],
+    ws: &[&[Block]],
+    alphas: &[usize],
+    extra_q: &[Block],
+    extra_r: &[bool],
+    extra_t: &[Block],
+    transcript: &[u8],
+) -> bool {
+    let t = alphas.len();
+    if t == 0
+        || vs.len() != t
+        || ws.len() != t
+        || extra_q.len() != KAPPA_BITS
+        || extra_r.len() != KAPPA_BITS
+        || extra_t.len() != KAPPA_BITS
+    {
+        return false;
+    }
+    let mut lens = Vec::with_capacity(t);
+    for (&alpha, (v, w)) in alphas.iter().zip(vs.iter().zip(ws)) {
+        if v.len() != w.len() || alpha >= v.len() {
+            return false;
+        }
+        lens.push(v.len());
+    }
     let chis = spcot_batched_fs_chis(&lens, transcript);
     let x_star_prime = spcot_batched_masked_choice(alphas, extra_r, &chis);
-    let vs: Vec<&[Block]> = (0..t).map(|l| &s[l * splen..(l + 1) * splen]).collect();
-    let ws: Vec<&[Block]> = (0..t).map(|l| &r[l * splen..(l + 1) * splen]).collect();
-    let hv = spcot_batched_sender_hash_v(delta, &vs, extra_q, &x_star_prime, &chis);
-    let hw = spcot_batched_receiver_hash_w(&ws, extra_t, &chis);
+    let hv = spcot_batched_sender_hash_v(delta, vs, extra_q, &x_star_prime, &chis);
+    let hw = spcot_batched_receiver_hash_w(ws, extra_t, &chis);
     hv == hw
 }
 
@@ -163,6 +327,105 @@ mod tests {
             let expect = if i == 1 { delta } else { [0u8; 16] };
             assert_eq!(xor_block(&v1[i], &w1[i]), expect);
         }
+    }
+
+    #[test]
+    fn regular_mpcot_relation_supports_uneven_padded_intervals() {
+        let mut rng = TestRng(0x3737);
+        let n = 37;
+        let t = 7;
+        let h = padded_interval_len(n, t).trailing_zeros() as usize;
+        let mut delta = [0u8; 16];
+        for b in &mut delta {
+            *b = rng.next_u32() as u8;
+        }
+        delta[0] |= 1;
+        let mut cot_q = Vec::new();
+        let mut cot_r = Vec::new();
+        let mut cot_t = Vec::new();
+        for _ in 0..(t * h) {
+            let mut row = [0u8; 16];
+            for chunk in row.chunks_mut(4) {
+                chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
+            }
+            let bit = (rng.next_u32() & 1) == 1;
+            cot_q.push(row);
+            cot_r.push(bit);
+            cot_t.push(if bit { xor_block(&row, &delta) } else { row });
+        }
+        let alphas = sample_regular_noise(&mut rng, n, t);
+        let choices = mpcot_reg_choice_bits(n, t, &alphas, &cot_r);
+        let (sender_padded, msg) =
+            mpcot_reg_sender_padded(&mut rng, &delta, n, t, &cot_q, &choices);
+        let receiver_padded = mpcot_reg_receiver_padded(n, t, &alphas, &cot_t, &msg);
+        let sender = mpcot_reg_flatten_outputs(n, t, &sender_padded);
+        let receiver = mpcot_reg_flatten_outputs(n, t, &receiver_padded);
+        assert_eq!(sender.len(), n);
+        assert_eq!(receiver.len(), n);
+        for i in 0..t {
+            let (start, end) = interval_bounds(n, t, i);
+            assert!(alphas[i] < end - start);
+            for index in start..end {
+                let expected = if index == start + alphas[i] {
+                    delta
+                } else {
+                    [0u8; 16]
+                };
+                assert_eq!(xor_block(&sender[index], &receiver[index]), expected);
+            }
+        }
+
+        let mut extra_q = Vec::with_capacity(KAPPA_BITS);
+        let mut extra_r = Vec::with_capacity(KAPPA_BITS);
+        let mut extra_t = Vec::with_capacity(KAPPA_BITS);
+        for _ in 0..KAPPA_BITS {
+            let mut row = [0u8; 16];
+            for chunk in row.chunks_mut(4) {
+                chunk.copy_from_slice(&rng.next_u32().to_le_bytes()[..chunk.len()]);
+            }
+            let bit = (rng.next_u32() & 1) == 1;
+            extra_q.push(row);
+            extra_r.push(bit);
+            extra_t.push(if bit { xor_block(&row, &delta) } else { row });
+        }
+        assert!(mpcot_reg_consistency_check(
+            &delta, &sender, &receiver, &alphas, &extra_q, &extra_r, &extra_t, b"uneven"
+        ));
+        assert!(mpcot_reg_consistency_check_padded(
+            &delta,
+            &sender_padded,
+            &receiver_padded,
+            &alphas,
+            &extra_q,
+            &extra_r,
+            &extra_t,
+            b"uneven-padded"
+        ));
+        let mut bad_padded_receiver = receiver_padded.clone();
+        bad_padded_receiver[0][7][0] ^= 1;
+        assert!(!mpcot_reg_consistency_check_padded(
+            &delta,
+            &sender_padded,
+            &bad_padded_receiver,
+            &alphas,
+            &extra_q,
+            &extra_r,
+            &extra_t,
+            b"uneven-padded"
+        ));
+        let mut bad_receiver = receiver.clone();
+        let (start, _) = interval_bounds(n, t, 1);
+        bad_receiver[start + alphas[1]][0] ^= 1;
+        assert!(!mpcot_reg_consistency_check(
+            &delta,
+            &sender,
+            &bad_receiver,
+            &alphas,
+            &extra_q,
+            &extra_r,
+            &extra_t,
+            b"uneven"
+        ));
     }
 
     #[test]

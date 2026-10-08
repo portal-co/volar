@@ -182,9 +182,10 @@ fn convert_enum_variant(v: &syn::Variant) -> Result<IrEnumVariant> {
 /// attributes.  We look for any doc string containing `@volar-native:`
 /// and return the corresponding [`volar_ir_common::Type`] if recognised.
 ///
-/// Accepted type names (case-sensitive):
-/// `Bit`, `AES8`, `Galois8`, `Galois64`, `_8`, `_16`, `_32`, `_64`,
-/// `_128`, `_256`.
+/// Accepted type names (case-sensitive) are the scalar primitives represented
+/// by `volar_ir_common::Type`. Algebra-specific types such as `Galois8` are not
+/// representable by that shared primitive enum and therefore are not marked as
+/// native.
 fn parse_native_volar_type(attrs: &[syn::Attribute]) -> Option<volar_ir_common::Type> {
     for attr in attrs {
         if !attr.path().is_ident("doc") {
@@ -218,16 +219,102 @@ fn volar_native_type_from_str(s: &str) -> Option<volar_ir_common::Type> {
     use volar_ir_common::Type;
     match s {
         "Bit" => Some(Type::Bit),
-        "AES8" | "Galois8" => Some(Type::AES8),
-        "Galois64" => Some(Type::Galois64),
         "_8" | "U8" => Some(Type::_8),
         "_16" | "U16" => Some(Type::_16),
         "_32" | "U32" => Some(Type::_32),
         "_64" | "U64" => Some(Type::_64),
         "_128" | "U128" => Some(Type::_128),
         "_256" => Some(Type::_256),
-        "Z3" => Some(Type::Z3),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod native_type_tests {
+    use super::volar_native_type_from_str;
+    use volar_ir_common::Type;
+
+    #[test]
+    fn maps_only_shared_scalar_types() {
+        assert_eq!(volar_native_type_from_str("Bit"), Some(Type::Bit));
+        assert_eq!(volar_native_type_from_str("Galois8"), None);
+        assert_eq!(volar_native_type_from_str("Galois64"), None);
+        assert_eq!(volar_native_type_from_str("Z3"), None);
+        assert_eq!(volar_native_type_from_str("U8"), Some(Type::_8));
+    }
+}
+
+#[cfg(test)]
+mod typed_integer_literal_tests {
+    use super::parse_source;
+    use crate::ir::{IrExprKind, IrStmtKind, IrType, PrimitiveType};
+
+    #[test]
+    fn preserves_suffixed_integer_type_in_ir() {
+        let module = parse_source(
+            "fn literal() -> u64 { let value = 7u64; value }",
+            "typed_literal",
+            &[],
+        )
+        .unwrap();
+        let IrStmtKind::Let {
+            init: Some(init), ..
+        } = &module.functions[0].body.stmts[0].kind
+        else {
+            panic!("expected a local initialized from the suffixed integer literal");
+        };
+        let IrExprKind::Cast { expr, ty } = &init.kind else {
+            panic!("the IR must retain a suffixed integer literal's type");
+        };
+        assert_eq!(ty.as_ref(), &IrType::Primitive(PrimitiveType::U64));
+        assert!(matches!(
+            &expr.kind,
+            IrExprKind::Lit(crate::ir::IrLit::Int(7))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod vec_repeat_macro_tests {
+    use super::parse_source;
+    use crate::ir::IrExprKind;
+
+    #[test]
+    fn vec_repeat_macro_preserves_dynamic_length() {
+        let module = parse_source(
+            "fn make(n: usize) -> Vec<bool> { vec![false; n] }",
+            "vec_repeat",
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            module.functions[0]
+                .body
+                .expr
+                .as_deref()
+                .map(|expr| &expr.kind),
+            Some(IrExprKind::VecRepeat { .. })
+        ));
+    }
+
+    #[test]
+    fn vec_list_macro_remains_a_vector_literal() {
+        let module =
+            parse_source("fn make() -> Vec<u8> { vec![1u8, 2u8] }", "vec_list", &[]).unwrap();
+        assert!(matches!(
+            module.functions[0].body.expr.as_deref().map(|expr| &expr.kind),
+            Some(IrExprKind::Array(elems)) if elems.len() == 2
+        ));
+    }
+
+    #[test]
+    fn rust_array_literal_is_not_a_vec_literal() {
+        let module =
+            parse_source("fn make() -> [u8; 2] { [1u8, 2u8] }", "array_literal", &[]).unwrap();
+        assert!(matches!(
+            module.functions[0].body.expr.as_deref().map(|expr| &expr.kind),
+            Some(IrExprKind::FixedArray(elems)) if elems.len() == 2
+        ));
     }
 }
 
@@ -1113,7 +1200,7 @@ fn ir_expr(kind: IrExprKind) -> IrExpr {
 
 fn convert_expr(expr: &Expr) -> Result<IrExpr> {
     match expr {
-        Expr::Lit(l) => Ok(ir_expr(IrExprKind::Lit(convert_lit(&l.lit)?))),
+        Expr::Lit(l) => convert_literal_expr(&l.lit),
         Expr::Path(p) => {
             // Handle qualified paths like `<D::OutputSize as Unsigned>::to_usize()`
             if p.qself.is_some() {
@@ -1299,7 +1386,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
         Expr::ForLoop(f) => convert_for_loop(&f.pat, &f.expr, &f.body),
         Expr::While(w) => Ok(ir_expr(IrExprKind::WhileLoop {
             cond: Box::new(convert_expr(&w.cond)?),
-            body: convert_block(&w.body)?,
+            body: convert_loop_body(&w.body)?,
         })),
         // `loop { .. }` has no static boundedness proof, but neither does
         // `while cond { .. }` above (`while true { .. }` is accepted
@@ -1309,7 +1396,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
         // and docs/compiler.md's Totality section for the reasoning.
         Expr::Loop(l) => Ok(ir_expr(IrExprKind::WhileLoop {
             cond: Box::new(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
-            body: convert_block(&l.body)?,
+            body: convert_loop_body(&l.body)?,
         })),
         Expr::Match(m) => Ok(ir_expr(IrExprKind::Match {
             expr: Box::new(convert_expr(&m.expr)?),
@@ -1324,9 +1411,13 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 .inputs
                 .iter()
                 .map(|p| {
+                    let ty = match p {
+                        Pat::Type(typed) => Some(convert_type(&typed.ty)?),
+                        _ => None,
+                    };
                     Ok(IrClosureParam {
                         pattern: convert_pattern(p),
-                        ty: None,
+                        ty,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -1409,7 +1500,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             elem: Box::new(convert_expr(&r.expr)?),
             len: Box::new(convert_expr(&r.len)?),
         })),
-        Expr::Array(a) => Ok(ir_expr(IrExprKind::Array(
+        Expr::Array(a) => Ok(ir_expr(IrExprKind::FixedArray(
             a.elems
                 .iter()
                 .map(convert_expr)
@@ -1438,25 +1529,35 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                     args: Vec::new(),
                 }));
             }
-            // For vec!, parse as an array literal
+            // Preserve the two supported vec! forms distinctly: list syntax
+            // becomes a vector literal, while `vec![elem; len]` must retain
+            // its runtime length rather than silently becoming `vec![]`.
             if name == "vec" {
-                let tokens = m.mac.tokens.clone();
-                // Wrap in brackets and parse as ExprArray
                 let bracketed =
                     proc_macro2::TokenStream::from_iter([proc_macro2::TokenTree::Group(
-                        proc_macro2::Group::new(proc_macro2::Delimiter::Bracket, tokens),
+                        proc_macro2::Group::new(
+                            proc_macro2::Delimiter::Bracket,
+                            m.mac.tokens.clone(),
+                        ),
                     )]);
-                let as_array: syn::Result<syn::ExprArray> = syn::parse2(bracketed);
-                if let Ok(arr) = as_array {
-                    let ir_elems = arr
-                        .elems
-                        .iter()
-                        .map(convert_expr)
-                        .collect::<Result<Vec<_>>>()?;
-                    return Ok(ir_expr(IrExprKind::Array(ir_elems)));
-                }
-                // Fallback: empty vec
-                return Ok(ir_expr(IrExprKind::Array(Vec::new())));
+                let expr: syn::Expr = syn::parse2(bracketed).map_err(|error| {
+                    CompilerError::ParseError(format!("invalid vec! macro input: {error}"))
+                })?;
+                return match expr {
+                    syn::Expr::Array(arr) => Ok(ir_expr(IrExprKind::Array(
+                        arr.elems
+                            .iter()
+                            .map(convert_expr)
+                            .collect::<Result<Vec<_>>>()?,
+                    ))),
+                    syn::Expr::Repeat(repeat) => Ok(ir_expr(IrExprKind::VecRepeat {
+                        elem: Box::new(convert_expr(&repeat.expr)?),
+                        len: Box::new(convert_expr(&repeat.len)?),
+                    })),
+                    other => Err(CompilerError::Unsupported(format!(
+                        "vec! macro form: {other:?}"
+                    ))),
+                };
             }
             // For typenum_usize, parse the token stream as a type and convert it
             if name == "typenum_usize" {
@@ -2161,14 +2262,29 @@ fn convert_for_loop(pat: &Pat, iter: &Expr, body: &syn::Block) -> Result<IrExpr>
                     .unwrap_or(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
             ),
             inclusive: matches!(r.limits, syn::RangeLimits::Closed(_)),
-            body: convert_block(body)?,
+            body: convert_loop_body(body)?,
         }));
     }
     Ok(ir_expr(IrExprKind::IterLoop {
         pattern: convert_pattern(pat),
         collection: Box::new(convert_expr(iter)?),
-        body: convert_block(body)?,
+        body: convert_loop_body(body)?,
     }))
+}
+
+/// Loop bodies are statement contexts: Rust discards the block's tail value.
+/// Keep a trailing expression in the statement list so backends do not return
+/// it from the enclosing function when lowering it as an expression block.
+fn convert_loop_body(block: &syn::Block) -> Result<IrBlock> {
+    let mut body = convert_block(block)?;
+    if let Some(expr) = body.expr.take() {
+        body.stmts.push(volar_ir_common::Node::new(
+            IrStmtKind::Semi(*expr),
+            (),
+            None,
+        ));
+    }
+    Ok(body)
 }
 
 fn convert_block(block: &syn::Block) -> Result<IrBlock> {
@@ -2184,19 +2300,28 @@ fn convert_block(block: &syn::Block) -> Result<IrBlock> {
                 } else {
                     None
                 };
-                stmts.push(volar_ir_common::Node::new(
+                let init_expr = l
+                    .init
+                    .as_ref()
+                    .map(|init| convert_expr(&init.expr))
+                    .transpose()?;
+                let let_kind = if let Some((_, diverge)) =
+                    l.init.as_ref().and_then(|init| init.diverge.as_ref())
+                {
+                    IrStmtKind::LetElse {
+                        pattern: convert_pattern(&l.pat),
+                        ty,
+                        init: init_expr,
+                        else_expr: convert_expr(diverge)?,
+                    }
+                } else {
                     IrStmtKind::Let {
                         pattern: convert_pattern(&l.pat),
                         ty,
-                        init: l
-                            .init
-                            .as_ref()
-                            .map(|init| convert_expr(&init.expr))
-                            .transpose()?,
-                    },
-                    (),
-                    None,
-                ));
+                        init: init_expr,
+                    }
+                };
+                stmts.push(volar_ir_common::Node::new(let_kind, (), None));
             }
             syn::Stmt::Expr(e, semi) => {
                 if is_last && semi.is_none() {
@@ -2359,6 +2484,20 @@ fn extract_ir_pattern(pat: &Pat) -> IrPattern {
         }
         _ => IrPattern::Wild,
     }
+}
+
+fn convert_literal_expr(lit: &syn::Lit) -> Result<IrExpr> {
+    let expr = ir_expr(IrExprKind::Lit(convert_lit(lit)?));
+    let Some(primitive) = (match lit {
+        syn::Lit::Int(int) => PrimitiveType::from_str(int.suffix()),
+        _ => None,
+    }) else {
+        return Ok(expr);
+    };
+    Ok(ir_expr(IrExprKind::Cast {
+        expr: Box::new(expr),
+        ty: Box::new(IrType::Primitive(primitive)),
+    }))
 }
 
 fn convert_lit(lit: &syn::Lit) -> Result<IrLit> {

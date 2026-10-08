@@ -28,7 +28,10 @@ pub use params::{
     FERRET_REG_MAIN, FERRET_REG_SETUP, FERRET_REG_TOY, FERRET_UNI_MAIN, FERRET_UNI_SETUP,
     FERRET_UNI_TOY, FerretParams,
 };
-pub use pool::{CotPoolReceiver, CotPoolSender, bea95_chosen_bit, refill, take_random};
+pub use pool::{
+    CotPoolReceiver, CotPoolSender, PoolSeedError, bea95_chosen_bit, checked_seed_cot_count,
+    checked_seed_cot_count_malicious, new_pool_malicious, refill, take_random,
+};
 pub use spcot::{
     Block, KAPPA_BITS, KAPPA_BYTES, spcot_batched_fs_chis, spcot_batched_masked_choice,
     spcot_batched_receiver_hash_w, spcot_batched_sender_hash_v, spcot_consistency_check,

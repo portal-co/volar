@@ -135,10 +135,15 @@ pub fn concat_small_voles(outs: Vec<ConvertOutput>) -> BigVoleProver {
         "concat_small_voles: need at least one VOLE"
     );
     let l_hat = outs[0].u.len();
-    for o in &outs {
+    for oi in 0..outs.len() {
+        let o = &outs[oi];
         assert_eq!(o.u.len(), l_hat, "small VOLEs must agree on l_hat_bytes");
-        for vj in &o.v {
-            assert_eq!(vj.len(), l_hat, "small VOLE v_j must agree on l_hat_bytes");
+        for vi in 0..o.v.len() {
+            assert_eq!(
+                o.v[vi].len(),
+                l_hat,
+                "small VOLE v_j must agree on l_hat_bytes"
+            );
         }
     }
 
@@ -146,17 +151,17 @@ pub fn concat_small_voles(outs: Vec<ConvertOutput>) -> BigVoleProver {
 
     // Correction vectors c_i = u_i ⊕ u_0 for i ∈ [1..τ).
     let mut c: Vec<Vec<u8>> = Vec::with_capacity(outs.len() - 1);
-    for o in outs.iter().skip(1) {
-        let mut ci = o.u.clone();
+    for oi in 1..outs.len() {
+        let mut ci = outs[oi].u.clone();
         xor_in_place(&mut ci, &u);
         c.push(ci);
     }
 
     // V columns: concatenate all v_j from each small VOLE in order.
     let mut v_columns: Vec<Vec<u8>> = Vec::new();
-    for o in outs {
-        for vj in o.v {
-            v_columns.push(vj);
+    for oi in 0..outs.len() {
+        for vi in 0..outs[oi].v.len() {
+            v_columns.push(outs[oi].v[vi].clone());
         }
     }
 
@@ -198,14 +203,13 @@ pub fn concat_small_voles_verifier(
     assert_eq!(corrections.len(), outs.len() - 1);
 
     let mut q_columns: Vec<Vec<u8>> = Vec::new();
-    for (i, o) in outs.into_iter().enumerate() {
-        let k = o.v.len();
+    for i in 0..outs.len() {
         let delta_i = deltas[i];
-        for (bit, vj_raw) in o.v.into_iter().enumerate() {
+        for bit in 0..outs[i].v.len() {
             // Verifier's raw v_j from convert_to_vole. The verifier knows
             // its own u'_i = 0 (because seed was missing). For i ≥ 1, it
             // also needs to fold in the correction c_i scaled by δ_{i,bit}.
-            let mut q = vj_raw;
+            let mut q = outs[i].v[bit].clone();
             if i >= 1 {
                 let delta_bit = (delta_i >> bit) & 1 == 1;
                 if delta_bit {
@@ -214,7 +218,6 @@ pub fn concat_small_voles_verifier(
             }
             q_columns.push(q);
         }
-        let _ = k;
     }
     BigVoleVerifier { q_columns }
 }

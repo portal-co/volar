@@ -2,6 +2,8 @@
 // @stability: very-unstable
 //! @ai: assisted
 //! Refillable COT pool (Ferret §6.2 bootstrap) and Bea95 chosen-bit conversion.
+//! @volar-allow-vec: runtime-boundary: Ferret seeds and buffered COT rows are
+//! runtime-sized host protocol material.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -10,7 +12,7 @@ use super::cot::{
     FerretReceiverSeed, FerretSenderSeed, ferret_extend, ferret_extend_malicious, sample_seed_cots,
 };
 use super::params::FerretParams;
-use super::spcot::Block;
+use super::spcot::{Block, KAPPA_BITS};
 use crate::SpecRng;
 
 fn xor_block(a: &Block, b: &Block) -> Block {
@@ -44,15 +46,241 @@ pub struct CotPoolReceiver {
     pub malicious: bool,
 }
 
+/// Why independently provisioned Ferret seeds cannot initialize a pool.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PoolSeedError {
+    /// The regular Ferret parameters are invalid or have no positive output.
+    InvalidParameters,
+    /// Sender seed COT count did not match the parameter-derived count.
+    SenderSeedCount { expected: usize, found: usize },
+    /// Receiver choice-bit count did not match the parameter-derived count.
+    ReceiverChoiceCount { expected: usize, found: usize },
+    /// Receiver seed-value count did not match the parameter-derived count.
+    ReceiverSeedCount { expected: usize, found: usize },
+    /// A profile transition needed more COTs than the setup pool contains.
+    InsufficientCotMaterial { required: usize, available: usize },
+    /// Receiver choices and value shares in the ready queue had different lengths.
+    ReceiverOutputCountMismatch { choices: usize, values: usize },
+}
+
+/// Validate regular Ferret parameters and return the semi-honest seed COT count.
+pub fn checked_seed_cot_count(params: FerretParams) -> Result<usize, PoolSeedError> {
+    checked_seed_cot_count_mode(params, false)
+}
+
+/// Validate regular Ferret parameters and return the malicious-mode seed COT count.
+pub fn checked_seed_cot_count_malicious(params: FerretParams) -> Result<usize, PoolSeedError> {
+    checked_seed_cot_count_mode(params, true)
+}
+
+fn checked_seed_cot_count_mode(
+    params: FerretParams,
+    malicious: bool,
+) -> Result<usize, PoolSeedError> {
+    if params.t == 0 || params.n < params.t || params.k < super::lpn::LOCALITY {
+        return Err(PoolSeedError::InvalidParameters);
+    }
+    let max_interval_len = params.n.div_ceil(params.t);
+    let splen = max_interval_len
+        .checked_next_power_of_two()
+        .ok_or(PoolSeedError::InvalidParameters)?;
+    let body = params
+        .t
+        .checked_mul(splen.trailing_zeros() as usize)
+        .and_then(|extra| params.k.checked_add(extra))
+        .ok_or(PoolSeedError::InvalidParameters)?;
+    let seed_count = if malicious {
+        body.checked_add(KAPPA_BITS)
+            .ok_or(PoolSeedError::InvalidParameters)?
+    } else {
+        body
+    };
+    if seed_count >= params.n {
+        return Err(PoolSeedError::InvalidParameters);
+    }
+    Ok(seed_count)
+}
+
 impl CotPoolSender {
+    /// Initialize one protocol side from an independently produced Ferret seed.
+    pub fn from_seed(params: FerretParams, seed: FerretSenderSeed) -> Result<Self, PoolSeedError> {
+        Self::from_seed_mode(params, seed, false)
+    }
+
+    /// Initialize a malicious-mode sender from an independently produced Ferret seed.
+    pub fn from_seed_malicious(
+        params: FerretParams,
+        seed: FerretSenderSeed,
+    ) -> Result<Self, PoolSeedError> {
+        Self::from_seed_mode(params, seed, true)
+    }
+
+    fn from_seed_mode(
+        params: FerretParams,
+        seed: FerretSenderSeed,
+        malicious: bool,
+    ) -> Result<Self, PoolSeedError> {
+        let expected = checked_seed_cot_count_mode(params, malicious)?;
+        if seed.q.len() != expected {
+            return Err(PoolSeedError::SenderSeedCount {
+                expected,
+                found: seed.q.len(),
+            });
+        }
+        Ok(Self {
+            params,
+            seed,
+            out: VecDeque::new(),
+            raise_n: None,
+            malicious,
+            refill_count: 0,
+        })
+    }
+
     pub fn remaining(&self) -> usize {
         self.out.len()
+    }
+
+    /// Change from a one-time setup parameter set to a main-iteration set.
+    ///
+    /// Call immediately after one setup refill, before consuming any outputs.
+    /// The refreshed setup seed is treated as the first part of the generated
+    /// `n`-COT sequence; queued outputs follow it. The first target `M` COTs
+    /// become the main seed, and the rest remain available in this pool.
+    pub fn reprofile(mut self, params: FerretParams) -> Result<Self, PoolSeedError> {
+        let old_seed_count = checked_seed_cot_count_mode(self.params, self.malicious)?;
+        if self.seed.q.len() != old_seed_count {
+            return Err(PoolSeedError::SenderSeedCount {
+                expected: old_seed_count,
+                found: self.seed.q.len(),
+            });
+        }
+        let required = checked_seed_cot_count_mode(params, self.malicious)?;
+        let available = self
+            .seed
+            .q
+            .len()
+            .checked_add(self.out.len())
+            .ok_or(PoolSeedError::InvalidParameters)?;
+        if available < required {
+            return Err(PoolSeedError::InsufficientCotMaterial {
+                required,
+                available,
+            });
+        }
+        let delta = self.seed.delta;
+        let mut cots = self.seed.q;
+        cots.extend(self.out);
+        let out = cots.split_off(required);
+        self.params = params;
+        self.seed = FerretSenderSeed { delta, q: cots };
+        self.out = out.into();
+        self.raise_n = None;
+        Ok(self)
     }
 }
 
 impl CotPoolReceiver {
+    /// Initialize one protocol side from independently produced Ferret seeds.
+    pub fn from_seed(
+        params: FerretParams,
+        seed: FerretReceiverSeed,
+    ) -> Result<Self, PoolSeedError> {
+        Self::from_seed_mode(params, seed, false)
+    }
+
+    /// Initialize a malicious-mode receiver from independently produced Ferret seeds.
+    pub fn from_seed_malicious(
+        params: FerretParams,
+        seed: FerretReceiverSeed,
+    ) -> Result<Self, PoolSeedError> {
+        Self::from_seed_mode(params, seed, true)
+    }
+
+    fn from_seed_mode(
+        params: FerretParams,
+        seed: FerretReceiverSeed,
+        malicious: bool,
+    ) -> Result<Self, PoolSeedError> {
+        let expected = checked_seed_cot_count_mode(params, malicious)?;
+        if seed.u.len() != expected {
+            return Err(PoolSeedError::ReceiverChoiceCount {
+                expected,
+                found: seed.u.len(),
+            });
+        }
+        if seed.w.len() != expected {
+            return Err(PoolSeedError::ReceiverSeedCount {
+                expected,
+                found: seed.w.len(),
+            });
+        }
+        Ok(Self {
+            params,
+            seed,
+            out_x: VecDeque::new(),
+            out_z: VecDeque::new(),
+            malicious,
+        })
+    }
+
     pub fn remaining(&self) -> usize {
         self.out_x.len()
+    }
+
+    /// Change from a one-time setup parameter set to a main-iteration set.
+    ///
+    /// Call immediately after one setup refill, before consuming any outputs.
+    /// The refreshed setup seed is treated as the first part of the generated
+    /// `n`-COT sequence; queued outputs follow it. The first target `M` COTs
+    /// become the main seed, and the rest remain available in this pool.
+    pub fn reprofile(mut self, params: FerretParams) -> Result<Self, PoolSeedError> {
+        let old_seed_count = checked_seed_cot_count_mode(self.params, self.malicious)?;
+        if self.seed.u.len() != old_seed_count {
+            return Err(PoolSeedError::ReceiverChoiceCount {
+                expected: old_seed_count,
+                found: self.seed.u.len(),
+            });
+        }
+        if self.seed.w.len() != old_seed_count {
+            return Err(PoolSeedError::ReceiverSeedCount {
+                expected: old_seed_count,
+                found: self.seed.w.len(),
+            });
+        }
+        if self.out_x.len() != self.out_z.len() {
+            return Err(PoolSeedError::ReceiverOutputCountMismatch {
+                choices: self.out_x.len(),
+                values: self.out_z.len(),
+            });
+        }
+        let required = checked_seed_cot_count_mode(params, self.malicious)?;
+        let available = self
+            .seed
+            .u
+            .len()
+            .checked_add(self.out_x.len())
+            .ok_or(PoolSeedError::InvalidParameters)?;
+        if available < required {
+            return Err(PoolSeedError::InsufficientCotMaterial {
+                required,
+                available,
+            });
+        }
+        let mut choices = self.seed.u;
+        choices.extend(self.out_x);
+        let mut values = self.seed.w;
+        values.extend(self.out_z);
+        let output_choices = choices.split_off(required);
+        let output_values = values.split_off(required);
+        self.params = params;
+        self.seed = FerretReceiverSeed {
+            u: choices,
+            w: values,
+        };
+        self.out_x = output_choices.into();
+        self.out_z = output_values.into();
+        Ok(self)
     }
 }
 
@@ -107,20 +335,47 @@ pub fn refill<R: SpecRng>(
     receiver: &mut CotPoolReceiver,
 ) -> bool {
     let malicious = sender.malicious;
+    if malicious != receiver.malicious || sender.params != receiver.params {
+        return false;
+    }
     let mut params = sender.params;
+    let current_seed_count = match checked_seed_cot_count_mode(params, malicious) {
+        Ok(count) => count,
+        Err(_) => return false,
+    };
+    if sender.seed.q.len() != current_seed_count
+        || receiver.seed.u.len() != current_seed_count
+        || receiver.seed.w.len() != current_seed_count
+        || sender.out.len() != receiver.out_x.len()
+        || sender.out.len() != receiver.out_z.len()
+    {
+        return false;
+    }
     if let Some(n) = sender.raise_n.take() {
-        debug_assert!(n % params.t == 0);
-        debug_assert!((n / params.t).is_power_of_two());
         let mut raised = params;
         raised.n = n;
-        // New `M` must fit in the current seed (raising `n` grows `log(n/t)`).
-        debug_assert!(raised.seed_cot_count(malicious) <= sender.seed.q.len());
-        params.n = n;
+        let raised_seed_count = match checked_seed_cot_count_mode(raised, malicious) {
+            Ok(count) => count,
+            Err(_) => return false,
+        };
+        // The current seed vectors must still have exactly the target profile's
+        // retained length; otherwise the extend's seed layout would be invalid.
+        if raised_seed_count != current_seed_count
+            || raised_seed_count != sender.seed.q.len()
+            || raised_seed_count != receiver.seed.u.len()
+            || raised_seed_count != receiver.seed.w.len()
+        {
+            return false;
+        }
+        params = raised;
         sender.params = params;
         receiver.params = params;
     }
     if malicious {
         // Bind the consistency check's FS coefficients to this refill.
+        let Some(next_refill_count) = sender.refill_count.checked_add(1) else {
+            return false;
+        };
         let mut transcript = b"volar-ferret-pool-refill-v1".to_vec();
         transcript.extend_from_slice(&sender.refill_count.to_le_bytes());
         let (out, check) =
@@ -128,7 +383,7 @@ pub fn refill<R: SpecRng>(
         if !check {
             return false;
         }
-        sender.refill_count += 1;
+        sender.refill_count = next_refill_count;
         sender.seed = out.sender_seed;
         receiver.seed = out.receiver_seed;
         sender.out.extend(out.sender_out);
@@ -234,6 +489,44 @@ mod tests {
                 r0[j]
             };
             assert_eq!(z[j], expected, "row {j}");
+        }
+    }
+
+    #[test]
+    fn reprofile_keeps_cot_relation_for_uneven_setup_intervals() {
+        let mut rng = TestRng(0xB007_57A9);
+        let setup_params = FerretParams {
+            n: 512,
+            k: 32,
+            t: 7,
+        };
+        let main_params = FERRET_REG_TOY;
+        let (sender_seed, receiver_seed) =
+            sample_seed_cots(&mut rng, checked_seed_cot_count(setup_params).unwrap());
+        let mut sender = CotPoolSender::from_seed(setup_params, sender_seed).unwrap();
+        let mut receiver = CotPoolReceiver::from_seed(setup_params, receiver_seed).unwrap();
+
+        assert!(refill(&mut rng, &mut sender, &mut receiver));
+        let sender = sender.reprofile(main_params).unwrap();
+        let receiver = receiver.reprofile(main_params).unwrap();
+        assert_eq!(sender.remaining(), 512 - main_params.seed_cot_count(false));
+        assert_eq!(sender.remaining(), receiver.remaining());
+        let delta = sender.seed.delta;
+        for (q, (&choice, z)) in sender
+            .seed
+            .q
+            .iter()
+            .zip(receiver.seed.u.iter().zip(&receiver.seed.w))
+        {
+            assert_eq!(*z, if choice { xor_block(q, &delta) } else { *q });
+        }
+        for ((q, &choice), z) in sender
+            .out
+            .iter()
+            .zip(receiver.out_x.iter())
+            .zip(receiver.out_z.iter())
+        {
+            assert_eq!(*z, if choice { xor_block(q, &delta) } else { *q });
         }
     }
 

@@ -1271,11 +1271,8 @@ mod tests {
     /// harness as the legacy TFHE compile checks).
     fn compile_check_binfhe(code: &str, test_name: &str) {
         let uses = "use volar_spec::binfhe::lwe::{BinfheLweCiphertext, binfhe_trivial, binfhe_not, wire_delta};\n\
-                    use volar_spec::binfhe::rlwe::BinfheRlweCiphertext;\n\
-                    use volar_spec::binfhe::rgsw::binfhe_rgsw_cmux;\n\
                     use volar_spec::binfhe::keys::BinfheBootstrappingKey;\n\
-                    use volar_spec::binfhe::circuit_bs::{CircuitBinfheBootstrappingKey, circuit_bootstrap};\n\
-                    use volar_spec::binfhe::pbs::{binfhe_gate_and, binfhe_gate_or, binfhe_gate_xor, binfhe_rgsw_cmux, binfhe_lut_read_dyn};\n";
+                    use volar_spec::binfhe::pbs::{binfhe_gate_and, binfhe_gate_or, binfhe_gate_xor, binfhe_lut_read_dyn};\n";
         let with_imports = if let Some(newline) = code.find('\n') {
             let (head, tail) = code.split_at(newline + 1);
             alloc::format!("{head}{uses}{tail}")
@@ -1370,11 +1367,11 @@ mod tests {
                         write!(s, "PlanOp::Not {{ input: {}, out: {} }},", input, out).unwrap();
                     }
                     PlanOp::Lut { inputs, table, out } => {
-                        write!(s, "PlanOp::Lut {{ inputs: volar_spec::binfhe::plan::LutInputs::from_slice(&[").unwrap();
-                        for w in inputs.as_slice() {
+                        write!(s, "PlanOp::Lut {{ inputs: vec![").unwrap();
+                        for w in inputs {
                             write!(s, "{},", w).unwrap();
                         }
-                        write!(s, "]), table: {}, out: {} }},", table, out).unwrap();
+                        write!(s, "], table: {}, out: {} }},", table, out).unwrap();
                     }
                     PlanOp::CircuitBootstrap { input, out } => {
                         write!(

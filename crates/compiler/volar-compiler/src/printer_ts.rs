@@ -24,20 +24,28 @@
 use core::fmt::{self, Write};
 
 #[cfg(feature = "std")]
+use std::boxed::Box;
+#[cfg(feature = "std")]
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "std")]
 use std::format;
 #[cfg(feature = "std")]
 use std::string::{String, ToString};
 #[cfg(feature = "std")]
+use std::vec;
+#[cfg(feature = "std")]
 use std::vec::Vec;
 
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
 #[cfg(not(feature = "std"))]
 use alloc::collections::{BTreeMap, BTreeSet};
 #[cfg(not(feature = "std"))]
 use alloc::format;
 #[cfg(not(feature = "std"))]
 use alloc::string::{String, ToString};
+#[cfg(not(feature = "std"))]
+use alloc::vec;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -249,7 +257,7 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 scan_expr_witnesses(e, out, declared_generics);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             scan_expr_witnesses(elem, out, declared_generics);
             scan_expr_witnesses(len, out, declared_generics);
         }
@@ -344,6 +352,14 @@ fn scan_block_witnesses(block: &IrBlock, out: &mut WitnessNeeds, declared_generi
         match &stmt.kind {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 scan_expr_witnesses(e, out, declared_generics);
+            }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    scan_expr_witnesses(init, out, declared_generics);
+                }
+                scan_expr_witnesses(else_expr, out, declared_generics);
             }
             _ => {}
         }
@@ -648,35 +664,200 @@ fn build_structs_by_name(module: &IrModule<IrFunction>) -> BTreeMap<String, IrSt
         .collect()
 }
 
+fn build_const_types(module: &IrModule<IrFunction>) -> BTreeMap<String, IrType> {
+    let mut types = BTreeMap::new();
+    let mut ambiguous = std::collections::BTreeSet::new();
+    for constant in &module.consts {
+        if ambiguous.contains(&constant.name) {
+            continue;
+        }
+        if types.contains_key(&constant.name) {
+            types.remove(&constant.name);
+            ambiguous.insert(constant.name.clone());
+        } else {
+            types.insert(constant.name.clone(), constant.ty.clone());
+        }
+    }
+    types
+}
+
+fn build_function_return_types(module: &IrModule<IrFunction>) -> BTreeMap<String, IrType> {
+    let mut types = BTreeMap::new();
+    let mut ambiguous = BTreeSet::new();
+    for function in &module.functions {
+        let Some(return_type) = &function.return_type else {
+            continue;
+        };
+        if ambiguous.contains(&function.name) {
+            continue;
+        }
+        if let Some(previous) = types.get(&function.name) {
+            if previous != return_type {
+                types.remove(&function.name);
+                ambiguous.insert(function.name.clone());
+            }
+        } else {
+            types.insert(function.name.clone(), return_type.clone());
+        }
+    }
+
+    let known_structs: BTreeSet<String> =
+        module.structs.iter().map(|s| s.kind.to_string()).collect();
+    let mut ambiguous_methods = BTreeSet::new();
+    for implementation in &module.impls {
+        let struct_name = match unwrap_ref(&implementation.self_ty) {
+            IrType::Struct { kind, .. } => kind.to_string(),
+            IrType::TypeParam(name) if known_structs.contains(name) => name.clone(),
+            _ => continue,
+        };
+        for item in &implementation.items {
+            let IrImplItem::Method(method) = item else {
+                continue;
+            };
+            let Some(return_type) = &method.return_type else {
+                continue;
+            };
+            let key = format!("__method__{}::{}", struct_name, method.name);
+            if ambiguous_methods.contains(&key) {
+                continue;
+            }
+            if let Some(previous) = types.get(&key) {
+                if previous != return_type {
+                    types.remove(&key);
+                    ambiguous_methods.insert(key);
+                }
+            } else {
+                types.insert(key, return_type.clone());
+            }
+        }
+    }
+    types
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct EnumVariantInfo {
+    class_name: String,
+    fields: Vec<String>,
+    is_unit: bool,
+    is_struct: bool,
+}
+
+fn insert_enum_variant(
+    variants: &mut BTreeMap<String, Option<EnumVariantInfo>>,
+    key: String,
+    info: EnumVariantInfo,
+) {
+    if let Some(existing) = variants.get_mut(&key) {
+        if existing.as_ref() != Some(&info) {
+            *existing = None;
+        }
+    } else {
+        variants.insert(key, Some(info));
+    }
+}
+
+/// Build a registry for enum constructors. Qualified keys always preserve the
+/// enum identity; bare variant names resolve only when unique in the module.
+fn build_enum_variants(module: &IrModule<IrFunction>) -> BTreeMap<String, Option<EnumVariantInfo>> {
+    let mut variants = BTreeMap::new();
+    for en in &module.enums {
+        let enum_name = en.kind.to_string();
+        for variant in &en.variants {
+            let info = EnumVariantInfo {
+                class_name: format!("{}_{}", enum_name, variant.name),
+                fields: match &variant.fields {
+                    IrEnumVariantData::Struct(fields) => {
+                        fields.iter().map(|field| field.name.clone()).collect()
+                    }
+                    _ => Vec::new(),
+                },
+                is_unit: matches!(&variant.fields, IrEnumVariantData::Unit),
+                is_struct: matches!(&variant.fields, IrEnumVariantData::Struct(_)),
+            };
+            insert_enum_variant(&mut variants, variant.name.clone(), info.clone());
+            insert_enum_variant(
+                &mut variants,
+                format!("{}::{}", enum_name, variant.name),
+                info,
+            );
+        }
+    }
+    variants
+}
+
+fn find_enum_variant<'a>(cx: &'a TsContext<'_>, path: &str) -> Option<&'a EnumVariantInfo> {
+    if !path.contains("::") && cx.structs_by_name.contains_key(path) {
+        return None;
+    }
+    if let Some(Some(info)) = cx.enum_variants.get(path) {
+        return Some(info);
+    }
+    let mut segments = path.rsplit("::");
+    let variant = segments.next()?;
+    let enum_name = segments.next()?;
+    let qualified = format!("{}::{}", enum_name, variant);
+    cx.enum_variants.get(&qualified).and_then(Option::as_ref)
+}
+
 /// Build an alias-name → target-type registry for the module, used to resolve
 /// alias heads of paths (`DigestImpl::new()` → `new Sha3_256()`). Keyed by the
 /// bare alias name (aliases are emitted into the flat TS scope by bare name).
 fn collect_error_enums(module: &IrModule<IrFunction>) -> std::collections::HashSet<String> {
     fn find(ty: &IrType, out: &mut std::collections::HashSet<String>) {
         match ty {
-            IrType::Struct { kind, type_args, .. } => {
-                if matches!(kind, crate::ir::StructKind::Custom(n) if n == "Result") && type_args.len() >= 2 {
+            IrType::Struct {
+                kind, type_args, ..
+            } => {
+                if matches!(kind, crate::ir::StructKind::Custom(n) if n == "Result")
+                    && type_args.len() >= 2
+                {
                     match &type_args[1] {
-                        IrType::Struct { kind: ek, .. } => { out.insert(ek.to_string()); }
-                        IrType::TypeParam(en) => { out.insert(en.clone()); }
+                        IrType::Struct { kind: ek, .. } => {
+                            out.insert(ek.to_string());
+                        }
+                        IrType::TypeParam(en) => {
+                            out.insert(en.clone());
+                        }
                         _ => {}
                     }
                 }
-                for a in type_args { find(a, out); }
+                for a in type_args {
+                    find(a, out);
+                }
             }
-            IrType::Vector { elem } | IrType::Array { elem, .. } | IrType::Reference { elem, .. } => find(elem, out),
+            IrType::Vector { elem }
+            | IrType::Array { elem, .. }
+            | IrType::Reference { elem, .. } => find(elem, out),
             IrType::Tuple(elems) => elems.iter().for_each(|e| find(e, out)),
             _ => {}
         }
     }
     let mut errors = std::collections::HashSet::new();
-    for f in &module.functions { if let Some(r) = &f.return_type { find(r, &mut errors); } }
+    for f in &module.functions {
+        if let Some(r) = &f.return_type {
+            find(r, &mut errors);
+        }
+    }
     for im in &module.impls {
         for item in &im.items {
-            if let IrImplItem::Method(f) = item { if let Some(r) = &f.return_type { find(r, &mut errors); } }
+            if let IrImplItem::Method(f) = item {
+                if let Some(r) = &f.return_type {
+                    find(r, &mut errors);
+                }
+            }
         }
     }
     errors
+}
+
+fn is_option_return_type(ty: Option<&IrType>) -> bool {
+    matches!(
+        ty,
+        Some(IrType::Struct {
+            kind: crate::ir::StructKind::Custom(name),
+            ..
+        }) if name == "Option"
+    )
 }
 
 fn build_type_aliases(module: &IrModule<IrFunction>) -> BTreeMap<String, IrType> {
@@ -763,6 +944,14 @@ fn collect_call_targets_block(block: &IrBlock, targets: &mut Vec<String>) {
             IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 collect_call_targets_expr(e, targets);
             }
+            IrStmtKind::LetElse {
+                init, else_expr, ..
+            } => {
+                if let Some(init) = init {
+                    collect_call_targets_expr(init, targets);
+                }
+                collect_call_targets_expr(else_expr, targets);
+            }
             _ => {}
         }
     }
@@ -774,10 +963,12 @@ fn collect_call_targets_block(block: &IrBlock, targets: &mut Vec<String>) {
 fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
     match &expr.kind {
         IrExprKind::Call { func, args } => {
-            if let IrExprKind::Path { segments, .. } = &func.kind {
-                if segments.len() == 1 {
+            match &func.kind {
+                IrExprKind::Var(name) => targets.push(name.clone()),
+                IrExprKind::Path { segments, .. } if segments.len() == 1 => {
                     targets.push(segments[0].clone());
-                } else if segments.len() == 2 {
+                }
+                IrExprKind::Path { segments, .. } if segments.len() == 2 => {
                     // `Type::assoc_fn(...)` / `Trait::method(...)` — collect the
                     // qualified `Type.method` key so the witness map (which keys
                     // methods as `ClassName.method`) can match. We do NOT collect the
@@ -785,6 +976,7 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
                     // same-named method across all structs.
                     targets.push(format!("{}.{}", segments[0], segments[1]));
                 }
+                _ => {}
             }
             collect_call_targets_expr(func, targets);
             for a in args {
@@ -841,7 +1033,7 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
                 collect_call_targets_expr(e, targets);
             }
         }
-        IrExprKind::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
             collect_call_targets_expr(elem, targets);
             collect_call_targets_expr(len, targets);
         }
@@ -983,9 +1175,12 @@ pub fn print_module_ts_with_imports(
     let error_enums = collect_error_enums(&module);
     let enum_names: std::collections::HashSet<String> =
         module.enums.iter().map(|e| e.kind.to_string()).collect();
+    let enum_variants = build_enum_variants(&module);
     let method_t_fields_map = build_method_t_fields(&module);
     let structs_by_name = build_structs_by_name(&module);
     let type_aliases = build_type_aliases(&module);
+    let function_return_types = build_function_return_types(&module);
+    let const_types = build_const_types(&module);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -995,6 +1190,7 @@ pub fn print_module_ts_with_imports(
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names,
+        enum_variants: &enum_variants,
         error_enums: &error_enums,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map,
@@ -1004,8 +1200,10 @@ pub fn print_module_ts_with_imports(
         oracle_fn_names: BTreeSet::new(),
         structs_by_name: &structs_by_name,
         type_aliases: &type_aliases,
-        local_var_types: BTreeMap::new(),
+        function_return_types: &function_return_types,
+        local_var_types: const_types,
         has_ctx_param: false,
+        try_returns_option: false,
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1079,8 +1277,11 @@ fn print_module_ts_with_emit_flags(
         module.enums.iter().map(|e| e.kind.to_string()).collect();
     let method_t_fields_map = build_method_t_fields(&module);
     let (oracle_fns, async_fns) = compute_async_fns(&module);
+    let enum_variants = build_enum_variants(&module);
     let structs_by_name = build_structs_by_name(&module);
     let type_aliases = build_type_aliases(&module);
+    let function_return_types = build_function_return_types(&module);
+    let const_types = build_const_types(&module);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -1090,6 +1291,7 @@ fn print_module_ts_with_emit_flags(
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names,
+        enum_variants: &enum_variants,
         error_enums: &error_enums,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map,
@@ -1099,8 +1301,10 @@ fn print_module_ts_with_emit_flags(
         oracle_fn_names: oracle_fns,
         structs_by_name: &structs_by_name,
         type_aliases: &type_aliases,
-        local_var_types: BTreeMap::new(),
+        function_return_types: &function_return_types,
+        local_var_types: const_types,
         has_ctx_param: false,
+        try_returns_option: false,
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1154,9 +1358,12 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
     let error_enums = collect_error_enums(&module);
     let enum_names: std::collections::HashSet<String> =
         module.enums.iter().map(|e| e.kind.to_string()).collect();
+    let enum_variants = build_enum_variants(&module);
     let method_t_fields_map2 = build_method_t_fields(&module);
     let structs_by_name = build_structs_by_name(&module);
     let type_aliases = build_type_aliases(&module);
+    let function_return_types = build_function_return_types(&module);
+    let const_types = build_const_types(&module);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -1166,6 +1373,7 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names,
+        enum_variants: &enum_variants,
         error_enums: &error_enums,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map2,
@@ -1175,8 +1383,10 @@ pub fn print_module_ts_seeded(module: &IrModule<IrFunction>, seeds: &[&str]) -> 
         oracle_fn_names: BTreeSet::new(),
         structs_by_name: &structs_by_name,
         type_aliases: &type_aliases,
-        local_var_types: BTreeMap::new(),
+        function_return_types: &function_return_types,
+        local_var_types: const_types,
         has_ctx_param: false,
+        try_returns_option: false,
     };
     let local_names: std::collections::HashSet<String> =
         module.structs.iter().map(|s| s.kind.to_string()).collect();
@@ -1278,9 +1488,12 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
     let error_enums_flat = collect_error_enums(&flat);
     let enum_names_flat: std::collections::HashSet<String> =
         flat.enums.iter().map(|e| e.kind.to_string()).collect();
+    let enum_variants_flat = build_enum_variants(&flat);
     let method_t_fields_map3 = build_method_t_fields(&flat);
     let structs_by_name = build_structs_by_name(&flat);
     let type_aliases = build_type_aliases(&flat);
+    let function_return_types = build_function_return_types(&flat);
+    let const_types = build_const_types(&flat);
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions_flat,
@@ -1290,6 +1503,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
         enum_names: &enum_names_flat,
+        enum_variants: &enum_variants_flat,
         error_enums: &error_enums_flat,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map3,
@@ -1299,8 +1513,10 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         oracle_fn_names: BTreeSet::new(),
         structs_by_name: &structs_by_name,
         type_aliases: &type_aliases,
-        local_var_types: BTreeMap::new(),
+        function_return_types: &function_return_types,
+        local_var_types: const_types,
         has_ctx_param: false,
+        try_returns_option: false,
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
@@ -1398,7 +1614,13 @@ fn zip_leaf_collections<'a>(chain: &'a IrIterChain, out: &mut Vec<(&'a IrExpr, b
             zip_leaf_collections(right, out);
         }
         IterChainSource::Method { collection, .. } => {
-            if let IrExprKind::MethodCall { receiver, method, args, .. } = &collection.kind {
+            if let IrExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } = &collection.kind
+            {
                 if matches!(method, MethodKind::Other(s) if s == "iter_mut") && args.is_empty() {
                     out.push((receiver, true));
                     return;
@@ -1433,7 +1655,12 @@ fn zip_pattern_names(pat: &IrPattern, out: &mut Vec<String>) -> bool {
 /// leaf which must remain a write-through reference.
 fn zip_method_leaves<'a>(expr: &'a IrExpr, out: &mut Vec<(&'a IrExpr, bool)>) -> bool {
     match &expr.kind {
-        IrExprKind::MethodCall { receiver, method, args, .. } => {
+        IrExprKind::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } => {
             if matches!(method, MethodKind::Other(name) if name == "zip") && args.len() == 1 {
                 return zip_method_leaves(receiver, out) && zip_method_leaves(&args[0], out);
             }
@@ -1482,9 +1709,11 @@ struct TsContext<'a> {
     class_witnesses: Vec<String>,
     /// Mutable-reference variables in scope (from `iter_mut` loops).
     mut_refs: Vec<MutRef>,
-    /// Enum type names in this module. Used to detect `Enum::Variant(...)` constructor calls
-    /// and emit `Enum_Variant(...)` (factory function) instead of `Enum.Variant(...)`.
+    /// Enum type names in this module, used to detect qualified variant constructors.
     enum_names: &'a std::collections::HashSet<String>,
+    /// Variant path → generated class, field order, and shape metadata. Ambiguous
+    /// bare names map to None so the printer never guesses which enum was intended.
+    enum_variants: &'a BTreeMap<String, Option<EnumVariantInfo>>,
     /// Enum names used as the `E` in a `Result<T, E>` return type anywhere in the
     /// module; their variant classes extend `__VolarError` for `?` desugar.
     error_enums: &'a std::collections::HashSet<String>,
@@ -1514,6 +1743,8 @@ struct TsContext<'a> {
     /// resolve alias heads of paths (`DigestImpl::new()` → `new Sha3_256()`).
     /// Built once per module print.
     type_aliases: &'a BTreeMap<String, IrType>,
+    /// Unambiguous top-level function return types for expression inference.
+    function_return_types: &'a BTreeMap<String, IrType>,
     /// Declared `IrType` for parameters (and any other statically-typed
     /// locals) of the function/method currently being printed. Reset per
     /// function/method body via `with_local_var_types` — unlike `var_types`
@@ -1525,6 +1756,8 @@ struct TsContext<'a> {
     /// `ctx` value is in scope to forward to callees that need one. Set by
     /// each function/method writer from its `witness_needs`.
     has_ctx_param: bool,
+    /// Whether `?` in the current function propagates `None` instead of an error.
+    try_returns_option: bool,
 }
 
 impl<'a> TsContext<'a> {
@@ -1534,6 +1767,25 @@ impl<'a> TsContext<'a> {
             .iter()
             .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(bare_name))
             .map(|(_, v)| v)
+    }
+
+    /// Resolve a method witness when receiver type information is unavailable.
+    /// Only return a result if exactly one concrete class has this method, so
+    /// a same-named method on another class cannot cause speculative ctx args.
+    fn get_unique_method_witness_needs(&self, method: &str) -> Option<&WitnessNeeds> {
+        let mut found = None;
+        for (key, needs) in self.witness_map {
+            let Some(qualified) = key.first().filter(|_| key.len() == 1) else {
+                continue;
+            };
+            if qualified.contains('.') && qualified.rsplit('.').next() == Some(method) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(needs);
+            }
+        }
+        found
     }
 
     /// Check if a bare struct/function name is a tuple struct (by last segment of IrPath).
@@ -1564,6 +1816,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: self.class_witnesses.clone(),
             mut_refs: self.mut_refs.clone(),
             enum_names: self.enum_names,
+            enum_variants: self.enum_variants,
             error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
@@ -1573,8 +1826,10 @@ impl<'a> TsContext<'a> {
             oracle_fn_names: self.oracle_fn_names.clone(),
             structs_by_name: self.structs_by_name,
             type_aliases: self.type_aliases,
+            function_return_types: self.function_return_types,
             local_var_types: self.local_var_types.clone(),
             has_ctx_param: self.has_ctx_param,
+            try_returns_option: self.try_returns_option,
         }
     }
 
@@ -1588,6 +1843,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: witnesses,
             mut_refs: self.mut_refs.clone(),
             enum_names: self.enum_names,
+            enum_variants: self.enum_variants,
             error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
@@ -1597,8 +1853,10 @@ impl<'a> TsContext<'a> {
             oracle_fn_names: self.oracle_fn_names.clone(),
             structs_by_name: self.structs_by_name,
             type_aliases: self.type_aliases,
+            function_return_types: self.function_return_types,
             local_var_types: self.local_var_types.clone(),
             has_ctx_param: self.has_ctx_param,
+            try_returns_option: self.try_returns_option,
         }
     }
 
@@ -1614,6 +1872,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: self.class_witnesses.clone(),
             mut_refs,
             enum_names: self.enum_names,
+            enum_variants: self.enum_variants,
             error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
@@ -1623,8 +1882,10 @@ impl<'a> TsContext<'a> {
             oracle_fn_names: self.oracle_fn_names.clone(),
             structs_by_name: self.structs_by_name,
             type_aliases: self.type_aliases,
+            function_return_types: self.function_return_types,
             local_var_types: self.local_var_types.clone(),
             has_ctx_param: self.has_ctx_param,
+            try_returns_option: self.try_returns_option,
         }
     }
 
@@ -1634,6 +1895,8 @@ impl<'a> TsContext<'a> {
     /// see `infer_expr_ir_type`). Used for width-aware codegen
     /// (`wrapping_add`/`wrapping_sub` — `infer_wrapping_bit_width`).
     fn with_local_var_types(&self, types: BTreeMap<String, IrType>) -> TsContext<'a> {
+        let mut local_var_types = self.local_var_types.clone();
+        local_var_types.extend(types);
         TsContext {
             witness_map: self.witness_map,
             name_collisions: self.name_collisions,
@@ -1643,6 +1906,7 @@ impl<'a> TsContext<'a> {
             class_witnesses: self.class_witnesses.clone(),
             mut_refs: self.mut_refs.clone(),
             enum_names: self.enum_names,
+            enum_variants: self.enum_variants,
             error_enums: self.error_enums,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
@@ -1652,8 +1916,10 @@ impl<'a> TsContext<'a> {
             oracle_fn_names: self.oracle_fn_names.clone(),
             structs_by_name: self.structs_by_name,
             type_aliases: self.type_aliases,
-            local_var_types: types,
+            function_return_types: self.function_return_types,
+            local_var_types,
             has_ctx_param: self.has_ctx_param,
+            try_returns_option: self.try_returns_option,
         }
     }
 
@@ -1666,15 +1932,38 @@ impl<'a> TsContext<'a> {
         // their qualifier (`Vec::new`, `VecDeque::new`, `Option::Some`, ...)
         // so `emit_path`'s `KnownCallPath` handling can see them.
         const STD_TYPE_HEADS: &[&str] = &[
-            "Vec", "VecDeque", "Option", "Result", "Box", "Rc", "Arc", "Cell", "RefCell",
+            "Vec",
+            "VecDeque",
+            "Option",
+            "Result",
+            "Box",
+            "Rc",
+            "Arc",
+            "Cell",
+            "RefCell",
             "PhantomData",
             // Primitive int type paths (`u32::from_le_bytes`, ...) — the head must be
             // kept so `emit_path`'s `KnownCallPath::FromLeBytes` can see the width.
-            "u8", "u16", "u32", "u64", "u128", "usize", "i32", "i64", "i128",
+            "u8",
+            "u16",
+            "u32",
+            "u64",
+            "u128",
+            "usize",
+            "i32",
+            "i64",
+            "i128",
             // Trait-path qualifiers handled by `KnownCallPath`/trait-namespace arms.
-            "AsRef", "Digest", "DigestUpdate", "Into", "From", "Default",
+            "AsRef",
+            "Digest",
+            "DigestUpdate",
+            "Into",
+            "From",
+            "Default",
             // Crypto-stub classes emitted by the preamble (see TsPreambleWriter).
-            "Shake128", "Shake256", "Sha3_256",
+            "Shake128",
+            "Shake256",
+            "Sha3_256",
         ];
         self.structs_by_name.contains_key(name)
             || self.enum_names.contains(name)
@@ -1690,6 +1979,12 @@ impl<'a> TsContext<'a> {
     fn with_ctx_param(&self, has_ctx: bool) -> TsContext<'a> {
         let mut c = self.with_local_var_types(self.local_var_types.clone());
         c.has_ctx_param = has_ctx;
+        c
+    }
+
+    fn with_try_returns_option(&self, returns_option: bool) -> TsContext<'a> {
+        let mut c = self.with_local_var_types(self.local_var_types.clone());
+        c.try_returns_option = returns_option;
         c
     }
 
@@ -1959,7 +2254,10 @@ fn is_statement_like(expr: &IrExpr) -> bool {
     match &expr.kind {
         IrExprKind::BoundedLoop { .. }
         | IrExprKind::IterLoop { .. }
-        | IrExprKind::WhileLoop { .. } => true,
+        | IrExprKind::WhileLoop { .. }
+        | IrExprKind::Return(_)
+        | IrExprKind::Break(_)
+        | IrExprKind::Continue => true,
         // An `if` without an else branch, or where branches are statement-like
         IrExprKind::If {
             else_branch: None, ..
@@ -2049,6 +2347,7 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "  wrappingNeg,")?;
         writeln!(f, "  __chunks,")?;
         writeln!(f, "  asRefU8,")?;
+        writeln!(f, "  u16_from_le_bytes,")?;
         writeln!(f, "  u32_from_le_bytes,")?;
         writeln!(f, "  u64_from_le_bytes,")?;
         writeln!(f, "  u128_from_le_bytes,")?;
@@ -2062,7 +2361,11 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         // well-typed in the meantime.
         writeln!(
             f,
-            "class __StubDigest {{ readonly outputSize = 32; update(_data: Uint8Array | readonly (number | bigint)[]): void {{}} finalize(): Uint8Array {{ return new Uint8Array(this.outputSize); }} }}"
+            "class __StubXofReader {{ read(_target: bigint[]): void {{}} }}"
+        )?;
+        writeln!(
+            f,
+            "class __StubDigest {{ readonly outputSize = 32; update(_data: Uint8Array | readonly (number | bigint)[]): void {{}} finalize(): Uint8Array {{ return new Uint8Array(this.outputSize); }} finalize_xof(): __StubXofReader {{ return new __StubXofReader(); }} }}"
         )?;
         writeln!(
             f,
@@ -2089,7 +2392,9 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "type Option<T> = T | undefined;")?;
         // Generated code represents Result as the raw union (Ok value or error),
         // with `?`/match discriminating — not the Ok/Err wrapper classes above.
-        writeln!(f, "type Result<T, E = unknown> = T | E;")?;
+        // `?` checks the erased error marker base class, which can be wider than
+        // the concrete E union when an error is produced by a converted result.
+        writeln!(f, "type Result<T, E = unknown> = T | E | __VolarError;")?;
         writeln!(f, "export abstract class __VolarError {{}}")?;
         // Minimal-runtime clone: spread arrays, shallow-copy objects with prototype.
         writeln!(f, "function __clone<T>(x: T): T {{")?;
@@ -2102,6 +2407,17 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
             "  if (x !== null && typeof x === 'object') return Object.assign(Object.create(Object.getPrototypeOf(x)), x) as T;"
         )?;
         writeln!(f, "  return x;")?;
+        writeln!(f, "}}")?;
+        writeln!(
+            f,
+            "function __u32_try_from(value: bigint | number): bigint {{"
+        )?;
+        writeln!(f, "  const converted = BigInt(value);")?;
+        writeln!(
+            f,
+            "  if (converted < 0n || converted > 0xffff_ffffn) throw new RangeError('u32 conversion out of range');"
+        )?;
+        writeln!(f, "  return converted;")?;
         writeln!(f, "}}")?;
         writeln!(f, "function __zeroValue<T>(val: T): T {{")?;
         writeln!(f, "  if (typeof val === 'bigint') return 0n as any;")?;
@@ -2169,9 +2485,12 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
             writeln!(f)?;
         }
 
-        // Enums → tagged union types
+        // Enums → tagged union types. Inherent enum methods are emitted on
+        // each variant class so calls remain available through the union type.
         for e in &self.module.enums {
-            ts_write_enum(f, e, cx)?;
+            let enum_name = e.kind.to_string();
+            let impls = impl_groups.get(&enum_name).cloned().unwrap_or_default();
+            ts_write_enum(f, e, &impls, self.filter_methods, cx)?;
             writeln!(f)?;
         }
 
@@ -2236,9 +2555,19 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
         // Group by method name and merge duplicates.
         let mut orphan_fns: BTreeMap<String, Vec<&IrFunction>> = BTreeMap::new();
         for (struct_name, impls) in &impl_groups {
+            let is_enum = self
+                .module
+                .enums
+                .iter()
+                .any(|e| e.kind.to_string() == *struct_name);
             for imp in impls {
                 for item in &imp.items {
                     if let IrImplItem::Method(func) = item {
+                        // Enum instance methods are already emitted on the shared
+                        // enum base; only retain associated functions as orphans.
+                        if is_enum && func.receiver.is_some() {
+                            continue;
+                        }
                         let fn_name = if func.name.starts_with("r#") {
                             func.name[2..].to_string()
                         } else {
@@ -2246,7 +2575,11 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
                         };
                         // When filtering is active, skip orphan methods not in the reachable set.
                         if let Some(filter) = self.filter_methods {
-                            if !filter.contains(&fn_name) && !filter.contains(&func.name) {
+                            let qualified_name = format!("{}.{}", struct_name, fn_name);
+                            if !filter.contains(&fn_name)
+                                && !filter.contains(&func.name)
+                                && !filter.contains(&qualified_name)
+                            {
                                 continue;
                             }
                         }
@@ -2318,7 +2651,11 @@ impl<'a> TsBackend for TsClassWriter<'a> {
         // Declare fields with definite assignment assertion.
         // Numeric (tuple) fields use bracket notation `[N]`; named fields use `.name`.
         for (idx, field) in fields.iter().enumerate() {
-            let ts_name = ts_field_name(&field.name, idx);
+            let ts_name = if self.s.is_tuple {
+                format!("[{}]", idx)
+            } else {
+                ts_field_name(&field.name, idx)
+            };
             // Numeric field: `[N]!: T;`  named field: `name!: T;`
             if ts_name.starts_with('[') {
                 write!(f, "  {}!: ", ts_name)?;
@@ -2392,11 +2729,14 @@ impl<'a> TsBackend for TsClassWriter<'a> {
         if let Some(filter) = self.filter_methods {
             analysis.unique_methods.retain(|im| {
                 let mname = ts_method_name(&im.func.name, im.imp.trait_.as_ref());
-                filter.contains(&mname) || filter.contains(&im.func.name)
+                let qualified_name = format!("{name}.{mname}");
+                filter.contains(&mname)
+                    || filter.contains(&im.func.name)
+                    || filter.contains(&qualified_name)
             });
-            analysis
-                .merged_methods
-                .retain(|mm| filter.contains(&mm.name));
+            analysis.merged_methods.retain(|mm| {
+                filter.contains(&mm.name) || filter.contains(&format!("{name}.{}", mm.name))
+            });
         }
         // Build `ClassName<T, U>` string for Self references in method bodies.
         let self_type_str = {
@@ -2427,6 +2767,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
                 func: im.func,
                 imp: im.imp,
                 struct_generics: &self.s.generics,
+                explicit_this_type: None,
                 indent: 1,
                 witness_needs: needs,
             }
@@ -2499,6 +2840,7 @@ struct TsMethodWriter<'a> {
     func: &'a IrFunction,
     imp: &'a IrImpl,
     struct_generics: &'a [IrGenericParam],
+    explicit_this_type: Option<String>,
     indent: usize,
     witness_needs: &'a WitnessNeeds,
 }
@@ -2527,6 +2869,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     class_witnesses: cx.class_witnesses.clone(),
                     mut_refs: cx.mut_refs.clone(),
                     enum_names: cx.enum_names,
+                    enum_variants: cx.enum_variants,
                     error_enums: cx.error_enums,
                     var_types: core::cell::RefCell::new(cx.var_types.borrow().clone()),
                     method_t_fields: cx.method_t_fields.clone(),
@@ -2536,8 +2879,10 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     oracle_fn_names: cx.oracle_fn_names.clone(),
                     structs_by_name: cx.structs_by_name,
                     type_aliases: cx.type_aliases,
+                    function_return_types: cx.function_return_types,
                     local_var_types: cx.local_var_types.clone(),
                     has_ctx_param: cx.has_ctx_param,
+                    try_returns_option: cx.try_returns_option,
                 };
                 &cx_static
             } else {
@@ -2649,8 +2994,17 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
 
         write!(f, "(")?;
         let mut first_param = true;
+        if !is_static {
+            if let Some(this_type) = &self.explicit_this_type {
+                write!(f, "this: {}", this_type)?;
+                first_param = false;
+            }
+        }
         // Emit ctx parameter if we have witness needs
         if !self.witness_needs.is_empty() {
+            if !first_param {
+                write!(f, ", ")?;
+            }
             write_ctx_param(self.witness_needs, f)?;
             first_param = false;
         }
@@ -2717,7 +3071,8 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
             .collect();
         let cx_local = cx_after_witnesses
             .with_local_var_types(param_types)
-            .with_ctx_param(!self.witness_needs.is_empty());
+            .with_ctx_param(!self.witness_needs.is_empty())
+            .with_try_returns_option(is_option_return_type(self.func.return_type.as_ref()));
         let cx_body = &cx_local;
         TsBlockWriter {
             block: &self.func.body,
@@ -2861,6 +3216,15 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
 
             // Emit the variant's body inline
             let body = &variant.func.body;
+            let param_types = variant
+                .func
+                .params
+                .iter()
+                .map(|p| (p.name.clone(), p.ty.clone()))
+                .collect();
+            let mut cx_variant = cx
+                .with_local_var_types(param_types)
+                .with_try_returns_option(is_option_return_type(variant.func.return_type.as_ref()));
             let inner_ind = "  ".repeat(self.indent + 2);
             for (try_index, stmt) in body.stmts.iter().enumerate() {
                 TsStmtWriter {
@@ -2868,16 +3232,17 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
                     indent: self.indent + 2,
                     try_index,
                 }
-                .ts_fmt(f, cx)?;
+                .ts_fmt(f, &cx_variant)?;
+                track_local_binding_type(stmt, &mut cx_variant);
             }
             if let Some(tail) = &body.expr {
                 if is_statement_like(tail) {
                     write!(f, "{}", inner_ind)?;
-                    TsExprWriter { expr: tail }.ts_fmt(f, cx)?;
+                    TsExprWriter { expr: tail }.ts_fmt(f, &cx_variant)?;
                     writeln!(f, ";")?;
                 } else {
                     write!(f, "{}return ", inner_ind)?;
-                    TsExprWriter { expr: tail }.ts_fmt(f, cx)?;
+                    TsExprWriter { expr: tail }.ts_fmt(f, &cx_variant)?;
                     writeln!(f, ";")?;
                 }
             }
@@ -2968,7 +3333,8 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
             .collect();
         let cx_local = cx_after_witnesses
             .with_local_var_types(param_types)
-            .with_ctx_param(!self.witness_needs.is_empty());
+            .with_ctx_param(!self.witness_needs.is_empty())
+            .with_try_returns_option(is_option_return_type(self.func.return_type.as_ref()));
         let cx_body = &cx_local;
         TsBlockWriter {
             block: &self.func.body,
@@ -3096,8 +3462,9 @@ impl<'a> TsBackend for TsMergedFunctionWriter<'a> {
                 .map(|p| (p.name.clone(), p.ty.clone()))
                 .collect();
             let cx_local = cx_after_witnesses
-            .with_local_var_types(param_types)
-            .with_ctx_param(!self.witness_needs.is_empty());
+                .with_local_var_types(param_types)
+                .with_ctx_param(!self.witness_needs.is_empty())
+                .with_try_returns_option(is_option_return_type(variant.return_type.as_ref()));
             let cx_body = &cx_local;
             write!(f, "    return (() => ")?;
             TsBlockWriter {
@@ -3168,7 +3535,15 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                 // than emitting the bare Rust name (which is undefined in TS).
                 if matches!(
                     name.as_str(),
-                    "i8" | "i16" | "i32" | "i64" | "u16" | "isize" | "u128" | "i128" | "f32" | "f64"
+                    "i8" | "i16"
+                        | "i32"
+                        | "i64"
+                        | "u16"
+                        | "isize"
+                        | "u128"
+                        | "i128"
+                        | "f32"
+                        | "f64"
                 ) {
                     return write!(f, "bigint");
                 }
@@ -3289,29 +3664,81 @@ impl<'a> TsBackend for TsBlockWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         writeln!(f, "{}{{", ind)?;
+        let mut cx_block = cx.with_local_var_types(cx.local_var_types.clone());
         for (try_index, stmt) in self.block.stmts.iter().enumerate() {
             TsStmtWriter {
                 stmt,
                 indent: self.indent + 1,
                 try_index,
             }
-            .ts_fmt(f, cx)?;
+            .ts_fmt(f, &cx_block)?;
+            track_local_binding_type(stmt, &mut cx_block);
         }
         if let Some(e) = &self.block.expr {
             let inner = "  ".repeat(self.indent + 1);
             if is_statement_like(e) {
                 // Emit as a statement — do NOT prefix with `return`
                 write!(f, "{}", inner)?;
-                emit_statement_expr(e, self.indent + 1, f, cx)?;
+                emit_statement_expr(e, self.indent + 1, f, &cx_block)?;
                 writeln!(f)?;
             } else {
                 write!(f, "{}return ", inner)?;
-                TsExprWriter { expr: e }.ts_fmt(f, cx)?;
+                TsExprWriter { expr: e }.ts_fmt(f, &cx_block)?;
                 writeln!(f, ";")?;
             }
         }
         write!(f, "{}}}", ind)?;
         Ok(())
+    }
+}
+
+/// Track local binding types in source order so width-sensitive method emission
+/// can resolve inferred locals as well as function parameters.
+fn track_local_binding_type(stmt: &IrStmt, cx: &mut TsContext<'_>) {
+    let (pattern, annotated_type, init) = match &stmt.kind {
+        IrStmtKind::Let { pattern, ty, init }
+        | IrStmtKind::LetElse {
+            pattern, ty, init, ..
+        } => (pattern, ty.as_ref(), init.as_ref()),
+        _ => return,
+    };
+    let binding_type = annotated_type
+        .cloned()
+        .or_else(|| init.and_then(|expr| infer_expr_ir_type(expr, cx)));
+    if let Some(binding_type) = binding_type {
+        track_pattern_type(pattern, &binding_type, cx);
+    }
+}
+
+fn track_pattern_type(pattern: &IrPattern, ty: &IrType, cx: &mut TsContext<'_>) {
+    match pattern {
+        IrPattern::Ident { name, subpat, .. } => {
+            cx.local_var_types.insert(name.clone(), ty.clone());
+            if let Some(subpat) = subpat {
+                track_pattern_type(subpat, ty, cx);
+            }
+        }
+        IrPattern::Tuple(patterns) => {
+            if let IrType::Tuple(types) = unwrap_ref(ty) {
+                for (pattern, ty) in patterns.iter().zip(types) {
+                    track_pattern_type(pattern, ty, cx);
+                }
+            }
+        }
+        IrPattern::Slice(patterns) => {
+            if let IrType::Array { elem, .. } | IrType::Vector { elem } = unwrap_ref(ty) {
+                for pattern in patterns {
+                    track_pattern_type(pattern, elem, cx);
+                }
+            }
+        }
+        IrPattern::Ref { pat, .. } => track_pattern_type(pat, ty, cx),
+        IrPattern::Or(patterns) => {
+            for pattern in patterns {
+                track_pattern_type(pattern, ty, cx);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -3352,7 +3779,10 @@ fn emit_statement_expr(
             // `for (index, value)` pattern needs the second binding to remain a
             // write-through reference, not a copied `const` pair.
             if let IrExprKind::IterPipeline(chain) = &collection.kind {
-                if let IterChainSource::Method { collection: source, .. } = &chain.source {
+                if let IterChainSource::Method {
+                    collection: source, ..
+                } = &chain.source
+                {
                     if let IrExprKind::MethodCall {
                         receiver: mutable_source,
                         method: MethodKind::Other(iter_mut_method),
@@ -3360,20 +3790,30 @@ fn emit_statement_expr(
                         ..
                     } = &source.kind
                     {
-                        if iter_mut_method == "iter_mut" && args.is_empty()
+                        if iter_mut_method == "iter_mut"
+                            && args.is_empty()
                             && chain.steps.iter().any(|s| matches!(s, IterStep::Enumerate))
                         {
                             if let IrPattern::Tuple(parts) = pattern {
                                 if parts.len() == 2 {
                                     if let (
-                                        IrPattern::Ident { name: index_name, .. },
-                                        IrPattern::Ident { name: value_name, .. },
+                                        IrPattern::Ident {
+                                            name: index_name, ..
+                                        },
+                                        IrPattern::Ident {
+                                            name: value_name, ..
+                                        },
                                     ) = (&parts[0], &parts[1])
                                     {
                                         let idx_var = format!("__mut_{}", indent);
                                         let arr_str = format!(
                                             "{}",
-                                            TsFmt(TsExprWriter { expr: mutable_source }, cx)
+                                            TsFmt(
+                                                TsExprWriter {
+                                                    expr: mutable_source
+                                                },
+                                                cx
+                                            )
                                         );
                                         let cx_body = cx.with_mut_ref(MutRef {
                                             var: value_name.clone(),
@@ -3391,11 +3831,78 @@ fn emit_statement_expr(
                                             "{}const {} = {};",
                                             bind_ind, index_name, idx_var
                                         )?;
-                                        TsBlockWriter { block: body, indent: indent + 1 }
-                                            .ts_fmt(f, &cx_body)?;
+                                        TsBlockWriter {
+                                            block: body,
+                                            indent: indent + 1,
+                                        }
+                                        .ts_fmt(f, &cx_body)?;
                                         write!(f, "}}")?;
                                         return Ok(());
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // A source-level `.iter_mut().enumerate()` can also be represented
+            // as nested MethodCall nodes rather than an IterPipeline. Use an
+            // indexed loop so the enumerated element remains a write-through ref.
+            if let IrExprKind::MethodCall {
+                receiver: iter,
+                method: MethodKind::Other(enumerate),
+                args,
+                ..
+            } = &collection.kind
+            {
+                if enumerate == "enumerate" && args.is_empty() {
+                    if let IrExprKind::MethodCall {
+                        receiver: mutable_source,
+                        method: MethodKind::Other(iter_mut),
+                        args: iter_mut_args,
+                        ..
+                    } = &iter.kind
+                    {
+                        if iter_mut == "iter_mut" && iter_mut_args.is_empty() {
+                            if let IrPattern::Tuple(parts) = pattern {
+                                if let [
+                                    IrPattern::Ident {
+                                        name: index_name, ..
+                                    },
+                                    IrPattern::Ident {
+                                        name: value_name, ..
+                                    },
+                                ] = parts.as_slice()
+                                {
+                                    let idx_var = format!("__mut_{}", indent);
+                                    let arr_str = format!(
+                                        "{}",
+                                        TsFmt(
+                                            TsExprWriter {
+                                                expr: mutable_source
+                                            },
+                                            cx
+                                        )
+                                    );
+                                    let cx_body = cx.with_mut_ref(MutRef {
+                                        var: value_name.clone(),
+                                        array_expr: arr_str.clone(),
+                                        index_var: idx_var.clone(),
+                                    });
+                                    writeln!(
+                                        f,
+                                        "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
+                                        idx_var, idx_var, arr_str, idx_var
+                                    )?;
+                                    let bind_ind = "  ".repeat(indent + 1);
+                                    writeln!(f, "{}const {} = {};", bind_ind, index_name, idx_var)?;
+                                    TsBlockWriter {
+                                        block: body,
+                                        indent: indent + 1,
+                                    }
+                                    .ts_fmt(f, &cx_body)?;
+                                    write!(f, "}}")?;
+                                    return Ok(());
                                 }
                             }
                         }
@@ -3417,7 +3924,12 @@ fn emit_statement_expr(
                     let idx_var = format!("__zip_mut_{}", indent);
                     let mut_arr = format!(
                         "{}",
-                        TsFmt(TsExprWriter { expr: method_leaves[mutable_leaf].0 }, cx)
+                        TsFmt(
+                            TsExprWriter {
+                                expr: method_leaves[mutable_leaf].0
+                            },
+                            cx
+                        )
                     );
                     let cx_body = cx.with_mut_ref(MutRef {
                         var: names[mutable_leaf].clone(),
@@ -3438,8 +3950,11 @@ fn emit_statement_expr(
                         TsExprWriter { expr: source }.ts_fmt(f, cx)?;
                         writeln!(f, "[Number({})];", idx_var)?;
                     }
-                    TsBlockWriter { block: body, indent: indent + 1 }
-                        .ts_fmt(f, &cx_body)?;
+                    TsBlockWriter {
+                        block: body,
+                        indent: indent + 1,
+                    }
+                    .ts_fmt(f, &cx_body)?;
                     write!(f, "}}")?;
                     return Ok(());
                 }
@@ -3458,7 +3973,15 @@ fn emit_statement_expr(
                 if patterns_ok && leaves.len() == names.len() && mutable_leaf.is_some() {
                     let mutable_leaf = mutable_leaf.unwrap();
                     let idx_var = format!("__zip_mut_{}", indent);
-                    let mut_arr = format!("{}", TsFmt(TsExprWriter { expr: leaves[mutable_leaf].0 }, cx));
+                    let mut_arr = format!(
+                        "{}",
+                        TsFmt(
+                            TsExprWriter {
+                                expr: leaves[mutable_leaf].0
+                            },
+                            cx
+                        )
+                    );
                     let mut cx_body = cx.with_mut_ref(MutRef {
                         var: names[mutable_leaf].clone(),
                         array_expr: mut_arr.clone(),
@@ -3496,7 +4019,15 @@ fn emit_statement_expr(
             } = &collection.kind
             {
                 if let IrPattern::Ident { name, .. } = pattern {
-                    let arr_str = format!("{}", TsFmt(TsExprWriter { expr: mutable_source }, cx));
+                    let arr_str = format!(
+                        "{}",
+                        TsFmt(
+                            TsExprWriter {
+                                expr: mutable_source
+                            },
+                            cx
+                        )
+                    );
                     let idx_var = format!("__mut_{}", indent);
                     let cx_body = cx.with_mut_ref(MutRef {
                         var: name.clone(),
@@ -3508,10 +4039,54 @@ fn emit_statement_expr(
                         "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
                         idx_var, idx_var, arr_str, idx_var
                     )?;
-                    TsBlockWriter { block: body, indent }
-                        .ts_fmt(f, &cx_body)?;
+                    TsBlockWriter {
+                        block: body,
+                        indent,
+                    }
+                    .ts_fmt(f, &cx_body)?;
                     write!(f, "}}")?;
                     return Ok(());
+                }
+            }
+            // Iterating a mutable slice parameter directly (`for value in values`)
+            // yields references in Rust but copied values in a JS for-of loop. Keep
+            // those element bindings write-through by iterating by index.
+            if let Some(IrType::Reference {
+                mutable: true,
+                elem,
+            }) = infer_expr_ir_type(collection, cx)
+            {
+                let iterable =
+                    matches!(elem.as_ref(), IrType::Array { .. } | IrType::Vector { .. })
+                        || matches!(
+                            elem.as_ref(),
+                            IrType::Struct {
+                                kind: StructKind::Custom(name),
+                                ..
+                            } if matches!(name.as_str(), "Vec" | "VecDeque")
+                        );
+                if iterable {
+                    if let IrPattern::Ident { name, .. } = pattern {
+                        let arr_str = format!("{}", TsFmt(TsExprWriter { expr: collection }, cx));
+                        let idx_var = format!("__mut_{}", indent);
+                        let cx_body = cx.with_mut_ref(MutRef {
+                            var: name.clone(),
+                            array_expr: arr_str.clone(),
+                            index_var: idx_var.clone(),
+                        });
+                        writeln!(
+                            f,
+                            "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {{",
+                            idx_var, idx_var, arr_str, idx_var
+                        )?;
+                        TsBlockWriter {
+                            block: body,
+                            indent: indent + 1,
+                        }
+                        .ts_fmt(f, &cx_body)?;
+                        write!(f, "}}")?;
+                        return Ok(());
+                    }
                 }
             }
             // Direct `iter_mut().zip(other.iter())`: preserve the left source's
@@ -3535,14 +4110,23 @@ fn emit_statement_expr(
                             if let IrPattern::Tuple(parts) = pattern {
                                 if parts.len() == 2 {
                                     if let (
-                                        IrPattern::Ident { name: left_name, .. },
-                                        IrPattern::Ident { name: right_name, .. },
+                                        IrPattern::Ident {
+                                            name: left_name, ..
+                                        },
+                                        IrPattern::Ident {
+                                            name: right_name, ..
+                                        },
                                     ) = (&parts[0], &parts[1])
                                     {
                                         let idx_var = format!("__zip_mut_{}", indent);
                                         let arr_str = format!(
                                             "{}",
-                                            TsFmt(TsExprWriter { expr: mutable_source }, cx)
+                                            TsFmt(
+                                                TsExprWriter {
+                                                    expr: mutable_source
+                                                },
+                                                cx
+                                            )
                                         );
                                         let cx_body = cx.with_mut_ref(MutRef {
                                             var: left_name.clone(),
@@ -3558,8 +4142,11 @@ fn emit_statement_expr(
                                         write!(f, "{}const {} = ", bind_ind, right_name)?;
                                         TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
                                         writeln!(f, "[Number({})];", idx_var)?;
-                                        TsBlockWriter { block: body, indent: indent + 1 }
-                                            .ts_fmt(f, &cx_body)?;
+                                        TsBlockWriter {
+                                            block: body,
+                                            indent: indent + 1,
+                                        }
+                                        .ts_fmt(f, &cx_body)?;
                                         write!(f, "}}")?;
                                         return Ok(());
                                     }
@@ -3715,6 +4302,82 @@ fn emit_statement_expr(
     Ok(())
 }
 
+/// Lower a `let value = match ...` containing a caller-return arm into actual
+/// statement-level branches. Keeping `return` outside an expression IIFE both
+/// preserves Rust's early-return semantics and lets TypeScript narrow the
+/// surviving match value after the diverging branch.
+fn emit_let_match_with_return(
+    pattern: &IrPattern,
+    ty: Option<&IrType>,
+    init: &IrExpr,
+    statement_index: usize,
+    indent: &str,
+    f: &mut fmt::Formatter<'_>,
+    cx: &TsContext<'_>,
+) -> core::result::Result<bool, fmt::Error> {
+    let IrExprKind::Match { expr, arms } = &init.kind else {
+        return Ok(false);
+    };
+    if !arms
+        .iter()
+        .any(|arm| matches!(arm.body.kind, IrExprKind::Return(_)))
+        || arms.iter().any(|arm| arm.guard.is_some())
+    {
+        return Ok(false);
+    }
+
+    let matched = format!("__volar_match_{}", statement_index);
+    let result = format!("__volar_match_result_{}", statement_index);
+    writeln!(f, "{}let {} ;", indent, result)?;
+    write!(f, "{}const {} = ", indent, matched)?;
+    TsExprWriter { expr }.ts_fmt(f, cx)?;
+    writeln!(f, ";")?;
+
+    for (index, arm) in arms.iter().enumerate() {
+        if index + 1 < arms.len() {
+            write!(f, "{}if (", indent)?;
+            ts_pattern_condition(&arm.pattern, &matched, f)?;
+            writeln!(f, ") {{")?;
+        } else {
+            writeln!(f, "{}{{", indent)?;
+        }
+        let body_indent = format!("{}  ", indent);
+        let mut bindings = String::new();
+        ts_emit_pattern_bindings(&arm.pattern, &matched, &mut bindings)?;
+        for binding in bindings.lines() {
+            writeln!(f, "{}{}", body_indent, binding)?;
+        }
+        match &arm.body.kind {
+            IrExprKind::Return(Some(value)) => {
+                write!(f, "{}return ", body_indent)?;
+                TsExprWriter { expr: value }.ts_fmt(f, cx)?;
+                writeln!(f, ";")?;
+            }
+            IrExprKind::Return(None) => writeln!(f, "{}return undefined;", body_indent)?,
+            _ => {
+                write!(f, "{}{} = ", body_indent, result)?;
+                TsExprWriter { expr: &arm.body }.ts_fmt(f, cx)?;
+                writeln!(f, ";")?;
+            }
+        }
+        writeln!(f, "{}}}", indent)?;
+    }
+
+    let keyword = if pattern_is_mutable(pattern) {
+        "let"
+    } else {
+        "const"
+    };
+    write!(f, "{}{} ", indent, keyword)?;
+    TsPatternWriter { pat: pattern }.ts_fmt(f, cx)?;
+    if let Some(ty) = ty {
+        write!(f, ": ")?;
+        TsTypeWriter { ty }.ts_fmt(f, cx)?;
+    }
+    writeln!(f, " = {};", result)?;
+    Ok(true)
+}
+
 // ============================================================================
 // STATEMENT
 // ============================================================================
@@ -3731,6 +4394,69 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         match &self.stmt.kind {
+            IrStmtKind::LetElse {
+                pattern,
+                ty,
+                init,
+                else_expr,
+            } => {
+                if let Some(IrType::TypeParam(tp)) = ty {
+                    collect_pattern_var_types(pattern, tp, cx);
+                }
+                let let_else_name = format!("__volar_let_else_{}", self.try_index);
+                if let Some(init) = init {
+                    if let IrExprKind::Try(inner) = &init.kind {
+                        let try_name = format!("__volar_let_else_try_{}", self.try_index);
+                        write!(f, "{}const {} = ", ind, try_name)?;
+                        TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
+                        writeln!(f, ";")?;
+                        if cx.try_returns_option {
+                            writeln!(f, "{}if ({} == null) return undefined;", ind, try_name)?;
+                        } else {
+                            writeln!(
+                                f,
+                                "{}if ({} instanceof __VolarError) return {};",
+                                ind, try_name, try_name
+                            )?;
+                        }
+                        write!(f, "{}const {}", ind, let_else_name)?;
+                        if let Some(ty) = ty {
+                            write!(f, ": ")?;
+                            TsTypeWriter { ty }.ts_fmt(f, cx)?;
+                        }
+                        writeln!(f, " = {};", try_name)?;
+                    } else {
+                        write!(f, "{}const {}", ind, let_else_name)?;
+                        if let Some(ty) = ty {
+                            write!(f, ": ")?;
+                            TsTypeWriter { ty }.ts_fmt(f, cx)?;
+                        }
+                        write!(f, " = ")?;
+                        TsExprWriter { expr: init }.ts_fmt(f, cx)?;
+                        writeln!(f, ";")?;
+                    }
+                } else {
+                    writeln!(f, "{}const {} = undefined;", ind, let_else_name)?;
+                }
+                write!(f, "{}if (!(", ind)?;
+                ts_pattern_condition(pattern, &let_else_name, f)?;
+                writeln!(f, ")) {{")?;
+                let else_ind = "  ".repeat(self.indent + 1);
+                write!(f, "{}", else_ind)?;
+                if is_statement_like(else_expr) {
+                    emit_statement_expr(else_expr, self.indent + 1, f, cx)?;
+                } else {
+                    TsExprWriter { expr: else_expr }.ts_fmt(f, cx)?;
+                    write!(f, ";")?;
+                }
+                writeln!(f)?;
+                writeln!(f, "{}}}", ind)?;
+                let mut bindings = String::new();
+                ts_emit_pattern_bindings(pattern, &let_else_name, &mut bindings)?;
+                for binding in bindings.lines() {
+                    writeln!(f, "{}{}", ind, binding)?;
+                }
+            }
             // Rust `?` is statement-level control flow, not an expression-level
             // cast: evaluate once, propagate an error immediately, then bind the
             // narrowed Ok value. `var` deliberately permits multiple Try statements
@@ -3750,12 +4476,20 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                 write!(f, "{}const {} = ", ind, try_name)?;
                 TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
                 writeln!(f, ";")?;
-                writeln!(
-                    f,
-                    "{}if ({} instanceof __VolarError) return {};",
-                    ind, try_name, try_name
-                )?;
-                let kw = if pattern_is_mutable(pattern) { "let" } else { "const" };
+                if cx.try_returns_option {
+                    writeln!(f, "{}if ({} == null) return undefined;", ind, try_name)?;
+                } else {
+                    writeln!(
+                        f,
+                        "{}if ({} instanceof __VolarError) return {};",
+                        ind, try_name, try_name
+                    )?;
+                }
+                let kw = if pattern_is_mutable(pattern) {
+                    "let"
+                } else {
+                    "const"
+                };
                 write!(f, "{}{} ", ind, kw)?;
                 TsPatternWriter { pat: pattern }.ts_fmt(f, cx)?;
                 if let Some(t) = ty {
@@ -3768,6 +4502,19 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                 // Track `let x: T = ...` bindings so size_of_val(x) → ctx.sizeOfT.
                 if let Some(IrType::TypeParam(tp)) = ty {
                     collect_pattern_var_types(pattern, tp, cx);
+                }
+                if let Some(init) = init {
+                    if emit_let_match_with_return(
+                        pattern,
+                        ty.as_ref(),
+                        init,
+                        self.try_index,
+                        &ind,
+                        f,
+                        cx,
+                    )? {
+                        return Ok(());
+                    }
                 }
                 let is_mutable = pattern_is_mutable(pattern);
                 let kw = if is_mutable { "let" } else { "const" };
@@ -3797,9 +4544,7 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                 }
                 writeln!(f, ";")?;
             }
-            IrStmtKind::Semi(e) | IrStmtKind::Expr(e)
-                if matches!(e.kind, IrExprKind::Try(_)) =>
-            {
+            IrStmtKind::Semi(e) | IrStmtKind::Expr(e) if matches!(e.kind, IrExprKind::Try(_)) => {
                 let IrExprKind::Try(inner) = &e.kind else {
                     unreachable!("match guard above proves Try")
                 };
@@ -3807,11 +4552,15 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                 write!(f, "{}const {} = ", ind, try_name)?;
                 TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
                 writeln!(f, ";")?;
-                writeln!(
-                    f,
-                    "{}if ({} instanceof __VolarError) return {};",
-                    ind, try_name, try_name
-                )?;
+                if cx.try_returns_option {
+                    writeln!(f, "{}if ({} == null) return undefined;", ind, try_name)?;
+                } else {
+                    writeln!(
+                        f,
+                        "{}if ({} instanceof __VolarError) return {};",
+                        ind, try_name, try_name
+                    )?;
+                }
             }
             IrStmtKind::Semi(e) => {
                 // Statement-like expressions get special treatment
@@ -3854,6 +4603,12 @@ impl<'a> TsBackend for TsExprWriter<'a> {
         match &self.expr.kind {
             IrExprKind::Lit(l) => ts_literal(l, f)?,
             IrExprKind::Var(v) => {
+                // Mutable iterator bindings are represented by indexed write-through
+                // refs rather than JS loop locals; reads/method receivers must resolve
+                // to the backing element just like explicit `*value` expressions.
+                if let Some(r) = cx.find_mut_ref(v) {
+                    return write!(f, "{}[Number({})]", r.array_expr, r.index_var);
+                }
                 let name = if v == "self" {
                     "this".to_string()
                 } else if v == "None" {
@@ -3931,6 +4686,29 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             IrExprKind::Call { func, args } => {
                 // Check for Some(x)/None via Path or Var
                 if let IrExprKind::Path { segments, .. } = &func.kind {
+                    if segments.len() > 1 {
+                        if let Some(name) = segments.last().map(String::as_str) {
+                            if is_primitive_class(name) || cx.is_tuple_struct(name) {
+                                let module_path = segments[..segments.len() - 1]
+                                    .iter()
+                                    .map(String::as_str)
+                                    .filter(|segment| !is_namespace_prefix(segment))
+                                    .map(String::from)
+                                    .collect::<Vec<_>>();
+                                let class_name = cx.ts_qualified_name(&module_path, name);
+                                write!(f, "new {}(", class_name)?;
+                                let mut first = true;
+                                for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                                    if !first {
+                                        write!(f, ", ")?;
+                                    }
+                                    first = false;
+                                    TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                                }
+                                return write!(f, ")");
+                            }
+                        }
+                    }
                     if segments.len() == 1 {
                         let name = &segments[0];
                         match name.as_str() {
@@ -4097,7 +4875,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     // Check if target is an internal function that needs ctx forwarding
                     if segments.len() == 1 {
                         let target_name = &segments[0];
-                        if cx.get_witness_needs(target_name).is_some() {
+                        if cx.has_ctx_param && cx.get_witness_needs(target_name).is_some() {
                             write!(f, "{}(ctx", target_name)?;
                             for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
                                 write!(f, ", ")?;
@@ -4174,10 +4952,46 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         {
                             return write!(f, "([] as any[])");
                         }
-                        // Enum::Variant(...) → new EnumName_VariantName(...)
+                        if segs.as_slice() == ["Vec", "as_slice"] && args.len() == 1 {
+                            return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                        }
+                        if segs.as_slice() == ["Vec", "from"] && args.len() == 1 {
+                            // `Vec::from(&slice)` copies the elements into a new
+                            // vector; preserve that copy rather than emitting a
+                            // nonexistent runtime `Vec` value or aliasing input.
+                            write!(f, "Array.from(")?;
+                            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+                            return write!(f, ")");
+                        }
+                        if segs.as_slice() == ["u32", "try_from"] && args.len() == 1 {
+                            write!(f, "__u32_try_from(")?;
+                            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+                            return write!(f, ")");
+                        }
+                        // Enum::Variant(...) constructs a variant only when the
+                        // registry confirms that this is an actual variant. Other
+                        // enum-qualified calls (e.g. Stage::try_from) are flattened
+                        // associated functions and must not become fake variants.
                         if segs.len() == 2 && cx.enum_names.contains(segs[0]) {
-                            write!(f, "new {}_{}", segs[0], segs[1])?;
-                            write!(f, "(")?;
+                            let variant = format!("{}::{}", segs[0], segs[1]);
+                            if let Some(info) = find_enum_variant(cx, &variant) {
+                                if info.is_unit && args.is_empty() {
+                                    return write!(f, "new {}()", info.class_name);
+                                }
+                                if !info.is_unit {
+                                    write!(f, "new {}(", info.class_name)?;
+                                    let mut first = true;
+                                    for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                                        if !first {
+                                            write!(f, ", ")?;
+                                        }
+                                        first = false;
+                                        TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                                    }
+                                    return write!(f, ")");
+                                }
+                            }
+                            write!(f, "{}(", segs[1])?;
                             let mut first = true;
                             for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
                                 if !first {
@@ -4193,7 +5007,8 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         // (`DigestImpl`) → `new X(args)`. Type params are handled
                         // earlier via ctx.newT; real structs construct via
                         // `new StructName({...})` (StructExpr), not `::new()`.
-                        if segs.len() == 2 && segs[1] == "new"
+                        if segs.len() == 2
+                            && segs[1] == "new"
                             && !is_crypto_type_param(segs[0])
                             && !cx.class_witnesses.iter().any(|w| w == segs[0])
                         {
@@ -4227,6 +5042,20 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         }
                     }
                 }
+                // Unqualified Rust free-function calls are represented by `Var`
+                // in the IR (unlike turbofish calls, which remain `Path`).
+                // Forward their leading witness just as for a single-segment path.
+                if let IrExprKind::Var(target_name) = &func.kind {
+                    if cx.has_ctx_param && cx.get_witness_needs(target_name).is_some() {
+                        TsExprWriter { expr: func }.ts_fmt(f, cx)?;
+                        write!(f, "(ctx")?;
+                        for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                            write!(f, ", ")?;
+                            TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                        }
+                        return write!(f, ")");
+                    }
+                }
                 // oracle/action/rng call sites: prepend `await` or `yield*`.
                 let callee_name: Option<&str> = match &func.kind {
                     IrExprKind::Var(n) => Some(n.as_str()),
@@ -4257,8 +5086,21 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, ")")?;
             }
             IrExprKind::Field { base, field } => {
+                // Generic-array wrappers (for example `hybrid_array::Array<T, N>`)
+                // are erased to their backing JS arrays by dynamic lowering. Their
+                // tuple field `.0` is therefore transparent, unlike a positional
+                // field on an emitted tuple-struct class.
+                let erased_array_field = field == "0"
+                    && infer_expr_ir_type(base, cx).is_some_and(|ty| {
+                        matches!(
+                            unwrap_ref(&ty),
+                            IrType::Array { .. } | IrType::Vector { .. }
+                        )
+                    });
                 TsExprWriter { expr: base }.ts_fmt(f, cx)?;
-                write!(f, "{}", ts_field_access(field))?;
+                if !erased_array_field {
+                    write!(f, "{}", ts_field_access(field))?;
+                }
             }
             IrExprKind::Index { base, index } => {
                 // TODO: Slice operations should be represented as a dedicated
@@ -4297,6 +5139,14 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
             }
             IrExprKind::Path { segments, .. } => {
+                let namespace_stripped: Vec<&str> = segments
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|segment| !is_namespace_prefix(segment))
+                    .collect();
+                if namespace_stripped.as_slice() == ["Vec", "as_slice"] {
+                    return write!(f, "(value: any) => value");
+                }
                 // Single-segment path that is a class witness → ctx.TClass
                 if segments.len() == 1 && cx.class_witnesses.contains(&segments[0]) {
                     write!(f, "ctx.{}Class", &segments[0])?;
@@ -4328,10 +5178,23 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         resolved.push(last);
                     }
                     // `Enum::Variant` in value position → an instance of the variant
-                    // class (`new Enum_Variant()`). Unit variants take no fields.
-                    if resolved.len() == 2 && cx.enum_names.contains(&resolved[0]) {
-                        write!(f, "new {}_{}()", resolved[0], resolved[1])?;
-                        return Ok(());
+                    // class, but only when IR metadata confirms the qualified variant.
+                    if resolved.len() == 2 {
+                        let variant = format!("{}::{}", resolved[0], resolved[1]);
+                        if let Some(info) = find_enum_variant(cx, &variant) {
+                            if info.is_unit {
+                                write!(f, "new {}()", info.class_name)?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                    if resolved.len() == 1 {
+                        if let Some(variant) = find_enum_variant(cx, &resolved[0]) {
+                            if variant.is_unit {
+                                write!(f, "new {}()", variant.class_name)?;
+                                return Ok(());
+                            }
+                        }
                     }
                     // Associated constants whose Rust definitions are attached to
                     // impls (the parser intentionally keeps them out of module
@@ -4352,7 +5215,10 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                                 return Ok(());
                             }
                             ("EdPoint", "IDENTITY") => {
-                                write!(f, "new EdPoint({{ $fx: new Fe25519([0n, 0n, 0n, 0n]), $fy: new Fe25519([1n, 0n, 0n, 0n]), $fz: new Fe25519([1n, 0n, 0n, 0n]), $ft: new Fe25519([0n, 0n, 0n, 0n]) }})")?;
+                                write!(
+                                    f,
+                                    "new EdPoint({{ $fx: new Fe25519([0n, 0n, 0n, 0n]), $fy: new Fe25519([1n, 0n, 0n, 0n]), $fz: new Fe25519([1n, 0n, 0n, 0n]), $ft: new Fe25519([0n, 0n, 0n, 0n]) }})"
+                                )?;
                                 return Ok(());
                             }
                             _ => {}
@@ -4377,6 +5243,28 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 } else {
                     base.to_string()
                 };
+                if let Some(variant) = find_enum_variant(cx, &raw) {
+                    let fields_match = variant.is_struct
+                        && variant.fields.len() == fields.len()
+                        && variant
+                            .fields
+                            .iter()
+                            .all(|name| fields.iter().any(|(field, _)| field == name));
+                    if fields_match {
+                        write!(f, "new {}(", variant.class_name)?;
+                        for (index, field_name) in variant.fields.iter().enumerate() {
+                            if index > 0 {
+                                write!(f, ", ")?;
+                            }
+                            let (_, value) = fields
+                                .iter()
+                                .find(|(field, _)| field == field_name)
+                                .unwrap();
+                            TsExprWriter { expr: value }.ts_fmt(f, cx)?;
+                        }
+                        return write!(f, ")");
+                    }
+                }
                 let real_fields: Vec<&(String, IrExpr)> = fields
                     .iter()
                     .filter(|(n, v)| !n.starts_with("_phantom") && !is_phantom_arg(v))
@@ -4444,7 +5332,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, "]")?;
                 }
             }
-            IrExprKind::Repeat { elem, len } => {
+            IrExprKind::Repeat { elem, len } | IrExprKind::VecRepeat { elem, len } => {
                 write!(f, "Array.from({{length: Number(")?;
                 TsExprWriter { expr: len }.ts_fmt(f, cx)?;
                 write!(f, ")}}, () => ")?;
@@ -4595,6 +5483,12 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, ")")?;
             }
             IrExprKind::Closure { params, body, .. } => {
+                let mut cx_body = cx.with_local_var_types(BTreeMap::new());
+                for param in params {
+                    if let Some(ty) = &param.ty {
+                        track_pattern_type(&param.pattern, ty, &mut cx_body);
+                    }
+                }
                 write!(f, "(")?;
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
@@ -4607,7 +5501,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     }
                 }
                 write!(f, ") => ")?;
-                TsExprWriter { expr: body }.ts_fmt(f, cx)?;
+                TsExprWriter { expr: body }.ts_fmt(f, &cx_body)?;
             }
             IrExprKind::Range {
                 start,
@@ -4659,6 +5553,15 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, " ")?;
                     TsExprWriter { expr: e }.ts_fmt(f, cx)?;
                 }
+            }
+            IrExprKind::Cast { expr, ty }
+                if matches!(&expr.kind, IrExprKind::Lit(IrLit::Int(_)))
+                    && !matches!(ty.as_ref(), IrType::Primitive(PrimitiveType::U8)) =>
+            {
+                // A suffixed integer literal is already represented as bigint in
+                // TypeScript; its IR cast carries type information for inference,
+                // not a runtime conversion. Preserve the existing emitted value.
+                TsExprWriter { expr }.ts_fmt(f, cx)?;
             }
             IrExprKind::Cast { expr, ty } => match ty.as_ref() {
                 IrType::Primitive(PrimitiveType::U32) => {
@@ -4866,6 +5769,93 @@ fn emit_method_call(
     }
 }
 
+fn emit_optional_range_get(
+    receiver: &IrExpr,
+    start: Option<&IrExpr>,
+    end: Option<&IrExpr>,
+    inclusive: bool,
+    f: &mut fmt::Formatter<'_>,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
+    write!(f, "(() => {{ const __get_array = ")?;
+    TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+    write!(f, "; const __get_start = ")?;
+    if let Some(start) = start {
+        write!(f, "BigInt(")?;
+        TsExprWriter { expr: start }.ts_fmt(f, cx)?;
+        write!(f, ")")?;
+    } else {
+        write!(f, "0n")?;
+    }
+    write!(f, "; const __get_end = ")?;
+    if let Some(end) = end {
+        write!(f, "BigInt(")?;
+        TsExprWriter { expr: end }.ts_fmt(f, cx)?;
+        write!(f, ")")?;
+        if inclusive {
+            write!(f, " + 1n")?;
+        }
+    } else {
+        write!(f, "BigInt(__get_array.length)")?;
+    }
+    write!(
+        f,
+        "; return __get_array != null && __get_start <= __get_end && __get_end <= BigInt(__get_array.length) ? __get_array.slice(Number(__get_start), Number(__get_end)) : undefined; }})()"
+    )
+}
+
+fn emit_bounded_integer_op(
+    receiver: &IrExpr,
+    arg: &IrExpr,
+    op: &str,
+    saturating: bool,
+    f: &mut fmt::Formatter<'_>,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
+    let primitive = infer_expr_ir_type(receiver, cx)
+        .and_then(|ty| resolve_width_type_alias(&ty, cx))
+        .and_then(|ty| match unwrap_ref(&ty) {
+            IrType::Primitive(primitive) => Some(*primitive),
+            _ => None,
+        });
+    let width = primitive.and_then(primitive_bit_width).unwrap_or_else(|| {
+        // Keep unknown/generic integer operations visible as a diagnostic rather
+        // than silently pretending BigInt has Rust's unbounded checked semantics.
+        infer_wrapping_bit_width(receiver, cx)
+    });
+    let signed = primitive == Some(PrimitiveType::I128);
+    let (min, max) = if signed {
+        let magnitude = 1u128 << (width - 1);
+        (format!("-{}", magnitude), (magnitude - 1).to_string())
+    } else {
+        let max = if width == 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        };
+        ("0".to_string(), max.to_string())
+    };
+
+    write!(f, "(() => {{ const __a = ")?;
+    TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+    write!(f, "; const __b = ")?;
+    TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+    write!(f, "; const __result = __a {} __b; return ", op)?;
+    if saturating {
+        write!(
+            f,
+            "__result < {}n ? {}n : (__result > {}n ? {}n : __result); }})()",
+            min, min, max, max
+        )
+    } else {
+        write!(
+            f,
+            "__result >= {}n && __result <= {}n ? __result : undefined; }})()",
+            min, max
+        )
+    }
+}
+
 /// Emit a method call for a [`StdMethod`] — the typed fast path.
 fn emit_known_method_call(
     receiver: &IrExpr,
@@ -4904,9 +5894,28 @@ fn emit_known_method_call(
         StdMethod::Into if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
         StdMethod::Cloned if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
         StdMethod::ToVec if args.is_empty() => {
-            write!(f, "[...")?;
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, "]")
+            let digest_finalize = match &receiver.kind {
+                IrExprKind::Call { func, .. } => match &func.kind {
+                    IrExprKind::Path { segments, .. } => {
+                        segments.iter().any(|segment| segment == "Digest")
+                            && segments.last().is_some_and(|segment| segment == "finalize")
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if digest_finalize {
+                // Digest::finalize returns a byte buffer (`Uint8Array` in the
+                // TS stub), whose spread elements are numbers; Rust `u8` is
+                // represented as bigint in this backend.
+                write!(f, "Array.from(")?;
+                TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+                write!(f, ", BigInt)")
+            } else {
+                write!(f, "[...")?;
+                TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+                write!(f, "]")
+            }
         }
         StdMethod::AsSlice if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
         StdMethod::Len if args.is_empty() => {
@@ -4921,6 +5930,21 @@ fn emit_known_method_call(
             write!(f, ")")
         }
         StdMethod::Get if args.len() == 1 => {
+            if let IrExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } = &args[0].kind
+            {
+                return emit_optional_range_get(
+                    receiver,
+                    start.as_deref(),
+                    end.as_deref(),
+                    *inclusive,
+                    f,
+                    cx,
+                );
+            }
             // arr.get(j) → optional chaining, returns T | undefined
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, "?.[")?;
@@ -4961,8 +5985,9 @@ fn emit_known_method_call(
             write!(f, ")")
         }
         StdMethod::Finalize if args.is_empty() => {
+            write!(f, "Array.from(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ".finalize()")
+            write!(f, ".finalize(), BigInt)")
         }
         StdMethod::Bitxor if args.len() == 1 => {
             write!(f, "fieldBitxor(")?;
@@ -5038,19 +6063,17 @@ fn emit_known_method_call(
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        StdMethod::CheckedAdd | StdMethod::SaturatingAdd if args.len() == 1 => {
-            write!(f, "(")?;
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, " + (")?;
-            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, "))")
+        StdMethod::CheckedAdd if args.len() == 1 => {
+            emit_bounded_integer_op(receiver, &args[0], "+", false, f, cx)
         }
-        StdMethod::CheckedSub | StdMethod::SaturatingSub if args.len() == 1 => {
-            write!(f, "(")?;
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, " - (")?;
-            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, "))")
+        StdMethod::SaturatingAdd if args.len() == 1 => {
+            emit_bounded_integer_op(receiver, &args[0], "+", true, f, cx)
+        }
+        StdMethod::CheckedSub if args.len() == 1 => {
+            emit_bounded_integer_op(receiver, &args[0], "-", false, f, cx)
+        }
+        StdMethod::SaturatingSub if args.len() == 1 => {
+            emit_bounded_integer_op(receiver, &args[0], "-", true, f, cx)
         }
         StdMethod::WrappingMul if args.len() == 1 => {
             write!(f, "BigInt(Math.imul(Number(")?;
@@ -5159,11 +6182,7 @@ fn emit_known_method_call(
             write!(f, "))")
         }
         StdMethod::SaturatingMul if args.len() == 1 => {
-            write!(f, "BigInt(Math.imul(Number(")?;
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, "), Number(")?;
-            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")))")
+            emit_bounded_integer_op(receiver, &args[0], "*", true, f, cx)
         }
         StdMethod::CountOnes if args.is_empty() => {
             // popcount — no native, use a simple approximation
@@ -5175,17 +6194,24 @@ fn emit_known_method_call(
             )
         }
         StdMethod::LeadingZeros if args.is_empty() => {
-            write!(f, "Math.clz32(")?;
+            let bits = infer_wrapping_bit_width(receiver, cx);
+            write!(
+                f,
+                "((__value) => {{ let __bits = 0n; while (__value !== 0n) {{ __value >>= 1n; __bits += 1n; }} return BigInt({}) - __bits; }})(BigInt.asUintN({}, ",
+                bits, bits
+            )?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ")")
+            write!(f, "))")
         }
         StdMethod::TrailingZeros if args.is_empty() => {
-            // Isolate the lowest set bit, then clz32 gives the trailing-zero count.
-            // Math.clz32 and the bitwise ops are number-domain, so convert the
-            // (bigint) operand once up front instead of mixing bigint and number.
-            write!(f, "Math.clz32((() => {{ const __tz = Number(")?;
+            let bits = infer_wrapping_bit_width(receiver, cx);
+            write!(
+                f,
+                "((__value) => {{ let __bits = 0n; if (__value === 0n) return BigInt({}); while ((__value & 1n) === 0n) {{ __value >>= 1n; __bits += 1n; }} return __bits; }})(BigInt.asUintN({}, ",
+                bits, bits
+            )?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") | 0; return (__tz & -__tz) | 0; }})())")
+            write!(f, "))")
         }
         StdMethod::FromLeBytes if args.len() == 1 => {
             // u32::from_le_bytes([b0, b1, b2, b3]) — all bigint
@@ -5241,6 +6267,15 @@ fn emit_known_method_call(
         }
         StdMethod::Abs if args.is_empty() => {
             write!(f, "Math.abs(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ")")
+        }
+        StdMethod::Min | StdMethod::Max if args.is_empty() => {
+            let comparison = if method == StdMethod::Max { ">" } else { "<" };
+            write!(
+                f,
+                "((__values: any[]) => __values.length === 0 ? undefined : __values.reduce((__a: any, __b: any) => __a {comparison} __b ? __a : __b))("
+            )?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
@@ -5301,6 +6336,16 @@ fn emit_other_method_call(
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             return write!(f, ") == null");
         }
+        "is_some_and" if args.len() == 1 => {
+            write!(
+                f,
+                "((__option: any, __predicate: (value: any) => boolean) => __option != null && __predicate(__option))("
+            )?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", ")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            return write!(f, ")");
+        }
         "is_ok" => {
             write!(f, "(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
@@ -5319,11 +6364,48 @@ fn emit_other_method_call(
             // collect() is a no-op in TS — arrays are already concrete
             return TsExprWriter { expr: receiver }.ts_fmt(f, cx);
         }
-        "next_power_of_two" => {
-            // Round up to next power of 2
-            write!(f, "BigInt(1 << Math.ceil(Math.log2(Number(")?;
+        "next_power_of_two" | "checked_next_power_of_two" if args.is_empty() => {
+            // Compute with bigint so large usize values are not rounded through
+            // Number. The checked form returns the Rust Option representation
+            // (undefined) when the result exceeds the receiver's integer width.
+            let checked = name == "checked_next_power_of_two";
+            let max = if checked {
+                let bits = infer_expr_ir_type(receiver, cx)
+                    .and_then(|ty| match unwrap_ref(&ty) {
+                        IrType::Primitive(primitive) => primitive_bit_width(*primitive),
+                        _ => None,
+                    })
+                    .unwrap_or(64);
+                Some(if bits >= 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << bits) - 1
+                })
+            } else {
+                None
+            };
+            write!(
+                f,
+                "((__value: bigint) => {{ let __power = 1n; while (__power < __value) __power <<= 1n; return "
+            )?;
+            if let Some(max) = max {
+                write!(f, "__power <= {}n ? __power : undefined;", max)?;
+            } else {
+                write!(f, "__power;")?;
+            }
+            write!(f, " }}) (")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            return write!(f, "))))");
+            return write!(f, ")");
+        }
+        "and_then" if args.len() == 1 => {
+            write!(
+                f,
+                "((__option: any, __continuation: (value: any) => any) => __option == null ? undefined : __continuation(__option))("
+            )?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", ")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            return write!(f, ")");
         }
         "all" => {
             // .all(|x| pred) → emit as .every()
@@ -5372,6 +6454,17 @@ fn emit_other_method_call(
             write!(f, ")); return __dst; }})()")?;
             return Ok(());
         }
+        // Vec::split_off(at) mutates the original prefix and returns the tail.
+        "split_off" if args.len() == 1 => {
+            write!(
+                f,
+                "((__vector: any[], __at: number) => __vector.splice(__at))("
+            )?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", Number(")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            return write!(f, "))");
+        }
         // `iter.any(pred)` → `Array.prototype.some`.
         "any" if args.len() == 1 => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
@@ -5409,20 +6502,29 @@ fn emit_other_method_call(
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, "); const __j = Number(")?;
             TsExprWriter { expr: &args[1] }.ts_fmt(f, cx)?;
-            write!(f, "); const __tmp = __a[__i]; __a[__i] = __a[__j]; __a[__j] = __tmp; return __a; }})()")?;
+            write!(
+                f,
+                "); const __tmp = __a[__i]; __a[__i] = __a[__j]; __a[__j] = __tmp; return __a; }})()"
+            )?;
             return Ok(());
         }
         // `iter.sum()` on the integer/field-value arrays emitted by this backend.
         "sum" if args.is_empty() => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ".reduce((__sum: bigint, __x: bigint) => __sum + __x, 0n)")?;
+            write!(
+                f,
+                ".reduce((__sum: bigint, __x: bigint) => __sum + __x, 0n)"
+            )?;
             return Ok(());
         }
         // `range.step_by(n)` → every nth range value. Ranges in generated TS are
         // concrete arrays from the range printer, so filter by the array index.
         "step_by" if args.len() == 1 => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ".filter((_: any, __step_i: number) => BigInt(__step_i) % (")?;
+            write!(
+                f,
+                ".filter((_: any, __step_i: number) => BigInt(__step_i) % ("
+            )?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ") === 0n)")?;
             return Ok(());
@@ -5430,11 +6532,21 @@ fn emit_other_method_call(
         "reverse_bits" if args.is_empty() => {
             write!(f, "(() => {{ let __r = ")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, "; let __o = 0n; for (let __i = 0n; __i < 64n; __i += 1n) {{ __o = (__o << 1n) | (__r & 1n); __r >>= 1n; }} return __o; }})()")?;
+            write!(
+                f,
+                "; let __o = 0n; for (let __i = 0n; __i < 64n; __i += 1n) {{ __o = (__o << 1n) | (__r & 1n); __r >>= 1n; }} return __o; }})()"
+            )?;
             return Ok(());
         }
         "rem_euclid" if args.len() == 1 => {
-            write!(f, "((({}) % ({}) + ({})) % ({}))", TsFmt(TsExprWriter { expr: receiver }, cx), TsFmt(TsExprWriter { expr: &args[0] }, cx), TsFmt(TsExprWriter { expr: &args[0] }, cx), TsFmt(TsExprWriter { expr: &args[0] }, cx))?;
+            write!(
+                f,
+                "((({}) % ({}) + ({})) % ({}))",
+                TsFmt(TsExprWriter { expr: receiver }, cx),
+                TsFmt(TsExprWriter { expr: &args[0] }, cx),
+                TsFmt(TsExprWriter { expr: &args[0] }, cx),
+                TsFmt(TsExprWriter { expr: &args[0] }, cx)
+            )?;
             return Ok(());
         }
         "last" if args.is_empty() => {
@@ -5449,7 +6561,10 @@ fn emit_other_method_call(
         }
         "sort_unstable" if args.is_empty() => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ".sort((__a: any, __b: any) => (__a < __b ? -1 : (__a > __b ? 1 : 0)))")?;
+            write!(
+                f,
+                ".sort((__a: any, __b: any) => (__a < __b ? -1 : (__a > __b ? 1 : 0)))"
+            )?;
             return Ok(());
         }
         // `arr.iter_mut()` outside an IterLoop — treat as a plain iteration source
@@ -5471,10 +6586,13 @@ fn emit_other_method_call(
             write!(f, ")[__zip_i]])")?;
             return Ok(());
         }
-        // `arr.enumerate()` → `[i, arr[i]]` pairs.
+        // `arr.enumerate()` yields Rust `usize` indices, represented as bigint.
         "enumerate" if args.is_empty() => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ".map((__enum_a: any, __enum_i: number) => [__enum_i, __enum_a])")?;
+            write!(
+                f,
+                ".map((__enum_a: any, __enum_i: number) => [BigInt(__enum_i), __enum_a] as [bigint, typeof __enum_a])"
+            )?;
             return Ok(());
         }
         // `vec.resize(n, val)` — grow to length n filling with val (statement).
@@ -5499,21 +6617,15 @@ fn emit_other_method_call(
             write!(f, ") - 1n)) === 0n)")?;
             return Ok(());
         }
-        // Checked integer ops: TS bigint is unbounded (never overflows), so the
-        // checked result is always `Some(product)` — emit the plain product wrapped
-        // so a following `.ok_or(...)`/`.unwrap_or(...)` sees a defined value.
+        // Rust checked integer operations return None on width overflow; preserve
+        // that option so a following `.ok_or(...)` can propagate the failure.
         "checked_mul" | "checked_add" | "checked_sub" if args.len() == 1 => {
             let op = match name {
                 "checked_mul" => "*",
                 "checked_add" => "+",
                 _ => "-",
             };
-            write!(f, "((")?;
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") {} (", op)?;
-            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, "))")?;
-            return Ok(());
+            return emit_bounded_integer_op(receiver, &args[0], op, false, f, cx);
         }
         // Option::ok_or(err) — Result<T,E> is erased to `T` in this backend and
         // error returns carry the error value directly, so `opt.ok_or(err)` is
@@ -5547,6 +6659,10 @@ fn emit_other_method_call(
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")")?;
             return Ok(());
+        }
+        "first" if args.is_empty() => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return write!(f, "[0]");
         }
         // PartialEq trait methods → __equals
         "eq" if args.len() == 1 => {
@@ -5588,19 +6704,22 @@ fn emit_other_method_call(
             IrType::Struct { kind, .. } => Some(bare_struct_name(&kind.to_string()).to_string()),
             // A field/param typed as a bare `Ring` parses as `TypeParam("Ring")` even
             // when `Ring` is a concrete struct — resolve it through the registry.
-            IrType::TypeParam(name) if cx.structs_by_name.contains_key(name.as_str()) => {
+            IrType::TypeParam(name)
+                if cx.structs_by_name.contains_key(name.as_str())
+                    || cx.enum_names.contains(name.as_str()) =>
+            {
                 Some(name.clone())
             }
             _ => None,
         }
     });
-    let callee_needs_ctx = receiver_struct
-        .as_ref()
-        .map(|sname| {
+    let callee_needs_ctx = match receiver_struct.as_ref() {
+        Some(sname) => {
             let key = format!("{}.{}", sname, name);
             cx.get_witness_needs(&key).is_some()
-        })
-        .unwrap_or(false);
+        }
+        None => cx.get_unique_method_witness_needs(name).is_some(),
+    };
     // The caller has a `ctx` to forward iff its own signature carries a leading
     // witness `ctx` param (any witness kind, not just Class witnesses).
     let caller_has_ctx = cx.has_ctx_param;
@@ -5610,9 +6729,8 @@ fn emit_other_method_call(
     }
     // Inject ctx witness if the method needs one and the caller doesn't have ctx in scope.
     // We construct ctx inline from the receiver's T-bearing field.
-    let inject_ctx = !forward_ctx
-        && cx.method_t_fields.contains_key(name)
-        && cx.class_witnesses.is_empty();
+    let inject_ctx =
+        !forward_ctx && cx.method_t_fields.contains_key(name) && cx.class_witnesses.is_empty();
     if inject_ctx {
         let field = &cx.method_t_fields[name];
         // { defaultT: () => __zeroValue((recv as any).__field__?.[0] ?? 0n) }
@@ -5662,7 +6780,8 @@ pub(crate) fn is_namespace_prefix(s: &str) -> bool {
 enum KnownCallPath<'a> {
     VecNew,               // Vec::new()          → []
     VecWithCapacity,      // Vec::with_capacity  → Array
-    FromLeBytes(&'a str), // u32/u64/u128::from_le_bytes → u*_from_le_bytes
+    FromLeBytes(&'a str), // u16/u32/u64/u128::from_le_bytes → u*_from_le_bytes
+    IntFrom,              // uN/iN::from(value) → BigInt(value)
     AsRefAsRef,           // AsRef::as_ref       → asRefU8
     SizeOf,               // size_of / size_of_val → ctx.sizeOf_unknown (fallback)
     None_,                // None                → undefined
@@ -5676,8 +6795,26 @@ impl<'a> KnownCallPath<'a> {
             ["VecDeque", "new"] => Some(Self::VecNew),
             ["VecDeque", "with_capacity"] => Some(Self::VecWithCapacity),
             ["Vec", "with_capacity"] => Some(Self::VecWithCapacity),
-            [int, "from_le_bytes"] if matches!(*int, "u32" | "u64" | "u128") => {
+            [int, "from_le_bytes"] if matches!(*int, "u16" | "u32" | "u64" | "u128") => {
                 Some(Self::FromLeBytes(int))
+            }
+            [int, "from"]
+                if matches!(
+                    *int,
+                    "u8" | "u16"
+                        | "u32"
+                        | "u64"
+                        | "u128"
+                        | "usize"
+                        | "i8"
+                        | "i16"
+                        | "i32"
+                        | "i64"
+                        | "i128"
+                        | "isize"
+                ) =>
+            {
+                Some(Self::IntFrom)
             }
             ["AsRef", "as_ref"] => Some(Self::AsRefAsRef),
             ["size_of_val"] | ["size_of"] => Some(Self::SizeOf),
@@ -5700,6 +6837,7 @@ fn emit_path(segments: &[String], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Some(KnownCallPath::VecNew) => write!(f, "[] as any[]"),
         Some(KnownCallPath::VecWithCapacity) => write!(f, "/* Vec::with_capacity */ Array"),
         Some(KnownCallPath::FromLeBytes(ty)) => write!(f, "{}_from_le_bytes", ty),
+        Some(KnownCallPath::IntFrom) => write!(f, "BigInt"),
         Some(KnownCallPath::AsRefAsRef) => write!(f, "asRefU8"),
         Some(KnownCallPath::SizeOf) => write!(f, "ctx.sizeOf_unknown"),
         Some(KnownCallPath::None_) => write!(f, "undefined"),
@@ -5758,7 +6896,7 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
                 IterStep::Enumerate => {
                     write!(
                         f,
-                        ".map((val: any, i: number) => [i, val] as [number, typeof val])"
+                        ".map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val])"
                     )?;
                 }
                 IterStep::Take { count } => {
@@ -6007,7 +7145,16 @@ fn ts_literal(l: &IrLit, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         IrLit::Bool(b) => write!(f, "{}", b),
         IrLit::Char(c) => write!(f, "\"{}\"", c),
         IrLit::Str(s) => write!(f, "\"{}\"", s),
-        IrLit::ByteStr(_) => write!(f, "new Uint8Array([/* byte string */])"),
+        IrLit::ByteStr(bytes) => {
+            write!(f, "[")?;
+            for (index, byte) in bytes.iter().enumerate() {
+                if index > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}n", byte)?;
+            }
+            write!(f, "]")
+        }
         IrLit::Byte(b) => write!(f, "{}n", b),
         IrLit::Unit => write!(f, "undefined"),
     }
@@ -6181,19 +7328,34 @@ fn is_phantom_field(field: &IrField) -> bool {
         || matches!(&field.ty, IrType::Struct { kind, .. } if kind.to_string().contains("PhantomData"))
 }
 
-/// TS has no PhantomData — drop any call argument that is a bare `PhantomData` path.
+/// TS has no PhantomData — drop its zero-sized value in any IR constructor shape.
 fn is_phantom_arg(expr: &IrExpr) -> bool {
-    matches!(&expr.kind, IrExprKind::Path { segments, .. } if segments.last().map(|s| s == "PhantomData").unwrap_or(false))
+    match &expr.kind {
+        IrExprKind::Path { segments, .. } => {
+            segments.last().map(|s| s == "PhantomData").unwrap_or(false)
+        }
+        IrExprKind::Var(name) => name == "PhantomData",
+        IrExprKind::Call { func, .. } => is_phantom_arg(func),
+        IrExprKind::StructExpr { kind, .. } => kind.to_string().contains("PhantomData"),
+        _ => false,
+    }
 }
 
 fn pattern_is_mutable(pat: &IrPattern) -> bool {
     match pat {
         IrPattern::Ident { mutable, .. } => *mutable,
+        IrPattern::Tuple(patterns)
+        | IrPattern::TupleStruct {
+            elems: patterns, ..
+        } => patterns.iter().any(pattern_is_mutable),
+        IrPattern::Struct { fields, .. } => fields.iter().any(|(_, pat)| pattern_is_mutable(pat)),
+        IrPattern::Ref { pat, .. } => pattern_is_mutable(pat),
+        IrPattern::Or(patterns) => patterns.iter().any(pattern_is_mutable),
         _ => false,
     }
 }
 
-fn self_ty_name(ty: &IrType) -> String {
+pub(crate) fn self_ty_name(ty: &IrType) -> String {
     match ty {
         IrType::Struct { kind, .. } => kind.to_string(),
         IrType::TypeParam(p) => p.clone(),
@@ -6239,10 +7401,10 @@ fn ts_pattern_condition(
 
 /// Emit pattern binding statements into the match arm body.
 /// E.g., `Some(s)` → `const s = __match;`
-fn ts_emit_pattern_bindings(
+fn ts_emit_pattern_bindings<W: fmt::Write>(
     pat: &IrPattern,
     match_var: &str,
-    f: &mut fmt::Formatter<'_>,
+    f: &mut W,
 ) -> fmt::Result {
     match pat {
         IrPattern::Ident { name, mutable, .. }
@@ -6339,6 +7501,20 @@ fn unwrap_ref(ty: &IrType) -> &IrType {
     }
 }
 
+fn resolve_known_struct_type(ty: IrType, cx: &TsContext<'_>) -> IrType {
+    match ty {
+        IrType::TypeParam(name) if cx.structs_by_name.contains_key(&name) => IrType::Struct {
+            kind: StructKind::Custom(name),
+            type_args: Vec::new(),
+        },
+        IrType::Reference { mutable, elem } => IrType::Reference {
+            mutable,
+            elem: Box::new(resolve_known_struct_type(*elem, cx)),
+        },
+        other => other,
+    }
+}
+
 fn unwrap_ref_expr(e: &IrExpr) -> &IrExpr {
     match &e.kind {
         IrExprKind::Unary {
@@ -6365,19 +7541,39 @@ fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
             // which may include type parameters ("FooDyn<T>"); the registry is
             // keyed by the bare struct name, so normalize before looking up.
             let bare = bare_struct_name(self_name);
-            cx.structs_by_name.contains_key(bare).then(|| IrType::Struct {
-                kind: StructKind::Custom(bare.to_string()),
-                type_args: Vec::new(),
-            })
+            cx.structs_by_name
+                .contains_key(bare)
+                .then(|| IrType::Struct {
+                    kind: StructKind::Custom(bare.to_string()),
+                    type_args: Vec::new(),
+                })
         }
-        IrExprKind::Var(name) => cx.local_var_types.get(name).cloned(),
+        IrExprKind::Var(name) => cx
+            .local_var_types
+            .get(name)
+            .cloned()
+            .map(|ty| resolve_known_struct_type(ty, cx)),
+        IrExprKind::Path { segments, .. } => {
+            let name = segments.last()?;
+            cx.local_var_types
+                .get(name)
+                .cloned()
+                .map(|ty| resolve_known_struct_type(ty, cx))
+        }
         IrExprKind::Field { base, field } => {
             let base_ty = infer_expr_ir_type(base, cx)?;
             let IrType::Struct { kind, .. } = unwrap_ref(&base_ty) else {
                 return None;
             };
-            let s = cx.structs_by_name.get(&kind.to_string())?;
-            s.fields.iter().find(|f| &f.name == field).map(|f| f.ty.clone())
+            let struct_name = kind.to_string();
+            let s = cx
+                .structs_by_name
+                .get(&struct_name)
+                .or_else(|| cx.structs_by_name.get(bare_struct_name(&struct_name)))?;
+            s.fields
+                .iter()
+                .find(|f| &f.name == field)
+                .map(|f| f.ty.clone())
         }
         IrExprKind::Index { base, .. } => {
             let base_ty = infer_expr_ir_type(base, cx)?;
@@ -6386,6 +7582,126 @@ fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
                 _ => None,
             }
         }
+        IrExprKind::Block(block) => block
+            .expr
+            .as_deref()
+            .and_then(|expr| infer_expr_ir_type(expr, cx)),
+        IrExprKind::Closure { body, .. } => infer_expr_ir_type(body, cx),
+        IrExprKind::If {
+            then_branch,
+            else_branch: Some(else_branch),
+            ..
+        } => {
+            let then_ty = then_branch
+                .expr
+                .as_deref()
+                .and_then(|expr| infer_expr_ir_type(expr, cx))?;
+            let else_ty = infer_expr_ir_type(else_branch, cx)?;
+            (then_ty == else_ty).then_some(then_ty)
+        }
+        IrExprKind::MethodCall {
+            method: MethodKind::Known(StdMethod::Len),
+            ..
+        } => Some(IrType::Primitive(PrimitiveType::Usize)),
+        IrExprKind::MethodCall {
+            receiver,
+            method:
+                MethodKind::Known(
+                    StdMethod::Expect | StdMethod::Unwrap | StdMethod::UnwrapOr | StdMethod::UnwrapOrDefault,
+                ),
+            ..
+        } => {
+            let receiver_ty = infer_expr_ir_type(receiver, cx)?;
+            let IrType::Struct { kind, type_args } = unwrap_ref(&receiver_ty) else {
+                return None;
+            };
+            matches!(kind.to_string().as_str(), "Option" | "Result")
+                .then(|| type_args.first().cloned())
+                .flatten()
+        }
+        IrExprKind::MethodCall {
+            method: MethodKind::Other(method_name),
+            ..
+        } if method_name == "finalize_xof" => Some(IrType::Struct {
+            kind: StructKind::Custom("__StubXofReader".to_string()),
+            type_args: Vec::new(),
+        }),
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Other(method_name),
+            ..
+        } if method_name == "checked_mul" => Some(IrType::Struct {
+            kind: StructKind::Custom("Option".to_string()),
+            type_args: vec![infer_expr_ir_type(receiver, cx)?],
+        }),
+        IrExprKind::MethodCall {
+            args,
+            method: MethodKind::Other(method_name),
+            ..
+        } if method_name == "and_then" => args
+            .first()
+            .and_then(|continuation| infer_expr_ir_type(continuation, cx)),
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Other(method_name),
+            ..
+        } if method_name == "expect" || method_name == "unwrap" => {
+            let receiver_ty = infer_expr_ir_type(receiver, cx)?;
+            let IrType::Struct { kind, type_args } = unwrap_ref(&receiver_ty) else {
+                return None;
+            };
+            matches!(kind.to_string().as_str(), "Option" | "Result")
+                .then(|| type_args.first().cloned())
+                .flatten()
+        }
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Other(method_name),
+            ..
+        } if method_name == "ok_or" || method_name == "ok_or_else" => {
+            let receiver_ty = infer_expr_ir_type(receiver, cx)?;
+            let IrType::Struct { kind, type_args } = unwrap_ref(&receiver_ty) else {
+                return None;
+            };
+            matches!(kind.to_string().as_str(), "Option" | "Result")
+                .then(|| type_args.first().cloned())
+                .flatten()
+        }
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Other(method_name),
+            ..
+        } if method_name == "checked_next_power_of_two" => Some(IrType::Struct {
+            kind: StructKind::Custom("Option".to_string()),
+            type_args: vec![infer_expr_ir_type(receiver, cx)?],
+        }),
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Other(method_name),
+            ..
+        } if method_name == "div_ceil" => infer_expr_ir_type(receiver, cx),
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Other(method_name),
+            ..
+        } => {
+            let receiver_ty = infer_expr_ir_type(receiver, cx)?;
+            let struct_name = match unwrap_ref(&receiver_ty) {
+                IrType::Struct { kind, .. } => kind.to_string(),
+                IrType::TypeParam(name) if cx.structs_by_name.contains_key(name) => name.clone(),
+                _ => return None,
+            };
+            let key = format!("__method__{}::{}", struct_name, method_name);
+            cx.function_return_types.get(&key).cloned()
+        }
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Known(StdMethod::CheckedAdd | StdMethod::CheckedSub),
+            ..
+        } => Some(IrType::Struct {
+            kind: StructKind::Custom("Option".to_string()),
+            type_args: vec![infer_expr_ir_type(receiver, cx)?],
+        }),
         IrExprKind::MethodCall {
             receiver,
             method: MethodKind::Known(StdMethod::WrappingAdd | StdMethod::WrappingSub),
@@ -6395,7 +7711,122 @@ fn infer_expr_ir_type(expr: &IrExpr, cx: &TsContext<'_>) -> Option<IrType> {
             // the receiver's type — same rule Rust's own type checker applies.
             infer_expr_ir_type(receiver, cx)
         }
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Known(StdMethod::OverflowingAdd | StdMethod::OverflowingSub),
+            ..
+        } => Some(IrType::Tuple(vec![
+            infer_expr_ir_type(receiver, cx)?,
+            IrType::Primitive(PrimitiveType::Bool),
+        ])),
+        IrExprKind::Try(inner) => match infer_expr_ir_type(inner, cx)? {
+            IrType::Struct { kind, type_args }
+                if matches!(kind.to_string().as_str(), "Option" | "Result") =>
+            {
+                type_args.into_iter().next()
+            }
+            ty => Some(ty),
+        },
+        IrExprKind::Call { func, .. } => {
+            if let IrExprKind::Path { segments, .. } = &func.kind {
+                let path: Vec<&str> = segments
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|segment| !is_namespace_prefix(segment))
+                    .collect();
+                if path.len() >= 2 {
+                    let key = format!(
+                        "__method__{}::{}",
+                        path[path.len() - 2],
+                        path[path.len() - 1]
+                    );
+                    if let Some(return_type) = cx.function_return_types.get(&key) {
+                        if matches!(return_type, IrType::TypeParam(name) if name == "Self") {
+                            return Some(IrType::Struct {
+                                kind: StructKind::Custom(path[path.len() - 2].to_string()),
+                                type_args: Vec::new(),
+                            });
+                        }
+                        return Some(resolve_known_struct_type(return_type.clone(), cx));
+                    }
+                }
+                if let Some(primitive) = segments
+                    .iter()
+                    .find_map(|segment| PrimitiveType::from_str(segment))
+                {
+                    return Some(IrType::Primitive(primitive));
+                }
+                if segments.last().is_some_and(|segment| segment == "new") {
+                    if let Some(type_name) = segments.iter().rev().nth(1) {
+                        let resolved = resolve_alias_name(type_name, cx);
+                        if matches!(resolved.as_str(), "Sha3_256" | "Shake128" | "Shake256") {
+                            return Some(IrType::Struct {
+                                kind: StructKind::Custom(resolved),
+                                type_args: Vec::new(),
+                            });
+                        }
+                    }
+                }
+            }
+            let name = match &func.kind {
+                IrExprKind::Var(name) => name.as_str(),
+                IrExprKind::Path { segments, .. } => segments.last()?.as_str(),
+                _ => return None,
+            };
+            cx.function_return_types.get(name).cloned()
+        }
+        IrExprKind::StructExpr {
+            kind, type_args, ..
+        } => Some(IrType::Struct {
+            kind: kind.clone(),
+            type_args: type_args.clone(),
+        }),
+        IrExprKind::Tuple(elems) => Some(IrType::Tuple(
+            elems
+                .iter()
+                .map(|elem| infer_expr_ir_type(elem, cx))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        IrExprKind::Array(elems) => Some(IrType::Vector {
+            elem: Box::new(infer_expr_ir_type(elems.first()?, cx)?),
+        }),
+        IrExprKind::FixedArray(elems) => Some(IrType::Array {
+            kind: ArrayKind::FixedArray,
+            elem: Box::new(infer_expr_ir_type(elems.first()?, cx)?),
+            len: ArrayLength::Const(elems.len()),
+        }),
+        IrExprKind::Repeat { elem, .. } | IrExprKind::VecRepeat { elem, .. } => {
+            Some(IrType::Vector {
+                elem: Box::new(infer_expr_ir_type(elem, cx)?),
+            })
+        }
+        IrExprKind::ArrayGenerate { elem_ty, body, .. } => {
+            let elem_ty = elem_ty
+                .as_deref()
+                .cloned()
+                .or_else(|| infer_expr_ir_type(body, cx))?;
+            Some(IrType::Vector {
+                elem: Box::new(elem_ty),
+            })
+        }
+        IrExprKind::Binary { op, left, right } => match op {
+            SpecBinOp::Eq
+            | SpecBinOp::Ne
+            | SpecBinOp::Lt
+            | SpecBinOp::Le
+            | SpecBinOp::Gt
+            | SpecBinOp::Ge
+            | SpecBinOp::And
+            | SpecBinOp::Or => Some(IrType::Primitive(PrimitiveType::Bool)),
+            _ => infer_expr_ir_type(left, cx).or_else(|| infer_expr_ir_type(right, cx)),
+        },
         IrExprKind::Cast { ty, .. } => Some((**ty).clone()),
+        IrExprKind::Unary { op, expr } => match op {
+            SpecUnaryOp::Neg | SpecUnaryOp::Not | SpecUnaryOp::Deref => {
+                infer_expr_ir_type(expr, cx)
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -6486,6 +7917,7 @@ fn primitive_bit_width(p: PrimitiveType) -> Option<u32> {
 /// (see the `[lowering_dyn] warning: ...` precedent in lowering_dyn.rs).
 fn infer_wrapping_bit_width(receiver: &IrExpr, cx: &TsContext<'_>) -> u32 {
     match infer_expr_ir_type(receiver, cx)
+        .and_then(|ty| resolve_width_type_alias(&ty, cx))
         .map(|ty| unwrap_ref(&ty).clone())
         .and_then(|ty| match ty {
             IrType::Primitive(p) => primitive_bit_width(p),
@@ -6493,9 +7925,28 @@ fn infer_wrapping_bit_width(receiver: &IrExpr, cx: &TsContext<'_>) -> u32 {
         }) {
         Some(width) => width,
         None => {
-            warn_wrapping_width_unresolved();
+            warn_wrapping_width_unresolved(receiver);
             32
         }
+    }
+}
+
+/// Resolve aliases that represent the primitive operand type needed by
+/// width-aware emission. The parser intentionally represents unknown bare
+/// names as `TypeParam`; module type aliases provide the missing definition.
+fn resolve_width_type_alias(ty: &IrType, cx: &TsContext<'_>) -> Option<IrType> {
+    resolve_width_type_alias_inner(ty, cx, 0)
+}
+
+fn resolve_width_type_alias_inner(ty: &IrType, cx: &TsContext<'_>, depth: usize) -> Option<IrType> {
+    if depth >= 8 {
+        return None;
+    }
+    match unwrap_ref(ty) {
+        IrType::TypeParam(name) => {
+            resolve_width_type_alias_inner(cx.type_aliases.get(name)?, cx, depth + 1)
+        }
+        other => Some(other.clone()),
     }
 }
 
@@ -6503,14 +7954,14 @@ fn infer_wrapping_bit_width(receiver: &IrExpr, cx: &TsContext<'_>) -> u32 {
 /// `eprintln!` (which needs `std`) is gated behind a tiny wrapper instead of
 /// used inline — a no-op when `std` isn't linked.
 #[cfg(feature = "std")]
-fn warn_wrapping_width_unresolved() {
+fn warn_wrapping_width_unresolved(receiver: &IrExpr) {
     std::eprintln!(
-        "[printer_ts] warning: could not infer operand width for wrapping_add/wrapping_sub; defaulting to 32-bit (may be wrong for u64/u128 operands)"
+        "[printer_ts] warning: could not infer operand width for wrapping_add/wrapping_sub receiver {receiver:?}; defaulting to 32-bit (may be wrong for u64/u128 operands)"
     );
 }
 
 #[cfg(not(feature = "std"))]
-fn warn_wrapping_width_unresolved() {}
+fn warn_wrapping_width_unresolved(_receiver: &IrExpr) {}
 
 fn write_param_type(
     p: &IrParam,
@@ -6713,9 +8164,9 @@ impl<'a> TsBackend for TsCfgModuleWriter<'a> {
             writeln!(f)?;
         }
 
-        // Enums → tagged union types
+        // Enums → tagged union types (CFG modules carry no impl blocks).
         for e in &self.module.enums {
-            ts_write_enum(f, e, cx)?;
+            ts_write_enum(f, e, &[], None, cx)?;
             writeln!(f)?;
         }
 
@@ -6762,7 +8213,13 @@ impl<'a> TsBackend for TsCfgModuleWriter<'a> {
 /// export class Sponge_Shake256 { constructor(public _0: Shake256) {} __zero() {...} }
 /// export type Sponge = Sponge_Shake128 | Sponge_Shake256;
 /// ```
-fn ts_write_enum(f: &mut fmt::Formatter<'_>, e: &IrEnum, cx: &TsContext<'_>) -> fmt::Result {
+fn ts_write_enum(
+    f: &mut fmt::Formatter<'_>,
+    e: &IrEnum,
+    impls: &[&IrImpl],
+    filter_methods: Option<&std::collections::HashSet<String>>,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
     let name = e.kind.to_string();
 
     let type_generics: Vec<&IrGenericParam> = e
@@ -6792,23 +8249,90 @@ fn ts_write_enum(f: &mut fmt::Formatter<'_>, e: &IrEnum, cx: &TsContext<'_>) -> 
         return Ok(());
     }
 
-    // One class per variant
-    for v in &e.variants {
-        let class_name = format!("{}_{}", name, v.name);
-        let is_error_enum = cx.error_enums.contains(&name);
-        write!(f, "export class {}", class_name)?;
+    let self_type = if type_generics.is_empty() {
+        name.clone()
+    } else {
+        format!(
+            "{}<{}>",
+            name,
+            type_generics
+                .iter()
+                .map(|generic| generic.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let enum_cx = cx.with_self_type(&self_type);
+    let mut analysis = analyze_class_impls(impls);
+    if let Some(filter) = filter_methods {
+        analysis.unique_methods.retain(|method| {
+            let method_name = ts_method_name(&method.func.name, method.imp.trait_.as_ref());
+            filter.contains(&method_name)
+                || filter.contains(&method.func.name)
+                || filter.contains(&format!("{name}.{method_name}"))
+        });
+        analysis.merged_methods.retain(|method| {
+            filter.contains(&method.name) || filter.contains(&format!("{name}.{}", method.name))
+        });
+    }
+
+    let is_error_enum = cx.error_enums.contains(&name);
+    let instance_methods: Vec<_> = analysis
+        .unique_methods
+        .iter()
+        .filter(|method| method.func.receiver.is_some())
+        .collect();
+    let has_enum_base = !instance_methods.is_empty();
+    let base_class_name = format!("__VolarEnum_{}", name);
+    if has_enum_base {
+        write!(f, "class {}", base_class_name)?;
         emit_generics(f)?;
         if is_error_enum {
             write!(f, " extends __VolarError")?;
         }
+        writeln!(f, " {{")?;
+        for method in &instance_methods {
+            let method_name = ts_method_name(&method.func.name, method.imp.trait_.as_ref());
+            let key = format!("{name}.{method_name}");
+            let empty = WitnessNeeds::default();
+            let needs = cx.get_witness_needs(&key).unwrap_or(&empty);
+            writeln!(f)?;
+            TsMethodWriter {
+                func: method.func,
+                imp: method.imp,
+                struct_generics: &e.generics,
+                explicit_this_type: Some(self_type.clone()),
+                indent: 1,
+                witness_needs: needs,
+            }
+            .ts_fmt(f, &enum_cx)?;
+        }
+        writeln!(f, "}}")?;
+    }
+
+    // One subclass per variant. Sharing an enum base class lets methods match
+    // on the full enum union rather than on a single statically narrowed case.
+    for v in &e.variants {
+        let class_name = format!("{}_{}", name, v.name);
+        write!(f, "export class {}", class_name)?;
+        emit_generics(f)?;
+        if has_enum_base {
+            write!(f, " extends {}", base_class_name)?;
+            emit_generics(f)?;
+        } else if is_error_enum {
+            write!(f, " extends __VolarError")?;
+        }
         match &v.fields {
             IrEnumVariantData::Unit => {
-                writeln!(f, " {{")?;
+                if has_enum_base {
+                    writeln!(f, " {{ constructor() {{ super(); }}")?;
+                } else {
+                    writeln!(f, " {{")?;
+                }
                 writeln!(
                     f,
                     "  __zero(): this {{ return new (this.constructor as any)() as this; }}"
                 )?;
-                writeln!(f, "}}")?;
             }
             IrEnumVariantData::Tuple(types) => {
                 write!(f, " {{ constructor(")?;
@@ -6819,7 +8343,7 @@ fn ts_write_enum(f: &mut fmt::Formatter<'_>, e: &IrEnum, cx: &TsContext<'_>) -> 
                     write!(f, "public _{}: ", fi)?;
                     TsTypeWriter { ty }.ts_fmt(f, cx)?;
                 }
-                if is_error_enum {
+                if has_enum_base || is_error_enum {
                     writeln!(f, ") {{ super(); }}")?;
                 } else {
                     writeln!(f, ") {{}}")?;
@@ -6835,7 +8359,6 @@ fn ts_write_enum(f: &mut fmt::Formatter<'_>, e: &IrEnum, cx: &TsContext<'_>) -> 
                     write!(f, "__zeroValue(this._{})", fi)?;
                 }
                 writeln!(f, ") as this; }}")?;
-                writeln!(f, "}}")?;
             }
             IrEnumVariantData::Struct(fields) => {
                 write!(f, " {{ constructor(")?;
@@ -6846,7 +8369,7 @@ fn ts_write_enum(f: &mut fmt::Formatter<'_>, e: &IrEnum, cx: &TsContext<'_>) -> 
                     write!(f, "public $f{}: ", field.name)?;
                     TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
                 }
-                if is_error_enum {
+                if has_enum_base || is_error_enum {
                     writeln!(f, ") {{ super(); }}")?;
                 } else {
                     writeln!(f, ") {{}}")?;
@@ -6862,9 +8385,10 @@ fn ts_write_enum(f: &mut fmt::Formatter<'_>, e: &IrEnum, cx: &TsContext<'_>) -> 
                     write!(f, "__zeroValue(this.$f{})", field.name)?;
                 }
                 writeln!(f, ") as this; }}")?;
-                writeln!(f, "}}")?;
             }
         }
+
+        writeln!(f, "}}")?;
     }
 
     // Union type alias
@@ -6970,6 +8494,8 @@ impl<'a> TsBackend for TsCfgFunctionWriter<'a> {
 
         // ── Body ──────────────────────────────────────────────────────────
         writeln!(f, " {{")?;
+        let cx_body = cx.with_try_returns_option(is_option_return_type(func.return_type.as_ref()));
+        let cx = &cx_body;
 
         // Single-block fast path (no state machine needed)
         if blocks.len() == 1 {
@@ -7115,4 +8641,34 @@ fn ts_write_jump_setup(
     }
     writeln!(f, "{}__state = {};", ind, jump.target)?;
     Ok(())
+}
+
+#[cfg(all(test, feature = "parsing"))]
+mod enum_variant_constructor_tests {
+    use super::print_module_ts;
+    use crate::parser::parse_source;
+
+    #[test]
+    fn resolves_enum_and_struct_constructors_and_erases_phantom_fields() {
+        let source = r#"
+            struct Same { ordinary: u8 }
+            struct Marker<T> { _d: core::marker::PhantomData<T> }
+            enum First { Same { first: u8, second: u8 }, Done }
+            enum Second { Same { other: u8 } }
+            fn make() -> First { First::Same { second: 2, first: 1 } }
+            fn make_unit() -> First { First::Done }
+            fn make_struct() -> Same { Same { ordinary: 3 } }
+            fn make_marker() -> Marker<u8> { Marker { _d: PhantomData } }
+        "#;
+        let module = parse_source(source, "enum_variant_test", &[]).unwrap();
+        let ts = print_module_ts(&module);
+
+        assert!(ts.contains("new First_Same(1n, 2n)"), "{ts}");
+        assert!(ts.contains("new First_Done()"), "{ts}");
+        assert!(ts.contains("new Same({ $fordinary: 3n })"), "{ts}");
+        assert!(ts.contains("new Marker({"), "{ts}");
+        assert!(!ts.contains("PhantomData"), "{ts}");
+        assert!(!ts.contains("$f_d"), "{ts}");
+        assert!(!ts.contains("new First_Same({"), "{ts}");
+    }
 }

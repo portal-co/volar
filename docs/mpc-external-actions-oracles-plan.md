@@ -735,4 +735,3 @@ adding unrelated action protocol rows to the FHE provider ledger. Proposed IDs:
 - treating FHE ciphertext conversion, ORAM material opening, or a provider WASM
   call as generic pure oracle evaluation;
 - host-side plaintext caching of MPC wire values.
-

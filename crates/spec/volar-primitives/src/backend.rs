@@ -1,5 +1,6 @@
 // @reliability: normal
 //! @ai: assisted
+//! @volar-codegen-exclude: generic backend is used only by Rust tests and is not spec code.
 //! Generic carry-less field multiplication backend (shift-and-XOR).
 //!
 //! This module provides a generic `field_mul<T>` for **Rust-only** use.

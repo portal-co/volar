@@ -250,6 +250,25 @@ fn dump_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
             }
             let _ = writeln!(out, ";");
         }
+        IrStmtKind::LetElse {
+            pattern,
+            ty,
+            init,
+            else_expr,
+        } => {
+            indent(out, level);
+            let _ = write!(out, "let {}", fmt_pattern(pattern));
+            if let Some(t) = ty {
+                let _ = write!(out, ": {}", t);
+            }
+            if let Some(e) = init {
+                let _ = write!(out, " = ");
+                dump_expr(out, e, level);
+            }
+            let _ = write!(out, " else ");
+            dump_expr(out, else_expr, level);
+            let _ = writeln!(out);
+        }
         IrStmtKind::Semi(expr) => {
             indent(out, level);
             dump_expr(out, expr, level);
@@ -603,6 +622,13 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
         }
         IrExprKind::Repeat { elem, len } => {
             let _ = write!(out, "[");
+            dump_expr(out, elem, level);
+            let _ = write!(out, "; ");
+            dump_expr(out, len, level);
+            let _ = write!(out, "]");
+        }
+        IrExprKind::VecRepeat { elem, len } => {
+            let _ = write!(out, "vec![");
             dump_expr(out, elem, level);
             let _ = write!(out, "; ");
             dump_expr(out, len, level);
