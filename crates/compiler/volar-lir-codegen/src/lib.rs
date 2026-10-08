@@ -135,6 +135,9 @@ struct LowerCtx<'t, T: LirTarget<P>, P: Clone = ()> {
     /// Original IrModule enum defs (reserved for future variant lookup refinements).
     #[allow(dead_code)]
     module_enums: &'t [IrEnum],
+    /// Original IrModule impl blocks (for method return-type lookup at
+    /// extern-fallback call sites that the plan did not specialize).
+    module_impls: &'t [volar_compiler::ir::IrImpl<P>],
     /// Functions annotated `#[oracle]`, `#[action]`, or `#[rng]`.
     /// Populated from the module at `lower_module_with_opts` time.
     external_fns: &'t BTreeMap<String, ExternalFnInfo>,
@@ -173,6 +176,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
         mono: &'t MonoEnv,
         module_structs: &'t [volar_compiler::ir::IrStruct],
         module_enums: &'t [IrEnum],
+        module_impls: &'t [volar_compiler::ir::IrImpl<P>],
     ) -> Self {
         let mut env = BTreeMap::new();
         let mut env_types = BTreeMap::new();
@@ -190,6 +194,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             mono,
             module_structs,
             module_enums,
+            module_impls,
             external_fns: &EMPTY_EXTERNAL_FNS,
             func_sigs: &EMPTY_FUNC_SIGS,
             ir_func_ret_types: &EMPTY_IR_RET_TYPES,
@@ -1485,6 +1490,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
             env,
             &module.structs,
             &module.enums,
+            &module.impls,
             &external_fns,
             &func_sigs,
             &ir_func_ret_types,
@@ -1506,6 +1512,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
     module_enums: &[IrEnum],
+    module_impls: &[volar_compiler::ir::IrImpl<P>],
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
@@ -1583,6 +1590,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
         env,
         module_structs,
         module_enums,
+        module_impls,
     );
     for (name, slot) in param_promotions {
         ctx.promoted.insert(name, slot);
@@ -1619,6 +1627,7 @@ fn lower_function_in_module<T: LirTarget<P>, P: Clone>(
     env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
     module_enums: &[IrEnum],
+    module_impls: &[volar_compiler::ir::IrImpl<P>],
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
@@ -1652,6 +1661,7 @@ fn lower_function_in_module<T: LirTarget<P>, P: Clone>(
         env,
         module_structs,
         module_enums,
+        module_impls,
     );
     ctx.external_fns = external_fns;
     ctx.func_sigs = func_sigs;
@@ -1684,6 +1694,7 @@ pub fn lower_function_with_registry<T: LirTarget>(
         registry,
         env,
         module_structs,
+        &[],
         LoopLowering::Unroll,
     );
 }
@@ -1702,6 +1713,7 @@ pub fn lower_function_with_loop_lowering<T: LirTarget>(
         &empty_registry,
         &EMPTY_ENV,
         &[],
+        &[],
         loop_lowering,
     );
 }
@@ -1712,6 +1724,7 @@ fn lower_function_with_registry_opts<T: LirTarget>(
     registry: &StructRegistry,
     env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
+    module_impls: &[volar_compiler::ir::IrImpl],
     loop_lowering: LoopLowering,
 ) {
     let param_lir_tys: Vec<LirType> = func
@@ -1743,6 +1756,7 @@ fn lower_function_with_registry_opts<T: LirTarget>(
         env,
         module_structs,
         &EMPTY_ENUMS,
+        module_impls,
     );
     ctx.loop_mode = loop_lowering;
 
@@ -6373,7 +6387,7 @@ fn lower_copy_from_slice<T: LirTarget<P>, P: Clone>(
     let dest_ir_ty = ctx
         .infer_type(receiver)
         .unwrap_or_else(|| panic!("copy_from_slice: cannot infer destination receiver type"));
-    let (elem_ir_ty, dest_len) = if let Some(elem) = vec_elem_type(&dest_ir_ty) {
+    let (_elem_ir_ty, dest_len) = if let Some(elem) = vec_elem_type(&dest_ir_ty) {
         // Vec destination: runtime length read from its handle.
         (elem.clone(), None)
     } else if is_slice_ref(&dest_ir_ty) {
@@ -6737,7 +6751,62 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
         flat_args.extend(lower_expr(a, ctx));
     }
 
-    let ret_lir_ty = recv_ir_ty.map(|t| ctx.registry.ir_type_to_lir(&t, ctx.mono));
+    // The fallback (unplanned) return type must come from the method's own
+    // declaration, not the receiver type: `t.squeeze(...)` returns `Vec<u8>`
+    // from a `FaestTranscript` receiver. Look up the method's IR return type
+    // (bare name, then `ImplName_method`), falling back to the receiver type
+    // only when no declaration is reachable.
+    let ret_ir_ty = ctx
+        .ir_func_ret_types
+        .get(method_name)
+        .cloned()
+        .or_else(|| {
+            ctx.mono_plan.and_then(|plan| {
+                let key = plan.local_call_deduce(ctx.current_instance?, method_name, "")?;
+                ctx.ir_func_ret_types.get(plan.emitted_name(key)).cloned()
+            })
+        })
+        .or_else(|| {
+            // Unplanned method (e.g. a private helper on a type whose impl
+            // was not specialized): resolve the declared return type from
+            // the receiver type's impl block.
+            let recv_struct_kind = recv_ir_ty.as_ref().and_then(|t| match t {
+                IrType::Reference { elem, .. } => match elem.as_ref() {
+                    IrType::Struct { kind, .. } => Some(kind),
+                    _ => None,
+                },
+                IrType::Struct { kind, .. } => Some(kind),
+                _ => None,
+            });
+            let recv_name = recv_struct_kind.map(crate::structs::kind_name)?;
+            ctx.module_impls
+                .iter()
+                .filter(|imp| {
+                    // The impl self type may be a nominal struct or the
+                    // `Self` placeholder when the parser didn't substitute it.
+                    match &imp.self_ty {
+                        IrType::Struct { kind, .. } => crate::structs::kind_name(kind) == recv_name,
+                        IrType::TypeParam(name) => *name == recv_name,
+                        _ => false,
+                    }
+                })
+                .find_map(|imp| {
+                    imp.items.iter().find_map(|item| match item {
+                        volar_compiler::ir::IrImplItem::Method(m) if m.name == method_name => {
+                            m.return_type.clone()
+                        }
+                        _ => None,
+                    })
+                })
+        });
+    let ret_lir_ty = ret_ir_ty
+        .as_ref()
+        .map(|t| ctx.registry.ir_type_to_lir(t, ctx.mono))
+        .or_else(|| {
+            recv_ir_ty
+                .clone()
+                .map(|t| ctx.registry.ir_type_to_lir(&t, ctx.mono))
+        });
     ctx.target
         .call_extern(&extern_name, &arg_tys, &flat_args, ret_lir_ty)
 }
@@ -7408,6 +7477,7 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
                     env,
                     &module.structs,
                     &module.enums,
+                    &module.impls,
                     &external_fns,
                     &func_sigs,
                     &ir_func_ret_types,
@@ -7430,6 +7500,7 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
                 env,
                 &module.structs,
                 &module.enums,
+                &module.impls,
                 &external_fns,
                 &func_sigs,
                 &ir_func_ret_types,
@@ -7447,6 +7518,7 @@ fn lower_cfg_function<T: LirTarget<P>, P: Clone>(
     env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
     module_enums: &[IrEnum],
+    module_impls: &[volar_compiler::ir::IrImpl<P>],
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
@@ -7524,6 +7596,7 @@ fn lower_cfg_function<T: LirTarget<P>, P: Clone>(
             env,
             module_structs,
             module_enums,
+            module_impls,
         );
         ctx.external_fns = external_fns;
         ctx.func_sigs = func_sigs;
