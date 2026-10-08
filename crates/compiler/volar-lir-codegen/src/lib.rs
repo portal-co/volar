@@ -3457,19 +3457,40 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
         IrType::Reference { elem, .. } => elem.as_ref().clone(),
         other => other.clone(),
     };
+    // A bare `TypeParam` that names a module struct (a nominal the parser
+    // left unresolved, e.g. `Vec<ConvertOutput>`'s element type surfacing
+    // through an index) resolves to that struct.
+    let peeled = match &peeled {
+        IrType::TypeParam(name)
+            if ctx
+                .module_structs
+                .iter()
+                .any(|s| s.kind.to_string() == *name) =>
+        {
+            IrType::Struct {
+                kind: StructKind::Custom(name.clone()),
+                type_args: Vec::new(),
+            }
+        }
+        other => other.clone(),
+    };
     let (struct_kind, type_args) = match &peeled {
-        IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
-        other => panic!("field .{field} on non-struct type {other:?}"),
+        IrType::Struct { kind, type_args } => (kind.clone(), type_args.as_slice()),
+        other => panic!(
+            "field .{field} on non-struct type {other:?} (base_kind={:?}, caller={:?})",
+            std::mem::discriminant(&base.kind),
+            ctx.current_instance.map(|k| &k.source_name)
+        ),
     };
 
     let mono_args: Vec<IrType> = type_args.iter().map(|a| mono_type(a, ctx.mono)).collect();
     let struct_id = ctx
         .registry
-        .id_for_instance(struct_kind, &mono_args)
+        .id_for_instance(&struct_kind, &mono_args)
         .unwrap_or_else(|| {
             panic!(
                 "struct '{}' not in registry for field .{field}",
-                structs::nominal_instance_name(struct_kind, &mono_args)
+                structs::nominal_instance_name(&struct_kind, &mono_args)
             )
         });
 
