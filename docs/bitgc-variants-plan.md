@@ -526,14 +526,14 @@ the lattice gadget), and run the artifact conformance vectors
          `ReferencePrg::new(2)`→`new(1)` slot-discipline issue,
          committed `fba383c`).
 
-     **One residual gap:** `volar-lir-codegen`/`volar-weaver` now
-     reference `LirType::ExtField`/`PrimeField`, which exist on
-     volar-ir `main` but **not** on the patched sibling checkout's
-     `feat/mpc` branch (the parent `.cargo/config.toml` patches
-     `volar-lir` to that checkout). volar-ir `feat/mpc` needs to merge
-     `main` (coordinated with that worktree's owner over the pi link).
-     Until then the weaver tests still can't build. BitGC's own
-     construction and integration tests are unaffected and green.
+     **Resolved:** the volar-ir worktree's `feat/mpc` branch merged
+     `main`, bringing `LirType::ExtField`/`PrimeField` onto the patched
+     checkout; `volar-lir-codegen`/`volar-weaver` now build, and the
+     weaver test suite runs (167 pass; the 2 `fhe_binfhe` vec-free
+     lint failures are pre-existing on `main` — confirmed against the
+     `main` worktree — and unrelated to BitGC). All BitGC tests
+     (volar-spec construction + cirrus `bitgc_roundtrip` integration)
+     are green end-to-end.
 5.4. Cut-and-choose interaction review: `cirrus-volar-garble` has an
      existing `cut_and_choose.rs` for the half-gate backend; record
      explicitly whether/how BitGC garblings participate (likely: not at
