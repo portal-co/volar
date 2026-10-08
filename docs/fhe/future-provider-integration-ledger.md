@@ -59,6 +59,12 @@ check.
 | FHE-PLUMB-PROVIDER-02 | Provider boundary attached to `PreFheStoragePlan` | Reviewed provider plus end-to-end strict-ORAM/held-material reference test with no secret host exposure | TODO |
 | FHE-PLUMB-PROVIDER-03 | Provider-induced failure/abort/replay semantics | Reviewed session/key-epoch binding and adversarial transport test plan | TODO |
 | FHE-PLUMB-MOVF-01 | 5a1/5a2 plans consume provider chunk inputs after movfuscation | Stable frontend marker consumer plus reviewed provider | TODO |
+| BITGC-LEDGER-01 | Authors'-artifact `sub64` conformance vectors for `volar_spec::bitgc::small` (ePrint 2025/1810 §4) | QEMU software-emulation Linux guest build of `wtd2/more-efficient-bitgc` (SEAL/HEXL, per repo Linux-coverage policy; fail-closed), `--offline-dim=9 --online-dim=8 --check=wire` wire dumps | TODO |
+| BITGC-LEDGER-02 | Authors'-artifact `sub64` conformance vectors for `volar_spec::bitgc::fast` (ePrint 2025/1810 §5.1) | Same QEMU artifact build as BITGC-LEDGER-01, `--variant=fast` | TODO |
+| BITGC-LEDGER-03 | Independent noise/parameter security review of the BitGC profiles (RLWE with KDM security, 128-bit claim) | External/reviewer parameter check against ePrint 2024/1988 and 2025/1810 parameter tables | TODO |
+| BITGC-LEDGER-04 | Paper-pinned gate equations replace the reference gate equation behind `bitgc::GateEquation` | ePrint 2025/1810 Figures 4–5 (small) and §5.1 (fast) verified against the archived PDF; differential test of the swapped equation against the reference adapter. The ePrint PDF was not retrievable from this host (HTTP 403 on 2026-10-08); pinning evidence so far is search-indexed PDF text and the artifact CLI, recorded in `docs/bitgc-variants-plan.md` §10 | TODO |
+| BITGC-LEDGER-05 | BitGC garble/eval benchmarks (Thumb SHA-256 fixture, all variants) vs. the half-gate locked baseline | QEMU software-emulation Linux guest with bounded timeout; artifact comparison numbers from BITGC-LEDGER-01/02 | TODO |
+| BITGC-LEDGER-06 | BitGC-tiny (ePrint 2025/1810 §5.2) implementation | Paper-only construction (the public artifact ships no `tiny` mode); deferred by maintainer decision 2026-10-08 until the §5.2 equations are pinned via BITGC-LEDGER-04 evidence | TODO |
 
 ## Recorded toolchain probe
 
