@@ -6476,7 +6476,10 @@ fn lower_copy_from_slice<T: LirTarget<P>, P: Clone>(
     // Peel the source: a reference to a `base[..]` / `base[start..end]` slice,
     // or a bare fixed-array element source.
     let src_arg = &args[0];
-    let (src_base, src_offset) = decompose_slice_source(src_arg);
+    let (src_base, src_offset, _src_end) = decompose_slice_source(src_arg);
+    // Peel the destination the same way (`r0_bytes[..n]` → base `r0_bytes`,
+    // length `n`): the copy runs to the slice's own end, not the whole array.
+    let (dest_base, dest_start, dest_end) = decompose_slice_source(receiver);
 
     let prov = receiver.prov.clone();
     let side = receiver.side;
@@ -6499,9 +6502,18 @@ fn lower_copy_from_slice<T: LirTarget<P>, P: Clone>(
         base: Box::new(src_base),
         index: Box::new(src_index),
     });
+    // Destination element: `dest_base[dest_start + k]` (or `dest_base[k]`).
+    let dest_index = match dest_start.clone() {
+        Some(off) => node(IrExprKind::Binary {
+            op: SpecBinOp::Add,
+            left: Box::new(off),
+            right: Box::new(idx_var.clone()),
+        }),
+        None => idx_var.clone(),
+    };
     let dest_elem = node(IrExprKind::Index {
-        base: Box::new(receiver.clone()),
-        index: Box::new(idx_var),
+        base: Box::new(dest_base.clone()),
+        index: Box::new(dest_index),
     });
     let assign = node(IrExprKind::Assign {
         left: Box::new(dest_elem),
@@ -6512,10 +6524,19 @@ fn lower_copy_from_slice<T: LirTarget<P>, P: Clone>(
         expr: None,
     };
 
-    // Loop bound: the destination length (fixed for arrays, runtime for Vec/slice).
-    let len_expr = match dest_len {
-        Some(n) => node(IrExprKind::Lit(IrLit::Int(n as i128))),
-        None => node(IrExprKind::MethodCall {
+    // Loop bound: the copy length is the destination slice's element count.
+    // A `dest[start..end]` slice copies `end - start` elements (not `end`,
+    // which would overrun when `start > 0`); a bare/whole-slice destination
+    // copies its own length.
+    let len_expr = match (dest_end, dest_start.clone(), dest_len) {
+        (Some(end), Some(start_off), _) => node(IrExprKind::Binary {
+            op: SpecBinOp::Sub,
+            left: Box::new(end),
+            right: Box::new(start_off),
+        }),
+        (Some(end), None, _) => end,
+        (None, _, Some(n)) => node(IrExprKind::Lit(IrLit::Int(n as i128))),
+        (None, _, None) => node(IrExprKind::MethodCall {
             receiver: Box::new(receiver.clone()),
             method: MethodKind::Known(StdMethod::Len),
             type_args: Vec::new(),
@@ -6534,9 +6555,11 @@ fn lower_copy_from_slice<T: LirTarget<P>, P: Clone>(
     Vec::new()
 }
 
-/// Peel a `copy_from_slice` source argument into `(base, optional_start)`.
+/// Peel a `copy_from_slice` source/destination into `(base, start, end)`.
 /// Accepts `&base[..]`, `&base[start..end]`, `&base`, and bare `base`.
-fn decompose_slice_source<P: Clone>(arg: &IrExpr<P>) -> (IrExpr<P>, Option<IrExpr<P>>) {
+fn decompose_slice_source<P: Clone>(
+    arg: &IrExpr<P>,
+) -> (IrExpr<P>, Option<IrExpr<P>>, Option<IrExpr<P>>) {
     // Strip a leading reference.
     let inner: &IrExpr<P> = match &arg.kind {
         IrExprKind::Unary {
@@ -6547,11 +6570,15 @@ fn decompose_slice_source<P: Clone>(arg: &IrExpr<P>) -> (IrExpr<P>, Option<IrExp
     };
     // A `base[range]` index expression slices into `base`.
     if let IrExprKind::Index { base, index } = &inner.kind {
-        if let IrExprKind::Range { start, .. } = &index.kind {
-            return ((**base).clone(), start.as_deref().cloned());
+        if let IrExprKind::Range { start, end, .. } = &index.kind {
+            return (
+                (**base).clone(),
+                start.as_deref().cloned(),
+                end.as_deref().cloned(),
+            );
         }
     }
-    (inner.clone(), None)
+    (inner.clone(), None, None)
 }
 
 fn lower_digest_external<T: LirTarget<P>, P: Clone>(
@@ -6702,6 +6729,20 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
             let zero = ctx.target.iconst(LirType::U64, 0);
             vec![ctx.target.select(negative, zero, diff)]
         }
+        // `a.min(b)` / `a.max(b)` — a compare-and-select over the two scalars.
+        MethodKind::Known(StdMethod::Min) => {
+            let rhs = into_scalar(lower_expr(&args[0], ctx), "min rhs");
+            let lhs = into_scalar(lower_expr(receiver, ctx), "min receiver");
+            let take_rhs = ctx.target.icmp(IcmpPred::Ult, rhs.clone(), lhs.clone());
+            vec![ctx.target.select(take_rhs, rhs, lhs)]
+        }
+        MethodKind::Known(StdMethod::Max) => {
+            let rhs = into_scalar(lower_expr(&args[0], ctx), "max rhs");
+            let lhs = into_scalar(lower_expr(receiver, ctx), "max receiver");
+            let take_rhs = ctx.target.icmp(IcmpPred::Ugt, rhs.clone(), lhs.clone());
+            vec![ctx.target.select(take_rhs, rhs, lhs)]
+        }
+
         // `value.to_le_bytes()` / `value.to_be_bytes()` — decompose the
         // integer into its byte array. Byte order is fixed by the method.
         MethodKind::Known(StdMethod::ToLeBytes) => lower_int_to_bytes(receiver, true, ctx),
