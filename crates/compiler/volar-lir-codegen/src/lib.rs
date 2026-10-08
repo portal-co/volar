@@ -256,7 +256,22 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 .env_types
                 .get(name)
                 .cloned()
-                .or_else(|| self.module_const_types.get(name).cloned()),
+                .or_else(|| self.module_const_types.get(name).cloned())
+                // A bare `TypeParam` naming a module struct (a nominal the
+                // parser left unresolved on a call return, e.g. `vole_hash`'s
+                // `UniversalHashOutput`) resolves to that struct so field
+                // access on the bound value infers.
+                .map(|ty| match ty {
+                    IrType::TypeParam(ref n)
+                        if self.module_structs.iter().any(|s| s.kind.to_string() == *n) =>
+                    {
+                        IrType::Struct {
+                            kind: StructKind::Custom(n.clone()),
+                            type_args: Vec::new(),
+                        }
+                    }
+                    other => other,
+                }),
 
             IrExprKind::Field { base, field } => {
                 let base_ty = self.infer_type(base)?;
@@ -276,6 +291,17 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                     }
                 ) {
                     return (field == "0").then_some(base_ty);
+                }
+                // `Galois128(pub u128)` / `Galois64(pub u64)` are
+                // `#[repr(transparent)]` wrappers over their field-element
+                // primitive; `.0` is the transparent payload.
+                if field == "0"
+                    && matches!(
+                        &base_ty,
+                        IrType::Primitive(PrimitiveType::Galois64 | PrimitiveType::Galois128)
+                    )
+                {
+                    return Some(base_ty);
                 }
                 // A bare `TypeParam` naming a module struct (a nominal the
                 // parser left unresolved, e.g. `Vec<ConvertOutput>`'s element
@@ -3584,6 +3610,18 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
         return lower_expr(base, ctx);
     }
 
+    // `Galois128(pub u128)` / `Galois64(pub u64)` are `#[repr(transparent)]`
+    // wrappers over their field-element primitive; `.0` is the transparent
+    // payload, not a registered struct field.
+    if field == "0"
+        && matches!(
+            &base_ir_ty,
+            IrType::Primitive(PrimitiveType::Galois64 | PrimitiveType::Galois128)
+        )
+    {
+        return lower_expr(base, ctx);
+    }
+
     // Peel any reference layers before the struct lookup.
     let peeled = match &base_ir_ty {
         IrType::Reference { elem, .. } => elem.as_ref().clone(),
@@ -3848,18 +3886,59 @@ fn lower_int_to_bytes<T: LirTarget<P>, P: Clone>(
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
     let recv_ir_ty = ctx.infer_type(receiver).unwrap_or_else(|| {
+        let recv_desc = match &receiver.kind {
+            IrExprKind::Field { base, field } => {
+                let base_desc = match &base.kind {
+                    IrExprKind::Field {
+                        base: b2,
+                        field: f2,
+                    } => {
+                        let b2_ty = ctx.infer_type(b2);
+                        let b2_desc = match &b2.kind {
+                            IrExprKind::Var(n) => format!("Var({n})"),
+                            IrExprKind::Call { func, .. } => match &func.kind {
+                                IrExprKind::Path { segments, .. } => {
+                                    format!("Call({})", segments.join("_"))
+                                }
+                                _ => "Call".to_owned(),
+                            },
+                            other => format!("{:?}", std::mem::discriminant(other)),
+                        };
+                        format!("field .{f2} on {b2_desc} whose ty={b2_ty:?}")
+                    }
+                    other => format!("base {:?}", std::mem::discriminant(other)),
+                };
+                format!("field .{field} on {base_desc}")
+            }
+            other => format!("{:?}", std::mem::discriminant(other)),
+        };
         panic!(
-            "to_le_bytes/to_be_bytes: cannot infer receiver type; receiver_kind={:?}, caller={:?}",
-            std::mem::discriminant(&receiver.kind),
+            "to_le_bytes/to_be_bytes: cannot infer receiver type; receiver={}, caller={:?}",
+            recv_desc,
             ctx.current_instance.map(|k| &k.source_name)
         )
     });
+    // A field-element primitive (`Galois128`, `Galois64`) is a
+    // `#[repr(transparent)]` wrapper over its raw integer payload; its
+    // `to_le_bytes`/`to_be_bytes` acts on that payload's width.
     let recv_lir = match &recv_ir_ty {
         IrType::Primitive(p) => primitive_to_lir(*p),
         other => panic!("to_le_bytes/to_be_bytes: receiver must be an integer, got {other:?}"),
     };
-    let bits = lir_int_bits(&recv_lir)
-        .unwrap_or_else(|| panic!("to_le_bytes/to_be_bytes: receiver is not a scalar integer"));
+    let bits = match &recv_lir {
+        LirType::ExtField {
+            degree, wrapped, ..
+        } => {
+            let wrapped_bits = lir_int_bits(wrapped).unwrap_or(1);
+            *degree * wrapped_bits
+        }
+        _ => lir_int_bits(&recv_lir).unwrap_or_else(|| {
+            panic!(
+                "to_le_bytes/to_be_bytes: receiver is not a scalar integer (recv_lir={:?})",
+                std::mem::discriminant(&recv_lir)
+            )
+        }),
+    };
     let n_bytes = (bits / 8) as usize;
 
     let val = into_scalar(lower_expr(receiver, ctx), "to_le_bytes receiver");
@@ -4472,9 +4551,13 @@ fn lower_iter_chain<T: LirTarget<P>, P: Clone>(
     // ---- Gather (index, elem) pairs from the source ----
     let mut elems: Vec<(Option<usize>, Vec<T::Value>, IrType)> = match &chain.source {
         IterChainSource::Method { collection, .. } => {
-            let coll_ty = ctx
-                .infer_type(collection)
-                .unwrap_or_else(|| panic!("IterChain: could not infer collection type"));
+            let coll_ty = ctx.infer_type(collection).unwrap_or_else(|| {
+                panic!(
+                    "IterChain: could not infer collection type (kind={:?}, in {:?})",
+                    std::mem::discriminant(&collection.kind),
+                    ctx.current_instance.map(|k| &k.source_name)
+                )
+            });
             let (elem_ir_ty, n) = array_elem_and_len(&coll_ty, ctx.mono);
             let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
             let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
