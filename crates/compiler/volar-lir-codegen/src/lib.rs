@@ -263,7 +263,26 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 ) {
                     return (field == "0").then_some(base_ty);
                 }
-                let (struct_kind, type_args) = match &base_ty {
+                // A bare `TypeParam` naming a module struct (a nominal the
+                // parser left unresolved, e.g. `Vec<ConvertOutput>`'s element
+                // type surfacing through an index) resolves to that struct.
+                let resolved_base;
+                let base_ty = match &base_ty {
+                    IrType::TypeParam(name)
+                        if self
+                            .module_structs
+                            .iter()
+                            .any(|s| s.kind.to_string() == *name) =>
+                    {
+                        resolved_base = IrType::Struct {
+                            kind: StructKind::Custom(name.clone()),
+                            type_args: Vec::new(),
+                        };
+                        &resolved_base
+                    }
+                    other => other,
+                };
+                let (struct_kind, type_args) = match base_ty {
                     IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
                     IrType::Reference { elem, .. } => match elem.as_ref() {
                         IrType::Struct { kind, type_args } => (kind, type_args.as_slice()),
