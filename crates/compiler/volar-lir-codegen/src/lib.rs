@@ -141,6 +141,9 @@ struct LowerCtx<'t, T: LirTarget<P>, P: Clone = ()> {
     /// Declared types of module-level constants (`SBOX`, `RCON`), so
     /// indexing a constant array infers its element type.
     module_const_types: &'t BTreeMap<String, IrType>,
+    /// Evaluated scalar values of module-level constant arrays (`SBOX`), so
+    /// referencing one materializes its flattened elements as `iconst`s.
+    module_const_scalars: &'t BTreeMap<String, (LirType, Vec<i64>)>,
     /// Functions annotated `#[oracle]`, `#[action]`, or `#[rng]`.
     /// Populated from the module at `lower_module_with_opts` time.
     external_fns: &'t BTreeMap<String, ExternalFnInfo>,
@@ -181,6 +184,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
         module_enums: &'t [IrEnum],
         module_impls: &'t [volar_compiler::ir::IrImpl<P>],
         module_const_types: &'t BTreeMap<String, IrType>,
+        module_const_scalars: &'t BTreeMap<String, (LirType, Vec<i64>)>,
     ) -> Self {
         let mut env = BTreeMap::new();
         let mut env_types = BTreeMap::new();
@@ -200,6 +204,7 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             module_enums,
             module_impls,
             module_const_types,
+            module_const_scalars,
             external_fns: &EMPTY_EXTERNAL_FNS,
             func_sigs: &EMPTY_FUNC_SIGS,
             ir_func_ret_types: &EMPTY_IR_RET_TYPES,
@@ -831,6 +836,39 @@ static EMPTY_EXTERNAL_FNS: LazyLock<BTreeMap<String, ExternalFnInfo>> =
 static EMPTY_FUNC_SIGS: LazyLock<BTreeMap<String, FuncSigInfo>> = LazyLock::new(BTreeMap::new);
 static EMPTY_IR_RET_TYPES: LazyLock<BTreeMap<String, IrType>> = LazyLock::new(BTreeMap::new);
 static EMPTY_CONST_TYPES: LazyLock<BTreeMap<String, IrType>> = LazyLock::new(BTreeMap::new);
+static EMPTY_CONST_SCALARS: LazyLock<BTreeMap<String, (LirType, Vec<i64>)>> =
+    LazyLock::new(BTreeMap::new);
+
+/// Evaluate a module-level constant's value into flat `i64` scalars when it
+/// is a literal fixed/repeat array of integers (e.g. `SBOX: [u8; 256]`).
+/// Returns `None` for anything non-literal.
+fn eval_const_int_array<P: Clone>(value: &volar_compiler::ir::IrExpr<P>) -> Option<Vec<i64>> {
+    match &value.kind {
+        IrExprKind::FixedArray(elems) | IrExprKind::Array(elems) => elems
+            .iter()
+            .map(|e| match &e.kind {
+                IrExprKind::Lit(IrLit::Int(v)) => Some(*v as i64),
+                IrExprKind::Cast { expr, .. } => match &expr.kind {
+                    IrExprKind::Lit(IrLit::Int(v)) => Some(*v as i64),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect(),
+        IrExprKind::Repeat { elem, len } => {
+            let n = match &len.kind {
+                IrExprKind::Lit(IrLit::Int(v)) => *v as usize,
+                _ => return None,
+            };
+            let v = match &elem.kind {
+                IrExprKind::Lit(IrLit::Int(v)) => *v as i64,
+                _ => return None,
+            };
+            Some(vec![v; n])
+        }
+        _ => None,
+    }
+}
 static EMPTY_ENUMS: LazyLock<Vec<IrEnum>> = LazyLock::new(Vec::new);
 static EMPTY_ENUM_REGISTRY: LazyLock<EnumRegistry> = LazyLock::new(EnumRegistry::empty);
 
@@ -1505,6 +1543,20 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
         .iter()
         .map(|c| (c.name.clone(), c.ty.clone()))
         .collect();
+    // Evaluated scalars for constant arrays whose values are literals, so a
+    // reference materializes `iconst`s. Non-literal const expressions (e.g.
+    // `0u8` repeat with a named length) are skipped — those resolve through
+    // the scalar-const path above or fail loudly at their use.
+    let module_const_scalars: BTreeMap<String, (LirType, Vec<i64>)> = module
+        .consts
+        .iter()
+        .filter_map(|c| {
+            let lir = registry.ir_type_to_lir(&c.ty, &empty);
+            let scalar = flatten_scalar_types(&lir, &registry).first()?.clone();
+            let vals = eval_const_int_array(&c.value)?;
+            Some((c.name.clone(), (scalar, vals)))
+        })
+        .collect();
     for (key, env) in &plan.instances {
         let func = plan
             .materialized
@@ -1553,6 +1605,7 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
             &module.enums,
             &module.impls,
             &module_const_types,
+            &module_const_scalars,
             &external_fns,
             &func_sigs,
             &ir_func_ret_types,
@@ -1576,6 +1629,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
     module_enums: &[IrEnum],
     module_impls: &[volar_compiler::ir::IrImpl<P>],
     module_const_types: &BTreeMap<String, IrType>,
+    module_const_scalars: &BTreeMap<String, (LirType, Vec<i64>)>,
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
@@ -1655,6 +1709,7 @@ fn lower_function_instance<T: LirTarget<P>, P: Clone>(
         module_enums,
         module_impls,
         module_const_types,
+        module_const_scalars,
     );
     for (name, slot) in param_promotions {
         ctx.promoted.insert(name, slot);
@@ -1727,6 +1782,7 @@ fn lower_function_in_module<T: LirTarget<P>, P: Clone>(
         module_enums,
         module_impls,
         &EMPTY_CONST_TYPES,
+        &EMPTY_CONST_SCALARS,
     );
     ctx.external_fns = external_fns;
     ctx.func_sigs = func_sigs;
@@ -1823,6 +1879,7 @@ fn lower_function_with_registry_opts<T: LirTarget>(
         &EMPTY_ENUMS,
         module_impls,
         &EMPTY_CONST_TYPES,
+        &EMPTY_CONST_SCALARS,
     );
     ctx.loop_mode = loop_lowering;
 
@@ -2436,6 +2493,15 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             // Module-level constants (e.g. TFHE's Q4) are compile-time words.
             if let Some(&value) = ctx.mono.consts.get(name.as_str()) {
                 return vec![ctx.target.iconst(LirType::U64, value as i64)];
+            }
+            // Module-level constant arrays (`SBOX`, `RCON`): materialize the
+            // evaluated scalars as `iconst`s (read-only tables, so a fresh
+            // copy at each use is semantically identical to a shared global).
+            if let Some((scalar_lir, vals)) = ctx.module_const_scalars.get(name.as_str()) {
+                return vals
+                    .iter()
+                    .map(|&v| ctx.target.iconst(scalar_lir.clone(), v))
+                    .collect();
             }
             // See `digit_var_as_literal`'s own doc: an all-digit `Var` name
             // is never a real variable reference, always a smuggled literal.
@@ -7756,6 +7822,7 @@ fn lower_cfg_function<T: LirTarget<P>, P: Clone>(
             module_enums,
             module_impls,
             &EMPTY_CONST_TYPES,
+            &EMPTY_CONST_SCALARS,
         );
         ctx.external_fns = external_fns;
         ctx.func_sigs = func_sigs;
