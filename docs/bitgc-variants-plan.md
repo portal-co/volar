@@ -522,6 +522,29 @@ the lattice gadget), and run the artifact conformance vectors
      construction lib tests run and pass). Fix the migration
      independently of BitGC; then re-run the Cirrus
      `bitgc_roundtrip` test and the weaver tests.
+
+     **Migration direction is consumer-side** (confirmed with the
+     volar-ir worktree via the pi link): the IR's `Type` enum is now
+     only `Bit/_8/_16/_32/_64/_128/_256`; field types are constructed
+     as `IrType::ExtField { wrapped, degree, irreducible }` (AES8 =
+     GF(2^8) degree-1 over the AES polynomial, Galois64 = GF(2^64),
+     Z3 = `PrimeField(3)`) via `volar-ir-common/src/field.rs`. Each
+     consumer must lower `IrType::ExtField`/`PrimeField` to its own
+     internal field type instead of matching the removed `Type`
+     variants:
+       - `cirrus-volar-boolar/src/types.rs` (lines 86-88): lower
+         `IrType::ExtField`/`PrimeField` to `VolarType::Aes8` /
+         `VolarType::Galois64` / `VolarTypeMapError::Z3`.
+       - `volar-compiler/src/parser.rs` (`volar_native_type_from_str`,
+         lines 217-229): returns `Type`, which no longer has the field
+         variants — must produce `IrType` (or the caller must construct
+         the `ExtField`/`PrimeField`) for `"AES8"/"Galois64"/"Z3"`.
+       - `volar-lir-codegen/src/structs.rs` (lines 867-879): uses
+         `NativeType::AES8`/`NativeType::Z3` from the compiler's
+         `PrimitiveType` mapping layer, which the volar-ir worktree
+         confirmed is the correct canonical mapping — this file may be
+         fine once `NativeType` itself is decoupled from the removed
+         IR `Type` variants; verify against the compiler's `NativeType`.
 5.4. Cut-and-choose interaction review: `cirrus-volar-garble` has an
      existing `cut_and_choose.rs` for the half-gate backend; record
      explicitly whether/how BitGC garblings participate (likely: not at

@@ -168,7 +168,10 @@ impl Delta {
 
     /// `−Δ` (additive inverse) in coefficient form.
     pub fn neg(&self) -> LabelPoly {
-        self.coeffs.iter().map(|&c| if c == 0 { 0 } else { self.p - c }).collect()
+        self.coeffs
+            .iter()
+            .map(|&c| if c == 0 { 0 } else { self.p - c })
+            .collect()
     }
 }
 
@@ -267,7 +270,11 @@ impl ReferenceDd {
         let d2 = ring::negacyclic_mul_coeffs(&delta.coeffs, &delta.coeffs, p);
         let d2u = ring::negacyclic_mul_coeffs(&d2, &u, p);
         let w = ring::sub_coeffs(&delta.neg(), &d2u, p);
-        Self { p, delta, triple: (u, v, w) }
+        Self {
+            p,
+            delta,
+            triple: (u, v, w),
+        }
     }
 
     /// The plaintext modulus.
@@ -312,7 +319,11 @@ impl ReferenceDd {
     /// `DD_i(A, τ) = c1·A + i·c0` (k=1).
     pub fn dd_i(&self, a: &LabelPoly, i: bool, tau: &RowCt) -> LabelPoly {
         let base = self.dd0(a, tau);
-        if i { ring::add_coeffs(&base, &tau.c0, self.p) } else { base }
+        if i {
+            ring::add_coeffs(&base, &tau.c0, self.p)
+        } else {
+            base
+        }
     }
 
     /// The k=2 share product with the CP-RLWE triple
@@ -348,7 +359,11 @@ impl ReferenceDd {
     pub fn dd_ij(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, tau: &RowCt) -> LabelPoly {
         let share = self.hss_mul(a, i, b, j);
         let base = ring::negacyclic_mul_coeffs(&tau.c1, &share, self.p);
-        if i && j { ring::add_coeffs(&base, &tau.c0, self.p) } else { base }
+        if i && j {
+            ring::add_coeffs(&base, &tau.c0, self.p)
+        } else {
+            base
+        }
     }
 
     /// The gate evaluator ([ZLL+26] §3.3):
@@ -368,7 +383,11 @@ impl ReferenceDd {
 }
 
 fn delta_scaled(delta: &Delta, k: u64, p: u64) -> LabelPoly {
-    delta.coeffs.iter().map(|&c| ring::mul_mod(c, k, p)).collect()
+    delta
+        .coeffs
+        .iter()
+        .map(|&c| ring::mul_mod(c, k, p))
+        .collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -417,7 +436,9 @@ mod tests {
         let mut state = seed;
         move |out: &mut [u64]| {
             for v in out.iter_mut() {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 *v = state >> 33;
             }
         }
@@ -431,25 +452,40 @@ mod tests {
         );
         // π_a=1, π_b=0, π_c=1, index [i + 2j]:
         // (0,0): 1∧0⊕1 = 1; (1,0): 0∧0⊕1 = 1; (0,1): 1∧1⊕1 = 0; (1,1): 0∧1⊕1 = 1
-        assert_eq!(masked_table(true, true, false, true), [true, true, false, true]);
+        assert_eq!(
+            masked_table(true, true, false, true),
+            [true, true, false, true]
+        );
         // π_a=1, π_b=1, π_c=0: (1⊕i)(1⊕j) = (¬i)(¬j) → only (0,0) is 1
-        assert_eq!(masked_table(true, true, true, false), [true, false, false, false]);
+        assert_eq!(
+            masked_table(true, true, true, false),
+            [true, false, false, false]
+        );
     }
 
     #[test]
     fn masked_table_xor() {
         // Free-XOR rule π_c = π_a ⊕ π_b ⇒ ẑ[i,j] = i ⊕ j.
         for (pa, pb) in [(false, false), (false, true), (true, false), (true, true)] {
-            assert_eq!(masked_table(false, pa, pb, pa ^ pb), [false, true, true, false]);
+            assert_eq!(
+                masked_table(false, pa, pb, pa ^ pb),
+                [false, true, true, false]
+            );
         }
     }
 
     #[test]
     fn row_multipliers_reconstruct() {
         // AND, all-zero π: only ẑ[1,1] = 1 → z = [0,0,0,1], t = [0,0,1].
-        assert_eq!(row_multipliers(&masked_table(true, false, false, false)), [0, 0, 1]);
+        assert_eq!(
+            row_multipliers(&masked_table(true, false, false, false)),
+            [0, 0, 1]
+        );
         // AND, π_a=1: ẑ[i,j] = (¬i)∧j → z = [0, 0, 1, 0] → t = [0, 1, −1].
-        assert_eq!(row_multipliers(&masked_table(true, true, false, false)), [0, 1, -1]);
+        assert_eq!(
+            row_multipliers(&masked_table(true, true, false, false)),
+            [0, 1, -1]
+        );
         // General reconstruction for all π combinations.
         for pa in [false, true] {
             for pb in [false, true] {
@@ -497,9 +533,17 @@ mod tests {
         let a0: LabelPoly = (0..degree).map(|i| (i as u64 * 37 + 5) % p).collect();
         let m = dd.dec_row(&tau);
         for i in [false, true] {
-            let a = if i { ring::add_coeffs(&a0, &delta.coeffs, p) } else { a0.clone() };
+            let a = if i {
+                ring::add_coeffs(&a0, &delta.coeffs, p)
+            } else {
+                a0.clone()
+            };
             let lhs = dd.dd_i(&a, i, &tau);
-            let rhs = ring::add_coeffs(&dd.dd0(&a0, &tau), &if i { m.clone() } else { alloc::vec![0; degree] }, p);
+            let rhs = ring::add_coeffs(
+                &dd.dd0(&a0, &tau),
+                &if i { m.clone() } else { alloc::vec![0; degree] },
+                p,
+            );
             assert_eq!(lhs, rhs, "i={i}");
         }
     }
@@ -518,10 +562,22 @@ mod tests {
         let m = dd.dec_row(&tau);
         let base = dd.dd_ij(&a0, false, &b0, false, &tau);
         for (i, j) in [(false, false), (true, false), (false, true), (true, true)] {
-            let a = if i { ring::add_coeffs(&a0, &delta.coeffs, p) } else { a0.clone() };
-            let b = if j { ring::add_coeffs(&b0, &delta.coeffs, p) } else { b0.clone() };
+            let a = if i {
+                ring::add_coeffs(&a0, &delta.coeffs, p)
+            } else {
+                a0.clone()
+            };
+            let b = if j {
+                ring::add_coeffs(&b0, &delta.coeffs, p)
+            } else {
+                b0.clone()
+            };
             let lhs = dd.dd_ij(&a, i, &b, j, &tau);
-            let corr = if i && j { m.clone() } else { alloc::vec![0; degree] };
+            let corr = if i && j {
+                m.clone()
+            } else {
+                alloc::vec![0; degree]
+            };
             let rhs = ring::add_coeffs(&base, &corr, p);
             assert_eq!(lhs, rhs, "i={i} j={j}");
         }
@@ -544,8 +600,16 @@ mod tests {
         };
         assert_eq!(dd.hss_mul(&a0, false, &b0, false), base_share);
         for (i, j) in [(true, false), (false, true), (true, true)] {
-            let a = if i { ring::add_coeffs(&a0, &delta.coeffs, p) } else { a0.clone() };
-            let b = if j { ring::add_coeffs(&b0, &delta.coeffs, p) } else { b0.clone() };
+            let a = if i {
+                ring::add_coeffs(&a0, &delta.coeffs, p)
+            } else {
+                a0.clone()
+            };
+            let b = if j {
+                ring::add_coeffs(&b0, &delta.coeffs, p)
+            } else {
+                b0.clone()
+            };
             let got = dd.hss_mul(&a, i, &b, j);
             let expect = if i && j {
                 ring::add_coeffs(&base_share, &delta.coeffs, p)
