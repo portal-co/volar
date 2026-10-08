@@ -446,6 +446,22 @@ paper's §4 figures and the artifact's `small` mode easiest.
 
 ### Phase 5 — Hardening, benchmarks, docs
 
+> **Status after implementation round (2026-10-08):** Phases 0–4
+> landed. `volar_spec::bitgc` (ring/SWHE/PRG/seed/common/small) compiles
+> and passes 12 unit tests covering both the small and fast reference
+> adapters end-to-end on the gated `(x0∧x1)⊕x2` circuit; `volar-mpc`
+> admission tests pass; the Cirrus `cirrus-volar-garble` adapter compiles
+> and its `bitgc_roundtrip` integration test is written. The Cirrus test
+> **build** is blocked by a pre-existing, unrelated breakage:
+> `cirrus-volar-boolar` and the `volar-*` compiler crates reference
+> `Type::AES8`/`Galois64`/`Z3`, which the patched `volar-ir` checkout
+> removed in commit `80b0f82` ("Replace AES8 and Galois64 with canonical
+> ExtField"). This is a pre-existing merge inconsistency, not a BitGC
+> defect; the adapter library itself compiles clean.
+>
+> Remaining: Phase 5 (hardening/benchmarks/docs) below, plus the
+> equation-pinning work in BITGC-LEDGER-04.
+
 5.1. Parameter-security review gate: independent check of ring degrees,
      modulus chains, noise bounds against the RLWE-KDM assumption and the
      paper's claimed 128-bit profile. Until this passes, every BitGC
@@ -456,6 +472,15 @@ paper's §4 figures and the artifact's `small` mode easiest.
 5.3. Docs: update `docs/garbling-pipeline.md` with the bitgc branch of the
      pipeline diagram; write `docs/research/bitgc-variants-research.md`
      capturing the paper notes behind the pinning table.
+5.5. **Pre-existing volar-ir drift (blocks full workspace builds).**
+     `volar-compiler`, `volar-lir-codegen`, and Cirrus's
+     `cirrus-volar-boolar` reference `Type::AES8`/`Galois64`/`Z3`, which
+     the patched `volar-ir` checkout no longer has (replaced by
+     `ExtField` in volar-ir `80b0f82`). Until that migration completes,
+     the BitGC integration tests cannot *run* in either repo (the
+     construction lib tests run and pass). Fix the migration
+     independently of BitGC; then re-run the Cirrus
+     `bitgc_roundtrip` test and the weaver tests.
 5.4. Cut-and-choose interaction review: `cirrus-volar-garble` has an
      existing `cut_and_choose.rs` for the half-gate backend; record
      explicitly whether/how BitGC garblings participate (likely: not at
