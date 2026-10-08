@@ -487,29 +487,29 @@ shared evaluation key; fast XOR uses the global `[[Δ]]` (not plain label
 addition, which breaks `DD_{i,j}`); and the LSB wrap-around is the
 per-gate failure term (~N/p; the paper's `log p≈60` makes it <2^-40).
 
-**Remaining for a faithful implementation** (next milestone, tracked by
-BITGC-LEDGER-04): the **production lattice SWHEwDD gadget**. This is the
-largest open build. It ports, onto the coefficient-form `R_q` SWHE ring
-(`bitgc::swhe`/`bitgc::ring`):
-  1. **k=1 DD via RLWE' gadget-product ciphertexts** ([COS+22],
-     [ZLL+26] App. A): a gadget decomposition `RLWE'(t·Δ)` enabling
-     `DD_i(A,τ) = c1·A + i·c0` where `c0 + c1·Δ = t·Δ` now holds only
-     *with lattice noise* — needs gadget decomposition (`ring::
-     gadget_decompose_coeffs`, already present), a base-`2^w` gadget
-     vector, and the `ExternalMul`-style conversion (`b·RLWE'(y) +
-     a·RLWE'(s·y)`, cf. the artifact's `seal_ops.cc`).
-  2. **k=2 DD via a CP-RLWE triple** ([ILL25b], [ZLL+26] App. A): the
-     `(U,V,W)` with `ΔU+V=0`, `Δ²U+W=−Δ`, currently modeled exactly by
-     `ReferenceDd::hss_mul` — needs the noisy RLWE encryption of those
-     relations.
-  3. Wire it into the same `DdGadget` seam so `garble_circuit` /
-     `evaluate_circuit` run unchanged against the lattice gadget.
-  4. Noise/parameter budget to hit `< 2^-40` per-gate failure
-     (BITGC-LEDGER-03) using the §6 parameter shapes (log p≈60, DD
-     moduli log q≈120 (k=1) / log r≈240 (k=2)).
+**Lattice SWHEwDD gadget landed (2026-10-08):** `bitgc::lattice_dd`
+implements the production DD primitive — GSW-style RLWE row ciphertexts
+`τ=(u1,u2)` over `R_q` (phase `u1+u2·Δ = t·Δ + p·e`) for k=1, and a
+CP-RLWE triple `(U,V,W)` (`U·Δ+V=p·e₁`, `U·Δ²+W=−Δ+p·e₂`) for k=2
+`HssMul`. DD rounds mod `p` (`round_to_rp`: center mod `q`, reduce mod
+`p`), so the noise vanishes and the DD identities hold **exactly** —
+verified by unit tests and by running `garble_circuit`/`evaluate_circuit`
+through the shared `DdGadget` seam (`lattice_small/fast_circuit_truth_table`
+pass). A lattice row reduces mod `p` to exactly the reference `RowCt`,
+which is the concrete statement that the lattice gadget degrades to the
+reference gadget.
 
-Then the artifact conformance vectors (BITGC-LEDGER-01/02) against the
-QEMU `sub64` build.
+**Caveats (reference-grade):** schoolbook O(N²) negacyclic mul (no NTT),
+symmetric ternary noise sampler (not Gaussian), reduced test profile
+(p=97, q≈2^23 unit / p=2^62 round-trip) vs. the paper's log p≈60 /
+log q≈120, and no bit-decomposition/extended-gadget form.
+
+**Remaining (tracked):** noise/parameter security review
+(BITGC-LEDGER-03 — the KDM-style `t·Δ`-under-`Δ` message and the
+non-Gaussian noise need an independent check), the artifact conformance
+vectors (BITGC-LEDGER-01/02, QEMU `sub64` build), and the NTT/extended-
+gadget production form (the seam is in place; the arithmetic is the
+slow reference).
 
 ### Phase 5 — Hardening, benchmarks, docs
 
