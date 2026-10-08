@@ -30,7 +30,7 @@ use alloc::vec::Vec;
 use super::common::{
     Circuit, ExpandedGate, Gate, GateEquation, GlobalDelta, Stitch, StitchError, WireState,
 };
-use super::seed::{OfflineEvaluator, OfflineGarbler};
+use super::seed::OfflineEvaluator;
 use super::swhe::{Ciphertext, Context, KeySwitchKeySet};
 
 /// Garble a circuit, producing the online stitching record stream.

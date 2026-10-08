@@ -204,6 +204,32 @@ impl Ring {
         }
     }
 
+    /// Gadget-decompose each coefficient of `value` (read in coefficient
+    /// form) into `digits` base-`base` limbs, returning one coefficient-form
+    /// vector per digit position (little-endian: `digits[0]` is the units).
+    ///
+    /// This is the GSW/RLWE' gadget used by the DD primitive: it lets a
+    /// party combine a label with a ciphertext's "extended" gadget form.
+    /// Requires `base^digits > modulus`.
+    pub fn gadget_decompose_coeffs(
+        &self,
+        coeffs: &[u64],
+        base: u64,
+        digits: usize,
+    ) -> Result<Vec<Vec<u64>>, Error> {
+        if coeffs.len() != self.parameters.degree || !base.is_power_of_two() {
+            return Err(Error::LengthMismatch);
+        }
+        let mut out = alloc::vec![alloc::vec![0_u64; self.parameters.degree]; digits];
+        let bits = base.trailing_zeros() as usize;
+        for (i, &c) in coeffs.iter().enumerate() {
+            for d in 0..digits {
+                out[d][i] = (c >> (bits * d)) & (base - 1);
+            }
+        }
+        Ok(out)
+    }
+
     /// In-place additive negation.
     pub fn negate_assign(&self, value: &mut Poly) {
         let q = self.parameters.modulus;

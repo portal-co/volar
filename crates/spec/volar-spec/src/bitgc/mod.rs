@@ -44,6 +44,7 @@
 //! [LWYY25a]: <https://eprint.iacr.org/2025/232>
 
 pub mod common;
+pub mod pinned;
 pub mod prg;
 pub mod ring;
 pub mod seed;
