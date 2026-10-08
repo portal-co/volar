@@ -7324,6 +7324,29 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         return values;
     }
 
+    // ---- Tuple-struct construction -----------------------------------------
+    // A bare `StructName(payload)` call constructs a single-field tuple
+    // struct (e.g. `FaestPublicKey(pk)`). The wrapper is transparent in the
+    // flat scalar model: the value is just the payload's flattened scalars.
+    if args.len() == 1 {
+        let ctor_name = match &func.kind {
+            IrExprKind::Path { segments, .. } if segments.len() == 1 => Some(segments[0].as_str()),
+            IrExprKind::Var(name) => Some(name.as_str()),
+            _ => None,
+        };
+        if let Some(name) = ctor_name {
+            if let Some(ir_struct) = ctx
+                .module_structs
+                .iter()
+                .find(|s| s.kind.to_string() == *name)
+            {
+                if ir_struct.fields.len() == 1 {
+                    return lower_expr(&args[0], ctx);
+                }
+            }
+        }
+    }
+
     // ---- Enum variant construction (Tuple variant) -------------------------
     // Check if this call is `EnumKind::VariantName(args...)` — a tuple variant constructor.
     if let Some((entry, variant)) = ctx.enum_registry.find_variant(&func_name) {
@@ -7331,13 +7354,6 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         let mut scalars: Vec<T::Value> = vec![tag];
         for a in args {
             let v = lower_expr(a, ctx);
-            if func_name.contains("Sponge") {
-                eprintln!(
-                    "[probe] {func_name} payload arg -> {} scalars, max_w={}",
-                    v.len(),
-                    entry.max_payload_width
-                );
-            }
             scalars.extend(v);
         }
         let max_w = entry.max_payload_width;
@@ -7467,6 +7483,10 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     // ---- Default: call_extern ----------------------------------------------
     // Look up the called function's signature for return-type inference.
     // Without this, intra-module calls would discard their return value.
+    if func_name == "FaestPublicKey" || func_name == "FaestSecretKey" {
+        let argt: Vec<_> = args.iter().map(|a| ctx.infer_type(a)).collect();
+        eprintln!("[ctor] {func_name} nargs={} arg_tys={argt:?}", args.len());
+    }
     let ret_ty = ctx
         .func_sigs
         .get(&func_name)
