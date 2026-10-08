@@ -110,14 +110,18 @@ impl FaestAesProver for StubFaestAesProver {
         hash_key: &UniversalHashKey,
     ) -> QuickSilverProof {
         let a_hat_out: UniversalHashOutput = vole_hash(hash_key, &big_vole.u);
-        let a_hat: Vec<u8> = a_hat_out
-            .h0
-            .0
-            .to_le_bytes()
-            .iter()
-            .chain(a_hat_out.h1.0.to_le_bytes().iter())
-            .cloned()
-            .collect();
+        // Push the two halves explicitly rather than `.iter().chain(..)`:
+        // the LIR iterator-chain lowering has no `chain` step, and the
+        // `to_le_bytes().iter()` collection is a temporary it cannot type.
+        let h0_bytes = a_hat_out.h0.0.to_le_bytes();
+        let h1_bytes = a_hat_out.h1.0.to_le_bytes();
+        let mut a_hat: Vec<u8> = Vec::with_capacity(h0_bytes.len() + h1_bytes.len());
+        for i in 0..h0_bytes.len() {
+            a_hat.push(h0_bytes[i]);
+        }
+        for i in 0..h1_bytes.len() {
+            a_hat.push(h1_bytes[i]);
+        }
         let len = a_hat.len();
         QuickSilverProof {
             a_hat,
