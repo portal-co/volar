@@ -4171,6 +4171,19 @@ fn resolve_const_expr_len<P: Clone>(len: &IrExpr<P>, mono: &MonoEnv) -> usize {
             .or_else(|| mono.consts.get(segments[0].as_str()))
             .copied()
             .unwrap_or_else(|| panic!("array length '{}' is not concrete", segments[0])),
+        // Constant arithmetic over resolved lengths (`4 * NK_ROUND_KEYS`,
+        // `2 * N - 1`): evaluate the resolved operands.
+        IrExprKind::Binary { op, left, right } => {
+            let l = resolve_const_expr_len(left, mono);
+            let r = resolve_const_expr_len(right, mono);
+            match op {
+                SpecBinOp::Add => l + r,
+                SpecBinOp::Sub => l - r,
+                SpecBinOp::Mul => l * r,
+                SpecBinOp::Div => l / r,
+                other => panic!("array length arithmetic op {other:?} is not supported"),
+            }
+        }
         _ => panic!("array length must be a concrete integer"),
     }
 }
