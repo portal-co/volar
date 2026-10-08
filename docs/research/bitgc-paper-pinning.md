@@ -208,6 +208,37 @@ step (see plan §5 / BITGC-LEDGER-04).
 - Parameter shapes (N_PRG/N_gate, limb counts, log-moduli) — BITGC-PIN-10
   pinned (paper §6).
 
+**Landed (2026-10-08) — the pinned circuit drivers:**
+`volar_spec::bitgc::pinned` now has full `garble_circuit` /
+`evaluate_circuit` drivers over the reference DD gadget, realizing the
+equations above end-to-end. Both small and fast truth tables pass over
+all inputs (`small_circuit_truth_table`, `fast_circuit_truth_table`),
+and `record_bit_counts` confirms the Table 1 communication accounting
+(small: 1+1 bits for And+Xor; fast: 5 bits for the AND, 0 for XOR).
+
+**Key implementation findings** (verified by the round-trip tests and an
+empirical probe):
+
+1. **The DD `(U,V,W)` triple is an evaluation key** — the
+   `Eval_{i,j}(A+iΔ,B+jΔ) = Eval_{0,0}(A,B) + (i·t₁+j·t₂+ij·t₃)·Δ`
+   identity holds **only if garbler and evaluator use the same
+   `(U,V,W)`**. The drivers therefore take a shared `&ReferenceDd` and
+   never re-derive it per gate.
+2. **Fast XOR uses the global `[[Δ]]`** (Fig. 6 Case 2: `τ₁=τ₂=[[Δ]],
+   τ₃=−2[[Δ]]`), *not* plain label addition — plain addition leaves a
+   `2Δ` payload that breaks downstream `DD_{i,j}` (which needs the
+   `Δ·U+V=0` correlation). This is exactly why fast XOR is free: the
+   rows derive from the one global `[[Δ]]` with no per-gate table and no
+   communicated bit. Small XOR is the same with a per-gate sign
+   `d = π_α⊕π_β⊕π_γ` (the 1 communicated bit).
+3. **LSB wrap-around is the per-gate failure term.** The determination
+   relation `LSB(W^0+k·Δ) = LSB(W^0)⊕k` holds only when the
+   coefficient-0 sum `W^0[0]+k·Δ[0]` does not wrap mod `p`; wrap (prob.
+   ~`N/p` per gate for degree `N`) flips a bit. Measured 1.03% per gate
+   at `p=97`, degree 8 (empirical probe); the paper's `log p ≈ 60`
+   makes this cryptographically negligible (`< 2^-40`). Tests use
+   `p = 2^62+135` (prime) to stay exact; production parameters per §6.
+
 **Still open (implementation, not evidence):**
 - BITGC-LEDGER-04: replace `ReferenceEquation` with the paper equations
   above + differential test. Evidence now complete (PDF + artifact agree).
