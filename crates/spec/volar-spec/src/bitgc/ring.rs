@@ -320,7 +320,7 @@ pub(crate) fn sample_uniform(
 }
 
 #[derive(Clone, Debug)]
-struct Ntt {
+pub(crate) struct Ntt {
     modulus: u64,
     degree: usize,
     psi: u64,
@@ -331,7 +331,16 @@ struct Ntt {
 }
 
 impl Ntt {
-    fn new(degree: usize, modulus: u64) -> Result<Self, Error> {
+    pub(crate) fn new(degree: usize, modulus: u64) -> Result<Self, Error> {
+        // Necessary condition for a negacyclic NTT of length `degree`:
+        // `modulus ≡ 1 (mod 2·degree)`. Fail fast instead of scanning
+        // `2..modulus` for a root that cannot exist.
+        if degree == 0
+            || !degree.is_power_of_two()
+            || (modulus - 1) % (2 * degree as u64) != 0
+        {
+            return Err(Error::Arithmetic);
+        }
         let psi = find_negacyclic_root(degree, modulus).ok_or(Error::Arithmetic)?;
         let omega = mul_mod(psi, psi, modulus);
         Ok(Self {
@@ -395,7 +404,7 @@ fn bit_reverse(values: &mut [u64]) {
     }
 }
 
-fn find_negacyclic_root(degree: usize, modulus: u64) -> Option<u64> {
+pub(crate) fn find_negacyclic_root(degree: usize, modulus: u64) -> Option<u64> {
     let exponent = (modulus - 1) / (2 * degree as u64);
     for candidate in 2..modulus {
         let root = pow_mod(candidate, exponent as usize, modulus);
@@ -404,6 +413,26 @@ fn find_negacyclic_root(degree: usize, modulus: u64) -> Option<u64> {
         }
     }
     None
+}
+
+/// Negacyclic convolution via NTT: `a · b mod (X^N + 1, q)` where the
+/// modulus is NTT-friendly (`q ≡ 1 mod 2N`). `O(N log N)`.
+///
+/// Equivalent to [`negacyclic_mul_coeffs`] but requires the [`Ntt`]
+/// context. Returns coefficients in `[0, q)`.
+pub(crate) fn negacyclic_mul_ntt(a: &[u64], b: &[u64], ntt: &Ntt) -> Vec<u64> {
+    debug_assert_eq!(a.len(), ntt.degree);
+    debug_assert_eq!(b.len(), ntt.degree);
+    let mut fa = a.to_vec();
+    let mut fb = b.to_vec();
+    ntt.forward(&mut fa);
+    ntt.forward(&mut fb);
+    let q = ntt.modulus;
+    for (x, &y) in fa.iter_mut().zip(fb.iter()) {
+        *x = mul_mod(*x, y, q);
+    }
+    ntt.inverse(&mut fa);
+    fa
 }
 
 /// Schoolbook negacyclic convolution `a · b mod (X^N + 1, p)` on
