@@ -124,8 +124,10 @@ pub struct FaestSignature {
 /// `sk ← {0,1}^λ` uniformly; `pk = AES_{sk}(0^128)`.
 pub fn keygen(rng: &mut impl SpecRng) -> (FaestSecretKey, FaestPublicKey) {
     let mut sk = [0u8; LAMBDA_BYTES];
-    for b in sk.iter_mut() {
-        *b = rng.next_u8();
+    // Index-based fill rather than `sk.iter_mut()`: the LIR lowering has no
+    // fixed-array iter_mut idiom, and the indexed form lowers directly.
+    for i in 0..LAMBDA_BYTES {
+        sk[i] = rng.next_u8();
     }
     let pk = aes128_encrypt(&sk, &[0u8; LAMBDA_BYTES]);
     (FaestSecretKey(sk), FaestPublicKey(pk))
