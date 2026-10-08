@@ -235,6 +235,33 @@ pub struct RowCt {
     pub c1: LabelPoly,
 }
 
+/// The shared DD-gadget seam ([ZLL+26] Def. 6 / §3.3). Both the exact
+/// [`ReferenceDd`] and the lattice [`super::lattice_dd::LatticeDd`]
+/// implement it, so the pinned circuit drivers are gadget-agnostic.
+///
+/// The row ciphertext is [`RowCt`]: the lattice gadget *reduces* its
+/// noisy RLWE rows `(u1,u2)` to this exact `R_p` form (the noise, a
+/// multiple of `p`, vanishes on reduction), so a single `RowCt` type
+/// serves both. This is the precise sense in which the lattice gadget
+/// degrades to the reference gadget under rounding.
+pub trait DdGadget {
+    /// The plaintext modulus.
+    fn p(&self) -> u64;
+    /// The key Δ.
+    fn delta(&self) -> &Delta;
+    /// Generate a row ciphertext for multiplier `t`.
+    fn row(&self, t: i64, random: &mut dyn SpecRng) -> RowCt;
+    /// `DD_0(A, τ)` (k=1).
+    fn dd0(&self, a: &LabelPoly, tau: &RowCt) -> LabelPoly;
+    /// `DD_i(A, τ)` (k=1).
+    fn dd_i(&self, a: &LabelPoly, i: bool, tau: &RowCt) -> LabelPoly;
+    /// `DD_{i,j}(A, B, τ)` (k=2).
+    fn dd_ij(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, tau: &RowCt) -> LabelPoly;
+    /// The gate evaluator `Eval_{i,j}(A,B,τ)`.
+    fn eval(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, taus: &[RowCt; 3])
+    -> LabelPoly;
+}
+
 /// The reference DD gadget over `R_p` (exact DD identities; see module
 /// docs for the honesty boundary). Holds Δ (garbler-side row generation)
 /// and the CP-RLWE-style multiplication triple for the k=2 term.
@@ -384,6 +411,34 @@ impl ReferenceDd {
         let mut out = self.dd_i(a, i, &taus[0]);
         out = ring::add_coeffs(&out, &self.dd_i(b, j, &taus[1]), self.p);
         ring::add_coeffs(&out, &self.dd_ij(a, i, b, j, &taus[2]), self.p)
+    }
+}
+
+impl DdGadget for ReferenceDd {
+    fn p(&self) -> u64 {
+        self.p
+    }
+    fn delta(&self) -> &Delta {
+        &self.delta
+    }
+    fn row(&self, t: i64, random: &mut dyn SpecRng) -> RowCt {
+        self.row(t, &mut |buf| {
+            for v in buf.iter_mut() {
+                *v = (random.next_u32() as u64) % self.p;
+            }
+        })
+    }
+    fn dd0(&self, a: &LabelPoly, tau: &RowCt) -> LabelPoly {
+        self.dd0(a, tau)
+    }
+    fn dd_i(&self, a: &LabelPoly, i: bool, tau: &RowCt) -> LabelPoly {
+        self.dd_i(a, i, tau)
+    }
+    fn dd_ij(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, tau: &RowCt) -> LabelPoly {
+        self.dd_ij(a, i, b, j, tau)
+    }
+    fn eval(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, taus: &[RowCt; 3]) -> LabelPoly {
+        self.eval(a, i, b, j, taus)
     }
 }
 
@@ -600,12 +655,6 @@ fn sample_poly(degree: usize, p: u64, random: &mut dyn SpecRng) -> LabelPoly {
     out
 }
 
-fn fill_random(buf: &mut [u64], p: u64, random: &mut dyn SpecRng) {
-    for v in buf.iter_mut() {
-        *v = (random.next_u32() as u64) % p;
-    }
-}
-
 /// The garbler's gate-output label computation ([ZLL+26] Fig. 4c):
 ///
 /// ```text
@@ -614,8 +663,8 @@ fn fill_random(buf: &mut [u64], p: u64, random: &mut dyn SpecRng) {
 ///
 /// Returns the output wire's label state (storing `W^0`, so `w0_lsb()` is
 /// the true `LSB(W^0)` used by the determination bit).
-fn gate_output_label(
-    dd: &ReferenceDd,
+fn gate_output_label<D: DdGadget>(
+    dd: &D,
     wa_base: &LabelPoly,
     wb_base: &LabelPoly,
     taus: &[RowCt; 3],
@@ -649,10 +698,10 @@ fn gate_output_label(
 /// `π_γ`'s are sampled here instead and the realized values recorded in
 /// the returned garbling. `prg_bits` supplies the fast variant's four
 /// PRG mask bits per AND gate (flattened in circuit order).
-pub fn garble_circuit(
+pub fn garble_circuit<D: DdGadget>(
     variant: Variant,
     circuit: &Circuit,
-    dd: &ReferenceDd,
+    dd: &D,
     pis: &[bool],
     prf: &PrfKey,
     prg_bits: &[bool],
@@ -668,7 +717,7 @@ pub fn garble_circuit(
 
     // Global [[Δ]] (setup: Enc(Δ,Δ) is a t=1 row under the reference
     // gadget).
-    let delta_ct = dd.row(1, &mut |buf| fill_random(buf, p, random));
+    let delta_ct = dd.row(1, random);
 
     let mut pi: Vec<bool> = pis.to_vec();
     let mut labels: Vec<WireLabel> = Vec::with_capacity(circuit.wires());
@@ -695,9 +744,9 @@ pub fn garble_circuit(
                 let z = masked_table(true, pi[a], pi[b], pi[w]);
                 let t = row_multipliers(&z);
                 let taus = [
-                    dd.row(t[0], &mut |buf| fill_random(buf, p, random)),
-                    dd.row(t[1], &mut |buf| fill_random(buf, p, random)),
-                    dd.row(t[2], &mut |buf| fill_random(buf, p, random)),
+                    dd.row(t[0], random),
+                    dd.row(t[1], random),
+                    dd.row(t[2], random),
                 ];
                 let out = gate_output_label(dd, &wa, &wb, &taus, z[0], prf, w, pi[w]);
                 let det = determination_bit(out.w0_lsb(), pi[w]);
@@ -726,10 +775,10 @@ pub fn garble_circuit(
                 fast_and += 1;
                 let masks = fast_mask_bits(&z, &r);
                 let r_rows = [
-                    dd.row(i64::from(r[0]), &mut |buf| fill_random(buf, p, random)),
-                    dd.row(i64::from(r[1]), &mut |buf| fill_random(buf, p, random)),
-                    dd.row(i64::from(r[2]), &mut |buf| fill_random(buf, p, random)),
-                    dd.row(i64::from(r[3]), &mut |buf| fill_random(buf, p, random)),
+                    dd.row(i64::from(r[0]), random),
+                    dd.row(i64::from(r[1]), random),
+                    dd.row(i64::from(r[2]), random),
+                    dd.row(i64::from(r[3]), random),
                 ];
                 let taus = fast_and_rows(&delta_ct, &r_rows, &masks, p);
                 let out = gate_output_label(dd, &wa, &wb, &taus, z[0], prf, w, out_pi);
@@ -782,8 +831,8 @@ pub fn encode_inputs(
 /// The shared gate-evaluation step ([ZLL+26] Fig. 5c / 7c):
 /// `W_γ = Eval_{x̂_α,x̂_β}(W_α,W_β,τ₁,τ₂,τ₃) + PRF_K(γ)`.
 #[allow(clippy::too_many_arguments)]
-fn eval_gate(
-    dd: &ReferenceDd,
+fn eval_gate<D: DdGadget>(
+    dd: &D,
     a: &LabelPoly,
     i: bool,
     b: &LabelPoly,
@@ -815,10 +864,10 @@ fn eval_gate(
 /// no-noise evaluation of the garbling algebra. It is **not** the
 /// production distributed-decryption path (lattice DD + hash-match
 /// opening). See the module docs and BITGC-LEDGER-04.
-pub fn evaluate_circuit(
+pub fn evaluate_circuit<D: DdGadget>(
     variant: Variant,
     circuit: &Circuit,
-    dd: &ReferenceDd,
+    dd: &D,
     delta_ct: &RowCt,
     and_rows: &[AndRows],
     records: &[GateRecord],
