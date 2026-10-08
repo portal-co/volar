@@ -1,0 +1,2027 @@
+=== PAGE 1 ===
+BitGC Made (More) Efficient*
+Wenhao Zhang† Hanlin Liu† Kang Yang‡ Wen-jie Lu§
+Yu Yu¶ || Xiao Wang† Chenkai Weng**
+May 18, 2026
+Abstract
+Garbled circuits with one-bit-per-gate communication were recently introduced by Liu et al. (BitGC,
+Eurocrypt 2025), Meyer et al. (Crypto 2025), and Ishai et al. (Crypto 2025). However, these works
+focus primarily on the theoretical communication complexity, leaving open questions about practical
+computational efficiency. In this paper, we present a set of optimizations that substantially improve its
+practical efficiency. First, we eliminate key barriers to enable SIMD support for BitGC, leading to a
+substantial speedup in its homomorphic operations. Second, we demonstrate that XOR gates can be
+garbled without any communication, improving both efficiency and simplicity. Finally, we present a
+computationally efficient garbling scheme that requires zero communication for XOR gates and only 5
+bits per AND gate. When applied to an AES-128 circuit, our fastest garbling scheme generates a garbled
+circuit of just 4 KB in 2 minutes on a single CPU core.
+1 Introduction
+Garbled circuit (GC) [Yao86] is a fundamental cryptographic tool that has been widely used to build
+secure two-party computation (2PC) [LP09], secure multi-party computation [BMR90], zero-knowledge
+proofs [JKO13], identity-based encryption [DG17], etc. It is particularly useful to build protocols with
+constant-round interaction and active security due to its inherent resilience against a corrupted evaluator.
+Optimizing the size of GCs has been studied extensively both in practice and in a theoretical aspect. On
+the practical side, many optimizations have been proposed to improve the communication [BMR90, NPS99,
+KS08, PSSW09, KMR14, ZRE15, GLNP15, RR21] and computation [BHKR13, GKWY20, GKW+20] of
+garbling using only symmetric-key primitives. Notably, the scheme by Rosulek and Roy [RR21] achieves
+1.5λ+ 5 bits per AND gate and no cost for XOR gates, whereλ is the security parameter. It was recently
+shown to be optimal [JRR25]. In contrast, asymptotically sublinear-size GCs aim for fully succinct construc-
+tions [GKP+13, GGH+13, BGG+14, Agr17], typically relying on heavy cryptographic primitives such as
+fully homomorphic encryption (FHE) or multilinear maps. However, these approaches remain completely
+impractical so far due to their non-blackbox use of FHE.
+More recently, several works by Liu, Wang, Yang and Yu [LWYY25b], Meyer, Orlandi, Roy and
+Scholl [MORS25], and Ishai, Li and Lin [ILL25b] investigated rate-one garbling for Boolean circuits
+*Full version of a paper published at Eurocrypt 2026 [ZLY+26].
+†Northwestern University.Email:{wenhao.zhang,hanlin.liu}@northwestern.edu,
+wangxiao1254@gmail.com
+‡State Key Laboratory of Cryptology.Email:yangk@sklc.org
+§TikTok.Email:fionser@gmail.com
+¶Shanghai Jiao Tong University.Email:yuyu@yuyu.hk
+||Shanghai Qi Zhi Institute.
+**Arizona State University.Email:Chenkai.Weng@asu.edu
+1
+=== PAGE 2 ===
+Communication Computation
+AND XORAES-128AND XORAES-128
+BitGC-fast(Sec 5.1) 5 bits 0 bits 4.0 KB16.24ms0.43ms116s
+BitGC-small(Sec 4) 1 bit 1 bit 4.3 KB34.20ms4.47ms345s
+BitGC-tiny(Sec 5.2) 1 bit 0 bits 0.8 KB≥331ms≥44ms≥56min
+BitGC[LWYY25b] 1 bit 1 bit 4.3 KB≥1.45s≥1.45s≥14hours
+Table 1:Performance of our optimized BitGC variants compared to the original BitGC [LWYY25b].
+An AES-128 circuit includes 6400 AND gates and 28176 XOR gates. The time costs of BitGC-fast and
+BitGC-small are benchmarked with single-threaded execution and those of BitGC-tiny and BitGC are lower
+bound estimations assuming the same experimental environment. The communication cost excludes data that
+is reusable across multiple garblings, and also omits the amortized communication of transmitting encrypted
+PRG seeds which is arbitrarily small.
+with reasonable efficiency. In particular, these works have shown garbling schemes with one bit per gate
+communication based on lattice assumptions [LWYY25b, ILL25b] and classical assumptions [ILL25b,
+MORS25]. While these methods represent notable theoretical progress, their concrete efficiency is not
+clear and likely very far from being practical. Taking BitGC [LWYY25b] as an example, it requires offline
+homomorphic evaluation of a pseudorandom generator (PRG) as well as online computation of homomorphic
+gate assembling and complicated polynomial ring operations. Our conservative estimates show that a direct
+implementation of their scheme would require at least14hours to garble an AES-128 circuit.
+1.1 Our Contribution
+In this paper, we investigate the concrete efficiency ofBitGC protocol and propose several important opti-
+mizations to maximize its performance. Our most practical scheme is over 400× faster than the unoptimized
+BitGCwith a reduced garbling size.
+1.BitGC requires using somewhat homomorphic encryption (SWHE) to evaluate a PRG but cannot use
+the SIMD optimization to accelerate this step. This is because BitGC requires an even ciphertext space
+while SIMD requires primes friendly to Number Theoretic Transform (NTT). We observed that the
+above restriction is due to how BitGC correlates the garbled labels and the permutation bit; by revising
+the structure of BitGC, we are able to support any ciphertext space and hence bringing back SIMD to
+accelerate operations on SWHE.
+2. Many circuits have been optimized to minimize the number of ANDs with possibly more XOR gates due
+to the free-XOR optimization [KS08]. However, all existing one-bit protocols treat all types of gates in the
+same way. We provide various kinds of free-XOR optimizations toBitGC reducing the communication
+(sometimes also computation) cost for handling XOR gates.
+3. Although the offline homomorphic PRG evaluation can be SIMD-accelerated, the online garbling phase
+uses ring operations for each gate and cannot use such optimization. We propose a variant of BitGC with
+slightly more communication but avoiding the need for any homomorphic multiplication in the online
+phase.
+By incorporating all these optimizations, we are able to obtain three schemes (BitGC-small, BitGC-tiny, and
+BitGC-fast) with different trade-offs as shown in Table 1. While all three schemes can enjoy the SIMD
+optimizations for improved offline phase, each of them has a different set of features.
+•BitGC-small . This version is a direct optimization of the original scheme with SIMD acceleration and
+2
+=== PAGE 3 ===
+slight optimization to make XOR gates cheaper in computation.
+•BitGC-tiny . This version further eliminates the communication of XOR gates, but requires larger parameters
+for SWHE to support free-XOR. As a result, it has the smallest garbling but slow computation (still about
+15×faster than the unoptimizedBitGC).
+•BitGC-fast . This is the variant with cheapest computation and the most balanced. XOR gates are
+additionally 10× cheaper to garble and requires no communication. The downside is that AND gates
+require5bits of communication.
+Why not optimizing HSS-based constructions?Ishai et al. [ILL25b] and Meyer et al. [MORS25] also
+proposed protocols for one bit garbling. Both protocols are built from homomorphic secret sharing (HSS)
+and semi-private HSS (a.k.a. algebraic homomorphic MAC [ILL25a]). By working directly over the HSS
+abstraction, they are able to instantiate one-bit garbling from a variety of assumptions. In this paper, we focus
+only on the practical efficiency of the garbling schemes and thus focus on lattice-based BitGC. Since these
+two works share some similar traits with BitGC, we believe some of our optimizations could be applied to
+their protocols.
+2 Technical overview
+LetRp
+def=Z p[X]/(Xn + 1) andRq
+def=Z q[X]/(Xn + 1). For any ring element A, we define LSB(A) as
+A0 mod 2, whereA 0 is the first coefficient ofA.
+2.1 Recap BitGC Construction
+First, we give a brief summary of the BitGC construction [LWYY25b, LWYY25a]. In BitGC and many
+practical garbling schemes, the permutation bit on a wire is defined to be the LSB of the zero label on that
+wire. For clarity, we store the permutation bit explicitly; thus, each wire has a permutation bit and two
+garbled labels. The garbler picks a uniform global offset ∆∈R p with LSB(∆) = 1 . For any wire with
+(A0,A 1,πa), the protocol requiresA1 =A 0 + (−1)πa·∆ . The BitGC setsπa =LSB(A 0), which implies
+that LSB(Aπa) = 0 whereAπa =A 0 + (−1)πa·πa·∆ . In what follows, ∆ plays a dual role: it is both the
+global free-XOR offset on labels and the secret key under which the SWHE ciphertexts below are encrypted.
+For a messagem, we use JmK to denote an SWHE ciphertext ofm that is encrypted with a private key ∆.
+Consider a gateg with two inputs and one output. Given the input and output wire masksπa,πb, andπc, the
+assembled garbled table consists of a set of three ciphertexts:
+τ1 =J(−1) πc·(z 1,0−z 0,0)K
+τ2 =J(−1) πc·(z 0,1−z 0,0)K
+τ3 =J(−1) πc·(z 0,0 +z 1,1−z 1,0−z 0,1)K
+(1)
+wherezi,j =g(i⊕π a,j⊕π b). Note that it implicitly definesτ0 = 0 due to the garbled row reduction [NPS99].
+Distributed evaluation of BitGC.The BitGC scheme crucially requires a special homomorphism enabled
+by defining two functions Eval and Dec. We defer their instantiations to a later section and focus on their
+relations here. For any three ciphertextsτ1,τ 2,τ 3 and uniformX,Y∈R p, the following equation holds with
+overwhelming probability:
+Evali,j(X+i·∆,Y+j·∆,τ 1,τ 2,τ 3)−Eval 0,0(X,Y,τ 1,τ 2,τ 3)
+=i·Dec(∆,τ 1) +j·Dec(∆,τ 2) +i·j·Dec(∆,τ 3).
+3
+=== PAGE 4 ===
+When assuming that Dec(∆,JmK) =m·∆ and theseτ values are ciphertexts as in Equation (1), the above
+equation can be further simplified to
+Evali,j(X+i·∆,Y+j·∆,τ 1,τ 2,τ 3)−Eval 0,0(X,Y,τ 1,τ 2,τ 3)
+= (−1)πc·(zi,j−z 0,0)·∆. (2)
+For any gate, the garbler always has all the input wire information (A0,A 1,πa) and (B0,B 1,πb), while
+the evaluator only holds the labels corresponding to the real values va,vb and masked values, namely
+(Ava,πa⊕va) and (Bvb,πb⊕vb). One can verify that the labels satisfy the correct correlation: for any bits i
+andj, we haveAi =A πa + (πa⊕i)·∆ andBj =B πb + (πb⊕j)·∆ . Using Equation (2), it follows that
+Evalπa⊕i,πb⊕j(Ai,Bj,τ 1,τ 2,τ 3)−Eval 0,0(Aπa,Bπb,τ 1,τ 2,τ 3)
+= (−1)πc·(zπa⊕i,πb⊕j−z 0,0)·∆.
+However, the computation ofπc encounters a deadlock: by definition,π c =LSB(C 0)and one can compute
+labels (C0,C 1) from ciphertexts (τ1,τ 2,τ 3), but these ciphertexts rely onπc. To avoid the “chicken-and-egg”
+problem, the BitGC computes the permutation bitπc =LSB(Eval 0,0(Aπa,Bπb,eτ1,eτ2,eτ3))⊕g(πa,πb), where
+eτ1,eτ2,eτ3 are the same asτ1,τ 2,τ 3 except for replacing (−1)πc with (−1)rc for a uniform bitrc. Then, the
+garbler setsCz0,0 =Eval 0,0(Aπa,Bπb,τ 1,τ 2,τ 3), and is able to compute (C0,C 1) with (Cz0,0,∆,π c,z 0,0).
+What the evaluator can compute is
+Evalπa⊕va,πb⊕vb(Ava,Bvb,τ 1,τ 2,τ 3)
+=C z0,0 + (−1)πc·(zπa⊕va,πb⊕vb−z 0,0)·∆
+=C 0 + (−1)πc·z 0,0·∆ + (−1)πc·(zπa⊕va,πb⊕vb−z 0,0)·∆
+=C 0 + (−1)πc·g(v a,vb)·∆ =C g(va,vb) =C vc ,
+wherevc =g(v a,vb) is the real bit on the output wire. The BitGC further shows that LSB(Cvc) =π c⊕vc,
+which is the needed masked bit of the output wire. Now, the garbler has the output wire information
+(C0,C 1,πc), and the evaluator holds(C vc,πc⊕vc). Thus, we can continue with the circuit evaluation.
+Transmitting BitGC garbled table.First of all, transmitting encryptions of random bits is “free” in terms
+of communication, as the garbler can send an encrypted seed JsK to the evaluator, and then both parties can
+locally and homomorphically expand it using a PRG to generate many pseudorandom bit encryptions. This
+does not need fully homomorphic encryption as long as a low-depth PRG such as [Gol11, Ale03, App12,
+BPR12, AL16, ABBS25] is used. Given that, one can transmit the garbled table for a gate with just one bit of
+communication.
+Both garbler and evaluator start with encryptions of input permutation bits and a uniform bit, i.e., JπaK,
+JπbK and JrcK. The garbler has input labels (A0,A 1), (B0,B 1). With this setup, the garbler garbles a gate in
+the following steps:
+1. Compute a candidate garbled table.The garbler performs homomorphic evaluations on JπaK, JπbK and
+JrcKto obtain:
+eτ1 =J(−1) rc·(z 1,0−z 0,0)K
+eτ2 =J(−1) rc·(z 0,1−z 0,0)K
+eτ3 =J(−1) rc·(z 0,0 +z 1,1−z 1,0−z 0,1)K
+2.Transmit the garbled-table bit.The garbler computes
+πc =LSB(Eval 0,0(Aπa,Bπb,eτ1,eτ2,eτ3))⊕g(π a,πb)
+4
+=== PAGE 5 ===
+and sendsdc =r c⊕πc to the evaluator. Both parties compute JπcK=d c⊕JrcK, and then can locally
+assemble the garbled table to obtain τi = (−1)dc·eτi fori∈{1,2,3} . In words, eτi is the candidate
+garbled-table ciphertext computed using the uniform bitrc in place of the still-unknownπc, and the sign
+correction (−1)dc converts eacheτi into the actual garbled-table entryτi defined in Equation (1). As shown
+in theBitGC, setting the plaintext moduluspto an even number ensures the correctness of this step.
+3. Obtain output labels.The garbler computes Cz0,0 as described above, from which the garbler can obtain
+both output labels, maintaining the invariant.
+Constructing distributed evaluation.The BitGC presented two constructions of the Eval function under the
+Ring-LWE assumption [LPR10] and NTRU assumption [HPS98, PS21]. Both constructions use two basic
+operations: Dec anddDec. Specifically, for any X,Y∈R p and ciphertextsτ1,τ 2,τ 3, the Eval function is
+defined as:
+Evali,j(X,Y,τ 1,τ 2,τ 3) def=Dec i(X,τ 1) +Decj(Y,τ 2) +dDeci,j(X,Y,τ 3).
+For any ciphertextτ and uniformX,Y∈R p, the following properties hold with overwhelming probability:
+1. Linear distributed decryption:Dec 1(X+ ∆,τ) =Dec 0(X,τ) +Dec(∆,τ).
+2. Correlated-key distributed decryption:
+dDeci,j(X+i·∆,Y+j·∆,τ)− dDec0,0(X,Y,τ) =i·j·Dec(∆,τ).
+The linear distributed decryption functionDeci above is based on [BKS19]. TheBitGC scheme introduces
+thedDeci,j function to securely multiply two additive shares. It defines an extended form of the GSW ciphertext
+and shows how to transform a standard ciphertext into this form. Finally, it applies linear distributed decryption
+to this extended ciphertext using key shares (X·Y,X,Y,1) . Independently, constructions of a similar spirit
+were also proposed by [ILL25b] and [MORS25]. They were proposed under slightly different formulations,
+but from a broader range of assumptions as well.
+Challenges in making BitGC practical.Although the BitGC has a lot of potential, its current form is far
+from practical. Here, we summarize the greatest bottlenecks in concrete efficiency.
+• Incompatible with state-of-the-art SWHE optimizations.The BitGC requires using an SWHE scheme to
+homomorphically evaluate a PRG. However, the scheme requires an even plaintext modulusp, which rules
+out SIMD techniques that rely on an NTT-friendly plaintext modulus. Enabling SIMD could potentially
+introduce three orders of magnitude improvement on homomorphic PRG evaluation.
+• Incompatible with free-XOR.The majority of circuits are optimized to minimize the number of AND gates,
+due to the free-XOR technique [KS08], which makes XOR gates incur no communication cost and cheap
+in computational cost. On the other hand, the original BitGC scheme has the same cost across all types of
+gates; thus, usingBitGCon existing free-XOR-optimized circuits would lead to suboptimal performance.
+• High ciphertext space and lattice dimension.In addition, BitGC has some practical limitations that impact
+its performance. First, large parameter sizes are necessary due to the high homomorphic depth, specifically
+to support 1) homomorphic PRG evaluation and 2) homomorphic assembly of the garbled table. A
+larger modulus increases the cost of modular arithmetic, while a higher lattice dimension raises the cost
+of polynomial ring operations. Consequently, homomorphic evaluation remains inefficient, even with
+optimizations such as the Chinese Remainder Theorem.
+Below, we will provide more details of our proposed optimizations and how they can be combined for more
+practical constructions.
+5
+=== PAGE 6 ===
+2.2 Enabling SIMD Optimizations for Homomorphic PRG Evaluation
+As mentioned above, one major bottleneck is the homomorphic evaluation of PRG over SWHE ciphertexts.
+Modern lattice-based SWHE schemes are highly efficient due to the use of SIMD optimization. In more
+detail, plaintext values are packed into polynomial ring elements, where the Number Theoretic Transform
+(NTT) is used, before being encrypted in SWHE. Due to the high lattice dimension, it is common to pack
+tens of thousands of plaintext messages into one ring element, thereby significantly amortizing the cost.
+This optimization requires an NTT-friendly prime as the plaintext modulus, butBitGC, as described above,
+requires an even plaintext space, thus making it incompatible with the packing technique. We first address
+this limitation.
+Why BitGC requires even plaintext modulus.The root reason why BitGC requires an even plaintext
+modulus is the cyclic dependency among values:
+1. Garbled-table ciphertextsτ’s are dependent on the permutation bitπ c by definition.
+2. The output permutation bitπ c is defined from the lowest bit of the output garbled label.
+3. The output label is obtained by the garbled-table ciphertext (similar to the garbled row reduction tech-
+nique [NPS99]).
+In the BitGC, this is resolved by an alternative way to computeπc, where the requirement on the plaintext
+space is introduced: the garbler instead computes a bit from the “candidate ciphertexts” (namely eτi, whereπc
+is replaced by a uniform bitrc) as:
+LSB(Eval0,0(Aπa,Bπb,eτ1,eτ2,eτ3))⊕g(π a,πb).
+The correctness of this procedure can be argued as follows. When rc̸=π c, we haveeτi =−1·τ i, which
+means that Eval(Aπa,Bπb,eτ1,eτ2,eτ3) =−Eval(A πa,Bπb,τ 1,τ 2,τ 3) when Eval is odd. Now, if the plaintext
+space is set to even, the resulting permutation bit is still the correct value because for any value a, as the
+lowest coefficient of the output ofEval,(amodp) mod 2 = (−amodp) mod 2whenpis even.
+Avoiding even plaintext modulus. BitGC breaks the cyclic dependency by computing the permutation bit
+without theτ’s. Our observation, once writing the permutation bit separate from the garbled labels, is that we
+can also break the dependency by not enforcing the invariant thatπc =LSB(C 0). In our improved version,
+we pick all permutation bits uniformly; namely, JπaK, JπbK, and JπcK are ciphertexts directly from the PRG.
+Now both parties can assemble the garbled-table ciphertextsτ 1,τ 2,τ 3 directly.
+Now, if we look at the values that both parties hold, they remain correlated in the correct manner. The
+garbler can computeCz0,0 =Eval 0,0(Aπa,Bπb,τ 1,τ 2,τ 3) and hence derive all values (C0,C 1,πc) for the
+output wire. The evaluator can computeCvc =Eval πa⊕va,πb⊕vb(Ava,Bvb,τ 1,τ 2,τ 3). However, because this
+label does not embed the information of the masked bit, the garbler still needs to send one bit to the evaluator
+to transmit this information. Specifically, the garbler needs to send πc⊕LSB(C 0) to the evaluator, who
+computes the masked bitπc⊕LSB(C 0)⊕LSB(C vc) =v c⊕πc, thus maintaining the invariant.
+2.3 Supporting Free-XOR
+After the above steps of enabling SIMD, the permutation bits of all gates are uniformly random and
+independent of each other, and we hope further to eliminate the communication for XOR gates. Achieving
+free-XOR when labels are bit-strings is easy, since the relationship between zero- and one-labels is based on
+XOR:A 1 =A 0⊕∆. Therefore, in the traditional setting, given thatC 0 =A 0⊕B 0, we have:
+Ava⊕B vb = (A0⊕va∆)⊕(B 0⊕vb∆) =A 0⊕B 0⊕(va⊕vb)∆ =C 0⊕vc∆.
+6
+=== PAGE 7 ===
+The masked bit is consistent for the same reason. However, in our context, our labels are defined as
+A1 =A 0 + (−1)πa·∆ and thus cannot be directly used in the above approach since it is not XOR
+homomorphic.
+Below, we look at theBitGC scheme after changing it to support an odd modulus. For any gate functiong,
+including the XOR function, two parties can obtain the correct correlation of labels. One bit is communicated
+so that the evaluator can obtain the masked bit, which is vc⊕π c = (va⊕v b)⊕π c in our context. We
+observe that this bit of communication can be eliminated if we can setπc =π a⊕πb, since the permutation
+bit itself is still “XOR-homomorphic” like a classical bit-string label. Therefore, the task of achieving no
+communication for XOR gates reduces to ensuring that the evaluator obtains correlated permutation bits: the
+output permutation bits of AND gates are uniform, while the output permutation bits of XOR gates are the
+XOR of input permutation bits.
+Obtaining correlated permutation bits for free-XOR is not straightforward since the evaluator must obtain
+the SWHE ciphertexts of all bits. Here we discuss two possible ways, although we acknowledge that none of
+them are really practical:
+• One can use a leveled HE scheme with a large ciphertext space to homomorphically compute the output
+permutation bits for all XOR gates. In this case, consecutive XOR operations can be evaluated in a
+binary tree manner. Since the noise does not carry across AND gates, an additional O(logN) levels of
+homomorphic multiplications are needed, whereN is the number of XOR gates in the longest sequence of
+consecutive XOR operations. This method allows zero communication for XOR gates, but in the worst
+case, the additional number of multiplication levels needed could beO(log|C|) where|C| is the size of
+the circuit to be garbled.
+• If an SWHE scheme with depth L+d is provided, where d is the depth needed by the original BitGC
+scheme, then one can achieveO(1/L) bits per XOR gate for a layered circuit. In practice, this approach
+also leads to significant computational overhead, as increasingL prohibitively increases the computational
+cost.
+In conclusion, it is possible to achieve free communication for XOR gates, but the computational cost
+becomes even higher than that of AND gates. Nevertheless, in certain use cases where the garbling size is the
+most important, it could be of interest. Conceptually, it also enables us to obtain more realistic trade-offs, as
+described below.
+2.4 Better Trade-Off between Computation and Communication
+Our third major contribution is to obtain a more realistic trade-off. Note that after applying the SIMD
+optimization for evaluating the PRG, its cost would be significantly reduced. Now the bottleneck becomes
+1) homomorphic assembling of the garbled-table ciphertexts (i.e., {τi}), which requires two levels of
+homomorphic evaluation, and 2) distributed evaluation of the table by means of Evali,j. Note that neither of
+these two parts can enjoy SIMD acceleration. The first step is dependent on the circuit structure and thus can
+only be packed if the same circuit needs to be garbled multiple times; the second step involves operations on
+polynomial rings and is not compatible with packing at all.
+To reduce these costs, our goal is to eliminate the need for homomorphic multiplication completely
+after PRG evaluation. This way, we avoid the heavy operation of table assembling, and only need a smaller
+ciphertext modulus, which in turn reduces the dimension of the polynomial ring. We plan to accomplish it by
+slightly increasing the communication.
+As an example, the first row of the garbled-table ciphertextτ1 is an encryption oft1 = (−1)πc·(z1,0−z0,0).
+One idea would be to first establish encryptions of some random r, where the evaluator only knows the
+ciphertext, and then the garbler sendsr+t 1 to the evaluator. The evaluator can recover the encryption oft1
+with homomorphic addition. Note thatt1 can be any of{−1,0,1} , but the above addition works on a very
+7
+=== PAGE 8 ===
+large plaintext domain. Thusr can only be statistical masking with size at least 2ρ for a statistical security
+parameterρ. This would significantly increase the communication.
+A better approach is to communicate the high and low bits of t1 + 1, which range between 0 and
+2, separately. Let tH,tL be the high and low bits of t1 + 1. Suppose the evaluator obtains the SWHE
+ciphertext of two uniform bits rH andrL. The garbler can send rH⊕t H andrL⊕t L to the evaluator,
+who can compute JtH K=Jr H K⊕(r H⊕tH), and JtLK in a similar way. Then the evaluator can assemble
+Jt1K= 2·Jt H K+Jt LK−1 . Now, to communicate all three ciphertexts for each gate, the garbler sends 6
+bits of communication and needs to use 6 bits from the homomorphically evaluated PRG. One more bit
+needs to be sent for the evaluator to recover the masked bit as described in Section 2.2, meaning that the
+communication cost is now 7 bits per gate. This is already a fairly competitive baseline, but below we show
+how to 1) further reduce the cost and 2) support free-XOR cheaply.
+A 5-bit version.There is still hope for improvement because the above scheme is somewhat “wasteful”. Each
+garbled-table ciphertext encrypts a value of three possibilities, while we transmit two bits that can encode
+four possibilities. Even without considering the correlation between the three values (t1,t 2,t 3), there are at
+most 27 possibilities, and thus, less than 6 bits of communication could still be possible. We look back at the
+plaintext in the garbled rows:
+t1 = (−1)πc·(z 1,0−z 0,0)
+t2 = (−1)πc·(z 0,1−z 0,0)
+t3 = (−1)πc·(z 0,0 +z 1,1−z 1,0−z 0,1)
+(3)
+Our goal is to come up with a minimum number of bits such that their additive linear combination (modulo
+a large value) producest1,t 2,t 3. One may consider decomposing them to small units as (−1)πc·zi,j’s but
+they still range in{−1,0,1}and thus lead to a total of8bits. Instead, we crucially notice that
+(−1)πc·(zi,j−z 0,0) =z i,j⊕πc−z 0,0⊕πc.
+Note that the right-hand side is a mix of arithmetic operations and Boolean operations. To see why this is
+true, we note that(−1)π·(z−π) =z⊕πfor any bitsz,π; thus we have:
+(−1)πc·(zi,j−z 0,0) = (−1)πc·((zi,j−πc)−(z 0,0−πc))
+= (−1)πc·(zi,j−πc)−(−1) πc·(z 0,0−πc)
+=z i,j⊕πc−z 0,0⊕πc.
+With this observation, one can transmit the garbled-table ciphertext with only 4 bits, sending the masked
+value ofzi,j⊕πc with the evaluator holding the encrypted mask. The evaluator can homomorphically unmask
+and compute the difference with only linear operations. One more bit is still needed for the evaluator to
+obtain the masked bit for the output wire, totaling 5 bits for each gate.
+In practice, this leads to significant improvement. Although using more PRG bits, it leads to a roughly
+3× improvement in overall computational cost (and about 30× on the gate-dependent AND cost alone), due
+to elimination of homomorphic multiplications and reduction of lattice parameters.
+Lightweight free-XOR.Finally, we would like to further improve this scheme so that the 5-bit communication
+is only needed for AND gates. We start by plugging the XOR gate function tozi,j’s in Equation (3). Note that
+for a XOR gate,zi,j =g(i⊕π a,j⊕π b) =π a⊕πb⊕i⊕j . If we setπc =π a⊕πb similar to Section 2.3,
+thenzi,j⊕πc =i⊕j, and the plaintexts on three garbled rows can be simplified to
+t1 = 1
+t2 = 1
+t3 =−2,
+8
+=== PAGE 9 ===
+which requires no communication. Essentially, for XOR gates, while Section 2.3 eliminates the communica-
+tion for transmitting the masked value, here we eliminate the need to transmit the garbled tables. Furthermore,
+we no longer require the encryption ofπc to assemble the garbled table and thus can avoid homomorphic
+multiplication over a high-depth circuit as needed in Section 2.3.
+3 Preliminaries
+3.1 Notation
+We denote the computational and statistical security parameters by λ andρ, respectively. All logarithms
+are base 2, i.e., log(·). For n∈N , let [n] def={0,...,n−1} . We write x $← −Sfor samplingx uniformly
+at random from a setS, and use x←D to denote that sampling x according to a distributionD. Define
+the polynomial ringR def=Z[X]/(X n + 1) and, for a modulusq∈N +, the quotient ringRq
+def=R/qR=
+Zq[X]/(Xn + 1). For a vector or polynomial a, we denote its i-th component by ai, with a0 being the
+constant term. For a polynomial a∈R , let LSB(a) =a 0 mod 2. We use negl(·) to represent a negligible
+function, where negl(λ) =o(λ−c) for every constantc. Additionally, poly(·) denotes a polynomial function,
+withpoly(λ) =O(λ c)for some constantc.
+For a Boolean circuitf, we useI to denote the set of circuit-input wires, and denote byO the set of circuit
+output wires. We useW,WAND andWXOR to denote the sets of the output wires of all gates, AND gates and
+XOR gates, respectively. Each gate in a Boolean circuit is represented by a tuple (α,β,γ,T) , whereα andβ
+are the input wires,γis the output wire, andT∈{AND,XOR}specifies the type of gate.
+3.2 Definition of Garbling Schemes
+We recall the definition of a garbling scheme from [RR21], which modifies the original definition [BHR12]
+in two ways: (i) correctness allows a negligible probability of failure, and (ii) authenticity is strengthened
+by giving the adversary an extra decoding information d. As in the previous work [BHR12], we define a
+side-information function Φ(·) that deterministically maps a circuitf to a string Φ(f) specifying which side
+information is revealed. In this work, we focus on the classical setting Φcirc(f) =f , where the entire circuit
+is revealed. The garbler executes the garbling algorithm Gb and encoding algorithm En, while the evaluator
+runs the evaluation algorithmEvand decoding algorithmDe. These algorithms are defined below.
+Definition 1(Syntax).A garbling scheme consists of the following four polynomial-time algorithms:
+•(F,e,d)←Gb(1 λ,f) : takes as input a security parameterλ and a circuitf, and outputs a garbled circuit
+F, an encoding informationeand a decoding informationd.
+•X←En(e,x): takes as inputeand an inputx, and outputs a garbled inputX.
+•Y←Ev(F,X): takes as inputFandX, and outputs a garbled outputY.
+•y←De(d,Y): takes as inputdandY, and outputs a circuit outputy.
+Correctness.For any circuitfand inputx, for(F,e,d)←Gb(1 λ,f), then with probability1−negl(λ),
+De
+
+d,Ev
+
+F,En(e,x)
+
+=f(x).
+Privacy.The privacy property ensures that the evaluator learns nothing about the input, even when given the
+transcript(F,X,d). We formalize this as follows.
+9
+=== PAGE 10 ===
+Real WorldExp prv,Φ
+real (1λ,f,x)
+1.(F,e,d)←Gb(1 λ,f);
+2.X←En(e,x);
+3.b←D(F,X,d).
+Ideal WorldExp prv,Φ
+ideal,S(1λ,f,x)
+1.(F,X,d)←S(1 λ,Φ(f),f(x))
+2.b←D(F,X,d).
+Figure 1: Experiments for privacy with respect to a side-information functionΦ.
+Real WorldExp obv,Φ
+real (1λ,f,x)
+1.(F,e,d)←Gb(1 λ,f);
+2.X←En(e,x);
+3.b←D(F,X).
+Ideal WorldExp obv,Φ
+ideal,S(1λ,f,x)
+1.(F,X)←S(1 λ,Φ(f))
+2.b←D(F,X).
+Figure 2: Experiments for obliviousness w.r.t. a side-information functionΦ.
+Expauth
+A (1λ,f,x)
+1.(F,e,d)←Gb(1 λ,f);X←En(e,x); bY←A(F,X,d);
+2. IfDe(d, bY)̸=⊥and bY̸=Ev(F,X), then output1, else output0.
+Figure 3: Experiment for authenticity.
+Definition 2(Privacy).A garbling scheme satisfies privacy if there exists a negligible function negl(·) and
+a probabilistic polynomial-time (PPT) simulatorS such that, for any probabilistic polynomial time (PPT)
+distinguisherD, any functionf, and any inputx,
+Pr
+h
+Expprv,Φ
+real (1λ,f,x) = 1
+i
+−Pr
+h
+Expprv,Φ
+ideal,S(1λ,f,x) = 1
+i≤negl(λ),
+whereExp prv,Φ
+real andExp prv,Φ
+ideal,S are defined in Figure 1.
+Obliviousness.Obliviousness ensures that the evaluator learns nothing about the inputs, even given (F,X) .
+Unlike privacy, the adversary does not receive the decoding informationd and thus cannot obtain the output
+f(x). This property is useful when the evaluator should not learn the output, for example, when the garbling
+scheme is used as part of a larger system.
+Definition 3(Obliviousness).A garbling scheme satisfies obliviousness if there exists a negligible function
+negl(·)and a PPT simulatorSsuch that, for any PPT distinguisherD, any functionf, and any inputx,
+Pr
+h
+Expobv,Φ
+real (1λ,f,x) = 1
+i
+−Pr
+h
+Expobv,Φ
+ideal,S(1λ,f,x) = 1
+i≤negl(λ),
+whereExp obv,Φ
+real andExp obv,Φ
+ideal,S are defined in Figure 2.
+Authenticity.Authenticity does not guarantee privacy: the adversary may learn the circuit f and inputx.
+However, it guarantees that the adversary cannot create a forged garbled outputbY that decodes successfully
+while differing from Ev(F,X) , even when given (F,X,d) . This property is important for building constant-
+round zero-knowledge proofs (e.g., [JKO13, FNO15, KP17, HK20]).
+10
+=== PAGE 11 ===
+Definition 4(Authenticity).For any PPT adversary A, for any function f and input x, there exists a
+negligible functionnegl(·)such that for any PPT adversaryA, the following holds:
+Pr
+h
+Expauth
+A (1λ,f,x) = 1
+i
+≤negl(λ),
+whereExp auth
+A (1λ,f,x)is defined in Figure 3.
+3.3 SWHE with Distributed Decryption
+We first recall the standard definition of somewhat homomorphic encryption (SWHE) schemes in the private-
+key setting. Then, we show the definition of a special property called distributed decryption (DD), and refer
+to SWHE with such a special property as SWHEwDD. Without loss of generality, we adopt two polynomial
+ringsR andRp in the following definition, and note that this definition can be directly extended to other
+finite fields or rings. We note that Liu et al. [LWYY25b] presented two instantiations of SWHEwDD under
+the RLWE and NTRU assumptions respectively, which satisfy our required properties for garbling schemes.
+For better concrete efficiency, we take an instantiation based on the BGV framework [BGV12, COS+22] in
+Appendix A.
+Definition 5(SWHE).A somewhat homomorphic encryption scheme is a tuple of probabilistic polynomial-
+time algorithms (Setup,Gen,Enc,Dec,HEval) for key space K ⊆ R, message space M ⊆ Rp, and
+ciphertext spaceC.
+1.params←Setup(1 λ,1L). The setup algorithm takes as input a security parameter λ and a maximum
+multiplication depthL, and outputs a set of parameters params, which is an implicit input to the following
+algorithms and will be omitted for simplicity.
+2.(keypar,∆)←Gen(params) . The key-generation algorithm takes as input a set of parameters params,
+and outputs a set of key-related parameters keypar and a secret key ∆∈K . Similarly, keypar is an
+implicit input to the following algorithms and will be omitted for simplicity.
+3.JmK←Enc(∆,m) . The encryption algorithm takes as input a secret key ∆∈K and a plaintextm∈M ,
+and outputs a ciphertextJmK.
+4.m←Dec(∆,JmK) . The decryption algorithm takes as input a secret key ∆∈K and a ciphertext
+JmK∈C, and outputs a plaintextm∈M.
+5.JyK←HEval(f,Jm 0K,···,Jm ℓ−1K). The homomorphic evaluation algorithm takes as input a polynomial-
+sized arithmetic circuitf:M ℓ→M andℓ ciphertexts Jm0K,···,Jm ℓ−1K∈C , and outputs a ciphertext
+JyK∈C.
+For each security parameterλ, depth boundL, circuitf:M ℓ→M with multiplication depth at most
+L, andm 0,...,m ℓ−1∈M, it holds that
+Pr
+
+Dec(∆,JyK)̸=f(m 0,···,m ℓ−1)
+
+params←Setup(1 λ,1L),
+(keypar,∆)←Gen(params),
+JmiK←Enc(∆,m i)∀i∈[ℓ],
+JyK←HEval(f,Jm 0K,···,Jm ℓ−1K)
+
+≤negl(λ).
+Distributed decryption property.The linear distributed decryption (DD) property (i.e., DD of dimension
+k= 1 ) was introduced by Boyle et al. [BKS19], and was extended to further support the correlated-key DD
+property (i.e., DD of dimensionk= 2 ) by Liu et al. [LWYY25b]. We recall the DD property in the following
+definition, and also generalize the definition to support any DD dimensionk∈N +, which may be useful for
+future garbling constructions. In this work, SWHEwDD refers to SWHE schemes that satisfy the following
+distributed decryption property on bothk= 1andk= 2.
+11
+=== PAGE 12 ===
+Definition 6(Distributed Decryption).We say that an SWHE scheme satisfies the distributed decryption
+property on dimension k∈N +, if there exist polynomial-time algorithms DDa :R k
+p×C→R p for all
+a∈{0,1} k, each of which implicitly takes(params,keypar) as an input, such that, for all security parameter
+λand depth boundL, it holds that
+Pr
+
+
+DDx(X+x·∆,τ)
+̸=DD 0(X,τ) +
+Qk−1
+i=0 xi
+
+·Dec(∆,τ)
+
+params←Setup(1 λ,1L),
+(keypar,∆)←Gen(params),
+X $← −Rk
+p,
+∀τ∈C,x∈{0,1} k
+
+≤negl(λ),
+where the operation ofX+x·∆is defined overR k
+p.
+That is, if an SWHE scheme satisfies DD on k= 1 , with overwhelming probability it holds that
+DDi(X+i·∆,τ) =DD 0(X,τ) +i·Dec(∆,τ) for any biti∈{0,1} and uniformly distributedX $← −Rp;
+if one satisfies DD onk= 2 , with overwhelming probability it holds that DDi,j(X+i·∆,Y+j·∆,τ) =
+DD0,0(X,Y,τ) +i·j·Dec(∆,τ)for anyi,j∈{0,1}and uniformly distributedX,Y $← −Rp.
+To simplify the notation of our garbling scheme, for eachi,j∈{0,1} , we define the function Evali,j :
+R2
+p×C 3→R p as
+Evali,j(A,B,τ 1,τ 2,τ 3) :=DD i(A,τ 1) +DDj(B,τ 2) +DDi,j(A,B,τ 3).
+CPA and KDM security properties.In our garbling schemes, we require that the SWHEwDD scheme
+satisfies the standard indistinguishability under chosen-plaintext attacks (i.e., IND-CPA in short). Informally,
+any PPT adversary cannot distinguish Jm0K from Jm1K for two adversarial-chosen messagesm0,m 1, given
+that the adversary obtains (params,keypar) and has access to an encryption oracle Enc(∆,·) . Furthermore,
+we assume that the SWHEwDD scheme also satisfies the key-dependent message (KDM) security [BRS03].
+Informally, for any PPT adversaryA, it is infeasible thatA can distinguish Jf(∆)K from J0K for a function
+f chosen by itself, given that A has access to (params,keypar) as well as Enc(∆,·) . For our garbling
+application, we only need thatJ∆Kis computationally indistinguishable fromJ0K.
+4 BitGC-small: Garbling Scheme with 1 Bit per Gate
+4.1 Detailed Construction of BitGC-small
+The details of garbling scheme BitGC-small are shown in Figures 4 and 5. Compared to the original
+BitGC scheme [LWYY25b], BitGC-small achieves the same communication cost but has a much smaller
+computational cost. The computation is improved by supporting PRG homomorphic evaluation with SIMD
+optimization and applying specific optimizations on XOR gates. In particular, for each gate (α,β,γ,XOR) ,
+the masked bit on the output wireγis equal to
+ˆxγ = (xα⊕xβ)⊕π γ = (ˆxα⊕πα)⊕(ˆxβ⊕πβ)⊕π γ = ˆxα⊕ˆxβ⊕(πα⊕πβ⊕πγ).
+Thus, we let the garbler send dγ =π α⊕π β⊕π γ to the evaluator, who can compute the masked bit
+ˆxγ = ˆxα⊕ˆxβ⊕dγ. For each XOR gate with output wireγ, we havedγ = ˆz0,0 according to their definitions.
+Furthermore, the relationships ˆz1,0 = ˆz0,1 = ˆz0,0⊕1 = 1−ˆz 0,0 and ˆz1,1 = ˆz0,0 hold for each XOR
+gate. Therefore, the ciphertexts τ1,τ 2,τ 3 can be computed in a simple manner without any homomorphic
+multiplications.
+The BitGC-small adopts a low-depth PRG, which can be instantiated under different assumptions [Gol11,
+Ale03, App12, BPR12, AL16, AR16, ABBS25]. Our implementation uses a Goldreich-style random local
+12
+=== PAGE 13 ===
+BitGC-small(Part I)
+Let SWHE= (Setup,Gen,Enc,Dec,HEval) be an SWHEwDD scheme. Let PRG:{0,1} ℓ→{0,1} N be a
+securet-depth PRG whereℓ is the seed size andN=|I|+|W| is the number of wires, PRF:{0,1} λ×{0,1} λ→
+Rp be a secure PRF, andH:R p→{0,1} λ be a random oracle.
+Gb(1λ,f):
+1. Generate SWHE parameters params←Setup(1 λ,1L), whereL=t+ 2 is the maximum multiplication depth
+forSWHE.
+2. Produce a set of key-dependent parameters (keypar,∆)←Gen(params) where LSB(∆) = 1, and generate
+J∆K:=Enc(∆,∆). Sample a PRF keyK
+$
+← −{0,1}λ.
+3. Sample a PRG seed s
+$
+← − {0,1}ℓ and compute ciphertext JsiK:=Enc(∆,s i) for each i∈[ℓ] . Then,
+compute (π0,...,π N−1) :=PRG(s) , and homomorphically compute ciphertexts (Jπ0K,...,Jπ N−1 K) :=
+PRG(Js 0K,...,Js ℓ−1K).
+4. For each input wirei∈I, sample a labelW 0
+i
+$
+← −Rp and computeW 1
+i :=W 0
+i + (−1)πi·∆∈R p.
+5. For each gate(α,β,γ,T)in topological order, do the following:
+• Case 1 (T=AND):
+(a) For eachi,j∈{0,1} , compute a bit ˆzi,j := (πα⊕i)∧(π β⊕j)⊕π γ and homomorphically compute
+a ciphertext Jˆzi,j·∆K from JπαK,JπβK,JπγK and J∆K with two levels of homomorphic multiplications.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ 2 :=Jˆz0,1·∆K−Jˆz0,0·∆K,τ 3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ 1−τ 2.
+(c) Compute a pair of labelsWπγ
+γ :=Eval 0,0(Wπα
+α ,W πβ
+β ,τ 1,τ 2,τ 3)−ˆz0,0·∆+PRF K(γ) andWπγ⊕1
+γ :=
+Wπγ
+γ + ∆, along with a bitdγ :=LSB(W 0
+γ )⊕π γ.
+• Case 2 (T=XOR):
+(a) Compute a bitdγ :=π α⊕πβ⊕πγ as well as three ciphertextsτ1 := (1−2·d γ)·J∆K ,τ2 :=τ 1 and
+τ3 :=−τ 1−τ 2.
+(b) Compute a pair of labelsWπγ
+γ :=Eval 0,0(Wπα
+α ,W πβ
+β ,τ 1,τ 2,τ 3)−d γ·∆ +PRF K(γ) andWπγ⊕1
+γ :=
+Wπγ
+γ + ∆.
+6. Output a garbled circuitF:= (params,keypar,J∆K,K,{Js iK}i∈[ℓ],{di}i∈W), an encoding informatione:=
+({(πi,W 0
+i )}i∈I,∆)and a decoding informationd:=
+
+H(W 0
+i ),H(W 1
+i )
+	
+i∈O.
+En(e,x) :For each i∈I , compute ˆxi :=x i⊕π i and Wi :=W 0
+i + (−1)πi·x i·∆∈R p. Output X:=
+{(ˆxi,Wi)}i∈I.
+Figure 4: Garbling schemeBitGC-smallwith 1 bit per gate (Part I).
+PRG [AL16, ABBS25], which is able to expand aℓ-bit seed intoℓ2 pseudorandom bits using a deptht= 4
+arithmetic circuit. See Section 6 for more details. In this case, BitGC-small requires SWHEwDD to support
+t+ 2 = 6 levels of multiplications. We use a pseudorandom function (PRF) to randomize the labels on the
+output wires of all gates. This makes the DD property be satisfied in the computational sense. Note that PRF
+is not used to protect the privacy, and instead guarantees the correctness. For a secret key ∆, we assume that
+LSB(∆) = 1. In this case, since Wi =W 0
+i + (−1)πi·xi·∆ =W πi
+i + (xi⊕πi)·∆ due to the fact that
+Wπi
+i =W 0
+i + (−1)πi·πi·∆ and (−1)πi·(xi−πi) =x i⊕πi, we have LSB(Wi) =LSB(W πi
+i )⊕(x i⊕πi)
+andLSB(W πi
+i ) =LSB(W 0
+i )⊕π i.
+The BitGC-small scheme satisfies not only privacy but also obliviousness and authenticity. To achieve
+authenticity, we use the hash values of a pair of labels for each circuit-output wire as the decoding information,
+following the standard approach used in prior works [HKE12, ZRE15, LWYY25b]. In proof of security, we
+model the hash function as a random oracle (RO). In the following subsections, we analyze the correctness
+of garbling scheme BitGC-small and prove its security. If authenticity is not required, then we can set the
+13
+=== PAGE 14 ===
+BitGC-small(Part II)
+Ev(F,X):
+1. Homomorphically compute(Jπ 0K,...,Jπ N−1 K) :=PRG(Js 0K,...,Js ℓ−1K).
+2. For each gate(α,β,γ,T)in topological order, perform the following steps:
+• Case 1 (T=AND):
+(a) For eachi,j∈{0,1}, homomorphically computeJˆz i,j·∆KfromJπ αK,JπβK,JπγKandJ∆K.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ2 :=Jˆz0,1·∆K−Jˆz0,0·∆K, andτ3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ1−τ2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(d) Compute a masked bitˆxγ :=LSB(W γ)⊕d γ.
+• Case 2 (T=XOR):
+(a) Computeτ 1 := (1−2·d γ)·J∆K,τ 2 :=τ 1 andτ 3 :=−τ 1−τ 2.
+(b) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(c) Compute a masked bitˆxγ := ˆxα⊕ˆxβ⊕dγ.
+3. OutputY:={W i}i∈O.
+De(d,Y) : For each i∈O , if H(Wi) =H(W 0
+i ), setxi := 0; if H(Wi) =H(W 1
+i ), setxi := 1; otherwise, abort
+and output⊥. If not abort, outputy:={x i}i∈O.
+Figure 5: Garbling schemeBitGC-smallwith 1 bit per gate (Part II).
+permutation bitπi for eachi∈O as the decoding information; the evaluation algorithm outputs the masked
+bit ˆxi, and the decoding algorithm recovers the output bit xi = ˆxi⊕πi, for eachi∈O . In addition, we
+note that one can replace the random oracle model with the notion of correlation-robust hash functions
+(CRHFs) [IKNP03, BHKR13, GKWY20, GKW+20, GWYY25] to remove the dependency on the RO and
+achieve better computational efficiency. In particular, while the domain of a CRHF H is often defined over
+{0,1}λ, we need to extend the domain of H toRp for our garbling schemes. The standard techniques
+as described above can be applied in not only BitGC-small but also BitGC-fast and BitGC-tiny shown in
+Section 5.
+Analysis for communication complexity.We focus on the size of a garbled circuit F , as it dominates the
+communication cost. We can always suppose that the garbler and evaluator have already agreed upon the set
+of parameters params. The keypar and J∆K can be reused across multiple garbling executions between the
+garbler and evaluator, which allows us to amortize the communication cost to negligibly small. Furthermore,
+the communication cost of transmitting keypar and J∆K is independent of the circuit size. Excluding the
+tuple of system parameters (params,keypar,J∆K) , the size of garbled circuit F is|W|+ℓ·|ct|+λ bits,
+where|W| is the number of gates,ℓ=o(|W|) is the seed size of the PRG, and|ct| is the size of an SWHE
+ciphertext. Therefore, the amortized communication cost for each gate is only 1 bit for sufficiently large
+circuits.
+4.2 Correctness Analysis
+In the following, we analyze the correctness of the BitGC-small scheme (Figure 4 and 5). We replace
+PRFK(γ) with a uniform elementRγ∈R p for each gate-output wireγ∈W . This replacement only incurs a
+negligible difference for the correctness probability, due to the pseudorandomness of PRF outputs, following
+the correctness analysis in prior works [BKS19, LWYY25b]. In this case, we have thatWπγ
+γ is uniform in
+Rp for eachγ∈W . For each input wirei∈I , we haveWπi
+i =W 0
+i + (−1)πi·πi·∆ is uniform inRp, due
+to the uniformity ofW 0
+i .
+We prove the correctness by induction following the topological order of the circuit. Throughout this
+14
+=== PAGE 15 ===
+paper, for each wirei, we usexi and ˆxi to denote the real value and masked value, respectively. For each
+input wirei∈I , we have thatWi =W 0
+i + (−1)πi·xi·∆ and ˆxi =x i⊕πi. For each gate (α,β,γ,T) , we
+have the following holds:
+Wα =W 0
+α + (−1)πα·xα·∆andˆxα =x α⊕πα,
+Wβ =W 0
+β + (−1)πβ·xβ·∆andˆxβ =x β⊕πβ .
+According to the definitions of (Wπα
+α ,W πβ
+β ) and (ˆxα,ˆxβ), it is easy to verify thatWα =W πα
+α + ˆxα·∆ and
+Wβ =W πβ
+β + ˆxβ·∆ . For the output wire γ, we show thatWγ =W πγ
+γ + ˆxγ·∆ and ˆxγ =π γ⊕xγ hold,
+except with negligible probability. We consider two cases:T=ANDandT=XOR.
+Case 1:T=AND .In the Gb algorithm, for the output wireγ,Wπγ
+γ is computed asEval0,0(Wπα
+α ,W πβ
+β ,τ 1,τ 2,τ 3)−
+ˆz0,0·∆ +R γ where ˆz0,0 = (πα∧π β)⊕π γ. Then, W 0
+γ is computed as Wπγ
+γ −(−1) πγ·π γ·∆ . In the
+Ev algorithm, we have that Wγ =Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +Rγ and ˆxγ =LSB(W γ)⊕d γ, where
+dγ =LSB(W 0
+γ )⊕π γ. Based on the distributed decryption property, with overwhelming probability, we have
+Wγ =DD ˆxα(Wα,τ 1) +DD ˆxβ(Wβ,τ 2) +DD ˆxα,ˆxβ(Wα,Wβ,τ 3) +Rγ
+=DD ˆxα(Wπα
+α + ˆxα·∆,τ 1) +DD ˆxβ(Wπβ
+β + ˆxβ·∆,τ 2)
++DD ˆxα,ˆxβ(Wπα
+α + ˆxα·∆,W πβ
+β + ˆxβ·∆,τ 3) +Rγ
+=DD 0(Wπα
+α ,τ 1) +DD 0(Wπβ
+β ,τ 2) +DD 0,0(Wπα
+α ,W πβ
+β ,τ 3) +Rγ
++ ˆxα·Dec(∆,τ 1) + ˆxβ·Dec(∆,τ 2) + ˆxα·ˆxβ·Dec(∆,τ 3)
+=Eval 0,0(Wπα
+α ,W πβ
+β ,τ 1,τ 2,τ 3) +Rγ +
+
+ˆxα·(ˆz1,0−ˆz0,0)+
+ˆxβ·(ˆz0,1−ˆz0,0) + ˆxα·ˆxβ·(ˆz1,1 + ˆz0,0−ˆz1,0−ˆz0,1)
+
+·∆
+=W πγ
+γ + ˆz0,0·∆ + (ˆzˆxα,ˆxβ−ˆz0,0)·∆
+=W πγ
+γ + ˆz0,0·∆ + (ˆxγ−ˆz0,0)·∆
+=W πγ
+γ + ˆxγ·∆ =W πγ
+γ + (xγ⊕πγ)·∆
+=W πγ
+γ + (−1)πγ·(xγ−πγ)·∆
+=W 0
+γ + (−1)πγ·xγ·∆.
+(4)
+In the above analysis, since ˆzi,j = (πα⊕i)∧(π β⊕j)⊕π γ, ˆxα =x α⊕πα and ˆxβ =x β⊕πβ, we obtain that
+ˆzˆxα,ˆxβ = (xα∧xβ)⊕π γ =x γ⊕πγ = ˆxγ. In addition, we use the fact that xγ⊕πγ = (−1)πγ·(xγ−πγ)
+forxγ,πγ∈{0,1}. Thus, we have
+ˆxγ =LSB(W γ)⊕d γ =LSB(W γ)⊕LSB(W 0
+γ )⊕π γ =x γ⊕πγ .
+Case 2: T=XOR .In the Gb algorithm, for the output wire γ, we still have the equations Wπγ
+γ =
+Eval0,0(Wπα
+α ,W πβ
+β ,τ 1,τ 2,τ 3)−d γ·∆ +Rγ andW 0
+γ =W πγ
+γ −(−1)πγ·πγ·∆ , wheredγ =π α⊕πβ⊕πγ.
+In the Ev algorithm, we still haveWγ =Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +Rγ. Differently, the masked bit ˆxγ
+is computed asˆxα⊕ˆxβ⊕dγ. From the distributed decryption property, except with negligible probability,
+Wγ =W πγ
+γ +dγ·∆ + ˆxα·Dec(∆,τ 1) + ˆxβ·Dec(∆,τ 2) + ˆxα·ˆxβ·Dec(∆,τ 3)
+=W πγ
+γ +dγ·∆ +
+
+ˆxα + ˆxβ−2·ˆxα·ˆxβ
+
+·(−1)dγ·∆
+=W πγ
+γ +dγ·∆ +
+
+ˆxα⊕ˆxβ
+
+·(−1)dγ·∆
+=W πγ
+γ +dγ·∆ + (ˆxα⊕ˆxβ⊕dγ−dγ)·∆
+=W πγ
+γ + (xα⊕xβ⊕πγ)·∆
+=W πγ
+γ + ˆxγ·∆
+=W 0
+γ + (−1)πγ·xγ·∆.
+(5)
+15
+=== PAGE 16 ===
+In the above analysis, we omit some intermediate steps, as they can be derived by applying the same approach
+as in Equation (4). Note thatτ 1,τ 2 andτ 3 are now decrypted as
+Dec(∆,τ 1) =Dec(∆,τ 2) = (1−2·d γ)·∆ = (−1) dγ·∆
+Dec(∆,τ 3) =−2·(−1) dγ·∆,
+Next, it is easy to verify
+ˆxγ = ˆxα⊕ˆxβ⊕dγ = ˆxα⊕ˆxβ⊕πα⊕πβ⊕πγ =x α⊕xβ⊕πγ =x γ⊕πγ.
+From the above analysis, for each output wire i∈O , we have Wi =W 0
+i + (−1)πi·x i·∆ where
+{xi}i∈O =f({x i}i∈I). Recall that De(d,Y) outputs 0 if H(Wi) =H(W 0
+i ), and outputs 1 if H(Wi) =
+H(W 1
+i ). Therefore,De(d,Y)outputsy=f(x), which completes the correctness proof.
+4.3 Security Proof
+Before giving the detailed proof, we show an overview of the proof. We complete the proof via a sequence of
+hybrids, where the real-world execution isHybrid 0. InHybrid 1, the Gb algorithm only computes the labels
+on the real bits without knowing ∆, following the computation process on the evaluator side. Furthermore,
+each bitdγ is computed with the masked bit and LSB(Wγ), given that each masked bit can be computed with
+the real bit and permutation bit. These changes are computationally indistinguishable from the real-world
+execution, according to the correctness analysis based on the pseudorandomness of the PRF outputs. In this
+hybrid, the decoding information is set according to the circuit outputy=f(x) , and H(Wyi⊕1
+i ) is replaced
+with a random stringVi. In the random oracle (RO) model, if a PPT adversary can distinguish the decoding
+information from real values, then we can use it to break the IND-CPA and KDM security of the SWHEwDD
+scheme. This hybrid allows us to generate a garbled circuit without depending on the secret key ∆, which is
+crucial for going into the next hybrid. InHybrid 2, we replace Enc(∆,∆) and Enc(∆,si) fori∈[ℓ] with the
+ciphertexts on zero. It is easy to see that Hybrid 2 is computationally indistinguishable from Hybrid 1, under
+the assumption that the SWHEwDD scheme is IND-CPA and KDM secure. InHybrid 3, we replace each
+permutation bitπi with a random bit, which has a negligible difference based on the pseudorandomness of the
+PRG output. InHybrid 4, we replace each bit dγ with a random bit. This hybrid is perfectly indistinguishable
+from Hybrid 3, due to the fact thatπγ is uniform. In Hybrid 4, no real bits are used, and we construct a PPT
+simulator for BitGC-small. That is, Hybrid 4 is the ideal-world execution. The above overview is used for
+the proof of privacy. The proof of obliviousness can use the same simulator and hybrids, except that the
+decoding information is not sent to the adversary, and so need not be simulated. For authenticity, we can
+use the simulator of privacy to generate the garbled circuitF and input labels. If a PPT adversary can break
+authenticity, then it must make a query associated with ∆ to the random oracle H. We can extract ∆ from the
+queries ofHand use it to break the IND-CPA and KDM security of the SWHEwDD scheme.
+Theorem 1.Garbling scheme BitGC-small shown in Figures 4 and 5 satisfies privacy, obliviousness and
+authenticity, provided that the SWHEwDD scheme satisfies the IND-CPA and KDM security properties,PRG
+is a secure PRG,PRFis a secure PRF , andHis a random oracle.
+The detailed proof of Theorem 1 can be found in Appendix B.1.
+5 BitGC-fast and BitGC-tiny: Garbling Schemes with Free-XOR
+5.1 BitGC-fast with Free-XOR and 5 Bits per AND Gate
+The detailed construction of theBitGC-fast garbling scheme is shown in Figures 6 and 7. TheBitGC-fast scheme
+adopts the En and De algorithms in the BitGC-small scheme (Section 4.1). Thus, we omit the description of
+16
+=== PAGE 17 ===
+BitGC-fast(Part I)
+Let SWHE= (Setup,Gen,Enc,Dec,HEval) be an SWHE scheme with distributed decryption. Let PRG:
+{0,1}ℓ→{0,1} 4N be a securet-depth PRG whereℓ is the seed size andN=|W AND| is the number of AND
+gates,PRF:{0,1} λ×{0,1} λ→R p be a secure PRF, andH:R p→{0,1} λ be a random oracle.
+Gb(1λ,f):
+1. Generate a set of setup parameters params←Setup(1 λ,1L), whereL=t+ 1 is the maximum multiplication
+depth for SWHEwDD.
+2. Generate a set of key-dependent parameters (keypar,∆)←Gen(params) with LSB(∆) = 1, and run J∆K:=
+Enc(∆,∆). Sample a PRF keyK
+$
+← −{0,1}λ.
+3. Sample a PRG seed s
+$
+← −{0,1}ℓ and generate JsiK:=Enc(∆,s i) for each bitsi withi∈[ℓ] . Then, compute
+{ri,j
+γ }γ∈WAND,i,j∈{0,1} :=PRG(s) , and homomorphically compute PRG(Js 0K,...,Js ℓ−1K) to obtain Jri,j
+γ K for
+eachγ∈W AND,i,j∈{0,1}.
+4. For eachγ∈W AND,i,j∈{0,1}, homomorphically compute a ciphertextJr i,j
+γ ·∆KfromJr i,j
+γ KandJ∆K.
+5. For each input wirei∈I , sampleπi
+$
+← −{0,1}andW 0
+i
+$
+← −Rp, and then computeW 1
+i :=W 0
+i + (−1)πi·∆∈
+Rp.
+6. For each gate(α,β,γ,T)in topological order, do the following:
+• Case 1 (T=AND):
+(a) Sample πγ
+$
+← − {0,1}. For each i,j∈ {0,1} , compute ˆzi,j := (πα⊕i)∧(π β⊕j)⊕π γ, set
+di,j
+γ := ˆzi,j⊕ri,j
+γ , and homomorphically computeJˆzi,j·∆K:=d i,j
+γ ·J∆K+ (1−2·d i,j
+γ )·Jr i,j
+γ ·∆K.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ 2 :=Jˆz0,1·∆K−Jˆz0,0·∆K,τ 3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ 1−τ 2.
+(c) Compute a pair of labelsWπγ
+γ :=Eval 0,0(Wπα
+α ,W πβ
+β ,τ 1,τ 2,τ 3)−ˆz0,0·∆ +PRF K(γ),Wπγ⊕1
+γ :=
+Wπγ
+γ + ∆, along with a bitdγ :=LSB(W 0
+γ )⊕π γ.
+• Case 2 (T=XOR):
+(a) Computeπ γ :=π α⊕πβ,τ 1 :=J∆K,τ 2 :=τ 1, andτ 3 :=−τ 1−τ 2.
+(b) Compute a pair of labelsWπγ
+γ :=Eval 0,0(Wπα
+α ,W πβ
+β ,τ 1,τ 2,τ 3)+PRFK(γ) andWπγ⊕1
+γ :=W πγ
+γ +∆.
+7. Output a garbled circuit F:= (params,keypar,J∆K,K,{Js iK}i∈[ℓ],{(d γ,d 0,0
+γ ,d 0,1
+γ ,d 1,0
+γ ,d 1,1
+γ )}γ∈WAND), an
+encoding informatione:=
+
+{(πi,W 0
+i )}i∈I,∆
+
+and a decoding informationd:={H(W 0
+i ),H(W 1
+i )}i∈O.
+Figure 6: BitGC-fast with 5 bits per AND gate and free-XOR (Part I), where the differences between
+BitGC-fastandBitGC-smallare marked in blue.
+the two algorithms for BitGC-fast. In Figures 6 and 7, the steps marked in blue show the differences of the
+GbandEvalgorithms betweenBitGC-fastandBitGC-small. The main differences are listed as follows:
+• Homomorphic PRG computation needs to generate the SWHE ciphertexts on 4·|W AND| (instead of
+|I|+|W|) pseudorandom bits
+• Each bit ˆzi,j is masked with a pseudorandom bit ri,j
+γ and sent to the evaluator. Then the evaluator can
+compute the ciphertextJˆzi,j·∆Kwith only homomorphic-addition operations.
+• For the output wireγ of each AND gate, the permutation bitπγ is sampled uniformly rather than an output
+bit of PRG(s). For each XOR gate,πγ is defined asπα⊕πβ. In this case, the bit dγ =π α⊕πβ⊕πγ = 0
+need not be sent, achieving free communication for XOR gates.
+In the amortized setting, BitGC-fast takes 5 bits per AND gate and achieves free-XOR. It requires that
+the SWHEwDD scheme supportst+ 1 levels of homomorphic multiplications, compared witht+ 2 levels
+forBitGC-small.
+Correctness analysis.Compared to BitGC-small, the BitGC-fast scheme mainly changes how the bits{dγ}
+17
+=== PAGE 18 ===
+BitGC-fast(Part II)
+Ev(F,X):
+1. Homomorphically compute PRG(Js 0K,...,Js ℓ−1K) to obtain Jri,j
+γ K for eachγ∈W AND,i,j∈{0,1} . Then,
+for eachγ∈W AND,i,j∈{0,1}, homomorphically computeJr i,j
+γ ·∆KfromJr i,j
+γ KandJ∆K.
+2. For each gate(α,β,γ,T)in topological order, perform the following steps:
+• Case 1 (T=AND):
+(a) For eachi,j∈{0,1}, homomorphically computeJˆz i,j·∆K:=d i,j
+γ ·J∆K+ (1−2·d i,j
+γ )·Jr i,j
+γ ·∆K.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ 2 :=Jˆz0,1·∆K−Jˆz0,0·∆K,τ 3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ 1−τ 2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(d) Compute a masked bitˆxγ :=LSB(W γ)⊕d γ.
+• Case 2 (T=XOR):
+(a) Setτ 1 :=J∆K,τ 2 :=τ 1, andτ 3 :=−τ 1−τ 2.
+(b) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(c) Compute a masked bitˆxγ := ˆxα⊕ˆxβ.
+3. OutputY:={W i}i∈O.
+Figure 7: BitGC-fast with 5 bits per AND gate and free-XOR (Part II), where the differences between
+BitGC-fastandBitGC-smallare marked in blue.
+are computed. Specifically, for each AND gate, BitGC-fast uses four additional bits of communication to
+directly transmit{ˆzi,j} in a secure way. For each XOR gate, BitGC-fast directly setsdγ = 0, which realizes
+free-XOR. Below, we show that these changes do not affect the correctness.
+• Case 1: each AND gate.The BitGC-fast scheme derivesτ1,τ2, andτ3 in the same way as BitGC-small,
+except that it uses a different method to generate Jˆzi,j·∆K . Each term Jˆzi,j·∆K is homomorphically
+computed as
+Jˆzi,j·∆K:=d i,j
+γ ·J∆K+ (1−2·d i,j
+γ )·Jr i,j
+γ ·∆K.
+Therefore, it suffices to show thatDec(Jˆzi,j·∆K) = ˆzi,j·∆. In particular,
+Dec(Jˆzi,j·∆K) =d i,j
+γ ·∆ + (1−2·d i,j
+γ )·r i,j
+γ ·∆
+=
+
+di,j
+γ +ri,j
+γ −2·d i,j
+γ ·ri,j
+γ
+
+·∆
+=
+
+di,j
+γ ⊕ri,j
+γ
+
+·∆ = ˆzi,j·∆.
+• Case 2: each XOR gate.The BitGC-fast scheme directly defines πγ =π α⊕πβ, resulting in dγ = 0.
+This modification preserves the correctness of the wire label, since the proof of Equation (5) remains valid.
+Therefore, it suffices to show thatˆxγ =π γ⊕xγ. To see this, observe that
+ˆxγ = ˆxα⊕ˆxβ =x α⊕πα⊕xβ⊕πβ =x γ⊕πγ.
+Therefore, the correctness ofBitGC-fastcan follow that of theBitGC-smallscheme.
+Security proof.The proof of BitGC-fast follows the same hybrid-based strategy as in BitGC-small, except
+for some modifications tailored to the construction of BitGC-fast. Similarly, we first change the garbling
+process without relying on secret key ∆. Then, J∆K and JsiK fori∈[ℓ] are replaced with encryptions of
+zero. The changes are computationally indistinguishable from the real-world execution, under the assumption
+that the SWHEwDD scheme satisfies the IND-CPA and KDM security and PRF is a secure PRF. Next,
+each bitri,j
+γ is replaced by a uniform bit, justified by the pseudorandomness of the PRG. Finally, the 5-bit
+18
+=== PAGE 19 ===
+communication values for each AND gate are shown to be uniformly random, since they are masked with
+independent random bits. Note that permutation bits are uniform and independent of the adversary’s view
+in the final hybrid. Through the above proof idea, we are able to obtain a proof for privacy. Using the
+same approach as in the proof of BitGC-small, we can easily obtain the proofs for both obliviousness and
+authenticity.
+Theorem 2.Garbling scheme BitGC-fast shown in Figures 6 and 7 satisfies privacy, obliviousness and
+authenticity, provided that the SWHEwDD scheme satisfies the IND-CPA and KDM security properties,PRG
+is a secure PRG,PRFis a secure PRF , andHis a random oracle.
+The proof of the above theorem is postponed to Appendix B.2.
+5.2 BitGC-tiny with Free-XOR, 1 Bit per AND Gate and More Computational Cost
+We describe a garbling scheme called BitGC-tiny, which supports free-XOR and communication of 1 bit per
+AND gate. While BitGC-tiny achieves the lowest communication cost among our three garbling schemes,
+it requires the usage of a leveled HE scheme and brings about much more computational cost. A leveled
+homomorphic encryption with distributed decryption (LHEwDD) scheme follows the same syntax and
+security properties as the SWHEwDD scheme (Section 3.3), except that the maximum multiplication depthL
+of the leveled HE scheme can be any positive integer.
+The detailed construction of the BitGC-tiny scheme is shown in Figure 8. The BitGC-tiny scheme shares
+the En and De algorithms with the BitGC-small scheme (Section 4.1). Thus, these two algorithms are omitted
+forBitGC-tiny. In the following, we discuss the main differences betweenBitGC-tinyandBitGC-small.
+• In BitGC-tiny, the leveled HE scheme requires⌈log(ℓXOR+1)⌉ more levels of homomorphic multiplications
+than BitGC-small, whereℓXOR is the length of the longest consecutive sequence of XOR gates in the circuit.
+• Homomorphic PRG computation needs to generate the HE ciphertexts on |I|+|W AND| (instead of
+|I|+|W|) pseudorandom bits.
+• For each XOR gate (α,β,γ,XOR) ,πγ is directly defined asπα⊕πβ rather than an output bit of PRG(s).
+Following the approach in BitGC-fast, the bitdγ =π α⊕πβ⊕πγ = 0 need not be sent. Nevertheless, both
+the Gb and Ev algorithms still need to compute the ciphertext JπγK, as it remains necessary for garbling
+subsequent AND gates. To minimize the multiplicative depth, we recursively expand πγ into its base
+constituent masks whenever an input itself is an output of an XOR gate. The final JπγK then is computed as
+the homomorphic XOR sum of all flattened masks.
+Based on the correctness analysis of BitGC-small and BitGC-fast, the correctness of the BitGC-tiny
+scheme can be naturally derived. By combining the proof of BitGC-small with that of BitGC-fast, it is easy
+to obtain the proof of BitGC-tiny, when replacing the IND-CPA and KDM security of SWHEwDD with that
+of LHEwDD. We state the security of theBitGC-tinyscheme in the following theorem.
+Theorem 3.Garbling scheme BitGC-tiny shown in Figure 8 satisfies privacy, obliviousness and authenticity,
+provided that the LHEwDD scheme satisfies the IND-CPA and KDM security properties,PRG is a secure
+PRG,PRFis a secure PRF , andHis a random oracle.
+The proof of the above theorem can be found in Appendix B.3.
+19
+=== PAGE 20 ===
+BitGC-tiny
+Let LHEwDD= (Setup,Gen,Enc,Dec,HEval) be a leveled HE with distributed decryption scheme. Let PRG:
+{0,1}ℓ→{0,1} N be a securet-depth PRG whereℓ is the seed size andN=|I|+|W AND|, PRF:{0,1} λ×
+{0,1}λ→R p be a secure PRF, andH:R p→{0,1} λ be a random oracle.
+Gb(1λ,f):
+1. LetℓXOR be the length of the longest consecutive sequence of XOR gates in the circuit f. Generate a set of
+setup parameters params←Setup(1 λ,1L), whereL=⌈log(ℓ XOR +1)⌉+t+2 is the maximum multiplication
+depth for the leveled HE scheme.
+2. Produce a set of key-dependent parameters (keypar,∆)←Gen(params) where LSB(∆) = 1, and generate
+J∆K:=Enc(∆,∆). Sample a PRF keyK
+$
+← −{0,1}λ.
+3. Sample a PRG seed s
+$
+← −{0,1}ℓ and generate a ciphertext JsiK:=Enc(∆,s i) for each bit si withi∈[ℓ] .
+Then, compute{πγ}γ∈I∪W AND :=PRG(s) , and homomorphically compute ciphertexts{JπγK}γ∈I∪W AND
+:=
+PRG(Js 0K,...,Js ℓ−1K).
+4. For each input wirei∈I, sample a labelW 0
+i
+$
+← −Rp and computeW 1
+i :=W 0
+i + (−1)πi·∆∈R p.
+5. For each gate(α,β,γ,T)in topological order, do the following:
+• Case 1 (T=AND):
+(a) For eachi,j∈{0,1} , compute a bit ˆzi,j := (πα⊕i)∧(π β⊕j)⊕π γ and homomorphically compute
+a ciphertext Jˆzi,j·∆K from JπαK,JπβK,JπγK and J∆K with two levels of homomorphic multiplications.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ 2 :=Jˆz0,1·∆K−Jˆz0,0·∆K,τ 3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ 1−τ 2.
+(c) Compute a pair of labelsWπγ
+γ :=Eval 0,0(Wπα
+α ,W πβ
+β ,τ 1,τ 2,τ 3)−ˆz0,0·∆+PRF K(γ) andWπγ⊕1
+γ :=
+Wπγ
+γ + ∆, along with a bitdγ :=LSB(W 0
+γ )⊕π γ.
+• Case 2 (T=XOR):
+(a) Computeπγ :=π α⊕πβ, and expressπγ as a subset XOR sum of{πγ}γ∈I∪W AND. Homomorphically
+evaluate JπγK by computing the XOR sum of the corresponding ciphertexts. Set τ1 :=J∆K ,τ2 :=τ 1
+andτ 3 :=−τ 1−τ 2.
+(b) Compute a pair of labelsWπγ
+γ :=Eval 0,0(Wπα
+α ,W πβ
+β ,τ 1,τ 2,τ 3)+PRFK(γ) andWπγ⊕1
+γ :=W πγ
+γ +∆.
+6. Output a garbled circuit F:= (params,keypar,J∆K,K,{Js iK}i∈[λ],{d i}i∈WAND), an encoding information
+e:= ({(π i,W 0
+i )}i∈I,∆)and a decoding informationd:=
+
+H(W 0
+i ),H(W 1
+i )
+	
+i∈O.
+Ev(F,X):
+1. Homomorphically compute{Jπ γK}γ∈I∪W AND
+:=PRG(Js 0K,...,Js ℓ−1K).
+2. For each gate(α,β,γ,T)in topological order, perform the following steps:
+• Case 1 (T=AND):
+(a) For eachi,j∈{0,1}, homomorphically computeJˆz i,j·∆KfromJπ αK,JπβK,JπγKandJ∆K.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ2 :=Jˆz0,1·∆K−Jˆz0,0·∆K, andτ3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ1−τ2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(d) Compute a masked bitˆxγ :=LSB(W γ)⊕d γ.
+• Case 2 (T=XOR):
+(a) Homomorphically evaluateJπ γKin the same way as theGbalgorithm does.
+(b) Setτ 1 :=J∆K,τ 2 :=τ 1 andτ 3 :=−τ 1−τ 2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(d) Compute a masked bitˆxγ := ˆxα⊕ˆxβ.
+3. OutputY:={W i}i∈O.
+Figure 8: Garbling scheme BitGC-tiny with 1 bit per AND gate and free-XOR, where the differences between
+BitGC-tinyandBitGC-smallare marked in blue.
+20
+=== PAGE 21 ===
+6 Implementation Details
+We implement the proposed garbling schemes BitGC-fast and BitGC-small1 in C++ on top of Microsoft
+SEAL 4.1 [SEA23]. In this section, we provide the details of the implementation, including the instantiation
+of the SWHEwDD scheme and the low-depth PRG, homomorphic evaluation of the PRG with SIMD
+optimization, and concrete parameters.
+SWHEwDD instantiation.We adopt the BGV framework [BGV12] under the RLWE assumption as our
+basic SWHE scheme. We instantiate distributed decryption onk= 1 following the blueprint proposed by
+Chillotti et al. [COS+22], and instantiate that onk= 2 by providing a BGV-native instantiation that replaces
+the GSW-style ciphertexts in the original BitGC scheme [LWYY25b]. We further adopt the CP-RLWE-
+based approach proposed in recent work [ILL25b] for the k= 2 case, for better efficiency. As a result,
+our SWHEwDD instantiation relies on RLWE for the base SWHE and the k= 1 distributed decryption
+case, and on CP-RLWE for the k= 2 case, substantially improving concrete efficiency over the existing
+instantiation [LWYY25b]. We defer the details of the resulting SWHEwDD construction to Appendix A.
+We note that the SWHEwDD scheme can also be instantiated under the BFV framework [Bra12, FV12] in a
+similar way.
+Low-depth PRG instantiation.We instantiate our low-depth PRG using Goldreich-style random local
+PRGs [Gol11]. Let d be the locality of the PRG, ℓ be the seed size, ℓs for somes >1 be the polynomial
+stretch, andP:{0,1} d→{0,1} be the predicate. The i-th bit of the PRG output yi is associated with a
+randomly sampled public index setIi∈[ℓ] d, and is evaluated by the predicateP on the input bits indexed by
+Ii. We choose the predicateP as XORk1-Majorityk2 proposed by Applebaum and Lovett [AL16], and use
+the parameters as in [ABBS25] withk1 = 4 andk2 = 7 for a high stretch. We set parametersℓ= 2 16,s= 2 ,
+and stretchℓs = 232, which can resist the best known attacks [OW14, ¨Una23, YGJL22]. The predicateP is
+defined as
+P({xi}i∈[11]) =Majority
+
+{xi}i∈[7]
+
+⊕(x 7⊕x 8⊕x 9⊕x 10)
+=
+
+ M
+0≤i<j<k<l<7
+(xi∧xj∧xk∧xl)
+
+⊕(x 7⊕x 8⊕x 9⊕x 10).
+Since the plaintext space in our SWHEwDD instantiation is a polynomial ringRp, we must arithmetize
+the Boolean predicateP to enable homomorphic evaluation. We achieve this by mapping logical operations
+to arithmetic ones:a∧b7→a·b anda⊕b7→a+b−2·a·b . We further simplify the expression by reducing
+all higher-degree exponents (xk≡x forx∈{0,1} ). The resulting arithmetic representation of P consists of
+additive terms of up to 11 degrees, which can be homomorphically evaluated with a multiplicative depth of
+4.
+SIMD-enabled PRG evaluation.The ring structure of the plaintext space Rp naturally supports SIMD
+batching. Let N be the ring degree and m be the number of packed slots ( m is typically N under full
+packing). An input of m·ℓ seed bits, divided into m blocks ofℓ bits each, is packed into ℓ polynomials
+and then encrypted, where thei-th polynomial encodes thei-th bit of allm blocks across its slots. We then
+homomorphically evaluate the arithmetic expression of the PRG over the ciphertexts, and yield each output
+ciphertext encrypting a packed polynomial ofmbits.
+For Gb and Ev algorithms, we need single-bit ciphertexts rather than packed outputs. Therefore, we
+further apply an unpacking pipeline to extractm single-bit ciphertexts from a packed ciphertext. It can be
+achieved in two steps. First, we perform slot-to-coefficient conversion using the BSGS method [HS15, HS18],
+1Source code is available at https://github.com/wtd2/more-efficient-bitgc/. Compared to the conference
+version [ZLY+26], this implementation adopts a tightened modulus-chain configuration that improves concrete efficiency without
+changing protocol functionality; the resulting parameters appear in the SWHEwDD parameters paragraph below.
+21
+=== PAGE 22 ===
+which requiresO(2
+√
+N) rotations and one multiplicative layer. Then, we run coefficient expansion to obtain
+individual bit ciphertexts [CDKS21], which requires O(N) homomorphic operations and no additional
+multiplicative depth. For better concrete efficiency, before the coefficient expansion, we switch the ciphertexts
+to a smaller modulus/dimension context via ring-dimension reduction [CDKS21].
+SWHEwDD parameters.Our implementation uses BGV in residue number system (RNS) form. Let
+(NPRG,Q PRG) denote the large modulus/dimension context used for packed PRG evaluation, and(NGate,Q Gate)
+the small context after the dimension reduction used for gate evaluation, withNPRG >N Gate. Ciphertext
+moduli are represented as RNS chains of 60-bit data limbs. For distributed decryption, we use two reduced
+moduliqandrfork= 1andk= 2cases respectively (details in Appendix A).
+We choose parameters to target a per-gate failure probability below2−40 and a 128-bit RLWE security
+(estimated following [ACC+19]). Concretely, we set logp≈60 as the plaintext modulus, logq≈120
+and logr≈240 as the moduli for k= 1 and k= 2 distributed decryption. For BitGC-fast, we use
+moduli logQ PRG ≈600,logQ Gate ≈180 with 10 and 3 data limbs, and NPRG = 2 15,N Gate = 2 13
+correspondingly. For BitGC-small, we use moduli logQ PRG≈780,logQ Gate≈300 with 13 and 5 data
+limbs, andN PRG = 215,N Gate = 214 correspondingly.
+7 Performance Evaluation
+In this section, we perform a series of benchmark experiments to study the concrete performance of the
+BitGCscheme and the proposed variantsBitGC-fast,BitGC-small, andBitGC-tiny.
+Experimental setup.Our experiments are conducted on an AWS EC2 instance of type m8azn.24xlarge,
+with up to 384 GiB of memory. We conduct all experiments withsingle-threadedexecution for simplicity. To
+evaluate the concrete performance of our schemes, we benchmark the end-to-end garbling and evaluation
+pipeline. We structure the pipeline into two phases:
+• Preprocessing: this stage requires only an upper bound on the circuit size, and consists primarily of
+homomorphic PRG evaluation over the encrypted seed. For our improved SIMD-enabled schemes, two
+steps are involved:(1) HE-PRGwhich homomorphically evaluates the PRG over encrypted packed
+polynomials;(2) Extractionwhich extracts individual ciphertexts from the packed ciphertexts. For the
+original BitGC, only the HE-PRG step is involved. For the BitGC-fast, we also account for the cost of
+evaluatingJr·∆KfromJrKandJ∆Kfor each PRG expanded pseudorandom bitrinto the extraction step.
+• Gate-dependent: this execution requires the circuit topology. During this phase, the garbler generates
+the garbled table, while the evaluator takes as input the garbled table and evaluates the output label of
+each gate in a topological order. It consists of(3) Assemblywhich assembles three ciphertexts as the
+input of the function Evali,j.(4) DDwhich applies the distributed-decryption family DD on the assembled
+ciphertexts and the input labels to obtain the output label. For BitGC-tiny, each XOR gate additionally
+incurs a homomorphic ciphertext multiplication to derive the output wire’s permutation-bit ciphertext,
+which we account for in the Assembly step.
+Experimental results.We evaluate the performance of our schemes BitGC-fast and BitGC-small by
+benchmarking an AES-128 circuit with 6,400 AND gates and 28,176 XOR gates. The circuit also contains
+2,087 NOT gates, whose cost is almost negligible. We utilize a single thread for execution, and note that
+the preprocessing phase can be further accelerated by parallelizing the execution, as each PRG output bit is
+associated with an independent index set. Since the computation costs of the garbling and evaluation are
+nearly identical, we only report the results of the garbling pipeline for simplicity.
+In addition, we provide a lower-bound performance estimation for the original BitGC scheme and
+our BitGC-tiny scheme. For the original BitGC, we estimate the performance by assuming a non-SIMD
+homomorphic PRG evaluation and assigning the cost of an AND gate to all gates; the per-gate gate-dependent
+22
+=== PAGE 23 ===
+Gate Comm. Preprocessing Gate-dependent Total
+timeHE-PRG Extraction Assembly DD
+BitGC-fast AND50.11 15.11 0.07 0.95 16.24
+XOR00 0 0 0.43 0.43
+BitGC-small AND1 0.04 3.52 28.57 2.07 34.20
+XOR10 0.91 4.47
+BitGC-tiny AND1≥0.2≥34≥277≥20≥331
+XOR00 0≥35≥9≥44
+BitGC
+[LWYY25b]
+AND1 ≥1418 0≥28.57≥2.07≥1449XOR1
+Table 2:Performance comparison between BitGC and our proposed variants.The communication cost
+(bits), amortized running time (ms) in total, and amortized running time for each pipeline step (ms) are
+reported for each AND and XOR gate. Costs for BitGC and BitGC-tiny are lower-bound estimation. Costs
+are amortized over large circuits and exclude reusable data. The communication cost of transmitting an
+encrypted seed is negligibly small compared to other components of a garbled circuit and thus is omitted.
+cost is taken to inherit the implementation-level optimizations of our BitGC-small variant, so the resulting
+estimate is a lower bound on what a faithful implementation of the original BitGC construction would
+achieve. For the performance estimation of BitGC-tiny, we assume that the additional multiplication depth
+for homomorphic evaluation is bounded by 5 (supporting circuits with up to 31 consecutive XOR operations).
+Correspondingly, we set logQ PRG = 1200,logQ Gate = 660,N PRG = 216,N Gate = 215 for the parameters
+underlying the BitGC-tiny scheme. For each XOR gate, we account for the cost of homomorphic computing
+the permutation bit into the “assembly” step.
+We note that our instantiated low-depth PRG has an expansion factor ofℓs−1, and we enable SIMD for
+homomorphic PRG evaluation. Therefore, the amortized communication cost for transmitting encrypted
+seeds is logQ PRG/ℓs−1<0.02 bits per homomorphically expanded pseudorandom bit. We need 1 pseudo-
+random bit per gate for BitGC-small and BitGC, 4 pseudorandom bits per AND gate for BitGC-fast, and 1
+pseudorandom bit per AND gate for BitGC-tiny. We therefore omit the amortized communication cost for
+transmitting encrypted seeds.
+The one-time setup communication of SWHEwDD consists of the public parameters and key-related
+material (the ciphertext of the secret key ∆, preprocessed ciphertexts for distributed decryption, and all
+evaluation keys). Measured on our prototype with 128-bit-secure parameters, the setup payload is about 1.6
+GiB for BitGC-fast and about 2.7 GiB for BitGC-small. This cost is independent of the circuit size and can be
+amortized to negligibly small for sufficiently large circuits. Compared to the best-known “Yao-style” garbled
+circuit [RR21], which sends 1.5λ+ 5 bits per AND gate and no bits per XOR gate,BitGC-fast achieves lower
+total communication once more than approximately 7×10 7 AND gates (about 11,000 AES-128 circuits) are
+evaluated.
+The amortized communication and time costs per gate, along with the time costs for each pipeline step,
+are presented in Table 2.
+Analysis.As shown in the table, BitGC scheme incurs a substantial overhead from its non-SIMD ho-
+momorphic PRG evaluation. In contrast, with SIMD optimization, our BitGC-small scheme significantly
+reduces the time cost by over 400× end-to-end on AES-128, with the preprocessing phase alone seeing about
+400×. Furthermore, by applying specific optimizations for XOR gates rather than treating them generically,
+23
+=== PAGE 24 ===
+BitGC-smallscheme further cuts more than30×the cost during the gate-dependent phase for XOR gates.
+We also note that BitGC-fast scheme provides a powerful trade-off between communication and concrete
+computational cost. It significantly reduces the per-gate time cost for AND and XOR gates by approxi-
+mately 2× and 10×, respectively, compared to BitGC-small scheme, and substantially further compared
+to the BitGC-tiny scheme. We acknowledge that it requires more communication per AND gate, but
+BitGC-fast scheme benefits from the free-XOR property that eliminates communication for XOR gates. This
+can lead to a comparable total communication cost to BitGC-small scheme, especially in circuits with a high
+ratio of XOR gates to AND gates like AES-128.
+Acknowledgements
+The work of Yu Yu is supported by the National Natural Science Foundation of China (Grant Nos. 62125204
+and 92270201) and Innovation Program for Quantum Science and Technology (No. 2021ZD0302901 /
+2021ZD0302902).
+References
+[ABBS25] Amit Agarwal, Carsten Baum, Lennart Braun, and Peter Scholl. Low-bandwidth mixed
+arithmetic in VOLE-based ZK from low-degree PRGs. In Serge Fehr and Pierre-Alain Fouque,
+editors,EUROCRYPT 2025, Part IV, volume 15604 ofLNCS, pages 396–426. Springer, Cham,
+May 2025.
+[ACC+19] Martin Albrecht, Melissa Chase, Hao Chen, Jintai Ding, Shafi Goldwasser, Sergey Gorbunov,
+Shai Halevi, Jeffrey Hoffstein, Kim Laine, Kristin Lauter, Satya Lokam, Daniele Micciancio,
+Dustin Moody, Travis Morrison, Amit Sahai, and Vinod Vaikuntanathan. Homomorphic
+encryption standard. Cryptology ePrint Archive, Report 2019/939, 2019.
+[Agr17] Shweta Agrawal. Stronger security for reusable garbled circuits, general definitions and attacks.
+In Jonathan Katz and Hovav Shacham, editors,CRYPTO 2017, Part I, volume 10401 ofLNCS,
+pages 3–35. Springer, Cham, August 2017.
+[AL16] Benny Applebaum and Shachar Lovett. Algebraic attacks against random local functions and
+their countermeasures. In Daniel Wichs and Yishay Mansour, editors,48th ACM STOC, pages
+1087–1100. ACM Press, June 2016.
+[Ale03] Michael Alekhnovich. More on average case vs approximation complexity. In44th FOCS,
+pages 298–307. IEEE Computer Society Press, October 2003.
+[App12] Benny Applebaum. Pseudorandom generators with long stretch and low locality from random
+local one-way functions. In Howard J. Karloff and Toniann Pitassi, editors,44th ACM STOC,
+pages 805–816. ACM Press, May 2012.
+[AR16] Benny Applebaum and Pavel Raykov. Fast pseudorandom functions based on expander graphs.
+In Martin Hirt and Adam D. Smith, editors,TCC 2016-B, Part I, volume 9985 ofLNCS, pages
+27–56. Springer, Berlin, Heidelberg, October / November 2016.
+[BGG+14] Dan Boneh, Craig Gentry, Sergey Gorbunov, Shai Halevi, Valeria Nikolaenko, Gil Segev,
+Vinod Vaikuntanathan, and Dhinakaran Vinayagamurthy. Fully key-homomorphic encryption,
+arithmetic circuit ABE and compact garbled circuits. In Phong Q. Nguyen and Elisabeth
+24
+=== PAGE 25 ===
+Oswald, editors,EUROCRYPT 2014, volume 8441 ofLNCS, pages 533–556. Springer, Berlin,
+Heidelberg, May 2014.
+[BGV12] Zvika Brakerski, Craig Gentry, and Vinod Vaikuntanathan. (Leveled) fully homomorphic
+encryption without bootstrapping. In Shafi Goldwasser, editor,ITCS 2012, pages 309–325.
+ACM, January 2012.
+[BHKR13] Mihir Bellare, Viet Tung Hoang, Sriram Keelveedhi, and Phillip Rogaway. Efficient garbling
+from a fixed-key blockcipher. In2013 IEEE Symposium on Security and Privacy, pages
+478–492. IEEE Computer Society Press, May 2013.
+[BHR12] Mihir Bellare, Viet Tung Hoang, and Phillip Rogaway. Foundations of garbled circuits. In
+Ting Yu, George Danezis, and Virgil D. Gligor, editors,ACM CCS 2012, pages 784–796. ACM
+Press, October 2012.
+[BKS19] Elette Boyle, Lisa Kohl, and Peter Scholl. Homomorphic secret sharing from lattices without
+FHE. In Yuval Ishai and Vincent Rijmen, editors,EUROCRYPT 2019, Part II, volume 11477
+ofLNCS, pages 3–33. Springer, Cham, May 2019.
+[BMR90] Donald Beaver, Silvio Micali, and Phillip Rogaway. The round complexity of secure protocols
+(extended abstract). In22nd ACM STOC, pages 503–513. ACM Press, May 1990.
+[BPR12] Abhishek Banerjee, Chris Peikert, and Alon Rosen. Pseudorandom functions and lattices. In
+David Pointcheval and Thomas Johansson, editors,EUROCRYPT 2012, volume 7237 ofLNCS,
+pages 719–737. Springer, Berlin, Heidelberg, April 2012.
+[Bra12] Zvika Brakerski. Fully homomorphic encryption without modulus switching from classical
+GapSVP. In Reihaneh Safavi-Naini and Ran Canetti, editors,CRYPTO 2012, volume 7417 of
+LNCS, pages 868–886. Springer, Berlin, Heidelberg, August 2012.
+[BRS03] John Black, Phillip Rogaway, and Thomas Shrimpton. Encryption-scheme security in the
+presence of key-dependent messages. In Kaisa Nyberg and Howard M. Heys, editors,SAC
+2002, volume 2595 ofLNCS, pages 62–75. Springer, Berlin, Heidelberg, August 2003.
+[CDKS21] Hao Chen, Wei Dai, Miran Kim, and Yongsoo Song. Efficient homomorphic conversion
+between (ring) LWE ciphertexts. In Kazue Sako and Nils Ole Tippenhauer, editors,ACNS
+2021, Part I, volume 12726 ofLNCS, pages 460–479. Springer, Cham, June 2021.
+[COS+22] Ilaria Chillotti, Emmanuela Orsini, Peter Scholl, Nigel P. Smart, and Barry van Leeuwen.
+Scooby: Improved multi-party homomorphic secret sharing based on FHE. In Clemente Galdi
+and Stanislaw Jarecki, editors,SCN 22, volume 13409 ofLNCS, pages 540–563. Springer,
+Cham, September 2022.
+[DG17] Nico D¨ottling and Sanjam Garg. Identity-based encryption from the Diffie-Hellman assumption.
+In Jonathan Katz and Hovav Shacham, editors,CRYPTO 2017, Part I, volume 10401 ofLNCS,
+pages 537–569. Springer, Cham, August 2017.
+[FNO15] Tore Kasper Frederiksen, Jesper Buus Nielsen, and Claudio Orlandi. Privacy-free garbled
+circuits with applications to efficient zero-knowledge. In Elisabeth Oswald and Marc Fischlin,
+editors,EUROCRYPT 2015, Part II, volume 9057 ofLNCS, pages 191–219. Springer, Berlin,
+Heidelberg, April 2015.
+25
+=== PAGE 26 ===
+[FV12] Junfeng Fan and Frederik Vercauteren. Somewhat practical fully homomorphic encryption.
+Cryptology ePrint Archive, Report 2012/144, 2012.
+[GGH+13] Craig Gentry, Sergey Gorbunov, Shai Halevi, Vinod Vaikuntanathan, and Dhinakaran Vinayaga-
+murthy. How to compress (reusable) garbled circuits. Cryptology ePrint Archive, Report
+2013/687, 2013.
+[GKP+13] Shafi Goldwasser, Yael Tauman Kalai, Raluca A. Popa, Vinod Vaikuntanathan, and Nickolai
+Zeldovich. Reusable garbled circuits and succinct functional encryption. In Dan Boneh, Tim
+Roughgarden, and Joan Feigenbaum, editors,45th ACM STOC, pages 555–564. ACM Press,
+June 2013.
+[GKW+20] Chun Guo, Jonathan Katz, Xiao Wang, Chenkai Weng, and Yu Yu. Better concrete security
+for half-gates garbling (in the multi-instance setting). In Daniele Micciancio and Thomas
+Ristenpart, editors,CRYPTO 2020, Part II, volume 12171 ofLNCS, pages 793–822. Springer,
+Cham, August 2020.
+[GKWY20] Chun Guo, Jonathan Katz, Xiao Wang, and Yu Yu. Efficient and secure multiparty computation
+from fixed-key block ciphers. In2020 IEEE Symposium on Security and Privacy, pages
+825–841. IEEE Computer Society Press, May 2020.
+[GLNP15] Shay Gueron, Yehuda Lindell, Ariel Nof, and Benny Pinkas. Fast garbling of circuits under
+standard assumptions. In Indrajit Ray, Ninghui Li, and Christopher Kruegel, editors,ACM CCS
+2015, pages 567–578. ACM Press, October 2015.
+[Gol11] Oded Goldreich.Candidate One-Way Functions Based on Expander Graphs, pages 76–87.
+Springer Berlin Heidelberg, Berlin, Heidelberg, 2011.
+[GWYY25] Chun Guo, Xiao Wang, Kang Yang, and Yu Yu. On tweakable correlation robust hashing
+against key leakages.DCC, 93(8):3375–3412, 2025.
+[HK20] David Heath and Vladimir Kolesnikov. Stacked garbling for disjunctive zero-knowledge proofs.
+In Anne Canteaut and Yuval Ishai, editors,EUROCRYPT 2020, Part III, volume 12107 of
+LNCS, pages 569–598. Springer, Cham, May 2020.
+[HKE12] Yan Huang, Jonathan Katz, and David Evans. Quid-Pro-Quo-tocols: Strengthening semi-
+honest protocols with dual execution. In2012 IEEE Symposium on Security and Privacy, pages
+272–284. IEEE Computer Society Press, May 2012.
+[HPS98] Jeffrey Hoffstein, Jill Pipher, and Joseph H. Silverman. NTRU: A ring-based public key
+cryptosystem. In Joe P. Buhler, editor,Algorithmic Number Theory, pages 267–288, Berlin,
+Heidelberg, 1998. Springer Berlin Heidelberg.
+[HS15] Shai Halevi and Victor Shoup. Bootstrapping for HElib. In Elisabeth Oswald and Marc Fischlin,
+editors,EUROCRYPT 2015, Part I, volume 9056 ofLNCS, pages 641–670. Springer, Berlin,
+Heidelberg, April 2015.
+[HS18] Shai Halevi and Victor Shoup. Faster homomorphic linear transformations in HElib. In Hovav
+Shacham and Alexandra Boldyreva, editors,CRYPTO 2018, Part I, volume 10991 ofLNCS,
+pages 93–120. Springer, Cham, August 2018.
+26
+=== PAGE 27 ===
+[IKNP03] Yuval Ishai, Joe Kilian, Kobbi Nissim, and Erez Petrank. Extending oblivious transfers
+efficiently. In Dan Boneh, editor,CRYPTO 2003, volume 2729 ofLNCS, pages 145–161.
+Springer, Berlin, Heidelberg, August 2003.
+[ILL25a] Yuval Ishai, Hanjun Li, and Huijia Lin. Succinct homomorphic MACs from groups and
+applications. In66th FOCS, pages 2505–2545. IEEE Computer Society Press, December 2025.
+[ILL25b] Yuval Ishai, Hanjun Li, and Huijia Lin. A unified framework for succinct garbling from
+homomorphic secret sharing. In Yael Tauman Kalai and Seny F. Kamara, editors,CRYPTO 2025,
+Part IV, volume 16003 ofLNCS, pages 390–425. Springer, Cham, August 2025.
+[JKO13] Marek Jawurek, Florian Kerschbaum, and Claudio Orlandi. Zero-knowledge using garbled
+circuits: how to prove non-algebraic statements efficiently. In Ahmad-Reza Sadeghi, Virgil D.
+Gligor, and Moti Yung, editors,ACM CCS 2013, pages 955–966. ACM Press, November 2013.
+[JRR25] Jake Januzelli, Mike Rosulek, and Lawrence Roy. Lower bounds for garbled circuits from
+shannon-type information inequalities. In Yael Tauman Kalai and Seny F. Kamara, editors,
+CRYPTO 2025, Part IV, volume 16003 ofLNCS, pages 589–618. Springer, Cham, August
+2025.
+[KMR14] Vladimir Kolesnikov, Payman Mohassel, and Mike Rosulek. FleXOR: Flexible garbling for
+XOR gates that beats free-XOR. In Juan A. Garay and Rosario Gennaro, editors,CRYPTO 2014,
+Part II, volume 8617 ofLNCS, pages 440–457. Springer, Berlin, Heidelberg, August 2014.
+[KP17] Yashvanth Kondi and Arpita Patra. Privacy-free garbled circuits for formulas: Size zero and
+information-theoretic. In Jonathan Katz and Hovav Shacham, editors,CRYPTO 2017, Part I,
+volume 10401 ofLNCS, pages 188–222. Springer, Cham, August 2017.
+[KS08] Vladimir Kolesnikov and Thomas Schneider. Improved garbled circuit: Free XOR gates and
+applications. In Luca Aceto, Ivan Damg˚ard, Leslie Ann Goldberg, Magn´us M. Halld´orsson,
+Anna Ing´olfsd´ottir, and Igor Walukiewicz, editors,ICALP 2008, Part II, volume 5126 ofLNCS,
+pages 486–498. Springer, Berlin, Heidelberg, July 2008.
+[LP09] Yehuda Lindell and Benny Pinkas. A proof of security of Yao’s protocol for two-party
+computation.Journal of Cryptology, 22(2):161–188, April 2009.
+[LPR10] Vadim Lyubashevsky, Chris Peikert, and Oded Regev. On ideal lattices and learning with errors
+over rings. In Henri Gilbert, editor,EUROCRYPT 2010, volume 6110 ofLNCS, pages 1–23.
+Springer, Berlin, Heidelberg, May / June 2010.
+[LWYY25a] Hanlin Liu, Xiao Wang, Kang Yang, and Yu Yu. Authenticated BitGC for actively secure
+rate-one 2PC. In Yael Tauman Kalai and Seny F. Kamara, editors,CRYPTO 2025, Part IV,
+volume 16003 ofLNCS, pages 652–687. Springer, Cham, August 2025.
+[LWYY25b] Hanlin Liu, Xiao Wang, Kang Yang, and Yu Yu. BitGC: Garbled circuits with 1 bit per gate. In
+Serge Fehr and Pierre-Alain Fouque, editors,EUROCRYPT 2025, Part VII, volume 15607 of
+LNCS, pages 437–466. Springer, Cham, May 2025.
+[MORS25] Pierre Meyer, Claudio Orlandi, Lawrence Roy, and Peter Scholl. Silent circuit relinearisation:
+Sublinear-size (boolean and arithmetic) garbled circuits from DCR. In Yael Tauman Kalai and
+Seny F. Kamara, editors,CRYPTO 2025, Part IV, volume 16003 ofLNCS, pages 426–458.
+Springer, Cham, August 2025.
+27
+=== PAGE 28 ===
+[NPS99] Moni Naor, Benny Pinkas, and Reuban Sumner. Privacy preserving auctions and mechanism
+design. InProceedings of the 1st ACM Conference on Electronic Commerce, pages 129–139,
+New York, NY , USA, 1999. Association for Computing Machinery.
+[OW14] Ryan ODonnell and David Witmer. Goldreich’s PRG: evidence for near-optimal polynomial
+stretch. In2014 IEEE 29th Conference on Computational Complexity (CCC), pages 1–12,
+2014.
+[PS21] Alice Pellet-Mary and Damien Stehl ´e. On the hardness of the NTRU problem. In Mehdi
+Tibouchi and Huaxiong Wang, editors,ASIACRYPT 2021, Part I, volume 13090 ofLNCS,
+pages 3–35. Springer, Cham, December 2021.
+[PSSW09] Benny Pinkas, Thomas Schneider, Nigel P. Smart, and Stephen C. Williams. Secure two-party
+computation is practical. In Mitsuru Matsui, editor,ASIACRYPT 2009, volume 5912 ofLNCS,
+pages 250–267. Springer, Berlin, Heidelberg, December 2009.
+[RR21] Mike Rosulek and Lawrence Roy. Three halves make a whole? Beating the half-gates lower
+bound for garbled circuits. In Tal Malkin and Chris Peikert, editors,CRYPTO 2021, Part I,
+volume 12825 ofLNCS, pages 94–124, Virtual Event, August 2021. Springer, Cham.
+[SEA23] Microsoft SEAL (release 4.1). https://github.com/Microsoft/SEAL, January
+2023. Microsoft Research, Redmond, W A.
+[ ¨Una23] Akin ¨Unal. Worst-case subexponential attacks on PRGs of constant degree or constant locality.
+In Carmit Hazay and Martijn Stam, editors,EUROCRYPT 2023, Part I, volume 14004 ofLNCS,
+pages 25–54. Springer, Cham, April 2023.
+[Yao86] Andrew Chi-Chih Yao. How to generate and exchange secrets (extended abstract). In27th
+FOCS, pages 162–167. IEEE Computer Society Press, October 1986.
+[YGJL22] Jing Yang, Qian Guo, Thomas Johansson, and Michael Lentmaier. Revisiting the concrete
+security of goldreich’s pseudorandom generator.IEEE Transactions on Information Theory,
+68(2):1329–1354, 2022.
+[ZLY+26] Wenhao Zhang, Hanlin Liu, Kang Yang, Wen-jie Lu, Yu Yu, Xiao Wang, and Chenkai Weng.
+BitGC made (more) efficient. InEUROCRYPT 2026. Springer, Cham, May 2026.
+[ZRE15] Samee Zahur, Mike Rosulek, and David Evans. Two halves make a whole - reducing data
+transfer in garbled circuits using half gates. In Elisabeth Oswald and Marc Fischlin, editors,EU-
+ROCRYPT 2015, Part II, volume 9057 ofLNCS, pages 220–250. Springer, Berlin, Heidelberg,
+April 2015.
+28
+=== PAGE 29 ===
+A SWHEwDD Instantiation
+A.1 Hardness Assumptions
+Definition 7(RLWE assumption).Let n=n(λ)∈N be a ring degree, p=p(λ),q=q(λ)∈N be a
+plaintext and a ciphertext modulus respectively,R=Z[X]/(X n + 1) be the corresponding cyclotomic ring,
+and letD∆,De be efficiently sampleable distributions overR indexed byλ. The RLWE assumption (with
+parameters(n,p,q,D ∆,De)) states that for every polynomialm=m(λ), the distribution
+n
+(a,b)
+ ∆←D ∆,e←D m
+e ,a $← −Rm
+q ,b=a·∆ +p·e
+o
+is computationally indistinguishable from{(a,u)|a,u $← −Rm
+q}.
+Definition 8(Circular Power RLWE assumption, CP-RLWE [ILL25b]).Let n,p,R,D ∆,De be as in the
+RLWE definition above, and letr=r(λ)∈N be a ciphertext modulus. The circular power RLWE (CP-RLWE)
+assumption (with parameters (n,p,r,D ∆,De)) states that for every polynomialm=m(λ) , the distribution
+(
+(a,b,c)
+
+∆←D ∆,e 1,e 2←D m
+e ,a $← −Rm
+r ,
+b=a·∆ +p·e 1,c=a·∆ 2 + ∆ +p·e 2
+)
+is computationally indistinguishable from{(a,u,v)|a,u,v $← −Rm
+r}.
+A.2 Overview of RLWE-based BGV Scheme
+We recall the level-structured BGV scheme of Brakerski, Gentry, and Vaikuntanathan [BGV12], retaining
+only the parameter conventions and noise-budget invariant on which our construction relies; we treat the
+homomorphic operations as black boxes and refer to [BGV12, HS15, HS18] for their constructions.
+Parameters and key material.The scheme realizes the SWHE interfaceBGV= (Setup,Gen,Enc,Dec,HEval)
+of Definition 5, parameterized by a security parameter λ and a target multiplicative depth L. For our
+distributed-decryption analysis we will only need the ring degree n, the plaintext modulus p, the level-0
+ciphertext modulusq, the secret-key distributionD∆ (taken to be uniform ternary, so∥∆∥∞≤1 ), and the
+noise distributionDe (a centered discrete Gaussian onR=Z[X]/(X n + 1)with standard deviationσ e).
+Ciphertext form.A level- 0 BGV ciphertext is a pair τ= (a,b)∈R 2
+q that encrypts a message m∈R p
+via b−a·∆≡p·e+m(modq) for some noise e∈R , with decryption Dec(∆,τ) = ((b−a·
+∆) modq) modp . For any depth-L circuit, HEval produces a level-0 output whose noise satisfies∥e∥∞≤
+Eout with overwhelming probability over the random coins of Setup, Gen, and HEval, for some bound
+Eout =E out(L,n,p,σ e) polynomial in the depth and parameters and independent of the plaintexts. We
+choose parameters to satisfy the distributed-decryption conditionn·(E out + 1)·p/q≤negl(λ) of Lemma 1.
+We assume throughout this section that the input toDDis such a level-0ciphertext.
+A.3 Extended BGV Scheme for SWHEwDD Instantiation
+We instantiate an SWHEwDD scheme BGVwDD= (Setup DD,Gen DD,Enc,Dec,HEval,DD) that satisfies
+the distributed decryption property of Definition 6 on both k= 1 andk= 2 , under the RLWE and CP-
+RLWE assumptions, respectively. The encryption, decryption, and homomorphic-evaluation algorithms
+(Enc,Dec,HEval) are inherited from the BGV scheme; the new ingredients are the augmented setup and key-
+generation algorithms (SetupDD,Gen DD), which extend (Setup,Gen) with the parameters and preprocessed
+ciphertexts used by distributed decryption, and the distributed decryption algorithms DDx (for k= 1 )
+29
+=== PAGE 30 ===
+and DDx,y (for k= 2 ). The construction of DDx follows the linear-DD blueprint of Boyle, Kohl, and
+Scholl [BKS19], instantiated for BGV in [COS+22]; thek= 2 algorithm DDx,y adapts the lattice construction
+of Ishai, Li, and Lin [ILL25b] using CP-RLWE-shaped preprocessed ciphertexts. We assume throughout this
+section that the input ciphertext to DD is a level-0 ciphertextτ= (a,b)∈R 2
+q satisfying the noise invariant
+with some boundE.
+Shared randomness.The garbler and the evaluator have access to a common source of synced randomness
+that supplies, on each DD invocation, an identical pair of fresh uniform masking values to both parties:R
+overRq orRr (depending on context), and (fork= 2 ) an additional ¯R overRp. Distinct invocations use
+independent masking values, even when applied to the same input ciphertext. The analysis below treats each
+such value as a truly uniform sample from the appropriate ring.
+Parameters and key-generation.Let r=r(λ)∈N be thek= 2 distributed-decryption modulus, chosen
+so that the parameter conditions of Lemma 2 hold. The augmented setup and key-generation algorithms are
+then defined as follows.
+•Setup DD(1λ,1L) runs params←Setup(1 λ,1L) and outputs the augmented parameters paramsDD :=
+(params,r) . (We treat the shared randomness used by DD as set up alongside paramsDD, as described
+above.)
+•Gen DD(paramsDD) runs (keypar,∆)←Gen(params) , samples a $← −Rr and e1,e 2←D e, and computes
+the CP-RLWE-shaped triple (c1,c 2,c 3) := (a,a·∆ +p·e 1,a·∆ 2 + ∆ +p·e 2) modr . It outputs
+the augmented key-related parameterskeypar DD := (keypar,(c 1,c 2,c 3))together with the secret key∆.
+Distributed decryption on k= 1 .Given the augmented parameters (paramsDD,keypar DD) output by
+SetupDD and GenDD, we define the distributed decryption algorithm DDx :R p×C→R p, parameterized
+byx∈{0,1}, by
+DDx(X,τ) :=
+
+x·b−X·a+R
+
+modqmodp,
+whereτ= (a,b)∈R 2
+q is a level-0 ciphertext andR∈R q is the shared masking value for this invocation.
+The algorithmDDx takes(params DD,keypar DD)as implicit input.
+Lemma 1.Let τ= (a,b)∈ R 2
+q be a level- 0 ciphertext such that b−a·∆≡p·e+m(modq)
+for some m=Dec(∆,τ)∈ R p and noise e∈ R with∥e∥∞ ≤E . Suppose the parameters satisfy
+n·(∥∆∥ ∞ + 1)/p≤negl(λ) andn·(E+ 1)·p/q≤negl(λ) . Then for everyx∈{0,1} , over the random
+choice ofX $← −Rp andR $← −Rq,
+Pr [DDx(X+x·∆,τ) =DD 0(X,τ) +x·m]≥1−negl(λ).
+Proof. The case x= 0 is immediate, since both sides of the equation reduce to DD0(X,τ) . Assume
+henceforthx= 1 . By the lifting lemma [BKS19] applied modulop, with probability at least 1−n·(∥∆∥ ∞ +
+1)/pover the choice ofX $← −Rp we have(X+ ∆) modp=X+ ∆overR, so that
+DD1(X+ ∆,τ)−DD 0(X,τ) =
+
+(b−(X+ ∆)·a+R) modq−(R−X·a) modq
+
+modp.
+Since R is uniform overRq, the value (R−X·a) modq is also uniform over Rq. Substituting b=
+a·∆ +p·e+m(modq) and applying the lifting lemma a second time, this time moduloq, with probability
+at least1−n·(∥e∥ ∞ + 1)·p/qwe obtain
+
+(b−(X+ ∆)·a+R) modq−(R−X·a) modq
+
+modp
+=
+
+(R−X·a) modq+p·e+m−(R−X·a) modq
+
+modp
+= (p·e+m) modp=m.
+30
+=== PAGE 31 ===
+Union-bounding over the two lifting-lemma applications, and using∥e∥∞≤E together with the parameter
+conditions in the lemma statement, we obtain
+Pr [DD1(X+ ∆,τ) =DD 0(X,τ) +m]≥1−n·
+
+(∥∆∥∞ + 1)/p+ (E+ 1)·p/q
+
+≥1−negl(λ),
+which concludes the proof.
+Distributed decryption onk= 2 .Given the augmented key-related parameters keyparDD = (keypar,(c 1,c 2,c 3))
+produced byGen DD, we define the auxiliary functionFx,y :R 2
+p→R p by
+Fx,y(X,Y) :=
+
+X·Y·c 1−(x·Y+y·X)·c 2 +x·y·c 3 +R
+
+modrmodp,
+whereR∈R r is the shared masking value for this Fx,y invocation. The k= 2 distributed decryption
+algorithmDDx,y :R 2
+p×C→R p is then defined by composingFx,y with thek= 1algorithmDD xy:
+DDx,y(X,Y,τ) :=DD xy
+
+Fx,y(X,Y) + ¯R, τ
+
+,
+where ¯R∈R p is an additional shared masking value that re-randomizes the input to DDxy overRp so that
+the uniform-first-argument premise of Lemma 1 is satisfied.
+Lemma 2.Let (c1,c 2,c 3) be the CP-RLWE-shaped triple produced by GenDD from noise samples e1,e 2∈
+R, and let E1,E 2 satisfy∥e1∥∞≤E 1 and∥e2∥∞≤E 2. Suppose the parameters satisfy 2n·(∥∆∥ ∞ +
+1)/p≤negl(λ) andn·(E 2 + 4n·p·E 1 + 1)·p/r≤negl(λ) . Then for everyx,y∈{0,1} , over the random
+choice ofX,Y $← −Rp andR $← −Rr,
+Pr [Fx,y(X+x·∆,Y+y·∆) =F 0,0(X,Y) +xy·∆]≥1−negl(λ).
+Proof. Let e(x,y) =xy·e 2−(2xy·∆ +x·Y+y·X)·e 1 overR (before reduction modulor). Using
+the standard bound∥f·g∥ ∞≤n·∥f∥ ∞·∥g∥∞ overR, together with∥∆∥∞≤1 ,∥X∥∞,∥Y∥ ∞≤p for
+X,Y∈R p, andx,y∈{0,1}, we have
+∥e(x,y)∥∞≤∥e 2∥∞ +n·(2∥∆∥ ∞ +∥X∥∞ +∥Y∥ ∞)·∥e 1∥∞
+≤E 2 +n·(2 + 2p)·E 1 ≤E 2 + 4n·p·E 1.
+Based on the lifting lemma [BKS19], with at least 1−2n·(∥∆∥ ∞ + 1)/p probability, we have both
+(X+x·∆) modp=X+x·∆and(Y+y·∆) modp=Y+y·∆overR; therefore,
+Fx,y(X+x·∆,Y+y·∆)−F 0,0(X,Y)
+=
+
+(X·Y·a+R+p·e(x,y) +xy·∆) modr−(X·Y·a+R) modr
+
+modp.
+SinceR $← −Rr is independent of the rest, (X·Y·a+R) modr is uniform overRr and independent of
+e(x,y). Applying the lifting lemma a second time, with probability at least1−n·(∥e(x,y)∥ ∞ + 1)·p/r,
+((X·Y·a+R+p·e(x,y) +xy·∆) modr−(X·Y·a+R) modr) modp
+= ((X·Y·a+R) modr+p·e(x,y) +xy·∆−(X·Y·a+R) modr) modp
+= (p·e(x,y) +xy·∆) modp=xy·∆.
+31
+=== PAGE 32 ===
+Substituting the bound on∥e(x,y)∥∞ derived above and union-bounding over the two lifting-lemma applica-
+tions, we obtain
+Pr [Fx,y(X+x·∆,Y+y·∆) =F 0,0(X,Y) +xy·∆]
+≥1−2n·(∥∆∥ ∞ + 1)/p−n·(E 2 + 4n·p·E 1 + 1)·p/r
+≥1−negl(λ),
+where the final inequality follows from the parameter conditions in the lemma statement. This concludes the
+proof.
+Combining Lemma 1 with Lemma 2 yields thek= 2 correctness statement for the composed algorithm
+DDx,y.
+Corollary 1.Let τ= (a,b)∈R 2
+q be a level- 0 ciphertext such that b−a·∆≡p·e+m(modq) ,
+wherem=Dec(∆,τ) and∥e∥∞≤E , and let E1,E 2 bound the noise samples used by GenDD as in
+Lemma 2. Suppose the parameters satisfy the conditions of Lemmas 1 and 2 simultaneously. Then for every
+x,y∈{0,1}, over the random choice ofX,Y $← −Rp,R $← −Rr, and ¯R $← −Rp,
+Pr [DDx,y(X+x·∆,Y+y·∆,τ) =DD 0,0(X,Y,τ) +xy·m]≥1−negl(λ).
+The proof is by direct substitution: Lemma 2 givesFx,y(X+x∆,Y+y∆) =F 0,0(X,Y) +xy∆ except
+with negligible probability; the additive shift ¯R is identical on both sides of the equation; and the outer DDxy
+call (whose first argument is uniform overRp thanks to ¯R) preserves the correlation by Lemma 1.
+Theorem 4.Suppose the BGV scheme BGV= (Setup,Gen,Enc,Dec,HEval) satisfies IND-CPA and KDM
+security with respect to the secret-key distributionD∆ and noise distributionDe, the RLWE assumption holds
+with parameters (n,p,q,D ∆,De), the CP-RLWE assumption holds with parameters (n,p,r,D ∆,De), and
+the parameters satisfy the conditions of Lemmas 1 and 2. Then, the scheme BGVwDD constructed above,
+with DD={DD x,DDx,y}x,y∈{0,1}, is an SWHEwDD scheme satisfying Definition 6 onk= 1 andk= 2 ,
+and inherits the IND-CPA and KDM security ofBGV.
+Sketch.We argue correctness and security separately.
+Correctness.The k= 1 case follows from Lemma 1 and thek= 2 case from Corollary 1, treating the shared
+masking randomness as truly uniform as discussed above.
+Security.The encryption and decryption algorithms of BGVwDD are inherited verbatim from BGV, so the
+only additional material in the augmented key-related parameters is the CP-RLWE-shaped triple (c1,c 2,c 3).
+Under the CP-RLWE assumption, this triple is computationally indistinguishable from a uniform tuple over
+R3
+r, after which keyparDD is independent of ∆ beyond what keypar already reveals. Any IND-CPA or KDM
+adversary againstBGVwDDthus reduces to one againstBGVwith the same advantage.
+B Security Proofs
+B.1 Security Proof of BitGC-small
+Theorem 5(Theorem 1, restated).Garbling scheme BitGC-small shown in Figures 4 and 5 satisfies privacy,
+obliviousness and authenticity, provided that the SWHEwDD scheme satisfies the IND-CPA and KDM security
+properties,PRGis a secure PRG,PRFis a secure PRF , andHis a random oracle.
+32
+=== PAGE 33 ===
+S(1λ,f,f(x)) :S answers the queries of random oracle H by returning consistent random values, and simulates
+theGbandEnalgorithms as follows:
+1. Generate a set of setup parameters params
+$
+← −Setup(1λ,1L), whereL=t+ 2 is the maximum multiplication
+depth forSWHE.
+2. Produce a set of key-dependent parameters (keypar,∆)
+$
+← −Gen(params)where LSB(∆) = 1, and generate a
+ciphertextJ∆K:=Enc(∆,0).
+3. Sample a PRF keyK
+$
+← −{0,1}λ. For eachi∈[ℓ] , runσi :=Enc(∆,0) . Homomorphically compute a tuple of
+ciphertexts(Jπ 0K,...,Jπ N−1 K) :=PRG(σ 0,...,σ λ−1).
+4. For each input wirei∈I, sample a labelW i
+$
+← −Rp and a masked bitˆxi
+$
+← −{0,1}.
+5. For each gate(α,β,γ,T)in topological order, do the following:
+• Case 1 (T=AND):
+(a) For eachi,j∈{0,1}, homomorphically computeJˆz i,j·∆KfromJπ αK,JπβK,JπγKandJ∆K.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ 2 :=Jˆz0,1·∆K−Jˆz0,0·∆K,τ 3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ 1−τ 2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(d) Sampled γ
+$
+← −{0,1}and set a masked bitˆxγ :=LSB(W γ)⊕d γ.
+• Case 2 (T=XOR):
+(a) Sampled γ
+$
+← −{0,1}and set a masked bitˆxγ :=d γ⊕ˆxα⊕ˆxβ.
+(b) Computeτ 1 := (1−2·d γ)·J∆K,τ 2 :=τ 1 andτ 3 :=−τ 1−τ 2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+6. For eachi∈I, setX i := (ˆxi,Wi). For eachi∈O, sampleV i
+$
+← −{0,1}λ, and set
+Hi :=
+(
+H(Wi), Vi
+
+ifxi = 0
+
+Vi,H(W i)
+
+ifxi = 1
+.
+7. Output a garbled circuitF= (params,keypar,J∆K,K,{σ i}i∈[ℓ],{di}i∈W), a set of input labelsX={X i}i∈I
+and a decoding informationd={H i}i∈O.
+Figure 9: The construction of simulatorSfor privacy ofBitGC-small.
+Proof. The proof of obliviousness follows directly from the proof of privacy. The only difference is that
+we do not need to simulate the decoding information d for the proof of obliviousness. The rest of the
+obliviousness proof proceeds in exactly the same way as the proof of privacy, showing that the garbled circuit
+and input labels constructed by a simulator are computationally indistinguishable from those in the real-world
+execution.
+We first show the proof for privacy. Specifically, we construct a probabilistic polynomial time (PPT)
+simulator shown in Figure 9. We prove the ideal-world execution is computationally indistinguishable from
+the real-world execution via a series of hybrids.
+Hybrid 0.This is the real-world execution and denoted byG0. This hybrid generates a transcript (F,X,d) as
+shown in Figure 4.
+Hybrid 1.This hybrid (denoted by G1) is the same asG0, except that the transcript (F,X,d) is generated
+using the Gb and En algorithms shown in Figure 10. In particular, the steps 4, 5, and 6 change the calculation
+of labels to eliminate the dependence on the secret key∆. This hybrid still knows the inputx.
+The differences betweenG 0 andG 1 are listed as follows:
+1. For each input wirei∈I , the garbled inputXi = (ˆxi,Wi). Here,Wi is sampled uniformly fromRp in
+33
+=== PAGE 34 ===
+G1(1λ,f,x) : This hybrid answers the queries of random oracle H by returning consistent random values, and
+simulates theGbandEnalgorithms as follows:
+1. Generate a set of setup parameters params
+$
+← −Setup(1λ,1L), whereL=t+ 2 is the maximum multiplication
+depth for SWHEwDD.
+2. Produce a set of key-dependent parameters (keypar,∆)
+$
+← −Gen(params)where LSB(∆) = 1, and generate a
+ciphertextJ∆K:=Enc(∆,∆).
+3. Sample a PRF keyK
+$
+← −{0,1}λ. Sample a PRG seed s
+$
+← −{0,1}ℓ and generate a ciphertextJsiK:=Enc(∆,s i)
+for each bitsi withi∈[ℓ] . Then, compute (π0,...,π N−1) :=PRG(s) , and homomorphically compute a tuple
+of ciphertexts(Jπ 0K,...,Jπ N−1 K) :=PRG(Js 0K,...,Js ℓ−1K).
+4. For each input wirei∈I, sample a labelW i
+$
+← −Rp and set a masked bitˆxi :=x i⊕πi.
+5. For each gate (α,β,γ,T) in topological order, compute the real value xγ∈{0,1} with (f,x) , and do the
+following:
+• Case 1 (T=AND):
+(a) For eachi,j∈{0,1}, homomorphically computeJˆz i,j·∆KfromJπ αK,JπβK,JπγKandJ∆K.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ 2 :=Jˆz0,1·∆K−Jˆz0,0·∆K,τ 3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ 1−τ 2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(d) Compute a masked bitˆxγ :=x γ⊕πγ and a bitdγ := ˆxγ⊕LSB(Wγ).
+• Case 2 (T=XOR):
+(a) Compute a masked bitˆxγ :=x γ⊕πγ and a bitdγ := ˆxα⊕ˆxβ⊕ˆxγ.
+(b) Computeτ 1 := (1−2·d γ)·J∆K,τ 2 :=τ 1 andτ 3 :=−τ 1−τ 2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+6. For eachi∈I, setX i := (ˆxi,Wi). For eachi∈O, sampleV i
+$
+← −{0,1}λ, and set
+Hi :=
+(
+H(Wi), Vi
+
+ifxi = 0
+
+Vi,H(W i)
+
+ifxi = 1
+.
+7. Output a garbled circuit F:= (params,keypar,J∆K,K,{Js iK}i∈[ℓ],{d i}i∈W), a set of input labels X=
+{Xi}i∈I and a decoding informationd:={H i}i∈O.
+Figure 10: The hybrid G1 used in the proof of BitGC-small, where the differences are marked in blue
+compared to the real worldG 0.
+G1, whileWi =W 0
+i + (−1)πi·xi·∆for a uniform elementW 0
+i ∈R p inG 0.
+2. For each gate(α,β,γ,T), the labelW γ associated with the real valuexγ is computed inG 1 as
+Wγ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ),
+while inG 0,Wγ is derived from the base labelW πγ
+γ .
+3. For eachi∈O,H i included in the decoding information is computed as
+Hi :=
+(
+H(Wi), Vi
+
+ifxi = 0
+
+Vi,H(W i)
+
+ifxi = 1
+whereVi
+$← −{0,1}λ inG 1, while inG 0, we setHi :=
+
+H(W 0
+i ),H(W 1
+i )
+
+.
+34
+=== PAGE 35 ===
+G2(1λ,f,x)//G 3(1λ,f,x) : This hybrid simulates the random oracle H honestly, and simulates the Gb and En
+algorithms as follows:
+1. Generate a set of setup parameters params
+$
+← −Setup(1λ,1L), whereL=t+ 2 is the maximum multiplication
+depth for SWHEwDD.
+2. Produce a set of key-dependent parameters (keypar,∆)
+$
+← −Gen(params)where LSB(∆) = 1, and generate a
+ciphertextJ∆K:=Enc(∆,0).
+3. Sample a PRF keyK
+$
+← −{0,1}λ. Sample a PRG seeds
+$
+← −{0,1}ℓ. For eachi∈[ℓ], runσ i :=Enc(∆,0).
+Compute(π 0,...,π N−1) :=PRG(s).//Sampleπ i
+$
+← −{0,1}for eachi∈[N].
+Homomorphically compute a tuple of ciphertexts(Jπ 0K,...,Jπ N−1 K) :=PRG(σ 0,...,σ ℓ−1).
+4. For each input wirei∈I, sample a labelW i
+$
+← −Rp and set a masked bitˆxγ :=x γ⊕πγ.
+5. For each gate (α,β,γ,T) in topological order, compute the real valuexγ∈{0,1} with (f,x) , do the following:
+• Case 1 (T=AND):
+(a) For eachi,j∈{0,1}, homomorphically computeJˆz i,j·∆KfromJπ αK,JπβK,JπγKandJ∆K.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ 2 :=Jˆz0,1·∆K−Jˆz0,0·∆K,τ 3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ 1−τ 2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(d) Compute a masked bitˆxγ :=x γ⊕πγ, and a bitdγ := ˆxγ⊕LSB(Wγ).
+• Case 2 (T=XOR):
+(a) Compute a masked bitˆxγ :=x γ⊕πγ and a bitdγ := ˆxα⊕ˆxβ⊕ˆxγ.
+(b) Computeτ 1 := (1−2·d γ)·J∆K,τ 2 :=τ 1 andτ 3 :=−τ 1−τ 2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+6. For eachi∈I, setX i := (ˆxi,Wi). For eachi∈O, sampleV i
+$
+← −{0,1}λ, and set
+Hi :=
+(
+H(Wi), Vi
+
+ifxi = 0
+
+Vi,H(W i)
+
+ifxi = 1
+.
+7. Output a garbled circuit F:= (params,keypar,J∆K,K,{σ i}i∈[ℓ],{d i}i∈W), a set of input labels X=
+{Xi}i∈I and a decoding informationd:={H i}i∈O.
+Figure 11: The hybridsG2 andG3 used in the proof, where the differences are marked in blue compared to
+G1. The difference betweenG 2 andG 3 is marked by a rectangular box.
+InG0, for eachi∈I ,Wi =W 0
+i + (−1)πi·xi·∆ is uniform inRp, sinceW 0
+i is sampled uniformly from
+Rp. InG1, for eachi∈I ,Wi∈R p is sampled at random. Thus, for eachi∈I ,Wi inG1 has the identical
+distribution as that inG0. Based on the correctness analysis (Section 4.2), we can see that the second change
+does not bring about a noticeable difference betweenG0 andG1, under the assumption that the outputs of
+PRFare pseudorandom.
+The third change replaces H(W 1−xi
+i ) with a uniform stringVi. We prove that any PPT adversary cannot
+make a queryW 1−xi
+i =W i + (−1)πi·(1−2x i)·∆ to random oracle H. Otherwise, we can construct an
+algorithmB to break the IND-CPA and KDM security of the SWHEwDD scheme. In particular,B simulates
+the random oracle H, and records the queries to H. Algorithm B behaves just like inG1, except that all
+ciphertexts are generated by querying its encryption oracle. Then, B is able to efficiently extract a secret
+key∆from the queries ofHat the end, and use∆to break the IND-CPA and KDM security. Therefore, no
+adversary makes a queryW 1−xi
+i toH, meaning thatH(W 1−xi
+i )is computationally indistinguishable from a
+uniform stringVi in the random oracle model.
+35
+=== PAGE 36 ===
+In conclusion,G 1 is computationally indistinguishable fromG 0.
+Hybrid 2.This hybrid (denoted by G2) is the same asG1, except that the ciphertext J∆K and{JsiK}i∈[ℓ] are
+replaced by fresh encryptions on zero, i.e.,Enc(∆,0)(see Figure 11).
+InG1, J∆K encrypts the secret key ∆, and each JsiK encrypts a bit si under the same key ∆. In G2,
+all these ciphertexts are replaced with fresh encryptions of 0. It is straightforward to bound the difference
+betweenG 1 andG 2 by using a reduction to the IND-CPA and KDM security of the SWHEwDD scheme.
+Hybrid 3.This hybrid (denoted by G3) is the same asG2, except that each bitπi is sampled uniformly at
+random (see Figure 11).
+The only change is how each bit πi withi∈[N] is generated: inG2, they are the outputs of PRG(s),
+while inG3, they are uniform bits. Since the seed s is now uniform and independent of the ciphertexts
+σ0,...,σ ℓ−1,G3 is computationally indistinguishable from G2 based on the pseudorandomness of PRG
+outputs.
+Hybrid 4.This hybrid (denoted byG 4) is the same asG 3, except for the following differences:
+1. For eachi∈I, the masked bitˆx i is sampled uniformly.
+2. For eachγ∈W, the bitd γ is picked uniformly at random.
+Specifically,G4 generates the transcript (F,X,d) as shown in Figure 9. That is, G4 is the same as the
+simulator. Now, this is the ideal world.
+InG3,πi is uniformly random in{0,1} , and thus ˆxi =x i⊕πi is a uniform bit. InG4, ˆxi∈{0,1} is
+sampled uniformly. The first change does not bring about any difference. The second change is related to how
+each bitdγ is generated. InG3, eachdγ∈{0,1} is computed asdγ := ˆxγ⊕LSB(Wγ) =x γ⊕πγ⊕LSB(Wγ)
+for an AND gate anddγ := ˆxα⊕ˆxβ⊕ˆxγ = ˆxα⊕ˆxβ⊕xγ⊕πγ for an XOR gate, whereπγ∈{0,1} is
+uniform. InG4, each dγ∈{0,1} is sampled uniformly. Therefore, the distribution w.r.t. dγ is identical
+betweenG 3 andG 4. That is,G 4 is perfectly indistinguishable fromG 3.
+In the following, we prove that the BitGC-small scheme satisfies authenticity. Specifically, we use the
+simulator from the proof of privacy shown in Figure 9 to generate the adversary’s view. From the proof of
+privacy, we have that it is computationally indistinguishable from the real view. According to the above
+analysis, we also obtain that a PPT adversary never makes a query W 1−xi
+i to random oracle H, under the
+assumption that the SWHEwDD scheme satisfies the IND-CPA and KDM security. Therefore, for each
+i∈O ,A has to guess a uniform stringVi with probability 1/2λ. In conclusion, the probability thatA forges
+a garbled output bY , such that De(d,bY)̸=⊥ and bY̸=Ev(F,X) is negligible in λ, which completes the
+proof.
+B.2 Security Proof of BitGC-fast
+Theorem 6(Theorem 2, restated).Garbling scheme BitGC-fast shown in Figures 6 and 7 satisfies privacy,
+obliviousness and authenticity, provided that the SWHEwDD scheme satisfies the IND-CPA and KDM security
+properties,PRGis a secure PRG,PRFis a secure PRF , andHis a random oracle.
+Sketch. We show that the garbling scheme BitGC-fast achieves privacy, obliviousness, and authenticity.
+Since the overall proof follows the structure of Theorem 1, we provide a sketch. In particular, we present a
+new simulator in Figure 12, where all modifications compared to the simulator of Theorem 1 are explicitly
+highlighted in blue.
+The proof proceeds through a sequence of hybrids. First, we replace each input label Wi with a uniform
+element fromRp. The replacement is statistically indistinguishable from the real world, becauseWi is already
+uniformly distributed in the real world. Next, we replace the uniform stringVi with H(W 1−xi
+i ), whereW 1−xi
+i
+denotes the hidden label of output wirei. If an adversary could queryW 1−xi
+i , we could extract the secret key∆
+and break the IND-CPA and KDM security of the SWHEwDD scheme, which is impossible. Thus,H(W 1−xi
+i )
+36
+=== PAGE 37 ===
+S(1λ,f,f(x)) :S answers the queries of random oracle H by returning consistent random values, and simulates
+theGbandEnalgorithms as follows:
+1. Generate a set of setup parameters params
+$
+← −Setup(1λ,1L), whereL=t+ 1 is the maximum multiplication
+depth for SWHEwDD.
+2. Produce a set of key-dependent parameters (keypar,∆)
+$
+← −Gen(params)where LSB(∆) = 1, and generate a
+ciphertextJ∆K:=Enc(∆,0).
+3. Sample a PRF keyK
+$
+← −{0,1}λ. For eachi∈[ℓ] , runσi :=Enc(∆,0) . For eachγ∈W AND andi,j∈{0,1} ,
+sampleri,j
+γ ←{0,1} uniformly at random, and then compute a ciphertextJri,j
+γ K by homomorphically evaluating
+PRG(Js0K,...,Js ℓ−1K).
+4. For eachγ∈W AND andi,j∈{0,1}, homomorphically compute a ciphertextJr i,j
+γ ·∆KfromJr i,j
+γ KandJ∆K.
+5. For each input wirei∈I, sample a labelW i
+$
+← −Rp and a masked bitˆxi
+$
+← −{0,1}.
+6. For each gate(α,β,γ,T)in topological order, do the following:
+• Case 1 (T=AND):
+(a) For eachi,j∈{0,1} , sampledi,j
+γ
+$
+← −{0,1}and homomorphically compute Jˆzi,j·∆K:=d i,j
+γ ·J∆K+
+(1−2·d i,j
+γ )·Jr i,j
+γ ·∆K.
+(b) Computeτ1 :=Jˆz1,0·∆K−Jˆz0,0·∆K,τ 2 :=Jˆz0,1·∆K−Jˆz0,0·∆K,τ 3 :=Jˆz1,1·∆K−Jˆz0,0·∆K−τ 1−τ 2.
+(c) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+(d) Sampled γ
+$
+← −{0,1}and set a masked bitˆxγ :=d γ⊕LSB(Wγ).
+• Case 2 (T=XOR):
+(a) Computeˆxγ := ˆxα⊕ˆxβ, along with three ciphertextsτ 1 :=J∆K,τ 2 :=τ 1, andτ 3 :=−τ 1−τ 2.
+(b) ComputeW γ :=Eval ˆxα,ˆxβ(Wα,Wβ,τ 1,τ 2,τ 3) +PRFK(γ).
+7. For eachi∈I, setX i := (ˆxi,Wi). For eachi∈O, sampleV i
+$
+← −{0,1}λ, and set
+Hi :=
+(
+H(Wi), Vi
+
+ifxi = 0
+
+Vi,H(W i)
+
+ifxi = 1
+.
+8. Output a garbled circuitF:= (params,keypar,J∆K,K,{σ i}i∈[ℓ],{(d γ,d 0,0
+γ ,d 0,1
+γ ,d 1,0
+γ ,d 1,1
+γ )}γ∈WAND), a set
+of input labelsX={X i}i∈I and a decoding informationd:={H i}i∈O.
+Figure 12: The construction of the simulator for the proof of garbling scheme BitGC-fast. The differences
+between the simulator forBitGC-fastand that forBitGC-smallare marked in blue.
+is indistinguishable fromVi in the random-oracle model. Next, we replace all ciphertexts, including J∆K
+and each JsiK, with fresh encryptions of 0. This modification yields computationally indistinguishable
+hybrids, guaranteed by the IND-CPA and KDM security of the SWHEwDD scheme. Then, we replace the
+PRG outputs PRG(s) with uniform bits. This step is computationally indistinguishable, as guaranteed by
+the pseudorandomness of the PRG. Finally, we replace the 5-bit communication for each AND gate with
+uniform bits. In the real world, these bits are computed as di,j
+γ = ˆzi,j⊕r i,j
+γ anddγ =LSB(W 0
+γ )⊕π γ =
+LSB(Wγ)⊕x γ⊕πγ. This replacement is statistically indistinguishable, since bothri,j
+γ andπγ are uniformly
+distributed and independent of all other variables.
+Hence, the adversary’s view generated byS is computationally indistinguishable from the real view,
+which completes the proof.
+37
+=== PAGE 38 ===
+B.3 Security Proof of BitGC-tiny
+Theorem 7(Theorem 3, restated).Garbling scheme BitGC-tiny shown in Figure 8 satisfies privacy, obliv-
+iousness and authenticity, provided that the leveled HE with distributed decryption scheme satisfies the
+IND-CPA and KDM security properties, PRG is a secure PRG, PRF is a secure PRF , andH is a random
+oracle.
+Sketch. The garbling scheme BitGC-tiny achieves privacy, obliviousness, and authenticity. It combines
+the BitGC-small and BitGC-fast schemes: AND gates are handled as in BitGC-small, and XOR gates as in
+BitGC-fast. Thus, the proof follows the structure of Theorem 1, and we provide a sketch.
+The simulator treats AND gates as in the proof of BitGC-small, and XOR gates as in the proof of
+BitGC-fast. The proof uses a standard hybrid argument. First, each input label Wi is replaced with a
+uniform element fromRp, which is statistically indistinguishable since the real labels are already uniform.
+Next, the uniform string Vi is replaced with H(W 1−xi
+i ), which remains indistinguishable in the random-
+oracle model because queryingW 1−xi
+i would break the SWHEwDD scheme’s IND-CPA and KDM security.
+Next, all ciphertexts, including J∆K and JsiK, are replaced with encryptions of 0, giving computational
+indistinguishability by the IND-CPA and KDM security properties of the leveled HE with distributed
+decryption scheme. Then, the PRG outputs PRG(s) are replaced with uniform bits, indistinguishable by
+the pseudorandomness of the PRG. Finally, the one-bit communication for each AND gate is replaced with
+uniform bits. In the real scheme, these bits are computed asdγ =LSB(W 0
+γ )⊕π γ =LSB(W γ)⊕x γ⊕πγ;
+this replacement is statistically indistinguishable sinceπγ is uniform and independent. Hence, the adversary’s
+view underSis computationally indistinguishable from the real view, completing the proof.
+38

@@ -590,15 +590,15 @@ checks get ledger IDs in `future-provider-integration-ledger.md` with
 |---|---|---|---|
 | BITGC-PIN-01 | Even-modulus barrier removal; permutation-bit decoupling | [ZLL+26] §3 | PARTIAL: structure identified (decoupled π, Δ = SWHE secret key embedded in Rp, LSB(Δ)=1, sign from label LSB) — see `docs/research/bitgc-artifact-notes.md`; the current `GlobalDelta` (small odd constant) is a placeholder |
 | BITGC-PIN-02 | SIMD slot mapping / NTT-friendly modulus choice | [ZLL+26] §3 | PINNED (structure): evaluation-form slot codec + modulus-switch chain landed Phase 1 |
-| BITGC-PIN-03 | Low-depth PRG choice + expansion depth | [LWYY25b] + [ZLL+26] §3 | PARTIAL: artifact uses a Goldreich-style low-depth PRG + SIMD unpack pipeline (`src/he/goldreich_prg.*`, `src/unpack/*`); `ExpansionPrg` seam landed Phase 1; the pinned PRG circuit is the remaining work |
+| BITGC-PIN-03 | Low-depth PRG choice + expansion depth | [ZLL+26] §6 | **PINNED (paper):** Goldreich random-local PRG, XOR₄–Majority₇ predicate, depth t=4, seed ℓ=2^16, stretch 2^32 (§6); artifact confirms Goldreich. `ExpansionPrg` seam landed Phase 1; pinned PRG circuit is remaining impl work |
 | BITGC-PIN-04 | Free-XOR permutation-bit rule | [ZLL+26] free-XOR section | PINNED (structure): `π_out = π_a ⊕ π_b` confirmed in artifact `fast_gen.cc::HandleXorGate`; reference adapter implements it |
-| BITGC-PIN-05 | BitGC-small garble procedure | [ZLL+26] §4.1 Fig. 4 | **IDENTIFIED (artifact):** monomial 3-ciphertext table `s·{u0,u1,u2}` + RGSW external-mul + HSS DD chain + 1-bit `DetermineGen` — equations recorded in `docs/research/bitgc-artifact-notes.md`; pending paper-PDF cross-check (BITGC-LEDGER-04) |
-| BITGC-PIN-06 | BitGC-small eval procedure | [ZLL+26] §4.1 Fig. 5 | **IDENTIFIED (artifact):** evaluator runs the same DD/HSSMul chain + `DetermineEva(garble_bit)`; XOR charged 1 bit (`π_a⊕π_b⊕π_c`) |
-| BITGC-PIN-07 | BitGC-fast 5-bit AND record + garble | [ZLL+26] §5.1 | **IDENTIFIED (artifact):** 4 offline mask bits corrected to the AND truth table (4 communicated bits) + subtraction-only 3-entry table + 1 determination bit = 5 bits/AND |
-| BITGC-PIN-08 | BitGC-fast eval (no online mults) | [ZLL+26] §5.1 | **IDENTIFIED (artifact):** evaluator flips offline mask cts per the 4 mask bits, builds the subtraction table, runs the DD chain; no online HE multiplication |
+| BITGC-PIN-05 | BitGC-small garble procedure | [ZLL+26] §4.1 Fig. 4 | **PINNED (paper + artifact agree):** `ẑ[i,j]=(π_α⊕i)∧(π_β⊕j)⊕π_γ`, `τ₁/τ₂/τ₃` subtractions, `Eval_{0,0} − ẑ[0,0]·Δ + PRF_K(γ)`, `d_γ=LSB(W⁰_γ)⊕π_γ` — `docs/research/bitgc-paper-pinning.md` §2 |
+| BITGC-PIN-06 | BitGC-small eval procedure | [ZLL+26] §4.1 Fig. 5 | **PINNED (paper + artifact agree):** `W_γ=Eval_{x̂_α,x̂_β}(…)+PRF_K(γ)`, `x̂_γ=LSB(W_γ)⊕d_γ`; XOR `x̂_γ=x̂_α⊕x̂_β⊕d_γ` |
+| BITGC-PIN-07 | BitGC-fast 5-bit AND record + garble | [ZLL+26] §5.1 | **PINNED (paper + artifact agree):** 4 PRG-masked `d_γ^{i,j}=ẑ[i,j]⊕r_γ^{i,j}` + `[[ẑ·Δ]]=d·[[Δ]]+(1−2d)·[[r·Δ]]` (addition-only) + 1 determination bit = 5 bits/AND |
+| BITGC-PIN-08 | BitGC-fast eval (no online mults) | [ZLL+26] §5.1 | **PINNED (paper + artifact agree):** evaluator unmaskes `d_γ^{i,j}` linearly from PRG ciphertexts; free-XOR via `π_γ=π_α⊕π_β`; no online HE multiplication |
 | BITGC-PIN-09 | BitGC-tiny garble/eval | [ZLL+26] §5.2 | DEFERRED (maintainer decision 2026-10-08; ledger BITGC-LEDGER-06) |
-| BITGC-PIN-10 | Parameter sets (both variants, 128-bit claim) | [ZLL+26] eval section + artifact cross-check | PARTIAL: artifact CLI shapes recorded (§1); paper parameter table pending BITGC-LEDGER-04 evidence |
-| BITGC-PIN-11 | Table 1 reconciliation (sizes, timings) | [ZLL+26] Table 1 | TODO |
+| BITGC-PIN-10 | Parameter sets (both variants, 128-bit claim) | [ZLL+26] §6 | **PINNED (paper):** log p≈60; DD moduli log q≈120 / log r≈240; fast log Q_PRG≈600 / Q_gate≈180 at N=2^15/2^13; small log Q_PRG≈780 / Q_gate≈300 at N=2^15/2^14 — pinning doc §5 |
+| BITGC-PIN-11 | Table 1 reconciliation (sizes, timings) | [ZLL+26] Table 1 | **PINNED (paper, verbatim):** fast 5/0 bits 4.0 KB 116 s; small 1/1 4.3 KB 345 s; tiny 1/0 0.8 KB ≥56 min; baseline BitGC 1/1 4.3 KB ≥14 h (est.) |
 | BITGC-LEDGER-01 | Artifact `sub64` conformance (small) | [ZLL+26-A] | TODO (QEMU build) |
 | BITGC-LEDGER-02 | Artifact `sub64` conformance (fast) | [ZLL+26-A] | TODO (QEMU build) |
 | BITGC-LEDGER-03 | Independent noise/parameter security review | [LWYY25b] assumption statement | TODO |
