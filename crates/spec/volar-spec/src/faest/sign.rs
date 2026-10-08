@@ -55,7 +55,7 @@ use sha3::{
 };
 
 use super::{
-    aes::encrypt_block as aes128_encrypt,
+    aes::encrypt_block,
     bavc::{Bavc, BavcCommitment, BavcOpening},
     convert_to_vole::{BigVoleProver, concat_small_voles, convert_to_vole},
     leaf_commit::EmLeafCommit,
@@ -129,7 +129,7 @@ pub fn keygen(rng: &mut impl SpecRng) -> (FaestSecretKey, FaestPublicKey) {
     for i in 0..LAMBDA_BYTES {
         sk[i] = rng.next_u8();
     }
-    let pk = aes128_encrypt(&sk, &[0u8; LAMBDA_BYTES]);
+    let pk = encrypt_block(&sk, &[0u8; LAMBDA_BYTES]);
     (FaestSecretKey(sk), FaestPublicKey(pk))
 }
 
@@ -149,10 +149,10 @@ pub fn sign(
     // ── 1. Derive IV ────────────────────────────────────────────────────────
     // IV = AES_{iv_seed}(counter=0) as a simple PRF.  Real FAEST uses a
     // dedicated SHAKE-based derivation; this is a structural stand-in.
-    let iv: [u8; LAMBDA_BYTES] = aes128_encrypt(&iv_seed, &[0u8; LAMBDA_BYTES]);
+    let iv: [u8; LAMBDA_BYTES] = encrypt_block(&iv_seed, &[0u8; LAMBDA_BYTES]);
 
     // ── 2. Derive BAVC root seed from (sk, iv) ───────────────────────────
-    let r: [u8; LAMBDA_BYTES] = aes128_encrypt(&sk.0, &iv);
+    let r: [u8; LAMBDA_BYTES] = encrypt_block(&sk.0, &iv);
 
     // ── 3. BAVC commit ───────────────────────────────────────────────────────
     let commitment: BavcCommitment<COM_BYTES> =
@@ -466,7 +466,7 @@ mod tests {
         let mut rng = TestRng(0xDEADBEEFCAFEBABE);
         let (sk, pk) = keygen(&mut rng);
         // pk = AES_{sk}(0^128)
-        let expected = aes128_encrypt(&sk.0, &[0u8; LAMBDA_BYTES]);
+        let expected = encrypt_block(&sk.0, &[0u8; LAMBDA_BYTES]);
         assert_eq!(pk.0, expected);
     }
 
