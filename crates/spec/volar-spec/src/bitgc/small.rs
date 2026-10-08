@@ -41,7 +41,7 @@ pub fn garble(
     ctx: &Context,
     equation: &impl GateEquation,
     circuit: &Circuit,
-    offline: &OfflineGarbler,
+    states: &[WireState],
     delta: &GlobalDelta,
 ) -> Result<Vec<Stitch>, StitchError> {
     circuit.validate()?;
@@ -49,13 +49,10 @@ pub fn garble(
     if delta.value() >= p {
         return Err(StitchError::NonCanonicalBit);
     }
-
-    // Per-wire garbler state from the expanded material.
-    let mut wires: Vec<WireState> = Vec::with_capacity(circuit.wires());
-    for w in 0..circuit.wires() {
-        let (a0, pi) = offline.wire_bits(ctx, w)?;
-        wires.push(WireState { a0: a0 % p, pi });
+    if states.len() != circuit.wires() {
+        return Err(StitchError::Exhausted);
     }
+    let mut wires: Vec<WireState> = states.to_vec();
 
     let mut records = Vec::new();
     for (index, gate) in circuit.gates.iter().enumerate() {
@@ -274,7 +271,7 @@ mod tests {
 
         let mut random = TestRandom(0x1234_5678_9abc_def0);
         // Chain has 4 primes: expansion depth 1 + online budget 2.
-        let (garbler, evaluator) = offline_phase(
+        let (garbler, evaluator, states) = offline_phase(
             &ctx,
             circuit.wires(),
             &prg,
@@ -286,13 +283,13 @@ mod tests {
         )
         .unwrap();
 
-        let records = garble(&ctx, &equation, &circuit, &garbler, &delta).unwrap();
+        let records = garble(&ctx, &equation, &circuit, &states, &delta).unwrap();
 
         // Input labels: encrypt active labels under the offline secret at
         // the online level.
         let mut input_labels = Vec::new();
         for (w, &bit) in inputs.iter().enumerate() {
-            let (a0, pi) = garbler.wire_bits(&ctx, w).unwrap();
+            let (a0, pi) = (states[w].a0, states[w].pi);
             let masked = bit ^ pi;
             let label =
                 (a0 + if masked { delta.value() } else { 0 }) % ctx.parameters().plaintext_modulus;
