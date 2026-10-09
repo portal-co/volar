@@ -488,6 +488,49 @@ pub(crate) fn negacyclic_mul_ntt(a: &[u64], b: &[u64], ntt: &Ntt) -> Vec<u64> {
     fa
 }
 
+/// Crate-public NTT facade for the shared [`crate::ntt`] component. This
+/// is the seam through which other systems (BinFHE, FHE paths) use the
+/// negacyclic NTT without depending on the `bitgc` internals; the engine
+/// lives here and `crate::ntt` re-exports it with pinned parameters.
+pub mod ntt_context {
+use super::{Ntt, negacyclic_mul_coeffs, negacyclic_mul_ntt};
+use alloc::vec::Vec;
+
+    /// A negacyclic NTT context (wraps the internal [`Ntt`] engine).
+    #[derive(Clone, Debug)]
+    pub struct Context(Ntt);
+
+    impl Context {
+        /// Build a context; `None` unless `degree` is a power of two and
+        /// `modulus ≡ 1 (mod 2·degree)` (NTT-friendly).
+        pub fn new(degree: usize, modulus: u64) -> Option<Self> {
+            Ntt::new(degree, modulus).ok().map(Self)
+        }
+        /// The ring degree.
+        pub const fn degree(&self) -> usize {
+            self.0.degree()
+        }
+        /// The modulus.
+        pub const fn modulus(&self) -> u64 {
+            self.0.modulus()
+        }
+        /// Negacyclic convolution via NTT (`O(N log N)`).
+        pub fn mul(&self, a: &[u64], b: &[u64]) -> Vec<u64> {
+            negacyclic_mul_ntt(a, b, &self.0)
+        }
+    }
+
+    /// Negacyclic convolution: NTT when the modulus is NTT-friendly, else
+    /// the schoolbook reference. This is the single entry point.
+    pub fn negacyclic_mul(degree: usize, modulus: u64, a: &[u64], b: &[u64]) -> Vec<u64> {
+        match Context::new(degree, modulus) {
+            Some(ctx) => ctx.mul(a, b),
+            None => negacyclic_mul_coeffs(a, b, modulus),
+        }
+    }
+
+}
+
 /// Schoolbook negacyclic convolution `a · b mod (X^N + 1, p)` on
 /// coefficient vectors.
 ///

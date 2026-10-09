@@ -13,6 +13,7 @@ pub mod fold;
 pub mod garble;
 pub mod lwe;
 pub mod mpc;
+pub mod ntt;
 pub mod ot;
 pub mod vole;
 // pub mod xsat;
