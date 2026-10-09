@@ -240,8 +240,18 @@ pub fn grind_chall3(
     for counter in 0..max_iters {
         let counter_bytes = counter.to_le_bytes();
         // c_hat_grind = c_hat_base ∥ counter (append the counter LE bytes)
-        let mut c_hat_grind = alloc::vec::Vec::from(c_hat_base);
-        c_hat_grind.extend_from_slice(&counter_bytes);
+        // Bounded copy rather than `Vec::from(slice)`: the LIR lowering has
+        // no Vec::from idiom and cannot infer its element type.
+        let mut c_hat_grind: alloc::vec::Vec<u8> =
+            alloc::vec::Vec::with_capacity(c_hat_base.len() + 4);
+        for i in 0..c_hat_base.len() {
+            c_hat_grind.push(c_hat_base[i]);
+        }
+        // Bounded push loop rather than `extend_from_slice`: the LIR
+        // lowering has no slice-extension idiom.
+        for i in 0..counter_bytes.len() {
+            c_hat_grind.push(counter_bytes[i]);
+        }
 
         let candidate = chall3(chall_2, a_hat, b_hat, &c_hat_grind, lambda, use_shake256);
 

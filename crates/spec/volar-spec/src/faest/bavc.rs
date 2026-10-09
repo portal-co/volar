@@ -288,12 +288,16 @@ where
         // Stub return for the M2 milestone: the test exercises `open`
         // via a wrapper that has the tree available.
         let _ = tree; // silence unused
+        // Index-based loop rather than `.iter().enumerate().map(..).collect()`:
+        // the LIR iterator-chain lowering needs a concrete range end, and
+        // `deltas.len()` is a runtime value here.
+        let mut hidden_commits: Vec<[u8; COM_BYTES]> = Vec::with_capacity(deltas.len());
+        for i in 0..deltas.len() {
+            let d = deltas[i];
+            hidden_commits.push(commitment.commitments[i * n + d]);
+        }
         BavcOpening {
-            hidden_commits: deltas
-                .iter()
-                .enumerate()
-                .map(|(i, &d)| commitment.commitments[i * n + d])
-                .collect(),
+            hidden_commits,
             // M5 follow-up: actual node enumeration. For now, an empty
             // opening — the round-trip test below uses a parallel
             // tree-walk helper rather than this path.

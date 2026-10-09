@@ -181,11 +181,14 @@ pub fn sign(
         TAU,
         SUB_VOLE_N,
     );
-    let hidden_commits: Vec<[u8; COM_BYTES]> = deltas
-        .iter()
-        .enumerate()
-        .map(|(i, &d)| commitment.commitments[i * SUB_VOLE_N + d])
-        .collect();
+    // Index-based loop rather than `deltas.iter().enumerate().map(..).collect()`:
+    // the LIR iterator-chain lowering needs a concrete range end, and
+    // `deltas.len()` is a runtime value here.
+    let mut hidden_commits: Vec<[u8; COM_BYTES]> = Vec::with_capacity(deltas.len());
+    for i in 0..deltas.len() {
+        let d = deltas[i];
+        hidden_commits.push(commitment.commitments[i * SUB_VOLE_N + d]);
+    }
     let opening = BavcOpening::<COM_BYTES> {
         hidden_commits: hidden_commits.clone(),
         nodes: nodes.clone(),
@@ -195,15 +198,23 @@ pub fn sign(
     // ── 7. ConvertToVOLE (prover: all seeds present) ──────────────────────────
     let mut sub_voles: Vec<super::convert_to_vole::ConvertOutput> = Vec::with_capacity(TAU);
     for i in 0..TAU {
-        let seeds_i: Vec<Option<[u8; LAMBDA_BYTES]>> = (0..SUB_VOLE_N)
-            .map(|j| Some(commitment.seeds[i * SUB_VOLE_N + j]))
-            .collect();
+        let mut seeds_i: Vec<Option<[u8; LAMBDA_BYTES]>> = Vec::with_capacity(SUB_VOLE_N);
+        for j in 0..SUB_VOLE_N {
+            seeds_i.push(Some(commitment.seeds[i * SUB_VOLE_N + j]));
+        }
         sub_voles.push(convert_to_vole(&seeds_i, &iv, i as u32, L_HAT_BYTES));
     }
     let big_vole: BigVoleProver = concat_small_voles(sub_voles);
 
     // ── 8. Build correction payload for chall_2 ────────────────────────────
-    let corrections_flat: Vec<u8> = big_vole.c.iter().flatten().cloned().collect();
+    // Nested bounded loops rather than `.iter().flatten().cloned().collect()`:
+    // the LIR lowering has no flatten step.
+    let mut corrections_flat: Vec<u8> = Vec::new();
+    for i in 0..big_vole.c.len() {
+        for j in 0..big_vole.c[i].len() {
+            corrections_flat.push(big_vole.c[i][j]);
+        }
+    }
     let chall_2 = chall2(
         &chall_1,
         &big_vole.u,
@@ -234,7 +245,12 @@ pub fn sign(
     .expect("grinding must terminate within 1M iterations");
 
     let mut c_hat_with_counter = qs_proof.c_hat_base.clone();
-    c_hat_with_counter.extend_from_slice(&counter.to_le_bytes());
+    // Bounded push loop rather than `extend_from_slice`: the LIR lowering
+    // has no slice-extension idiom.
+    let counter_bytes = counter.to_le_bytes();
+    for i in 0..counter_bytes.len() {
+        c_hat_with_counter.push(counter_bytes[i]);
+    }
 
     FaestSignature {
         iv,
@@ -291,15 +307,15 @@ pub fn verify(pk: &FaestPublicKey, message: &[u8], sig: &FaestSignature) -> bool
         // Verifier seeds: apply the Proposition 5.2 permutation.
         // sd'_j = sd_{j XOR delta_i}; sd'_0 = None (hidden).
         let d = deltas[i];
-        let verifier_seeds: Vec<Option<[u8; LAMBDA_BYTES]>> = (0..SUB_VOLE_N)
-            .map(|j| {
-                if j == 0 {
-                    None
-                } else {
-                    Some(reconstructed_seeds[i * SUB_VOLE_N + (j ^ d)])
-                }
-            })
-            .collect();
+        let mut verifier_seeds: Vec<Option<[u8; LAMBDA_BYTES]>> =
+            Vec::with_capacity(SUB_VOLE_N);
+        for j in 0..SUB_VOLE_N {
+            if j == 0 {
+                verifier_seeds.push(None);
+            } else {
+                verifier_seeds.push(Some(reconstructed_seeds[i * SUB_VOLE_N + (j ^ d)]));
+            }
+        }
         sub_voles_v.push(convert_to_vole(&verifier_seeds, iv, i as u32, L_HAT_BYTES));
     }
 
@@ -311,14 +327,26 @@ pub fn verify(pk: &FaestPublicKey, message: &[u8], sig: &FaestSignature) -> bool
     let big_q: Vec<u8> = {
         use super::convert_to_vole::concat_small_voles_verifier;
         let q_out = concat_small_voles_verifier(sub_voles_v, &deltas, corrections);
-        q_out.q_columns.into_iter().flatten().collect()
+        // Nested bounded loops rather than `.into_iter().flatten().collect()`.
+        let mut big_q: Vec<u8> = Vec::new();
+        for i in 0..q_out.q_columns.len() {
+            for j in 0..q_out.q_columns[i].len() {
+                big_q.push(q_out.q_columns[i][j]);
+            }
+        }
+        big_q
     };
 
     // ── 6. Reconstruct chall_2 ───────────────────────────────────────────────
     // The prover sends `vole_u` explicitly; verifier uses it for chall_2.
     // (In full FAEST, the verifier reconstructs Q from the opening and
     //  checks a consistency equation instead of reusing vole_u directly.)
-    let corrections_flat: Vec<u8> = sig.corrections.iter().flatten().cloned().collect();
+    let mut corrections_flat: Vec<u8> = Vec::new();
+    for i in 0..sig.corrections.len() {
+        for j in 0..sig.corrections[i].len() {
+            corrections_flat.push(sig.corrections[i][j]);
+        }
+    }
     let chall_2 = chall2(
         &chall_1,
         &sig.vole_u,

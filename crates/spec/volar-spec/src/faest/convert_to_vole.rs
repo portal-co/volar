@@ -70,15 +70,23 @@ pub fn convert_to_vole(
     // r[0..N]: the expanded seeds. Missing seed → zero vector.
     let zero_block = vec![0u8; l_hat_bytes];
     let mut r: Vec<Vec<u8>> = Vec::with_capacity(n);
-    for s in seeds {
-        match s {
-            Some(seed) => r.push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)),
+    // Index-based loop rather than `for s in seeds`: LIR slice iteration is
+    // not lowered; indexing through the slice reference is.
+    for i in 0..seeds.len() {
+        match seeds[i] {
+            Some(seed) => r.push(aes_ctr_prg(&seed, iv, tweak, l_hat_bytes)),
             None => r.push(zero_block.clone()),
         }
     }
 
     // v_0 = ... = v_{d-1} = 0.
-    let mut v: Vec<Vec<u8>> = (0..d).map(|_| vec![0u8; l_hat_bytes]).collect();
+    // Bounded loop rather than `(0..d).map(..).collect()`: the LIR
+    // iterator-chain lowering needs a concrete range end, and `d` is a
+    // runtime value here.
+    let mut v: Vec<Vec<u8>> = Vec::with_capacity(d);
+    for _j in 0..d {
+        v.push(vec![0u8; l_hat_bytes]);
+    }
 
     // Divide-and-conquer XOR pass.
     // At level j, half the buffer is updated in place and v[j] absorbs
@@ -99,7 +107,9 @@ pub fn convert_to_vole(
         level = next;
     }
     debug_assert_eq!(level.len(), 1);
-    let u = level.into_iter().next().unwrap();
+    // Index rather than `into_iter().next().unwrap()`: LIR iterator
+    // consumption is not lowered; indexed reads on a Vec are.
+    let u = level[0].clone();
 
     ConvertOutput { u, v }
 }
