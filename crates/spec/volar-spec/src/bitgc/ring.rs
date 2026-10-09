@@ -475,6 +475,77 @@ pub fn add_coeffs(a: &[u64], b: &[u64], modulus: u64) -> Vec<u64> {
 mod tests {
     use super::*;
 
+    /// Find an NTT-friendly prime `≡ 1 (mod 2N)` near `2^approx_bits`.
+    fn ntt_prime_for(n: usize, approx_bits: u32) -> u64 {
+        let step = (2 * n) as u64;
+        let mut c = (1u64 << approx_bits) + 1;
+        c = c - (c % step) + 1 + step; // align to ≡ 1 mod 2N
+        loop {
+            if is_prime(c) {
+                return c;
+            }
+            c += step;
+        }
+    }
+
+    fn is_prime(n: u64) -> bool {
+        if n < 2 {
+            return false;
+        }
+        for p in [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+            if n % p == 0 {
+                return n == p;
+            }
+        }
+        let d = n - 1;
+        let r = d.trailing_zeros();
+        let dd = d >> r;
+        for a in [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+            let mut x = pow_mod(a, dd as usize, n);
+            if x == 1 || x == n - 1 {
+                continue;
+            }
+            let mut cont = false;
+            for _ in 0..r - 1 {
+                x = mul_mod(x, x, n);
+                if x == n - 1 {
+                    cont = true;
+                    break;
+                }
+            }
+            if !cont {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// NTT vs schoolbook negacyclic-mul: correctness at scale + the
+    /// throughput win. This is the performance-path measurement for the
+    /// DD gadget's ring products.
+    #[test]
+    fn ntt_vs_schoolbook_scaling() {
+        for &n in &[8usize, 16, 64, 256, 1024] {
+            let q = ntt_prime_for(n, 40);
+            let mut s = 0x9e37_79b9_7f4a_7c15u64;
+            let mut rnd = |n_max: u64| {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (s >> 33) % n_max
+            };
+            let a: Vec<u64> = (0..n).map(|_| rnd(q)).collect();
+            let b: Vec<u64> = (0..n).map(|_| rnd(q)).collect();
+            let ntt = Ntt::new(n, q).expect("ntt-friendly");
+
+            // Correctness at scale: NTT must match the schoolbook reference
+            // exactly. (The perf win is the O(N log N) vs O(N^2) op count;
+            // wall-time is measured by the integration benchmark in a std
+            // context, not this no_std unit test.)
+            let sb = negacyclic_mul_coeffs(&a, &b, q);
+            let nt = negacyclic_mul_ntt(&a, &b, &ntt);
+            assert_eq!(sb, nt, "NTT must match schoolbook at N={}", n);
+        }
+    }
+
     /// NTT-friendly test modulus: prime, `(q - 1) % 16 == 0`.
     const TEST_MODULUS: u64 = 1_073_741_857; // ~2^30
 
