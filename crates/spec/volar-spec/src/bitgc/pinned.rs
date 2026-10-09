@@ -724,6 +724,8 @@ pub enum DriverError {
     BadPrgCount,
     /// The selected variant is deferred and has no pinned driver.
     UnsupportedVariant,
+    /// An output index is outside this garbling's circuit outputs.
+    BadOutputIndex,
     /// Ran out of communicated records or tables mid-evaluation.
     MissingRecord,
     /// A record or table had the wrong shape for the gate/variant.
@@ -1122,6 +1124,7 @@ pub struct GarblerWireLabels {
     labels: Vec<WireLabel>,
     delta: Delta,
     input_count: usize,
+    output_wires: Vec<usize>,
 }
 
 impl GarblerWireLabels {
@@ -1136,6 +1139,47 @@ impl GarblerWireLabels {
             encoded.push((self.labels[index].active(masked, &self.delta), masked));
         }
         Ok(encoded)
+    }
+
+    /// Return the false/true active-label pair and masked bits for one input.
+    /// The pair is intended for a 1-of-2 OT sender; callers must not forward
+    /// it directly to an evaluator.
+    pub fn input_label_pair(
+        &self,
+        input_index: usize,
+    ) -> Result<[(LabelPoly, bool); 2], DriverError> {
+        if input_index >= self.input_count {
+            return Err(DriverError::BadInputCount);
+        }
+        Ok(self.label_pair(input_index))
+    }
+
+    /// Number of output wires in the garbled circuit.
+    pub fn output_count(&self) -> usize {
+        self.output_wires.len()
+    }
+
+    /// Return one circuit output's wire index and false/true active labels.
+    /// Keep this pair on the garbler side; Phase 3 sends only label hashes.
+    pub fn output_label_pair(
+        &self,
+        output_index: usize,
+    ) -> Result<(usize, [(LabelPoly, bool); 2]), DriverError> {
+        let wire = *self
+            .output_wires
+            .get(output_index)
+            .ok_or(DriverError::BadOutputIndex)?;
+        Ok((wire, self.label_pair(wire)))
+    }
+
+    fn label_pair(&self, wire: usize) -> [(LabelPoly, bool); 2] {
+        let label = &self.labels[wire];
+        let masked_zero = label.pi;
+        let masked_one = !label.pi;
+        [
+            (label.active(masked_zero, &self.delta), masked_zero),
+            (label.active(masked_one, &self.delta), masked_one),
+        ]
     }
 
     /// The output permutation bit for semi-honest test opening.
@@ -1362,6 +1406,7 @@ pub fn garble_role_circuit<G: RoleDdGarbler>(
             labels,
             delta: delta.clone(),
             input_count: circuit.inputs,
+            output_wires: circuit.outputs.clone(),
         },
         RoleEvaluatorTables {
             delta_row,
@@ -1382,6 +1427,26 @@ pub fn evaluate_role_circuit<E: RoleDdEvaluator>(
     tables: &RoleEvaluatorTables<E::Row>,
     inputs: &[(LabelPoly, bool)],
 ) -> Result<Vec<bool>, DriverError> {
+    Ok(
+        evaluate_role_circuit_with_labels(variant, circuit, dd, tables, inputs)?
+            .into_iter()
+            .map(|(_, masked)| masked)
+            .collect(),
+    )
+}
+
+/// Evaluate and return each output's active label plus its masked bit.
+///
+/// The active labels are needed by the session layer's hash-match output
+/// opening; this API still accepts only evaluator-safe material and does not
+/// reveal the garbler's permutation bits or secret key.
+pub fn evaluate_role_circuit_with_labels<E: RoleDdEvaluator>(
+    variant: Variant,
+    circuit: &Circuit,
+    dd: &E,
+    tables: &RoleEvaluatorTables<E::Row>,
+    inputs: &[(LabelPoly, bool)],
+) -> Result<Vec<(LabelPoly, bool)>, DriverError> {
     circuit.validate().map_err(|_| DriverError::BadCircuit)?;
     if variant == Variant::Tiny {
         return Err(DriverError::UnsupportedVariant);
@@ -1474,7 +1539,11 @@ pub fn evaluate_role_circuit<E: RoleDdEvaluator>(
     if record_iter.next().is_some() || and_iter.next().is_some() {
         return Err(DriverError::WrongRecord);
     }
-    Ok(circuit.outputs.iter().map(|&wire| masked[wire]).collect())
+    Ok(circuit
+        .outputs
+        .iter()
+        .map(|&wire| (labels[wire].clone(), masked[wire]))
+        .collect())
 }
 
 /// Open a masked output bit with the wire's permutation bit

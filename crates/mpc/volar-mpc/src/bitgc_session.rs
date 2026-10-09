@@ -11,17 +11,28 @@
 //! replay, reordering, and invalid transitions, and makes cancellation
 //! terminal.
 //!
-//! This is framing and local protocol-state validation only. It does not
-//! authenticate a peer or transcript, perform OT, garble/evaluate a circuit,
-//! or make BitGC available for protected sessions. The admission gate remains
-//! closed pending the rest of BITGC-LEDGER-07 and independent review.
+//! This is an experimental framing/state foundation with a bounded
+//! Chou–Orlandi OT adapter and output-label hash matching. It does not
+//! authenticate peers or the transcript, canonically derive the supplied
+//! digests, integrate the OT channel with an authenticated session transport,
+//! garble/evaluate a circuit over the wire, or make BitGC available for
+//! protected sessions. The output hashes provide label-pair consistency only;
+//! an unauthenticated intermediary can alter or swap them. The admission gate
+//! remains closed pending the rest of BITGC-LEDGER-07 and independent review.
 //!
-//! TODO(provider-ledger: BITGC-LEDGER-07): transcript authentication, OT,
-//! authenticated output opening, and reviewed parameters remain release gates.
+//! TODO(provider-ledger: BITGC-LEDGER-07): authenticated transcript/session
+//! binding, canonical digests, authenticated output opening, Cirrus integration,
+//! and reviewed parameters remain release gates.
 
 use alloc::vec::Vec;
-
+use digest::Digest;
+use hybrid_array::Array;
+use sha2::Sha256;
 use volar_spec::bitgc::Variant;
+use volar_spec::bitgc::pinned::{GarblerWireLabels, LabelPoly};
+use volar_spec::vole::VoleArray;
+
+use crate::OtChannel;
 
 const MAGIC: &[u8; 8] = b"VBGCF001";
 const VERSION: u16 = 1;
@@ -31,6 +42,13 @@ const HEADER_BYTES: usize = 8 + 2 + 1 + 1 + 1 + 1 + 32 + 32 + 32 + 8 + 4;
 pub const BITGC_FRAME_MAX_PAYLOAD: usize = 64 * 1024;
 /// Maximum complete encoded frame, including the fixed header.
 pub const BITGC_FRAME_MAX_BYTES: usize = HEADER_BYTES + BITGC_FRAME_MAX_PAYLOAD;
+/// Maximum canonical byte length for one serialized BitGC input label.
+pub const BITGC_OT_MAX_INPUT_BYTES: usize = 1024 * 1024;
+const INPUT_CHUNK_TAG: u8 = 0x10;
+const INPUT_CHUNK_HEADER_BYTES: usize = 1 + 8 + 4 + 4 + 4;
+const OUTPUT_COMMIT_TAG: u8 = 0x20;
+const OUTPUT_COMMIT_BYTES: usize = 1 + 4 + 4 + 8 + 32 + 32;
+const BITGC_OUTPUT_MAX_COUNT: usize = 1 << 20;
 
 /// Party identity carried in every BitGC frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,6 +308,18 @@ pub enum BitGcSessionError {
     UnexpectedKind,
     /// A control frame has a nonempty payload.
     InvalidControlPayload,
+    /// Local or received label material is malformed or outside its profile.
+    InvalidInputMaterial,
+    /// An input chunk descriptor is malformed or out of its declared order.
+    InvalidInputDescriptor,
+    /// An output commitment record does not match the expected output/wire.
+    InvalidOutputCommitment,
+    /// The evaluator's active output label matches neither committed label.
+    OutputLabelMismatch,
+    /// The underlying 1-of-2 OT operation failed.
+    OtFailure,
+    /// Cancelling the underlying OT operation failed.
+    OtCancellationFailure,
     /// The sequence number cannot advance without wrapping.
     SequenceExhausted,
     /// The session has already been cancelled or aborted.
@@ -311,6 +341,182 @@ pub trait BitGcFrameTransport {
     fn receive_frame(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error>;
     /// Interrupt pending I/O and close the transport; safe to call repeatedly.
     fn cancel(&mut self) -> Result<(), Self::Error>;
+}
+
+/// Fallible 1-of-2 OT seam for evaluator-input label chunks.
+///
+/// The channel must be dedicated to this session (or independently bind each
+/// OT to the same session/input/chunk context). `cancel` must interrupt any
+/// blocked OT operation. The old [`crate::OtChannel`] trait is infallible, so
+/// it can only be used through the explicitly named compatibility adapter
+/// below; production adapters should preserve their transport errors here.
+pub trait BitGcInputOt<N: VoleArray<u8>> {
+    /// OT-specific protocol or transport error.
+    type Error;
+
+    /// Offer one fixed-size false/true message pair.
+    fn send_pair(&mut self, labels: [&Array<u8, N>; 2]) -> Result<(), Self::Error>;
+    /// Receive exactly the selected fixed-size message.
+    fn receive_choice(&mut self, choice: bool) -> Result<Array<u8, N>, Self::Error>;
+    /// Interrupt pending OT work; safe to call repeatedly.
+    fn cancel(&mut self) -> Result<(), Self::Error>;
+}
+
+/// Bounded, fallible message channel for one Chou–Orlandi OT session.
+/// Implementations must enforce `max_bytes` before allocating peer data.
+pub trait BitGcOtTransport {
+    /// Transport error.
+    type Error;
+
+    /// Send one bounded OT message.
+    fn send_ot_message(&mut self, message: &[u8]) -> Result<(), Self::Error>;
+    /// Receive one OT message, enforcing the supplied limit before allocation.
+    fn receive_ot_message(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error>;
+    /// Interrupt pending OT I/O; safe to call repeatedly.
+    fn cancel(&mut self) -> Result<(), Self::Error>;
+}
+
+/// Failure while running one Chou–Orlandi OT invocation.
+#[derive(Debug)]
+pub enum ChouOrlandiOtError<E> {
+    /// The bounded message transport failed.
+    Transport(E),
+    /// The role, message size, or OT message encoding was invalid.
+    InvalidMessage,
+    /// This endpoint's role does not match the requested OT operation.
+    WrongRole,
+}
+
+/// Chou–Orlandi 1-of-2 OT over a dedicated bounded message transport.
+///
+/// Construct a garbler endpoint with `BitGcRole::Garbler` and an evaluator
+/// endpoint with `BitGcRole::Evaluator`. One instance handles the ordered OT
+/// stream for a session; it does not authenticate or transcript-bind messages.
+pub struct ChouOrlandiBitGcOt<N, T, R>
+where
+    N: VoleArray<u8>,
+    T: BitGcOtTransport,
+    R: volar_spec::SpecRng,
+{
+    role: BitGcRole,
+    transport: T,
+    rng: R,
+    _n: core::marker::PhantomData<N>,
+}
+
+impl<N, T, R> ChouOrlandiBitGcOt<N, T, R>
+where
+    N: VoleArray<u8>,
+    T: BitGcOtTransport,
+    R: volar_spec::SpecRng,
+{
+    /// Create an OT endpoint. Its transport must be dedicated to the same
+    /// session and consumed in the same chunk order as the session frames.
+    pub fn new(role: BitGcRole, transport: T, rng: R) -> Self {
+        Self {
+            role,
+            transport,
+            rng,
+            _n: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<N, T, R> BitGcInputOt<N> for ChouOrlandiBitGcOt<N, T, R>
+where
+    N: VoleArray<u8>,
+    T: BitGcOtTransport,
+    R: volar_spec::SpecRng,
+{
+    type Error = ChouOrlandiOtError<T::Error>;
+
+    fn send_pair(&mut self, labels: [&Array<u8, N>; 2]) -> Result<(), Self::Error> {
+        if self.role != BitGcRole::Garbler {
+            return Err(ChouOrlandiOtError::WrongRole);
+        }
+        let (sender, setup) = crate::ot::CoSender::<N>::setup(&mut self.rng);
+        self.transport
+            .send_ot_message(&setup)
+            .map_err(ChouOrlandiOtError::Transport)?;
+        let response = self
+            .transport
+            .receive_ot_message(64)
+            .map_err(ChouOrlandiOtError::Transport)?;
+        if response.len() != 64 {
+            return Err(ChouOrlandiOtError::InvalidMessage);
+        }
+        let encrypted = sender
+            .finish(&response, labels)
+            .map_err(|_| ChouOrlandiOtError::InvalidMessage)?;
+        self.transport
+            .send_ot_message(&encrypted)
+            .map_err(ChouOrlandiOtError::Transport)
+    }
+
+    fn receive_choice(&mut self, choice: bool) -> Result<Array<u8, N>, Self::Error> {
+        if self.role != BitGcRole::Evaluator {
+            return Err(ChouOrlandiOtError::WrongRole);
+        }
+        let setup = self
+            .transport
+            .receive_ot_message(64)
+            .map_err(ChouOrlandiOtError::Transport)?;
+        if setup.len() != 64 {
+            return Err(ChouOrlandiOtError::InvalidMessage);
+        }
+        let (receiver, response) = crate::ot::CoReceiver::<N>::setup(&mut self.rng, &setup, choice)
+            .map_err(|_| ChouOrlandiOtError::InvalidMessage)?;
+        self.transport
+            .send_ot_message(&response)
+            .map_err(ChouOrlandiOtError::Transport)?;
+        let max_bytes = N::USIZE
+            .checked_mul(2)
+            .ok_or(ChouOrlandiOtError::InvalidMessage)?;
+        let encrypted = self
+            .transport
+            .receive_ot_message(max_bytes)
+            .map_err(ChouOrlandiOtError::Transport)?;
+        receiver
+            .finish(&encrypted)
+            .map_err(|_| ChouOrlandiOtError::InvalidMessage)
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        self.transport
+            .cancel()
+            .map_err(ChouOrlandiOtError::Transport)
+    }
+}
+
+/// Compatibility wrapper for existing infallible [`crate::OtChannel`]
+/// implementations. It does not make an infallible channel suitable for
+/// production; its owner must separately guarantee transport cancellation.
+pub struct InfallibleBitGcOt<'a, N: VoleArray<u8>> {
+    channel: &'a mut dyn OtChannel<N>,
+}
+
+impl<'a, N: VoleArray<u8>> InfallibleBitGcOt<'a, N> {
+    /// Wrap an existing `OtChannel` for deterministic/local compatibility.
+    pub fn new(channel: &'a mut dyn OtChannel<N>) -> Self {
+        Self { channel }
+    }
+}
+
+impl<N: VoleArray<u8>> BitGcInputOt<N> for InfallibleBitGcOt<'_, N> {
+    type Error = core::convert::Infallible;
+
+    fn send_pair(&mut self, labels: [&Array<u8, N>; 2]) -> Result<(), Self::Error> {
+        self.channel.send(labels);
+        Ok(())
+    }
+
+    fn receive_choice(&mut self, choice: bool) -> Result<Array<u8, N>, Self::Error> {
+        Ok(self.channel.receive(choice))
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 /// Error from a transport-driven send/receive seam.
@@ -452,7 +658,13 @@ impl BitGcSession {
         kind: BitGcFrameKind,
         payload: &[u8],
     ) -> Result<(), BitGcIoError<T::Error>> {
-        let encoded = self.emit(kind, payload).map_err(BitGcIoError::Protocol)?;
+        let encoded = match self.emit(kind, payload) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                let _ = transport.cancel();
+                return Err(BitGcIoError::Protocol(error));
+            }
+        };
         if let Err(error) = transport.send_frame(&encoded) {
             self.state = BitGcSessionState::Aborted;
             let _ = transport.cancel();
@@ -502,6 +714,428 @@ impl BitGcSession {
         })
     }
 
+    /// Transfer one evaluator-owned input's false/true labels by 1-of-2 OT.
+    ///
+    /// `ring_degree` is the profile's exact polynomial dimension. Labels are
+    /// serialized as canonical little-endian coefficients plus a masked-bit
+    /// byte, then split into `N::USIZE`-byte OT chunks. Each OT is
+    /// preceded by a session-bound frame naming the input and chunk ordinal.
+    /// The choice bit is used only by the receiver's OT operation and is never
+    /// serialized into a BitGC frame.
+    pub fn send_evaluator_input_over<N, C, T>(
+        &mut self,
+        transport: &mut T,
+        ot: &mut C,
+        input_index: u64,
+        plaintext_modulus: u64,
+        ring_degree: usize,
+        label_pair: &[(LabelPoly, bool); 2],
+    ) -> Result<(), BitGcIoError<T::Error>>
+    where
+        N: VoleArray<u8>,
+        C: BitGcInputOt<N>,
+        T: BitGcFrameTransport,
+    {
+        if self.local_role != BitGcRole::Garbler {
+            return self.abort_ot_over(transport, ot, BitGcSessionError::WrongRole);
+        }
+        let branch0 = match encode_input_branch(
+            &label_pair[0].0,
+            label_pair[0].1,
+            plaintext_modulus,
+            ring_degree,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => return self.abort_ot_over(transport, ot, error),
+        };
+        let branch1 = match encode_input_branch(
+            &label_pair[1].0,
+            label_pair[1].1,
+            plaintext_modulus,
+            ring_degree,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => return self.abort_ot_over(transport, ot, error),
+        };
+        if branch0.len() != branch1.len() || N::USIZE == 0 {
+            return self.abort_ot_over(transport, ot, BitGcSessionError::InvalidInputMaterial);
+        }
+        let chunk_count = match chunk_count(branch0.len(), N::USIZE) {
+            Some(count) if count <= u32::MAX as usize => count,
+            _ => return self.abort_ot_over(transport, ot, BitGcSessionError::InvalidInputMaterial),
+        };
+        let total_bytes = branch0.len() as u32;
+        let chunk_count_u32 = chunk_count as u32;
+
+        for chunk_index in 0..chunk_count {
+            let descriptor = encode_input_chunk_descriptor(
+                input_index,
+                chunk_index as u32,
+                chunk_count_u32,
+                total_bytes,
+            );
+            if let Err(error) = self.send_over(transport, BitGcFrameKind::Data, &descriptor) {
+                return self.cancel_ot_after_io_error(transport, ot, error);
+            }
+            let start = chunk_index * N::USIZE;
+            let block0 =
+                Array::<u8, N>::from_fn(|index| branch0.get(start + index).copied().unwrap_or(0));
+            let block1 =
+                Array::<u8, N>::from_fn(|index| branch1.get(start + index).copied().unwrap_or(0));
+            if ot.send_pair([&block0, &block1]).is_err() {
+                return self.abort_ot_over(transport, ot, BitGcSessionError::OtFailure);
+            }
+        }
+        Ok(())
+    }
+
+    /// Receive one evaluator-owned input label through the matching 1-of-2
+    /// OT. `choice` is local-only and never enters the session frame.
+    pub fn receive_evaluator_input_over<N, C, T>(
+        &mut self,
+        transport: &mut T,
+        ot: &mut C,
+        expected_input_index: u64,
+        plaintext_modulus: u64,
+        ring_degree: usize,
+        choice: bool,
+    ) -> Result<(LabelPoly, bool), BitGcIoError<T::Error>>
+    where
+        N: VoleArray<u8>,
+        C: BitGcInputOt<N>,
+        T: BitGcFrameTransport,
+    {
+        if self.local_role != BitGcRole::Evaluator {
+            return self.abort_ot_over(transport, ot, BitGcSessionError::WrongRole);
+        }
+        if plaintext_modulus <= 2 || plaintext_modulus & 1 == 0 || ring_degree == 0 || N::USIZE == 0
+        {
+            return self.abort_ot_over(transport, ot, BitGcSessionError::InvalidInputMaterial);
+        }
+        let first = match self.receive_input_chunk_descriptor(transport) {
+            Ok(descriptor) => descriptor,
+            Err(error) => return self.cancel_ot_after_io_error(transport, ot, error),
+        };
+        if first.input_index != expected_input_index || first.chunk_index != 0 {
+            return self.abort_ot_over(transport, ot, BitGcSessionError::InvalidInputDescriptor);
+        }
+        let total_bytes = first.total_bytes as usize;
+        let expected_chunks = match chunk_count(total_bytes, N::USIZE) {
+            Some(count) if count <= u32::MAX as usize => count,
+            _ => {
+                return self.abort_ot_over(
+                    transport,
+                    ot,
+                    BitGcSessionError::InvalidInputDescriptor,
+                );
+            }
+        };
+        if total_bytes < 9
+            || total_bytes > BITGC_OT_MAX_INPUT_BYTES
+            || ring_degree
+                .checked_mul(8)
+                .and_then(|bytes| bytes.checked_add(1))
+                != Some(total_bytes)
+            || (total_bytes - 1) % 8 != 0
+            || first.chunk_count as usize != expected_chunks
+            || expected_chunks == 0
+        {
+            return self.abort_ot_over(transport, ot, BitGcSessionError::InvalidInputDescriptor);
+        }
+        let mut encoded_label = Vec::new();
+        if encoded_label.try_reserve_exact(total_bytes).is_err() {
+            return self.abort_ot_over(transport, ot, BitGcSessionError::InvalidInputMaterial);
+        }
+
+        for chunk_index in 0..expected_chunks {
+            let descriptor = if chunk_index == 0 {
+                first
+            } else {
+                match self.receive_input_chunk_descriptor(transport) {
+                    Ok(descriptor) => descriptor,
+                    Err(error) => return self.cancel_ot_after_io_error(transport, ot, error),
+                }
+            };
+            if descriptor.input_index != expected_input_index
+                || descriptor.chunk_index as usize != chunk_index
+                || descriptor.chunk_count as usize != expected_chunks
+                || descriptor.total_bytes as usize != total_bytes
+            {
+                return self.abort_ot_over(
+                    transport,
+                    ot,
+                    BitGcSessionError::InvalidInputDescriptor,
+                );
+            }
+            let block = match ot.receive_choice(choice) {
+                Ok(block) => block,
+                Err(_) => return self.abort_ot_over(transport, ot, BitGcSessionError::OtFailure),
+            };
+            let remaining = total_bytes - encoded_label.len();
+            let take = core::cmp::min(N::USIZE, remaining);
+            if block.as_slice()[take..].iter().any(|&byte| byte != 0) {
+                return self.abort_ot_over(transport, ot, BitGcSessionError::InvalidInputMaterial);
+            }
+            encoded_label.extend_from_slice(&block.as_slice()[..take]);
+        }
+        match decode_input_branch(&encoded_label, plaintext_modulus, ring_degree) {
+            Ok(label) => Ok(label),
+            Err(error) => self.abort_ot_over(transport, ot, error),
+        }
+    }
+
+    /// Send domain-separated hashes of both clear-value output labels. The
+    /// label pair itself remains garbler-side; only the ordered hashes are
+    /// sent. This provides output-label consistency opening, not transport
+    /// authentication or active security. `ring_degree` must match the fixed
+    /// profile dimension.
+    pub fn send_output_commitments_over<T: BitGcFrameTransport>(
+        &mut self,
+        transport: &mut T,
+        garbler_labels: &GarblerWireLabels,
+        plaintext_modulus: u64,
+        ring_degree: usize,
+    ) -> Result<(), BitGcIoError<T::Error>> {
+        if self.local_role != BitGcRole::Garbler {
+            return self.abort_over(transport, BitGcSessionError::WrongRole);
+        }
+        if plaintext_modulus <= 2
+            || plaintext_modulus & 1 == 0
+            || ring_degree == 0
+            || garbler_labels.output_count() > BITGC_OUTPUT_MAX_COUNT
+        {
+            return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+        }
+        let output_count_u32 = match u32::try_from(garbler_labels.output_count()) {
+            Ok(count) => count,
+            Err(_) => {
+                return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+            }
+        };
+        for output_index in 0..garbler_labels.output_count() {
+            let (wire, pair) = match garbler_labels.output_label_pair(output_index) {
+                Ok(output) => output,
+                Err(_) => {
+                    return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+                }
+            };
+            let output_index_u32 = match u32::try_from(output_index) {
+                Ok(index) => index,
+                Err(_) => {
+                    return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+                }
+            };
+            let wire_u64 = match u64::try_from(wire) {
+                Ok(wire) => wire,
+                Err(_) => {
+                    return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+                }
+            };
+            let hash0 = match output_label_hash(
+                &self.binding,
+                output_index as u64,
+                wire_u64,
+                &pair[0].0,
+                plaintext_modulus,
+                ring_degree,
+            ) {
+                Ok(hash) => hash,
+                Err(error) => return self.abort_over(transport, error),
+            };
+            let hash1 = match output_label_hash(
+                &self.binding,
+                output_index as u64,
+                wire_u64,
+                &pair[1].0,
+                plaintext_modulus,
+                ring_degree,
+            ) {
+                Ok(hash) => hash,
+                Err(error) => return self.abort_over(transport, error),
+            };
+            let mut payload = [0; OUTPUT_COMMIT_BYTES];
+            payload[0] = OUTPUT_COMMIT_TAG;
+            payload[1..5].copy_from_slice(&output_count_u32.to_le_bytes());
+            payload[5..9].copy_from_slice(&output_index_u32.to_le_bytes());
+            payload[9..17].copy_from_slice(&wire_u64.to_le_bytes());
+            payload[17..49].copy_from_slice(&hash0);
+            payload[49..81].copy_from_slice(&hash1);
+            self.send_over(transport, BitGcFrameKind::Data, &payload)?;
+        }
+        Ok(())
+    }
+
+    /// Match evaluator output labels against the garbler's committed pair and
+    /// return clear output bits without opening permutation bits.
+    pub fn receive_committed_outputs_over<T: BitGcFrameTransport>(
+        &mut self,
+        transport: &mut T,
+        outputs: &[(LabelPoly, bool)],
+        output_wires: &[usize],
+        plaintext_modulus: u64,
+        ring_degree: usize,
+    ) -> Result<Vec<bool>, BitGcIoError<T::Error>> {
+        if self.local_role != BitGcRole::Evaluator {
+            return self.abort_over(transport, BitGcSessionError::WrongRole);
+        }
+        if plaintext_modulus <= 2
+            || plaintext_modulus & 1 == 0
+            || ring_degree == 0
+            || outputs.len() != output_wires.len()
+            || outputs.len() > BITGC_OUTPUT_MAX_COUNT
+        {
+            return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+        }
+        let mut clear_outputs = Vec::new();
+        if clear_outputs.try_reserve_exact(outputs.len()).is_err() {
+            return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+        }
+        for (output_index, ((label, _masked), &wire)) in
+            outputs.iter().zip(output_wires).enumerate()
+        {
+            let encoded = self.receive_over(transport)?;
+            let frame = match BitGcFrame::decode(&encoded) {
+                Ok(frame) if frame.kind == BitGcFrameKind::Data => frame,
+                _ => return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment),
+            };
+            let payload = frame.payload;
+            if payload.len() != OUTPUT_COMMIT_BYTES || payload[0] != OUTPUT_COMMIT_TAG {
+                return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+            }
+            let committed_count =
+                u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
+            let committed_index =
+                u32::from_le_bytes([payload[5], payload[6], payload[7], payload[8]]);
+            let committed_wire = u64::from_le_bytes([
+                payload[9],
+                payload[10],
+                payload[11],
+                payload[12],
+                payload[13],
+                payload[14],
+                payload[15],
+                payload[16],
+            ]);
+            let expected_wire = match u64::try_from(wire) {
+                Ok(wire) => wire,
+                Err(_) => {
+                    return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+                }
+            };
+            if committed_count as usize != outputs.len()
+                || committed_index as usize != output_index
+                || committed_wire != expected_wire
+            {
+                return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+            }
+            let label_hash = match output_label_hash(
+                &self.binding,
+                output_index as u64,
+                committed_wire,
+                label,
+                plaintext_modulus,
+                ring_degree,
+            ) {
+                Ok(hash) => hash,
+                Err(error) => return self.abort_over(transport, error),
+            };
+            let hash0: &[u8; 32] = match payload[17..49].try_into() {
+                Ok(hash) => hash,
+                Err(_) => {
+                    return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+                }
+            };
+            let hash1: &[u8; 32] = match payload[49..81].try_into() {
+                Ok(hash) => hash,
+                Err(_) => {
+                    return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
+                }
+            };
+            let matches0 = constant_time_eq(&label_hash, hash0);
+            let matches1 = constant_time_eq(&label_hash, hash1);
+            if matches0 == matches1 {
+                return self.abort_over(transport, BitGcSessionError::OutputLabelMismatch);
+            }
+            clear_outputs.push(matches1);
+        }
+        Ok(clear_outputs)
+    }
+
+    fn receive_input_chunk_descriptor<T: BitGcFrameTransport>(
+        &mut self,
+        transport: &mut T,
+    ) -> Result<InputChunkDescriptor, BitGcIoError<T::Error>> {
+        let encoded = self.receive_over(transport)?;
+        let frame = match BitGcFrame::decode(&encoded) {
+            Ok(frame) if frame.kind == BitGcFrameKind::Data => frame,
+            _ => return self.abort_over(transport, BitGcSessionError::InvalidInputDescriptor),
+        };
+        match decode_input_chunk_descriptor(frame.payload) {
+            Some(descriptor) => Ok(descriptor),
+            None => self.abort_over(transport, BitGcSessionError::InvalidInputDescriptor),
+        }
+    }
+
+    fn abort_ot_over<N, C, T, R>(
+        &mut self,
+        transport: &mut T,
+        ot: &mut C,
+        error: BitGcSessionError,
+    ) -> Result<R, BitGcIoError<T::Error>>
+    where
+        N: VoleArray<u8>,
+        C: BitGcInputOt<N>,
+        T: BitGcFrameTransport,
+    {
+        self.state = BitGcSessionState::Aborted;
+        let ot_cancel_failed = ot.cancel().is_err();
+        if let Err(transport_error) = transport.cancel() {
+            return Err(BitGcIoError::Transport(transport_error));
+        }
+        if ot_cancel_failed {
+            return Err(BitGcIoError::Protocol(
+                BitGcSessionError::OtCancellationFailure,
+            ));
+        }
+        Err(BitGcIoError::Protocol(error))
+    }
+
+    fn cancel_ot_after_io_error<N, C, T, R>(
+        &mut self,
+        transport: &mut T,
+        ot: &mut C,
+        error: BitGcIoError<T::Error>,
+    ) -> Result<R, BitGcIoError<T::Error>>
+    where
+        N: VoleArray<u8>,
+        C: BitGcInputOt<N>,
+        T: BitGcFrameTransport,
+    {
+        self.state = BitGcSessionState::Aborted;
+        let ot_cancel_failed = ot.cancel().is_err();
+        if let Err(transport_error) = transport.cancel() {
+            return Err(BitGcIoError::Transport(transport_error));
+        }
+        if ot_cancel_failed {
+            return Err(BitGcIoError::Protocol(
+                BitGcSessionError::OtCancellationFailure,
+            ));
+        }
+        Err(error)
+    }
+
+    fn abort_over<T: BitGcFrameTransport, R>(
+        &mut self,
+        transport: &mut T,
+        error: BitGcSessionError,
+    ) -> Result<R, BitGcIoError<T::Error>> {
+        self.state = BitGcSessionState::Aborted;
+        if let Err(transport_error) = transport.cancel() {
+            return Err(BitGcIoError::Transport(transport_error));
+        }
+        Err(BitGcIoError::Protocol(error))
+    }
+
     fn emit(&mut self, kind: BitGcFrameKind, payload: &[u8]) -> Result<Vec<u8>, BitGcSessionError> {
         if is_terminal(self.state) {
             return Err(BitGcSessionError::Terminal);
@@ -533,7 +1167,10 @@ impl BitGcSession {
             kind,
             payload,
         };
-        let encoded = frame.encode().map_err(BitGcSessionError::Frame)?;
+        let encoded = match frame.encode() {
+            Ok(encoded) => encoded,
+            Err(error) => return self.abort_with(BitGcSessionError::Frame(error)),
+        };
         self.next_send_sequence = next_sequence;
         match kind {
             BitGcFrameKind::Hello => self.local_hello_sent = true,
@@ -559,6 +1196,171 @@ impl BitGcSession {
     }
 }
 
+#[derive(Clone, Copy)]
+struct InputChunkDescriptor {
+    input_index: u64,
+    chunk_index: u32,
+    chunk_count: u32,
+    total_bytes: u32,
+}
+
+fn chunk_count(total_bytes: usize, chunk_bytes: usize) -> Option<usize> {
+    if chunk_bytes == 0 {
+        return None;
+    }
+    total_bytes
+        .checked_add(chunk_bytes - 1)
+        .map(|rounded| rounded / chunk_bytes)
+}
+
+fn encode_input_chunk_descriptor(
+    input_index: u64,
+    chunk_index: u32,
+    chunk_count: u32,
+    total_bytes: u32,
+) -> [u8; INPUT_CHUNK_HEADER_BYTES] {
+    let mut payload = [0; INPUT_CHUNK_HEADER_BYTES];
+    payload[0] = INPUT_CHUNK_TAG;
+    payload[1..9].copy_from_slice(&input_index.to_le_bytes());
+    payload[9..13].copy_from_slice(&chunk_index.to_le_bytes());
+    payload[13..17].copy_from_slice(&chunk_count.to_le_bytes());
+    payload[17..21].copy_from_slice(&total_bytes.to_le_bytes());
+    payload
+}
+
+fn decode_input_chunk_descriptor(payload: &[u8]) -> Option<InputChunkDescriptor> {
+    if payload.len() != INPUT_CHUNK_HEADER_BYTES || payload[0] != INPUT_CHUNK_TAG {
+        return None;
+    }
+    Some(InputChunkDescriptor {
+        input_index: u64::from_le_bytes(payload[1..9].try_into().ok()?),
+        chunk_index: u32::from_le_bytes(payload[9..13].try_into().ok()?),
+        chunk_count: u32::from_le_bytes(payload[13..17].try_into().ok()?),
+        total_bytes: u32::from_le_bytes(payload[17..21].try_into().ok()?),
+    })
+}
+
+fn encode_input_branch(
+    label: &LabelPoly,
+    masked: bool,
+    plaintext_modulus: u64,
+    ring_degree: usize,
+) -> Result<Vec<u8>, BitGcSessionError> {
+    if plaintext_modulus <= 2
+        || plaintext_modulus & 1 == 0
+        || ring_degree == 0
+        || label.len() != ring_degree
+        || label
+            .iter()
+            .any(|&coefficient| coefficient >= plaintext_modulus)
+    {
+        return Err(BitGcSessionError::InvalidInputMaterial);
+    }
+    let total_bytes = label
+        .len()
+        .checked_mul(8)
+        .and_then(|bytes| bytes.checked_add(1))
+        .ok_or(BitGcSessionError::InvalidInputMaterial)?;
+    if total_bytes > BITGC_OT_MAX_INPUT_BYTES {
+        return Err(BitGcSessionError::InvalidInputMaterial);
+    }
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(total_bytes)
+        .map_err(|_| BitGcSessionError::InvalidInputMaterial)?;
+    for coefficient in label {
+        encoded.extend_from_slice(&coefficient.to_le_bytes());
+    }
+    encoded.push(u8::from(masked));
+    Ok(encoded)
+}
+
+fn decode_input_branch(
+    encoded: &[u8],
+    plaintext_modulus: u64,
+    ring_degree: usize,
+) -> Result<(LabelPoly, bool), BitGcSessionError> {
+    if plaintext_modulus <= 2
+        || plaintext_modulus & 1 == 0
+        || ring_degree == 0
+        || encoded.len() < 9
+        || encoded.len() > BITGC_OT_MAX_INPUT_BYTES
+        || (encoded.len() - 1) % 8 != 0
+        || (encoded.len() - 1) / 8 != ring_degree
+        || encoded[encoded.len() - 1] > 1
+    {
+        return Err(BitGcSessionError::InvalidInputMaterial);
+    }
+    let degree = (encoded.len() - 1) / 8;
+    let mut label = Vec::new();
+    label
+        .try_reserve_exact(degree)
+        .map_err(|_| BitGcSessionError::InvalidInputMaterial)?;
+    for bytes in encoded[..encoded.len() - 1].chunks_exact(8) {
+        let coefficient = u64::from_le_bytes(
+            bytes
+                .try_into()
+                .map_err(|_| BitGcSessionError::InvalidInputMaterial)?,
+        );
+        if coefficient >= plaintext_modulus {
+            return Err(BitGcSessionError::InvalidInputMaterial);
+        }
+        label.push(coefficient);
+    }
+    Ok((label, encoded[encoded.len() - 1] == 1))
+}
+
+fn output_label_hash(
+    binding: &BitGcSessionBinding,
+    output_index: u64,
+    wire_index: u64,
+    label: &LabelPoly,
+    plaintext_modulus: u64,
+    ring_degree: usize,
+) -> Result<[u8; 32], BitGcSessionError> {
+    if plaintext_modulus <= 2
+        || plaintext_modulus & 1 == 0
+        || ring_degree == 0
+        || label.len() != ring_degree
+        || label.len().checked_mul(8).is_none_or(|bytes| {
+            bytes
+                .checked_add(1)
+                .is_none_or(|bytes| bytes > BITGC_OT_MAX_INPUT_BYTES)
+        })
+        || label
+            .iter()
+            .any(|&coefficient| coefficient >= plaintext_modulus)
+    {
+        return Err(BitGcSessionError::InvalidInputMaterial);
+    }
+    let variant = encode_variant(binding.variant).map_err(BitGcSessionError::Frame)?;
+    let mut hash = Sha256::new();
+    hash.update(b"Volar BitGC output label v1\0");
+    hash.update([variant]);
+    hash.update(binding.session_id);
+    hash.update(binding.parameter_fingerprint);
+    hash.update(binding.circuit_digest);
+    hash.update(plaintext_modulus.to_le_bytes());
+    hash.update(output_index.to_le_bytes());
+    hash.update(wire_index.to_le_bytes());
+    hash.update((label.len() as u64).to_le_bytes());
+    for coefficient in label {
+        hash.update(coefficient.to_le_bytes());
+    }
+    let digest = hash.finalize();
+    let mut output = [0; 32];
+    output.copy_from_slice(&digest);
+    Ok(output)
+}
+
+fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    let mut difference = 0u8;
+    for index in 0..32 {
+        difference |= left[index] ^ right[index];
+    }
+    difference == 0
+}
+
 fn is_terminal(state: BitGcSessionState) -> bool {
     matches!(
         state,
@@ -570,8 +1372,18 @@ fn is_terminal(state: BitGcSessionState) -> bool {
 mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
+    extern crate std;
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::thread;
+    use typenum::U16;
+    use volar_spec::bitgc::common::Circuit;
+    use volar_spec::bitgc::lattice_dd_rns::LatticeRnsDd;
+    use volar_spec::bitgc::pinned::{
+        PrfKey, evaluate_role_circuit_with_labels, garble_role_circuit,
+    };
 
     use super::*;
+    use crate::ot::{LoopbackOt, SeedRng};
 
     fn binding() -> BitGcSessionBinding {
         BitGcSessionBinding {
@@ -596,6 +1408,373 @@ mod tests {
         evaluator.accept(&g_hello).unwrap();
         assert_eq!(garbler.state(), BitGcSessionState::Active);
         assert_eq!(evaluator.state(), BitGcSessionState::Active);
+    }
+
+    fn run_single_input_session(
+        choice: bool,
+        tamper_output: bool,
+    ) -> Result<Vec<bool>, BitGcIoError<()>> {
+        let p = 97;
+        let mut rng = SeedRng::new(0x5048_4153 + u64::from(choice));
+        let dd = LatticeRnsDd::new(8, p, 1649, 1153, &mut rng).unwrap();
+        let circuit = Circuit {
+            inputs: 1,
+            gates: Vec::new(),
+            outputs: vec![0],
+        };
+        let prf = PrfKey([0x11, 0x22, 0x33, 0x44]);
+        let (garbler_labels, tables, evaluator_material) =
+            garble_role_circuit(Variant::Small, &circuit, &dd, &[false], &prf, &[], &mut rng)
+                .unwrap();
+        let input_pair = garbler_labels.input_label_pair(0).unwrap();
+        let mut garbler = BitGcSession::new(BitGcRole::Garbler, binding()).unwrap();
+        let mut evaluator = BitGcSession::new(BitGcRole::Evaluator, binding()).unwrap();
+        handshake(&mut garbler, &mut evaluator);
+
+        let mut loopback_ot = LoopbackOt::<U16>::new();
+        let mut ot = InfallibleBitGcOt::new(&mut loopback_ot);
+        let mut garbler_transport = TestTransport::new();
+        garbler.send_evaluator_input_over::<U16, _, _>(
+            &mut garbler_transport,
+            &mut ot,
+            0,
+            p,
+            8,
+            &input_pair,
+        )?;
+        let mut evaluator_transport = TestTransport {
+            incoming: garbler_transport.sent.clone(),
+            ..TestTransport::new()
+        };
+        let evaluator_input = evaluator.receive_evaluator_input_over::<U16, _, _>(
+            &mut evaluator_transport,
+            &mut ot,
+            0,
+            p,
+            8,
+            choice,
+        )?;
+        let mut outputs = evaluate_role_circuit_with_labels(
+            Variant::Small,
+            &circuit,
+            &evaluator_material,
+            &tables,
+            &[evaluator_input],
+        )
+        .unwrap();
+        if tamper_output {
+            outputs[0].0[0] = (outputs[0].0[0] + 1) % p;
+        }
+        let output_start = garbler_transport.sent.len();
+        garbler.send_output_commitments_over(&mut garbler_transport, &garbler_labels, p, 8)?;
+        evaluator_transport
+            .incoming
+            .extend(garbler_transport.sent[output_start..].iter().cloned());
+        evaluator.receive_committed_outputs_over(
+            &mut evaluator_transport,
+            &outputs,
+            &circuit.outputs,
+            p,
+            8,
+        )
+    }
+
+    #[test]
+    fn evaluator_input_ot_and_hash_match_opening_cover_both_bits() {
+        for choice in [false, true] {
+            assert_eq!(run_single_input_session(choice, false).unwrap(), [choice]);
+        }
+        assert!(matches!(
+            run_single_input_session(true, true),
+            Err(BitGcIoError::Protocol(
+                BitGcSessionError::OutputLabelMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn input_ot_descriptor_binds_wire_and_aborts_on_mismatch() {
+        let (mut garbler, mut evaluator) = pair();
+        handshake(&mut garbler, &mut evaluator);
+        let label_pair = [(vec![1, 2], false), (vec![3, 4], true)];
+        let mut loopback_ot = LoopbackOt::<U16>::new();
+        let mut ot = InfallibleBitGcOt::new(&mut loopback_ot);
+        let mut garbler_transport = TestTransport::new();
+        garbler
+            .send_evaluator_input_over::<U16, _, _>(
+                &mut garbler_transport,
+                &mut ot,
+                5,
+                97,
+                2,
+                &label_pair,
+            )
+            .unwrap();
+        let mut evaluator_transport = TestTransport {
+            incoming: garbler_transport.sent.clone(),
+            ..TestTransport::new()
+        };
+        assert!(matches!(
+            evaluator.receive_evaluator_input_over::<U16, _, _>(
+                &mut evaluator_transport,
+                &mut ot,
+                6,
+                97,
+                2,
+                false,
+            ),
+            Err(BitGcIoError::Protocol(
+                BitGcSessionError::InvalidInputDescriptor
+            ))
+        ));
+        assert_eq!(evaluator.state(), BitGcSessionState::Aborted);
+        assert!(evaluator_transport.cancelled);
+    }
+
+    struct FailingInputOt {
+        fail_send: bool,
+        fail_receive: bool,
+        cancelled: bool,
+    }
+
+    impl BitGcInputOt<U16> for FailingInputOt {
+        type Error = ();
+
+        fn send_pair(&mut self, _labels: [&Array<u8, U16>; 2]) -> Result<(), Self::Error> {
+            if self.fail_send { Err(()) } else { Ok(()) }
+        }
+
+        fn receive_choice(&mut self, _choice: bool) -> Result<Array<u8, U16>, Self::Error> {
+            if self.fail_receive {
+                Err(())
+            } else {
+                Ok(Array::from_fn(|_| 0))
+            }
+        }
+
+        fn cancel(&mut self) -> Result<(), Self::Error> {
+            self.cancelled = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn ot_failures_abort_both_ends_and_cancel_frame_and_ot_transports() {
+        let (mut garbler, mut evaluator) = pair();
+        handshake(&mut garbler, &mut evaluator);
+        let labels = [(vec![1, 2], false), (vec![3, 4], true)];
+        let mut failed_sender_ot = FailingInputOt {
+            fail_send: true,
+            fail_receive: false,
+            cancelled: false,
+        };
+        let mut garbler_transport = TestTransport::new();
+        assert!(matches!(
+            garbler.send_evaluator_input_over::<U16, _, _>(
+                &mut garbler_transport,
+                &mut failed_sender_ot,
+                0,
+                97,
+                2,
+                &labels,
+            ),
+            Err(BitGcIoError::Protocol(BitGcSessionError::OtFailure))
+        ));
+        assert_eq!(garbler.state(), BitGcSessionState::Aborted);
+        assert!(garbler_transport.cancelled);
+        assert!(failed_sender_ot.cancelled);
+
+        let (mut garbler, mut evaluator) = pair();
+        handshake(&mut garbler, &mut evaluator);
+        let mut loopback = LoopbackOt::<U16>::new();
+        let mut adapter = InfallibleBitGcOt::new(&mut loopback);
+        let mut garbler_transport = TestTransport::new();
+        garbler
+            .send_evaluator_input_over::<U16, _, _>(
+                &mut garbler_transport,
+                &mut adapter,
+                0,
+                97,
+                2,
+                &labels,
+            )
+            .unwrap();
+        let mut evaluator_transport = TestTransport {
+            incoming: garbler_transport.sent.clone(),
+            ..TestTransport::new()
+        };
+        let mut failed_receiver_ot = FailingInputOt {
+            fail_send: false,
+            fail_receive: true,
+            cancelled: false,
+        };
+        assert!(matches!(
+            evaluator.receive_evaluator_input_over::<U16, _, _>(
+                &mut evaluator_transport,
+                &mut failed_receiver_ot,
+                0,
+                97,
+                2,
+                true,
+            ),
+            Err(BitGcIoError::Protocol(BitGcSessionError::OtFailure))
+        ));
+        assert_eq!(evaluator.state(), BitGcSessionState::Aborted);
+        assert!(evaluator_transport.cancelled);
+        assert!(failed_receiver_ot.cancelled);
+    }
+
+    #[test]
+    fn input_profile_degree_and_oversized_outbound_frames_fail_closed() {
+        let (mut garbler, mut evaluator) = pair();
+        handshake(&mut garbler, &mut evaluator);
+
+        let mut loopback_ot = LoopbackOt::<U16>::new();
+        let mut ot = InfallibleBitGcOt::new(&mut loopback_ot);
+        let labels = [(vec![1, 2], false), (vec![3, 4], true)];
+        let mut transport = TestTransport::new();
+        assert!(matches!(
+            garbler.send_evaluator_input_over::<U16, _, _>(
+                &mut transport,
+                &mut ot,
+                0,
+                97,
+                3,
+                &labels,
+            ),
+            Err(BitGcIoError::Protocol(
+                BitGcSessionError::InvalidInputMaterial
+            ))
+        ));
+        assert_eq!(garbler.state(), BitGcSessionState::Aborted);
+        assert!(transport.cancelled);
+
+        let (mut garbler, mut evaluator) = pair();
+        handshake(&mut garbler, &mut evaluator);
+        let mut transport = TestTransport::new();
+        let oversized = vec![0; BITGC_FRAME_MAX_PAYLOAD + 1];
+        assert!(matches!(
+            garbler.send_over(&mut transport, BitGcFrameKind::Data, &oversized),
+            Err(BitGcIoError::Protocol(BitGcSessionError::Frame(
+                FrameError::PayloadTooLarge
+            )))
+        ));
+        assert_eq!(garbler.state(), BitGcSessionState::Aborted);
+        assert!(transport.cancelled);
+        assert_eq!(evaluator.state(), BitGcSessionState::Active);
+    }
+
+    struct Pipe {
+        send: Sender<Vec<u8>>,
+        receive: Receiver<Vec<u8>>,
+        cancelled: bool,
+    }
+
+    fn pipe_pair() -> (Pipe, Pipe) {
+        let (left_send, right_receive) = mpsc::channel();
+        let (right_send, left_receive) = mpsc::channel();
+        (
+            Pipe {
+                send: left_send,
+                receive: left_receive,
+                cancelled: false,
+            },
+            Pipe {
+                send: right_send,
+                receive: right_receive,
+                cancelled: false,
+            },
+        )
+    }
+
+    impl BitGcFrameTransport for Pipe {
+        type Error = ();
+
+        fn send_frame(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
+            self.send.send(frame.to_vec()).map_err(|_| ())
+        }
+
+        fn receive_frame(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error> {
+            let frame = self.receive.recv().map_err(|_| ())?;
+            if frame.len() > max_bytes {
+                return Err(());
+            }
+            Ok(frame)
+        }
+
+        fn cancel(&mut self) -> Result<(), Self::Error> {
+            self.cancelled = true;
+            Ok(())
+        }
+    }
+
+    impl BitGcOtTransport for Pipe {
+        type Error = ();
+
+        fn send_ot_message(&mut self, message: &[u8]) -> Result<(), Self::Error> {
+            self.send.send(message.to_vec()).map_err(|_| ())
+        }
+
+        fn receive_ot_message(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error> {
+            let message = self.receive.recv().map_err(|_| ())?;
+            if message.len() > max_bytes {
+                return Err(());
+            }
+            Ok(message)
+        }
+
+        fn cancel(&mut self) -> Result<(), Self::Error> {
+            self.cancelled = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn chou_orlandi_ot_transfers_only_the_selected_label_across_threads() {
+        for choice in [false, true] {
+            let (mut garbler_session, mut evaluator_session) = pair();
+            handshake(&mut garbler_session, &mut evaluator_session);
+            let (mut garbler_frames, mut evaluator_frames) = pipe_pair();
+            let (garbler_ot_transport, evaluator_ot_transport) = pipe_pair();
+            let labels = [(vec![11, 12], false), (vec![21, 22], true)];
+            let sender = ChouOrlandiBitGcOt::<U16, _, _>::new(
+                BitGcRole::Garbler,
+                garbler_ot_transport,
+                SeedRng::new(0x5345_4e44),
+            );
+            let receiver = ChouOrlandiBitGcOt::<U16, _, _>::new(
+                BitGcRole::Evaluator,
+                evaluator_ot_transport,
+                SeedRng::new(0x5245_4356),
+            );
+
+            let send = thread::spawn(move || {
+                let mut ot = sender;
+                garbler_session.send_evaluator_input_over::<U16, _, _>(
+                    &mut garbler_frames,
+                    &mut ot,
+                    4,
+                    97,
+                    2,
+                    &labels,
+                )
+            });
+            let receive = thread::spawn(move || {
+                let mut ot = receiver;
+                evaluator_session.receive_evaluator_input_over::<U16, _, _>(
+                    &mut evaluator_frames,
+                    &mut ot,
+                    4,
+                    97,
+                    2,
+                    choice,
+                )
+            });
+            send.join().unwrap().unwrap();
+            let (label, masked) = receive.join().unwrap().unwrap();
+            assert_eq!(label, if choice { vec![21, 22] } else { vec![11, 12] });
+            assert_eq!(masked, choice);
+        }
     }
 
     #[test]
@@ -845,7 +2024,7 @@ mod tests {
 
         let mut oversized_receiver = BitGcSession::new(BitGcRole::Evaluator, binding()).unwrap();
         let mut io = TestTransport {
-            incoming: Some(vec![0; BITGC_FRAME_MAX_BYTES + 1]),
+            incoming: vec![vec![0; BITGC_FRAME_MAX_BYTES + 1]],
             sent: Vec::new(),
             fail_send: false,
             cancelled: false,
@@ -874,11 +2053,23 @@ mod tests {
     }
 
     struct TestTransport {
-        incoming: Option<Vec<u8>>,
+        incoming: Vec<Vec<u8>>,
         sent: Vec<Vec<u8>>,
         fail_send: bool,
         cancelled: bool,
         receive_limit: usize,
+    }
+
+    impl TestTransport {
+        fn new() -> Self {
+            Self {
+                incoming: Vec::new(),
+                sent: Vec::new(),
+                fail_send: false,
+                cancelled: false,
+                receive_limit: 0,
+            }
+        }
     }
 
     impl BitGcFrameTransport for TestTransport {
@@ -894,7 +2085,11 @@ mod tests {
 
         fn receive_frame(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error> {
             self.receive_limit = max_bytes;
-            self.incoming.take().ok_or(())
+            if self.incoming.is_empty() {
+                Err(())
+            } else {
+                Ok(self.incoming.remove(0))
+            }
         }
 
         fn cancel(&mut self) -> Result<(), Self::Error> {
@@ -909,7 +2104,7 @@ mod tests {
         let g_hello = garbler.hello().unwrap();
         let e_hello = evaluator.hello().unwrap();
         let mut io = TestTransport {
-            incoming: Some(g_hello),
+            incoming: vec![g_hello],
             sent: Vec::new(),
             fail_send: false,
             cancelled: false,
@@ -920,7 +2115,7 @@ mod tests {
         assert_eq!(evaluator.state(), BitGcSessionState::Active);
 
         let mut failing = TestTransport {
-            incoming: None,
+            incoming: Vec::new(),
             sent: Vec::new(),
             fail_send: true,
             cancelled: false,

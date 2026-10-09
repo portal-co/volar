@@ -1,6 +1,6 @@
 # BitGC session protocol plan
 
-**Status:** Phases 0–2 safety quarantine, role-separated algebraic core, and bounded frame/state-machine foundation landed and locally validated. No session protocol or protected-data profile is deployable.
+**Status:** Phases 0–2 landed; Phase 3 has local OT/input and output-label hash-match primitives, but authenticated session integration and cross-process validation remain open. No session protocol or protected-data profile is deployable.
 **Scope:** shared Volar/Cirrus session infrastructure. Aero is not part of this work.
 **Ledger:** `BITGC-LEDGER-07` in `docs/fhe/future-provider-integration-ledger.md`.
 
@@ -11,7 +11,7 @@
 - **R-3 Evaluator inputs use OT** — the existing `volar-mpc` OT seam and BitGC input-label equations.
 - **R-4 Sessions bind peers and circuits** — the request for versioned, transcript-bound frames.
 - **R-5 Frames are bounded and sessions cancel safely** — the request for bounded APIs, cancellation, and errors.
-- **R-6 Outputs are authenticated** — the paper's output-label hash-match path; the reference `pi` opening is test-only.
+- **R-6 Output labels are opened by hash match** — the paper's output-label pair path; the reference `pi` opening is test-only. Hash matching does not authenticate an unauthenticated transport.
 - **R-7 Cirrus uses the shared protocol** — the request for a shared Volar/Cirrus implementation and differential tests.
 - **R-8 Security claims remain gated** — Volar reliability policy and `BITGC-LEDGER-03`.
 
@@ -35,10 +35,10 @@
 
 ### R-3 Evaluator inputs use OT
 
-- **Approach:** Route evaluator-owned input labels through the existing `OtChannel` seam; garbler-owned and public inputs use explicit ownership rules. Bind each transfer to the circuit input index and session.
+- **Approach:** Route evaluator-owned labels through the fallible `BitGcInputOt` seam. The experimental `ChouOrlandiBitGcOt` uses a dedicated bounded OT message transport; the infallible `OtChannel` adapter is explicitly local-only. Input descriptors bind index and chunk order to session frames, but do not cryptographically bind/authenticate the independent OT channel.
 - **Touches:** `volar-mpc` input ownership/OT and the BitGC session.
-- **Test seam:** Deterministic loopback OT tests with both input owners and mismatched-choice tests.
-- **Acceptance:** [ ] Evaluator receives only its selected label. [ ] Input order and ownership are checked before any gate record is consumed.
+- **Test seam:** Loopback tests plus two-thread Chou–Orlandi OT tests, both input choices, malformed descriptors, and injected OT failures.
+- **Acceptance:** [x] The tested OT implementation returns only its selected label. [x] Input index/chunk order is checked before the corresponding OT read. [ ] OT messages are cryptographically bound to an authenticated session transcript.
 - **Hard part:** The pinned reference driver currently returns masked bits alongside labels; the session must not send that helper value as clear protocol data.
 
 ### R-4 Sessions bind peers and circuits
@@ -57,13 +57,13 @@
 - **Acceptance:** [x] The borrowed decoder checks fixed limits before exposing payloads; the transport seam requires bounds before peer-sized allocation. [x] Malformed, duplicate, out-of-order, or over-budget input aborts. [x] Abort/cancel cannot resume the session.
 - **Hard part:** Bound ciphertext and RNS payload sizes before deserialization and avoid partial-state reuse after errors.
 
-### R-6 Outputs are authenticated
+### R-6 Output label hash-match opening
 
-- **Approach:** Commit to both output labels with domain-separated hashes bound to the transcript; the evaluator recognizes its active label by hash match. Never reveal `pi` as the production opening.
+- **Approach:** Send domain-separated hashes of both output labels bound to caller-supplied session/circuit/profile context; the evaluator recognizes its active label by hash match. Never reveal `pi` as the production opening. Because frames are unauthenticated, this is label-pair consistency only; an intermediary can alter or swap hashes.
 - **Touches:** Pinned output handling and session frames.
-- **Test seam:** Output-label tampering, wrong-wire, wrong-bit, and transcript-replay tests.
-- **Acceptance:** [ ] Evaluator cannot accept a label outside the committed pair. [ ] The garbler's SWHE secret is never needed to open evaluator output.
-- **Hard part:** This authenticates output consistency but does not provide active-secure garbling; document the semi-honest model.
+- **Test seam:** Output-label tampering and output/wire-order checks. Transport-authentication tests remain open.
+- **Acceptance:** [x] The evaluator rejects an active label outside the committed pair. [x] The garbler's SWHE secret is not needed to open evaluator output. [ ] The commitments are authenticated to the peer and transcript.
+- **Hard part:** This does not provide active-secure garbling or authenticate the sender; keep protected use disabled and document the semi-honest model.
 
 ### R-7 Cirrus uses the shared protocol
 
@@ -108,7 +108,7 @@
 - [x] Exercise small and fast with distinct garbler/evaluator material; explicitly reject tiny.
 
 **Validation (2026-10-09):** `volar-spec` default-feature `cargo check` passed; feature-enabled tests passed (330 unit tests, 5 integration tests, and the compile-fail doctest; 2 unit tests and 1 doctest ignored). Cirrus default-feature `cargo check` passed and its opt-in reference round-trip passed (2 tests). These are API/correctness checks only—not independent review, cryptographic security evidence, or deployability evidence.
-**Not here:** Wire transport, OT frames, authenticated output opening, or production parameter claims.
+**Not here:** Session transport, output-opening protocol, Cirrus integration, or production parameter claims.
 
 ### Phase 2 — Bounded, bound session frames
 
@@ -123,25 +123,26 @@
 - [x] Add fallible `BitGcFrameTransport` send/receive/cancel seams and terminal abort/cancel states.
 - [x] Test malformed, truncated, oversized, replayed, reordered, wrong-role, and wrong-binding frames, plus injected transport failure and cancellation during handshake/active states.
 
-**Validation (2026-10-09):** `volar-mpc` BitGC session unit tests passed (10/10) with an offline workspace-patched Cargo run; `git diff --check` and targeted rustfmt passed. The codec rejects noncanonical/truncated/oversized frames, and the state machine rejects mismatches before returning payloads. The envelope is not authenticated: peer/transcript authentication, canonical digest construction, OT, and protected-session admission remain open.
+**Validation (2026-10-09):** `volar-mpc` BitGC session unit tests passed (10/10) with an offline workspace-patched Cargo run; `git diff --check` and targeted rustfmt passed. The codec rejects noncanonical/truncated/oversized frames, and the state machine rejects mismatches before returning payloads. At this phase boundary the envelope was unauthenticated and OT was not yet implemented; Phase 3 adds only an experimental unbound OT adapter. Peer/transcript authentication, canonical digest construction, and protected-session admission remain open.
 **Not here:** Live OT or any deployment transport.
 
-### Phase 3 — Input OT and authenticated opening
+### Phase 3 — Input OT and output-label hash-match foundation
 
 **Covers:** R-2, R-3, R-6.
 
-**Goal:** A loopback session transfers only selected evaluator labels and opens outputs by hash match.
+#### Landed prototype tasks
 
-**Tasks**
+- [x] Add a fallible 1-of-2 OT interface and experimental Chou–Orlandi adapter over a dedicated bounded message channel; keep the infallible `OtChannel` wrapper explicitly local-only.
+- [x] Transfer serialized evaluator-input labels in bounded OT chunks, with session-bound ordered descriptors; keep the choice bit out of frames and enforce the profile's exact ring degree.
+- [x] Add domain-separated output-label pair hashes and evaluator hash-match opening without revealing `pi` or the garbler's secret.
+- [x] Make malformed descriptors, OT/frame failures, output mismatches, and failed cancellations terminal; test both input choices, OT failure paths, profile shape rejection, and output-label tampering.
 
-- Bind input ownership and OT choices to the session transcript.
-- Stream bounded offline evaluator material and gate records.
-- Commit output-label hashes and implement evaluator hash-match opening.
-- Propagate cancel and transport errors through both role machines.
-- Test wrong choices, altered records, bad output labels, and abort at every state.
+**Validation (2026-10-09):** `volar-mpc` session tests passed (15/15); the full `volar-mpc` library suite passed (36 tests), and `volar-spec` passed (330 passed, 2 ignored). A two-thread test exercised the Chou–Orlandi adapter over bounded message pipes. This is implementation/correctness evidence only.
 
-**Proof:** Two distinct role processes compute correct outputs; neither holds the other's private inputs or secret key.
-**Not here:** Malicious security or external network deployment.
+**Still open:** OT messages are not cryptographically bound to an authenticated session transcript; output hashes travel in unauthenticated frames and can be altered/swapped; there is no independent-process end-to-end test, canonical digest construction, or Cirrus integration. The output API therefore provides label-pair consistency, not authenticated transport or active security.
+
+**Proof:** Not yet met. Tests use two concurrent role endpoints in one process and a test message transport; they do not establish a deployable cross-process protocol or security.
+**Not here:** Malicious security or protected-data admission.
 
 ### Phase 4 — Cirrus adapter and differential closeout
 
