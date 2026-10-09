@@ -1,0 +1,167 @@
+# BitGC session protocol plan
+
+**Status:** proposed; callback sent to t-9bba. No session code is yet deployable.
+**Scope:** shared Volar/Cirrus session infrastructure. Aero is not part of this work.
+**Ledger:** `BITGC-LEDGER-07` in `docs/fhe/future-provider-integration-ledger.md`.
+
+## 1. Requirements
+
+- **R-1 Paper equations replace the reference equation** — `BITGC-LEDGER-04`, the archived 2025/1810 and 2024/1988 papers, and the authors' artifact.
+- **R-2 Garbler secrets stay role-separated** — the request from t-9bba and the pinned construction's key ownership.
+- **R-3 Evaluator inputs use OT** — the existing `volar-mpc` OT seam and BitGC input-label equations.
+- **R-4 Sessions bind peers and circuits** — the request for versioned, transcript-bound frames.
+- **R-5 Frames are bounded and sessions cancel safely** — the request for bounded APIs, cancellation, and errors.
+- **R-6 Outputs are authenticated** — the paper's output-label hash-match path; the reference `pi` opening is test-only.
+- **R-7 Cirrus uses the shared protocol** — the request for a shared Volar/Cirrus implementation and differential tests.
+- **R-8 Security claims remain gated** — Volar reliability policy and `BITGC-LEDGER-03`.
+
+## 2. Approach by requirement
+
+### R-1 Paper equations replace the reference equation
+
+- **Approach:** Keep equation and label math in `volar-spec::bitgc::pinned`; make the Cirrus adapter call those same operations. Quarantine `ReferenceEquation` to tests or an explicit reference-only feature.
+- **Touches:** `volar-spec::bitgc`, `volar-mpc`, and `cirrus-volar-garble`.
+- **Test seam:** Pinned garble/evaluate drivers and artifact-backed circuit vectors.
+- **Acceptance:** [ ] Small and fast equations map to cited figures. [ ] Cirrus cannot select the reference equation by default. [ ] Truth tables and record counts match the independent oracle.
+- **Hard part:** Existing pinned drivers are not actually role-separated and their DD seam exposes `Delta`.
+
+### R-2 Garbler secrets stay role-separated
+
+- **Approach:** Split garbler setup from evaluator-safe evaluation material. The evaluator receives neither `Delta` nor the SWHE secret key. The evaluator-facing DD interface exposes only the public/evaluation material required by the pinned operations.
+- **Touches:** `volar-spec::bitgc::pinned` and the session setup in `volar-mpc`.
+- **Test seam:** Construct evaluator state from serialized evaluator material only; compile-time API tests and secret-absence assertions cover both roles.
+- **Acceptance:** [ ] No evaluator API accepts `SecretKey` or `Delta`. [ ] Both roles evaluate using compatible public/evaluation material. [ ] No shared object contains both role secrets.
+- **Hard part:** The paper's distributed-decryption and CP-RLWE key material must be mapped exactly, not hidden behind a renamed shared key.
+
+### R-3 Evaluator inputs use OT
+
+- **Approach:** Route evaluator-owned input labels through the existing `OtChannel` seam; garbler-owned and public inputs use explicit ownership rules. Bind each transfer to the circuit input index and session.
+- **Touches:** `volar-mpc` input ownership/OT and the BitGC session.
+- **Test seam:** Deterministic loopback OT tests with both input owners and mismatched-choice tests.
+- **Acceptance:** [ ] Evaluator receives only its selected label. [ ] Input order and ownership are checked before any gate record is consumed.
+- **Hard part:** The pinned reference driver currently returns masked bits alongside labels; the session must not send that helper value as clear protocol data.
+
+### R-4 Sessions bind peers and circuits
+
+- **Approach:** Add a transport-neutral session state machine. Bind role, protocol version, variant, parameter fingerprint, circuit digest, session ID, and monotonic sequence numbers into the transcript.
+- **Touches:** New `volar-mpc::bitgc_session` module and the Cirrus adapter.
+- **Test seam:** Role-pair loopback tests plus wrong-version, wrong-profile, wrong-circuit, replay, and reordering tests.
+- **Acceptance:** [ ] A frame from another session or circuit is rejected before cryptographic evaluation. [ ] Sequences advance exactly once.
+- **Hard part:** Define canonical parameter and circuit digests without adding a serialization dependency to `volar-spec`.
+
+### R-5 Frames are bounded and sessions cancel safely
+
+- **Approach:** Define a versioned, canonical frame codec with checked lengths and bounded chunks. Return transport and protocol errors; cancellation moves both state machines to a terminal state.
+- **Touches:** `volar-mpc::bitgc_session` and transport adapters.
+- **Test seam:** Codec property tests, truncated/oversized frame tests, injected I/O failures, and cancel-at-each-state tests.
+- **Acceptance:** [ ] No untrusted length allocates before checking limits. [ ] Malformed, duplicate, out-of-order, or over-budget input aborts. [ ] Abort/cancel cannot resume the session.
+- **Hard part:** Bound ciphertext and RNS payload sizes before deserialization and avoid partial-state reuse after errors.
+
+### R-6 Outputs are authenticated
+
+- **Approach:** Commit to both output labels with domain-separated hashes bound to the transcript; the evaluator recognizes its active label by hash match. Never reveal `pi` as the production opening.
+- **Touches:** Pinned output handling and session frames.
+- **Test seam:** Output-label tampering, wrong-wire, wrong-bit, and transcript-replay tests.
+- **Acceptance:** [ ] Evaluator cannot accept a label outside the committed pair. [ ] The garbler's SWHE secret is never needed to open evaluator output.
+- **Hard part:** This authenticates output consistency but does not provide active-secure garbling; document the semi-honest model.
+
+### R-7 Cirrus uses the shared protocol
+
+- **Approach:** Keep `cirrus-volar-garble::bitgc` as a thin adapter over `volar-mpc::bitgc_session` and the pinned spec types. Remove duplicated equation behavior.
+- **Touches:** Cirrus BitGC backend and its `cirrus_core` adapters.
+- **Test seam:** Existing BitGC roundtrip plus shared-schedule differential tests against Volar and the artifact.
+- **Acceptance:** [ ] Both backends consume the same versioned schedule/profile. [ ] No default Cirrus path reaches `ReferenceEquation` or accepts evaluator-held garbler secrets.
+- **Hard part:** Preserve Cirrus streaming while the offline expansion and record stream become framed and bounded.
+
+### R-8 Security claims remain gated
+
+- **Approach:** Keep the module unpinned/very unstable and refuse protected-data admission until independent parameter/noise review and protocol review pass.
+- **Touches:** Ledger, profile admission, module docs, and tests.
+- **Test seam:** Admission tests and the external review record.
+- **Acceptance:** [ ] No production profile is enabled by test evidence alone. [ ] `BITGC-LEDGER-03` remains a release gate.
+- **Hard part:** The current lattice gadget uses simplified noise and has an unresolved KDM/RLWE security review.
+
+## 3. Phases
+
+### Phase 1 — Role-safe paper-pinned core
+
+**Covers:** R-1, R-2, R-8.
+
+**Goal:** The smallest garble/evaluate path runs from distinct garbler and evaluator material, with no evaluator reference to `Delta` or the garbler's secret key.
+
+**Tasks**
+
+- Trace every small/fast equation against the archived papers and artifact.
+- Split DD setup from evaluator-safe DD operations.
+- Move the test/reference equation behind a non-default test/reference gate.
+- Add compile-time and runtime tests for role-material separation.
+- Exercise both variants with independent garbler/evaluator objects.
+
+**Proof:** Paper-binding review and both variant truth tables pass without secret crossing the evaluator interface.
+**Not here:** Wire transport, OT frames, or production parameter claims.
+
+### Phase 2 — Bounded, bound session frames
+
+**Covers:** R-4, R-5.
+
+**Goal:** Two local roles reject malformed, replayed, mismatched, and over-budget frames before evaluation.
+
+**Tasks**
+
+- Define the protocol header, profile fingerprint, circuit digest, and sequence rules.
+- Implement canonical frame encode/decode with explicit size limits.
+- Add fallible send/receive/cancel seams and terminal abort state.
+- Test malformed, truncated, oversized, replayed, reordered, and wrong-profile frames.
+
+**Proof:** Codec and state-machine adversarial tests pass without allocating beyond configured limits.
+**Not here:** Live OT or any deployment transport.
+
+### Phase 3 — Input OT and authenticated opening
+
+**Covers:** R-2, R-3, R-6.
+
+**Goal:** A loopback session transfers only selected evaluator labels and opens outputs by hash match.
+
+**Tasks**
+
+- Bind input ownership and OT choices to the session transcript.
+- Stream bounded offline evaluator material and gate records.
+- Commit output-label hashes and implement evaluator hash-match opening.
+- Propagate cancel and transport errors through both role machines.
+- Test wrong choices, altered records, bad output labels, and abort at every state.
+
+**Proof:** Two distinct role processes compute correct outputs; neither holds the other's private inputs or secret key.
+**Not here:** Malicious security or external network deployment.
+
+### Phase 4 — Cirrus adapter and differential closeout
+
+**Covers:** R-1, R-3, R-4, R-5, R-6, R-7.
+
+**Goal:** Cirrus drives the same shared protocol and agrees with Volar and the independent artifact on bounded circuits.
+
+**Tasks**
+
+- Replace the current Cirrus reference-equation path with the shared role API.
+- Adapt Cirrus record push/pull to bounded session chunks.
+- Run circuit truth tables and sub64 accounting across both variants.
+- Add property-based topology and frame mutation tests.
+- Record remaining parameters and review blockers in the ledger.
+
+**Proof:** Volar/Cirrus/artifact outputs and record counts agree on the conformance fixtures.
+**Not here:** Active security, BitGC-tiny, or a production admission profile.
+
+### Phase 5 — Independent review and release gate
+
+**Covers:** R-2, R-6, R-8.
+
+**Goal:** No protected-data claim is made unless independent protocol and parameter reviews pass.
+
+**Tasks**
+
+- Review RLWE/KDM assumptions, noise distributions, and per-gate failure bounds.
+- Review transcript, OT, output-opening, and cancellation security.
+- Record reviewer, reviewed commit, assumptions, and findings.
+- Keep profile admission disabled until the maintainers accept the review.
+
+**Proof:** `BITGC-LEDGER-03` and `BITGC-LEDGER-07` have explicit accepted evidence, or the feature remains unavailable for protected data.
+**Not here:** Changes to Aero or its provider registry.
