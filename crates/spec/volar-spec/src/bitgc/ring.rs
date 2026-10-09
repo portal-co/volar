@@ -319,15 +319,29 @@ pub(crate) fn sample_uniform(
     Ok(())
 }
 
+/// A negacyclic NTT context over `Z_q` with precomputed twiddle/root
+/// tables. All tables are built once in [`Ntt::new`] so that
+/// `forward`/`inverse` are pure O(N·log N) butterflies with no
+/// per-element `pow_mod` calls (the earlier per-call `pow_mod(psi, i)`
+/// scaling made each transform O(N·log q) — this is the main perf fix).
+///
+/// The transform is the standard negacyclic-embedding: pre-scale by
+/// `psi^i`, run a cyclic NTT of length N with root `omega = psi^2`, then
+/// (for the inverse) post-scale by `N^{-1}·psi^{-i}`.
 #[derive(Clone, Debug)]
 pub(crate) struct Ntt {
     modulus: u64,
     degree: usize,
-    psi: u64,
-    omega: u64,
-    inverse_psi: u64,
-    inverse_omega: u64,
-    inverse_degree: u64,
+    /// `psi^i` for `i in 0..degree` (forward pre-scale table).
+    psi_powers: Vec<u64>,
+    /// `psi^{-i}` for `i in 0..degree` (inverse post-scale table,
+    /// pre-multiplied by `N^{-1}`).
+    inv_psi_powers_scaled: Vec<u64>,
+    /// Per-stage twiddle factors for the forward cyclic transform:
+    /// `omega^(N/length)` for `length = 2, 4, …, degree`.
+    fwd_twiddles: Vec<u64>,
+    /// Per-stage twiddle factors for the inverse cyclic transform.
+    inv_twiddles: Vec<u64>,
 }
 
 impl Ntt {
@@ -340,42 +354,83 @@ impl Ntt {
         }
         let psi = find_negacyclic_root(degree, modulus).ok_or(Error::Arithmetic)?;
         let omega = mul_mod(psi, psi, modulus);
+        let inverse_psi = inverse_mod(psi, modulus).ok_or(Error::Arithmetic)?;
+        let inverse_omega = inverse_mod(omega, modulus).ok_or(Error::Arithmetic)?;
+        let inverse_degree = inverse_mod(degree as u64, modulus).ok_or(Error::Arithmetic)?;
+
+        // Pre-scale tables.
+        let mut psi_powers = Vec::with_capacity(degree);
+        let mut acc = 1_u64;
+        for _ in 0..degree {
+            psi_powers.push(acc);
+            acc = mul_mod(acc, psi, modulus);
+        }
+        let mut inv_psi_powers_scaled = Vec::with_capacity(degree);
+        let mut acc = 1_u64;
+        for _ in 0..degree {
+            // `N^{-1}·psi^{-i}` folded into the inverse post-scale table.
+            inv_psi_powers_scaled.push(mul_mod(acc, inverse_degree, modulus));
+            acc = mul_mod(acc, inverse_psi, modulus);
+        }
+
+        // Per-stage twiddle factors (length-doubling butterflies).
+        let mut fwd_twiddles = Vec::new();
+        let mut inv_twiddles = Vec::new();
+        let mut length = 2;
+        while length <= degree {
+            fwd_twiddles.push(pow_mod(omega, degree / length, modulus));
+            inv_twiddles.push(pow_mod(inverse_omega, degree / length, modulus));
+            length *= 2;
+        }
+
         Ok(Self {
             modulus,
             degree,
-            psi,
-            omega,
-            inverse_psi: inverse_mod(psi, modulus).ok_or(Error::Arithmetic)?,
-            inverse_omega: inverse_mod(omega, modulus).ok_or(Error::Arithmetic)?,
-            inverse_degree: inverse_mod(degree as u64, modulus).ok_or(Error::Arithmetic)?,
+            psi_powers,
+            inv_psi_powers_scaled,
+            fwd_twiddles,
+            inv_twiddles,
         })
     }
 
+    /// The modulus this context transforms over.
+    pub(crate) const fn modulus(&self) -> u64 {
+        self.modulus
+    }
+
+    /// The transform length (ring degree `N`).
+    pub(crate) const fn degree(&self) -> usize {
+        self.degree
+    }
+
+    /// Forward negacyclic NTT (pre-scale by `psi^i`, cyclic NTT).
     fn forward(&self, values: &mut [u64]) {
-        for (index, value) in values.iter_mut().enumerate() {
-            *value = mul_mod(*value, pow_mod(self.psi, index, self.modulus), self.modulus);
+        debug_assert_eq!(values.len(), self.degree);
+        for (value, &s) in values.iter_mut().zip(self.psi_powers.iter()) {
+            *value = mul_mod(*value, s, self.modulus);
         }
-        self.cyclic(values, self.omega);
+        self.cyclic(values, &self.fwd_twiddles);
     }
 
+    /// Inverse negacyclic NTT (cyclic inverse, post-scale by
+    /// `N^{-1}·psi^{-i}`).
     fn inverse(&self, values: &mut [u64]) {
-        self.cyclic(values, self.inverse_omega);
-        for (index, value) in values.iter_mut().enumerate() {
-            *value = mul_mod(*value, self.inverse_degree, self.modulus);
-            *value = mul_mod(
-                *value,
-                pow_mod(self.inverse_psi, index, self.modulus),
-                self.modulus,
-            );
+        debug_assert_eq!(values.len(), self.degree);
+        self.cyclic(values, &self.inv_twiddles);
+        for (value, &s) in values.iter_mut().zip(self.inv_psi_powers_scaled.iter()) {
+            *value = mul_mod(*value, s, self.modulus);
         }
     }
 
-    fn cyclic(&self, values: &mut [u64], root: u64) {
+    /// The shared length-doubling butterfly network over precomputed
+    /// per-stage twiddles.
+    fn cyclic(&self, values: &mut [u64], twiddles: &[u64]) {
         debug_assert_eq!(values.len(), self.degree);
         bit_reverse(values);
         let mut length = 2;
+        let mut stage = 0;
         while length <= self.degree {
-            let step = pow_mod(root, self.degree / length, self.modulus);
+            let step = twiddles[stage];
             for start in (0..self.degree).step_by(length) {
                 let mut twiddle = 1;
                 for offset in 0..length / 2 {
@@ -387,6 +442,7 @@ impl Ntt {
                 }
             }
             length *= 2;
+            stage += 1;
         }
     }
 }
