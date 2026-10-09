@@ -565,6 +565,26 @@ slow reference).
      explicitly whether/how BitGC garblings participate (likely: not at
      first — semi-honest only — documented as a boundary).
 
+     **Resolved (2026-10-08):** BitGC garblings do **not** participate in
+     the existing cut-and-choose wrapper, and that boundary is now
+     explicit. `cut_and_choose::Broadcast` is generic over any cirrus
+     `Context`, so `BitGcGarbleBackend`/`BitGcEvalBackend` are
+     *structurally* wrappable — but the protocol's open-check step
+     requires **deterministic re-garbling from a revealed seed** that
+     reproduces the committed tables bit-for-bit. BitGC's garbling is
+     randomized over `R_p` (fresh `c1` per row, CP-RLWE triple, PRF
+     offsets) and its offline phase samples RLWE ciphertexts with
+     Gaussian-style noise, so a re-garble from the same seed does not
+     reproduce the committed garbled table as an equality checkable
+     value (the paper's construction commits to *labels*, not
+     ciphertexts). BitGC is **semi-honest only** for now; malicious
+     security would need a different cut-and-choose formulation
+     (commit-and-open over the PRG seed + Δ, or the [ZLL+26]
+     authenticated variant ePrint 2025/232). This is a documented
+     boundary, not a gap: `volar_spec::bitgc` and the cirrus adapter are
+     semi-honest constructions, and any malicious-security lift is
+     future work under a separate ledger entry.
+
 ---
 
 ## 6. Paper reference map (implementation → paper)
