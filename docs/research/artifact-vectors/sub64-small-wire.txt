@@ -1,0 +1,75 @@
+=== SMALL_WIRE_LOG ===
+SMALL_WIRE_DONE
+=== SMALL_WIRE_LOG ===
+=== BitGC E2E Benchmark ===
+Config: Variant=small, Check=wire, SeedSize=1000
+Circuit: /root/more-efficient-bitgc/circuits/sub64.txt
+
+=== Setup (ms) ===
+Total=6684.852, CircuitParse=26.059, LargeHE=791.463, SeedPrep=4273.010, SmallHE=1590.030, Other=4.290
+
+=== Setup Comm (Gen->Eva) ===
+Keys: Total=25.8 MB, HEEvalKey=25.7 MB, HSSEvalKey=0.0 MB
+HEEvalKey: Max=LargeGK(22.8 MB), Remain=3.0 MB
+
+=== Modulus Bits ===
+init(780 bits, N=2^9, L=13), post-extraction(300 bits, N=2^8, L=5), hss-mul(240 bits, N=2^8, L=4), dd-cipher(120 bits, N=2^8, L=2)
+
+=== Generator (ms) ===
+Offline RBits: Required=504, Produced=512, Extracted=504, Batches=1
+Offline Time: Total=2052.919, PRG=654.117, Unpack=1397.204
+Offline per RBit (consumed): Total=4.073, PRG=1.298, Unpack=2.772
+Offline per RBit (capacity): Total=4.010, PRG=1.278, Unpack=2.729
+Online Gates: AND=63, XOR=313, INV=63
+Online Time: Total=1103.483, CT=618.973, ExtMul=220.825, HSS/DD=236.663
+Online Per Gate: AND=14.460 (CT=9.825, ExtMul=3.505, HSS/DD=1.130), XOR=0.529, INV=0.325
+Total Per Gate (current): AND=18.531 (PRG=1.298, Unpack=2.772, CT=9.825, ExtMul=3.505, HSS/DD=1.130), XOR=4.599 (PRG=1.298, Unpack=2.772, HSS/DD=0.529), INV=0.325
+Total Per Gate (capacity): AND=18.467 (PRG=1.278, Unpack=2.729, CT=9.825, ExtMul=3.505, HSS/DD=1.130), XOR=4.535 (PRG=1.278, Unpack=2.729, HSS/DD=0.529), INV=0.325
+
+=== Evaluator (ms) ===
+Offline RBits: Required=504, Produced=512, Extracted=504, Batches=1
+Offline Time: Total=1988.303, PRG=659.569, Unpack=1328.468
+Offline per RBit (consumed): Total=3.945, PRG=1.309, Unpack=2.636
+Offline per RBit (capacity): Total=3.883, PRG=1.288, Unpack=2.595
+Online Gates: AND=63, XOR=313, INV=63
+Online Time: Total=1160.887, CT=629.754, ExtMul=240.060, HSS/DD=259.250
+Online Per Gate: AND=15.018 (CT=9.996, ExtMul=3.810, HSS/DD=1.212), XOR=0.584, INV=0.333
+Total Per Gate (current): AND=18.963 (PRG=1.309, Unpack=2.636, CT=9.996, ExtMul=3.810, HSS/DD=1.212), XOR=4.529 (PRG=1.309, Unpack=2.636, HSS/DD=0.584), INV=0.333
+Total Per Gate (capacity): AND=18.901 (PRG=1.288, Unpack=2.595, CT=9.996, ExtMul=3.810, HSS/DD=1.212), XOR=4.467 (PRG=1.288, Unpack=2.595, HSS/DD=0.584), INV=0.333
+
+[CHECK] Output and wire-level invariants verified
+
+=== BitGC E2E Benchmark ===
+--- fast ---
+Config: Variant=small, Check=wire, SeedSize=1000
+Circuit: /root/more-efficient-bitgc/circuits/sub64.txt
+=== Setup (ms) ===
+Total=6684.852, CircuitParse=26.059, LargeHE=791.463, SeedPrep=4273.010, SmallHE=1590.030, Other=4.290
+=== Setup Comm (Gen->Eva) ===
+Keys: Total=25.8 MB, HEEvalKey=25.7 MB, HSSEvalKey=0.0 MB
+HEEvalKey: Max=LargeGK(22.8 MB), Remain=3.0 MB
+=== Modulus Bits ===
+init(780 bits, N=2^9, L=13), post-extraction(300 bits, N=2^8, L=5), hss-mul(240 bits, N=2^8, L=4), dd-cipher(120 bits, N=2^8, L=2)
+=== Generator (ms) ===
+Offline RBits: Required=504, Produced=512, Extracted=504, Batches=1
+Offline Time: Total=2052.919, PRG=654.117, Unpack=1397.204
+Offline per RBit (consumed): Total=4.073, PRG=1.298, Unpack=2.772
+Offline per RBit (capacity): Total=4.010, PRG=1.278, Unpack=2.729
+Online Gates: AND=63, XOR=313, INV=63
+Online Time: Total=1103.483, CT=618.973, ExtMul=220.825, HSS/DD=236.663
+Online Per Gate: AND=14.460 (CT=9.825, ExtMul=3.505, HSS/DD=1.130), XOR=0.529, INV=0.325
+Total Per Gate (current): AND=18.531 (PRG=1.298, Unpack=2.772, CT=9.825, ExtMul=3.505, HSS/DD=1.130), XOR=4.599 (PRG=1.298, Unpack=2.772, HSS/DD=0.529), INV=0.325
+Total Per Gate (capacity): AND=18.467 (PRG=1.278, Unpack=2.729, CT=9.825, ExtMul=3.505, HSS/DD=1.130), XOR=4.535 (PRG=1.278, Unpack=2.729, HSS/DD=0.529), INV=0.325
+=== Evaluator (ms) ===
+Offline RBits: Required=504, Produced=512, Extracted=504, Batches=1
+Offline Time: Total=1988.303, PRG=659.569, Unpack=1328.468
+Offline per RBit (consumed): Total=3.945, PRG=1.309, Unpack=2.636
+Offline per RBit (capacity): Total=3.883, PRG=1.288, Unpack=2.595
+Online Gates: AND=63, XOR=313, INV=63
+Online Time: Total=1160.887, CT=629.754, ExtMul=240.060, HSS/DD=259.250
+Online Per Gate: AND=15.018 (CT=9.996, ExtMul=3.810, HSS/DD=1.212), XOR=0.584, INV=0.333
+Total Per Gate (current): AND=18.963 (PRG=1.309, Unpack=2.636, CT=9.996, ExtMul=3.810, HSS/DD=1.212), XOR=4.529 (PRG=1.309, Unpack=2.636, HSS/DD=0.584), INV=0.333
+Total Per Gate (capacity): AND=18.901 (PRG=1.288, Unpack=2.595, CT=9.996, ExtMul=3.810, HSS/DD=1.212), XOR=4.467 (PRG=1.288, Unpack=2.595, HSS/DD=0.584), INV=0.333
+[CHECK] Output and wire-level invariants verified
+--- fast ---
+FAST_WIRE_DONE
