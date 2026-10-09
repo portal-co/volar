@@ -194,6 +194,22 @@ macro_rules! lir_component {
     }
 }
 
+/// DEFERRED (closure ABI): `random_nonzero_delta` / `vole_commit_bit`
+/// thread `sample_t: impl Fn(&mut R) -> T` through `IdealCot::cot`, and LIR
+/// has no call ABI through opaque Fn parameters. Decision (user, 2026-10):
+/// real role-separated communication (mlkem_ferret sessions) is the path
+/// worth testing, not the same-process ideal functionality, so no
+/// closure-free re-seed workaround. Un-ignore once the mlkem_ferret
+/// integration or a closure ABI provides the real path.
+#[test]
+#[ignore = "deferred: closure ABI through impl Fn params (IdealCot::cot); superseded by mlkem_ferret role-separated sessions"]
+fn vole_setup() {
+    run_lir_component(
+        &["random_nonzero_delta", "vole_commit_bit", "derive_and_q"],
+        "vole_setup",
+    );
+}
+
 lir_component! {
     vole_prover: [
         "vole_and_prover_step",
@@ -204,11 +220,6 @@ lir_component! {
         "vole_and_verifier_check",
         "vole_sbox_verifier_check",
         "vole_mul3_verifier_check",
-    ],
-    vole_setup: [
-        "random_nonzero_delta",
-        "vole_commit_bit",
-        "derive_and_q",
     ],
     tfhe: [
         "tfhe_not",
