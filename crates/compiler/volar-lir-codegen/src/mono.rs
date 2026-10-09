@@ -1253,7 +1253,17 @@ fn bind_call_args_with_trait_args<P: Clone>(
 fn ambient_callee_env<P: Clone>(function: &IrFunction<P>, caller_env: &MonoEnv) -> MonoEnv {
     let shadows = |name: &str| function.generics.iter().any(|g| g.name == name);
     let mut env = MonoEnv::new(caller_env.hash_suffix.clone());
-    env.consts = caller_env.consts.clone();
+    // Drop ambient module scalar consts whose names collide with the
+    // callee's generics: `mono_type`'s consts fallback resolves bare
+    // TypeParams, so an unrelated `pub const U: usize = 7` would otherwise
+    // rewrite the callee's `U` type parameter to `TypeParam("7")` before
+    // unification can bind it from the call-site argument.
+    env.consts = caller_env
+        .consts
+        .iter()
+        .filter(|(name, _)| !shadows(name))
+        .map(|(name, value)| (name.clone(), *value))
+        .collect();
     for (name, value) in &caller_env.const_params {
         if !shadows(name) {
             env.const_params.insert(name.clone(), *value);
@@ -1526,6 +1536,26 @@ fn unify_into<P: Clone>(
             }
             Ok(())
         }
+        // Same nominal struct on both sides: unify type arguments
+        // positionally. Without this, `Delta<N, U>` against `Delta<N, T>`
+        // bound nothing, leaving trait-level generics (`U` in
+        // `impl Mul<Delta<N, U>> for Vope<N, T, K>`) unbound even when the
+        // call-site argument pins them.
+        (
+            IrType::Struct {
+                kind: p_kind,
+                type_args: p_args,
+            },
+            IrType::Struct {
+                kind: c_kind,
+                type_args: c_args,
+            },
+        ) if p_kind == c_kind && p_args.len() == c_args.len() => {
+            for (p, c) in p_args.iter().zip(c_args.iter()) {
+                unify_into(env, p, c, function, caller_env)?;
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -1722,9 +1752,21 @@ fn infer_expr_type<P: Clone>(
                 _ => None,
             }
         }
-        // `.clone()` / `.deref()` preserve the receiver's type — resolving
-        // through it keeps call-arg inference alive for arguments like
-        // `delta.clone()` passed to operator-impl methods.
+        // `.clone()` / `.deref()` yield the receiver's VALUE type: the
+        // receiver is typically a reference (`&Delta<N, T>`), and the clone
+        // produces the owned `Delta<N, T>` — peeling the reference is what
+        // lets operator-impl unification bind generic slots (e.g. `U` in
+        // `Mul<Delta<N, U>>`) from the cloned argument.
+        IrExprKind::MethodCall {
+            receiver,
+            method: MethodKind::Known(
+                volar_compiler::ir::StdMethod::Clone | volar_compiler::ir::StdMethod::Deref,
+            ),
+            ..
+        } => match infer_expr_type(receiver, env, vars, structs)? {
+            IrType::Reference { elem, .. } => Some(*elem),
+            other => Some(other),
+        },
         IrExprKind::MethodCall {
             receiver,
             method: MethodKind::Known(volar_compiler::ir::StdMethod::Len),
@@ -3018,7 +3060,10 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
             } else if let Some(&n) = env.consts.get(name) {
                 // Named module constants used directly as generic arguments
                 // (rather than array lengths) must be concrete for impl-trait
-                // argument unification as well.
+                // argument unification as well. Names that are type params
+                // in the CURRENT generic context are kept out of `consts`
+                // by the caller-env construction, so this does not shadow
+                // them.
                 IrType::TypeParam(n.to_string())
             } else if let Ok(n) = name.parse::<usize>() {
                 IrType::TypeParam(n.to_string())

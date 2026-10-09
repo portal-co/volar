@@ -418,11 +418,17 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 Some(IrType::Tuple(tys?))
             }
 
+            // `.clone()` / `.deref()` yield the receiver's VALUE type:
+            // cloning `&T` produces an owned `T`, so peel one reference
+            // layer (mirrors mono.rs's planner-side inference).
             IrExprKind::MethodCall {
                 receiver,
                 method: MethodKind::Known(StdMethod::Clone | StdMethod::Deref),
                 ..
-            } => self.infer_type(receiver),
+            } => self.infer_type(receiver).map(|ty| match ty {
+                IrType::Reference { elem, .. } => *elem,
+                other => other,
+            }),
 
             // `Option<T>.unwrap()` / `.expect(..)`: the result is the payload
             // type. (LIR cannot trap; the tag is dropped.)
