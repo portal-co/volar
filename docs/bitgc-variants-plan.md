@@ -693,8 +693,8 @@ checks get ledger IDs in `future-provider-integration-ledger.md` with
 | BITGC-PIN-09 | BitGC-tiny garble/eval | [ZLL+26] §5.2 | DEFERRED (maintainer decision 2026-10-08; ledger BITGC-LEDGER-06) |
 | BITGC-PIN-10 | Parameter sets (both variants, 128-bit claim) | [ZLL+26] §6 | **PINNED (paper):** log p≈60; DD moduli log q≈120 / log r≈240; fast log Q_PRG≈600 / Q_gate≈180 at N=2^15/2^13; small log Q_PRG≈780 / Q_gate≈300 at N=2^15/2^14 — pinning doc §5 |
 | BITGC-PIN-11 | Table 1 reconciliation (sizes, timings) | [ZLL+26] Table 1 | **PINNED (paper, verbatim):** fast 5/0 bits 4.0 KB 116 s; small 1/1 4.3 KB 345 s; tiny 1/0 0.8 KB ≥56 min; baseline BitGC 1/1 4.3 KB ≥14 h (est.) |
-| BITGC-LEDGER-01 | Artifact `sub64` conformance (small) | [ZLL+26-A] | TODO (QEMU build) |
-| BITGC-LEDGER-02 | Artifact `sub64` conformance (fast) | [ZLL+26-A] | TODO (QEMU build) |
+| BITGC-LEDGER-01 | Artifact `sub64` conformance (small) | [ZLL+26-A] | **PARTIAL:** vectors captured (QEMU Ubuntu guest, `--check=wire` passed) in `docs/research/artifact-vectors/`; differential test `tests/bitgc_sub64_conformance.rs` landed (gate/RBits/comm accounting + functional correctness over `LatticeDd`). Exact per-wire HSS-share differential is open (vectors are timing/structural) |
+| BITGC-LEDGER-02 | Artifact `sub64` conformance (fast) | [ZLL+26-A] | **PARTIAL:** same as BITGC-LEDGER-01 (fast: 5 bits/AND, free XOR, 252 RBits confirmed) |
 | BITGC-LEDGER-03 | Independent noise/parameter security review | [LWYY25b] assumption statement | TODO |
 
 ---
