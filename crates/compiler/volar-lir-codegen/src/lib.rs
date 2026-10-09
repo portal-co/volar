@@ -424,6 +424,18 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 ..
             } => self.infer_type(receiver),
 
+            // `Option<T>.unwrap()` / `.expect(..)`: the result is the payload
+            // type. (LIR cannot trap; the tag is dropped.)
+            IrExprKind::MethodCall {
+                receiver,
+                method: MethodKind::Known(StdMethod::Unwrap | StdMethod::Expect),
+                ..
+            } => self
+                .infer_type(receiver)
+                .as_ref()
+                .and_then(option_payload_type)
+                .cloned(),
+
             IrExprKind::MethodCall {
                 receiver,
                 method: MethodKind::Known(StdMethod::Len),
@@ -461,7 +473,18 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
             } => {
                 let recv_ty = self.infer_type(receiver)?;
                 let bits = match &recv_ty {
-                    IrType::Primitive(p) => lir_int_bits(&primitive_to_lir(*p))?,
+                    IrType::Primitive(p) => {
+                        let lir = primitive_to_lir(*p);
+                        lir_int_bits(&lir).or_else(|| match &lir {
+                            // A field element's byte width is its degree ×
+                            // wrapped-width (its polynomial-coefficient bits),
+                            // matching `lower_int_to_bytes`.
+                            LirType::ExtField {
+                                degree, wrapped, ..
+                            } => Some(*degree * lir_int_bits(wrapped).unwrap_or(1)),
+                            _ => None,
+                        })?
+                    }
                     _ => return None,
                 };
                 Some(IrType::Array {
@@ -491,6 +514,24 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 .is_some() =>
             {
                 self.infer_type(receiver)
+            }
+
+            // `match opt { Some(x) => x, None => <infallible exit> }` — the
+            // Option-unwrap idiom: the value is the payload type. (The None
+            // arm is a `return`/`break`, which has no value type.)
+            IrExprKind::Match { expr, arms } => {
+                if let Some(payload_ty) = self
+                    .infer_type(expr)
+                    .as_ref()
+                    .and_then(option_payload_type)
+                {
+                    let payload_ty = payload_ty.clone();
+                    if arms.iter().any(|arm| is_option_some_pattern(&arm.pattern)) {
+                        return Some(payload_ty);
+                    }
+                }
+                // General match: infer from the first arm body that has one.
+                arms.iter().find_map(|arm| self.infer_type(&arm.body))
             }
 
             // User-defined method: resolve through the monomorphization plan
@@ -528,19 +569,30 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 self.ir_func_ret_types.get(name).cloned()
             }
 
+            // References are transparent in the value-semantics model
+            // (lowering passes `Ref`/`RefMut` through), so do not wrap an
+            // inner type that is already a reference — `&x[a..b]` where the
+            // range index already yields `Reference<Slice<T>>` stays that
+            // type, not `Reference<Reference<Slice<T>>>`.
             IrExprKind::Unary {
                 op: SpecUnaryOp::Ref,
                 expr: inner,
-            } => self.infer_type(inner).map(|elem| IrType::Reference {
-                mutable: false,
-                elem: Box::new(elem),
+            } => self.infer_type(inner).map(|elem| match elem {
+                r @ IrType::Reference { .. } => r,
+                other => IrType::Reference {
+                    mutable: false,
+                    elem: Box::new(other),
+                },
             }),
             IrExprKind::Unary {
                 op: SpecUnaryOp::RefMut,
                 expr: inner,
-            } => self.infer_type(inner).map(|elem| IrType::Reference {
-                mutable: true,
-                elem: Box::new(elem),
+            } => self.infer_type(inner).map(|elem| match elem {
+                r @ IrType::Reference { .. } => r,
+                other => IrType::Reference {
+                    mutable: true,
+                    elem: Box::new(other),
+                },
             }),
 
             // Operator overload on a struct with a declared `Mul` impl
@@ -625,6 +677,20 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                         return Some(ty);
                     }
                 }
+                // Static digest trait call `Digest::finalize(h)` on a digest
+                // handle: `lower_digest_external` produces a `Vec<u8>` handle,
+                // matching the `StdMethod::Finalize` method-call arm.
+                if let IrExprKind::Path { segments, .. } = &func.kind {
+                    if segments.last().map(String::as_str) == Some("finalize")
+                        && args.len() == 1
+                        && self.is_digest_handle(&args[0])
+                    {
+                        return Some(IrType::Struct {
+                            kind: StructKind::Custom("Vec".to_string()),
+                            type_args: vec![IrType::Primitive(PrimitiveType::U8)],
+                        });
+                    }
+                }
                 // `uN::from_le_bytes` / `from_be_bytes` returns the head int type.
                 if let IrExprKind::Path { segments, .. } = &func.kind {
                     if segments.len() == 2
@@ -647,6 +713,34 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                     }
                 }
                 if args.len() == 1 {
+                    // Single-field tuple-struct / transparent-wrapper
+                    // constructor (`Galois128(x)`, `FaestPublicKey(pk)`):
+                    // the value carries the wrapper's type so `.0` field
+                    // access resolves. Primitive names (`Galois128`, …)
+                    // map to their primitive; module structs to their
+                    // nominal type.
+                    let ctor_name = match &func.kind {
+                        IrExprKind::Path { segments, .. } if segments.len() == 1 => {
+                            Some(segments[0].as_str())
+                        }
+                        IrExprKind::Var(name) => Some(name.as_str()),
+                        _ => None,
+                    };
+                    if let Some(name) = ctor_name {
+                        if let Some(p) = PrimitiveType::from_str(name) {
+                            return Some(IrType::Primitive(p));
+                        }
+                        if self
+                            .module_structs
+                            .iter()
+                            .any(|s| s.kind.to_string() == name && s.fields.len() == 1)
+                        {
+                            return Some(IrType::Struct {
+                                kind: StructKind::Custom(name.to_string()),
+                                type_args: Vec::new(),
+                            });
+                        }
+                    }
                     if let IrExprKind::Path {
                         segments,
                         type_args,
@@ -1012,7 +1106,49 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
                 let data_cell = handle
                     .first()
                     .cloned()
-                    .expect("Vec handle must contain a data-pointer cell");
+                    .unwrap_or_else(|| {
+                        let desc = match &arg.kind {
+                            IrExprKind::Var(name) => format!("var `{name}`"),
+                            IrExprKind::Path { segments, .. } => {
+                                format!("path `{}`", segments.join("::"))
+                            }
+                            IrExprKind::Call { func, .. } => match &func.kind {
+                                IrExprKind::Path { segments, .. } => {
+                                    format!("call to `{}`", segments.join("::"))
+                                }
+                                IrExprKind::Var(name) => format!("call to `{name}`"),
+                                other => format!(
+                                    "call (callee kind {:?})",
+                                    core::mem::discriminant(other)
+                                ),
+                            },
+                            IrExprKind::MethodCall { method, .. } => {
+                                format!("method call `{method:?}`")
+                            }
+                            IrExprKind::Unary { op, expr: inner } => {
+                                let inner_desc = match &inner.kind {
+                                    IrExprKind::Var(name) => format!("var `{name}`"),
+                                    IrExprKind::Path { segments, .. } => {
+                                        format!("path `{}`", segments.join("::"))
+                                    }
+                                    IrExprKind::Field { base, field } => format!(
+                                        "field `.{field}` of {:?}",
+                                        core::mem::discriminant(&base.kind)
+                                    ),
+                                    other => format!(
+                                        "inner kind {:?}",
+                                        core::mem::discriminant(other)
+                                    ),
+                                };
+                                format!("unary {op:?} of {inner_desc}")
+                            }
+                            other => format!("expr kind {:?}", core::mem::discriminant(other)),
+                        };
+                        panic!(
+                            "Vec handle must contain a data-pointer cell: \
+                             lower_expr produced no values for {desc}"
+                        );
+                    });
                 let zero = ctx.target.iconst(LirType::U64, 0);
                 let data = into_scalar(
                     ctx.target.ptr_index_load(
@@ -2131,7 +2267,27 @@ fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T,
                     &init_expr.kind,
                     IrExprKind::Call { func, args }
                         if args.is_empty() && ctx.infer_digest_new_type(func).is_some()
-                );
+                ) || {
+                    // Concrete external digest constructor (`Sha3_256::new()`):
+                    // the `T::new()` handler in `lower_call` emits the opaque
+                    // U64 handle, so register the local as a digest handle too.
+                    if let IrExprKind::Call { func, args } = &init_expr.kind {
+                        if let IrExprKind::Path { segments, .. } = &func.kind {
+                            args.is_empty()
+                                && segments.len() == 2
+                                && segments.last().map(String::as_str) == Some("new")
+                                && ctx
+                                    .module_structs
+                                    .iter()
+                                    .all(|s| s.kind.to_string() != segments[0])
+                                && segments[0].chars().next().is_some_and(|c| c.is_uppercase())
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
                 if digest_constructor {
                     if let IrPattern::Ident { name, .. } = pattern {
                         ctx.digest_handle_vars.insert(name.clone());
@@ -2995,6 +3151,10 @@ fn lower_lit<T: LirTarget<P>, P: Clone>(
         }
         IrLit::Bool(b) => ctx.target.iconst(LirType::Bool, *b as i64),
         IrLit::Float(_) => unimplemented!("float literals not supported in LIR"),
+        // String literals appear only as panic/assert/expect messages —
+        // semantically inert in LIR (no string type exists), so they lower
+        // to a zero machine word when a value is demanded.
+        IrLit::Str(_) => ctx.target.iconst(LirType::U64, 0),
         other => unimplemented!("lower_lit: unsupported literal {:?}", other),
     }
 }
@@ -3354,20 +3514,30 @@ fn lower_enum_match<T: LirTarget<P>, P: Clone>(
         }
         let then_vals = lower_expr(&arm.body, ctx);
 
-        if join_params.is_none() {
-            scalar_tys = then_vals
-                .iter()
-                .map(|v| ctx.target.value_scalar_type(v))
-                .collect();
-            join_params = Some(
-                scalar_tys
+        // A diverging arm body (`return ..`, `break`, `continue`) already
+        // emitted its own control-flow exit; it must not jump to the join
+        // block (its value list is empty, which would mis-arity the join
+        // edge), and it cannot define the join's parameter layout.
+        let diverges = matches!(
+            &arm.body.kind,
+            IrExprKind::Return(_) | IrExprKind::Break(_) | IrExprKind::Continue
+        );
+        if !diverges {
+            if join_params.is_none() {
+                scalar_tys = then_vals
                     .iter()
-                    .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
-                    .collect(),
-            );
+                    .map(|v| ctx.target.value_scalar_type(v))
+                    .collect();
+                join_params = Some(
+                    scalar_tys
+                        .iter()
+                        .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
+                        .collect(),
+                );
+            }
+            ctx.target
+                .jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
         }
-        ctx.target
-            .jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
 
         ctx.target.switch_to_block(else_block.clone());
         ctx.current_block = else_block;
@@ -3389,12 +3559,22 @@ fn lower_enum_match<T: LirTarget<P>, P: Clone>(
             .collect()
     };
 
+    let catch_diverges = catch_all
+        .map(|arm| {
+            matches!(
+                &arm.body.kind,
+                IrExprKind::Return(_) | IrExprKind::Break(_) | IrExprKind::Continue
+            )
+        })
+        .unwrap_or(false);
     let Some(jp) = join_params else {
-        // No variant arms — only catch-all.
+        // No (non-diverging) variant arms — only the catch-all carries a value.
         return catch_vals;
     };
-    ctx.target
-        .jump(join_block.clone(), BranchTarget::args(catch_vals.clone()));
+    if !catch_diverges {
+        ctx.target
+            .jump(join_block.clone(), BranchTarget::args(catch_vals.clone()));
+    }
     ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
     jp
@@ -5970,6 +6150,20 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
             .into_iter()
             .next()
             .expect("pointer should be a single scalar");
+        // Ranged slicing `base[start..]` / `base[start..end]`: LIR slices
+        // are bare element pointers with no length, so the result is the
+        // base pointer advanced by `start` (an empty start defaults to 0).
+        // The end bound is only a Rust-level assertion and drops here.
+        if let IrExprKind::Range { start, .. } = &index.kind {
+            let offset = match start {
+                Some(s) => into_scalar(lower_expr(s, ctx), "slice range start"),
+                None => ctx.target.iconst(LirType::U64, 0),
+            };
+            let ext = ctx.target.stack_alloc_ext().expect(
+                "ranged slice indexing requires a target with StackAllocExt (pointer offset)",
+            );
+            return vec![ext.ptr_offset(ptr, offset)];
+        }
         let idx_val = into_scalar(lower_expr(index, ctx), "array index");
         return ctx.target.ptr_index_load(ptr, idx_val, &elem_lir_ty);
     }
@@ -5977,6 +6171,25 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     let (elem_ir_ty, n) = array_elem_and_len(&base_ir_ty, ctx.mono);
     let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
     let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+
+    // Ranged slicing of an already-lowered slice pointer (`&tail[..n]`,
+    // where `tail` itself came from `&input[off..]`): the base value is a
+    // single bare element pointer, so the result is that pointer advanced
+    // by the range start. Detect by value shape — the IR type claims an
+    // array, but only pointer-backed bases flatten to exactly one scalar.
+    if let IrExprKind::Range { start, .. } = &index.kind {
+        let base_vals = lower_expr(base, ctx);
+        if base_vals.len() == 1 {
+            let offset = match start {
+                Some(s) => into_scalar(lower_expr(s, ctx), "slice range start"),
+                None => ctx.target.iconst(LirType::U64, 0),
+            };
+            let ext = ctx.target.stack_alloc_ext().expect(
+                "ranged slice indexing requires a target with StackAllocExt (pointer offset)",
+            );
+            return vec![ext.ptr_offset(base_vals.into_iter().next().unwrap(), offset)];
+        }
+    }
 
     // Memory-backed local: walk the slot with pointer arithmetic and a
     // single load per read — no mux tree over flat values. Handles nested
@@ -6554,17 +6767,35 @@ fn lower_vec_push<T: LirTarget<P>, P: Clone>(
         .unwrap_or_else(|| panic!("LIR lowering: Vec::push receiver is not a Vec"));
     let elem_lir_ty = ctx.registry.ir_type_to_lir(elem_ir_ty, ctx.mono);
     let handle = lower_expr(receiver, ctx);
-    let elem_values = lower_expr(&args[0], ctx);
     let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+    // A bare `None` push (`verifier_seeds.push(None)`) takes its type from
+    // the Vec's element type, not from whatever Option type the enclosing
+    // function returns: zero-fill the full element width (tag + payload).
+    let elem_values = if matches!(&args[0].kind, IrExprKind::Var(name) if name == "None")
+        && option_payload_type(elem_ir_ty).is_some()
+    {
+        lower_default_zero_values(elem_ir_ty, ctx)
+    } else {
+        lower_expr(&args[0], ctx)
+    };
     assert_eq!(
         elem_values.len(),
         elem_width,
-        "LIR lowering: Vec::push value has {} scalars, expected {elem_width}; value_kind={:?}, value_type={:?}, receiver_kind={:?}, instance={:?}",
-        elem_values.len(),
-        std::mem::discriminant(&args[0].kind),
-        ctx.infer_type(&args[0]),
-        std::mem::discriminant(&receiver.kind),
-        ctx.current_instance.map(|key| &key.source_name)
+        "LIR lowering: Vec::push value has {got} scalars, expected {elem_width}; value_kind={value_kind:?}, value_type={value_type:?}, receiver_kind={receiver_kind:?}, instance={instance:?}, value_desc={value_desc}",
+        got = elem_values.len(),
+        value_kind = std::mem::discriminant(&args[0].kind),
+        value_type = ctx.infer_type(&args[0]),
+        receiver_kind = std::mem::discriminant(&receiver.kind),
+        instance = ctx.current_instance.map(|key| &key.source_name),
+        value_desc = match &args[0].kind {
+            IrExprKind::Call { func, .. } => match &func.kind {
+                IrExprKind::Path { segments, .. } => format!("call `{}`", segments.join("::")),
+                IrExprKind::Var(n) => format!("call `{n}`"),
+                _ => "call (other callee)".to_string(),
+            },
+            IrExprKind::Var(n) => format!("var `{n}`"),
+            _ => "(other)".to_string(),
+        },
     );
     let (data_cell, len_cell, capacity_cell, old_data, len, capacity) =
         load_vec_parts(&handle, &elem_lir_ty, ctx);
@@ -6647,12 +6878,6 @@ fn lower_copy_from_slice<T: LirTarget<P>, P: Clone>(
     let dest_ir_ty = ctx
         .infer_type(receiver)
         .unwrap_or_else(|| panic!("copy_from_slice: cannot infer destination receiver type"));
-    if std::env::var("VOLAR_CFS_PROBE").is_ok() {
-        eprintln!(
-            "[cfs] dest_ty={dest_ir_ty:?} in {:?}",
-            ctx.current_instance.map(|k| &k.source_name)
-        );
-    }
     let (_elem_ir_ty, dest_len) = if let Some(elem) = vec_elem_type(&dest_ir_ty) {
         // Vec destination: runtime length read from its handle.
         (elem.clone(), None)
@@ -6808,6 +7033,25 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
         // `.clone()` and `.deref()` are transparent in value semantics.
         MethodKind::Known(StdMethod::Clone | StdMethod::Deref) => lower_expr(receiver, ctx),
 
+        // `Option<T>.unwrap()` / `.expect(..)`: the synthesized Option layout
+        // is `{ tag, payload }`, so unwrapping drops the tag and passes the
+        // payload through. LIR has no trap mechanism; a `None` unwrap simply
+        // yields whatever zero-initialized payload the None value carries
+        // (spec code only unwraps after checking `is_some`/grinding success).
+        MethodKind::Known(StdMethod::Unwrap | StdMethod::Expect)
+            if ctx
+                .infer_type(receiver)
+                .as_ref()
+                .and_then(option_payload_type)
+                .is_some() =>
+        {
+            let values = lower_expr(receiver, ctx);
+            values
+                .get(1..)
+                .expect("Option value must contain tag + payload")
+                .to_vec()
+        }
+
         // Vec stores its dynamic length alongside the data pointer in its LIR
         // fat-pointer representation. Preserve that length directly rather
         // than emitting an unresolved external call to `Vec::len`.
@@ -6826,6 +7070,51 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
             let fields = lower_expr(receiver, ctx);
             let (_, _, _, _, len, _) = load_vec_parts(&fields, &elem_lir_ty, ctx);
             vec![len]
+        }
+
+        // `.len()` on a fixed array is its constant length.
+        MethodKind::Known(StdMethod::Len)
+            if ctx
+                .infer_type(receiver)
+                .as_ref()
+                .map(|ty| {
+                    matches!(
+                        ty,
+                        IrType::Array {
+                            kind: ArrayKind::FixedArray,
+                            ..
+                        }
+                    ) || matches!(
+                        ty,
+                        IrType::Reference { elem, .. }
+                            if matches!(
+                                elem.as_ref(),
+                                IrType::Array {
+                                    kind: ArrayKind::FixedArray,
+                                    ..
+                                }
+                            )
+                    )
+                })
+                .unwrap_or(false) =>
+        {
+            let receiver_ir_ty = ctx.infer_type(receiver).expect("checked above");
+            let arr = match &receiver_ir_ty {
+                IrType::Reference { elem, .. } => elem.as_ref().clone(),
+                other => other.clone(),
+            };
+            let len = match &arr {
+                IrType::Array {
+                    kind: ArrayKind::FixedArray,
+                    len,
+                    ..
+                } => match mono_len(len, ctx.mono) {
+                    ArrayLength::Const(n) => n,
+                    other => panic!("fixed array length must be a concrete integer, got {other:?}"),
+                },
+                other => panic!(".len() on non-fixed-array {other:?}"),
+            };
+            vec![ctx.target.iconst(LirType::U64, len as i64)]
         }
 
         MethodKind::Known(StdMethod::Push) => lower_vec_push(receiver, args, ctx),
@@ -7167,6 +7456,32 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         }
     }
 
+    // Static digest trait calls — `Digest::finalize(h)` /
+    // `DigestUpdate::update(&mut h, data)` (often written through a
+    // single-letter `use` alias, so match only the last segment): route
+    // through the same extern path as the `h.finalize()` /
+    // `h.update(data)` method-call forms. Without this they fall through
+    // to the default `call_extern` with no return type, so `finalize`
+    // yields zero scalars and a bound Vec handle comes out empty.
+    if let IrExprKind::Path { segments, .. } = &func.kind {
+        match segments.last().map(String::as_str) {
+            Some("finalize") if args.len() == 1 && ctx.is_digest_handle(&args[0]) => {
+                let output_ty = IrType::Struct {
+                    kind: StructKind::Custom("Vec".to_string()),
+                    type_args: vec![IrType::Primitive(PrimitiveType::U8)],
+                };
+                let output_lir_ty = ctx.registry.ir_type_to_lir(&output_ty, ctx.mono);
+                return lower_digest_external(&args[0], "finalize", &[], Some(output_lir_ty), ctx);
+            }
+            Some("update")
+                if args.len() == 2 && ctx.is_digest_handle(&args[0]) =>
+            {
+                return lower_digest_external(&args[0], "update", &args[1..], None, ctx);
+            }
+            _ => {}
+        }
+    }
+
     // Handle Array::from_fn(|i| body) — convert on the fly to ArrayGenerate.
     if let IrExprKind::Path {
         segments,
@@ -7395,6 +7710,20 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
                     }
                 }
             }
+            // External / unregistered nominal type's `T::new()` (e.g.
+            // `Sha3_256::new()` in the FAEST signer/verifier): same opaque
+            // machine-word handle as `T::default()`.
+            if segments.last().map(String::as_str) == Some("new") && segments.len() == 2 {
+                let is_external = ctx
+                    .module_structs
+                    .iter()
+                    .all(|s| s.kind.to_string() != segments[0])
+                    && !segments[0].is_empty()
+                    && segments[0].chars().next().is_some_and(|c| c.is_uppercase());
+                if is_external {
+                    return vec![ctx.target.iconst(LirType::U64, 0)];
+                }
+            }
         }
     }
 
@@ -7566,10 +7895,7 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
     // ---- Default: call_extern ----------------------------------------------
     // Look up the called function's signature for return-type inference.
     // Without this, intra-module calls would discard their return value.
-    if func_name == "FaestPublicKey" || func_name == "FaestSecretKey" {
-        let argt: Vec<_> = args.iter().map(|a| ctx.infer_type(a)).collect();
-        eprintln!("[ctor] {func_name} nargs={} arg_tys={argt:?}", args.len());
-    }
+
     let ret_ty = ctx
         .func_sigs
         .get(&func_name)
@@ -7604,8 +7930,9 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
             .as_ref()
             .map(|t| ctx.registry.ir_type_to_lir(t, ctx.mono))
             .unwrap_or(LirType::U64);
+        let vals = lower_expr(a, ctx);
         arg_tys.push(a_lir_ty);
-        flat_args.extend(lower_expr(a, ctx));
+        flat_args.extend(vals);
     }
 
     ctx.target
