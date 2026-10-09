@@ -1,6 +1,6 @@
 # BitGC session protocol plan
 
-**Status:** proposed; callback sent to t-9bba. No session code is yet deployable.
+**Status:** Phase 0 safety quarantine landed; Phase 1 role-safe core remains open. No session code is deployable.
 **Scope:** shared Volar/Cirrus session infrastructure. Aero is not part of this work.
 **Ledger:** `BITGC-LEDGER-07` in `docs/fhe/future-provider-integration-ledger.md`.
 
@@ -82,6 +82,16 @@
 - **Hard part:** The current lattice gadget uses simplified noise and has an unresolved KDM/RLWE security review.
 
 ## 3. Phases
+
+### Phase 0 — Fail-closed quarantine
+
+**Covers:** R-8 and the safety preconditions for R-1/R-2.
+
+**Goal:** Prevent the current reference adapters from being selected by default or admitted as protected sessions while the role-safe core is unfinished.
+
+**Landed:** Volar rejects every BitGC profile at admission; Cirrus exports its existing reference adapter only behind the explicit `bitgc-reference` feature. Half-gate admission remains on its separate existing path.
+
+**Proof:** Default Cirrus build/tests pass without exporting the reference adapter; the explicit reference-feature round-trip remains available for correctness testing. This is containment only, not role separation or a security review.
 
 ### Phase 1 — Role-safe paper-pinned core
 

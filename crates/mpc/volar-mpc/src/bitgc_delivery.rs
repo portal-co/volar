@@ -1,29 +1,26 @@
 //! BitGC garbling-scheme profile selection and resource admission.
 //!
-//! Mirrors [`crate::input_labels`]'s delivery-seam discipline: the default
-//! garbling scheme stays the half-gate baseline; the BitGC variants
-//! ([`volar_spec::bitgc`]) are an explicit, server-only opt-in selected
-//! before a transcript begins. This module owns the public profile type,
-//! the circuit-geometry manifest the offline phase is sized from, and
-//! resource admission. It does not implement the construction — that is
-//! `volar_spec::bitgc` — and it does not change input-label delivery.
+//! Mirrors [`crate::input_labels`]'s delivery-seam discipline. The default
+//! garbling scheme stays the half-gate baseline. This module records BitGC
+//! profile identities and resource budgets, but rejects every BitGC profile
+//! until the role-separated session protocol is implemented and reviewed.
+//! It does not implement the construction or change input-label delivery.
 //!
 //! # Pinning status
 //!
-//! The BitGC construction modules are experimental reference adapters
-//! (gate equations pending BITGC-LEDGER-04). Selecting a BitGC profile
-//! while the ledger rows are TODO must remain an explicit, documented
-//! decision.
+//! The BitGC reference and pinned modules are not a deployable session. In
+//! particular, the current Cirrus adapter gives evaluator state the garbler
+//! secret key. `is_available` therefore admits only HalfGate until
+//! BITGC-LEDGER-07 passes its role-separation and protocol gates.
 
 use volar_spec::bitgc::Variant;
 
 /// The garbling scheme for a session.
 ///
 /// `HalfGate` (the default) is the existing streaming baseline
-/// ([`volar_spec::garble`]). The `BitGc*` variants are the rate-one
-/// lattice-based schemes of ePrint 2025/1810, implemented in
-/// [`volar_spec::bitgc`] as an optional substitute for large circuits
-/// where communication dominates.
+/// ([`volar_spec::garble`]). The `BitGc*` variants name constructions from
+/// ePrint 2025/1810, but are unavailable for session admission until the
+/// shared role-separated protocol passes its review gates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GcScheme {
     /// Half-gate baseline (default; [ZRE15]-style tables).
@@ -58,9 +55,14 @@ impl GcScheme {
         }
     }
 
-    /// Whether this scheme is implemented and selectable today.
+    /// Whether this scheme is safe to admit to a session today.
+    ///
+    /// BitGC remains unavailable until role-separated key material,
+    /// authenticated output opening, and the reviewed session protocol land.
+    /// TODO(provider-ledger: BITGC-LEDGER-07): enable only after the ledger
+    /// criteria pass; reference equations are not a production substitute.
     pub const fn is_available(self) -> bool {
-        !matches!(self, Self::BitGcTiny)
+        matches!(self, Self::HalfGate)
     }
 }
 
@@ -104,19 +106,21 @@ pub struct BitGcResourceRequest {
 /// Admission decision error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BitGcAdmissionError {
-    /// The selected scheme is not implemented (e.g. `BitGcTiny`).
+    /// The selected scheme is not available for secure session admission.
     UnavailableScheme,
     /// The request exceeds the configured budget.
     OverBudget,
 }
 
-/// Admit a BitGC session: scheme must be implemented and within budget.
+/// Admit a BitGC session: it must select an available BitGC profile and fit
+/// the configured BitGC resource budget. Half-gate sessions use their own
+/// admission path and must not be charged this SWHE estimate.
 pub fn admit(
     manifest: &BitGcManifest,
     budget: &BitGcResourceBudget,
     ciphertext_bytes: u64,
 ) -> Result<BitGcResourceRequest, BitGcAdmissionError> {
-    if !manifest.scheme.is_available() {
+    if manifest.scheme.bitgc_variant().is_none() || !manifest.scheme.is_available() {
         return Err(BitGcAdmissionError::UnavailableScheme);
     }
     let expanded_cts = manifest.wires.saturating_mul(2);
@@ -125,12 +129,15 @@ pub fn admit(
         expanded_cts,
         resident_bytes,
     };
-    if request.expanded_cts > budget.max_expanded_cts
-        || request.resident_bytes > budget.max_resident_bytes
-    {
+    if !within_budget(request, budget) {
         return Err(BitGcAdmissionError::OverBudget);
     }
     Ok(request)
+}
+
+fn within_budget(request: BitGcResourceRequest, budget: &BitGcResourceBudget) -> bool {
+    request.expanded_cts <= budget.max_expanded_cts
+        && request.resident_bytes <= budget.max_resident_bytes
 }
 
 #[cfg(test)]
@@ -153,6 +160,9 @@ mod tests {
         assert_eq!(GcScheme::HalfGate.bitgc_variant(), None);
         assert_eq!(GcScheme::BitGcSmall.bitgc_variant(), Some(Variant::Small));
         assert_eq!(GcScheme::BitGcFast.bitgc_variant(), Some(Variant::Fast));
+        assert!(GcScheme::HalfGate.is_available());
+        assert!(!GcScheme::BitGcSmall.is_available());
+        assert!(!GcScheme::BitGcFast.is_available());
         assert!(!GcScheme::BitGcTiny.is_available());
     }
 
@@ -162,23 +172,37 @@ mod tests {
             max_expanded_cts: 10_000,
             max_resident_bytes: 1 << 30,
         };
-        // ok
-        let req = admit(&manifest(GcScheme::BitGcSmall), &budget, 1_000).unwrap();
-        assert_eq!(req.expanded_cts, 2_000);
-        assert_eq!(req.resident_bytes, 2_000_000);
-        // tiny rejected
+        // All BitGC profiles are rejected until the shared session passes
+        // the role-separation and security gates.
+        for scheme in [
+            GcScheme::BitGcSmall,
+            GcScheme::BitGcFast,
+            GcScheme::BitGcTiny,
+        ] {
+            assert_eq!(
+                admit(&manifest(scheme), &budget, 1_000),
+                Err(BitGcAdmissionError::UnavailableScheme)
+            );
+        }
+        // Half-gate is available, but its resources belong to its own
+        // admission path rather than this BitGC/SWHE estimator.
         assert_eq!(
-            admit(&manifest(GcScheme::BitGcTiny), &budget, 1_000),
+            admit(&manifest(GcScheme::HalfGate), &budget, 1_000),
             Err(BitGcAdmissionError::UnavailableScheme)
         );
-        // over budget
+
+        // Keep the budget arithmetic covered even while every BitGC profile
+        // is fail-closed at the availability gate.
         let tight = BitGcResourceBudget {
             max_expanded_cts: 100,
             max_resident_bytes: 1 << 30,
         };
-        assert_eq!(
-            admit(&manifest(GcScheme::BitGcSmall), &tight, 1_000),
-            Err(BitGcAdmissionError::OverBudget)
-        );
+        assert!(!within_budget(
+            BitGcResourceRequest {
+                expanded_cts: 2_000,
+                resident_bytes: 2_000_000,
+            },
+            &tight,
+        ));
     }
 }
