@@ -2559,6 +2559,30 @@ fn collect_expr_calls<P: Clone>(
                 collect_expr_calls(arg, env, defs, structs, var_types, calls);
             }
         }
+        // Known methods (`push`, `clone`, `len`, …) have no callee to plan,
+        // but their receiver and arguments may themselves contain local
+        // calls — e.g. `sub_voles.push(convert_to_vole(..))`. Without this
+        // walk the nested call is never recorded, so lowering finds no
+        // planned callee and the call falls back to an extern with no
+        // return type (zero-scalar results).
+        MethodCall {
+            receiver, args, ..
+        } => {
+            collect_expr_calls(receiver, env, defs, structs, var_types, calls);
+            for arg in args {
+                collect_expr_calls(arg, env, defs, structs, var_types, calls);
+            }
+        }
+        // `match` scrutinee and arm bodies may contain local calls.
+        Match { expr, arms } => {
+            collect_expr_calls(expr, env, defs, structs, var_types, calls);
+            for arm in arms {
+                collect_expr_calls(&arm.body, env, defs, structs, var_types, calls);
+            }
+        }
+        VecRepeat { elem, .. } => {
+            collect_expr_calls(elem, env, defs, structs, var_types, calls);
+        }
         Binary {
             op: SpecBinOp::Mul,
             left,
@@ -2616,6 +2640,21 @@ fn collect_expr_calls<P: Clone>(
                 collect_stmt_calls(stmt, env, defs, structs, var_types, calls);
             }
             if let Some(expr) = &block.expr {
+                collect_expr_calls(expr, env, defs, structs, var_types, calls);
+            }
+        }
+        // `for pat in collection { body }` — calls in the body and the
+        // collection expression must be recorded just like a BoundedLoop,
+        // else lowering finds no planned callee for them and falls back to
+        // an extern call with no return type (zero-scalar results).
+        IterLoop {
+            collection, body, ..
+        } => {
+            collect_expr_calls(collection, env, defs, structs, var_types, calls);
+            for stmt in &body.stmts {
+                collect_stmt_calls(stmt, env, defs, structs, var_types, calls);
+            }
+            if let Some(expr) = &body.expr {
                 collect_expr_calls(expr, env, defs, structs, var_types, calls);
             }
         }
