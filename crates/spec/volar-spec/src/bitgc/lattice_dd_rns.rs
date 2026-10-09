@@ -271,7 +271,14 @@ impl LatticeRnsDd {
     }
 
     /// `DD_{i,j}(A, B, τ) = round_p(u2·HssMul_{i,j}(A,B) + i·j·u1)` (k=2).
-    pub fn dd_ij(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, tau: &RnsRowCt) -> LabelPoly {
+    pub fn dd_ij(
+        &self,
+        a: &LabelPoly,
+        i: bool,
+        b: &LabelPoly,
+        j: bool,
+        tau: &RnsRowCt,
+    ) -> LabelPoly {
         let (p, q0) = (self.p, self.q0);
         let share = self.hss_mul_rp(a, i, b, j);
         let share_q0: Limb = share.iter().map(|&c| c % q0).collect();
@@ -425,7 +432,11 @@ fn noise_limb(n: usize, p: u64, q: u64, random: &mut dyn SpecRng) -> Limb {
     let mut out = alloc::vec![0_u64; n];
     for c in out.iter_mut() {
         let r = (random.next_u32() % 3) as i64 - 1;
-        *c = if r < 0 { q - (p % q) } else { (r as u64 * p) % q };
+        *c = if r < 0 {
+            q - (p % q)
+        } else {
+            (r as u64 * p) % q
+        };
     }
     out
 }
@@ -517,7 +528,11 @@ mod tests {
         let m = dd.dec_row(&tau);
         let base = dd.dd0(&a0, &tau);
         for i in [false, true] {
-            let a = if i { add_delta(&a0, dd.delta(), p) } else { a0.clone() };
+            let a = if i {
+                add_delta(&a0, dd.delta(), p)
+            } else {
+                a0.clone()
+            };
             let lhs = dd.dd_i(&a, i, &tau);
             let rhs = if i {
                 ring::add_coeffs(&base, &m, p)
@@ -539,10 +554,22 @@ mod tests {
         let m = dd.dec_row(&tau);
         let base = dd.dd_ij(&a0, false, &b0, false, &tau);
         for (i, j) in [(false, false), (true, false), (false, true), (true, true)] {
-            let a = if i { add_delta(&a0, dd.delta(), p) } else { a0.clone() };
-            let b = if j { add_delta(&b0, dd.delta(), p) } else { b0.clone() };
+            let a = if i {
+                add_delta(&a0, dd.delta(), p)
+            } else {
+                a0.clone()
+            };
+            let b = if j {
+                add_delta(&b0, dd.delta(), p)
+            } else {
+                b0.clone()
+            };
             let lhs = dd.dd_ij(&a, i, &b, j, &tau);
-            let corr = if i && j { m.clone() } else { alloc::vec![0; dd.degree()] };
+            let corr = if i && j {
+                m.clone()
+            } else {
+                alloc::vec![0; dd.degree()]
+            };
             let rhs = ring::add_coeffs(&base, &corr, p);
             assert_eq!(lhs, rhs, "i={i} j={j}");
         }
@@ -606,13 +633,25 @@ mod tests {
         let p = dd.p();
         let mut rng = TestRng(0xdddd);
         let t = [1i64, -1, 1];
-        let taus = [dd.row(t[0], &mut rng), dd.row(t[1], &mut rng), dd.row(t[2], &mut rng)];
+        let taus = [
+            dd.row(t[0], &mut rng),
+            dd.row(t[1], &mut rng),
+            dd.row(t[2], &mut rng),
+        ];
         let a0 = sample_rp(dd.degree(), p, 0xeeee);
         let b0 = sample_rp(dd.degree(), p, 0xffff);
         let base = dd.eval(&a0, false, &b0, false, &taus);
         for (i, j) in [(false, false), (true, false), (false, true), (true, true)] {
-            let a = if i { add_delta(&a0, dd.delta(), p) } else { a0.clone() };
-            let b = if j { add_delta(&b0, dd.delta(), p) } else { b0.clone() };
+            let a = if i {
+                add_delta(&a0, dd.delta(), p)
+            } else {
+                a0.clone()
+            };
+            let b = if j {
+                add_delta(&b0, dd.delta(), p)
+            } else {
+                b0.clone()
+            };
             let got = dd.eval(&a, i, &b, j, &taus);
             let k = (i as i64) * t[0] + (j as i64) * t[1] + ((i && j) as i64) * t[2];
             let corr: LabelPoly = dd

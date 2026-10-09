@@ -529,7 +529,9 @@ mod tests {
             let q = ntt_prime_for(n, 40);
             let mut s = 0x9e37_79b9_7f4a_7c15u64;
             let mut rnd = |n_max: u64| {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (s >> 33) % n_max
             };
             let a: Vec<u64> = (0..n).map(|_| rnd(q)).collect();
