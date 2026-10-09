@@ -78,18 +78,20 @@ relations with the modulus budget `log r ≈ 240`.
   `ring::tests::ntt_vs_schoolbook_scaling`) — the win is the O(N log N) vs
   O(N²) op count (~341× fewer ops at N=1024).
 
-**The production-parameter blocker is RNS, not the NTT.** `lattice_dd`
-represents `R_q` elements as `Vec<u64>` over a **single u64 modulus**, so
-`log q ≤ 63` (u128 intermediate in the schoolbook mul). The paper needs
-`log q ≈ 120` (k=1, per Scooby Eq. 1) and `log r ≈ 240` (k=2) — that requires
-a **multi-limb RNS representation** (a `Vec` of per-prime residues, each a
-60-bit NTT-friendly prime, with per-limb NTT and CRT reconstruction for the
-mod-`p` rounding). `bitgc::swhe` already has this machinery (`RnsPoly` +
-`level_rings[i].mul` per-prime NTT); the DD gadget needs its own
-single-modulus-chain version (no leveling) plus a `round_to_rp` that
-CRT-reconstructs the centered value before reducing mod `p` — the one step
-that cannot be done per-limb. That is the concrete next performance
-milestone.
+**The production-parameter form landed (2026-10-08).** `lattice_dd`'s
+single-`u64` ceiling (`log q ≤ 63`) is lifted by
+`bitgc::lattice_dd_rns::LatticeRnsDd`, a **two-limb RNS** gadget
+(`q = q0·q1`, both NTT-friendly, `p | q0`). The key enabler is the limb-0
+rounding: because `p | q0`, `x mod p = (x mod q0) mod p` and the phase noise
+(`O(p) ≪ q0/2`) is centered exactly from limb 0 alone, so **no CRT
+reconstruction is needed** — the one step that historically broke multi-prime
+`swhe`. Ring products run per-limb (NTT where the limb prime is friendly,
+schoolbook fallback). Verified: `rns_dd_linear_identity`,
+`rns_dd_correlated_identity`, `rns_eval_row_reconstruction`, and a full
+`rns_circuit_roundtrip` (both variants through the `DdGadget` seam). Two
+60-bit limbs give `log q ≈ 120` (the k=1 target); a third limb reaches
+`log r ≈ 240` (k=2) — the structure is limb-count-generic and extending it
+is mechanical.
 
 ## Performance-path implications (BITGC-LEDGER-04 production form)
 
