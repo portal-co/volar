@@ -904,6 +904,7 @@ pub fn primitive_to_lir(p: PrimitiveType) -> LirType {
         PrimitiveType::U32 => LirType::U32,
         PrimitiveType::U64 | PrimitiveType::BitsInBytes64 | PrimitiveType::Usize => LirType::U64,
         PrimitiveType::Galois64 => ext_field_lir(64, &[0, 1, 3, 4]),
+        PrimitiveType::I64 => LirType::I64,
         PrimitiveType::I128 => LirType::I128,
         PrimitiveType::U128 => LirType::U128,
         PrimitiveType::Galois128 => ext_field_lir(128, &[0, 1, 2, 7]),

@@ -7088,6 +7088,7 @@ fn ts_primitive(p: &PrimitiveType) -> &'static str {
         | PrimitiveType::U32
         | PrimitiveType::Usize
         | PrimitiveType::U64
+        | PrimitiveType::I64
         | PrimitiveType::I128
         | PrimitiveType::U128 => "bigint",
         PrimitiveType::Bit => "Bit",
@@ -7190,6 +7191,7 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
             | PrimitiveType::U32
             | PrimitiveType::Usize
             | PrimitiveType::U64
+            | PrimitiveType::I64
             | PrimitiveType::I128
             | PrimitiveType::U128 => write!(f, "0n"),
             PrimitiveType::Bit => write!(f, "Bit.default()"),
@@ -7889,7 +7891,7 @@ fn primitive_bit_width(p: PrimitiveType) -> Option<u32> {
     match p {
         PrimitiveType::U8 => Some(8),
         PrimitiveType::U32 => Some(32),
-        PrimitiveType::U64 => Some(64),
+        PrimitiveType::U64 | PrimitiveType::I64 => Some(64),
         // Treated as 64-bit: there is no native "word size" in the TS/bigint
         // runtime target, and 64-bit is the common case for the platforms this
         // spec targets. See docs/ts-emitter-length-params-and-solidity-backend-plan.md §1.3.2.

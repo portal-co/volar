@@ -251,6 +251,8 @@ pub enum PrimitiveType {
     U64,
     /// Unsigned pointer-sized integer
     Usize,
+    /// Signed 64-bit integer
+    I64,
     /// Signed 128-bit integer (for literals)
     I128,
     /// Unsigned 128-bit integer
@@ -285,6 +287,7 @@ impl PrimitiveType {
             "u32" => Some(Self::U32),
             "u64" => Some(Self::U64),
             "usize" => Some(Self::Usize),
+            "i64" => Some(Self::I64),
             "i128" => Some(Self::I128),
             "u128" => Some(Self::U128),
             "Bit" => Some(Self::Bit),
@@ -305,7 +308,7 @@ impl PrimitiveType {
             Self::Bool | Self::Bit => 1,
             Self::U8 | Self::Galois | Self::BitsInBytes => 8,
             Self::U32 => 32,
-            Self::U64 | Self::Galois64 | Self::BitsInBytes64 => 64,
+            Self::U64 | Self::Galois64 | Self::BitsInBytes64 | Self::I64 => 64,
             Self::Usize => std::mem::size_of::<usize>() * 8,
             Self::I128 | Self::U128 | Self::Galois128 => 128,
             Self::Galois256 => 256,
@@ -337,6 +340,7 @@ impl fmt::Display for PrimitiveType {
             Self::U32 => write!(f, "u32"),
             Self::U64 => write!(f, "u64"),
             Self::Usize => write!(f, "usize"),
+            Self::I64 => write!(f, "i64"),
             Self::I128 => write!(f, "i128"),
             Self::U128 => write!(f, "u128"),
             Self::Bit => write!(f, "Bit"),
