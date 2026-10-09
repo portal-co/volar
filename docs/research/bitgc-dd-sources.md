@@ -68,6 +68,29 @@ identity `HssMul(A0+iΔ, B0+jΔ) ≡ U·A0·B0 + i·j·Δ (mod p)`, which `latti
 already realizes exactly. The production form is the RLWE encryption of those
 relations with the modulus budget `log r ≈ 240`.
 
+## Performance-path status (2026-10-08)
+
+**Landed:**
+- NTT-accelerated negacyclic mul in `lattice_dd` (`mul_q`/`mul_p` dispatch to
+  `ring::negacyclic_mul_ntt` when the modulus is `≡ 1 mod 2N`, else
+  schoolbook), with a fail-fast NTT-friendliness guard in `ring::Ntt::new`.
+- NTT-vs-schoolbook exactness verified at scale (`N` up to 1024,
+  `ring::tests::ntt_vs_schoolbook_scaling`) — the win is the O(N log N) vs
+  O(N²) op count (~341× fewer ops at N=1024).
+
+**The production-parameter blocker is RNS, not the NTT.** `lattice_dd`
+represents `R_q` elements as `Vec<u64>` over a **single u64 modulus**, so
+`log q ≤ 63` (u128 intermediate in the schoolbook mul). The paper needs
+`log q ≈ 120` (k=1, per Scooby Eq. 1) and `log r ≈ 240` (k=2) — that requires
+a **multi-limb RNS representation** (a `Vec` of per-prime residues, each a
+60-bit NTT-friendly prime, with per-limb NTT and CRT reconstruction for the
+mod-`p` rounding). `bitgc::swhe` already has this machinery (`RnsPoly` +
+`level_rings[i].mul` per-prime NTT); the DD gadget needs its own
+single-modulus-chain version (no leveling) plus a `round_to_rp` that
+CRT-reconstructs the centered value before reducing mod `p` — the one step
+that cannot be done per-limb. That is the concrete next performance
+milestone.
+
 ## Performance-path implications (BITGC-LEDGER-04 production form)
 
 1. **The modulus chain is large by design** (super-poly for DD). The NTT is
