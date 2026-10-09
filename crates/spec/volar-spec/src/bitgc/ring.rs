@@ -335,10 +335,7 @@ impl Ntt {
         // Necessary condition for a negacyclic NTT of length `degree`:
         // `modulus ≡ 1 (mod 2·degree)`. Fail fast instead of scanning
         // `2..modulus` for a root that cannot exist.
-        if degree == 0
-            || !degree.is_power_of_two()
-            || (modulus - 1) % (2 * degree as u64) != 0
-        {
+        if degree == 0 || !degree.is_power_of_two() || (modulus - 1) % (2 * degree as u64) != 0 {
             return Err(Error::Arithmetic);
         }
         let psi = find_negacyclic_root(degree, modulus).ok_or(Error::Arithmetic)?;
