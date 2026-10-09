@@ -1,44 +1,24 @@
-// @reliability: experimental
-// @experimental-status: design
-// @experimental-since: bitgc-phase-2
+// @pinnedness: unpinned
+// @stability: very-unstable
 //! @ai: assisted
-//! Shared BitGC structure: decoupled permutation bits, the free-XOR delta,
-//! stitching records, and the gate-equation seam.
+//! Shared BitGC circuit structure and the legacy reference gate-equation
+//! adapter.
 //!
-//! Paper anchors (see `docs/bitgc-variants-plan.md` §6):
+//! The paper's exact small/fast equations are now recorded in
+//! `docs/research/bitgc-paper-pinning.md` and implemented separately by
+//! `super::pinned`. `ReferenceEquation` still models only the earlier
+//! self-consistent reference equations and communication shape; it is not
+//! the paper construction and makes no security claim. The legacy
+//! `super::small` path remains reference-only and is quarantined from
+//! protected-session admission.
 //!
-//! - **Permutation-bit decoupling** — [ZLL+26] §3 (BITGC-PIN-01). The
-//!   original BitGC takes the permutation bit as the LSB of the zero
-//!   label, forcing an even plaintext modulus and blocking SIMD-friendly
-//!   prime moduli; [ZLL+26] stores the permutation bit explicitly:
-//!   a wire is `(A0, A1, π)` with `A1 = A0 + (−1)^π·Δ`, `Δ ∈ R_p`,
-//!   `LSB(Δ) = 1`. This module models that structure with
-//!   plaintext-space bit labels: [`WireState`] is the garbler's
-//!   `(A0, π)`, and the evaluator-visible *active label* for wire value
-//!   `v` is `L = A0 + b·Δ` with masked bit `b = v ⊕ π`.
-//! - **Free-XOR rule** — [ZLL+26] free-XOR contribution (BITGC-PIN-04):
-//!   an XOR output's permutation bit is the XOR of the input permutation
-//!   bits (`π_out = π_a ⊕ π_b`). The reference adapter additionally sets
-//!   `A0_out = A0_a + A0_b`, which makes XOR gates zero-communication and
-//!   zero-multiplication at the active-label level (see
-//!   [`GateEquation::eval_xor`]).
-//! - **Stitching records** — [ZLL+26] Table 1 (BITGC-PIN-05..08): one bit
-//!   per AND (and per XOR for small); five bits per AND for fast.
+//! This module also contains common wire, circuit, and record types used by
+//! the pinned driver. Their presence does not imply that the legacy equation
+//! or the current SWHE profile is suitable for protected data.
 //!
-//! # Gate-equation seam (BITGC-LEDGER-04)
-//!
-//! The exact per-gate stitching equations of [ZLL+26] Figures 4–5
-//! (small) and §5.1 (fast) are **not yet pinned from the paper text**
-//! (the ePrint PDF was unreachable from the development host). All gate
-//! semantics go through [`GateEquation`]; [`ReferenceEquation`] is a
-//! self-consistent adapter with the paper's communication shape and the
-//! §3 decoupling structure, but its equations are **not** the paper's
-//! and it makes no security claim. The pinned replacement must implement
-//! the same trait and pass a differential test against this adapter.
-//!
-//! TODO(provider-ledger: BITGC-LEDGER-04) — replace [`ReferenceEquation`]
-//! with the paper-pinned Figures 4–5 / §5.1 equations once the ePrint
-//! 2025/1810 PDF text is verified, and add the differential test.
+//! TODO(provider-ledger: BITGC-LEDGER-04): replace or explicitly quarantine
+//! the remaining `ReferenceEquation` path and add an equation differential
+//! test against the paper-pinned driver.
 
 use alloc::vec::Vec;
 
@@ -437,6 +417,7 @@ pub fn parity_coeffs(p: u64, k_max: usize) -> Result<Vec<u64>, StitchError> {
     Ok(coeffs)
 }
 
+#[cfg(any(test, feature = "bitgc-reference"))]
 /// Reference gate-equation adapter (small and fast flavors).
 ///
 /// **Not paper-pinned** (BITGC-LEDGER-04) — see module docs. Semantics:
@@ -452,11 +433,13 @@ pub fn parity_coeffs(p: u64, k_max: usize) -> Result<Vec<u64>, StitchError> {
 ///   garbler, so `L_a + L_b = A0_out + (b_a + b_b)·Δ` is the output
 ///   label with payload `m = b_a + b_b` — zero communication, zero
 ///   multiplications, matching the fast variant's Table 1 row.
+#[cfg(any(test, feature = "bitgc-reference"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReferenceEquation {
     xor_charged: bool,
 }
 
+#[cfg(any(test, feature = "bitgc-reference"))]
 impl ReferenceEquation {
     /// Small-variant adapter: XOR gates are charged one bit
     /// ([ZLL+26] §4, Table 1).
@@ -577,6 +560,7 @@ impl ReferenceEquation {
     }
 }
 
+#[cfg(any(test, feature = "bitgc-reference"))]
 impl GateEquation for ReferenceEquation {
     fn garble_and(
         &self,

@@ -1,12 +1,11 @@
-// @reliability: experimental
-// @experimental-status: design
-// @experimental-since: bitgc-pinning
+// @pinnedness: unpinned
+// @stability: very-unstable
 //! @ai: assisted
-//! **RNS (multi-limb) lattice SWHEwDD gadget** — the production-parameter
-//! form of [`super::lattice_dd`], lifting the single-`u64` modulus ceiling
-//! (`log q ≤ 63`) to the paper's `log q ≈ 120` (k=1) / `log r ≈ 240` (k=2)
+//! **Two-limb RNS lattice SWHEwDD reference gadget** — a modulus-shape
+//! experiment for the paper's `log q ≈ 120` (k=1) / `log r ≈ 240` (k=2)
 //! ([ZLL+26] §6; the super-polynomial bound is Scooby Eq. 1, see
-//! `docs/research/bitgc-dd-sources.md`).
+//! `docs/research/bitgc-dd-sources.md`). This is not a production-parameter
+//! or security-reviewed implementation.
 //!
 //! # Representation
 //!
@@ -29,14 +28,17 @@
 //!
 //! # Honesty boundary
 //!
-//! Same as [`super::lattice_dd`]: real RLWE noise, exact mod-`p` DD
-//! identities, but a reference implementation (ternary noise, no Gaussian,
-//! reduced test profile). Security (RLWE + KDM) is BITGC-LEDGER-03. **Do
-//! not use for protected data.**
+//! The implementation uses simplified ternary noise and reduced test
+//! profiles. Its exact mod-`p` DD identities and role-separated API are
+//! algebraic test evidence only; they do not establish RLWE/KDM security or
+//! the paper's per-gate failure bounds. Security review is BITGC-LEDGER-03.
+//! **Do not use for protected data.**
 
 use alloc::vec::Vec;
 
-use super::pinned::{DdGadget, Delta, LabelPoly, RowCt};
+#[cfg(any(test, feature = "bitgc-reference"))]
+use super::pinned::{DdGadget, RowCt};
+use super::pinned::{Delta, LabelPoly, RoleDdEvaluator, RoleDdGarbler};
 use super::ring;
 use crate::SpecRng;
 
@@ -62,9 +64,9 @@ pub struct RnsRowCt {
     pub u2: Rns2,
 }
 
-/// The two-limb RNS lattice DD gadget. Same algebra as
-/// [`super::lattice_dd::LatticeDd`], but the ciphertext modulus is
-/// `q = q0·q1`, reaching the paper's `log q ≈ 120` k=1 budget.
+/// The two-limb RNS lattice DD garbler setup. Its evaluator-only view is
+/// `LatticeRnsEvaluator`; the modulus shape can represent a
+/// `log q ≈ 120` profile, but this implementation is not security-reviewed.
 #[derive(Clone, Debug)]
 pub struct LatticeRnsDd {
     /// Ring degree `N`.
@@ -81,13 +83,29 @@ pub struct LatticeRnsDd {
     delta_pinned: Delta,
     /// CP-RLWE triple `(U, V, W)` in RNS form.
     triple: (Rns2, Rns2, Rns2),
-    /// The triple reduced mod `p` (for the driver-facing k=2 `HssMul`).
+    /// The triple reduced mod `p` for the legacy shared-gadget driver.
+    #[cfg(any(test, feature = "bitgc-reference"))]
     triple_rp: (LabelPoly, LabelPoly, LabelPoly),
     /// NTT contexts for the two limbs (present when NTT-friendly).
     ntt0: Option<ring::Ntt>,
     ntt1: Option<ring::Ntt>,
-    /// NTT context over `R_p`.
+    /// NTT context over `R_p` for the legacy shared-gadget driver.
+    #[cfg(any(test, feature = "bitgc-reference"))]
     ntt_p: Option<ring::Ntt>,
+}
+
+/// Evaluator-only portion of the RNS DD setup. It contains the noisy
+/// CP-RLWE evaluation triple and public ring parameters, but no Δ or
+/// garbler secret key.
+#[derive(Clone, Debug)]
+pub struct LatticeRnsEvaluator {
+    n: usize,
+    p: u64,
+    q0: u64,
+    q1: u64,
+    triple: (Rns2, Rns2, Rns2),
+    ntt0: Option<ring::Ntt>,
+    ntt1: Option<ring::Ntt>,
 }
 
 impl LatticeRnsDd {
@@ -142,8 +160,11 @@ impl LatticeRnsDd {
             q1,
         );
 
-        let red = |limb: &Limb| -> LabelPoly { limb.iter().map(|&c| c % p).collect() };
-        let triple_rp = (red(&u0), red(&v0), red(&w0));
+        #[cfg(any(test, feature = "bitgc-reference"))]
+        let triple_rp = {
+            let red = |limb: &Limb| -> LabelPoly { limb.iter().map(|&c| c % p).collect() };
+            (red(&u0), red(&v0), red(&w0))
+        };
         let delta_pinned = Delta {
             coeffs: delta.clone(),
             p,
@@ -160,9 +181,11 @@ impl LatticeRnsDd {
                 Rns2 { l0: v0, l1: v1 },
                 Rns2 { l0: w0, l1: w1 },
             ),
+            #[cfg(any(test, feature = "bitgc-reference"))]
             triple_rp,
             ntt0: ring::Ntt::new(n, q0).ok(),
             ntt1: ring::Ntt::new(n, q1).ok(),
+            #[cfg(any(test, feature = "bitgc-reference"))]
             ntt_p: ring::Ntt::new(n, p).ok(),
         })
     }
@@ -181,13 +204,28 @@ impl LatticeRnsDd {
     }
 
     /// The key `Δ` (garbler-side), as raw coefficient form.
+    #[cfg(any(test, feature = "bitgc-reference"))]
     pub fn delta(&self) -> &LabelPoly {
         &self.delta
     }
 
-    /// The key `Δ` as a `pinned::Delta` (for `encode_inputs`).
+    /// The key `Δ` as a `pinned::Delta` (for reference-driver input encoding).
+    #[cfg(any(test, feature = "bitgc-reference"))]
     pub fn delta_pinned_ref(&self) -> &Delta {
         &self.delta_pinned
+    }
+
+    /// Derive a distinct evaluator-only key object. It contains no Δ.
+    pub fn evaluator_material(&self) -> LatticeRnsEvaluator {
+        LatticeRnsEvaluator {
+            n: self.n,
+            p: self.p,
+            q0: self.q0,
+            q1: self.q1,
+            triple: self.triple.clone(),
+            ntt0: self.ntt0.clone(),
+            ntt1: self.ntt1.clone(),
+        }
     }
 
     /// Generate a row ciphertext for multiplier `t` (RNS form).
@@ -215,6 +253,7 @@ impl LatticeRnsDd {
     }
 
     /// Garbler-side special decryption `Dec(Δ, τ) = t·Δ (mod p)`, exact.
+    #[cfg(any(test, feature = "bitgc-reference"))]
     pub fn dec_row(&self, tau: &RnsRowCt) -> LabelPoly {
         let q0 = self.q0;
         let dq0 = to_limb(&self.delta, self.p, q0);
@@ -224,6 +263,7 @@ impl LatticeRnsDd {
     }
 
     /// `DD_0(A, τ) = round_p(u2·A)` (k=1), RNS.
+    #[cfg(any(test, feature = "bitgc-reference"))]
     pub fn dd0(&self, a: &LabelPoly, tau: &RnsRowCt) -> LabelPoly {
         let (p, q0) = (self.p, self.q0);
         let a_q0: Limb = a.iter().map(|&c| c % q0).collect();
@@ -232,6 +272,7 @@ impl LatticeRnsDd {
     }
 
     /// `DD_i(A, τ) = round_p(u2·A + i·u1)` (k=1), RNS.
+    #[cfg(any(test, feature = "bitgc-reference"))]
     pub fn dd_i(&self, a: &LabelPoly, i: bool, tau: &RnsRowCt) -> LabelPoly {
         let (p, q0) = (self.p, self.q0);
         let a_q0: Limb = a.iter().map(|&c| c % q0).collect();
@@ -242,7 +283,8 @@ impl LatticeRnsDd {
         round_limb0_to_rp(&acc0, q0, p)
     }
 
-    /// `HssMul` over `R_p` (the reduced-triple form, driver-facing).
+    /// `HssMul` over `R_p` for the legacy shared-gadget driver.
+    #[cfg(any(test, feature = "bitgc-reference"))]
     fn hss_mul_rp(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool) -> LabelPoly {
         let p = self.p;
         let (u, v, w) = &self.triple_rp;
@@ -262,7 +304,8 @@ impl LatticeRnsDd {
         out
     }
 
-    /// Negacyclic product over `R_p` (NTT when friendly).
+    /// Negacyclic product over `R_p` for the legacy shared-gadget driver.
+    #[cfg(any(test, feature = "bitgc-reference"))]
     fn mul_p(&self, a: &[u64], b: &[u64]) -> LabelPoly {
         match &self.ntt_p {
             Some(ntt) => ring::negacyclic_mul_ntt(a, b, ntt),
@@ -271,6 +314,7 @@ impl LatticeRnsDd {
     }
 
     /// `DD_{i,j}(A, B, τ) = round_p(u2·HssMul_{i,j}(A,B) + i·j·u1)` (k=2).
+    #[cfg(any(test, feature = "bitgc-reference"))]
     pub fn dd_ij(
         &self,
         a: &LabelPoly,
@@ -290,6 +334,7 @@ impl LatticeRnsDd {
     }
 
     /// The gate evaluator `Eval_{i,j}(A,B,τ)` (RNS), summed over `R_p`.
+    #[cfg(any(test, feature = "bitgc-reference"))]
     pub fn eval(
         &self,
         a: &LabelPoly,
@@ -314,6 +359,7 @@ pub enum RnsError {
     InvalidParameters,
 }
 
+#[cfg(any(test, feature = "bitgc-reference"))]
 impl DdGadget for LatticeRnsDd {
     fn p(&self) -> u64 {
         self.p
@@ -354,6 +400,248 @@ impl DdGadget for LatticeRnsDd {
         out = ring::add_coeffs(&out, &DdGadget::dd_i(self, b, j, &taus[1]), self.p);
         ring::add_coeffs(&out, &DdGadget::dd_ij(self, a, i, b, j, &taus[2]), self.p)
     }
+}
+
+impl RoleDdEvaluator for LatticeRnsEvaluator {
+    type Row = RnsRowCt;
+
+    fn p(&self) -> u64 {
+        self.p
+    }
+
+    fn degree(&self) -> usize {
+        self.n
+    }
+
+    fn eval_rows(
+        &self,
+        a: &LabelPoly,
+        i: bool,
+        b: &LabelPoly,
+        j: bool,
+        taus: &[RnsRowCt; 3],
+    ) -> LabelPoly {
+        eval_rns_rows(
+            self.p,
+            self.q0,
+            self.q1,
+            &self.triple,
+            &self.ntt0,
+            &self.ntt1,
+            a,
+            i,
+            b,
+            j,
+            taus,
+        )
+    }
+
+    fn xor_rows_for(&self, delta_row: &RnsRowCt, determination: bool) -> [RnsRowCt; 3] {
+        xor_rns_rows(delta_row, determination, self.q0, self.q1)
+    }
+
+    fn fast_rows_for(
+        &self,
+        delta_row: &RnsRowCt,
+        prg_rows: &[RnsRowCt; 4],
+        masks: &[bool; 4],
+    ) -> [RnsRowCt; 3] {
+        fast_rns_rows(delta_row, prg_rows, masks, self.q0, self.q1)
+    }
+}
+
+impl RoleDdGarbler for LatticeRnsDd {
+    type Row = RnsRowCt;
+    type Evaluator = LatticeRnsEvaluator;
+
+    fn p(&self) -> u64 {
+        self.p
+    }
+
+    fn degree(&self) -> usize {
+        self.n
+    }
+
+    fn secret_delta(&self) -> &Delta {
+        &self.delta_pinned
+    }
+
+    fn encrypt_row(&self, t: i64, random: &mut dyn SpecRng) -> RnsRowCt {
+        LatticeRnsDd::row(self, t, random)
+    }
+
+    fn evaluator_material(&self) -> Self::Evaluator {
+        LatticeRnsDd::evaluator_material(self)
+    }
+}
+
+fn lift_rp(poly: &LabelPoly, q: u64) -> Limb {
+    poly.iter().map(|&coefficient| coefficient % q).collect()
+}
+
+fn mul_rns2(
+    a: &Rns2,
+    b: &Rns2,
+    q0: u64,
+    q1: u64,
+    ntt0: &Option<ring::Ntt>,
+    ntt1: &Option<ring::Ntt>,
+) -> Rns2 {
+    Rns2 {
+        l0: mul_limb(&a.l0, &b.l0, q0, ntt0),
+        l1: mul_limb(&a.l1, &b.l1, q1, ntt1),
+    }
+}
+
+fn add_rns2(a: &Rns2, b: &Rns2, q0: u64, q1: u64) -> Rns2 {
+    Rns2 {
+        l0: add_limb(&a.l0, &b.l0, q0),
+        l1: add_limb(&a.l1, &b.l1, q1),
+    }
+}
+
+fn sub_rns2(a: &Rns2, b: &Rns2, q0: u64, q1: u64) -> Rns2 {
+    Rns2 {
+        l0: sub_limb(&a.l0, &b.l0, q0),
+        l1: sub_limb(&a.l1, &b.l1, q1),
+    }
+}
+
+fn hss_mul_rns(
+    p: u64,
+    q0: u64,
+    q1: u64,
+    triple: &(Rns2, Rns2, Rns2),
+    ntt0: &Option<ring::Ntt>,
+    ntt1: &Option<ring::Ntt>,
+    a: &LabelPoly,
+    i: bool,
+    b: &LabelPoly,
+    j: bool,
+) -> Rns2 {
+    let a = Rns2 {
+        l0: lift_rp(a, q0),
+        l1: lift_rp(a, q1),
+    };
+    let b = Rns2 {
+        l0: lift_rp(b, q0),
+        l1: lift_rp(b, q1),
+    };
+    let ab = mul_rns2(&a, &b, q0, q1, ntt0, ntt1);
+    let mut out = mul_rns2(&ab, &triple.0, q0, q1, ntt0, ntt1);
+    if i {
+        out = add_rns2(&out, &mul_rns2(&b, &triple.1, q0, q1, ntt0, ntt1), q0, q1);
+    }
+    if j {
+        out = add_rns2(&out, &mul_rns2(&a, &triple.1, q0, q1, ntt0, ntt1), q0, q1);
+    }
+    if i && j {
+        out = sub_rns2(&out, &triple.2, q0, q1);
+    }
+    // Keep the plaintext modulus in the signature to make the lift/reduce
+    // boundary explicit at this evaluator operation.
+    let _ = p;
+    out
+}
+
+fn eval_rns_rows(
+    p: u64,
+    q0: u64,
+    q1: u64,
+    triple: &(Rns2, Rns2, Rns2),
+    ntt0: &Option<ring::Ntt>,
+    ntt1: &Option<ring::Ntt>,
+    a: &LabelPoly,
+    i: bool,
+    b: &LabelPoly,
+    j: bool,
+    taus: &[RnsRowCt; 3],
+) -> LabelPoly {
+    let dd_i = |poly: &LabelPoly, bit: bool, tau: &RnsRowCt| {
+        let lifted = Rns2 {
+            l0: lift_rp(poly, q0),
+            l1: lift_rp(poly, q1),
+        };
+        let mut phase = mul_rns2(&tau.u2, &lifted, q0, q1, ntt0, ntt1);
+        if bit {
+            phase = add_rns2(&phase, &tau.u1, q0, q1);
+        }
+        round_limb0_to_rp(&phase.l0, q0, p)
+    };
+    let first = dd_i(a, i, &taus[0]);
+    let second = dd_i(b, j, &taus[1]);
+    let share = hss_mul_rns(p, q0, q1, triple, ntt0, ntt1, a, i, b, j);
+    let mut product = mul_rns2(&taus[2].u2, &share, q0, q1, ntt0, ntt1);
+    if i && j {
+        product = add_rns2(&product, &taus[2].u1, q0, q1);
+    }
+    let correlated = round_limb0_to_rp(&product.l0, q0, p);
+    let sum = ring::add_coeffs(&first, &second, p);
+    ring::add_coeffs(&sum, &correlated, p)
+}
+
+fn scale_rns2(a: &Rns2, k: i64, q0: u64, q1: u64) -> Rns2 {
+    Rns2 {
+        l0: scale_limb(&a.l0, k, q0),
+        l1: scale_limb(&a.l1, k, q1),
+    }
+}
+
+fn scale_rns_row(row: &RnsRowCt, k: i64, q0: u64, q1: u64) -> RnsRowCt {
+    RnsRowCt {
+        u1: scale_rns2(&row.u1, k, q0, q1),
+        u2: scale_rns2(&row.u2, k, q0, q1),
+    }
+}
+
+fn sub_rns_row(a: &RnsRowCt, b: &RnsRowCt, q0: u64, q1: u64) -> RnsRowCt {
+    RnsRowCt {
+        u1: sub_rns2(&a.u1, &b.u1, q0, q1),
+        u2: sub_rns2(&a.u2, &b.u2, q0, q1),
+    }
+}
+
+fn xor_rns_rows(delta_row: &RnsRowCt, determination: bool, q0: u64, q1: u64) -> [RnsRowCt; 3] {
+    let sign = if determination { -1 } else { 1 };
+    [
+        scale_rns_row(delta_row, sign, q0, q1),
+        scale_rns_row(delta_row, sign, q0, q1),
+        scale_rns_row(delta_row, -2 * sign, q0, q1),
+    ]
+}
+
+fn fast_rns_rows(
+    delta_row: &RnsRowCt,
+    prg_rows: &[RnsRowCt; 4],
+    masks: &[bool; 4],
+    q0: u64,
+    q1: u64,
+) -> [RnsRowCt; 3] {
+    let z0 = if masks[0] {
+        sub_rns_row(delta_row, &prg_rows[0], q0, q1)
+    } else {
+        prg_rows[0].clone()
+    };
+    let z1 = if masks[1] {
+        sub_rns_row(delta_row, &prg_rows[1], q0, q1)
+    } else {
+        prg_rows[1].clone()
+    };
+    let z2 = if masks[2] {
+        sub_rns_row(delta_row, &prg_rows[2], q0, q1)
+    } else {
+        prg_rows[2].clone()
+    };
+    let z3 = if masks[3] {
+        sub_rns_row(delta_row, &prg_rows[3], q0, q1)
+    } else {
+        prg_rows[3].clone()
+    };
+    let t1 = sub_rns_row(&z1, &z0, q0, q1);
+    let t2 = sub_rns_row(&z2, &z0, q0, q1);
+    let t3 = sub_rns_row(&sub_rns_row(&z3, &z0, q0, q1), &t1, q0, q1);
+    let t3 = sub_rns_row(&t3, &t2, q0, q1);
+    [t1, t2, t3]
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -600,9 +888,12 @@ mod tests {
             let prf = PrfKey([0x11, 0x22, 0x33, 0x44]);
             let dd = LatticeRnsDd::new(degree, p, q0, q1, &mut rng).expect("params");
             let pis: Vec<bool> = (0..wires).map(|_| (rng.next_u32() & 1) == 1).collect();
-            let prg_bits: Vec<bool> = (0..4 * and_count)
-                .map(|_| (rng.next_u32() & 1) == 1)
-                .collect();
+            let prg_count = if variant == crate::bitgc::Variant::Fast {
+                4 * and_count
+            } else {
+                0
+            };
+            let prg_bits: Vec<bool> = (0..prg_count).map(|_| (rng.next_u32() & 1) == 1).collect();
             let g = garble_circuit(variant, &circuit, &dd, &pis, &prf, &prg_bits, &mut rng)
                 .expect("garble");
             for x in 0..8u8 {
@@ -621,6 +912,77 @@ mod tests {
                 )
                 .expect("eval");
                 let got = open_output(masked[0], g.labels[circuit.outputs[0]].pi);
+                let want = (inputs[0] & inputs[1]) ^ inputs[2];
+                assert_eq!(got, want, "{variant:?} inputs {inputs:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rns_role_separated_roundtrip() {
+        use crate::bitgc::common::{Circuit, Gate};
+        use crate::bitgc::pinned::{
+            PrfKey, evaluate_role_circuit, garble_role_circuit, open_output,
+        };
+
+        let p = 97u64;
+        let q0 = 97u64 * 17;
+        let q1 = 1153u64;
+        let degree = 8;
+        let circuit = Circuit {
+            inputs: 3,
+            gates: alloc::vec![Gate::And { a: 0, b: 1 }, Gate::Xor { a: 3, b: 2 }],
+            outputs: alloc::vec![4],
+        };
+        for variant in [crate::bitgc::Variant::Small, crate::bitgc::Variant::Fast] {
+            let mut rng = TestRng(0x524f_4c45);
+            let prf = PrfKey([0x11, 0x22, 0x33, 0x44]);
+            let garbler = LatticeRnsDd::new(degree, p, q0, q1, &mut rng).expect("params");
+            let pis: Vec<bool> = (0..circuit.wires())
+                .map(|_| (rng.next_u32() & 1) == 1)
+                .collect();
+            let prg_count = if variant == crate::bitgc::Variant::Fast {
+                4
+            } else {
+                0
+            };
+            let prg_bits: Vec<bool> = (0..prg_count).map(|_| (rng.next_u32() & 1) == 1).collect();
+            let (garbler_labels, tables, evaluator) =
+                garble_role_circuit(variant, &circuit, &garbler, &pis, &prf, &prg_bits, &mut rng)
+                    .expect("garble");
+            assert!(matches!(
+                garble_role_circuit(
+                    crate::bitgc::Variant::Tiny,
+                    &circuit,
+                    &garbler,
+                    &pis,
+                    &prf,
+                    &[],
+                    &mut rng,
+                ),
+                Err(crate::bitgc::pinned::DriverError::UnsupportedVariant)
+            ));
+            assert!(matches!(
+                evaluate_role_circuit(
+                    crate::bitgc::Variant::Tiny,
+                    &circuit,
+                    &evaluator,
+                    &tables,
+                    &[],
+                ),
+                Err(crate::bitgc::pinned::DriverError::UnsupportedVariant)
+            ));
+
+            for x in 0..8u8 {
+                let inputs = [x & 1 == 1, x & 2 == 2, x & 4 == 4];
+                let encoded = garbler_labels.encode_inputs(&inputs).expect("encode");
+                let masked =
+                    evaluate_role_circuit(variant, &circuit, &evaluator, &tables, &encoded)
+                        .expect("evaluate without garbler material");
+                let output_pi = garbler_labels
+                    .permutation_bit(circuit.outputs[0])
+                    .expect("output wire");
+                let got = open_output(masked[0], output_pi);
                 let want = (inputs[0] & inputs[1]) ^ inputs[2];
                 assert_eq!(got, want, "{variant:?} inputs {inputs:?}");
             }

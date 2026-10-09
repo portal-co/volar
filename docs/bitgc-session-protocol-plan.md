@@ -1,6 +1,6 @@
 # BitGC session protocol plan
 
-**Status:** Phase 0 safety quarantine landed; Phase 1 role-safe core remains open. No session code is deployable.
+**Status:** Phases 0–1 safety quarantine and role-separated algebraic core landed and locally validated. No session protocol or protected-data profile is deployable.
 **Scope:** shared Volar/Cirrus session infrastructure. Aero is not part of this work.
 **Ledger:** `BITGC-LEDGER-07` in `docs/fhe/future-provider-integration-ledger.md`.
 
@@ -19,19 +19,19 @@
 
 ### R-1 Paper equations replace the reference equation
 
-- **Approach:** Keep equation and label math in `volar-spec::bitgc::pinned`; make the Cirrus adapter call those same operations. Quarantine `ReferenceEquation` to tests or an explicit reference-only feature.
+- **Approach:** Keep equation and label math in `volar-spec::bitgc::pinned`; the role-separated Volar core is landed, while Cirrus's existing reference adapter remains behind its explicit opt-in until Phase 4. Quarantine `ReferenceEquation` to tests or an explicit reference-only feature.
 - **Touches:** `volar-spec::bitgc`, `volar-mpc`, and `cirrus-volar-garble`.
-- **Test seam:** Pinned garble/evaluate drivers and artifact-backed circuit vectors.
-- **Acceptance:** [ ] Small and fast equations map to cited figures. [ ] Cirrus cannot select the reference equation by default. [ ] Truth tables and record counts match the independent oracle.
-- **Hard part:** Existing pinned drivers are not actually role-separated and their DD seam exposes `Delta`.
+- **Test seam:** Pinned role-separated garble/evaluate drivers and artifact-backed circuit vectors.
+- **Acceptance:** [x] Small and fast equations map to cited figures. [x] Cirrus cannot select the reference equation by default. [x] Truth tables and record counts match the independent oracle on the current fixtures; exact per-wire HSS differential remains open.
+- **Hard part:** Replace the opt-in Cirrus reference adapter with the shared role API and session path in Phase 4.
 
 ### R-2 Garbler secrets stay role-separated
 
 - **Approach:** Split garbler setup from evaluator-safe evaluation material. The evaluator receives neither `Delta` nor the SWHE secret key. The evaluator-facing DD interface exposes only the public/evaluation material required by the pinned operations.
 - **Touches:** `volar-spec::bitgc::pinned` and the session setup in `volar-mpc`.
-- **Test seam:** Construct evaluator state from serialized evaluator material only; compile-time API tests and secret-absence assertions cover both roles.
-- **Acceptance:** [ ] No evaluator API accepts `SecretKey` or `Delta`. [ ] Both roles evaluate using compatible public/evaluation material. [ ] No shared object contains both role secrets.
-- **Hard part:** The paper's distributed-decryption and CP-RLWE key material must be mapped exactly, not hidden behind a renamed shared key.
+- **Test seam:** Construct distinct evaluator material and exercise evaluation without passing the garbler object, `Delta`, or PRF key; serialization and session ownership are deferred to Phases 2–3.
+- **Acceptance:** [x] No evaluator entry point accepts `SecretKey`, `Delta`, or the PRF key. [x] Both variants evaluate using a distinct evaluator-only material object. [ ] Session construction and serialization enforce the role boundary across processes.
+- **Hard part:** The paper's distributed-decryption and CP-RLWE key material must be mapped exactly, not hidden behind a renamed shared key; the current RNS/noise profile still needs independent review.
 
 ### R-3 Evaluator inputs use OT
 
@@ -99,16 +99,16 @@
 
 **Goal:** The smallest garble/evaluate path runs from distinct garbler and evaluator material, with no evaluator reference to `Delta` or the garbler's secret key.
 
-**Tasks**
+**Tasks — landed**
 
-- Trace every small/fast equation against the archived papers and artifact.
-- Split DD setup from evaluator-safe DD operations.
-- Move the test/reference equation behind a non-default test/reference gate.
-- Add compile-time and runtime tests for role-material separation.
-- Exercise both variants with independent garbler/evaluator objects.
+- [x] Trace the small/fast equations against the archived papers and artifact; see `docs/research/bitgc-paper-pinning.md`.
+- [x] Split DD setup from evaluator-safe DD operations. `LatticeRnsEvaluator` carries no Δ, and `RoleDdGarbler` does not implement `RoleDdEvaluator`.
+- [x] Gate the legacy shared/reference equation and drivers behind the non-default `bitgc-reference` feature (or unit tests).
+- [x] Add a compile-fail API check and runtime role-separated round-trips.
+- [x] Exercise small and fast with distinct garbler/evaluator material; explicitly reject tiny.
 
-**Proof:** Paper-binding review and both variant truth tables pass without secret crossing the evaluator interface.
-**Not here:** Wire transport, OT frames, or production parameter claims.
+**Validation (2026-10-09):** `volar-spec` default-feature `cargo check` passed; feature-enabled tests passed (330 unit tests, 5 integration tests, and the compile-fail doctest; 2 unit tests and 1 doctest ignored). Cirrus default-feature `cargo check` passed and its opt-in reference round-trip passed (2 tests). These are API/correctness checks only—not independent review, cryptographic security evidence, or deployability evidence.
+**Not here:** Wire transport, OT frames, authenticated output opening, or production parameter claims.
 
 ### Phase 2 — Bounded, bound session frames
 

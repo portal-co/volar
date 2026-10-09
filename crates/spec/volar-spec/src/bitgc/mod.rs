@@ -1,55 +1,44 @@
-// @reliability: experimental
-// @experimental-status: design
-// @experimental-since: bitgc-phase-1
+// @pinnedness: unpinned
+// @stability: very-unstable
 //! @ai: assisted
-//! Experimental BitGC-style rate-one garbling variants.
+//! Experimental BitGC algebra, reference adapters, and evaluator-safe test
+//! drivers.
 //!
-//! This module tree implements the **structure** of the three optimized
-//! BitGC variants from Zhang, Liu, Yang, Lu, Yu, Wang, and Weng, *BitGC
-//! Made (More) Efficient* (EUROCRYPT 2026; IACR ePrint 2025/1810), built on
-//! the original BitGC of Liu, Wang, Yang, and Yu (EUROCRYPT 2025; ePrint
-//! 2024/1988). See `docs/bitgc-variants-plan.md` for the plan, the
-//! paper-reference map, and the paper-pinned status table.
+//! The small/fast equations are recorded in
+//! `docs/research/bitgc-paper-pinning.md` from ePrint 2025/1810 §§4–6 and
+//! ePrint 2024/1988 §2.5, and cross-checked against the authors' artifact.
+//! That evidence pins the gate algebra; it does **not** make the current
+//! SWHE/DD implementation, parameters, or session protocol deployable.
+//! The legacy `ReferenceEquation`, `small`, `lattice_dd`, and shared-gadget
+//! driver are available only under `bitgc-reference` (or tests). The new
+//! role-separated path is in `pinned` and `lattice_dd_rns`; its algebraic
+//! tests do not establish protocol security.
 //!
-//! # Pinning status (read before relying on any equation)
+//! # Safety boundary
 //!
-//! The per-gate stitching equations are **not yet paper-pinned**: the
-//! ePrint PDF was not retrievable from the development host, so the exact
-//! construction equations of [ZLL+26] Figures 4–5 (small) and §5.1 (fast)
-//! are pending (ledger row BITGC-LEDGER-04 in
-//! `docs/fhe/future-provider-integration-ledger.md`). All gate semantics
-//! live behind the [`GateEquation`] seam in [`common`]; the shipped
-//! [`common::ReferenceEquation`] is a self-consistent reference adapter
-//! with the *communication shape* the paper specifies (1 bit per AND and
-//! per XOR for small, 5 bits per AND and free XOR for fast) but it is
-//! **not** the paper's construction and makes no security claim.
-//!
-//! # Deliberate boundaries
-//!
-//! - Semi-honest structure only; no active-security variant ([LWYY25a] is
-//!   out of scope).
-//! - Security assumption of the target constructions: Ring-LWE with
-//!   key-dependent-message (KDM) security. No profile here is validated
-//!   against a parameter table; the 128-bit claim is deferred to
+//! - BitGC admission remains disabled for protected sessions; HalfGate uses
+//!   its separate admission path.
+//! - The role-separated evaluator object contains no Δ/SWHE secret key, but
+//!   input OT, bounded transcript frames, authenticated output opening, and
+//!   independent parameter/noise review remain open under BITGC-LEDGER-07 and
 //!   BITGC-LEDGER-03.
-//! - No wire format: all values are typed in-memory values. Framing is a
-//!   separate adapter concern (mirrors `tinylabels` discipline).
-//! - Caller-supplied randomness and noise via [`swhe::RandomSource`] /
-//!   [`swhe::NoiseSource`]; `ZeroNoise` exists for deterministic tests and
-//!   must never be used with protected data.
+//! - Test profiles and exact mod-p shadows establish algebraic behavior only;
+//!   they make no RLWE/KDM security claim.
 //! - `no_std + alloc`, no external arithmetic dependencies (ADR
 //!   `docs/adr/0003-bitgc-ring-substrate.md`).
 //!
 //! [ZLL+26]: <https://eprint.iacr.org/2025/1810>
-//! [LWYY25a]: <https://eprint.iacr.org/2025/232>
+//! [LWYY25b]: <https://eprint.iacr.org/2024/1988>
 
 pub mod common;
+#[cfg(any(test, feature = "bitgc-reference"))]
 pub mod lattice_dd;
 pub mod lattice_dd_rns;
 pub mod pinned;
 pub mod prg;
 pub mod ring;
 pub mod seed;
+#[cfg(any(test, feature = "bitgc-reference"))]
 pub mod small;
 pub mod swhe;
 

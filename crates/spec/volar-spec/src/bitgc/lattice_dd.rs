@@ -760,9 +760,12 @@ mod tests {
             .iter()
             .filter(|g| matches!(g, Gate::And { .. }))
             .count();
-        let prg_bits: Vec<bool> = (0..4 * and_count)
-            .map(|_| (rng.next_u32() & 1) == 1)
-            .collect();
+        let prg_count = if variant == Variant::Fast {
+            4 * and_count
+        } else {
+            0
+        };
+        let prg_bits: Vec<bool> = (0..prg_count).map(|_| (rng.next_u32() & 1) == 1).collect();
 
         let garbling = garble_circuit(variant, &circuit, &dd, &pis, &prf, &prg_bits, &mut rng)
             .expect("garble");

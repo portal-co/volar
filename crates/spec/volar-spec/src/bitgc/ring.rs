@@ -493,8 +493,8 @@ pub(crate) fn negacyclic_mul_ntt(a: &[u64], b: &[u64], ntt: &Ntt) -> Vec<u64> {
 /// negacyclic NTT without depending on the `bitgc` internals; the engine
 /// lives here and `crate::ntt` re-exports it with pinned parameters.
 pub mod ntt_context {
-use super::{Ntt, negacyclic_mul_coeffs, negacyclic_mul_ntt};
-use alloc::vec::Vec;
+    use super::{Ntt, negacyclic_mul_coeffs, negacyclic_mul_ntt};
+    use alloc::vec::Vec;
 
     /// A negacyclic NTT context (wraps the internal [`Ntt`] engine).
     #[derive(Clone, Debug)]
@@ -528,7 +528,6 @@ use alloc::vec::Vec;
             None => negacyclic_mul_coeffs(a, b, modulus),
         }
     }
-
 }
 
 /// Schoolbook negacyclic convolution `a · b mod (X^N + 1, p)` on

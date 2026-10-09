@@ -136,7 +136,8 @@ fn sub64_bench() {
         let prf = PrfKey([1, 2, 3, 4]);
         let dd = LatticeDd::new(8, p, q, &mut rng).unwrap();
         let pis: Vec<bool> = (0..wires).map(|_| (rng.next_u32() & 1) == 1).collect();
-        let prg_bits: Vec<bool> = (0..4 * and).map(|_| (rng.next_u32() & 1) == 1).collect();
+        let prg_count = if variant == Variant::Fast { 4 * and } else { 0 };
+        let prg_bits: Vec<bool> = (0..prg_count).map(|_| (rng.next_u32() & 1) == 1).collect();
 
         let t0 = Instant::now();
         let g = garble_circuit(variant, &circuit, &dd, &pis, &prf, &prg_bits, &mut rng).unwrap();
