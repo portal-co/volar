@@ -14,11 +14,12 @@
 //! # Shape
 //!
 //! `BIrBlocks` is a single-block circuit: `params = num_inputs`, one
-//! [`BIrStmt`] per gate, and a `Jmp(Return, output_wires)` terminator.
-//! `GateSchedule` gate `k` defines wire `num_inputs + k`, which maps
-//! directly to `IRVarId(num_inputs + k)`. A `Not` gate is emitted as
-//! `Xor(a, one)` with a shared constant-1 wire (the weaver's convention —
-//! free NOT is XOR with the constant-1 wire).
+//! [`BIrStmt`] per scheduled gate (plus one shared constant-1 statement
+//! when any `Not` appears), and a `Jmp(Return, output_wires)` terminator.
+//! Inputs keep their wire IDs. If a shared constant-1 statement is needed,
+//! computed schedule wires are remapped by one so the inserted statement
+//! does not shift or alias any gate output. A `Not` gate is emitted as
+//! `Xor(a, one)` per the weaver convention.
 
 use alloc::vec::Vec;
 
@@ -52,52 +53,30 @@ impl GateSchedule {
         }
 
         let num_inputs = self.num_inputs;
-        // `BIrStmt`'s var namespace is the block's var space: params occupy
-        // `0..num_inputs`, then each statement produces the next var.
-        // `IRVarId(num_inputs + k)` is the output of the `k`-th statement,
-        // matching `GateSchedule` gate `k` → wire `num_inputs + k`.
-        let var = |wire: usize| IRVarId(wire as u32);
+        // `BIrStmt` results are numbered by statement position after the
+        // params. Prefix the shared one before all gates, then remap every
+        // computed schedule wire by that prefix length. Inputs are params
+        // and retain their IDs.
+        let has_not = self.gates.iter().any(|gate| matches!(gate, Gate::Not(_)));
+        let prefix = usize::from(has_not);
+        let var = |wire: usize| {
+            let remapped = if wire < num_inputs { wire } else { wire + prefix };
+            IRVarId(remapped as u32)
+        };
 
-        // Lazily materialize the constant-0 / constant-1 wires shared by
-        // all `Not` gates (NOT = XOR with the one-wire).
-        let mut stmts: Vec<BIrStmt> = Vec::with_capacity(self.gates.len() + 2);
-        let mut one_var: Option<u32> = None;
-        let mut stmt_index = num_inputs;
+        let mut stmts: Vec<BIrStmt> = Vec::with_capacity(self.gates.len() + prefix);
+        if has_not {
+            // This is IRVarId(num_inputs), the shared XOR-with-one operand.
+            stmts.push(BIrStmt::One);
+        }
 
         for gate in &self.gates {
             let stmt = match *gate {
-                Gate::Zero => {
-                    stmt_index += 1;
-                    BIrStmt::Zero
-                }
-                Gate::One => {
-                    stmt_index += 1;
-                    BIrStmt::One
-                }
-                Gate::Xor(a, b) => {
-                    stmt_index += 1;
-                    BIrStmt::Xor(var(a), var(b))
-                }
-                Gate::And(a, b) => {
-                    stmt_index += 1;
-                    BIrStmt::And(var(a), var(b))
-                }
-                Gate::Not(a) => {
-                    // NOT = XOR with the constant-1 wire (weaver
-                    // convention). Materialize `one` on first use.
-                    let one = match one_var {
-                        Some(v) => v,
-                        None => {
-                            stmts.push(BIrStmt::One);
-                            let v = stmt_index as u32;
-                            stmt_index += 1;
-                            one_var = Some(v);
-                            v
-                        }
-                    };
-                    stmt_index += 1;
-                    BIrStmt::Xor(var(a), IRVarId(one))
-                }
+                Gate::Zero => BIrStmt::Zero,
+                Gate::One => BIrStmt::One,
+                Gate::Xor(a, b) => BIrStmt::Xor(var(a), var(b)),
+                Gate::And(a, b) => BIrStmt::And(var(a), var(b)),
+                Gate::Not(a) => BIrStmt::Xor(var(a), IRVarId(num_inputs as u32)),
                 Gate::StorageRead { .. } | Gate::StorageWrite { .. } => {
                     return Err(BridgeError::HasStorage);
                 }
@@ -153,9 +132,9 @@ mod tests {
         // (x0 ∧ x1) ⊕ x2, with a NOT: out = (x0 ∧ x1) ⊕ ¬x2.
         let sched = bool_schedule(
             alloc::vec![
-                Gate::And(0, 1),  // wire 3
-                Gate::Not(2),     // wire 4 = ¬x2 (as Xor(2, one))
-                Gate::Xor(3, 4),  // wire 5
+                Gate::And(0, 1), // wire 3
+                Gate::Not(2),    // wire 4 = ¬x2 (as Xor(2, one))
+                Gate::Xor(3, 4), // wire 5
             ],
             3,
             5,
@@ -164,12 +143,17 @@ mod tests {
         assert_eq!(blocks.blocks.len(), 1);
         let block = &blocks.blocks[0];
         assert_eq!(block.params, 3);
-        // 3 gates + 1 shared constant-1 wire for the NOT.
+        // Prefix constant 1 at var 3; schedule wires 3, 4, 5 map to
+        // vars 4, 5, 6 respectively. The NOT's XOR uses input 2 and var 3.
         assert_eq!(block.stmts.len(), 4);
-        assert!(matches!(
-            block.terminator,
-            BIrTerminator::Jmp(_)
-        ));
+        assert_eq!(block.stmts[0].kind, BIrStmt::One);
+        assert_eq!(block.stmts[1].kind, BIrStmt::And(IRVarId(0), IRVarId(1)));
+        assert_eq!(block.stmts[2].kind, BIrStmt::Xor(IRVarId(2), IRVarId(3)));
+        assert_eq!(block.stmts[3].kind, BIrStmt::Xor(IRVarId(4), IRVarId(5)));
+        let BIrTerminator::Jmp(target) = &block.terminator else {
+            panic!("single-block circuit must return");
+        };
+        assert_eq!(target.args, [IRVarId(6)]);
     }
 
     #[test]
