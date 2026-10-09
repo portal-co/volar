@@ -1,6 +1,6 @@
 # BitGC session protocol plan
 
-**Status:** Phases 0–1 safety quarantine and role-separated algebraic core landed and locally validated. No session protocol or protected-data profile is deployable.
+**Status:** Phases 0–2 safety quarantine, role-separated algebraic core, and bounded frame/state-machine foundation landed and locally validated. No session protocol or protected-data profile is deployable.
 **Scope:** shared Volar/Cirrus session infrastructure. Aero is not part of this work.
 **Ledger:** `BITGC-LEDGER-07` in `docs/fhe/future-provider-integration-ledger.md`.
 
@@ -43,10 +43,10 @@
 
 ### R-4 Sessions bind peers and circuits
 
-- **Approach:** Add a transport-neutral session state machine. Bind role, protocol version, variant, parameter fingerprint, circuit digest, session ID, and monotonic sequence numbers into the transcript.
+- **Approach:** Add a transport-neutral session state machine. Carry role, protocol version, variant, parameter fingerprint, circuit digest, session ID, and monotonic sequence numbers in every frame and validate them against local session context. Cryptographic transcript authentication remains deferred.
 - **Touches:** New `volar-mpc::bitgc_session` module and the Cirrus adapter.
 - **Test seam:** Role-pair loopback tests plus wrong-version, wrong-profile, wrong-circuit, replay, and reordering tests.
-- **Acceptance:** [ ] A frame from another session or circuit is rejected before cryptographic evaluation. [ ] Sequences advance exactly once.
+- **Acceptance:** [x] A frame from another session, variant, parameter profile, or circuit is rejected before cryptographic evaluation. [x] Sequences advance exactly once; replay and reordering are rejected.
 - **Hard part:** Define canonical parameter and circuit digests without adding a serialization dependency to `volar-spec`.
 
 ### R-5 Frames are bounded and sessions cancel safely
@@ -54,7 +54,7 @@
 - **Approach:** Define a versioned, canonical frame codec with checked lengths and bounded chunks. Return transport and protocol errors; cancellation moves both state machines to a terminal state.
 - **Touches:** `volar-mpc::bitgc_session` and transport adapters.
 - **Test seam:** Codec property tests, truncated/oversized frame tests, injected I/O failures, and cancel-at-each-state tests.
-- **Acceptance:** [ ] No untrusted length allocates before checking limits. [ ] Malformed, duplicate, out-of-order, or over-budget input aborts. [ ] Abort/cancel cannot resume the session.
+- **Acceptance:** [x] The borrowed decoder checks fixed limits before exposing payloads; the transport seam requires bounds before peer-sized allocation. [x] Malformed, duplicate, out-of-order, or over-budget input aborts. [x] Abort/cancel cannot resume the session.
 - **Hard part:** Bound ciphertext and RNS payload sizes before deserialization and avoid partial-state reuse after errors.
 
 ### R-6 Outputs are authenticated
@@ -116,14 +116,14 @@
 
 **Goal:** Two local roles reject malformed, replayed, mismatched, and over-budget frames before evaluation.
 
-**Tasks**
+**Tasks — landed**
 
-- Define the protocol header, profile fingerprint, circuit digest, and sequence rules.
-- Implement canonical frame encode/decode with explicit size limits.
-- Add fallible send/receive/cancel seams and terminal abort state.
-- Test malformed, truncated, oversized, replayed, reordered, and wrong-profile frames.
+- [x] Define the v1 header and sequence rules: role, variant, 32-byte parameter fingerprint, circuit digest, session ID, and per-direction monotonic sequence.
+- [x] Implement canonical encode/decode with a 64 KiB payload cap and borrowed payload parsing.
+- [x] Add fallible `BitGcFrameTransport` send/receive/cancel seams and terminal abort/cancel states.
+- [x] Test malformed, truncated, oversized, replayed, reordered, wrong-role, and wrong-binding frames, plus injected transport failure and cancellation during handshake/active states.
 
-**Proof:** Codec and state-machine adversarial tests pass without allocating beyond configured limits.
+**Validation (2026-10-09):** `volar-mpc` BitGC session unit tests passed (10/10) with an offline workspace-patched Cargo run; `git diff --check` and targeted rustfmt passed. The codec rejects noncanonical/truncated/oversized frames, and the state machine rejects mismatches before returning payloads. The envelope is not authenticated: peer/transcript authentication, canonical digest construction, OT, and protected-session admission remain open.
 **Not here:** Live OT or any deployment transport.
 
 ### Phase 3 — Input OT and authenticated opening

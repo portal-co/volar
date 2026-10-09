@@ -61,6 +61,7 @@ use volar_spec::garble::{Eval, EvalSetup, Garble, GarbleTable, GarbledCircuit, G
 use volar_spec::vole::VoleArray;
 
 pub mod bitgc_delivery;
+pub mod bitgc_session;
 pub mod cut_and_choose;
 pub mod external_batch;
 pub use external_batch::{
