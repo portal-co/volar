@@ -796,6 +796,19 @@ pub fn garble_circuit<D: DdGadget>(
                 labels[w] = out;
                 records.push(GateRecord::FastXor);
             }
+            (_, Gate::Not { .. }) => {
+                // Free NOT ([ZLL+26]; artifact `HandleInvGate`): copy the
+                // wire label unchanged and flip the permutation bit
+                // (`π_c = π_a ⊕ 1`). Then `x̂_c = v_c ⊕ π_c = ¬v_a ⊕ (π_a ⊕ 1)
+                // = v_a ⊕ π_a = x̂_a` — the masked bit is unchanged, so the
+                // evaluator copies the label and keeps the masked bit. No
+                // communication, no table, no DD, no offline bit.
+                let out_pi = !pi[a];
+                pi[w] = out_pi;
+                let w0 = labels[a].w0.clone();
+                labels[w] = WireLabel { w0, pi: out_pi };
+                // No record pushed: NOT is free (0 bits).
+            }
         }
     }
 
@@ -957,6 +970,13 @@ pub fn evaluate_circuit<D: DdGadget>(
                 );
                 labels.push(out);
                 masked.push(masked[a] ^ masked[b]);
+            }
+            (_, Gate::Not { .. }) => {
+                // Free NOT: copy the label, keep the masked bit (the
+                // permutation bit flipped garbler-side; see
+                // `garble_circuit`). No record consumed, no table.
+                labels.push(labels[a].clone());
+                masked.push(masked[a]);
             }
         }
     }
