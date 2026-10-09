@@ -1,0 +1,13 @@
+[package]
+name = "volar-vole-pipeline"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-compiler = { git = "https://github.com/portal-co/volar.git", features = ["parsing"] }
+volar-lir-codegen = { git = "https://github.com/portal-co/volar.git" }
+volar-lir = { git = "https://github.com/portal-co/volar-ir" }
+volar-weaver = { git = "https://github.com/portal-co/volar.git" }

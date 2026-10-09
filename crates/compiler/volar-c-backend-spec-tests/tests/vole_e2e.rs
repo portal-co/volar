@@ -29,152 +29,21 @@ use volar_compiler::{
     linkage::{LinkageKind, LinkageSystem, LinkedSpec},
     parse_sources,
 };
-use volar_lir_codegen::{MonoPlanOptions, lower_module_monomorphized, mono::MonoEnv};
+use volar_lir_codegen::mono::MonoEnv;
 use volar_lir_saved::{RecordingTarget, SavedLirModule};
+use volar_vole_pipeline::{
+    galois_vole_env, lower_vole_to_target, make_vole_linkage, make_vole_linkage_galois,
+    parse_vole_spec, vole_env,
+};
 use volar_lir_test_corpus::{compile_and_run, make_biir_and, make_biir_half_adder, make_biir_xor};
 use volar_wasm_backend::WasmBackend;
 use volar_weaver::{weave_vole_prover, weave_vole_verifier};
 use wasmtime::{Engine, Module, Store};
 
-/// Plan-API lower for woven VOLE modules.
-///
-/// Roots only woven entries (`vole_prove_*` / `vole_verify_*`) plus harness
-/// helpers the e2e `main` calls directly. Rooting every linked Normal function
-/// would force unused sbox/`mul_generalized` specializations that the small
-/// AND/XOR circuits never call.
+
+/// Plan-API lower for woven VOLE modules (delegates to the shared pipeline).
 fn lower_vole_module(module: &IrModule<IrFunction>, backend: &mut CBackend, env: &MonoEnv) {
     lower_vole_to_target(module, backend, env);
-}
-
-/// Same root selection as [`lower_vole_module`], targeting an arbitrary `LirTarget`.
-///
-/// Prefix list is configurable (see `roots_by_name_prefix`'s own doc) —
-/// covers only `vole_prove_`/`vole_verify_` here since this file's own
-/// circuits (AND/XOR/half-adder) never weave a QSim role (`vole_qsim_`);
-/// a caller rooting a QSim-inclusive module passes a broader list.
-fn lower_vole_to_target<T: volar_lir::LirTarget>(
-    module: &IrModule<IrFunction>,
-    target: &mut T,
-    env: &MonoEnv,
-) {
-    let roots = volar_lir_codegen::roots_by_name_prefix(
-        module,
-        &["vole_prove_", "vole_verify_"],
-        &["vole_and_verifier_check", "vole_and_prover_step"],
-        env.clone(),
-    );
-    lower_module_monomorphized(
-        module,
-        target,
-        MonoPlanOptions {
-            roots,
-            ..Default::default()
-        },
-    )
-    .unwrap_or_else(|err| panic!("LIR monomorphization failed: {err}"));
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-fn spec_src_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("spec")
-        .join("volar-spec")
-        .join("src")
-}
-
-fn read_spec(name: &str) -> (String, String) {
-    let path = spec_src_dir().join(name);
-    let src = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read spec file {}: {e}", path.display()));
-    let stem = Path::new(name)
-        .file_stem()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    (src, stem)
-}
-
-/// Parse the VOLE-relevant spec sources into a single `IrModule`.
-///
-/// We include:
-/// - `lib.rs`         — top-level re-exports, SpecRng trait
-/// - `vole.rs`        — Delta, Q, VoleArray trait, rotation/remap operations
-/// - `vole/prove.rs`  — vole_and_prover_step, vole_and_verifier_check
-/// - `vole/vope.rs`   — Vope struct definition
-/// - `vole/impls.rs`  — Add/Mul/BitXor impls for Vope
-fn parse_vole_spec() -> volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction> {
-    let files = [
-        "lib.rs",
-        "vole.rs",
-        "vole/prove.rs",
-        "vole/vope.rs",
-        "vole/impls.rs",
-    ];
-    let loaded: Vec<(String, String)> = files.iter().map(|&f| read_spec(f)).collect();
-    let inputs: Vec<SourceInput> = loaded
-        .iter()
-        .map(|(src, name)| SourceInput {
-            source: src.as_str(),
-            name: name.as_str(),
-        })
-        .collect();
-    parse_sources(&inputs, "volar_spec", &[])
-        .unwrap_or_else(|e| panic!("parse_vole_spec failed: {e}"))
-}
-
-/// Build a `LinkageSystem` from the VOLE spec sources.
-fn make_vole_linkage() -> LinkageSystem {
-    let spec_module = parse_vole_spec();
-    let mut ls = LinkageSystem::new();
-    ls.add(LinkedSpec {
-        name: "volar_spec".into(),
-        module: spec_module,
-        kind: LinkageKind::Inline,
-    });
-    ls
-}
-
-/// `MonoEnv` for VOLE with 16-lane GF(2^8) field elements.
-///
-/// - `N = 16`  : VOLE vector length (number of field elements per wire)
-/// - `T = u8`  : field element type (GF(2^8))
-/// - `U1 = 1`  : typenum U1, used as the degree-1 polynomial index in Vope
-/// - `K = 1`   : Vope degree param (same as U1; appears as ArrayLength::TypeParam)
-/// - `U0 = 0`  : typenum U0
-fn vole_env() -> MonoEnv {
-    MonoEnv::new("sha256")
-        .with_len("N", 16)
-        .with_len("U1", 1)
-        .with_len("U0", 0)
-        .with_len("K", 1)
-        .with_type("T", IrType::Primitive(PrimitiveType::U8))
-}
-
-/// `MonoEnv` for VOLE with 16-lane `Galois` (GF(2^8)) field elements.
-///
-/// Unlike `vole_env`, `T = Galois` routes through the C backend's
-/// GF-aware arithmetic (`^` for add/sub, `volar_gf8_mul` for multiply).
-/// This is required for correct OT-based VOLE where field masks are non-zero.
-fn galois_vole_env() -> MonoEnv {
-    MonoEnv::new("sha256")
-        .with_len("N", 16)
-        .with_len("U1", 1)
-        .with_len("U0", 0)
-        .with_len("K", 1)
-        .with_type("T", IrType::Primitive(PrimitiveType::Galois))
-}
-
-/// Build a `LinkageSystem` using the standard spec (Galois is a PrimitiveType).
-fn make_vole_linkage_galois() -> LinkageSystem {
-    // Standard spec parse suffices; Galois is a PrimitiveType, not a custom struct.
-    make_vole_linkage()
 }
 
 // ============================================================================

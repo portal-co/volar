@@ -11,6 +11,7 @@ publish = false
 volar-c-backend = { git = "https://github.com/portal-co/volar-ir" }
 volar-compiler = { git = "https://github.com/portal-co/volar.git", features = ["parsing"] }
 volar-lir-codegen = { git = "https://github.com/portal-co/volar.git" }
+volar-vole-pipeline = { path = "../volar-vole-pipeline" }
 volar-weaver = { git = "https://github.com/portal-co/volar.git" }
 volar-wasm-backend = { git = "https://github.com/portal-co/volar-ir" }
 volar-lir = { git = "https://github.com/portal-co/volar-ir" }
