@@ -796,6 +796,31 @@ pub fn garble_circuit<D: DdGadget>(
                 labels[w] = out;
                 records.push(GateRecord::FastXor);
             }
+            (_, Gate::Not { .. }) => {
+                // Free NOT ([ZLL+26]; artifact `HandleInvGate`): the
+                // DD base of the output label is **identical** to the
+                // input's base (`W_2^{π_2} = W_0^{π_0}`), and the
+                // permutation bit flips (`π_c = π_a ⊕ 1`). Then
+                // `x̂_c = v_c ⊕ π_c = ¬v_a ⊕ (π_a ⊕ 1) = v_a ⊕ π_a = x̂_a` —
+                // the masked bit is unchanged, so the evaluator copies
+                // the active label and keeps the masked bit.
+                //
+                // We must NOT just copy `w0` and flip `pi`: that would
+                // shift `base()` by Δ (breaking the DD invariant for the
+                // downstream gate). Instead set `w0` so that
+                // `labels[w].base() == labels[a].base()`: with
+                // `base = w0 + π·Δ` and `π_c = ¬π_a`, `w0 = W_a^{π_a} − π_c·Δ`.
+                let out_pi = !pi[a];
+                pi[w] = out_pi;
+                let base = labels[a].base(delta); // W_a^{π_a}
+                let w0 = if out_pi {
+                    ring::sub_coeffs(&base, &delta.coeffs, p)
+                } else {
+                    base
+                };
+                labels[w] = WireLabel { w0, pi: out_pi };
+                // No record pushed: NOT is free (0 bits).
+            }
         }
     }
 
@@ -957,6 +982,13 @@ pub fn evaluate_circuit<D: DdGadget>(
                 );
                 labels.push(out);
                 masked.push(masked[a] ^ masked[b]);
+            }
+            (_, Gate::Not { .. }) => {
+                // Free NOT: copy the label, keep the masked bit (the
+                // permutation bit flipped garbler-side; see
+                // `garble_circuit`). No record consumed, no table.
+                labels.push(labels[a].clone());
+                masked.push(masked[a]);
             }
         }
     }

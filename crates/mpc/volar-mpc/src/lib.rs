@@ -77,6 +77,11 @@ pub mod ot;
 #[cfg(feature = "mlkem")]
 pub mod ot_mlkem;
 pub mod strict;
+
+/// GateSchedule → volar-ir `BIrBlocks` bridge for the weaver backend.
+/// Pure-boolean schedules only; gated behind the `weaver-bridge` feature.
+#[cfg(feature = "weaver-bridge")]
+pub mod weaver_bridge;
 pub mod strict_chain;
 pub mod strict_cursor;
 pub mod strict_split;

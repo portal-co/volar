@@ -285,6 +285,7 @@ impl Circuit {
             values[self.inputs + i] = match gate {
                 Gate::And { .. } => values[a] & values[b],
                 Gate::Xor { .. } => values[a] ^ values[b],
+                Gate::Not { .. } => !values[a],
             };
         }
         Ok(self.outputs.iter().map(|&o| values[o]).collect())
@@ -308,13 +309,22 @@ pub enum Gate {
         /// Second input wire.
         b: usize,
     },
+    /// `out = ¬a` (logical NOT). Free in BitGC — it is an XOR with the
+    /// constant 1 and carries no communication (its one input is also
+    /// passed as the second operand for binary-shape callers).
+    Not {
+        /// Input wire.
+        a: usize,
+    },
 }
 
 impl Gate {
-    /// Operand wire indices.
+    /// Operand wire indices. A unary gate returns its single input for
+    /// both slots (callers that need a binary shape).
     pub const fn operands(&self) -> (usize, usize) {
         match *self {
             Self::And { a, b } | Self::Xor { a, b } => (a, b),
+            Self::Not { a } => (a, a),
         }
     }
 

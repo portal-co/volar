@@ -1,0 +1,41 @@
+=== FAST_WIRE_LOG ===
+FAST_WIRE_DONE
+=== FAST_WIRE_LOG ===
+=== BitGC E2E Benchmark ===
+Config: Variant=fast, Check=wire, SeedSize=1000
+Circuit: /root/more-efficient-bitgc/circuits/sub64.txt
+
+=== Setup (ms) ===
+Total=5016.845, CircuitParse=9.459, LargeHE=541.105, SeedPrep=3338.226, SmallHE=1126.229, Other=1.826
+
+=== Setup Comm (Gen->Eva) ===
+Keys: Total=15.3 MB, HEEvalKey=15.3 MB, HSSEvalKey=0.0 MB
+HEEvalKey: Max=LargeGK(13.8 MB), Remain=1.5 MB
+
+=== Modulus Bits ===
+init(600 bits, N=2^9, L=10), post-extraction(180 bits, N=2^8, L=3), hss-mul(240 bits, N=2^8, L=4), dd-cipher(120 bits, N=2^8, L=2)
+
+=== Generator (ms) ===
+Offline RBits: Required=252, Produced=512, Extracted=252, Batches=1
+Offline Time: Total=1502.123, PRG=478.350, Unpack=723.427, ExtMul=299.880
+Offline per RBit (consumed): Total=5.961, PRG=1.898, Unpack=2.871, ExtMul=1.190
+Offline per RBit (capacity): Total=2.934, PRG=0.934, Unpack=1.413, ExtMul=1.190
+Online Gates: AND=63, XOR=313, INV=63
+Online Time: Total=251.395, CT=20.816, HSS/DD=223.545
+Online Per Gate: AND=1.329 (CT=0.330, HSS/DD=0.999), XOR=0.513, INV=0.008
+Total Per Gate (current): AND=25.165 (PRG=7.593, Unpack=11.483, ExtMul=4.760, CT=0.330, HSS/DD=0.999), XOR=0.513, INV=0.008
+Total Per Gate (capacity): AND=15.478 (PRG=3.737, Unpack=5.652, ExtMul=4.760, CT=0.330, HSS/DD=0.999), XOR=0.513, INV=0.008
+
+=== Evaluator (ms) ===
+Offline RBits: Required=252, Produced=512, Extracted=252, Batches=1
+Offline Time: Total=1446.895, PRG=481.064, Unpack=661.047, ExtMul=304.596
+Offline per RBit (consumed): Total=5.742, PRG=1.909, Unpack=2.623, ExtMul=1.209
+Offline per RBit (capacity): Total=2.826, PRG=0.940, Unpack=1.291, ExtMul=1.209
+Online Gates: AND=63, XOR=313, INV=63
+Online Time: Total=261.476, CT=18.682, HSS/DD=237.476
+Online Per Gate: AND=1.250 (CT=0.297, HSS/DD=0.953), XOR=0.567, INV=0.009
+Total Per Gate (current): AND=24.214 (PRG=7.636, Unpack=10.493, ExtMul=4.835, CT=0.297, HSS/DD=0.953), XOR=0.567, INV=0.009
+Total Per Gate (capacity): AND=15.008 (PRG=3.758, Unpack=5.164, ExtMul=4.835, CT=0.297, HSS/DD=0.953), XOR=0.567, INV=0.009
+
+[CHECK] Output and wire-level invariants verified
+

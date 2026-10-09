@@ -114,7 +114,7 @@ impl DdGadget for LatticeDd {
     }
 
     fn dd0(&self, a: &LabelPoly, tau: &RowCt) -> LabelPoly {
-        ring::negacyclic_mul_coeffs(&tau.c1, a, self.p)
+        self.mul_p(&tau.c1, a)
     }
 
     fn dd_i(&self, a: &LabelPoly, i: bool, tau: &RowCt) -> LabelPoly {
@@ -129,7 +129,7 @@ impl DdGadget for LatticeDd {
     fn dd_ij(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, tau: &RowCt) -> LabelPoly {
         // HssMul with the reduced (mod-p) triple, then c1·share + i·j·c0.
         let share = self.hss_mul_rp(a, i, b, j);
-        let base = ring::negacyclic_mul_coeffs(&tau.c1, &share, self.p);
+        let base = self.mul_p(&tau.c1, &share);
         if i && j {
             ring::add_coeffs(&base, &tau.c0, self.p)
         } else {
@@ -190,6 +190,11 @@ pub struct LatticeDd {
     /// The triple reduced mod `p`, for the driver-facing seam's k=2
     /// `HssMul` (the relations hold mod `p` exactly).
     triple_rp: (RpPoly, RpPoly, RpPoly),
+    /// NTT context over `R_q`, present when `q` is NTT-friendly
+    /// (`q ≡ 1 mod 2N`). When absent the schoolbook path is used.
+    ntt_q: Option<ring::Ntt>,
+    /// NTT context over `R_p`, present when `p ≡ 1 mod 2N`.
+    ntt_p: Option<ring::Ntt>,
 }
 
 impl LatticeDd {
@@ -248,6 +253,9 @@ impl LatticeDd {
             coeffs: delta.clone(),
             p,
         };
+        // NTT contexts where the moduli are NTT-friendly.
+        let ntt_q = ring::Ntt::new(n, q).ok();
+        let ntt_p = ring::Ntt::new(n, p).ok();
         Ok(Self {
             n,
             p,
@@ -256,21 +264,41 @@ impl LatticeDd {
             delta_pinned,
             triple: (u, v, w),
             triple_rp,
+            ntt_q,
+            ntt_p,
         })
+    }
+
+    /// Negacyclic product over `R_q` — NTT when `q` is friendly, else
+    /// schoolbook.
+    fn mul_q(&self, a: &[u64], b: &[u64]) -> RqPoly {
+        match &self.ntt_q {
+            Some(ntt) => ring::negacyclic_mul_ntt(a, b, ntt),
+            None => negacyclic_mul_rq(a, b, self.q),
+        }
+    }
+
+    /// Negacyclic product over `R_p` — NTT when `p` is friendly, else
+    /// schoolbook.
+    fn mul_p(&self, a: &[u64], b: &[u64]) -> RpPoly {
+        match &self.ntt_p {
+            Some(ntt) => ring::negacyclic_mul_ntt(a, b, ntt),
+            None => ring::negacyclic_mul_coeffs(a, b, self.p),
+        }
     }
 
     /// `HssMul` over `R_p` using the reduced triple (driver-facing).
     fn hss_mul_rp(&self, a: &RpPoly, i: bool, b: &RpPoly, j: bool) -> RpPoly {
         let p = self.p;
         let (u, v, w) = &self.triple_rp;
-        let ab = ring::negacyclic_mul_coeffs(a, b, p);
-        let mut out = ring::negacyclic_mul_coeffs(&ab, u, p);
+        let ab = self.mul_p(a, b);
+        let mut out = self.mul_p(&ab, u);
         if i {
-            let bv = ring::negacyclic_mul_coeffs(b, v, p);
+            let bv = self.mul_p(b, v);
             out = ring::add_coeffs(&out, &bv, p);
         }
         if j {
-            let av = ring::negacyclic_mul_coeffs(a, v, p);
+            let av = self.mul_p(a, v);
             out = ring::add_coeffs(&out, &av, p);
         }
         if i && j {
@@ -321,7 +349,7 @@ impl LatticeDd {
                 }
             })
             .collect();
-        let u2d = negacyclic_mul_rq(&u2, &delta_q, q);
+        let u2d = self.mul_q(&u2, &delta_q);
         // t·Δ over R_q (t may be ±2 for the XOR τ₃ row).
         let td: RqPoly = delta_q
             .iter()
@@ -353,7 +381,7 @@ impl LatticeDd {
                 }
             })
             .collect();
-        let u2d = negacyclic_mul_rq(&tau.u2, &delta_q, q);
+        let u2d = self.mul_q(&tau.u2, &delta_q);
         let phase = add_rq(&tau.u1, &u2d, q);
         round_to_rp(&phase, q, self.p)
     }
@@ -362,7 +390,7 @@ impl LatticeDd {
     pub fn dd0(&self, a: &RpPoly, tau: &LatticeRowCt) -> RpPoly {
         // A (mod p) embedded into R_q; product over R_q; round to R_p.
         let a_q: RqPoly = a.iter().map(|&c| c % self.q).collect();
-        let prod = negacyclic_mul_rq(&tau.u2, &a_q, self.q);
+        let prod = self.mul_q(&tau.u2, &a_q);
         round_to_rp(&prod, self.q, self.p)
     }
 
@@ -378,7 +406,7 @@ impl LatticeDd {
     /// Raw (unrounded, mod-q) `u2·A` — shared by `dd0`/`dd_i`.
     fn dd0_raw(&self, a: &RpPoly, tau: &LatticeRowCt) -> RqPoly {
         let a_q: RqPoly = a.iter().map(|&c| c % self.q).collect();
-        negacyclic_mul_rq(&tau.u2, &a_q, self.q)
+        self.mul_q(&tau.u2, &a_q)
     }
 
     /// The k=2 share product with the CP-RLWE triple (over `R_q`):
@@ -391,14 +419,14 @@ impl LatticeDd {
         let (u, v, w) = &self.triple;
         let a_q: RqPoly = a.iter().map(|&c| c % q).collect();
         let b_q: RqPoly = b.iter().map(|&c| c % q).collect();
-        let ab = negacyclic_mul_rq(&a_q, &b_q, q);
-        let mut acc = negacyclic_mul_rq(&ab, u, q);
+        let ab = self.mul_q(&a_q, &b_q);
+        let mut acc = self.mul_q(&ab, u);
         if i {
-            let bv = negacyclic_mul_rq(&b_q, v, q);
+            let bv = self.mul_q(&b_q, v);
             acc = add_rq(&acc, &bv, q);
         }
         if j {
-            let av = negacyclic_mul_rq(&a_q, v, q);
+            let av = self.mul_q(&a_q, v);
             acc = add_rq(&acc, &av, q);
         }
         if i && j {
@@ -411,7 +439,7 @@ impl LatticeDd {
     pub fn dd_ij(&self, a: &RpPoly, i: bool, b: &RpPoly, j: bool, tau: &LatticeRowCt) -> RpPoly {
         let q = self.q;
         let share = self.hss_mul_raw(a, i, b, j);
-        let mut acc = negacyclic_mul_rq(&tau.u2, &share, q);
+        let mut acc = self.mul_q(&tau.u2, &share);
         if i && j {
             acc = add_rq(&acc, &tau.u1, q);
         }
@@ -424,14 +452,14 @@ impl LatticeDd {
         let (u, v, w) = &self.triple;
         let a_q: RqPoly = a.iter().map(|&c| c % q).collect();
         let b_q: RqPoly = b.iter().map(|&c| c % q).collect();
-        let ab = negacyclic_mul_rq(&a_q, &b_q, q);
-        let mut acc = negacyclic_mul_rq(&ab, u, q);
+        let ab = self.mul_q(&a_q, &b_q);
+        let mut acc = self.mul_q(&ab, u);
         if i {
-            let bv = negacyclic_mul_rq(&b_q, v, q);
+            let bv = self.mul_q(&b_q, v);
             acc = add_rq(&acc, &bv, q);
         }
         if j {
-            let av = negacyclic_mul_rq(&a_q, v, q);
+            let av = self.mul_q(&a_q, v);
             acc = add_rq(&acc, &av, q);
         }
         if i && j {
@@ -789,6 +817,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// NTT-friendly test profile: p=97 (≡1 mod 16), q=97·17 (≡1 mod 16),
+    /// degree 8 — both moduli admit a negacyclic NTT, exercising the
+    /// fast path (`mul_q`/`mul_p` → NTT).
+    fn ntt_dd() -> LatticeDd {
+        let p = 97u64;
+        let q = 97u64 * 17; // 1649 ≡ 1 mod 16
+        let mut rng = TestRng(0xfeed_5678_9abc_def0);
+        LatticeDd::new(8, p, q, &mut rng).expect("params")
+    }
+
+    #[test]
+    fn ntt_path_is_taken() {
+        // Both moduli NTT-friendly ⇒ both contexts present.
+        let dd = ntt_dd();
+        assert!(dd.ntt_q.is_some(), "q=1649 should be NTT-friendly for N=8");
+        assert!(dd.ntt_p.is_some(), "p=97 should be NTT-friendly for N=8");
+    }
+
+    #[test]
+    fn ntt_mul_matches_schoolbook() {
+        // mul_q/mul_p (NTT path) must equal the schoolbook reference.
+        let dd = ntt_dd();
+        let n = dd.degree();
+        let p = dd.p();
+        let q = dd.q();
+        let a: RpPoly = (0..n).map(|i| (i as u64 * 31 + 7) % p).collect();
+        let b: RpPoly = (0..n).map(|i| (i as u64 * 17 + 3) % p).collect();
+        assert_eq!(dd.mul_p(&a, &b), ring::negacyclic_mul_coeffs(&a, &b, p));
+        let a_q: RqPoly = (0..n).map(|i| (i as u64 * 123 + 45) % q).collect();
+        let b_q: RqPoly = (0..n).map(|i| (i as u64 * 87 + 11) % q).collect();
+        assert_eq!(dd.mul_q(&a_q, &b_q), negacyclic_mul_rq(&a_q, &b_q, q));
+    }
+
+    #[test]
+    fn ntt_dd_identities_exact() {
+        // The DD identities hold under the NTT path too.
+        let dd = ntt_dd();
+        let p = dd.p();
+        let mut rng = TestRng(0x1a2b_3c4d);
+        let tau = DdGadget::row(&dd, 1, &mut rng);
+        let a0 = sample_rp(dd.degree(), p, 0x5e6f);
+        // DD_i identity via the seam (NTT-accelerated mod-p ops).
+        let base = DdGadget::dd0(&dd, &a0, &tau);
+        let a1 = add_delta(&a0, dd.delta(), p);
+        let lhs = DdGadget::dd_i(&dd, &a1, true, &tau);
+        // dec via a fresh lattice row for the same t=1: Dec = t·Δ = Δ.
+        let expect = add_rp(&base, dd.delta(), p);
+        assert_eq!(lhs, expect, "DD_1(A0+Δ, τ) = DD_0(A0, τ) + Δ");
     }
 
     #[test]

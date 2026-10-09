@@ -84,6 +84,16 @@ pub fn garble(
                     records.push(stitch);
                 }
             }
+            Gate::Not { .. } => {
+                // Free NOT: output label = input label, π flipped (the
+                // masked bit is unchanged; see the pinned driver). The
+                // reference adapter's `WireState { a0, pi }` keeps `a0`,
+                // flips `pi`. No record.
+                wires[out_wire] = WireState {
+                    a0: a.a0,
+                    pi: !a.pi,
+                };
+            }
         }
     }
     Ok(records)
@@ -160,6 +170,12 @@ pub fn evaluate(
                     None
                 };
                 equation.eval_xor(ctx, la, lb, &expanded, delta, ksk, stitch)?
+            }
+            Gate::Not { .. } => {
+                // Free NOT: pass the input label through unchanged (the
+                // masked bit is unchanged because the garbler flipped π;
+                // see the pinned driver). No record consumed.
+                la.clone()
             }
         };
         wires.push(out);

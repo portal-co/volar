@@ -45,6 +45,7 @@
 
 pub mod common;
 pub mod lattice_dd;
+pub mod lattice_dd_rns;
 pub mod pinned;
 pub mod prg;
 pub mod ring;
