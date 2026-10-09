@@ -18,13 +18,13 @@
 //! - **Functional correctness** — sub64 computes 64-bit subtraction;
 //!   evaluated over sampled inputs and checked against plain evaluation.
 
+use volar_spec::SpecRng;
+use volar_spec::bitgc::Variant;
 use volar_spec::bitgc::common::{Circuit, Gate};
 use volar_spec::bitgc::lattice_dd::LatticeDd;
 use volar_spec::bitgc::pinned::{
     GateRecord, PrfKey, encode_inputs, evaluate_circuit, garble_circuit, open_output,
 };
-use volar_spec::bitgc::Variant;
-use volar_spec::SpecRng;
 
 /// Parse a Bristol-format circuit into [`Circuit`].
 ///
@@ -188,8 +188,11 @@ fn sub64_plain(inputs: &[bool]) -> Vec<bool> {
 
 #[test]
 fn sub64_gate_counts_match_artifact() {
-    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sub64.txt"))
-        .expect("sub64 fixture");
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sub64.txt"
+    ))
+    .expect("sub64 fixture");
     let circuit = parse_bristol(&text);
     let (and, xor, inv) = counts(&circuit);
     // From the artifact's wire-log: "Online Gates: AND=63, XOR=313, INV=63".
@@ -208,8 +211,11 @@ fn sub64_gate_counts_match_artifact() {
 
 #[test]
 fn sub64_pinned_accounting_and_correctness() {
-    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sub64.txt"))
-        .expect("sub64 fixture");
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sub64.txt"
+    ))
+    .expect("sub64 fixture");
     let circuit = parse_bristol(&text);
     let (and, xor, inv) = counts(&circuit);
     assert_eq!((and, xor, inv), (63, 313, 63));
