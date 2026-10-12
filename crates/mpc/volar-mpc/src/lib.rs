@@ -79,7 +79,7 @@ pub mod ot_mlkem;
 pub mod strict;
 pub mod schedule;
 pub use schedule::{
-    MpcScheduleCursor, MpcScheduleError, MpcScheduleFrame, MpcSchedulePhase,
+    MpcScheduleCursor, MpcScheduleError, MpcScheduleFrame, MpcSchedulePhase, MpcScheduleRole,
     validate_gate_schedule_binding,
 };
 

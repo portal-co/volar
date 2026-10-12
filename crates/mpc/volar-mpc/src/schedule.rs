@@ -25,6 +25,20 @@ pub enum MpcSchedulePhase {
     EpochAck,
 }
 
+/// The role's position in the public lockstep envelope.
+///
+/// The garbler emits epoch-open, iteration, and commit frames and receives the
+/// evaluator's acknowledgement. The evaluator mirrors that order and sends the
+/// acknowledgement. Payload protocol frames run only after the corresponding
+/// iteration frame has been exchanged by both roles.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MpcScheduleRole {
+    /// The role that initiates epoch and iteration frames.
+    Garbler,
+    /// The role that validates those frames and acknowledges each epoch.
+    Evaluator,
+}
+
 /// One public schedule frame exchanged by a lockstep MPC adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MpcScheduleFrame {
@@ -413,6 +427,44 @@ impl MpcScheduleCursor {
         Ok(frame)
     }
 
+    /// Drive the complete manifest in lockstep, invoking `iteration` once for
+    /// every accepted iteration frame.
+    ///
+    /// The callback receives the canonical, locally validated iteration frame
+    /// after that frame has crossed the transport. Returning an error aborts
+    /// the schedule before any later iteration or epoch boundary is admitted.
+    /// The return value is the number of payload iterations executed.
+    pub fn drive<T: Transport>(
+        &mut self,
+        role: MpcScheduleRole,
+        transport: &mut T,
+        mut iteration: impl FnMut(&MpcScheduleFrame) -> Result<(), MpcError>,
+    ) -> Result<usize, MpcError> {
+        let mut executed = 0usize;
+        while !self.is_complete() {
+            let expected = self.next_frame().ok_or(MpcError::MalformedSchedule)?;
+            let frame = match (role, expected.phase) {
+                (MpcScheduleRole::Garbler, MpcSchedulePhase::EpochAck) => {
+                    self.receive_next(transport)?
+                }
+                (MpcScheduleRole::Evaluator, MpcSchedulePhase::EpochAck) => {
+                    self.send_next(transport)?
+                }
+                (MpcScheduleRole::Garbler, _) => self.send_next(transport)?,
+                (MpcScheduleRole::Evaluator, _) => self.receive_next(transport)?,
+            };
+            if frame.phase == MpcSchedulePhase::Iteration {
+                iteration(&frame)?;
+                executed += 1;
+            }
+        }
+        self.finish().map_err(|_| MpcError::MalformedSchedule)?;
+        if executed != self.accepted_iterations() {
+            return Err(MpcError::MalformedSchedule);
+        }
+        Ok(executed)
+    }
+
     fn require_iteration(
         &self,
         expected: Option<IterationId>,
@@ -492,7 +544,7 @@ pub fn validate_gate_schedule_binding(
 
 #[cfg(test)]
 mod tests {
-    use alloc::{collections::VecDeque, vec};
+    use alloc::{collections::VecDeque, vec, vec::Vec};
 
     use super::*;
 
@@ -508,6 +560,22 @@ mod tests {
             self.0.pop_front().expect("test queue frame")
         }
     }
+
+    #[derive(Default)]
+    struct ScriptedTransport {
+        inbound: VecDeque<Vec<u8>>,
+        sent: Vec<Vec<u8>>,
+    }
+
+    impl Transport for ScriptedTransport {
+        fn send(&mut self, frame: &[u8]) {
+            self.sent.push(frame.to_vec());
+        }
+
+        fn recv(&mut self) -> Vec<u8> {
+            self.inbound.pop_front().expect("scripted inbound frame")
+        }
+    }
     use volar_ir_common::{CommunicationGroup, EpochManifest, IterationManifest, WorkerLane};
 
     fn manifest() -> ScheduleManifest {
@@ -521,6 +589,38 @@ mod tests {
         let mut manifest = ScheduleManifest::new([1; 32], [2; 32], 7, 2, 2);
         manifest.epochs.push(epoch);
         manifest
+    }
+
+    fn multi_epoch_manifest() -> ScheduleManifest {
+        let mut first = EpochManifest::new(EpochId(0), CommunicationGroup(0));
+        first
+            .iterations
+            .push(IterationManifest::new(IterationId(0), 10, WorkerLane(0)));
+        first
+            .iterations
+            .push(IterationManifest::new(IterationId(1), 11, WorkerLane(1)));
+        let mut second = EpochManifest::new(EpochId(1), CommunicationGroup(1));
+        second
+            .iterations
+            .push(IterationManifest::new(IterationId(2), 12, WorkerLane(0)));
+        let mut manifest = ScheduleManifest::new([1; 32], [2; 32], 7, 3, 2);
+        manifest.epochs.push(first);
+        manifest.epochs.push(second);
+        manifest
+    }
+
+    fn canonical_frames(
+        manifest: &ScheduleManifest,
+        session_id: u64,
+        digest: [u8; 32],
+    ) -> Vec<MpcScheduleFrame> {
+        let mut cursor = MpcScheduleCursor::new(manifest, session_id, digest).unwrap();
+        let mut frames = Vec::new();
+        while let Some(frame) = cursor.next_frame() {
+            cursor.accept(&frame).unwrap();
+            frames.push(frame);
+        }
+        frames
     }
 
     fn run_frames(cursor: &mut MpcScheduleCursor) {
@@ -551,6 +651,87 @@ mod tests {
         assert!(receiver.is_complete());
         sender.finish().unwrap();
         receiver.finish().unwrap();
+    }
+
+    #[test]
+    fn drive_runs_multi_epoch_iterations_in_manifest_order() {
+        let manifest = multi_epoch_manifest();
+        let digest = [7; 32];
+        let frames = canonical_frames(&manifest, 44, digest);
+        let inbound_acks = frames
+            .iter()
+            .filter(|frame| frame.phase == MpcSchedulePhase::EpochAck)
+            .map(|frame| SessionFrame::Schedule(frame.clone()).encode())
+            .collect();
+        let mut garbler_wire = ScriptedTransport {
+            inbound: inbound_acks,
+            sent: Vec::new(),
+        };
+        let mut garbler = MpcScheduleCursor::new(&manifest, 44, digest).unwrap();
+        let mut garbler_iterations = Vec::new();
+        let executed = garbler
+            .drive(MpcScheduleRole::Garbler, &mut garbler_wire, |frame| {
+                garbler_iterations.push(frame.iteration.unwrap());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(executed, 3);
+        assert_eq!(
+            garbler_iterations,
+            vec![IterationId(0), IterationId(1), IterationId(2)]
+        );
+        let sent: Vec<MpcScheduleFrame> = garbler_wire
+            .sent
+            .iter()
+            .map(|frame| match SessionFrame::decode(frame).unwrap() {
+                SessionFrame::Schedule(frame) => frame,
+                _ => panic!("driver sent a non-schedule frame"),
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            frames
+                .iter()
+                .filter(|frame| frame.phase != MpcSchedulePhase::EpochAck)
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+
+        let inbound_payload = frames
+            .iter()
+            .filter(|frame| frame.phase != MpcSchedulePhase::EpochAck)
+            .map(|frame| SessionFrame::Schedule(frame.clone()).encode())
+            .collect();
+        let mut evaluator_wire = ScriptedTransport {
+            inbound: inbound_payload,
+            sent: Vec::new(),
+        };
+        let mut evaluator = MpcScheduleCursor::new(&manifest, 44, digest).unwrap();
+        let mut evaluator_iterations = Vec::new();
+        let executed = evaluator
+            .drive(MpcScheduleRole::Evaluator, &mut evaluator_wire, |frame| {
+                evaluator_iterations.push(frame.iteration.unwrap());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(executed, 3);
+        assert_eq!(evaluator_iterations, garbler_iterations);
+        let acknowledgements: Vec<MpcScheduleFrame> = evaluator_wire
+            .sent
+            .iter()
+            .map(|frame| match SessionFrame::decode(frame).unwrap() {
+                SessionFrame::Schedule(frame) => frame,
+                _ => panic!("driver sent a non-schedule frame"),
+            })
+            .collect();
+        assert_eq!(
+            acknowledgements,
+            frames
+                .iter()
+                .filter(|frame| frame.phase == MpcSchedulePhase::EpochAck)
+                .cloned()
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
