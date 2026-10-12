@@ -13,16 +13,17 @@
 //!
 //! This is an experimental framing/state foundation with bounded
 //! Chou–Orlandi OT and output-label hash matching. Callers may opt into keyed
-//! frame authentication with [`BitGcSession::new_authenticated`] and keyed OT
-//! envelopes, but key establishment and a unified transport transcript remain
-//! outside this module. The canonical digest helpers bind the circuit/profile
-//! shape; they do not make BitGC available for protected sessions. The
-//! admission gate remains closed pending Cirrus integration and independent
-//! review.
+//! frame authentication with [`BitGcSession::new_authenticated`] or the
+//! PSK-authenticated [`BitGcSession::new_psk_authenticated`] constructor and
+//! keyed OT envelopes. The OT channel has one ordered transcript, while the
+//! frame and OT transcript states remain separate. The canonical digest
+//! helpers bind the circuit/profile shape; they do not make BitGC available
+//! for protected sessions. The admission gate remains closed pending Cirrus
+//! integration and independent review.
 //!
-//! TODO(provider-ledger: BITGC-LEDGER-07): authenticated key establishment,
-//! unified frame/OT transcript integration, Cirrus integration, and reviewed
-//! parameters remain release gates.
+//! TODO(provider-ledger: BITGC-LEDGER-07): full frame/OT transcript
+//! integration, forward-secret external key exchange where required, Cirrus
+//! integration, and reviewed parameters remain release gates.
 
 use alloc::vec::Vec;
 use digest::Digest;
@@ -56,6 +57,10 @@ const AUTH_DOMAIN: &[u8] = b"Volar BitGC frame auth v1\0";
 const TRANSCRIPT_DOMAIN: &[u8] = b"Volar BitGC transcript v1\0";
 const CIRCUIT_DIGEST_DOMAIN: &[u8] = b"Volar BitGC circuit digest v1\0";
 const PARAMETER_DIGEST_DOMAIN: &[u8] = b"Volar BitGC parameter fingerprint v1\0";
+const PSK_HELLO_MAGIC: &[u8; 8] = b"VBGPK001";
+const PSK_HELLO_BYTES: usize = 8 + 32 + AUTH_TAG_BYTES;
+const PSK_HELLO_DOMAIN: &[u8] = b"Volar BitGC PSK hello v1\0";
+const PSK_SESSION_KEY_DOMAIN: &[u8] = b"Volar BitGC PSK session key v1\0";
 
 /// Party identity carried in every BitGC frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -530,17 +535,18 @@ pub enum AuthenticatedOtError<E> {
 /// Adds a keyed, ordered envelope to the dedicated OT message transport.
 ///
 /// This authenticates and binds each OT message to the public session binding,
-/// role, descriptor-frame context, and direction-local sequence. It is
-/// intended to be used together with [`BitGcSession::new_authenticated`]. The
-/// frame and OT transports remain separate channels, but each OT invocation
-/// can now be bound to the frame that introduced it.
+/// role, descriptor-frame context, and one ordered transcript sequence shared
+/// by both OT directions. It is intended to be used together with
+/// [`BitGcSession::new_authenticated`]. The frame and OT transports remain
+/// separate channels, but each OT invocation is chained to the frame that
+/// introduced it.
 pub struct AuthenticatedBitGcOtTransport<T> {
     role: BitGcRole,
     binding: BitGcSessionBinding,
     key: [u8; 32],
     transport: T,
-    next_send_sequence: u64,
-    next_receive_sequence: u64,
+    next_sequence: u64,
+    transcript: [u8; 32],
     context: [u8; 32],
 }
 
@@ -552,8 +558,8 @@ impl<T> AuthenticatedBitGcOtTransport<T> {
             binding,
             key,
             transport,
-            next_send_sequence: 0,
-            next_receive_sequence: 0,
+            next_sequence: 0,
+            transcript: initial_ot_transcript(&binding),
             context: [0; 32],
         }
     }
@@ -566,7 +572,7 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
         if message.len() > BITGC_OT_MAX_INPUT_BYTES {
             return Err(AuthenticatedOtError::InvalidMessage);
         }
-        let sequence = self.next_send_sequence;
+        let sequence = self.next_sequence;
         let next = sequence
             .checked_add(1)
             .ok_or(AuthenticatedOtError::InvalidMessage)?;
@@ -585,6 +591,7 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
             &self.key,
             &self.binding,
             self.role,
+            &self.transcript,
             &self.context,
             sequence,
             message,
@@ -593,7 +600,8 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
         self.transport
             .send_ot_message(&envelope)
             .map_err(AuthenticatedOtError::Transport)?;
-        self.next_send_sequence = next;
+        self.transcript = ot_transcript_after(&self.transcript, &envelope);
+        self.next_sequence = next;
         Ok(())
     }
 
@@ -619,7 +627,7 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
                 .try_into()
                 .map_err(|_| AuthenticatedOtError::InvalidMessage)?,
         );
-        if sequence != self.next_receive_sequence {
+        if sequence != self.next_sequence {
             return Err(AuthenticatedOtError::InvalidMessage);
         }
         let length = u32::from_le_bytes(
@@ -639,6 +647,7 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
             &self.key,
             &self.binding,
             self.role.peer(),
+            &self.transcript,
             &self.context,
             sequence,
             payload,
@@ -651,8 +660,9 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
             .try_reserve_exact(length)
             .map_err(|_| AuthenticatedOtError::AllocationFailed)?;
         message.extend_from_slice(payload);
-        self.next_receive_sequence = self
-            .next_receive_sequence
+        self.transcript = ot_transcript_after(&self.transcript, &envelope);
+        self.next_sequence = self
+            .next_sequence
             .checked_add(1)
             .ok_or(AuthenticatedOtError::InvalidMessage)?;
         Ok(message)
@@ -660,6 +670,7 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
 
     fn bind_context(&mut self, context: &[u8; 32]) {
         self.context = *context;
+        self.transcript = ot_transcript_bind(&self.transcript, context);
     }
 
     fn cancel(&mut self) -> Result<(), Self::Error> {
@@ -847,6 +858,8 @@ pub struct BitGcSession {
     local_hello_sent: bool,
     peer_hello_received: bool,
     auth_key: Option<[u8; 32]>,
+    psk_key: Option<[u8; 32]>,
+    local_nonce: Option<[u8; 32]>,
     send_transcript: [u8; 32],
     receive_transcript: [u8; 32],
 }
@@ -859,7 +872,7 @@ impl BitGcSession {
         local_role: BitGcRole,
         binding: BitGcSessionBinding,
     ) -> Result<Self, BitGcSessionError> {
-        Self::new_inner(local_role, binding, None)
+        Self::new_inner(local_role, binding, None, None, None)
     }
 
     /// Start a session whose frames are authenticated by an externally
@@ -871,13 +884,110 @@ impl BitGcSession {
         binding: BitGcSessionBinding,
         session_key: [u8; 32],
     ) -> Result<Self, BitGcSessionError> {
-        Self::new_inner(local_role, binding, Some(session_key))
+        Self::new_inner(local_role, binding, Some(session_key), None, None)
+    }
+
+    /// Start a session authenticated by a pre-shared key (PSK).
+    ///
+    /// The caller supplies a fresh, unpredictable 32-byte nonce. Each role
+    /// sends a bounded PSK-authenticated hello; after both hellos the session
+    /// key is derived from the PSK, binding, and role-ordered nonces. This
+    /// provides authentication and key separation, but not forward secrecy;
+    /// applications needing that property must use an external key exchange.
+    pub fn new_psk_authenticated(
+        local_role: BitGcRole,
+        binding: BitGcSessionBinding,
+        pre_shared_key: [u8; 32],
+        local_nonce: [u8; 32],
+    ) -> Result<Self, BitGcSessionError> {
+        Self::new_inner(
+            local_role,
+            binding,
+            None,
+            Some(pre_shared_key),
+            Some(local_nonce),
+        )
+    }
+
+    /// Wrap a dedicated OT transport with this session's externally
+    /// established authentication key and binding.
+    ///
+    /// Keeping construction on the authenticated session prevents callers
+    /// from accidentally using a different key or public binding for OT.
+    pub fn authenticated_ot_transport<T: BitGcOtTransport>(
+        &self,
+        transport: T,
+    ) -> Result<AuthenticatedBitGcOtTransport<T>, BitGcSessionError> {
+        let Some(key) = self.auth_key else {
+            return Err(BitGcSessionError::MissingAuthentication);
+        };
+        Ok(AuthenticatedBitGcOtTransport::new(
+            self.local_role,
+            self.binding,
+            key,
+            transport,
+        ))
+    }
+
+    fn psk_hello_payload(&self, key: &[u8; 32]) -> Result<Vec<u8>, BitGcSessionError> {
+        let nonce = self
+            .local_nonce
+            .ok_or(BitGcSessionError::AuthenticationFailed)?;
+        let tag = psk_hello_tag(key, &self.binding, self.local_role, &nonce);
+        let mut payload = Vec::new();
+        payload
+            .try_reserve_exact(PSK_HELLO_BYTES)
+            .map_err(|_| BitGcSessionError::Frame(FrameError::AllocationFailed))?;
+        payload.extend_from_slice(PSK_HELLO_MAGIC);
+        payload.extend_from_slice(&nonce);
+        payload.extend_from_slice(&tag);
+        Ok(payload)
+    }
+
+    fn accept_psk_hello(
+        &mut self,
+        peer_role: BitGcRole,
+        payload: &[u8],
+    ) -> Result<(), BitGcSessionError> {
+        if payload.len() != PSK_HELLO_BYTES || &payload[..8] != PSK_HELLO_MAGIC {
+            return Err(BitGcSessionError::AuthenticationFailed);
+        }
+        let nonce: &[u8; 32] = payload[8..40]
+            .try_into()
+            .map_err(|_| BitGcSessionError::AuthenticationFailed)?;
+        let supplied: &[u8; AUTH_TAG_BYTES] = payload[40..]
+            .try_into()
+            .map_err(|_| BitGcSessionError::AuthenticationFailed)?;
+        let key = self
+            .psk_key
+            .as_ref()
+            .ok_or(BitGcSessionError::AuthenticationFailed)?;
+        let expected = psk_hello_tag(key, &self.binding, peer_role, nonce);
+        if !constant_time_eq(&expected, supplied) {
+            return Err(BitGcSessionError::AuthenticationFailed);
+        }
+        let local_nonce = self
+            .local_nonce
+            .ok_or(BitGcSessionError::AuthenticationFailed)?;
+        let (garbler_nonce, evaluator_nonce) = match self.local_role {
+            BitGcRole::Garbler => (local_nonce, *nonce),
+            BitGcRole::Evaluator => (*nonce, local_nonce),
+        };
+        self.auth_key = Some(derive_psk_session_key(
+            key,
+            &self.binding,
+            &garbler_nonce,
+            &evaluator_nonce,
+        ));
+        Ok(())
     }
 
     fn new_inner(
         local_role: BitGcRole,
         binding: BitGcSessionBinding,
         auth_key: Option<[u8; 32]>,
+        psk_key: Option<[u8; 32]>,
+        local_nonce: Option<[u8; 32]>,
     ) -> Result<Self, BitGcSessionError> {
         encode_variant(binding.variant).map_err(BitGcSessionError::Frame)?;
         Ok(Self {
@@ -889,6 +999,8 @@ impl BitGcSession {
             local_hello_sent: false,
             peer_hello_received: false,
             auth_key,
+            psk_key,
+            local_nonce,
             send_transcript: initial_transcript(&binding),
             receive_transcript: initial_transcript(&binding),
         })
@@ -904,9 +1016,16 @@ impl BitGcSession {
         self.binding
     }
 
-    /// Send the one empty sequence-zero hello frame.
+    /// Send the sequence-zero hello frame.
+    ///
+    /// PSK-authenticated sessions carry a bounded nonce/MAC payload; plain
+    /// and externally keyed sessions retain the empty legacy hello.
     pub fn hello(&mut self) -> Result<Vec<u8>, BitGcSessionError> {
-        self.emit(BitGcFrameKind::Hello, &[])
+        let payload = match self.psk_key {
+            Some(key) => self.psk_hello_payload(&key)?,
+            None => Vec::new(),
+        };
+        self.emit(BitGcFrameKind::Hello, &payload)
     }
 
     /// Send one opaque bounded protocol payload after both hello frames.
@@ -959,7 +1078,11 @@ impl BitGcSession {
                 if self.peer_hello_received || frame.sequence != 0 {
                     return self.abort_with(BitGcSessionError::UnexpectedKind);
                 }
-                if !payload.is_empty() {
+                if self.psk_key.is_some() {
+                    if let Err(error) = self.accept_psk_hello(frame.role, payload) {
+                        return self.abort_with(error);
+                    }
+                } else if !payload.is_empty() {
                     return self.abort_with(BitGcSessionError::InvalidControlPayload);
                 }
                 self.peer_hello_received = true;
@@ -1488,7 +1611,10 @@ impl BitGcSession {
         }
         let valid = match kind {
             BitGcFrameKind::Hello => {
-                !self.local_hello_sent && self.next_send_sequence == 0 && payload.is_empty()
+                !self.local_hello_sent
+                    && self.next_send_sequence == 0
+                    && ((self.psk_key.is_some() && payload.len() == PSK_HELLO_BYTES)
+                        || (self.psk_key.is_none() && payload.is_empty()))
             }
             BitGcFrameKind::Data => self.state == BitGcSessionState::Active,
             BitGcFrameKind::Cancel => payload.is_empty(),
@@ -1508,7 +1634,9 @@ impl BitGcSession {
         };
         let sequence = self.next_send_sequence;
         let mut authenticated = Vec::new();
-        let wire_payload = if let Some(key) = self.auth_key.as_ref() {
+        let authenticate = self.auth_key.is_some()
+            && !(matches!(kind, BitGcFrameKind::Hello) && self.psk_key.is_some());
+        let wire_payload = if let Some(key) = self.auth_key.as_ref().filter(|_| authenticate) {
             if payload.len() > BITGC_FRAME_MAX_PAYLOAD - AUTH_TAG_BYTES {
                 return self.abort_with(BitGcSessionError::Frame(FrameError::PayloadTooLarge));
             }
@@ -1571,6 +1699,9 @@ impl BitGcSession {
         &self,
         frame: &BitGcFrame<'a>,
     ) -> Result<&'a [u8], BitGcSessionError> {
+        if matches!(frame.kind, BitGcFrameKind::Hello) && self.psk_key.is_some() {
+            return Ok(frame.payload);
+        }
         let Some(key) = self.auth_key.as_ref() else {
             return Ok(frame.payload);
         };
@@ -1800,10 +1931,46 @@ fn frame_auth_tag(
     Ok(hmac_sha256(key, &parts))
 }
 
+fn initial_ot_transcript(binding: &BitGcSessionBinding) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"Volar BitGC OT transcript v1\0");
+    hash.update(binding.session_id);
+    hash.update([binding.variant as u8]);
+    hash.update(binding.parameter_fingerprint);
+    hash.update(binding.circuit_digest);
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
+}
+
+fn ot_transcript_bind(previous: &[u8; 32], context: &[u8; 32]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"Volar BitGC OT context v1\0");
+    hash.update(previous);
+    hash.update(context);
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
+}
+
+fn ot_transcript_after(previous: &[u8; 32], envelope: &[u8]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"Volar BitGC OT message v1\0");
+    hash.update(previous);
+    hash.update(envelope);
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
+}
+
 fn ot_auth_tag(
     key: &[u8; 32],
     binding: &BitGcSessionBinding,
     sender_role: BitGcRole,
+    transcript: &[u8; 32],
     context: &[u8; 32],
     sequence: u64,
     payload: &[u8],
@@ -1819,10 +1986,54 @@ fn ot_auth_tag(
             &variant,
             binding.parameter_fingerprint.as_slice(),
             binding.circuit_digest.as_slice(),
+            transcript.as_slice(),
             context.as_slice(),
             &sender,
             &sequence,
             payload,
+        ],
+    )
+}
+
+fn psk_hello_tag(
+    key: &[u8; 32],
+    binding: &BitGcSessionBinding,
+    role: BitGcRole,
+    nonce: &[u8; 32],
+) -> [u8; AUTH_TAG_BYTES] {
+    let variant = [binding.variant as u8];
+    let role = [role as u8];
+    hmac_sha256(
+        key,
+        &[
+            PSK_HELLO_DOMAIN,
+            binding.session_id.as_slice(),
+            &variant,
+            binding.parameter_fingerprint.as_slice(),
+            binding.circuit_digest.as_slice(),
+            &role,
+            nonce.as_slice(),
+        ],
+    )
+}
+
+fn derive_psk_session_key(
+    key: &[u8; 32],
+    binding: &BitGcSessionBinding,
+    garbler_nonce: &[u8; 32],
+    evaluator_nonce: &[u8; 32],
+) -> [u8; 32] {
+    let variant = [binding.variant as u8];
+    hmac_sha256(
+        key,
+        &[
+            PSK_SESSION_KEY_DOMAIN,
+            binding.session_id.as_slice(),
+            &variant,
+            binding.parameter_fingerprint.as_slice(),
+            binding.circuit_digest.as_slice(),
+            garbler_nonce.as_slice(),
+            evaluator_nonce.as_slice(),
         ],
     )
 }
@@ -2363,14 +2574,11 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let mut frames = CrossProcessTransport(frame_stream);
-        let ot_transport = AuthenticatedBitGcOtTransport::new(
-            BitGcRole::Evaluator,
-            binding(),
-            [0x6b; 32],
-            CrossProcessTransport(ot_stream),
-        );
         let mut evaluator =
             BitGcSession::new_authenticated(BitGcRole::Evaluator, binding(), [0x6b; 32]).unwrap();
+        let ot_transport = evaluator
+            .authenticated_ot_transport(CrossProcessTransport(ot_stream))
+            .unwrap();
         let hello = evaluator.hello().unwrap();
         frames.send_frame(&hello).unwrap();
         let peer_hello = frames.receive_frame(BITGC_FRAME_MAX_BYTES).unwrap();
@@ -2434,12 +2642,9 @@ mod tests {
         let frame = garbler.accept(&response).unwrap();
         assert_eq!(garbler.payload_without_auth(&frame).unwrap(), &[10, 11]);
 
-        let ot_transport = AuthenticatedBitGcOtTransport::new(
-            BitGcRole::Garbler,
-            binding(),
-            [0x6b; 32],
-            CrossProcessTransport(ot_stream),
-        );
+        let ot_transport = garbler
+            .authenticated_ot_transport(CrossProcessTransport(ot_stream))
+            .unwrap();
         let mut sender = ChouOrlandiBitGcOt::<U16, _, _>::new(
             BitGcRole::Garbler,
             ot_transport,
@@ -2669,6 +2874,47 @@ mod tests {
             wrong_key.accept(&hello),
             Err(BitGcSessionError::AuthenticationFailed)
         );
+    }
+
+    #[test]
+    fn psk_handshake_derives_authenticated_session_key() {
+        let mut garbler = BitGcSession::new_psk_authenticated(
+            BitGcRole::Garbler,
+            binding(),
+            [0x33; 32],
+            [0x44; 32],
+        )
+        .unwrap();
+        let mut evaluator = BitGcSession::new_psk_authenticated(
+            BitGcRole::Evaluator,
+            binding(),
+            [0x33; 32],
+            [0x55; 32],
+        )
+        .unwrap();
+        let evaluator_hello = evaluator.hello().unwrap();
+        garbler.accept(&evaluator_hello).unwrap();
+        let garbler_hello = garbler.hello().unwrap();
+        assert_eq!(garbler_hello.len(), HEADER_BYTES + PSK_HELLO_BYTES);
+        evaluator.accept(&garbler_hello).unwrap();
+        assert_eq!(garbler.state(), BitGcSessionState::Active);
+        assert_eq!(evaluator.state(), BitGcSessionState::Active);
+        let data = garbler.send_data(&[6, 7, 8]).unwrap();
+        let frame = evaluator.accept(&data).unwrap();
+        assert_eq!(evaluator.payload_without_auth(&frame).unwrap(), &[6, 7, 8]);
+
+        let mut wrong_key = BitGcSession::new_psk_authenticated(
+            BitGcRole::Evaluator,
+            binding(),
+            [0x34; 32],
+            [0x55; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_key.accept(&garbler_hello),
+            Err(BitGcSessionError::AuthenticationFailed)
+        );
+        assert_eq!(wrong_key.state(), BitGcSessionState::Aborted);
     }
 
     #[test]
