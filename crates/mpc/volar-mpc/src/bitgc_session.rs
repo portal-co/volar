@@ -1857,11 +1857,16 @@ fn is_terminal(state: BitGcSessionState) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
     extern crate std;
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::process::Command;
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::thread;
+    use std::time::Duration;
     use typenum::U16;
     use volar_spec::bitgc::common::Circuit;
     use volar_spec::bitgc::lattice_dd_rns::LatticeRnsDd;
@@ -2230,6 +2235,177 @@ mod tests {
             self.cancelled = true;
             Ok(())
         }
+    }
+
+    struct CrossProcessTransport(TcpStream);
+
+    impl CrossProcessTransport {
+        fn write_blob(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+            let length = u32::try_from(bytes.len()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "message too large")
+            })?;
+            self.0.write_all(&length.to_le_bytes())?;
+            self.0.write_all(bytes)
+        }
+
+        fn read_blob(&mut self, max_bytes: usize) -> std::io::Result<Vec<u8>> {
+            let mut length = [0; 4];
+            self.0.read_exact(&mut length)?;
+            let length = u32::from_le_bytes(length) as usize;
+            if length > max_bytes {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "message exceeds bound",
+                ));
+            }
+            let mut bytes = vec![0; length];
+            self.0.read_exact(&mut bytes)?;
+            Ok(bytes)
+        }
+    }
+
+    impl BitGcFrameTransport for CrossProcessTransport {
+        type Error = std::io::Error;
+
+        fn send_frame(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
+            self.write_blob(frame)
+        }
+
+        fn receive_frame(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error> {
+            self.read_blob(max_bytes)
+        }
+
+        fn cancel(&mut self) -> Result<(), Self::Error> {
+            self.0.shutdown(Shutdown::Both)
+        }
+    }
+
+    impl BitGcOtTransport for CrossProcessTransport {
+        type Error = std::io::Error;
+
+        fn send_ot_message(&mut self, message: &[u8]) -> Result<(), Self::Error> {
+            self.write_blob(message)
+        }
+
+        fn receive_ot_message(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error> {
+            self.read_blob(max_bytes)
+        }
+
+        fn cancel(&mut self) -> Result<(), Self::Error> {
+            self.0.shutdown(Shutdown::Both)
+        }
+    }
+
+    #[test]
+    fn cross_process_worker() {
+        let Ok(frame_address) = std::env::var("VOLAR_BITGC_FRAME_ADDRESS") else {
+            return;
+        };
+        let ot_address = std::env::var("VOLAR_BITGC_OT_ADDRESS").unwrap();
+        let frame_stream = TcpStream::connect(frame_address).unwrap();
+        let ot_stream = TcpStream::connect(ot_address).unwrap();
+        frame_stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        ot_stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut frames = CrossProcessTransport(frame_stream);
+        let ot_transport = AuthenticatedBitGcOtTransport::new(
+            BitGcRole::Evaluator,
+            binding(),
+            [0x6b; 32],
+            CrossProcessTransport(ot_stream),
+        );
+        let mut evaluator =
+            BitGcSession::new_authenticated(BitGcRole::Evaluator, binding(), [0x6b; 32]).unwrap();
+        let hello = evaluator.hello().unwrap();
+        frames.send_frame(&hello).unwrap();
+        let peer_hello = frames.receive_frame(BITGC_FRAME_MAX_BYTES).unwrap();
+        evaluator.accept(&peer_hello).unwrap();
+        assert_eq!(evaluator.state(), BitGcSessionState::Active);
+
+        let data = frames.receive_frame(BITGC_FRAME_MAX_BYTES).unwrap();
+        let frame = evaluator.accept(&data).unwrap();
+        assert_eq!(evaluator.payload_without_auth(&frame).unwrap(), &[7, 8, 9]);
+        let response = evaluator.send_data(&[10, 11]).unwrap();
+        frames.send_frame(&response).unwrap();
+
+        let receiver = ChouOrlandiBitGcOt::<U16, _, _>::new(
+            BitGcRole::Evaluator,
+            ot_transport,
+            SeedRng::new(0x4352_4f53),
+        );
+        let mut receiver = receiver;
+        let selected = receiver.receive_choice(true).unwrap();
+        assert_eq!(&selected.as_slice()[..2], &[41, 42]);
+        assert!(selected.as_slice()[2..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn authenticated_frame_and_ot_roundtrip_across_processes() {
+        let frame_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let ot_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let frame_address = frame_listener.local_addr().unwrap();
+        let ot_address = ot_listener.local_addr().unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "bitgc_session::tests::cross_process_worker",
+                "--nocapture",
+            ])
+            .env("VOLAR_BITGC_FRAME_ADDRESS", frame_address.to_string())
+            .env("VOLAR_BITGC_OT_ADDRESS", ot_address.to_string())
+            .spawn()
+            .unwrap();
+
+        let (frame_stream, _) = frame_listener.accept().unwrap();
+        let (ot_stream, _) = ot_listener.accept().unwrap();
+        frame_stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        ot_stream
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut frames = CrossProcessTransport(frame_stream);
+        let mut garbler =
+            BitGcSession::new_authenticated(BitGcRole::Garbler, binding(), [0x6b; 32]).unwrap();
+        let hello = garbler.hello().unwrap();
+        frames.send_frame(&hello).unwrap();
+        let peer_hello = frames.receive_frame(BITGC_FRAME_MAX_BYTES).unwrap();
+        garbler.accept(&peer_hello).unwrap();
+        assert_eq!(garbler.state(), BitGcSessionState::Active);
+        let data = garbler.send_data(&[7, 8, 9]).unwrap();
+        frames.send_frame(&data).unwrap();
+        let response = frames.receive_frame(BITGC_FRAME_MAX_BYTES).unwrap();
+        let frame = garbler.accept(&response).unwrap();
+        assert_eq!(garbler.payload_without_auth(&frame).unwrap(), &[10, 11]);
+
+        let ot_transport = AuthenticatedBitGcOtTransport::new(
+            BitGcRole::Garbler,
+            binding(),
+            [0x6b; 32],
+            CrossProcessTransport(ot_stream),
+        );
+        let mut sender = ChouOrlandiBitGcOt::<U16, _, _>::new(
+            BitGcRole::Garbler,
+            ot_transport,
+            SeedRng::new(0x5345_4e44),
+        );
+        let blocks = [
+            Array::<u8, U16>::from_fn(|i| match i {
+                0 => 31,
+                1 => 32,
+                _ => 0,
+            }),
+            Array::<u8, U16>::from_fn(|i| match i {
+                0 => 41,
+                1 => 42,
+                _ => 0,
+            }),
+        ];
+        sender.send_pair([&blocks[0], &blocks[1]]).unwrap();
+        assert!(child.wait().unwrap().success());
     }
 
     #[test]
