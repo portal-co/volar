@@ -30,9 +30,13 @@ use alloc::vec::Vec;
 use digest::Digest;
 use hybrid_array::Array;
 use sha2::Sha256;
+use volar_spec::SpecRng;
 use volar_spec::bitgc::Variant;
 use volar_spec::bitgc::common::{Circuit, Gate};
-use volar_spec::bitgc::pinned::{GarblerWireLabels, LabelPoly};
+use volar_spec::bitgc::pinned::{
+    DriverError, GarblerWireLabels, LabelPoly, PrfKey, RoleDdGarbler,
+    evaluate_role_circuit_with_labels, garble_role_circuit,
+};
 use volar_spec::vole::VoleArray;
 
 use crate::OtChannel;
@@ -2180,6 +2184,226 @@ fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
     difference == 0
 }
 
+/// Error from the Phase 4 role-separated circuit runner.
+///
+/// The runner is a narrow integration seam for the role-separated pinned
+/// drivers. It is not active security, a production profile, or protected-
+/// session admission.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BitGcCircuitRunnerError<E> {
+    /// Canonical binding construction rejected the circuit/profile shape.
+    Binding(BitGcDigestError),
+    /// A local session-state operation failed before a transport seam was
+    /// entered.
+    SessionState(BitGcSessionError),
+    /// The shared frame/OT transport seam failed.
+    Session(E),
+    /// The circuit driver rejected its inputs or material.
+    Driver(DriverError),
+    /// A garbler/evaluator ownership mismatch is structurally impossible.
+    WrongRole,
+}
+
+impl<E> core::fmt::Display for BitGcCircuitRunnerError<E>
+where
+    E: core::fmt::Debug,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Binding(error) => write!(f, "canonical BitGC binding failed: {error:?}"),
+            Self::SessionState(error) => write!(f, "BitGC session state failed: {error:?}"),
+            Self::Session(error) => write!(f, "BitGC session failed: {error:?}"),
+            Self::Driver(error) => write!(f, "BitGC circuit driver failed: {error:?}"),
+            Self::WrongRole => f.write_str("BitGC runner role mismatch"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl<E> std::error::Error for BitGcCircuitRunnerError<E> where E: core::fmt::Debug {}
+
+/// Transfer one evaluator-owned input label over an in-process loopback
+/// frame/OT pair from garbler to evaluator.
+///
+/// This helper is an integration/test seam: it drives both roles through one
+/// local transport object. Real deployments run the per-role methods
+/// ([`BitGcSession::send_evaluator_input_over`] /
+/// [`BitGcSession::receive_evaluator_input_over`]) on separate processes over
+/// real transports, as the cross-process test demonstrates.
+pub fn transfer_evaluator_input<N, O, T>(
+    garbler_session: &mut BitGcSession,
+    evaluator_session: &mut BitGcSession,
+    frames: &mut T,
+    ot: &mut O,
+    input_index: u64,
+    plaintext_modulus: u64,
+    ring_degree: usize,
+    label_pair: &[(LabelPoly, bool); 2],
+    choice: bool,
+) -> Result<(LabelPoly, bool), BitGcCircuitRunnerError<BitGcIoError<T::Error>>>
+where
+    N: VoleArray<u8>,
+    O: BitGcInputOt<N>,
+    T: BitGcFrameTransport,
+{
+    garbler_session
+        .send_evaluator_input_over::<N, _, _>(
+            frames,
+            ot,
+            input_index,
+            plaintext_modulus,
+            ring_degree,
+            label_pair,
+        )
+        .map_err(BitGcCircuitRunnerError::Session)?;
+    evaluator_session
+        .receive_evaluator_input_over::<N, _, _>(
+            frames,
+            ot,
+            input_index,
+            plaintext_modulus,
+            ring_degree,
+            choice,
+        )
+        .map_err(BitGcCircuitRunnerError::Session)
+}
+
+/// Open output-label commitments from garbler to evaluator over an
+/// in-process loopback frame transport and return the clear output bits.
+///
+/// Like [`transfer_evaluator_input`], this drives both roles locally; real
+/// deployments use the per-role session methods on separate transports.
+pub fn open_committed_outputs<T: BitGcFrameTransport>(
+    garbler_session: &mut BitGcSession,
+    evaluator_session: &mut BitGcSession,
+    frames: &mut T,
+    garbler_labels: &GarblerWireLabels,
+    outputs: &[(LabelPoly, bool)],
+    output_wires: &[usize],
+    plaintext_modulus: u64,
+    ring_degree: usize,
+) -> Result<Vec<bool>, BitGcCircuitRunnerError<BitGcIoError<T::Error>>> {
+    garbler_session
+        .send_output_commitments_over(frames, garbler_labels, plaintext_modulus, ring_degree)
+        .map_err(BitGcCircuitRunnerError::Session)?;
+    evaluator_session
+        .receive_committed_outputs_over(
+            frames,
+            outputs,
+            output_wires,
+            plaintext_modulus,
+            ring_degree,
+        )
+        .map_err(BitGcCircuitRunnerError::Session)
+}
+
+/// Run one role-separated BitGC circuit in-process over a loopback frame
+/// transport and OT.
+///
+/// The evaluator endpoint is constructed with only the evaluator-only
+/// material produced by [`garble_role_circuit`]; garbler Δ and the PRF key
+/// remain outside evaluator-facing arguments. All inputs are transferred by
+/// OT using the evaluator's choices, and output labels open through the
+/// session's hash-match commitments. This runner is an in-process
+/// integration/correctness seam for the Phase 4 shared protocol: it does
+/// not model concurrent processes, does not grant active security, and does
+/// not admit BitGC for protected data.
+///
+/// TODO(provider-ledger: BITGC-LEDGER-07): keep this out of protected-data
+/// profiles until independent protocol/parameter review passes.
+pub fn run_role_separated_circuit_local<G, N, T, O, R>(
+    variant: Variant,
+    circuit: &Circuit,
+    dd: &G,
+    prf: &PrfKey,
+    prg_bits: &[bool],
+    random: &mut R,
+    pis: &[bool],
+    modulus_chain: &[u64],
+    session_id: [u8; 32],
+    evaluator_choices: &[bool],
+    frames: &mut T,
+    ot: &mut O,
+) -> Result<Vec<bool>, BitGcCircuitRunnerError<BitGcIoError<T::Error>>>
+where
+    G: RoleDdGarbler,
+    N: VoleArray<u8>,
+    T: BitGcFrameTransport,
+    O: BitGcInputOt<N>,
+    R: SpecRng,
+{
+    circuit
+        .validate()
+        .map_err(|_| BitGcCircuitRunnerError::Binding(BitGcDigestError::InvalidCircuit))?;
+    if evaluator_choices.len() != circuit.inputs {
+        return Err(BitGcCircuitRunnerError::Driver(
+            volar_spec::bitgc::pinned::DriverError::BadInputCount,
+        ));
+    }
+    let (garbler_labels, tables, evaluator_material) =
+        garble_role_circuit(variant, circuit, dd, pis, prf, prg_bits, random)
+            .map_err(BitGcCircuitRunnerError::Driver)?;
+    let binding = canonical_session_binding(
+        session_id,
+        variant,
+        dd.p(),
+        dd.degree(),
+        modulus_chain,
+        circuit,
+    )
+    .map_err(BitGcCircuitRunnerError::Binding)?;
+    let mut garbler = BitGcSession::new_authenticated(BitGcRole::Garbler, binding, [0x42; 32])
+        .map_err(BitGcCircuitRunnerError::SessionState)?;
+    let mut evaluator = BitGcSession::new_authenticated(BitGcRole::Evaluator, binding, [0x42; 32])
+        .map_err(BitGcCircuitRunnerError::SessionState)?;
+
+    let garbler_hello = garbler
+        .hello()
+        .map_err(BitGcCircuitRunnerError::SessionState)?;
+    let evaluator_hello = evaluator
+        .hello()
+        .map_err(BitGcCircuitRunnerError::SessionState)?;
+    garbler
+        .accept(&evaluator_hello)
+        .map_err(BitGcCircuitRunnerError::SessionState)?;
+    evaluator
+        .accept(&garbler_hello)
+        .map_err(BitGcCircuitRunnerError::SessionState)?;
+
+    let mut inputs: Vec<(LabelPoly, bool)> = Vec::with_capacity(circuit.inputs);
+    for input_index in 0..circuit.inputs {
+        let label_pair = garbler_labels
+            .input_label_pair(input_index)
+            .map_err(BitGcCircuitRunnerError::Driver)?;
+        let transferred = transfer_evaluator_input::<N, O, T>(
+            &mut garbler,
+            &mut evaluator,
+            frames,
+            ot,
+            input_index as u64,
+            dd.p(),
+            dd.degree(),
+            &label_pair,
+            evaluator_choices[input_index],
+        )?;
+        inputs.push(transferred);
+    }
+
+    let outputs =
+        evaluate_role_circuit_with_labels(variant, circuit, &evaluator_material, &tables, &inputs)
+            .map_err(BitGcCircuitRunnerError::Driver)?;
+    open_committed_outputs(
+        &mut garbler,
+        &mut evaluator,
+        frames,
+        &garbler_labels,
+        &outputs,
+        &circuit.outputs,
+        dd.p(),
+        dd.degree(),
+    )
+}
+
 fn is_terminal(state: BitGcSessionState) -> bool {
     matches!(
         state,
@@ -2208,6 +2432,220 @@ mod tests {
 
     use super::*;
     use crate::ot::{LoopbackOt, SeedRng};
+
+    fn role_runner_fixture(
+        variant: Variant,
+        seed: u64,
+    ) -> (
+        Circuit,
+        LatticeRnsDd,
+        PrfKey,
+        Vec<bool>,
+        Vec<bool>,
+        Vec<u64>,
+    ) {
+        let mut rng = SeedRng::new(seed);
+        let circuit = Circuit {
+            inputs: 3,
+            gates: vec![Gate::And { a: 0, b: 1 }, Gate::Xor { a: 3, b: 2 }],
+            outputs: vec![4],
+        };
+        let p = 97;
+        let dd = LatticeRnsDd::new(8, p, 1649, 1153, &mut rng).unwrap();
+        let prf = PrfKey([0x11, 0x22, 0x33, 0x44]);
+        let pis: Vec<bool> = (0..circuit.wires())
+            .map(|_| (rng.next_u32() & 1) == 1)
+            .collect();
+        let prg_count = if variant == Variant::Fast { 4 } else { 0 };
+        let prg_bits: Vec<bool> = (0..prg_count).map(|_| (rng.next_u32() & 1) == 1).collect();
+        (circuit, dd, prf, prg_bits, pis, vec![1649, 1153])
+    }
+
+    /// In-process loopback frame transport: sent frames are immediately
+    /// readable by the other role in order.
+    #[derive(Default)]
+    struct LoopbackFrames {
+        queue: Vec<Vec<u8>>,
+    }
+
+    impl BitGcFrameTransport for LoopbackFrames {
+        type Error = ();
+
+        fn send_frame(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
+            self.queue.push(frame.to_vec());
+            Ok(())
+        }
+
+        fn receive_frame(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error> {
+            let frame = self.queue.first().ok_or(())?;
+            if frame.len() > max_bytes {
+                return Err(());
+            }
+            Ok(self.queue.remove(0))
+        }
+
+        fn cancel(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn role_runner_covers_small_and_fast_choices() {
+        for variant in [Variant::Small, Variant::Fast] {
+            for pattern in 0..8u8 {
+                let choices = [pattern & 1 == 1, pattern & 2 == 2, pattern & 4 == 4];
+                let (circuit, dd, prf, prg_bits, pis, modulus_chain) =
+                    role_runner_fixture(variant, 0x5012_3456 + variant as u64);
+                let mut rng = SeedRng::new(0x5012_3456 + variant as u64 + 0x1000);
+                let (garbler_labels, tables, evaluator_material) =
+                    garble_role_circuit(variant, &circuit, &dd, &pis, &prf, &prg_bits, &mut rng)
+                        .unwrap();
+                let binding = canonical_session_binding(
+                    [0x51; 32],
+                    variant,
+                    dd.p(),
+                    dd.degree(),
+                    &modulus_chain,
+                    &circuit,
+                )
+                .unwrap();
+                let mut garbler =
+                    BitGcSession::new_authenticated(BitGcRole::Garbler, binding, [0x42; 32])
+                        .unwrap();
+                let mut evaluator =
+                    BitGcSession::new_authenticated(BitGcRole::Evaluator, binding, [0x42; 32])
+                        .unwrap();
+                handshake(&mut garbler, &mut evaluator);
+
+                let mut frames = LoopbackFrames::default();
+                let mut loopback = LoopbackOt::<U16>::new();
+                let mut ot = InfallibleBitGcOt::new(&mut loopback);
+                let mut inputs = Vec::new();
+                for (input_index, choice) in choices.iter().enumerate() {
+                    let pair = garbler_labels.input_label_pair(input_index).unwrap();
+                    inputs.push(
+                        transfer_evaluator_input::<U16, _, _>(
+                            &mut garbler,
+                            &mut evaluator,
+                            &mut frames,
+                            &mut ot,
+                            input_index as u64,
+                            dd.p(),
+                            dd.degree(),
+                            &pair,
+                            *choice,
+                        )
+                        .unwrap(),
+                    );
+                }
+                let outputs = evaluate_role_circuit_with_labels(
+                    variant,
+                    &circuit,
+                    &evaluator_material,
+                    &tables,
+                    &inputs,
+                )
+                .unwrap();
+                let got = open_committed_outputs(
+                    &mut garbler,
+                    &mut evaluator,
+                    &mut frames,
+                    &garbler_labels,
+                    &outputs,
+                    &circuit.outputs,
+                    dd.p(),
+                    dd.degree(),
+                )
+                .unwrap();
+                let want = vec![(choices[0] && choices[1]) ^ choices[2]];
+                assert_eq!(got, want, "{variant:?} choices={choices:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn role_runner_rejects_bad_input_count() {
+        let (circuit, dd, prf, prg_bits, pis, modulus_chain) =
+            role_runner_fixture(Variant::Small, 0x7012_3456);
+        let mut rng = SeedRng::new(0x7012_3456);
+        let short_choices = [false, true];
+        let mut frames = LoopbackFrames::default();
+        let mut loopback = LoopbackOt::<U16>::new();
+        let mut ot = InfallibleBitGcOt::new(&mut loopback);
+        let error = run_role_separated_circuit_local::<_, U16, _, _, _>(
+            Variant::Small,
+            &circuit,
+            &dd,
+            &prf,
+            &prg_bits,
+            &mut rng,
+            &pis,
+            &modulus_chain,
+            [0x53; 32],
+            &short_choices,
+            &mut frames,
+            &mut ot,
+        );
+        assert!(matches!(
+            error,
+            Err(BitGcCircuitRunnerError::Driver(DriverError::BadInputCount))
+        ));
+    }
+
+    #[test]
+    fn role_runner_rejects_tiny_and_nontopological_circuit() {
+        let (mut circuit, dd, prf, prg_bits, pis, modulus_chain) =
+            role_runner_fixture(Variant::Small, 0x7012_3457);
+        let mut rng = SeedRng::new(0x7012_3457);
+        let choices = [false, true, true];
+        let mut frames = LoopbackFrames::default();
+        let mut loopback = LoopbackOt::<U16>::new();
+        let mut ot = InfallibleBitGcOt::new(&mut loopback);
+        let error = run_role_separated_circuit_local::<_, U16, _, _, _>(
+            Variant::Tiny,
+            &circuit,
+            &dd,
+            &prf,
+            &prg_bits,
+            &mut rng,
+            &pis,
+            &modulus_chain,
+            [0x52; 32],
+            &choices,
+            &mut frames,
+            &mut ot,
+        );
+        assert!(matches!(
+            error,
+            Err(BitGcCircuitRunnerError::Driver(
+                DriverError::UnsupportedVariant
+            ))
+        ));
+
+        // Gate 0's output is wire 3; an operand equal to its own output
+        // violates topological order.
+        circuit.gates[0] = Gate::And { a: 3, b: 1 };
+        let error = run_role_separated_circuit_local::<_, U16, _, _, _>(
+            Variant::Small,
+            &circuit,
+            &dd,
+            &prf,
+            &prg_bits,
+            &mut rng,
+            &pis,
+            &modulus_chain,
+            [0x54; 32],
+            &choices,
+            &mut frames,
+            &mut ot,
+        );
+        assert!(matches!(
+            error,
+            Err(BitGcCircuitRunnerError::Binding(
+                BitGcDigestError::InvalidCircuit
+            ))
+        ));
+    }
 
     fn binding() -> BitGcSessionBinding {
         BitGcSessionBinding {

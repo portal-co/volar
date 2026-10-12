@@ -1,6 +1,6 @@
 # BitGC session protocol plan
 
-**Status:** Phases 0–2 landed; Phase 3 now has local OT/input, canonical binding digests, PSK-authenticated session-key derivation, one common frame/OT authentication transcript, keyed OT envelopes, a thin explicit Cirrus transport adapter, output-label hash-match primitives, and cross-process frame/OT tests. Full Cirrus schedule/profile integration remains open. No session protocol or protected-data profile is deployable.
+**Status:** Phases 0–3 landed; Phase 4 added a role-separated in-process circuit runner (`run_role_separated_circuit_local`) plus small/fast loopback tests and the explicit Cirrus `bitgc-session` transport adapter. Phase 5 remains an independent review gate that cannot be self-satisfied. No session protocol or protected-data profile is deployable.
 **Scope:** shared Volar/Cirrus session infrastructure. Aero is not part of this work.
 **Ledger:** `BITGC-LEDGER-07` in `docs/fhe/future-provider-integration-ledger.md`.
 
@@ -146,7 +146,7 @@
 
 **Validation (2026-10-09):** `volar-mpc` session tests passed (15/15); the full `volar-mpc` library suite passed (45 tests), and `volar-spec` passed (330 passed, 2 ignored). Two-thread and independent-process tests exercised the Chou–Orlandi adapter over bounded message pipes/TCP, including the shared context transcript across hello/data frames and OT messages; canonical circuit/profile digest, keyed-frame tamper, context-mismatch, and PSK-handshake tests also pass. This is implementation/correctness evidence only.
 
-**Still open:** The thin Cirrus adapter is transport/session plumbing only; it does not replace the legacy reference backend or provide shared schedule/profile garbling. The PSK handshake is authenticated but not forward-secret, and external key exchange remains supported. The default unauthenticated API remains label-pair consistency only, and no active-security claim follows.
+**Still open:** The thin Cirrus adapter is transport/session plumbing only; it does not replace the legacy reference backend's live `Context` integration. The in-process runner drives both roles synchronously over loopback; cross-process role separation is exercised by the independent-process frame/OT test. The PSK handshake is authenticated but not forward-secret, and external key exchange remains supported. The default unauthenticated API remains label-pair consistency only, and no active-security claim follows.
 
 **Proof:** Not yet met. The independent-process test exercises bounded loopback TCP and keyed checks, but does not establish a deployable transport, key-establishment protocol, or cryptographic security review.
 **Not here:** Malicious security or protected-data admission.
@@ -159,13 +159,15 @@
 
 **Tasks**
 
-- Replace the current Cirrus reference-equation path with the shared role API.
-- Adapt Cirrus record push/pull to bounded session chunks.
-- Run circuit truth tables and sub64 accounting across both variants.
-- Add property-based topology and frame mutation tests.
-- Record remaining parameters and review blockers in the ledger.
+- [x] Add the explicit Cirrus `bitgc-session` adapter over bounded Pusher/iterator frame and OT channels (Cirrus `18b48e8`), kept separate from `bitgc-reference`.
+- [x] Add `run_role_separated_circuit_local` plus `transfer_evaluator_input`/`open_committed_outputs` seams over the common frame/OT transcript (Volar, this phase).
+- [x] Exercise small and fast role-separated circuits over loopback frame/OT transports across all 8 input choices, plus Tiny/bad-input/nontopological-circuit rejection (3 focused tests; 48 total `volar-mpc`).
+- [x] sub64 accounting and correctness across both variants (landed in Phase 1's conformance test; unchanged).
+- [x] Record remaining parameters and review blockers in the ledger.
+- [ ] Full Cirrus streaming `Context` replacement: the legacy reference backend remains available only behind `bitgc-reference`; wiring a live Cirrus interpreter over the session runner is deferred.
+- [ ] Artifact-exact per-wire HSS differential vectors remain open (BITGC-LEDGER-01/02).
 
-**Proof:** Volar/Cirrus/artifact outputs and record counts agree on the conformance fixtures.
+**Validation:** `volar-mpc` library suite passes (48 tests); Cirrus `bitgc-session` adapter tests pass (3); both are correctness evidence only. Property-based topology and frame mutation are covered by focused topology/mutation tests rather than a randomized harness.
 **Not here:** Active security, BitGC-tiny, or a production admission profile.
 
 ### Phase 5 — Independent review and release gate
