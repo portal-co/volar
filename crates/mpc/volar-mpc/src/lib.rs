@@ -77,6 +77,11 @@ pub mod ot;
 #[cfg(feature = "mlkem")]
 pub mod ot_mlkem;
 pub mod strict;
+pub mod schedule;
+pub use schedule::{
+    MpcScheduleCursor, MpcScheduleError, MpcScheduleFrame, MpcSchedulePhase,
+    validate_gate_schedule_binding,
+};
 
 /// GateSchedule → volar-ir `BIrBlocks` bridge for the weaver backend.
 /// Pure-boolean schedules only; gated behind the `weaver-bridge` feature.
