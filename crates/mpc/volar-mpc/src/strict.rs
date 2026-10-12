@@ -1482,21 +1482,27 @@ where
     D: Digest,
 {
     let mut cursor = scheduled_cursor(&exec.schedule, manifest, session_id, schedule_digest)?;
-    cursor.send_next(transport)?;
-    cursor.send_next(transport)?;
-    let verdict = run_garbler_strict::<N, D, T>(
-        exec,
-        elim,
-        partition,
-        public_bits,
-        garbler_bits,
+    let mut verdict = None;
+    let executed = cursor.drive(
+        crate::MpcScheduleRole::Garbler,
         transport,
-        ot,
+        |_, transport| {
+            verdict = Some(run_garbler_strict::<N, D, T>(
+                exec,
+                elim,
+                partition,
+                public_bits,
+                garbler_bits,
+                transport,
+                ot,
+            )?);
+            Ok(())
+        },
     )?;
-    cursor.send_next(transport)?;
-    cursor.receive_next(transport)?;
-    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
-    Ok(verdict)
+    if executed != 1 {
+        return Err(MpcError::MalformedSchedule);
+    }
+    verdict.ok_or(MpcError::MalformedSchedule)
 }
 
 /// Evaluator counterpart to [`run_garbler_strict_scheduled`]. It rejects any
@@ -1517,14 +1523,25 @@ where
     D: Digest,
 {
     let mut cursor = scheduled_cursor(schedule, manifest, session_id, schedule_digest)?;
-    cursor.receive_next(transport)?;
-    cursor.receive_next(transport)?;
-    let verdict =
-        run_evaluator_strict::<N, D, T>(schedule, partition, evaluator_bits, transport, ot)?;
-    cursor.receive_next(transport)?;
-    cursor.send_next(transport)?;
-    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
-    Ok(verdict)
+    let mut verdict = None;
+    let executed = cursor.drive(
+        crate::MpcScheduleRole::Evaluator,
+        transport,
+        |_, transport| {
+            verdict = Some(run_evaluator_strict::<N, D, T>(
+                schedule,
+                partition,
+                evaluator_bits,
+                transport,
+                ot,
+            )?);
+            Ok(())
+        },
+    )?;
+    if executed != 1 {
+        return Err(MpcError::MalformedSchedule);
+    }
+    verdict.ok_or(MpcError::MalformedSchedule)
 }
 
 /// Run the evaluator-hosted strict action protocol inside a manifest-bound
@@ -1548,21 +1565,27 @@ where
     D: Digest,
 {
     let mut cursor = scheduled_cursor(&full.exec.schedule, manifest, session_id, schedule_digest)?;
-    cursor.send_next(transport)?;
-    cursor.send_next(transport)?;
-    let verdict = run_garbler_strict_actions::<N, D, T>(
-        full,
-        elim,
-        partition,
-        public_bits,
-        garbler_bits,
+    let mut verdict = None;
+    let executed = cursor.drive(
+        crate::MpcScheduleRole::Garbler,
         transport,
-        ot,
+        |_, transport| {
+            verdict = Some(run_garbler_strict_actions::<N, D, T>(
+                full,
+                elim,
+                partition,
+                public_bits,
+                garbler_bits,
+                transport,
+                ot,
+            )?);
+            Ok(())
+        },
     )?;
-    cursor.send_next(transport)?;
-    cursor.receive_next(transport)?;
-    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
-    Ok(verdict)
+    if executed != 1 {
+        return Err(MpcError::MalformedSchedule);
+    }
+    verdict.ok_or(MpcError::MalformedSchedule)
 }
 
 /// Run garbler-hosted actions inside the same manifest-bound envelope as
@@ -1585,22 +1608,28 @@ where
     D: Digest,
 {
     let mut cursor = scheduled_cursor(&full.exec.schedule, manifest, session_id, schedule_digest)?;
-    cursor.send_next(transport)?;
-    cursor.send_next(transport)?;
-    let verdict = run_garbler_strict_actions_garbler_host::<N, D, T>(
-        full,
-        elim,
-        partition,
-        public_bits,
-        garbler_bits,
+    let mut verdict = None;
+    let executed = cursor.drive(
+        crate::MpcScheduleRole::Garbler,
         transport,
-        ot,
-        host,
+        |_, transport| {
+            verdict = Some(run_garbler_strict_actions_garbler_host::<N, D, T>(
+                full,
+                elim,
+                partition,
+                public_bits,
+                garbler_bits,
+                transport,
+                ot,
+                host,
+            )?);
+            Ok(())
+        },
     )?;
-    cursor.send_next(transport)?;
-    cursor.receive_next(transport)?;
-    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
-    Ok(verdict)
+    if executed != 1 {
+        return Err(MpcError::MalformedSchedule);
+    }
+    verdict.ok_or(MpcError::MalformedSchedule)
 }
 
 /// The evaluator counterpart to [`run_garbler_strict_actions_scheduled`].
@@ -1623,21 +1652,27 @@ where
     D: Digest,
 {
     let mut cursor = scheduled_cursor(schedule, manifest, session_id, schedule_digest)?;
-    cursor.receive_next(transport)?;
-    cursor.receive_next(transport)?;
-    let verdict = run_evaluator_strict_actions::<N, D, T>(
-        schedule,
-        partition,
-        evaluator_bits,
+    let mut verdict = None;
+    let executed = cursor.drive(
+        crate::MpcScheduleRole::Evaluator,
         transport,
-        ot,
-        host,
-        gram,
+        |_, transport| {
+            verdict = Some(run_evaluator_strict_actions::<N, D, T>(
+                schedule,
+                partition,
+                evaluator_bits,
+                transport,
+                ot,
+                host,
+                gram,
+            )?);
+            Ok(())
+        },
     )?;
-    cursor.receive_next(transport)?;
-    cursor.send_next(transport)?;
-    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
-    Ok(verdict)
+    if executed != 1 {
+        return Err(MpcError::MalformedSchedule);
+    }
+    verdict.ok_or(MpcError::MalformedSchedule)
 }
 
 /// The strict evaluator role for a schedule carrying actions

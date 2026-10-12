@@ -438,7 +438,7 @@ impl MpcScheduleCursor {
         &mut self,
         role: MpcScheduleRole,
         transport: &mut T,
-        mut iteration: impl FnMut(&MpcScheduleFrame) -> Result<(), MpcError>,
+        mut iteration: impl FnMut(&MpcScheduleFrame, &mut T) -> Result<(), MpcError>,
     ) -> Result<usize, MpcError> {
         let mut executed = 0usize;
         while !self.is_complete() {
@@ -454,7 +454,7 @@ impl MpcScheduleCursor {
                 (MpcScheduleRole::Evaluator, _) => self.receive_next(transport)?,
             };
             if frame.phase == MpcSchedulePhase::Iteration {
-                iteration(&frame)?;
+                iteration(&frame, transport)?;
                 executed += 1;
             }
         }
@@ -670,7 +670,7 @@ mod tests {
         let mut garbler = MpcScheduleCursor::new(&manifest, 44, digest).unwrap();
         let mut garbler_iterations = Vec::new();
         let executed = garbler
-            .drive(MpcScheduleRole::Garbler, &mut garbler_wire, |frame| {
+            .drive(MpcScheduleRole::Garbler, &mut garbler_wire, |frame, _| {
                 garbler_iterations.push(frame.iteration.unwrap());
                 Ok(())
             })
@@ -709,10 +709,14 @@ mod tests {
         let mut evaluator = MpcScheduleCursor::new(&manifest, 44, digest).unwrap();
         let mut evaluator_iterations = Vec::new();
         let executed = evaluator
-            .drive(MpcScheduleRole::Evaluator, &mut evaluator_wire, |frame| {
-                evaluator_iterations.push(frame.iteration.unwrap());
-                Ok(())
-            })
+            .drive(
+                MpcScheduleRole::Evaluator,
+                &mut evaluator_wire,
+                |frame, _| {
+                    evaluator_iterations.push(frame.iteration.unwrap());
+                    Ok(())
+                },
+            )
             .unwrap();
         assert_eq!(executed, 3);
         assert_eq!(evaluator_iterations, garbler_iterations);
