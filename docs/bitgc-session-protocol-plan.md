@@ -1,6 +1,6 @@
 # BitGC session protocol plan
 
-**Status:** Phases 0–2 landed; Phase 3 has local OT/input and output-label hash-match primitives, but authenticated session integration and cross-process validation remain open. No session protocol or protected-data profile is deployable.
+**Status:** Phases 0–2 landed; Phase 3 now has local OT/input, canonical binding digests, optional keyed frame authentication, keyed OT envelopes, and output-label hash-match primitives. Unified key establishment/transcript integration, cross-process validation, and Cirrus integration remain open. No session protocol or protected-data profile is deployable.
 **Scope:** shared Volar/Cirrus session infrastructure. Aero is not part of this work.
 **Ledger:** `BITGC-LEDGER-07` in `docs/fhe/future-provider-integration-ledger.md`.
 
@@ -35,7 +35,7 @@
 
 ### R-3 Evaluator inputs use OT
 
-- **Approach:** Route evaluator-owned labels through the fallible `BitGcInputOt` seam. The experimental `ChouOrlandiBitGcOt` uses a dedicated bounded OT message transport; the infallible `OtChannel` adapter is explicitly local-only. Input descriptors bind index and chunk order to session frames, but do not cryptographically bind/authenticate the independent OT channel.
+- **Approach:** Route evaluator-owned labels through the fallible `BitGcInputOt` seam. The experimental `ChouOrlandiBitGcOt` uses a dedicated bounded OT message transport; the infallible `OtChannel` adapter is explicitly local-only. Input descriptors bind index and chunk order to session frames, and `AuthenticatedBitGcOtTransport` can add keyed, ordered envelopes to the independent OT channel.
 - **Touches:** `volar-mpc` input ownership/OT and the BitGC session.
 - **Test seam:** Loopback tests plus two-thread Chou–Orlandi OT tests, both input choices, malformed descriptors, and injected OT failures.
 - **Acceptance:** [x] The tested OT implementation returns only its selected label. [x] Input index/chunk order is checked before the corresponding OT read. [ ] OT messages are cryptographically bound to an authenticated session transcript.
@@ -43,11 +43,11 @@
 
 ### R-4 Sessions bind peers and circuits
 
-- **Approach:** Add a transport-neutral session state machine. Carry role, protocol version, variant, parameter fingerprint, circuit digest, session ID, and monotonic sequence numbers in every frame and validate them against local session context. Cryptographic transcript authentication remains deferred.
+- **Approach:** Add a transport-neutral session state machine. Carry role, protocol version, variant, parameter fingerprint, circuit digest, session ID, and monotonic sequence numbers in every frame and validate them against local session context. `new_authenticated` adds keyed direction-local transcript tags; key establishment and one unified frame/OT transcript remain external seams.
 - **Touches:** New `volar-mpc::bitgc_session` module and the Cirrus adapter.
 - **Test seam:** Role-pair loopback tests plus wrong-version, wrong-profile, wrong-circuit, replay, and reordering tests.
 - **Acceptance:** [x] A frame from another session, variant, parameter profile, or circuit is rejected before cryptographic evaluation. [x] Sequences advance exactly once; replay and reordering are rejected.
-- **Hard part:** Define canonical parameter and circuit digests without adding a serialization dependency to `volar-spec`.
+- **Hard part:** Bind the canonical digest helpers to the compiler/provider's reviewed profile registry and define the external key-establishment seam without adding a serialization dependency to `volar-spec`.
 
 ### R-5 Frames are bounded and sessions cancel safely
 
@@ -59,7 +59,7 @@
 
 ### R-6 Output label hash-match opening
 
-- **Approach:** Send domain-separated hashes of both output labels bound to caller-supplied session/circuit/profile context; the evaluator recognizes its active label by hash match. Never reveal `pi` as the production opening. Because frames are unauthenticated, this is label-pair consistency only; an intermediary can alter or swap hashes.
+- **Approach:** Send domain-separated hashes of both output labels bound to the canonical session/circuit/profile context; the evaluator recognizes its active label by hash match. Never reveal `pi` as the production opening. Unauthenticated sessions provide label-pair consistency only; authenticated sessions also require an externally established key.
 - **Touches:** Pinned output handling and session frames.
 - **Test seam:** Output-label tampering and output/wire-order checks. Transport-authentication tests remain open.
 - **Acceptance:** [x] The evaluator rejects an active label outside the committed pair. [x] The garbler's SWHE secret is not needed to open evaluator output. [ ] The commitments are authenticated to the peer and transcript.
@@ -136,10 +136,11 @@
 - [x] Transfer serialized evaluator-input labels in bounded OT chunks, with session-bound ordered descriptors; keep the choice bit out of frames and enforce the profile's exact ring degree.
 - [x] Add domain-separated output-label pair hashes and evaluator hash-match opening without revealing `pi` or the garbler's secret.
 - [x] Make malformed descriptors, OT/frame failures, output mismatches, and failed cancellations terminal; test both input choices, OT failure paths, profile shape rejection, and output-label tampering.
+- [x] Add canonical circuit/profile digest helpers and an opt-in keyed frame authenticator; bind the dedicated OT channel with keyed ordered envelopes.
 
-**Validation (2026-10-09):** `volar-mpc` session tests passed (15/15); the full `volar-mpc` library suite passed (36 tests), and `volar-spec` passed (330 passed, 2 ignored). A two-thread test exercised the Chou–Orlandi adapter over bounded message pipes. This is implementation/correctness evidence only.
+**Validation (2026-10-09):** `volar-mpc` session tests passed (15/15); the full `volar-mpc` library suite passed (40 tests), and `volar-spec` passed (330 passed, 2 ignored). A two-thread test exercised the Chou–Orlandi adapter over bounded message pipes, including the keyed OT envelope; canonical circuit/profile digest and keyed-frame tamper tests also pass. This is implementation/correctness evidence only.
 
-**Still open:** OT messages are not cryptographically bound to an authenticated session transcript; output hashes travel in unauthenticated frames and can be altered/swapped; there is no independent-process end-to-end test, canonical digest construction, or Cirrus integration. The output API therefore provides label-pair consistency, not authenticated transport or active security.
+**Still open:** Key establishment and one unified frame/OT transcript are not provided; the keyed OT envelope and keyed frame tags are separate direction-local checks. There is no independent-process end-to-end test or Cirrus integration. The default unauthenticated API remains label-pair consistency only, and no active-security claim follows.
 
 **Proof:** Not yet met. Tests use two concurrent role endpoints in one process and a test message transport; they do not establish a deployable cross-process protocol or security.
 **Not here:** Malicious security or protected-data admission.

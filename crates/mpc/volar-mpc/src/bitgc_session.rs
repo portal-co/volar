@@ -11,24 +11,25 @@
 //! replay, reordering, and invalid transitions, and makes cancellation
 //! terminal.
 //!
-//! This is an experimental framing/state foundation with a bounded
-//! Chou–Orlandi OT adapter and output-label hash matching. It does not
-//! authenticate peers or the transcript, canonically derive the supplied
-//! digests, integrate the OT channel with an authenticated session transport,
-//! garble/evaluate a circuit over the wire, or make BitGC available for
-//! protected sessions. The output hashes provide label-pair consistency only;
-//! an unauthenticated intermediary can alter or swap them. The admission gate
-//! remains closed pending the rest of BITGC-LEDGER-07 and independent review.
+//! This is an experimental framing/state foundation with bounded
+//! Chou–Orlandi OT and output-label hash matching. Callers may opt into keyed
+//! frame authentication with [`BitGcSession::new_authenticated`] and keyed OT
+//! envelopes, but key establishment and a unified transport transcript remain
+//! outside this module. The canonical digest helpers bind the circuit/profile
+//! shape; they do not make BitGC available for protected sessions. The
+//! admission gate remains closed pending Cirrus integration and independent
+//! review.
 //!
-//! TODO(provider-ledger: BITGC-LEDGER-07): authenticated transcript/session
-//! binding, canonical digests, authenticated output opening, Cirrus integration,
-//! and reviewed parameters remain release gates.
+//! TODO(provider-ledger: BITGC-LEDGER-07): authenticated key establishment,
+//! unified frame/OT transcript integration, Cirrus integration, and reviewed
+//! parameters remain release gates.
 
 use alloc::vec::Vec;
 use digest::Digest;
 use hybrid_array::Array;
 use sha2::Sha256;
 use volar_spec::bitgc::Variant;
+use volar_spec::bitgc::common::{Circuit, Gate};
 use volar_spec::bitgc::pinned::{GarblerWireLabels, LabelPoly};
 use volar_spec::vole::VoleArray;
 
@@ -49,6 +50,12 @@ const INPUT_CHUNK_HEADER_BYTES: usize = 1 + 8 + 4 + 4 + 4;
 const OUTPUT_COMMIT_TAG: u8 = 0x20;
 const OUTPUT_COMMIT_BYTES: usize = 1 + 4 + 4 + 8 + 32 + 32;
 const BITGC_OUTPUT_MAX_COUNT: usize = 1 << 20;
+const AUTH_TAG_BYTES: usize = 32;
+const AUTH_BLOCK_BYTES: usize = 64;
+const AUTH_DOMAIN: &[u8] = b"Volar BitGC frame auth v1\0";
+const TRANSCRIPT_DOMAIN: &[u8] = b"Volar BitGC transcript v1\0";
+const CIRCUIT_DIGEST_DOMAIN: &[u8] = b"Volar BitGC circuit digest v1\0";
+const PARAMETER_DIGEST_DOMAIN: &[u8] = b"Volar BitGC parameter fingerprint v1\0";
 
 /// Party identity carried in every BitGC frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,6 +249,126 @@ fn decode_variant(value: u8) -> Result<Variant, FrameError> {
     }
 }
 
+/// Failure while deriving a canonical session binding digest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitGcDigestError {
+    /// The circuit is malformed or contains a non-topological wire.
+    InvalidCircuit,
+    /// The requested variant is not available to this protocol.
+    UnsupportedVariant,
+    /// A platform-sized count or index cannot be represented canonically.
+    LengthOverflow,
+    /// The parameter profile is outside the canonical BitGC shape.
+    InvalidParameters,
+}
+
+/// Derive the circuit digest from the canonical, dependency-preserving circuit
+/// encoding. Callers must use this instead of hashing a compiler-specific
+/// serialization or supplying an unrelated digest.
+pub fn canonical_circuit_digest(circuit: &Circuit) -> Result<[u8; 32], BitGcDigestError> {
+    circuit
+        .validate()
+        .map_err(|_| BitGcDigestError::InvalidCircuit)?;
+    let inputs = u64::try_from(circuit.inputs).map_err(|_| BitGcDigestError::LengthOverflow)?;
+    let gates = u64::try_from(circuit.gates.len()).map_err(|_| BitGcDigestError::LengthOverflow)?;
+    let outputs =
+        u64::try_from(circuit.outputs.len()).map_err(|_| BitGcDigestError::LengthOverflow)?;
+    let mut hash = Sha256::new();
+    hash.update(CIRCUIT_DIGEST_DOMAIN);
+    hash.update(inputs.to_le_bytes());
+    hash.update(gates.to_le_bytes());
+    for gate in &circuit.gates {
+        let (tag, a, b) = match *gate {
+            Gate::And { a, b } => (1u8, a, b),
+            Gate::Xor { a, b } => (2u8, a, b),
+            Gate::Not { a } => (3u8, a, a),
+        };
+        hash.update([tag]);
+        hash.update(
+            u64::try_from(a)
+                .map_err(|_| BitGcDigestError::LengthOverflow)?
+                .to_le_bytes(),
+        );
+        hash.update(
+            u64::try_from(b)
+                .map_err(|_| BitGcDigestError::LengthOverflow)?
+                .to_le_bytes(),
+        );
+    }
+    hash.update(outputs.to_le_bytes());
+    for &output in &circuit.outputs {
+        hash.update(
+            u64::try_from(output)
+                .map_err(|_| BitGcDigestError::LengthOverflow)?
+                .to_le_bytes(),
+        );
+    }
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    Ok(result)
+}
+
+/// Derive the parameter fingerprint from the exact profile inputs used by the
+/// session. The modulus chain is encoded in order, so changing a limb or its
+/// level cannot silently reuse a session binding.
+pub fn canonical_parameter_fingerprint(
+    variant: Variant,
+    plaintext_modulus: u64,
+    ring_degree: usize,
+    modulus_chain: &[u64],
+) -> Result<[u8; 32], BitGcDigestError> {
+    let variant = encode_variant(variant).map_err(|_| BitGcDigestError::UnsupportedVariant)?;
+    if plaintext_modulus <= 2
+        || plaintext_modulus & 1 == 0
+        || ring_degree == 0
+        || modulus_chain.is_empty()
+        || modulus_chain
+            .iter()
+            .any(|&modulus| modulus <= 2 || modulus & 1 == 0)
+    {
+        return Err(BitGcDigestError::InvalidParameters);
+    }
+    let degree = u64::try_from(ring_degree).map_err(|_| BitGcDigestError::LengthOverflow)?;
+    let levels =
+        u64::try_from(modulus_chain.len()).map_err(|_| BitGcDigestError::LengthOverflow)?;
+    let mut hash = Sha256::new();
+    hash.update(PARAMETER_DIGEST_DOMAIN);
+    hash.update([variant]);
+    hash.update(plaintext_modulus.to_le_bytes());
+    hash.update(degree.to_le_bytes());
+    hash.update(levels.to_le_bytes());
+    for &modulus in modulus_chain {
+        hash.update(modulus.to_le_bytes());
+    }
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    Ok(result)
+}
+
+/// Build a binding with canonical circuit and parameter digests.
+pub fn canonical_session_binding(
+    session_id: [u8; 32],
+    variant: Variant,
+    plaintext_modulus: u64,
+    ring_degree: usize,
+    modulus_chain: &[u64],
+    circuit: &Circuit,
+) -> Result<BitGcSessionBinding, BitGcDigestError> {
+    Ok(BitGcSessionBinding {
+        session_id,
+        variant,
+        parameter_fingerprint: canonical_parameter_fingerprint(
+            variant,
+            plaintext_modulus,
+            ring_degree,
+            modulus_chain,
+        )?,
+        circuit_digest: canonical_circuit_digest(circuit)?,
+    })
+}
+
 /// Canonical frame parse/encode failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameError {
@@ -316,6 +443,10 @@ pub enum BitGcSessionError {
     InvalidOutputCommitment,
     /// The evaluator's active output label matches neither committed label.
     OutputLabelMismatch,
+    /// An authenticated session frame did not carry the required tag.
+    MissingAuthentication,
+    /// An authenticated session frame failed its keyed transcript check.
+    AuthenticationFailed,
     /// The underlying 1-of-2 OT operation failed.
     OtFailure,
     /// Cancelling the underlying OT operation failed.
@@ -374,6 +505,149 @@ pub trait BitGcOtTransport {
     fn receive_ot_message(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error>;
     /// Interrupt pending OT I/O; safe to call repeatedly.
     fn cancel(&mut self) -> Result<(), Self::Error>;
+}
+
+const OT_MAGIC: &[u8; 8] = b"VBGOT001";
+const OT_HEADER_BYTES: usize = 8 + 1 + 8 + 4;
+const OT_ENVELOPE_OVERHEAD: usize = OT_HEADER_BYTES + AUTH_TAG_BYTES;
+
+/// Error from the keyed OT envelope.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AuthenticatedOtError<E> {
+    /// The wrapped OT transport failed.
+    Transport(E),
+    /// The envelope was malformed, replayed, or exceeded its bound.
+    InvalidMessage,
+    /// The envelope could not be allocated locally.
+    AllocationFailed,
+}
+
+/// Adds a keyed, ordered envelope to the dedicated OT message transport.
+///
+/// This authenticates and binds each OT message to the public session binding,
+/// role, and direction-local sequence. It is intended to be used together
+/// with [`BitGcSession::new_authenticated`]. The frame and OT transports are
+/// still separate channels; a future transport adapter may merge their
+/// transcript state explicitly.
+pub struct AuthenticatedBitGcOtTransport<T> {
+    role: BitGcRole,
+    binding: BitGcSessionBinding,
+    key: [u8; 32],
+    transport: T,
+    next_send_sequence: u64,
+    next_receive_sequence: u64,
+}
+
+impl<T> AuthenticatedBitGcOtTransport<T> {
+    /// Wrap a dedicated OT transport with the authenticated session envelope.
+    pub fn new(role: BitGcRole, binding: BitGcSessionBinding, key: [u8; 32], transport: T) -> Self {
+        Self {
+            role,
+            binding,
+            key,
+            transport,
+            next_send_sequence: 0,
+            next_receive_sequence: 0,
+        }
+    }
+}
+
+impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> {
+    type Error = AuthenticatedOtError<T::Error>;
+
+    fn send_ot_message(&mut self, message: &[u8]) -> Result<(), Self::Error> {
+        if message.len() > BITGC_OT_MAX_INPUT_BYTES {
+            return Err(AuthenticatedOtError::InvalidMessage);
+        }
+        let sequence = self.next_send_sequence;
+        let next = sequence
+            .checked_add(1)
+            .ok_or(AuthenticatedOtError::InvalidMessage)?;
+        let length =
+            u32::try_from(message.len()).map_err(|_| AuthenticatedOtError::InvalidMessage)?;
+        let mut envelope = Vec::new();
+        envelope
+            .try_reserve_exact(OT_ENVELOPE_OVERHEAD + message.len())
+            .map_err(|_| AuthenticatedOtError::AllocationFailed)?;
+        envelope.extend_from_slice(OT_MAGIC);
+        envelope.push(self.role as u8);
+        envelope.extend_from_slice(&sequence.to_le_bytes());
+        envelope.extend_from_slice(&length.to_le_bytes());
+        envelope.extend_from_slice(message);
+        let tag = ot_auth_tag(&self.key, &self.binding, self.role, sequence, message);
+        envelope.extend_from_slice(&tag);
+        self.transport
+            .send_ot_message(&envelope)
+            .map_err(AuthenticatedOtError::Transport)?;
+        self.next_send_sequence = next;
+        Ok(())
+    }
+
+    fn receive_ot_message(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error> {
+        if max_bytes > BITGC_OT_MAX_INPUT_BYTES {
+            return Err(AuthenticatedOtError::InvalidMessage);
+        }
+        let limit = max_bytes
+            .checked_add(OT_ENVELOPE_OVERHEAD)
+            .ok_or(AuthenticatedOtError::InvalidMessage)?;
+        let envelope = self
+            .transport
+            .receive_ot_message(limit)
+            .map_err(AuthenticatedOtError::Transport)?;
+        if envelope.len() < OT_ENVELOPE_OVERHEAD
+            || envelope[..OT_MAGIC.len()] != OT_MAGIC[..]
+            || envelope[8] != self.role.peer() as u8
+        {
+            return Err(AuthenticatedOtError::InvalidMessage);
+        }
+        let sequence = u64::from_le_bytes(
+            envelope[9..17]
+                .try_into()
+                .map_err(|_| AuthenticatedOtError::InvalidMessage)?,
+        );
+        if sequence != self.next_receive_sequence {
+            return Err(AuthenticatedOtError::InvalidMessage);
+        }
+        let length = u32::from_le_bytes(
+            envelope[17..21]
+                .try_into()
+                .map_err(|_| AuthenticatedOtError::InvalidMessage)?,
+        ) as usize;
+        if length > max_bytes || envelope.len() != OT_HEADER_BYTES + length + AUTH_TAG_BYTES {
+            return Err(AuthenticatedOtError::InvalidMessage);
+        }
+        let payload_end = OT_HEADER_BYTES + length;
+        let payload = &envelope[OT_HEADER_BYTES..payload_end];
+        let supplied: &[u8; AUTH_TAG_BYTES] = envelope[payload_end..]
+            .try_into()
+            .map_err(|_| AuthenticatedOtError::InvalidMessage)?;
+        let expected = ot_auth_tag(
+            &self.key,
+            &self.binding,
+            self.role.peer(),
+            sequence,
+            payload,
+        );
+        if !constant_time_eq(&expected, supplied) {
+            return Err(AuthenticatedOtError::InvalidMessage);
+        }
+        let mut message = Vec::new();
+        message
+            .try_reserve_exact(length)
+            .map_err(|_| AuthenticatedOtError::AllocationFailed)?;
+        message.extend_from_slice(payload);
+        self.next_receive_sequence = self
+            .next_receive_sequence
+            .checked_add(1)
+            .ok_or(AuthenticatedOtError::InvalidMessage)?;
+        Ok(message)
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        self.transport
+            .cancel()
+            .map_err(AuthenticatedOtError::Transport)
+    }
 }
 
 /// Failure while running one Chou–Orlandi OT invocation.
@@ -533,9 +807,9 @@ pub enum BitGcIoError<E> {
 /// This state machine binds both directions to one session, variant,
 /// parameter fingerprint, and circuit digest. Each direction starts at
 /// sequence zero with exactly one empty hello; opaque data is accepted only
-/// after both hello frames. A cancel frame is terminal. These checks prevent
-/// accidental cross-session replay/reordering but are not an authentication
-/// mechanism.
+/// after both hello frames. A cancel frame is terminal. [`Self::new`] provides
+/// structural checks only; [`Self::new_authenticated`] additionally verifies
+/// a keyed transcript tag on every frame.
 #[derive(Clone, Debug)]
 pub struct BitGcSession {
     local_role: BitGcRole,
@@ -545,6 +819,9 @@ pub struct BitGcSession {
     next_receive_sequence: u64,
     local_hello_sent: bool,
     peer_hello_received: bool,
+    auth_key: Option<[u8; 32]>,
+    send_transcript: [u8; 32],
+    receive_transcript: [u8; 32],
 }
 
 impl BitGcSession {
@@ -555,6 +832,26 @@ impl BitGcSession {
         local_role: BitGcRole,
         binding: BitGcSessionBinding,
     ) -> Result<Self, BitGcSessionError> {
+        Self::new_inner(local_role, binding, None)
+    }
+
+    /// Start a session whose frames are authenticated by an externally
+    /// established symmetric session key. The key is deliberately not
+    /// derived from public binding fields; callers must obtain it from an
+    /// authenticated channel/key exchange before entering BitGC.
+    pub fn new_authenticated(
+        local_role: BitGcRole,
+        binding: BitGcSessionBinding,
+        session_key: [u8; 32],
+    ) -> Result<Self, BitGcSessionError> {
+        Self::new_inner(local_role, binding, Some(session_key))
+    }
+
+    fn new_inner(
+        local_role: BitGcRole,
+        binding: BitGcSessionBinding,
+        auth_key: Option<[u8; 32]>,
+    ) -> Result<Self, BitGcSessionError> {
         encode_variant(binding.variant).map_err(BitGcSessionError::Frame)?;
         Ok(Self {
             local_role,
@@ -564,6 +861,9 @@ impl BitGcSession {
             next_receive_sequence: 0,
             local_hello_sent: false,
             peer_hello_received: false,
+            auth_key,
+            send_transcript: initial_transcript(&binding),
+            receive_transcript: initial_transcript(&binding),
         })
     }
 
@@ -619,6 +919,10 @@ impl BitGcSession {
         if frame.sequence != self.next_receive_sequence {
             return self.abort_with(BitGcSessionError::SequenceMismatch);
         }
+        let payload = match self.authenticated_payload(&frame) {
+            Ok(payload) => payload,
+            Err(error) => return self.abort_with(error),
+        };
         let Some(next_sequence) = self.next_receive_sequence.checked_add(1) else {
             return self.abort_with(BitGcSessionError::SequenceExhausted);
         };
@@ -628,7 +932,7 @@ impl BitGcSession {
                 if self.peer_hello_received || frame.sequence != 0 {
                     return self.abort_with(BitGcSessionError::UnexpectedKind);
                 }
-                if !frame.payload.is_empty() {
+                if !payload.is_empty() {
                     return self.abort_with(BitGcSessionError::InvalidControlPayload);
                 }
                 self.peer_hello_received = true;
@@ -639,13 +943,14 @@ impl BitGcSession {
                 }
             }
             BitGcFrameKind::Cancel => {
-                if !frame.payload.is_empty() {
+                if !payload.is_empty() {
                     return self.abort_with(BitGcSessionError::InvalidControlPayload);
                 }
                 self.state = BitGcSessionState::Cancelled;
             }
         }
         self.next_receive_sequence = next_sequence;
+        self.receive_transcript = transcript_after(&self.receive_transcript, encoded);
         self.refresh_active_state();
         Ok(frame)
     }
@@ -998,7 +1303,10 @@ impl BitGcSession {
                 Ok(frame) if frame.kind == BitGcFrameKind::Data => frame,
                 _ => return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment),
             };
-            let payload = frame.payload;
+            let payload = match self.payload_without_auth(&frame) {
+                Ok(payload) => payload,
+                Err(error) => return self.abort_over(transport, error),
+            };
             if payload.len() != OUTPUT_COMMIT_BYTES || payload[0] != OUTPUT_COMMIT_TAG {
                 return self.abort_over(transport, BitGcSessionError::InvalidOutputCommitment);
             }
@@ -1070,7 +1378,11 @@ impl BitGcSession {
             Ok(frame) if frame.kind == BitGcFrameKind::Data => frame,
             _ => return self.abort_over(transport, BitGcSessionError::InvalidInputDescriptor),
         };
-        match decode_input_chunk_descriptor(frame.payload) {
+        let payload = match self.payload_without_auth(&frame) {
+            Ok(payload) => payload,
+            Err(error) => return self.abort_over(transport, error),
+        };
+        match decode_input_chunk_descriptor(payload) {
             Some(descriptor) => Ok(descriptor),
             None => self.abort_over(transport, BitGcSessionError::InvalidInputDescriptor),
         }
@@ -1160,18 +1472,49 @@ impl BitGcSession {
         let Some(next_sequence) = self.next_send_sequence.checked_add(1) else {
             return self.abort_with(BitGcSessionError::SequenceExhausted);
         };
+        let sequence = self.next_send_sequence;
+        let mut authenticated = Vec::new();
+        let wire_payload = if let Some(key) = self.auth_key.as_ref() {
+            if payload.len() > BITGC_FRAME_MAX_PAYLOAD - AUTH_TAG_BYTES {
+                return self.abort_with(BitGcSessionError::Frame(FrameError::PayloadTooLarge));
+            }
+            if authenticated
+                .try_reserve_exact(payload.len() + AUTH_TAG_BYTES)
+                .is_err()
+            {
+                return self.abort_with(BitGcSessionError::Frame(FrameError::AllocationFailed));
+            }
+            authenticated.extend_from_slice(payload);
+            let tag = match frame_auth_tag(
+                key,
+                &self.send_transcript,
+                self.local_role,
+                &self.binding,
+                sequence,
+                kind,
+                payload,
+            ) {
+                Ok(tag) => tag,
+                Err(()) => return self.abort_with(BitGcSessionError::AuthenticationFailed),
+            };
+            authenticated.extend_from_slice(&tag);
+            authenticated.as_slice()
+        } else {
+            payload
+        };
         let frame = BitGcFrame {
             role: self.local_role,
             binding: self.binding,
-            sequence: self.next_send_sequence,
+            sequence,
             kind,
-            payload,
+            payload: wire_payload,
         };
         let encoded = match frame.encode() {
             Ok(encoded) => encoded,
             Err(error) => return self.abort_with(BitGcSessionError::Frame(error)),
         };
         self.next_send_sequence = next_sequence;
+        self.send_transcript = transcript_after(&self.send_transcript, &encoded);
         match kind {
             BitGcFrameKind::Hello => self.local_hello_sent = true,
             BitGcFrameKind::Data => {}
@@ -1187,6 +1530,53 @@ impl BitGcSession {
             && self.peer_hello_received
         {
             self.state = BitGcSessionState::Active;
+        }
+    }
+
+    fn authenticated_payload<'a>(
+        &self,
+        frame: &BitGcFrame<'a>,
+    ) -> Result<&'a [u8], BitGcSessionError> {
+        let Some(key) = self.auth_key.as_ref() else {
+            return Ok(frame.payload);
+        };
+        if frame.payload.len() < AUTH_TAG_BYTES {
+            return Err(BitGcSessionError::MissingAuthentication);
+        }
+        let split = frame.payload.len() - AUTH_TAG_BYTES;
+        let payload = &frame.payload[..split];
+        let supplied: &[u8; AUTH_TAG_BYTES] = frame.payload[split..]
+            .try_into()
+            .map_err(|_| BitGcSessionError::MissingAuthentication)?;
+        let expected = frame_auth_tag(
+            key,
+            &self.receive_transcript,
+            frame.role,
+            &frame.binding,
+            frame.sequence,
+            frame.kind,
+            payload,
+        )
+        .map_err(|_| BitGcSessionError::AuthenticationFailed)?;
+        if !constant_time_eq(&expected, supplied) {
+            return Err(BitGcSessionError::AuthenticationFailed);
+        }
+        Ok(payload)
+    }
+
+    fn payload_without_auth<'a>(
+        &self,
+        frame: &BitGcFrame<'a>,
+    ) -> Result<&'a [u8], BitGcSessionError> {
+        if self.auth_key.is_some() {
+            let split = frame
+                .payload
+                .len()
+                .checked_sub(AUTH_TAG_BYTES)
+                .ok_or(BitGcSessionError::MissingAuthentication)?;
+            Ok(&frame.payload[..split])
+        } else {
+            Ok(frame.payload)
         }
     }
 
@@ -1310,6 +1700,103 @@ fn decode_input_branch(
     Ok((label, encoded[encoded.len() - 1] == 1))
 }
 
+fn initial_transcript(binding: &BitGcSessionBinding) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(TRANSCRIPT_DOMAIN);
+    hash.update(binding.session_id);
+    hash.update([binding.variant as u8]);
+    hash.update(binding.parameter_fingerprint);
+    hash.update(binding.circuit_digest);
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
+}
+
+fn transcript_after(previous: &[u8; 32], encoded_frame: &[u8]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(TRANSCRIPT_DOMAIN);
+    hash.update(previous);
+    hash.update(encoded_frame);
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
+}
+
+fn frame_auth_tag(
+    key: &[u8; 32],
+    transcript: &[u8; 32],
+    role: BitGcRole,
+    binding: &BitGcSessionBinding,
+    sequence: u64,
+    kind: BitGcFrameKind,
+    payload: &[u8],
+) -> Result<[u8; AUTH_TAG_BYTES], ()> {
+    let variant = encode_variant(binding.variant).map_err(|_| ())?;
+    let sequence = sequence.to_le_bytes();
+    let parts = [
+        AUTH_DOMAIN,
+        transcript.as_slice(),
+        &[role as u8],
+        &[variant],
+        binding.session_id.as_slice(),
+        binding.parameter_fingerprint.as_slice(),
+        binding.circuit_digest.as_slice(),
+        sequence.as_slice(),
+        &[kind as u8],
+        payload,
+    ];
+    Ok(hmac_sha256(key, &parts))
+}
+
+fn ot_auth_tag(
+    key: &[u8; 32],
+    binding: &BitGcSessionBinding,
+    sender_role: BitGcRole,
+    sequence: u64,
+    payload: &[u8],
+) -> [u8; AUTH_TAG_BYTES] {
+    let sequence = sequence.to_le_bytes();
+    let variant = [binding.variant as u8];
+    let sender = [sender_role as u8];
+    hmac_sha256(
+        key,
+        &[
+            b"Volar BitGC OT v1\0",
+            binding.session_id.as_slice(),
+            &variant,
+            binding.parameter_fingerprint.as_slice(),
+            binding.circuit_digest.as_slice(),
+            &sender,
+            &sequence,
+            payload,
+        ],
+    )
+}
+
+fn hmac_sha256(key: &[u8; 32], parts: &[&[u8]]) -> [u8; AUTH_TAG_BYTES] {
+    let mut ipad = [0x36; AUTH_BLOCK_BYTES];
+    let mut opad = [0x5c; AUTH_BLOCK_BYTES];
+    for (index, &byte) in key.iter().enumerate() {
+        ipad[index] ^= byte;
+        opad[index] ^= byte;
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    for part in parts {
+        inner.update(part);
+    }
+    let inner_digest = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner_digest);
+    let digest = outer.finalize();
+    let mut result = [0; AUTH_TAG_BYTES];
+    result.copy_from_slice(&digest);
+    result
+}
+
 fn output_label_hash(
     binding: &BitGcSessionBinding,
     output_index: u64,
@@ -1401,6 +1888,14 @@ mod tests {
         )
     }
 
+    fn authenticated_pair() -> (BitGcSession, BitGcSession) {
+        let key = [0x5a; 32];
+        (
+            BitGcSession::new_authenticated(BitGcRole::Garbler, binding(), key).unwrap(),
+            BitGcSession::new_authenticated(BitGcRole::Evaluator, binding(), key).unwrap(),
+        )
+    }
+
     fn handshake(garbler: &mut BitGcSession, evaluator: &mut BitGcSession) {
         let g_hello = garbler.hello().unwrap();
         let e_hello = evaluator.hello().unwrap();
@@ -1413,6 +1908,7 @@ mod tests {
     fn run_single_input_session(
         choice: bool,
         tamper_output: bool,
+        authenticated: bool,
     ) -> Result<Vec<bool>, BitGcIoError<()>> {
         let p = 97;
         let mut rng = SeedRng::new(0x5048_4153 + u64::from(choice));
@@ -1427,8 +1923,11 @@ mod tests {
             garble_role_circuit(Variant::Small, &circuit, &dd, &[false], &prf, &[], &mut rng)
                 .unwrap();
         let input_pair = garbler_labels.input_label_pair(0).unwrap();
-        let mut garbler = BitGcSession::new(BitGcRole::Garbler, binding()).unwrap();
-        let mut evaluator = BitGcSession::new(BitGcRole::Evaluator, binding()).unwrap();
+        let (mut garbler, mut evaluator) = if authenticated {
+            authenticated_pair()
+        } else {
+            pair()
+        };
         handshake(&mut garbler, &mut evaluator);
 
         let mut loopback_ot = LoopbackOt::<U16>::new();
@@ -1482,14 +1981,18 @@ mod tests {
     #[test]
     fn evaluator_input_ot_and_hash_match_opening_cover_both_bits() {
         for choice in [false, true] {
-            assert_eq!(run_single_input_session(choice, false).unwrap(), [choice]);
+            assert_eq!(
+                run_single_input_session(choice, false, false).unwrap(),
+                [choice]
+            );
         }
         assert!(matches!(
-            run_single_input_session(true, true),
+            run_single_input_session(true, true, false),
             Err(BitGcIoError::Protocol(
                 BitGcSessionError::OutputLabelMismatch
             ))
         ));
+        assert_eq!(run_single_input_session(true, false, true).unwrap(), [true]);
     }
 
     #[test]
@@ -1778,6 +2281,58 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_chou_orlandi_ot_binds_messages_to_session_and_role() {
+        let key = [0x42; 32];
+        let (garbler_ot_transport, evaluator_ot_transport) = pipe_pair();
+        let sender_transport = AuthenticatedBitGcOtTransport::new(
+            BitGcRole::Garbler,
+            binding(),
+            key,
+            garbler_ot_transport,
+        );
+        let receiver_transport = AuthenticatedBitGcOtTransport::new(
+            BitGcRole::Evaluator,
+            binding(),
+            key,
+            evaluator_ot_transport,
+        );
+        let sender = ChouOrlandiBitGcOt::<U16, _, _>::new(
+            BitGcRole::Garbler,
+            sender_transport,
+            SeedRng::new(0x5345_4e44),
+        );
+        let receiver = ChouOrlandiBitGcOt::<U16, _, _>::new(
+            BitGcRole::Evaluator,
+            receiver_transport,
+            SeedRng::new(0x5245_4356),
+        );
+        let sender_thread = thread::spawn(move || {
+            let mut ot = sender;
+            let blocks = [
+                Array::<u8, U16>::from_fn(|i| match i {
+                    0 => 31,
+                    1 => 32,
+                    _ => 0,
+                }),
+                Array::<u8, U16>::from_fn(|i| match i {
+                    0 => 41,
+                    1 => 42,
+                    _ => 0,
+                }),
+            ];
+            ot.send_pair([&blocks[0], &blocks[1]])
+        });
+        let receiver_thread = thread::spawn(move || {
+            let mut ot = receiver;
+            ot.receive_choice(true)
+        });
+        sender_thread.join().unwrap().unwrap();
+        let received = receiver_thread.join().unwrap().unwrap();
+        assert_eq!(&received.as_slice()[..2], &[41, 42]);
+        assert!(received.as_slice()[2..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
     fn canonical_frame_roundtrip_binds_every_context_field() {
         let frame = BitGcFrame {
             role: BitGcRole::Evaluator,
@@ -1790,6 +2345,86 @@ mod tests {
         let decoded = BitGcFrame::decode(&encoded).unwrap();
         assert_eq!(decoded, frame);
         assert_eq!(decoded.payload, &[9, 8, 7]);
+    }
+
+    #[test]
+    fn canonical_digests_bind_circuit_and_parameter_shape() {
+        let circuit = Circuit {
+            inputs: 2,
+            gates: vec![Gate::Xor { a: 0, b: 1 }],
+            outputs: vec![2],
+        };
+        let digest = canonical_circuit_digest(&circuit).unwrap();
+        let changed = Circuit {
+            gates: vec![Gate::And { a: 0, b: 1 }],
+            ..circuit.clone()
+        };
+        assert_ne!(digest, canonical_circuit_digest(&changed).unwrap());
+        let profile =
+            canonical_parameter_fingerprint(Variant::Small, 97, 8, &[1649, 1153]).unwrap();
+        let changed_profile =
+            canonical_parameter_fingerprint(Variant::Small, 97, 8, &[1649, 1157]).unwrap();
+        assert_ne!(profile, changed_profile);
+        let binding =
+            canonical_session_binding([7; 32], Variant::Small, 97, 8, &[1649, 1153], &circuit)
+                .unwrap();
+        assert_eq!(binding.session_id, [7; 32]);
+        assert_eq!(binding.parameter_fingerprint, profile);
+        assert_eq!(binding.circuit_digest, digest);
+    }
+
+    #[test]
+    fn canonical_digest_rejects_non_topological_circuit() {
+        let circuit = Circuit {
+            inputs: 1,
+            gates: vec![Gate::Xor { a: 0, b: 1 }],
+            outputs: vec![1],
+        };
+        assert_eq!(
+            canonical_circuit_digest(&circuit),
+            Err(BitGcDigestError::InvalidCircuit)
+        );
+    }
+
+    #[test]
+    fn hmac_sha256_matches_known_answer() {
+        let key = [0x5a; 32];
+        let tag = hmac_sha256(&key, &[b"Hi There"]);
+        assert_eq!(
+            tag,
+            [
+                0xd2, 0xab, 0x63, 0xe8, 0x59, 0xb5, 0x0a, 0x5d, 0xec, 0xd7, 0x54, 0x85, 0xc0, 0xca,
+                0x30, 0x20, 0x34, 0x4e, 0x8a, 0x84, 0x87, 0xfb, 0x79, 0xf8, 0x91, 0xf0, 0x4c, 0x3a,
+                0xf8, 0x3e, 0x8b, 0x60,
+            ]
+        );
+    }
+
+    #[test]
+    fn authenticated_frames_bind_key_and_transcript() {
+        let (mut garbler, mut evaluator) = authenticated_pair();
+        handshake(&mut garbler, &mut evaluator);
+        let frame = garbler.send_data(&[1, 2, 3]).unwrap();
+        evaluator.accept(&frame).unwrap();
+        let mut tampered = garbler.send_data(&[4, 5, 6]).unwrap();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        assert_eq!(
+            evaluator.accept(&tampered),
+            Err(BitGcSessionError::AuthenticationFailed)
+        );
+        assert_eq!(evaluator.state(), BitGcSessionState::Aborted);
+
+        let mut wrong_key =
+            BitGcSession::new_authenticated(BitGcRole::Evaluator, binding(), [0x51; 32]).unwrap();
+        let hello = BitGcSession::new_authenticated(BitGcRole::Garbler, binding(), [0x5a; 32])
+            .unwrap()
+            .hello()
+            .unwrap();
+        assert_eq!(
+            wrong_key.accept(&hello),
+            Err(BitGcSessionError::AuthenticationFailed)
+        );
     }
 
     #[test]
