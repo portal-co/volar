@@ -9,9 +9,13 @@
 
 use hybrid_array::{Array, typenum::U16};
 use sha2::Sha256;
+use volar_ir_common::{
+    CommunicationGroup, EpochId, EpochManifest, IterationId, IterationManifest, ScheduleManifest,
+    WorkerLane,
+};
 use volar_mpc::strict::{
-    decode_output_label, eliminate_nots, garble_schedule_strict_dyn, run_evaluator_strict,
-    run_garbler_strict,
+    decode_output_label, eliminate_nots, garble_schedule_strict_dyn,
+    run_evaluator_strict_scheduled, run_garbler_strict, run_garbler_strict_scheduled,
 };
 use volar_mpc::{Gate, GateSchedule, InputOwner};
 use volar_spec::garble::{Garble, GlobalSecret};
@@ -172,6 +176,12 @@ fn strict_session_tcp_honest() {
     ];
     let inputs = [true, false, true, true]; // a, b, c, d
     let want = eval_concrete_multi(&schedule, &inputs);
+    let mut manifest = ScheduleManifest::new([1; 32], [2; 32], 7, 1, 1);
+    let mut epoch = EpochManifest::new(EpochId(0), CommunicationGroup(0));
+    epoch
+        .iterations
+        .push(IterationManifest::new(IterationId(0), 0, WorkerLane(0)));
+    manifest.epochs.push(epoch);
 
     let secret = GlobalSecret::<N>::new(det_bytes(0x77));
     let input_labels: Vec<Garble<N>> = (0..4).map(|i| det_label(i as u8 + 11)).collect();
@@ -181,6 +191,7 @@ fn strict_session_tcp_honest() {
     let addr = format!("{}", listener.local_addr().unwrap());
 
     let g_elim = elim.schedule.clone();
+    let g_manifest = manifest.clone();
     let garbler = std::thread::spawn(move || {
         let transport = TcpTransport::accept(&listener).expect("accept");
         let mut session = transport.try_clone().expect("clone");
@@ -188,12 +199,15 @@ fn strict_session_tcp_honest() {
         let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
         let public = [true]; // a
         let garbler_bits = [false]; // b
-        run_garbler_strict::<N, D, _>(
+        run_garbler_strict_scheduled::<N, D, _>(
             &exec,
             &elim,
             &partition,
             &public,
             &garbler_bits,
+            &g_manifest,
+            44,
+            [0; 32],
             &mut session,
             &mut ot,
         )
@@ -204,10 +218,13 @@ fn strict_session_tcp_honest() {
     let mut rng = SeedRng::new(0xB0B);
     let mut ot = NetOtChannel::new(transport, OtRole::Receiver, &mut rng);
     let evaluator_bits = [true, true]; // c, d
-    let eval_out = run_evaluator_strict::<N, D, _>(
+    let eval_out = run_evaluator_strict_scheduled::<N, D, _>(
         &g_elim,
         &partition,
         &evaluator_bits,
+        &manifest,
+        44,
+        [0; 32],
         &mut session,
         &mut ot,
     )

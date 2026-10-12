@@ -34,6 +34,7 @@ use alloc::vec::Vec;
 
 use digest::Digest;
 use hybrid_array::Array;
+use volar_ir_common::ScheduleManifest;
 use volar_spec::garble::{Garble, GarbleTable, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
@@ -42,7 +43,7 @@ use crate::{
     DynGarbledCircuit, DynGarbledExec, Eval, EvaluatorBatchExecutor, ExternalBatchAction,
     ExternalBatchActionHost, ExternalBatchBinding, ExternalBatchFrame, ExternalBatchManifest,
     ExternalBatchTranscript, GarblerBatchExecutor, Gate, GateSchedule, InputOwner, MpcError,
-    OtChannel, SessionFrame, Transport,
+    MpcScheduleCursor, OtChannel, SessionFrame, Transport,
 };
 
 /// The result of [`eliminate_nots`]: a Not/One-free schedule plus the
@@ -1155,90 +1156,74 @@ fn decode_table_chunk<N: VoleArray<u8>>(
         .collect()
 }
 
-/// Evaluate a Not-free strict schedule as table chunks arrive. At most one
-/// received chunk is retained; wires are the unavoidable live circuit state.
+struct RejectActionHost;
+
+struct RejectOt<N>(core::marker::PhantomData<N>);
+
+impl<N: VoleArray<u8>> OtChannel<N> for RejectOt<N> {
+    fn send(&mut self, _labels: [&Array<u8, N>; 2]) {}
+
+    fn receive(&mut self, _bit: bool) -> Array<u8, N> {
+        Array::default()
+    }
+}
+
+impl StrictActionHost for RejectActionHost {
+    fn action(&mut self, _name: &str, _args: &[bool]) -> Result<Vec<bool>, MpcError> {
+        Err(MpcError::ActionRequiresHost)
+    }
+}
+
+/// Evaluate a Not-free, storage-free strict schedule as table chunks arrive.
+/// The resumable gate cursor is the single source of truth for free-gate and
+/// table advancement; this compatibility entry point supplies no action or
+/// GRAM hosts and therefore rejects those gates before execution.
 pub(crate) fn eval_strict_table_stream<N: VoleArray<u8>, D: Digest, T: Transport>(
     schedule: &GateSchedule,
     inputs: &[Eval<N>],
     transport: &mut T,
 ) -> Result<Vec<Eval<N>>, MpcError> {
-    if inputs.len() != schedule.num_inputs
-        || schedule.gates.iter().any(|g| {
-            matches!(
-                g,
-                Gate::Not(_)
-                    | Gate::One
-                    | Gate::StorageRead { .. }
-                    | Gate::StorageWrite { .. }
-                    | Gate::ActionBit { .. }
-            )
-        })
-    {
+    if schedule.gates.iter().any(|gate| {
+        matches!(
+            gate,
+            Gate::Not(_)
+                | Gate::One
+                | Gate::StorageRead { .. }
+                | Gate::StorageWrite { .. }
+                | Gate::ActionBit { .. }
+        )
+    }) {
         return Err(MpcError::MalformedSchedule);
     }
-    let mut wires = Vec::with_capacity(schedule.wire_count());
-    wires.extend_from_slice(inputs);
-    let mut gate_i = 0usize;
-    let mut table_i = 0usize;
+    let mut cursor = StrictGateCursor::new(schedule, inputs)?;
+    let mut host = RejectActionHost;
+    let mut ot = RejectOt::<N>(core::marker::PhantomData);
+    let mut gram: Vec<&mut dyn crate::GramDrive<N>> = Vec::new();
     let mut seen_tables = 0usize;
     loop {
         let frame = SessionFrame::decode(&transport.recv()).ok_or(MpcError::UnexpectedMessage)?;
         match frame {
             SessionFrame::SetupStrictChunk { tables } => {
-                let tables = decode_table_chunk::<N>(tables)?;
-                for table in tables {
-                    while gate_i < schedule.gates.len()
-                        && !matches!(schedule.gates[gate_i], Gate::And(..))
+                for table in decode_table_chunk::<N>(tables)? {
+                    if cursor.advance::<D, T>(transport, &mut ot, &mut host, &mut gram)?
+                        != CursorState::NeedsTable
                     {
-                        let out = match schedule.gates[gate_i] {
-                            Gate::Zero => Eval::zero(),
-                            Gate::Xor(a, b) => {
-                                wires.get(a).cloned().ok_or(MpcError::MalformedSchedule)?
-                                    ^ wires.get(b).cloned().ok_or(MpcError::MalformedSchedule)?
-                            }
-                            _ => return Err(MpcError::MalformedSchedule),
-                        };
-                        wires.push(out);
-                        gate_i += 1;
-                    }
-                    let Gate::And(a, b) = schedule
-                        .gates
-                        .get(gate_i)
-                        .copied()
-                        .ok_or(MpcError::MalformedSchedule)?
-                    else {
                         return Err(MpcError::MalformedSchedule);
-                    };
-                    let left = wires.get(a).ok_or(MpcError::MalformedSchedule)?;
-                    let right = wires.get(b).ok_or(MpcError::MalformedSchedule)?;
-                    wires.push(left.and_via_table::<D>(right, &table));
-                    gate_i += 1;
-                    table_i += 1;
+                    }
+                    cursor.apply_table::<D>(&table)?;
+                    seen_tables += 1;
                 }
-                seen_tables += table_i;
-                table_i = 0;
             }
             SessionFrame::SetupStrictEnd { table_count } => {
                 if seen_tables != table_count as usize || seen_tables != schedule.and_count() {
                     return Err(MpcError::MalformedSchedule);
                 }
-                while gate_i < schedule.gates.len() {
-                    let out = match schedule.gates[gate_i] {
-                        Gate::Zero => Eval::zero(),
-                        Gate::Xor(a, b) => {
-                            wires.get(a).cloned().ok_or(MpcError::MalformedSchedule)?
-                                ^ wires.get(b).cloned().ok_or(MpcError::MalformedSchedule)?
-                        }
-                        _ => return Err(MpcError::MalformedSchedule),
-                    };
-                    wires.push(out);
-                    gate_i += 1;
+                if cursor.advance::<D, T>(transport, &mut ot, &mut host, &mut gram)?
+                    != CursorState::Complete
+                {
+                    return Err(MpcError::MalformedSchedule);
                 }
-                return schedule
-                    .output_wires()
-                    .iter()
-                    .map(|&wire| wires.get(wire).cloned().ok_or(MpcError::MalformedSchedule))
-                    .collect();
+                return cursor.outputs();
             }
             _ => return Err(MpcError::UnexpectedMessage),
         }
@@ -1459,6 +1444,87 @@ where
         SessionFrame::Verdict(Err(())) => Err(MpcError::DecodeFailure),
         _ => Err(MpcError::UnexpectedMessage),
     }
+}
+
+fn scheduled_cursor(
+    schedule: &GateSchedule,
+    manifest: &ScheduleManifest,
+    session_id: u64,
+    schedule_digest: [u8; 32],
+) -> Result<MpcScheduleCursor, MpcError> {
+    crate::validate_gate_schedule_binding(schedule, manifest)
+        .map_err(|_| MpcError::MalformedSchedule)?;
+    if manifest.epochs.len() != 1 || manifest.epochs[0].iterations.len() != 1 {
+        return Err(MpcError::MalformedSchedule);
+    }
+    MpcScheduleCursor::new(manifest, session_id, schedule_digest)
+        .map_err(|_| MpcError::MalformedSchedule)
+}
+
+/// Run one strict circuit invocation inside a manifest-bound one-iteration
+/// lockstep envelope. The garbled-circuit payload remains the existing strict
+/// protocol; schedule frames are an outer metadata phase and are not a VOLE or
+/// OT replacement.
+pub fn run_garbler_strict_scheduled<N, D, T: Transport>(
+    exec: &DynGarbledExec<N>,
+    elim: &EliminatedNots,
+    partition: &[InputOwner],
+    public_bits: &[bool],
+    garbler_bits: &[bool],
+    manifest: &ScheduleManifest,
+    session_id: u64,
+    schedule_digest: [u8; 32],
+    transport: &mut T,
+    ot: &mut dyn OtChannel<N>,
+) -> Result<Vec<bool>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let mut cursor = scheduled_cursor(&exec.schedule, manifest, session_id, schedule_digest)?;
+    cursor.send_next(transport)?;
+    cursor.send_next(transport)?;
+    let verdict = run_garbler_strict::<N, D, T>(
+        exec,
+        elim,
+        partition,
+        public_bits,
+        garbler_bits,
+        transport,
+        ot,
+    )?;
+    cursor.send_next(transport)?;
+    cursor.receive_next(transport)?;
+    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
+    Ok(verdict)
+}
+
+/// Evaluator counterpart to [`run_garbler_strict_scheduled`]. It rejects any
+/// schedule frame that does not match the locally validated manifest cursor
+/// before entering the existing strict garbled-circuit loop.
+pub fn run_evaluator_strict_scheduled<N, D, T: Transport>(
+    schedule: &GateSchedule,
+    partition: &[InputOwner],
+    evaluator_bits: &[bool],
+    manifest: &ScheduleManifest,
+    session_id: u64,
+    schedule_digest: [u8; 32],
+    transport: &mut T,
+    ot: &mut dyn OtChannel<N>,
+) -> Result<Vec<bool>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let mut cursor = scheduled_cursor(schedule, manifest, session_id, schedule_digest)?;
+    cursor.receive_next(transport)?;
+    cursor.receive_next(transport)?;
+    let verdict =
+        run_evaluator_strict::<N, D, T>(schedule, partition, evaluator_bits, transport, ot)?;
+    cursor.receive_next(transport)?;
+    cursor.send_next(transport)?;
+    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
+    Ok(verdict)
 }
 
 /// The strict evaluator role for a schedule carrying actions
