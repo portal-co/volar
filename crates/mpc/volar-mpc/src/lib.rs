@@ -1279,6 +1279,10 @@ pub enum SessionFrame {
     /// Garbler → evaluator: false/true encodings for output wires that are
     /// intentionally decoded only by the evaluator.
     OutputDecodes(Vec<[Vec<u8>; 2]>),
+    /// Public lockstep scheduling metadata. Payload semantics remain owned by
+    /// the schedule cursor/adapter; this frame binds them to the session,
+    /// manifest digest, epoch, iteration, and logical message ordinal.
+    Schedule(crate::MpcScheduleFrame),
 }
 
 impl SessionFrame {
@@ -1385,6 +1389,27 @@ impl SessionFrame {
                     push_bytes(&mut out, zero);
                     push_bytes(&mut out, one);
                 }
+            }
+            SessionFrame::Schedule(frame) => {
+                out.push(15);
+                push_u64(&mut out, frame.session_id);
+                out.extend_from_slice(&frame.schedule_digest);
+                push_u64(&mut out, frame.epoch.0);
+                match frame.iteration {
+                    Some(iteration) => {
+                        out.push(1);
+                        push_u64(&mut out, iteration.0);
+                    }
+                    None => out.push(0),
+                }
+                out.push(match frame.phase {
+                    MpcSchedulePhase::EpochOpen => 0,
+                    MpcSchedulePhase::Iteration => 1,
+                    MpcSchedulePhase::EpochCommit => 2,
+                    MpcSchedulePhase::EpochAck => 3,
+                });
+                push_u64(&mut out, frame.message_ordinal);
+                push_bytes(&mut out, &frame.payload);
             }
         }
         out
@@ -1508,6 +1533,36 @@ impl SessionFrame {
                 }
                 Some(SessionFrame::OutputDecodes(decodes))
             }
+            15 => {
+                let session_id = r.u64()?;
+                let mut schedule_digest = [0u8; 32];
+                schedule_digest.copy_from_slice(r.buf.get(r.pos..r.pos + 32)?);
+                r.pos += 32;
+                let epoch = volar_ir_common::EpochId(r.u64()?);
+                let iteration = match r.u8()? {
+                    0 => None,
+                    1 => Some(volar_ir_common::IterationId(r.u64()?)),
+                    _ => return None,
+                };
+                let phase = match r.u8()? {
+                    0 => crate::schedule::MpcSchedulePhase::EpochOpen,
+                    1 => crate::schedule::MpcSchedulePhase::Iteration,
+                    2 => crate::schedule::MpcSchedulePhase::EpochCommit,
+                    3 => crate::schedule::MpcSchedulePhase::EpochAck,
+                    _ => return None,
+                };
+                let message_ordinal = r.u64()?;
+                let payload = r.bytes()?;
+                Some(SessionFrame::Schedule(crate::MpcScheduleFrame {
+                    session_id,
+                    schedule_digest,
+                    epoch,
+                    iteration,
+                    phase,
+                    message_ordinal,
+                    payload,
+                }))
+            }
             _ => None,
         }?;
         r.at_end().then_some(frame)
@@ -1576,6 +1631,19 @@ mod session_frame_tests {
         let mut malformed = encoded;
         malformed.push(0);
         assert_eq!(SessionFrame::decode(&malformed), None);
+    }
+
+    #[test]
+    fn schedule_frames_round_trip_all_public_binding_fields() {
+        let frame = SessionFrame::Schedule(MpcScheduleFrame::iteration(
+            44,
+            [9; 32],
+            volar_ir_common::EpochId(2),
+            volar_ir_common::IterationId(7),
+            13,
+            vec![1, 2, 3],
+        ));
+        assert_eq!(SessionFrame::decode(&frame.encode()), Some(frame));
     }
 }
 
