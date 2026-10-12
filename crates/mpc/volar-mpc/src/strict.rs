@@ -1527,6 +1527,119 @@ where
     Ok(verdict)
 }
 
+/// Run the evaluator-hosted strict action protocol inside a manifest-bound
+/// one-iteration lockstep envelope. The action and GRAM payload still use the
+/// existing strict transport protocol; schedule frames make the enclosing
+/// epoch and completion barrier explicit.
+pub fn run_garbler_strict_actions_scheduled<N, D, T: Transport>(
+    full: &StrictGarbledFull<N>,
+    elim: &EliminatedNots,
+    partition: &[InputOwner],
+    public_bits: &[bool],
+    garbler_bits: &[bool],
+    manifest: &ScheduleManifest,
+    session_id: u64,
+    schedule_digest: [u8; 32],
+    transport: &mut T,
+    ot: &mut dyn OtChannel<N>,
+) -> Result<Vec<bool>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let mut cursor = scheduled_cursor(&full.exec.schedule, manifest, session_id, schedule_digest)?;
+    cursor.send_next(transport)?;
+    cursor.send_next(transport)?;
+    let verdict = run_garbler_strict_actions::<N, D, T>(
+        full,
+        elim,
+        partition,
+        public_bits,
+        garbler_bits,
+        transport,
+        ot,
+    )?;
+    cursor.send_next(transport)?;
+    cursor.receive_next(transport)?;
+    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
+    Ok(verdict)
+}
+
+/// Run garbler-hosted actions inside the same manifest-bound envelope as
+/// [`run_garbler_strict_actions_scheduled`].
+pub fn run_garbler_strict_actions_garbler_host_scheduled<N, D, T: Transport>(
+    full: &StrictGarbledFull<N>,
+    elim: &EliminatedNots,
+    partition: &[InputOwner],
+    public_bits: &[bool],
+    garbler_bits: &[bool],
+    manifest: &ScheduleManifest,
+    session_id: u64,
+    schedule_digest: [u8; 32],
+    transport: &mut T,
+    ot: &mut dyn OtChannel<N>,
+    host: &mut dyn StrictActionHost,
+) -> Result<Vec<bool>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let mut cursor = scheduled_cursor(&full.exec.schedule, manifest, session_id, schedule_digest)?;
+    cursor.send_next(transport)?;
+    cursor.send_next(transport)?;
+    let verdict = run_garbler_strict_actions_garbler_host::<N, D, T>(
+        full,
+        elim,
+        partition,
+        public_bits,
+        garbler_bits,
+        transport,
+        ot,
+        host,
+    )?;
+    cursor.send_next(transport)?;
+    cursor.receive_next(transport)?;
+    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
+    Ok(verdict)
+}
+
+/// The evaluator counterpart to [`run_garbler_strict_actions_scheduled`].
+/// It validates and consumes the schedule envelope before and after the
+/// resumable action/GRAM cursor loop.
+pub fn run_evaluator_strict_actions_scheduled<N, D, T: Transport>(
+    schedule: &GateSchedule,
+    partition: &[InputOwner],
+    evaluator_bits: &[bool],
+    manifest: &ScheduleManifest,
+    session_id: u64,
+    schedule_digest: [u8; 32],
+    transport: &mut T,
+    ot: &mut dyn OtChannel<N>,
+    host: &mut dyn StrictActionHost,
+    gram: &mut [&mut dyn crate::GramDrive<N>],
+) -> Result<Vec<bool>, MpcError>
+where
+    N: VoleArray<u8>,
+    D: Digest,
+{
+    let mut cursor = scheduled_cursor(schedule, manifest, session_id, schedule_digest)?;
+    cursor.receive_next(transport)?;
+    cursor.receive_next(transport)?;
+    let verdict = run_evaluator_strict_actions::<N, D, T>(
+        schedule,
+        partition,
+        evaluator_bits,
+        transport,
+        ot,
+        host,
+        gram,
+    )?;
+    cursor.receive_next(transport)?;
+    cursor.send_next(transport)?;
+    cursor.finish().map_err(|_| MpcError::MalformedSchedule)?;
+    Ok(verdict)
+}
+
 /// The strict evaluator role for a schedule carrying actions
 /// ([`Gate::ActionBit`]): identical to [`run_evaluator_strict`] plus, per
 /// action call, an arg-decode round-trip (the garbler learns the logical
