@@ -15,14 +15,15 @@
 //! Chou–Orlandi OT and output-label hash matching. Callers may opt into keyed
 //! frame authentication with [`BitGcSession::new_authenticated`] or the
 //! PSK-authenticated [`BitGcSession::new_psk_authenticated`] constructor and
-//! keyed OT envelopes. The OT channel has one ordered transcript, while the
-//! frame and OT transcript states remain separate. The canonical digest
-//! helpers bind the circuit/profile shape; they do not make BitGC available
-//! for protected sessions. The admission gate remains closed pending Cirrus
-//! integration and independent review.
+//! keyed OT envelopes. Session-driven input transfer maintains one shared
+//! context transcript across hello/data frames and OT messages; frame
+//! authentication tags retain direction-local chains for compatibility. The
+//! canonical digest helpers bind the circuit/profile shape; they do not make
+//! BitGC available for protected sessions. The admission gate remains closed
+//! pending Cirrus integration and independent review.
 //!
-//! TODO(provider-ledger: BITGC-LEDGER-07): full frame/OT transcript
-//! integration, forward-secret external key exchange where required, Cirrus
+//! TODO(provider-ledger: BITGC-LEDGER-07): common-transcript frame tag
+//! migration, forward-secret external key exchange where required, Cirrus
 //! integration, and reviewed parameters remain release gates.
 
 use alloc::vec::Vec;
@@ -63,6 +64,7 @@ const PSK_HELLO_DOMAIN: &[u8] = b"Volar BitGC PSK hello v1\0";
 const PSK_SESSION_KEY_DOMAIN: &[u8] = b"Volar BitGC PSK session key v1\0";
 const FRAME_DIGEST_DOMAIN: &[u8] = b"Volar BitGC frame digest v1\0";
 const FRAME_OT_CONTEXT_DOMAIN: &[u8] = b"Volar BitGC frame/OT context v1\0";
+const UNIFIED_TRANSCRIPT_DOMAIN: &[u8] = b"Volar BitGC unified transcript v1\0";
 
 /// Party identity carried in every BitGC frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -496,9 +498,13 @@ pub trait BitGcInputOt<N: VoleArray<u8>> {
     fn send_pair(&mut self, labels: [&Array<u8, N>; 2]) -> Result<(), Self::Error>;
     /// Receive exactly the selected fixed-size message.
     fn receive_choice(&mut self, choice: bool) -> Result<Array<u8, N>, Self::Error>;
-    /// Bind the next OT invocation to the descriptor frame that introduced it.
+    /// Bind the next OT invocation to the current unified frame/OT transcript.
     /// Local compatibility adapters may leave this as the default no-op.
     fn bind_context(&mut self, _context: &[u8; 32]) {}
+    /// Return the current authenticated transcript checkpoint when available.
+    fn transcript(&self) -> Option<[u8; 32]> {
+        None
+    }
     /// Interrupt pending OT work; safe to call repeatedly.
     fn cancel(&mut self) -> Result<(), Self::Error>;
 }
@@ -513,8 +519,13 @@ pub trait BitGcOtTransport {
     fn send_ot_message(&mut self, message: &[u8]) -> Result<(), Self::Error>;
     /// Receive one OT message, enforcing the supplied limit before allocation.
     fn receive_ot_message(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error>;
-    /// Bind the next OT message sequence to a session frame context.
+    /// Bind the next OT message sequence to the current unified frame/OT
+    /// transcript.
     fn bind_context(&mut self, _context: &[u8; 32]) {}
+    /// Return the current authenticated transcript checkpoint when available.
+    fn transcript(&self) -> Option<[u8; 32]> {
+        None
+    }
     /// Interrupt pending OT I/O; safe to call repeatedly.
     fn cancel(&mut self) -> Result<(), Self::Error>;
 }
@@ -537,11 +548,11 @@ pub enum AuthenticatedOtError<E> {
 /// Adds a keyed, ordered envelope to the dedicated OT message transport.
 ///
 /// This authenticates and binds each OT message to the public session binding,
-/// role, descriptor-frame context, and one ordered transcript sequence shared
+/// role, shared frame/OT context transcript, and one ordered sequence shared
 /// by both OT directions. It is intended to be used together with
 /// [`BitGcSession::new_authenticated`]. The frame and OT transports remain
-/// separate channels, but each OT invocation is chained to the frame that
-/// introduced it.
+/// separate channels, but session-driven input transfer seeds OT from the
+/// common transcript checkpoint.
 pub struct AuthenticatedBitGcOtTransport<T> {
     role: BitGcRole,
     binding: BitGcSessionBinding,
@@ -672,7 +683,11 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
 
     fn bind_context(&mut self, context: &[u8; 32]) {
         self.context = *context;
-        self.transcript = ot_transcript_bind(&self.transcript, context);
+        self.transcript = *context;
+    }
+
+    fn transcript(&self) -> Option<[u8; 32]> {
+        Some(self.transcript)
     }
 
     fn cancel(&mut self) -> Result<(), Self::Error> {
@@ -795,6 +810,10 @@ where
             .map_err(|_| ChouOrlandiOtError::InvalidMessage)
     }
 
+    fn transcript(&self) -> Option<[u8; 32]> {
+        self.transport.transcript()
+    }
+
     fn cancel(&mut self) -> Result<(), Self::Error> {
         self.transport
             .cancel()
@@ -862,6 +881,7 @@ pub struct BitGcSession {
     auth_key: Option<[u8; 32]>,
     psk_key: Option<[u8; 32]>,
     local_nonce: Option<[u8; 32]>,
+    unified_transcript: [u8; 32],
     garbler_hello_digest: [u8; 32],
     evaluator_hello_digest: [u8; 32],
     last_sent_frame_digest: [u8; 32],
@@ -995,13 +1015,8 @@ impl BitGcSession {
         }
     }
 
-    fn frame_ot_context(&self, descriptor_digest: [u8; 32]) -> [u8; 32] {
-        input_ot_context(
-            &self.binding,
-            self.garbler_hello_digest,
-            self.evaluator_hello_digest,
-            descriptor_digest,
-        )
+    fn frame_ot_context(&self) -> [u8; 32] {
+        self.unified_transcript
     }
 
     fn new_inner(
@@ -1023,6 +1038,7 @@ impl BitGcSession {
             auth_key,
             psk_key,
             local_nonce,
+            unified_transcript: initial_unified_transcript(&binding),
             garbler_hello_digest: [0; 32],
             evaluator_hello_digest: [0; 32],
             last_sent_frame_digest: [0; 32],
@@ -1130,6 +1146,16 @@ impl BitGcSession {
         self.last_received_frame_digest = frame_digest(encoded);
         if matches!(frame.kind, BitGcFrameKind::Hello) {
             self.set_hello_digest(frame.role, self.last_received_frame_digest);
+            if self.local_hello_sent {
+                self.unified_transcript = unified_handshake_transcript(
+                    &self.binding,
+                    self.garbler_hello_digest,
+                    self.evaluator_hello_digest,
+                );
+            }
+        } else {
+            self.unified_transcript =
+                unified_transcript_after(&self.unified_transcript, self.last_received_frame_digest);
         }
         self.refresh_active_state();
         Ok(frame)
@@ -1262,7 +1288,7 @@ impl BitGcSession {
             if let Err(error) = self.send_over(transport, BitGcFrameKind::Data, &descriptor) {
                 return self.cancel_ot_after_io_error(transport, ot, error);
             }
-            let context = self.frame_ot_context(self.last_sent_frame_digest);
+            let context = self.frame_ot_context();
             ot.bind_context(&context);
             let start = chunk_index * N::USIZE;
             let block0 =
@@ -1271,6 +1297,9 @@ impl BitGcSession {
                 Array::<u8, N>::from_fn(|index| branch1.get(start + index).copied().unwrap_or(0));
             if ot.send_pair([&block0, &block1]).is_err() {
                 return self.abort_ot_over(transport, ot, BitGcSessionError::OtFailure);
+            }
+            if let Some(transcript) = ot.transcript() {
+                self.unified_transcript = transcript;
             }
         }
         Ok(())
@@ -1359,6 +1388,9 @@ impl BitGcSession {
                 Ok(block) => block,
                 Err(_) => return self.abort_ot_over(transport, ot, BitGcSessionError::OtFailure),
             };
+            if let Some(transcript) = ot.transcript() {
+                self.unified_transcript = transcript;
+            }
             let remaining = total_bytes - encoded_label.len();
             let take = core::cmp::min(N::USIZE, remaining);
             if block.as_slice()[take..].iter().any(|&byte| byte != 0) {
@@ -1566,7 +1598,7 @@ impl BitGcSession {
             Err(error) => return self.abort_over(transport, error),
         };
         match decode_input_chunk_descriptor(payload) {
-            Some(descriptor) => Ok((descriptor, self.frame_ot_context(frame_digest(&encoded)))),
+            Some(descriptor) => Ok((descriptor, self.frame_ot_context())),
             None => self.abort_over(transport, BitGcSessionError::InvalidInputDescriptor),
         }
     }
@@ -1706,6 +1738,16 @@ impl BitGcSession {
         self.last_sent_frame_digest = frame_digest(&encoded);
         if matches!(kind, BitGcFrameKind::Hello) {
             self.set_hello_digest(self.local_role, self.last_sent_frame_digest);
+            if self.peer_hello_received {
+                self.unified_transcript = unified_handshake_transcript(
+                    &self.binding,
+                    self.garbler_hello_digest,
+                    self.evaluator_hello_digest,
+                );
+            }
+        } else {
+            self.unified_transcript =
+                unified_transcript_after(&self.unified_transcript, self.last_sent_frame_digest);
         }
         match kind {
             BitGcFrameKind::Hello => self.local_hello_sent = true,
@@ -1835,11 +1877,23 @@ fn frame_digest(encoded: &[u8]) -> [u8; 32] {
     result
 }
 
-fn input_ot_context(
+fn initial_unified_transcript(binding: &BitGcSessionBinding) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(UNIFIED_TRANSCRIPT_DOMAIN);
+    hash.update(binding.session_id);
+    hash.update([binding.variant as u8]);
+    hash.update(binding.parameter_fingerprint);
+    hash.update(binding.circuit_digest);
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
+}
+
+fn unified_handshake_transcript(
     binding: &BitGcSessionBinding,
     garbler_hello_digest: [u8; 32],
     evaluator_hello_digest: [u8; 32],
-    descriptor_digest: [u8; 32],
 ) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(FRAME_OT_CONTEXT_DOMAIN);
@@ -1849,7 +1903,17 @@ fn input_ot_context(
     hash.update(binding.circuit_digest);
     hash.update(garbler_hello_digest);
     hash.update(evaluator_hello_digest);
-    hash.update(descriptor_digest);
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
+}
+
+fn unified_transcript_after(previous: &[u8; 32], encoded_frame_digest: [u8; 32]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(UNIFIED_TRANSCRIPT_DOMAIN);
+    hash.update(previous);
+    hash.update(encoded_frame_digest);
     let digest = hash.finalize();
     let mut result = [0; 32];
     result.copy_from_slice(&digest);
@@ -1983,17 +2047,6 @@ fn initial_ot_transcript(binding: &BitGcSessionBinding) -> [u8; 32] {
     hash.update([binding.variant as u8]);
     hash.update(binding.parameter_fingerprint);
     hash.update(binding.circuit_digest);
-    let digest = hash.finalize();
-    let mut result = [0; 32];
-    result.copy_from_slice(&digest);
-    result
-}
-
-fn ot_transcript_bind(previous: &[u8; 32], context: &[u8; 32]) -> [u8; 32] {
-    let mut hash = Sha256::new();
-    hash.update(b"Volar BitGC OT context v1\0");
-    hash.update(previous);
-    hash.update(context);
     let digest = hash.finalize();
     let mut result = [0; 32];
     result.copy_from_slice(&digest);
