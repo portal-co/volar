@@ -1,6 +1,6 @@
 # BitGC session protocol plan
 
-**Status:** Phases 0–2 landed; Phase 3 now has local OT/input, canonical binding digests, optional keyed frame authentication, PSK-authenticated session-key derivation, a unified ordered frame/OT context transcript, keyed OT envelopes, output-label hash-match primitives, and a cross-process frame/OT test. Frame-authentication tag chains remain direction-local, and Cirrus integration remains open. No session protocol or protected-data profile is deployable.
+**Status:** Phases 0–2 landed; Phase 3 now has local OT/input, canonical binding digests, PSK-authenticated session-key derivation, one common frame/OT authentication transcript, keyed OT envelopes, a thin explicit Cirrus transport adapter, output-label hash-match primitives, and cross-process frame/OT tests. Full Cirrus schedule/profile integration remains open. No session protocol or protected-data profile is deployable.
 **Scope:** shared Volar/Cirrus session infrastructure. Aero is not part of this work.
 **Ledger:** `BITGC-LEDGER-07` in `docs/fhe/future-provider-integration-ledger.md`.
 
@@ -38,12 +38,12 @@
 - **Approach:** Route evaluator-owned labels through the fallible `BitGcInputOt` seam. The experimental `ChouOrlandiBitGcOt` uses a dedicated bounded OT message transport; the infallible `OtChannel` adapter is explicitly local-only. Input descriptors bind index and chunk order to session frames, and `AuthenticatedBitGcOtTransport` adds keyed envelopes with one ordered transcript sequence across both OT directions.
 - **Touches:** `volar-mpc` input ownership/OT and the BitGC session.
 - **Test seam:** Loopback tests plus two-thread Chou–Orlandi OT tests, both input choices, malformed descriptors, and injected OT failures.
-- **Acceptance:** [x] The tested OT implementation returns only its selected label. [x] Input index/chunk order is checked before the corresponding OT read. [x] Authenticated OT messages are bound to the descriptor context and one ordered keyed OT transcript. [x] Session-driven input transfer merges hello/data-frame digests and OT messages into one ordered context transcript. [ ] Replace the direction-local frame-authentication chains with the common transcript itself.
+- **Acceptance:** [x] The tested OT implementation returns only its selected label. [x] Input index/chunk order is checked before the corresponding OT read. [x] Authenticated OT messages are bound to the descriptor context and one ordered keyed OT transcript. [x] Session-driven input transfer merges hello/data-frame digests, frame tags, and OT messages into one common transcript.
 - **Hard part:** The pinned reference driver currently returns masked bits alongside labels; the session must not send that helper value as clear protocol data. The PSK mode has no forward secrecy, so deployments may still need an external authenticated key exchange.
 
 ### R-4 Sessions bind peers and circuits
 
-- **Approach:** Add a transport-neutral session state machine. Carry role, protocol version, variant, parameter fingerprint, circuit digest, session ID, and monotonic sequence numbers in every frame and validate them against local session context. `new_authenticated` adds keyed direction-local transcript tags; `new_psk_authenticated` authenticates nonce hellos and derives a binding-separated session key. A single transcript spanning frame and OT channels remains an external seam.
+- **Approach:** Add a transport-neutral session state machine. Carry role, protocol version, variant, parameter fingerprint, circuit digest, session ID, and monotonic sequence numbers in every frame and validate them against local session context. `new_authenticated` and `new_psk_authenticated` authenticate frame tags from the common frame/OT transcript; the PSK constructor derives a binding-separated session key. External key exchange remains available where forward secrecy is required.
 - **Touches:** New `volar-mpc::bitgc_session` module and the Cirrus adapter.
 - **Test seam:** Role-pair loopback tests plus wrong-version, wrong-profile, wrong-circuit, replay, and reordering tests.
 - **Acceptance:** [x] A frame from another session, variant, parameter profile, or circuit is rejected before cryptographic evaluation. [x] Sequences advance exactly once; replay and reordering are rejected.
@@ -139,13 +139,14 @@
 - [x] Add canonical circuit/profile digest helpers and an opt-in keyed frame authenticator; bind the dedicated OT channel with keyed ordered envelopes.
 - [x] Add PSK-authenticated nonce hellos and binding-separated session-key derivation; retain an external-key constructor for deployments requiring forward secrecy.
 - [x] Chain authenticated OT messages with one ordered transcript sequence across both directions and construct OT wrappers from the authenticated session binding/key.
-- [x] Maintain one session context transcript across both hello frames, data frames, and authenticated OT messages; use its checkpoint to seed each OT invocation.
-- [x] Bind each OT invocation to the exact encoded garbler/evaluator hello digests and descriptor-frame digest, including frame authentication tags when enabled.
+- [x] Maintain one session context transcript across both hello frames, data frames, frame authentication tags, and authenticated OT messages; use its checkpoint to seed each OT invocation.
+- [x] Bind each OT invocation to the exact encoded garbler/evaluator hello digests and descriptor-frame digest, including frame authentication tags.
+- [x] Add an explicit Cirrus `bitgc-session` adapter over bounded Pusher/iterator frame and OT channels; keep `bitgc-reference` separate and opt-in.
 - [x] Exercise authenticated frame and OT round trips across independent test processes over bounded loopback TCP transports, with each OT chunk bound to its descriptor-frame context.
 
 **Validation (2026-10-09):** `volar-mpc` session tests passed (15/15); the full `volar-mpc` library suite passed (45 tests), and `volar-spec` passed (330 passed, 2 ignored). Two-thread and independent-process tests exercised the Chou–Orlandi adapter over bounded message pipes/TCP, including the shared context transcript across hello/data frames and OT messages; canonical circuit/profile digest, keyed-frame tamper, context-mismatch, and PSK-handshake tests also pass. This is implementation/correctness evidence only.
 
-**Still open:** The shared context transcript now spans the session's hello/data/OT flow, but frame authentication tags still use direction-local chains for compatibility and are not themselves keyed by the common state. The PSK handshake is authenticated but not forward-secret, and external key exchange remains supported. Cirrus integration remains open. The default unauthenticated API remains label-pair consistency only, and no active-security claim follows.
+**Still open:** The thin Cirrus adapter is transport/session plumbing only; it does not replace the legacy reference backend or provide shared schedule/profile garbling. The PSK handshake is authenticated but not forward-secret, and external key exchange remains supported. The default unauthenticated API remains label-pair consistency only, and no active-security claim follows.
 
 **Proof:** Not yet met. The independent-process test exercises bounded loopback TCP and keyed checks, but does not establish a deployable transport, key-establishment protocol, or cryptographic security review.
 **Not here:** Malicious security or protected-data admission.

@@ -17,14 +17,14 @@
 //! PSK-authenticated [`BitGcSession::new_psk_authenticated`] constructor and
 //! keyed OT envelopes. Session-driven input transfer maintains one shared
 //! context transcript across hello/data frames and OT messages; frame
-//! authentication tags retain direction-local chains for compatibility. The
-//! canonical digest helpers bind the circuit/profile shape; they do not make
-//! BitGC available for protected sessions. The admission gate remains closed
-//! pending Cirrus integration and independent review.
+//! authentication tags use that same common state. The canonical digest
+//! helpers bind the circuit/profile shape; they do not make BitGC available
+//! for protected sessions. The admission gate remains closed pending Cirrus
+//! integration and independent review.
 //!
-//! TODO(provider-ledger: BITGC-LEDGER-07): common-transcript frame tag
-//! migration, forward-secret external key exchange where required, Cirrus
-//! integration, and reviewed parameters remain release gates.
+//! TODO(provider-ledger: BITGC-LEDGER-07): forward-secret external key
+//! exchange where required, Cirrus integration, and reviewed parameters
+//! remain release gates.
 
 use alloc::vec::Vec;
 use digest::Digest;
@@ -55,7 +55,6 @@ const BITGC_OUTPUT_MAX_COUNT: usize = 1 << 20;
 const AUTH_TAG_BYTES: usize = 32;
 const AUTH_BLOCK_BYTES: usize = 64;
 const AUTH_DOMAIN: &[u8] = b"Volar BitGC frame auth v1\0";
-const TRANSCRIPT_DOMAIN: &[u8] = b"Volar BitGC transcript v1\0";
 const CIRCUIT_DIGEST_DOMAIN: &[u8] = b"Volar BitGC circuit digest v1\0";
 const PARAMETER_DIGEST_DOMAIN: &[u8] = b"Volar BitGC parameter fingerprint v1\0";
 const PSK_HELLO_MAGIC: &[u8; 8] = b"VBGPK001";
@@ -886,8 +885,6 @@ pub struct BitGcSession {
     evaluator_hello_digest: [u8; 32],
     last_sent_frame_digest: [u8; 32],
     last_received_frame_digest: [u8; 32],
-    send_transcript: [u8; 32],
-    receive_transcript: [u8; 32],
 }
 
 impl BitGcSession {
@@ -1043,8 +1040,6 @@ impl BitGcSession {
             evaluator_hello_digest: [0; 32],
             last_sent_frame_digest: [0; 32],
             last_received_frame_digest: [0; 32],
-            send_transcript: initial_transcript(&binding),
-            receive_transcript: initial_transcript(&binding),
         })
     }
 
@@ -1142,7 +1137,6 @@ impl BitGcSession {
             }
         }
         self.next_receive_sequence = next_sequence;
-        self.receive_transcript = transcript_after(&self.receive_transcript, encoded);
         self.last_received_frame_digest = frame_digest(encoded);
         if matches!(frame.kind, BitGcFrameKind::Hello) {
             self.set_hello_digest(frame.role, self.last_received_frame_digest);
@@ -1707,7 +1701,7 @@ impl BitGcSession {
             authenticated.extend_from_slice(payload);
             let tag = match frame_auth_tag(
                 key,
-                &self.send_transcript,
+                &self.unified_transcript,
                 self.local_role,
                 &self.binding,
                 sequence,
@@ -1734,7 +1728,6 @@ impl BitGcSession {
             Err(error) => return self.abort_with(BitGcSessionError::Frame(error)),
         };
         self.next_send_sequence = next_sequence;
-        self.send_transcript = transcript_after(&self.send_transcript, &encoded);
         self.last_sent_frame_digest = frame_digest(&encoded);
         if matches!(kind, BitGcFrameKind::Hello) {
             self.set_hello_digest(self.local_role, self.last_sent_frame_digest);
@@ -1787,7 +1780,7 @@ impl BitGcSession {
             .map_err(|_| BitGcSessionError::MissingAuthentication)?;
         let expected = frame_auth_tag(
             key,
-            &self.receive_transcript,
+            &self.unified_transcript,
             frame.role,
             &frame.binding,
             frame.sequence,
@@ -1801,7 +1794,9 @@ impl BitGcSession {
         Ok(payload)
     }
 
-    fn payload_without_auth<'a>(
+    /// Return the application payload after [`Self::accept`] has verified the
+    /// frame's binding, sequence, and authentication tag.
+    pub fn payload_without_auth<'a>(
         &self,
         frame: &BitGcFrame<'a>,
     ) -> Result<&'a [u8], BitGcSessionError> {
@@ -1988,30 +1983,6 @@ fn decode_input_branch(
         label.push(coefficient);
     }
     Ok((label, encoded[encoded.len() - 1] == 1))
-}
-
-fn initial_transcript(binding: &BitGcSessionBinding) -> [u8; 32] {
-    let mut hash = Sha256::new();
-    hash.update(TRANSCRIPT_DOMAIN);
-    hash.update(binding.session_id);
-    hash.update([binding.variant as u8]);
-    hash.update(binding.parameter_fingerprint);
-    hash.update(binding.circuit_digest);
-    let digest = hash.finalize();
-    let mut result = [0; 32];
-    result.copy_from_slice(&digest);
-    result
-}
-
-fn transcript_after(previous: &[u8; 32], encoded_frame: &[u8]) -> [u8; 32] {
-    let mut hash = Sha256::new();
-    hash.update(TRANSCRIPT_DOMAIN);
-    hash.update(previous);
-    hash.update(encoded_frame);
-    let digest = hash.finalize();
-    let mut result = [0; 32];
-    result.copy_from_slice(&digest);
-    result
 }
 
 fn frame_auth_tag(
