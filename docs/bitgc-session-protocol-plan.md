@@ -137,11 +137,11 @@
 - [x] Add domain-separated output-label pair hashes and evaluator hash-match opening without revealing `pi` or the garbler's secret.
 - [x] Make malformed descriptors, OT/frame failures, output mismatches, and failed cancellations terminal; test both input choices, OT failure paths, profile shape rejection, and output-label tampering.
 - [x] Add canonical circuit/profile digest helpers and an opt-in keyed frame authenticator; bind the dedicated OT channel with keyed ordered envelopes.
-- [x] Exercise authenticated frame and OT round trips across independent test processes over bounded loopback TCP transports.
+- [x] Exercise authenticated frame and OT round trips across independent test processes over bounded loopback TCP transports, with each OT chunk bound to its descriptor-frame context.
 
-**Validation (2026-10-09):** `volar-mpc` session tests passed (15/15); the full `volar-mpc` library suite passed (43 tests), and `volar-spec` passed (330 passed, 2 ignored). Two-thread and independent-process tests exercised the Chou–Orlandi adapter over bounded message pipes/TCP, including the keyed OT envelope; canonical circuit/profile digest and keyed-frame tamper tests also pass. This is implementation/correctness evidence only.
+**Validation (2026-10-09):** `volar-mpc` session tests passed (15/15); the full `volar-mpc` library suite passed (44 tests), and `volar-spec` passed (330 passed, 2 ignored). Two-thread and independent-process tests exercised the Chou–Orlandi adapter over bounded message pipes/TCP, including descriptor-context-bound keyed OT envelopes; canonical circuit/profile digest, keyed-frame tamper, and context-mismatch tests also pass. This is implementation/correctness evidence only.
 
-**Still open:** Key establishment and one unified frame/OT transcript are not provided; the keyed OT envelope and keyed frame tags are separate direction-local checks. Cirrus integration remains open. The default unauthenticated API remains label-pair consistency only, and no active-security claim follows.
+**Still open:** Key establishment and one unified frame/OT transcript are not provided; keyed OT messages are now bound to their descriptor-frame context, while the frame and OT channels still maintain separate direction-local transcript state. Cirrus integration remains open. The default unauthenticated API remains label-pair consistency only, and no active-security claim follows.
 
 **Proof:** Not yet met. The independent-process test exercises bounded loopback TCP and keyed checks, but does not establish a deployable transport, key-establishment protocol, or cryptographic security review.
 **Not here:** Malicious security or protected-data admission.

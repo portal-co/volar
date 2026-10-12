@@ -489,6 +489,9 @@ pub trait BitGcInputOt<N: VoleArray<u8>> {
     fn send_pair(&mut self, labels: [&Array<u8, N>; 2]) -> Result<(), Self::Error>;
     /// Receive exactly the selected fixed-size message.
     fn receive_choice(&mut self, choice: bool) -> Result<Array<u8, N>, Self::Error>;
+    /// Bind the next OT invocation to the descriptor frame that introduced it.
+    /// Local compatibility adapters may leave this as the default no-op.
+    fn bind_context(&mut self, _context: &[u8; 32]) {}
     /// Interrupt pending OT work; safe to call repeatedly.
     fn cancel(&mut self) -> Result<(), Self::Error>;
 }
@@ -503,6 +506,8 @@ pub trait BitGcOtTransport {
     fn send_ot_message(&mut self, message: &[u8]) -> Result<(), Self::Error>;
     /// Receive one OT message, enforcing the supplied limit before allocation.
     fn receive_ot_message(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error>;
+    /// Bind the next OT message sequence to a session frame context.
+    fn bind_context(&mut self, _context: &[u8; 32]) {}
     /// Interrupt pending OT I/O; safe to call repeatedly.
     fn cancel(&mut self) -> Result<(), Self::Error>;
 }
@@ -525,10 +530,10 @@ pub enum AuthenticatedOtError<E> {
 /// Adds a keyed, ordered envelope to the dedicated OT message transport.
 ///
 /// This authenticates and binds each OT message to the public session binding,
-/// role, and direction-local sequence. It is intended to be used together
-/// with [`BitGcSession::new_authenticated`]. The frame and OT transports are
-/// still separate channels; a future transport adapter may merge their
-/// transcript state explicitly.
+/// role, descriptor-frame context, and direction-local sequence. It is
+/// intended to be used together with [`BitGcSession::new_authenticated`]. The
+/// frame and OT transports remain separate channels, but each OT invocation
+/// can now be bound to the frame that introduced it.
 pub struct AuthenticatedBitGcOtTransport<T> {
     role: BitGcRole,
     binding: BitGcSessionBinding,
@@ -536,6 +541,7 @@ pub struct AuthenticatedBitGcOtTransport<T> {
     transport: T,
     next_send_sequence: u64,
     next_receive_sequence: u64,
+    context: [u8; 32],
 }
 
 impl<T> AuthenticatedBitGcOtTransport<T> {
@@ -548,6 +554,7 @@ impl<T> AuthenticatedBitGcOtTransport<T> {
             transport,
             next_send_sequence: 0,
             next_receive_sequence: 0,
+            context: [0; 32],
         }
     }
 }
@@ -574,7 +581,14 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
         envelope.extend_from_slice(&sequence.to_le_bytes());
         envelope.extend_from_slice(&length.to_le_bytes());
         envelope.extend_from_slice(message);
-        let tag = ot_auth_tag(&self.key, &self.binding, self.role, sequence, message);
+        let tag = ot_auth_tag(
+            &self.key,
+            &self.binding,
+            self.role,
+            &self.context,
+            sequence,
+            message,
+        );
         envelope.extend_from_slice(&tag);
         self.transport
             .send_ot_message(&envelope)
@@ -625,6 +639,7 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
             &self.key,
             &self.binding,
             self.role.peer(),
+            &self.context,
             sequence,
             payload,
         );
@@ -641,6 +656,10 @@ impl<T: BitGcOtTransport> BitGcOtTransport for AuthenticatedBitGcOtTransport<T> 
             .checked_add(1)
             .ok_or(AuthenticatedOtError::InvalidMessage)?;
         Ok(message)
+    }
+
+    fn bind_context(&mut self, context: &[u8; 32]) {
+        self.context = *context;
     }
 
     fn cancel(&mut self) -> Result<(), Self::Error> {
@@ -665,7 +684,8 @@ pub enum ChouOrlandiOtError<E> {
 ///
 /// Construct a garbler endpoint with `BitGcRole::Garbler` and an evaluator
 /// endpoint with `BitGcRole::Evaluator`. One instance handles the ordered OT
-/// stream for a session; it does not authenticate or transcript-bind messages.
+/// stream for a session. When its transport supports it, `bind_context`
+/// attaches each OT invocation to the preceding session descriptor frame.
 pub struct ChouOrlandiBitGcOt<N, T, R>
 where
     N: VoleArray<u8>,
@@ -675,6 +695,7 @@ where
     role: BitGcRole,
     transport: T,
     rng: R,
+    context: [u8; 32],
     _n: core::marker::PhantomData<N>,
 }
 
@@ -691,6 +712,7 @@ where
             role,
             transport,
             rng,
+            context: [0; 32],
             _n: core::marker::PhantomData,
         }
     }
@@ -703,6 +725,11 @@ where
     R: volar_spec::SpecRng,
 {
     type Error = ChouOrlandiOtError<T::Error>;
+
+    fn bind_context(&mut self, context: &[u8; 32]) {
+        self.context = *context;
+        self.transport.bind_context(context);
+    }
 
     fn send_pair(&mut self, labels: [&Array<u8, N>; 2]) -> Result<(), Self::Error> {
         if self.role != BitGcRole::Garbler {
@@ -1079,9 +1106,12 @@ impl BitGcSession {
                 chunk_count_u32,
                 total_bytes,
             );
+            let descriptor_sequence = self.next_send_sequence;
             if let Err(error) = self.send_over(transport, BitGcFrameKind::Data, &descriptor) {
                 return self.cancel_ot_after_io_error(transport, ot, error);
             }
+            let context = input_ot_context(&self.binding, descriptor_sequence, &descriptor);
+            ot.bind_context(&context);
             let start = chunk_index * N::USIZE;
             let block0 =
                 Array::<u8, N>::from_fn(|index| branch0.get(start + index).copied().unwrap_or(0));
@@ -1117,7 +1147,7 @@ impl BitGcSession {
         {
             return self.abort_ot_over(transport, ot, BitGcSessionError::InvalidInputMaterial);
         }
-        let first = match self.receive_input_chunk_descriptor(transport) {
+        let (first, first_context) = match self.receive_input_chunk_descriptor(transport) {
             Ok(descriptor) => descriptor,
             Err(error) => return self.cancel_ot_after_io_error(transport, ot, error),
         };
@@ -1153,8 +1183,8 @@ impl BitGcSession {
         }
 
         for chunk_index in 0..expected_chunks {
-            let descriptor = if chunk_index == 0 {
-                first
+            let (descriptor, context) = if chunk_index == 0 {
+                (first, first_context)
             } else {
                 match self.receive_input_chunk_descriptor(transport) {
                     Ok(descriptor) => descriptor,
@@ -1172,6 +1202,7 @@ impl BitGcSession {
                     BitGcSessionError::InvalidInputDescriptor,
                 );
             }
+            ot.bind_context(&context);
             let block = match ot.receive_choice(choice) {
                 Ok(block) => block,
                 Err(_) => return self.abort_ot_over(transport, ot, BitGcSessionError::OtFailure),
@@ -1372,7 +1403,7 @@ impl BitGcSession {
     fn receive_input_chunk_descriptor<T: BitGcFrameTransport>(
         &mut self,
         transport: &mut T,
-    ) -> Result<InputChunkDescriptor, BitGcIoError<T::Error>> {
+    ) -> Result<(InputChunkDescriptor, [u8; 32]), BitGcIoError<T::Error>> {
         let encoded = self.receive_over(transport)?;
         let frame = match BitGcFrame::decode(&encoded) {
             Ok(frame) if frame.kind == BitGcFrameKind::Data => frame,
@@ -1383,7 +1414,10 @@ impl BitGcSession {
             Err(error) => return self.abort_over(transport, error),
         };
         match decode_input_chunk_descriptor(payload) {
-            Some(descriptor) => Ok(descriptor),
+            Some(descriptor) => Ok((
+                descriptor,
+                input_ot_context(&self.binding, frame.sequence, payload),
+            )),
             None => self.abort_over(transport, BitGcSessionError::InvalidInputDescriptor),
         }
     }
@@ -1630,6 +1664,22 @@ fn decode_input_chunk_descriptor(payload: &[u8]) -> Option<InputChunkDescriptor>
     })
 }
 
+fn input_ot_context(binding: &BitGcSessionBinding, sequence: u64, descriptor: &[u8]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"Volar BitGC OT frame context v1\0");
+    hash.update(binding.session_id);
+    hash.update([binding.variant as u8]);
+    hash.update(binding.parameter_fingerprint);
+    hash.update(binding.circuit_digest);
+    hash.update([BitGcRole::Garbler as u8]);
+    hash.update(sequence.to_le_bytes());
+    hash.update(descriptor);
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
+}
+
 fn encode_input_branch(
     label: &LabelPoly,
     masked: bool,
@@ -1754,6 +1804,7 @@ fn ot_auth_tag(
     key: &[u8; 32],
     binding: &BitGcSessionBinding,
     sender_role: BitGcRole,
+    context: &[u8; 32],
     sequence: u64,
     payload: &[u8],
 ) -> [u8; AUTH_TAG_BYTES] {
@@ -1768,6 +1819,7 @@ fn ot_auth_tag(
             &variant,
             binding.parameter_fingerprint.as_slice(),
             binding.circuit_digest.as_slice(),
+            context.as_slice(),
             &sender,
             &sequence,
             payload,
@@ -2331,15 +2383,16 @@ mod tests {
         let response = evaluator.send_data(&[10, 11]).unwrap();
         frames.send_frame(&response).unwrap();
 
-        let receiver = ChouOrlandiBitGcOt::<U16, _, _>::new(
+        let mut receiver = ChouOrlandiBitGcOt::<U16, _, _>::new(
             BitGcRole::Evaluator,
             ot_transport,
             SeedRng::new(0x4352_4f53),
         );
-        let mut receiver = receiver;
-        let selected = receiver.receive_choice(true).unwrap();
-        assert_eq!(&selected.as_slice()[..2], &[41, 42]);
-        assert!(selected.as_slice()[2..].iter().all(|&byte| byte == 0));
+        let (selected, masked) = evaluator
+            .receive_evaluator_input_over::<U16, _, _>(&mut frames, &mut receiver, 4, 97, 2, true)
+            .unwrap();
+        assert_eq!(selected, vec![41, 42]);
+        assert!(masked);
     }
 
     #[test]
@@ -2392,19 +2445,10 @@ mod tests {
             ot_transport,
             SeedRng::new(0x5345_4e44),
         );
-        let blocks = [
-            Array::<u8, U16>::from_fn(|i| match i {
-                0 => 31,
-                1 => 32,
-                _ => 0,
-            }),
-            Array::<u8, U16>::from_fn(|i| match i {
-                0 => 41,
-                1 => 42,
-                _ => 0,
-            }),
-        ];
-        sender.send_pair([&blocks[0], &blocks[1]]).unwrap();
+        let labels = [(vec![31, 32], false), (vec![41, 42], true)];
+        garbler
+            .send_evaluator_input_over::<U16, _, _>(&mut frames, &mut sender, 4, 97, 2, &labels)
+            .unwrap();
         assert!(child.wait().unwrap().success());
     }
 
@@ -2506,6 +2550,30 @@ mod tests {
         let received = receiver_thread.join().unwrap().unwrap();
         assert_eq!(&received.as_slice()[..2], &[41, 42]);
         assert!(received.as_slice()[2..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn keyed_ot_rejects_descriptor_context_mismatch() {
+        let (sender_pipe, receiver_pipe) = pipe_pair();
+        let mut sender = AuthenticatedBitGcOtTransport::new(
+            BitGcRole::Garbler,
+            binding(),
+            [0x42; 32],
+            sender_pipe,
+        );
+        let mut receiver = AuthenticatedBitGcOtTransport::new(
+            BitGcRole::Evaluator,
+            binding(),
+            [0x42; 32],
+            receiver_pipe,
+        );
+        sender.bind_context(&[1; 32]);
+        receiver.bind_context(&[2; 32]);
+        sender.send_ot_message(&[9; 16]).unwrap();
+        assert_eq!(
+            receiver.receive_ot_message(16),
+            Err(AuthenticatedOtError::InvalidMessage)
+        );
     }
 
     #[test]
