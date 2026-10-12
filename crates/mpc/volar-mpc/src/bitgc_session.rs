@@ -61,6 +61,8 @@ const PSK_HELLO_MAGIC: &[u8; 8] = b"VBGPK001";
 const PSK_HELLO_BYTES: usize = 8 + 32 + AUTH_TAG_BYTES;
 const PSK_HELLO_DOMAIN: &[u8] = b"Volar BitGC PSK hello v1\0";
 const PSK_SESSION_KEY_DOMAIN: &[u8] = b"Volar BitGC PSK session key v1\0";
+const FRAME_DIGEST_DOMAIN: &[u8] = b"Volar BitGC frame digest v1\0";
+const FRAME_OT_CONTEXT_DOMAIN: &[u8] = b"Volar BitGC frame/OT context v1\0";
 
 /// Party identity carried in every BitGC frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -860,6 +862,10 @@ pub struct BitGcSession {
     auth_key: Option<[u8; 32]>,
     psk_key: Option<[u8; 32]>,
     local_nonce: Option<[u8; 32]>,
+    garbler_hello_digest: [u8; 32],
+    evaluator_hello_digest: [u8; 32],
+    last_sent_frame_digest: [u8; 32],
+    last_received_frame_digest: [u8; 32],
     send_transcript: [u8; 32],
     receive_transcript: [u8; 32],
 }
@@ -982,6 +988,22 @@ impl BitGcSession {
         Ok(())
     }
 
+    fn set_hello_digest(&mut self, role: BitGcRole, digest: [u8; 32]) {
+        match role {
+            BitGcRole::Garbler => self.garbler_hello_digest = digest,
+            BitGcRole::Evaluator => self.evaluator_hello_digest = digest,
+        }
+    }
+
+    fn frame_ot_context(&self, descriptor_digest: [u8; 32]) -> [u8; 32] {
+        input_ot_context(
+            &self.binding,
+            self.garbler_hello_digest,
+            self.evaluator_hello_digest,
+            descriptor_digest,
+        )
+    }
+
     fn new_inner(
         local_role: BitGcRole,
         binding: BitGcSessionBinding,
@@ -1001,6 +1023,10 @@ impl BitGcSession {
             auth_key,
             psk_key,
             local_nonce,
+            garbler_hello_digest: [0; 32],
+            evaluator_hello_digest: [0; 32],
+            last_sent_frame_digest: [0; 32],
+            last_received_frame_digest: [0; 32],
             send_transcript: initial_transcript(&binding),
             receive_transcript: initial_transcript(&binding),
         })
@@ -1101,6 +1127,10 @@ impl BitGcSession {
         }
         self.next_receive_sequence = next_sequence;
         self.receive_transcript = transcript_after(&self.receive_transcript, encoded);
+        self.last_received_frame_digest = frame_digest(encoded);
+        if matches!(frame.kind, BitGcFrameKind::Hello) {
+            self.set_hello_digest(frame.role, self.last_received_frame_digest);
+        }
         self.refresh_active_state();
         Ok(frame)
     }
@@ -1229,11 +1259,10 @@ impl BitGcSession {
                 chunk_count_u32,
                 total_bytes,
             );
-            let descriptor_sequence = self.next_send_sequence;
             if let Err(error) = self.send_over(transport, BitGcFrameKind::Data, &descriptor) {
                 return self.cancel_ot_after_io_error(transport, ot, error);
             }
-            let context = input_ot_context(&self.binding, descriptor_sequence, &descriptor);
+            let context = self.frame_ot_context(self.last_sent_frame_digest);
             ot.bind_context(&context);
             let start = chunk_index * N::USIZE;
             let block0 =
@@ -1537,10 +1566,7 @@ impl BitGcSession {
             Err(error) => return self.abort_over(transport, error),
         };
         match decode_input_chunk_descriptor(payload) {
-            Some(descriptor) => Ok((
-                descriptor,
-                input_ot_context(&self.binding, frame.sequence, payload),
-            )),
+            Some(descriptor) => Ok((descriptor, self.frame_ot_context(frame_digest(&encoded)))),
             None => self.abort_over(transport, BitGcSessionError::InvalidInputDescriptor),
         }
     }
@@ -1677,6 +1703,10 @@ impl BitGcSession {
         };
         self.next_send_sequence = next_sequence;
         self.send_transcript = transcript_after(&self.send_transcript, &encoded);
+        self.last_sent_frame_digest = frame_digest(&encoded);
+        if matches!(kind, BitGcFrameKind::Hello) {
+            self.set_hello_digest(self.local_role, self.last_sent_frame_digest);
+        }
         match kind {
             BitGcFrameKind::Hello => self.local_hello_sent = true,
             BitGcFrameKind::Data => {}
@@ -1795,16 +1825,31 @@ fn decode_input_chunk_descriptor(payload: &[u8]) -> Option<InputChunkDescriptor>
     })
 }
 
-fn input_ot_context(binding: &BitGcSessionBinding, sequence: u64, descriptor: &[u8]) -> [u8; 32] {
+fn frame_digest(encoded: &[u8]) -> [u8; 32] {
     let mut hash = Sha256::new();
-    hash.update(b"Volar BitGC OT frame context v1\0");
+    hash.update(FRAME_DIGEST_DOMAIN);
+    hash.update(encoded);
+    let digest = hash.finalize();
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
+}
+
+fn input_ot_context(
+    binding: &BitGcSessionBinding,
+    garbler_hello_digest: [u8; 32],
+    evaluator_hello_digest: [u8; 32],
+    descriptor_digest: [u8; 32],
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(FRAME_OT_CONTEXT_DOMAIN);
     hash.update(binding.session_id);
     hash.update([binding.variant as u8]);
     hash.update(binding.parameter_fingerprint);
     hash.update(binding.circuit_digest);
-    hash.update([BitGcRole::Garbler as u8]);
-    hash.update(sequence.to_le_bytes());
-    hash.update(descriptor);
+    hash.update(garbler_hello_digest);
+    hash.update(evaluator_hello_digest);
+    hash.update(descriptor_digest);
     let digest = hash.finalize();
     let mut result = [0; 32];
     result.copy_from_slice(&digest);
