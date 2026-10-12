@@ -10,7 +10,7 @@ use core::fmt;
 
 use volar_ir_common::{EpochId, IterationId, ManifestError, ScheduleLimits, ScheduleManifest};
 
-use crate::{Gate, GateSchedule};
+use crate::{Gate, GateSchedule, MpcError, SessionFrame, Transport};
 
 /// Public phase carried by a lockstep schedule frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -387,6 +387,32 @@ impl MpcScheduleCursor {
         Ok(())
     }
 
+    /// Encode, locally accept, and send the next schedule frame.
+    pub fn send_next<T: Transport>(
+        &mut self,
+        transport: &mut T,
+    ) -> Result<MpcScheduleFrame, MpcError> {
+        let frame = self.next_frame().ok_or(MpcError::MalformedSchedule)?;
+        self.accept(&frame)
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        transport.send(&SessionFrame::Schedule(frame.clone()).encode());
+        Ok(frame)
+    }
+
+    /// Receive and accept the next schedule frame from the counterparty.
+    pub fn receive_next<T: Transport>(
+        &mut self,
+        transport: &mut T,
+    ) -> Result<MpcScheduleFrame, MpcError> {
+        let frame = match SessionFrame::decode(&transport.recv()) {
+            Some(SessionFrame::Schedule(frame)) => frame,
+            _ => return Err(MpcError::UnexpectedMessage),
+        };
+        self.accept(&frame)
+            .map_err(|_| MpcError::UnexpectedMessage)?;
+        Ok(frame)
+    }
+
     fn require_iteration(
         &self,
         expected: Option<IterationId>,
@@ -466,9 +492,22 @@ pub fn validate_gate_schedule_binding(
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use alloc::{collections::VecDeque, vec};
 
     use super::*;
+
+    #[derive(Default)]
+    struct Queue(VecDeque<Vec<u8>>);
+
+    impl Transport for Queue {
+        fn send(&mut self, frame: &[u8]) {
+            self.0.push_back(frame.to_vec());
+        }
+
+        fn recv(&mut self) -> Vec<u8> {
+            self.0.pop_front().expect("test queue frame")
+        }
+    }
     use volar_ir_common::{CommunicationGroup, EpochManifest, IterationManifest, WorkerLane};
 
     fn manifest() -> ScheduleManifest {
@@ -489,6 +528,29 @@ mod tests {
             cursor.accept(&expected).unwrap();
         }
         cursor.finish().unwrap();
+    }
+
+    #[test]
+    fn cursor_can_bind_schedule_frames_to_transport_order() {
+        let mut manifest = manifest();
+        manifest.epochs[0].iterations.truncate(1);
+        let mut sender = MpcScheduleCursor::new(&manifest, 44, [9; 32]).unwrap();
+        let mut receiver = MpcScheduleCursor::new(&manifest, 44, [9; 32]).unwrap();
+        let mut wire = Queue::default();
+
+        sender.send_next(&mut wire).unwrap();
+        receiver.receive_next(&mut wire).unwrap();
+        sender.send_next(&mut wire).unwrap();
+        receiver.receive_next(&mut wire).unwrap();
+        sender.send_next(&mut wire).unwrap();
+        receiver.receive_next(&mut wire).unwrap();
+        receiver.send_next(&mut wire).unwrap();
+        sender.receive_next(&mut wire).unwrap();
+
+        assert!(sender.is_complete());
+        assert!(receiver.is_complete());
+        sender.finish().unwrap();
+        receiver.finish().unwrap();
     }
 
     #[test]
