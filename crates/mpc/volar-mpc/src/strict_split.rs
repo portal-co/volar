@@ -10,6 +10,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use digest::Digest;
+use volar_ir_common::ScheduleManifest;
 use volar_spec::garble::{Eval, Garble, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
@@ -18,7 +19,8 @@ use crate::strict::{
     garble_schedule_strict_dyn_full,
 };
 use crate::{
-    GateSchedule, InputOwner, MpcError, OtChannel, SessionFrame, Transport, arr_to_vec, vec_to_arr,
+    GateSchedule, InputOwner, MpcError, MpcScheduleCursor, MpcScheduleFrame, MpcScheduleRole,
+    OtChannel, SessionFrame, Transport, arr_to_vec, vec_to_arr,
 };
 
 struct TransportRef<'a>(&'a mut dyn Transport);
@@ -394,6 +396,34 @@ pub enum SplitInput {
 }
 
 impl<N: VoleArray<u8>> SplitGarbler<N> {
+    /// Drive every epoch and iteration in a manifest around caller-selected
+    /// split rounds. The callback runs after each iteration frame has crossed
+    /// the transport and should invoke one split runner for that iteration.
+    ///
+    /// This binds frame/session/digest order at the runner seam; each payload
+    /// `GateSchedule` should still be checked with
+    /// [`crate::validate_gate_schedule_binding`] before it is executed.
+    pub fn drive_schedule<T: Transport>(
+        &self,
+        manifest: &ScheduleManifest,
+        session_id: u64,
+        schedule_digest: [u8; 32],
+        transport: &mut T,
+        ot: &mut dyn OtChannel<N>,
+        mut round: impl FnMut(
+            &MpcScheduleFrame,
+            &Self,
+            &mut T,
+            &mut dyn OtChannel<N>,
+        ) -> Result<(), MpcError>,
+    ) -> Result<usize, MpcError> {
+        let mut cursor = MpcScheduleCursor::new(manifest, session_id, schedule_digest)
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        cursor.drive(MpcScheduleRole::Garbler, transport, |frame, transport| {
+            round(frame, self, transport, ot)
+        })
+    }
+
     /// Execute a state-threading circuit. `Held` wires consume the supplied
     /// garbler bases; their matching evaluator labels remain entirely with the
     /// evaluator. This is the primitive used to replace `Oram2pc::run_circuit`.
@@ -538,6 +568,29 @@ impl<N: VoleArray<u8>> SplitGarbler<N> {
 }
 
 impl<N: VoleArray<u8>> SplitEvaluator<N> {
+    /// Evaluator counterpart to [`SplitGarbler::drive_schedule`]. The callback
+    /// runs after each manifest iteration frame is validated and received.
+    pub fn drive_schedule<T: Transport>(
+        &self,
+        manifest: &ScheduleManifest,
+        session_id: u64,
+        schedule_digest: [u8; 32],
+        transport: &mut T,
+        ot: &mut dyn OtChannel<N>,
+        mut round: impl FnMut(
+            &MpcScheduleFrame,
+            &Self,
+            &mut T,
+            &mut dyn OtChannel<N>,
+        ) -> Result<(), MpcError>,
+    ) -> Result<usize, MpcError> {
+        let mut cursor = MpcScheduleCursor::new(manifest, session_id, schedule_digest)
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        cursor.drive(MpcScheduleRole::Evaluator, transport, |frame, transport| {
+            round(frame, self, transport, ot)
+        })
+    }
+
     /// Evaluator half of [`SplitGarbler::run_with_state`]. `held_labels` are
     /// consumed in `SplitInput::Held` order and never enter an OT or frame.
     pub fn run_with_state<D: Digest>(

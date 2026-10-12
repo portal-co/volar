@@ -28,6 +28,7 @@ use alloc::vec::Vec;
 
 use digest::Digest;
 use hybrid_array::Array;
+use volar_ir_common::ScheduleManifest;
 use volar_spec::garble::{Garble, GlobalSecret};
 use volar_spec::vole::VoleArray;
 
@@ -36,8 +37,8 @@ use crate::strict::{
     garble_schedule_strict_dyn_full,
 };
 use crate::{
-    Eval, ExternalBatchManifest, GateSchedule, MpcError, OtChannel, SessionFrame, Transport,
-    arr_to_vec, vec_to_arr,
+    Eval, ExternalBatchManifest, GateSchedule, MpcError, MpcScheduleCursor, MpcScheduleFrame,
+    MpcScheduleRole, OtChannel, SessionFrame, Transport, arr_to_vec, vec_to_arr,
 };
 
 /// A chain input feed, per circuit-input bit. The feed script is shared by
@@ -543,6 +544,35 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Garble<N>, N>> ChainGarbler<N, S> {
         self.metrics
     }
 
+    /// Drive every epoch and iteration in a manifest around caller-selected
+    /// chain rounds. The callback runs after each iteration frame has crossed
+    /// the transport and should invoke [`ChainParty::run_round`] or a boundary
+    /// phase for that canonical iteration.
+    ///
+    /// The cursor binds session, digest, epoch, iteration, and frame order.
+    /// Each payload `GateSchedule` should still be checked with
+    /// [`crate::validate_gate_schedule_binding`] before it is executed.
+    pub fn drive_schedule<T: Transport>(
+        &mut self,
+        manifest: &ScheduleManifest,
+        session_id: u64,
+        schedule_digest: [u8; 32],
+        transport: &mut T,
+        ot: &mut dyn OtChannel<N>,
+        mut round: impl FnMut(
+            &MpcScheduleFrame,
+            &mut Self,
+            &mut T,
+            &mut dyn OtChannel<N>,
+        ) -> Result<(), MpcError>,
+    ) -> Result<usize, MpcError> {
+        let mut cursor = MpcScheduleCursor::new(manifest, session_id, schedule_digest)
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        cursor.drive(MpcScheduleRole::Garbler, transport, |frame, transport| {
+            round(frame, self, transport, ot)
+        })
+    }
+
     fn fresh_base<D: Digest>(&mut self) -> Garble<N> {
         self.fresh += 1;
         let h = D::new()
@@ -825,6 +855,28 @@ impl<N: VoleArray<u8>, S: HeldMaterialStore<Eval<N>, N>> ChainEvaluator<N, S> {
     /// values through the chain protocol.
     pub fn into_held(self) -> S {
         self.held
+    }
+
+    /// Evaluator counterpart to [`ChainGarbler::drive_schedule`].
+    pub fn drive_schedule<T: Transport>(
+        &mut self,
+        manifest: &ScheduleManifest,
+        session_id: u64,
+        schedule_digest: [u8; 32],
+        transport: &mut T,
+        ot: &mut dyn OtChannel<N>,
+        mut round: impl FnMut(
+            &MpcScheduleFrame,
+            &mut Self,
+            &mut T,
+            &mut dyn OtChannel<N>,
+        ) -> Result<(), MpcError>,
+    ) -> Result<usize, MpcError> {
+        let mut cursor = MpcScheduleCursor::new(manifest, session_id, schedule_digest)
+            .map_err(|_| MpcError::MalformedSchedule)?;
+        cursor.drive(MpcScheduleRole::Evaluator, transport, |frame, transport| {
+            round(frame, self, transport, ot)
+        })
     }
 
     fn held_get<D: Digest>(
