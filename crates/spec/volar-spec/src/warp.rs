@@ -137,6 +137,16 @@ impl WarpTranscript {
         }
     }
 
+    /// Count-then-elements absorb over a slice — for capacity-plus-count
+    /// vectors (sumcheck polynomials) where the absorbed length is the
+    /// *count*, not the capacity. The oracle's `absorb_polynomial`.
+    pub fn absorb_field_slice(&mut self, values: &[Galois128]) {
+        self.absorb_usize(values.len());
+        for value in values {
+            self.absorb_field(*value);
+        }
+    }
+
     /// Squeeze `N` field elements from ONE XOF stream (16 LE bytes each) —
     /// byte-identical to the oracle's single `squeeze_bytes(16N)` + chunking
     /// (never N independent squeezes: each squeeze must advance one stream).
@@ -146,6 +156,23 @@ impl WarpTranscript {
             let mut bytes = [0u8; 16];
             reader.read(&mut bytes);
             Galois128(u128::from_le_bytes(bytes))
+        })
+    }
+
+    /// Squeeze an `R × C` grid of field elements from ONE XOF stream —
+    /// byte-identical to the oracle's single `squeeze_bytes(R*C*16)` +
+    /// chunking (used for the Construction 5.10 `tau_i` and the
+    /// Construction 7.2 out-of-domain points).
+    pub fn squeeze_field_grid<R: ArraySize, C: ArraySize>(
+        &self,
+    ) -> Array<Array<Galois128, C>, R> {
+        let mut reader = self.sponge.clone().finalize_xof();
+        Array::from_fn(|_| {
+            Array::from_fn(|_| {
+                let mut bytes = [0u8; 16];
+                reader.read(&mut bytes);
+                Galois128(u128::from_le_bytes(bytes))
+            })
         })
     }
 
@@ -760,6 +787,7 @@ pub struct WarpAcc<N: ArraySize, K: ArraySize, LOGN: ArraySize, BETA: ArraySize,
 pub struct WarpProof<
     FRESH: ArraySize,
     ELL: ArraySize,
+    A: ArraySize,
     S: ArraySize,
     SHIFTS: ArraySize,
     SC: ArraySize,
@@ -782,6 +810,8 @@ pub struct WarpProof<
     pub second_sumcheck: Array<WarpUni<SC>, LOGN>,
     /// One authentication path per shift query for the fresh commitment.
     pub initial_paths: Array<WarpAuthPath<LOGN>, SHIFTS>,
+    /// One path list per input accumulator, one path per shift query.
+    pub accumulator_paths: Array<Array<WarpAuthPath<LOGN>, SHIFTS>, A>,
     /// Query-major opened values: `openings[query][input]`.
     pub openings: Array<Array<Galois128, ELL>, SHIFTS>,
 }
@@ -1052,6 +1082,721 @@ mod tests {
         assert_eq!(
             warp_decide_spec(&index, &WarpIdentityCode, &acc),
             Err(WarpError::CommitmentMismatch)
+        );
+    }
+}
+
+// ============================================================================
+// The prover (W4) — Construction 10.4's P_ACC.
+// ============================================================================
+
+/// `eq`-weighted combination of `ELL` vectors by `point` (`log ELL`
+/// coordinates) — the oracle's `combine_vectors`.
+pub fn warp_combine_vectors<ELL, LOGL, LEN>(
+    items: &Array<Array<Galois128, LEN>, ELL>,
+    point: &Array<Galois128, LOGL>,
+) -> WarpResult<Array<Galois128, LEN>>
+where
+    ELL: ArraySize,
+    LOGL: ArraySize,
+    LEN: ArraySize,
+{
+    let weights = warp_eq_evals::<LOGL, ELL>(point)?;
+    let mut out = Array::<Galois128, LEN>::default();
+    for (item, weight) in items.iter().zip(weights.iter()) {
+        for (dst, value) in out.iter_mut().zip(item.iter()) {
+            *dst = *dst + *value * *weight;
+        }
+    }
+    Ok(out)
+}
+
+/// `prefix || [current] || binary(suffix)` — the oracle's `point_with_suffix`.
+fn warp_point_with_suffix<LOG: ArraySize>(
+    prefix: &[Galois128],
+    current: Galois128,
+    suffix: usize,
+    suffix_len: usize,
+) -> Array<Galois128, LOG> {
+    Array::from_fn(|i| {
+        if i < prefix.len() {
+            prefix[i]
+        } else if i == prefix.len() {
+            current
+        } else {
+            let bit = i - prefix.len() - 1;
+            if bit < suffix_len && (suffix >> bit) & 1 == 1 {
+                Galois128(1)
+            } else {
+                Galois128(0)
+            }
+        }
+    })
+}
+
+/// Construction 6.3's `G_hat` summand — the oracle's `evaluate_g`.
+fn warp_evaluate_g<M, TERMS, DEG, N, K, LOGN, BETA>(
+    index: &WarpIndex<M, TERMS, DEG>,
+    codeword: &Array<Galois128, N>,
+    witness: &Array<Galois128, K>,
+    alpha: &Array<Galois128, LOGN>,
+    beta: &Array<Galois128, BETA>,
+    omega: Galois128,
+) -> WarpResult<Galois128>
+where
+    M: ArraySize,
+    TERMS: ArraySize,
+    DEG: ArraySize,
+    N: ArraySize + Logarithm2,
+    K: ArraySize,
+    LOGN: ArraySize,
+    BETA: ArraySize,
+    Log2<N>: ArraySize,
+{
+    let evaluation = warp_mle_eval(codeword, alpha)?;
+    let bundled = index.evaluate_bundled(beta, witness)?;
+    Ok(evaluation + omega * bundled)
+}
+
+/// The Construction 8.2 eq-star sum — the oracle's `eq_star_at`.
+fn warp_eq_star_at<R, LOGR, LOGN>(
+    claim_points: &Array<Array<Galois128, LOGN>, R>,
+    xi: &Array<Galois128, LOGR>,
+    point: &Array<Galois128, LOGN>,
+) -> WarpResult<Galois128>
+where
+    R: ArraySize,
+    LOGR: ArraySize,
+    LOGN: ArraySize,
+{
+    if !is_pow2(R::USIZE) || LOGR::USIZE != log2_pow2(R::USIZE) as usize {
+        return Err(WarpError::ShapeMismatch);
+    }
+    let mut out = Galois128(0);
+    for (index, claim_point) in claim_points.iter().enumerate() {
+        let claim_index = warp_binary_point::<LOGR>(index);
+        let weight = warp_eq_scalar(xi, &claim_index) * warp_eq_scalar(claim_point, point);
+        out = out + weight;
+    }
+    Ok(out)
+}
+
+/// One first-sumcheck evaluation at `x` — the oracle's `first_sumcheck_eval`.
+#[allow(clippy::too_many_arguments)]
+fn warp_first_sumcheck_eval<M, TERMS, DEG, K, N, ELL, LOGL, LOGN, BETA>(
+    index: &WarpIndex<M, TERMS, DEG>,
+    codewords: &Array<Array<Galois128, N>, ELL>,
+    witnesses: &Array<Array<Galois128, K>, ELL>,
+    alphas: &Array<Array<Galois128, LOGN>, ELL>,
+    betas: &Array<Array<Galois128, BETA>, ELL>,
+    tau: &Array<Galois128, LOGL>,
+    omega: Galois128,
+    prefix: &[Galois128],
+    x: Galois128,
+) -> WarpResult<Galois128>
+where
+    M: ArraySize,
+    TERMS: ArraySize,
+    DEG: ArraySize,
+    K: ArraySize,
+    N: ArraySize + Logarithm2,
+    ELL: ArraySize,
+    LOGL: ArraySize,
+    LOGN: ArraySize,
+    BETA: ArraySize,
+    Log2<N>: ArraySize,
+{
+    let log_ell = log2_pow2(ELL::USIZE) as usize;
+    let round = prefix.len();
+    let suffix_len = log_ell - round - 1;
+    let mut out = Galois128(0);
+    for suffix in 0..(1usize << suffix_len) {
+        let point = warp_point_with_suffix::<LOGL>(prefix, x, suffix, suffix_len);
+        let codeword = warp_combine_vectors(codewords, &point)?;
+        let witness = warp_combine_vectors(witnesses, &point)?;
+        let alpha = warp_combine_vectors(alphas, &point)?;
+        let beta = warp_combine_vectors(betas, &point)?;
+        let g = warp_evaluate_g(index, &codeword, &witness, &alpha, &beta, omega)?;
+        out = out + warp_eq_scalar(tau, &point) * g;
+    }
+    Ok(out)
+}
+
+/// One second-sumcheck evaluation at `x` — the oracle's
+/// `second_sumcheck_eval`.
+fn warp_second_sumcheck_eval<N, R, LOGR, LOGN>(
+    codeword: &Array<Galois128, N>,
+    claim_points: &Array<Array<Galois128, LOGN>, R>,
+    xi: &Array<Galois128, LOGR>,
+    prefix: &[Galois128],
+    x: Galois128,
+) -> WarpResult<Galois128>
+where
+    N: ArraySize + Logarithm2,
+    R: ArraySize,
+    LOGR: ArraySize,
+    LOGN: ArraySize,
+    Log2<N>: ArraySize,
+{
+    let log_n = log2_pow2(N::USIZE) as usize;
+    let round = prefix.len();
+    let suffix_len = log_n - round - 1;
+    let mut out = Galois128(0);
+    for suffix in 0..(1usize << suffix_len) {
+        let point = warp_point_with_suffix::<LOGN>(prefix, x, suffix, suffix_len);
+        let eq = warp_eq_star_at(claim_points, xi, &point)?;
+        out = out + eq * warp_mle_eval(codeword, &point)?;
+    }
+    Ok(out)
+}
+
+/// The sumcheck link/target check — the oracle's `check_sumcheck`.
+pub fn warp_check_sumcheck<SC: ArraySize>(
+    polys: &[WarpUni<SC>],
+    initial_claim: Galois128,
+    challenges: &[Galois128],
+    final_claim: Galois128,
+) -> bool {
+    if polys.len() != challenges.len() {
+        return false;
+    }
+    if polys.is_empty() {
+        return initial_claim == final_claim;
+    }
+    if polys[0].at_zero() + polys[0].at_one() != initial_claim {
+        return false;
+    }
+    for round in 1..polys.len() {
+        let expected = polys[round - 1].evaluate(challenges[round - 1]);
+        if polys[round].at_zero() + polys[round].at_one() != expected {
+            return false;
+        }
+    }
+    match polys.last() {
+        Some(poly) => poly.evaluate(challenges[challenges.len() - 1]) == final_claim,
+        None => false,
+    }
+}
+
+/// Prove Construction 10.4 for fresh PESAT inputs plus prior accumulators.
+///
+/// Shape parameters are carried in types; every derived relation
+/// (`ELL = FRESH + A`, `R = 1 + S + SHIFTS`, `TW = log2(ELL) + 1`,
+/// `BETA = public_len + log2(M)`, `NODES = 2N - 1`, power-of-two `N`/`M`/
+/// `ELL`/`R`) is checked fail-closed at entry. The first-sumcheck degree is
+/// `1 + max(log n + 1, log M + degree_bound)` and must fit `SC - 1`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn warp_prove_spec<M, TERMS, DEG, K, X, N, FRESH, A, ELL, S, SHIFTS, R, SC, TW, NODES, BETA, C>(
+    index: &WarpIndex<M, TERMS, DEG>,
+    code: &C,
+    fresh: &Array<WarpWitness<K, X>, FRESH>,
+    accumulators: &Array<WarpAcc<N, K, Log2<N>, BETA, NODES>, A>,
+) -> WarpResult<(
+    WarpAcc<N, K, Log2<N>, BETA, NODES>,
+    WarpProof<FRESH, ELL, A, S, SHIFTS, SC, Log2<N>>,
+)>
+where
+    M: ArraySize + Logarithm2,
+    TERMS: ArraySize,
+    DEG: ArraySize,
+    K: ArraySize,
+    X: ArraySize,
+    N: ArraySize + Logarithm2,
+    FRESH: ArraySize,
+    A: ArraySize,
+    ELL: ArraySize + Logarithm2,
+    S: ArraySize,
+    SHIFTS: ArraySize,
+    R: ArraySize + Logarithm2,
+    SC: ArraySize,
+    TW: ArraySize,
+    NODES: ArraySize,
+    BETA: ArraySize,
+    C: WarpCode<K, N>,
+    Log2<M>: ArraySize,
+    Log2<N>: ArraySize,
+    Log2<ELL>: ArraySize,
+    Log2<R>: ArraySize,
+{
+    // ---- shape validation (the oracle's validate_input_shapes) ----
+    index.validate()?;
+    let log_n = log2_pow2(N::USIZE) as usize;
+    let log_m = index.log_constraints();
+    let log_ell = log2_pow2(ELL::USIZE) as usize;
+    if !is_pow2(N::USIZE)
+        || !is_pow2(ELL::USIZE)
+        || ELL::USIZE != FRESH::USIZE + A::USIZE
+        || FRESH::USIZE == 0
+        || !is_pow2(R::USIZE)
+        || R::USIZE != 1 + S::USIZE + SHIFTS::USIZE
+        || TW::USIZE != log_ell + 1
+        || BETA::USIZE != index.public_len + log_m
+        || K::USIZE != index.witness_len
+        || X::USIZE != index.public_len
+        || NODES::USIZE != 2 * N::USIZE - 1
+    {
+        return Err(WarpError::ShapeMismatch);
+    }
+    let first_degree = 1 + (log_n + 1).max(log_m + index.degree_bound);
+    if first_degree + 1 > SC::USIZE || 3 > SC::USIZE {
+        return Err(WarpError::ShapeMismatch);
+    }
+    for instance in fresh.iter() {
+        index.check_instance(instance)?;
+    }
+    for accumulator in accumulators.iter() {
+        if accumulator.witness.tree.root() != accumulator.instance.root {
+            return Err(WarpError::CommitmentMismatch);
+        }
+    }
+
+    // ---- transcript prefix ----
+    let fresh_publics = Array::<Array<Galois128, X>, FRESH>::from_fn(|i| fresh[i].public.clone());
+    let acc_instances =
+        Array::<WarpAccInstance<Log2<N>, BETA>, A>::from_fn(|i| accumulators[i].instance.clone());
+    let mut transcript = warp_transcript_for(index, &fresh_publics, &acc_instances);
+
+    // ---- Construction 5.10 + Remark 5.9: encode, commit, zerocheck ----
+    let fresh_codewords =
+        Array::<Array<Galois128, N>, FRESH>::from_fn(|i| code.encode(&fresh[i].witness));
+    let initial_tree = warp_commit_stacked::<N, FRESH, NODES>(&fresh_codewords)?;
+    let initial_root = initial_tree.root();
+    transcript.absorb_len_prefixed(&initial_root);
+
+    let taus: Array<Array<Galois128, Log2<M>>, FRESH> = transcript.squeeze_field_grid();
+    let zero_point_n = Array::<Galois128, Log2<N>>::default();
+    let fresh_mus = Array::<Galois128, FRESH>::from_fn(|i| {
+        warp_mle_eval(&fresh_codewords[i], &zero_point_n)
+            .expect("fresh codeword MLE at the zero point")
+    });
+
+    let mut alphas = Array::<Array<Galois128, Log2<N>>, ELL>::default();
+    let mut mus = Array::<Galois128, ELL>::default();
+    let mut betas = Array::<Array<Galois128, BETA>, ELL>::default();
+    let mut etas = Array::<Galois128, ELL>::default();
+    let mut codewords = Array::<Array<Galois128, N>, ELL>::default();
+    let mut witnesses = Array::<Array<Galois128, K>, ELL>::default();
+    for i in 0..FRESH::USIZE {
+        alphas[i] = Array::default();
+        mus[i] = fresh_mus[i];
+        let mut beta = Array::<Galois128, BETA>::default();
+        for j in 0..X::USIZE {
+            beta[j] = fresh[i].public[j];
+        }
+        for j in 0..log_m {
+            beta[X::USIZE + j] = taus[i][j];
+        }
+        betas[i] = beta;
+        etas[i] = Galois128(0);
+        codewords[i] = fresh_codewords[i].clone();
+        witnesses[i] = fresh[i].witness.clone();
+    }
+    transcript.absorb_fields(&fresh_mus);
+    for i in 0..A::USIZE {
+        let acc = &accumulators[i];
+        alphas[FRESH::USIZE + i] = acc.instance.alpha.clone();
+        mus[FRESH::USIZE + i] = acc.instance.mu;
+        betas[FRESH::USIZE + i] = acc.instance.beta.clone();
+        etas[FRESH::USIZE + i] = acc.instance.eta;
+        codewords[FRESH::USIZE + i] = acc.witness.codeword.clone();
+        witnesses[FRESH::USIZE + i] = acc.witness.witness.clone();
+    }
+
+    // ---- Construction 6.3 (inlined in 9.4): twin pseudo-batching ----
+    let tau_omega: Array<Galois128, TW> = transcript.squeeze_fields();
+    let tau = Array::<Galois128, Log2<ELL>>::from_fn(|i| tau_omega[i]);
+    let omega = tau_omega[TW::USIZE - 1];
+    let sigma1 = {
+        let eq_tau = warp_eq_evals::<Log2<ELL>, ELL>(&tau)?;
+        let mut out = Galois128(0);
+        for ((mu, eta), weight) in mus.iter().zip(etas.iter()).zip(eq_tau.iter()) {
+            out = out + *weight * (*mu + omega * *eta);
+        }
+        out
+    };
+
+    let mut first_sumcheck = Array::<WarpUni<SC>, Log2<ELL>>::from_fn(|_| WarpUni {
+        evaluations: Array::default(),
+        count: 0,
+    });
+    let mut gamma = Array::<Galois128, Log2<ELL>>::default();
+    for round in 0..log_ell {
+        let mut evals = Array::<Galois128, SC>::default();
+        for x in 0..=first_degree {
+            evals[x] = warp_first_sumcheck_eval(
+                index,
+                &codewords,
+                &witnesses,
+                &alphas,
+                &betas,
+                &tau,
+                omega,
+                &gamma[..round],
+                Galois128(x as u128),
+            )?;
+        }
+        let poly = WarpUni::<SC> {
+            evaluations: evals,
+            count: (first_degree + 1) as u32,
+        };
+        transcript.absorb_field_slice(&poly.evaluations[..poly.count as usize]);
+        gamma[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
+        first_sumcheck[round] = poly;
+    }
+    let zeta0 = warp_combine_vectors(&alphas, &gamma)?;
+    let beta = warp_combine_vectors(&betas, &gamma)?;
+    let folded_codeword = warp_combine_vectors(&codewords, &gamma)?;
+    let folded_witness = warp_combine_vectors(&witnesses, &gamma)?;
+    let nu0 = warp_mle_eval(&folded_codeword, &zeta0)?;
+    let eta = index.evaluate_bundled(&beta, &folded_witness)?;
+    if !warp_check_sumcheck(first_sumcheck.as_slice(), sigma1, &gamma, {
+        warp_eq_scalar(&tau, &gamma) * (nu0 + omega * eta)
+    }) {
+        return Err(WarpError::SumcheckMismatch);
+    }
+
+    // ---- Construction 7.2: commit, OOD samples, shift queries ----
+    let output_tree = warp_commit_codeword::<N, NODES>(&folded_codeword)?;
+    let output_root = output_tree.root();
+    transcript.absorb_len_prefixed(&output_root);
+    transcript.absorb_field(nu0);
+    transcript.absorb_field(eta);
+    let ood_points: Array<Array<Galois128, Log2<N>>, S> = transcript.squeeze_field_grid();
+    let ood_answers = Array::<Galois128, S>::from_fn(|i| {
+        warp_mle_eval(&folded_codeword, &ood_points[i]).expect("OOD MLE")
+    });
+    transcript.absorb_fields(&ood_answers);
+
+    let (shift_indices, xi): (Array<u32, SHIFTS>, Array<Galois128, Log2<R>>) =
+        transcript.squeeze_shift_and_xi(log_n as u32);
+    let mut claim_points = Array::<Array<Galois128, Log2<N>>, R>::default();
+    let mut claim_values = Array::<Galois128, R>::default();
+    claim_points[0] = zeta0.clone();
+    claim_values[0] = nu0;
+    for i in 0..S::USIZE {
+        claim_points[1 + i] = ood_points[i].clone();
+        claim_values[1 + i] = ood_answers[i];
+    }
+    for i in 0..SHIFTS::USIZE {
+        claim_points[1 + S::USIZE + i] = warp_binary_point(shift_indices[i] as usize);
+        claim_values[1 + S::USIZE + i] = folded_codeword[shift_indices[i] as usize];
+    }
+    let sigma2 = {
+        let eq_xi = warp_eq_evals::<Log2<R>, R>(&xi)?;
+        let mut out = Galois128(0);
+        for (value, weight) in claim_values.iter().zip(eq_xi.iter()) {
+            out = out + *value * *weight;
+        }
+        out
+    };
+
+    // ---- Construction 8.2: batch the claims into one ----
+    let mut second_sumcheck = Array::<WarpUni<SC>, Log2<N>>::from_fn(|_| WarpUni {
+        evaluations: Array::default(),
+        count: 0,
+    });
+    let mut alpha = Array::<Galois128, Log2<N>>::default();
+    for round in 0..log_n {
+        let mut evals = Array::<Galois128, SC>::default();
+        for x in 0..=2usize {
+            evals[x] = warp_second_sumcheck_eval(
+                &folded_codeword,
+                &claim_points,
+                &xi,
+                &alpha[..round],
+                Galois128(x as u128),
+            )?;
+        }
+        let poly = WarpUni::<SC> {
+            evaluations: evals,
+            count: 3,
+        };
+        transcript.absorb_field_slice(&poly.evaluations[..poly.count as usize]);
+        alpha[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
+        second_sumcheck[round] = poly;
+    }
+    let mu = warp_mle_eval(&folded_codeword, &alpha)?;
+    if !warp_check_sumcheck(second_sumcheck.as_slice(), sigma2, &alpha, {
+        let eq = warp_eq_star_at(&claim_points, &xi, &alpha)?;
+        mu * eq
+    }) {
+        return Err(WarpError::SumcheckMismatch);
+    }
+
+    // ---- openings ----
+    let initial_paths = Array::<WarpAuthPath<Log2<N>>, SHIFTS>::from_fn(|i| {
+        initial_tree.open(shift_indices[i] as usize)
+    });
+    let accumulator_paths = Array::<Array<WarpAuthPath<Log2<N>>, SHIFTS>, A>::from_fn(|i| {
+        Array::<WarpAuthPath<Log2<N>>, SHIFTS>::from_fn(|j| {
+            accumulators[i].witness.tree.open(shift_indices[j] as usize)
+        })
+    });
+    let openings = Array::<Array<Galois128, ELL>, SHIFTS>::from_fn(|j| {
+        Array::<Galois128, ELL>::from_fn(|i| codewords[i][shift_indices[j] as usize])
+    });
+
+    let accumulator = WarpAcc {
+        instance: WarpAccInstance {
+            root: output_root,
+            alpha,
+            mu,
+            beta,
+            eta,
+        },
+        witness: WarpAccWitness {
+            tree: output_tree,
+            codeword: folded_codeword,
+            witness: folded_witness,
+        },
+    };
+    let proof = WarpProof {
+        initial_root,
+        fresh_mus,
+        first_sumcheck,
+        nu0,
+        ood_answers,
+        second_sumcheck,
+        initial_paths,
+        accumulator_paths,
+        openings,
+    };
+    Ok((accumulator, proof))
+}
+
+#[cfg(test)]
+mod prove_tests {
+    use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use cipher::consts::*;
+
+    fn toy_index() -> WarpIndex<U1, U4, U2> {
+        let mk = |vars: [usize; 2], n_vars: u32| WarpTerm::<U2> {
+            coeff: Galois128(1),
+            vars: Array::from_fn(|i| vars[i]),
+            n_vars,
+        };
+        WarpIndex {
+            constraints: Array::from_fn(|_| WarpConstraint::<U4, U2> {
+                terms: Array::from_fn(|i| match i {
+                    0 => mk([0, 1], 2),
+                    1 => mk([2, 0], 1),
+                    2 => mk([3, 0], 1),
+                    _ => mk([0, 0], 0),
+                }),
+                n_terms: 3,
+            }),
+            public_len: 0,
+            witness_len: 4,
+            degree_bound: 2,
+        }
+    }
+
+    fn toy_witness(a: u128, b: u128, c: u128) -> WarpWitness<U4, U0> {
+        let d = Galois128(a) * Galois128(b) + Galois128(c);
+        WarpWitness {
+            public: Array::default(),
+            witness: Array::from_fn(|i| [Galois128(a), Galois128(b), Galois128(c), d][i]),
+        }
+    }
+
+    fn oracle_index() -> volar_iop::warp::PesatIndex<volar_primitives::Galois128> {
+        use volar_iop::warp::{PesatConstraint, PesatIndex, PesatTerm};
+        let mk = |vars: Vec<usize>| PesatTerm {
+            coeff: volar_primitives::Galois128(1),
+            vars,
+        };
+        PesatIndex {
+            constraints: vec![PesatConstraint {
+                terms: vec![mk(vec![0, 1]), mk(vec![2]), mk(vec![3])],
+            }],
+            public_len: 0,
+            witness_len: 4,
+            degree_bound: 2,
+        }
+    }
+
+    fn oracle_witness(w: &WarpWitness<U4, U0>) -> volar_iop::warp::PesatWitness<volar_primitives::Galois128> {
+        volar_iop::warp::PesatWitness {
+            public: Vec::new(),
+            witness: w.witness.to_vec(),
+        }
+    }
+
+    /// Two-fresh accumulation: the spec prover must match the oracle
+    /// byte-for-byte (roots, mus, both sumchecks, OOD answers, openings).
+    #[test]
+    fn prove_two_fresh_matches_the_oracle() {
+        let index = toy_index();
+        let fresh = Array::<WarpWitness<U4, U0>, U2>::from_fn(|i| {
+            if i == 0 { toy_witness(3, 5, 7) } else { toy_witness(9, 11, 13) }
+        });
+        let accumulators = Array::<WarpAcc<U4, U4, U2, U0, U7>, U0>::from_fn(|_| unreachable!("U0 is empty"));
+        let (acc, proof) = warp_prove_spec::<
+            U1, U4, U2, U4, U0, U4, U2, U0, U2, U1, U2, U4, U8, U2, U7, U0, _
+        >(&index, &WarpIdentityCode, &fresh, &accumulators)
+        .unwrap();
+        warp_decide_spec(&index, &WarpIdentityCode, &acc).unwrap();
+
+        let oacc = {
+            let ofresh: Vec<_> = fresh.iter().map(oracle_witness).collect();
+            volar_iop::warp::warp_prove(
+                &oracle_index(),
+                &volar_iop::warp::IdentityCode::new(4).unwrap(),
+                volar_iop::warp::WarpSampling {
+                    log_codeword_len: 2,
+                    out_of_domain: 1,
+                    shift_queries: 2,
+                },
+                &ofresh,
+                &[],
+            )
+            .unwrap()
+        };
+        let (oacc, oproof) = oacc;
+
+        assert_eq!(acc.instance.root.as_slice(), oacc.instance.root.as_slice());
+        assert_eq!(acc.instance.mu, oacc.instance.mu);
+        assert_eq!(acc.instance.eta, oacc.instance.eta);
+        assert_eq!(acc.instance.alpha.to_vec(), oacc.instance.alpha);
+        assert_eq!(acc.instance.beta.to_vec(), oacc.instance.beta);
+        assert_eq!(proof.initial_root.as_slice(), oproof.initial_root.as_slice());
+        assert_eq!(proof.fresh_mus.to_vec(), oproof.fresh_mus);
+        assert_eq!(proof.nu0, oproof.nu0);
+        assert_eq!(proof.ood_answers.to_vec(), oproof.ood_answers);
+        for (spec_poly, oracle_poly) in proof
+            .first_sumcheck
+            .iter()
+            .zip(oproof.first_sumcheck.iter())
+        {
+            assert_eq!(
+                spec_poly.evaluations[..spec_poly.count as usize].to_vec(),
+                oracle_poly.evaluations,
+                "first sumcheck polynomials must match the oracle"
+            );
+        }
+        for (spec_poly, oracle_poly) in proof
+            .second_sumcheck
+            .iter()
+            .zip(oproof.second_sumcheck.iter())
+        {
+            assert_eq!(
+                spec_poly.evaluations[..spec_poly.count as usize].to_vec(),
+                oracle_poly.evaluations,
+                "second sumcheck polynomials must match the oracle"
+            );
+        }
+        for (spec_row, oracle_row) in proof.openings.iter().zip(oproof.openings.iter()) {
+            assert_eq!(spec_row.to_vec(), *oracle_row);
+        }
+        for (spec_path, oracle_path) in proof
+            .initial_paths
+            .iter()
+            .zip(oproof.initial_paths.iter())
+        {
+            assert_eq!(
+                spec_path.siblings.iter().map(|s| s.as_slice()).collect::<Vec<_>>(),
+                oracle_path.siblings.iter().map(|s| s.as_slice()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    /// Genesis-then-accumulate: a prior accumulator folds with a fresh
+    /// statement, matching the oracle (FRESH=1, A=1, ELL=2).
+    #[test]
+    fn prove_with_prior_accumulator_matches_the_oracle() {
+        let index = toy_index();
+        let genesis = warp_genesis_spec::<_, _, _, _, _, U4, _, U7, U0>(
+            &index,
+            &WarpIdentityCode,
+            &toy_witness(17, 19, 23),
+        )
+        .unwrap();
+        let fresh = Array::<WarpWitness<U4, U0>, U1>::from_fn(|_| toy_witness(29, 31, 37));
+        let accumulators = Array::<WarpAcc<U4, U4, U2, U0, U7>, U1>::from_fn(|_| genesis.clone());
+        let (acc, _proof) = warp_prove_spec::<
+            U1, U4, U2, U4, U0, U4, U1, U1, U2, U1, U2, U4, U8, U2, U7, U0, _
+        >(&index, &WarpIdentityCode, &fresh, &accumulators)
+        .unwrap();
+        warp_decide_spec(&index, &WarpIdentityCode, &acc).unwrap();
+
+        let ogenesis = volar_iop::warp::warp_genesis(
+            &oracle_index(),
+            &volar_iop::warp::IdentityCode::new(4).unwrap(),
+            &oracle_witness(&toy_witness(17, 19, 23)),
+        )
+        .unwrap();
+        let ofresh = vec![oracle_witness(&toy_witness(29, 31, 37))];
+        let (oacc, _oproof) = volar_iop::warp::warp_prove(
+            &oracle_index(),
+            &volar_iop::warp::IdentityCode::new(4).unwrap(),
+            volar_iop::warp::WarpSampling {
+                log_codeword_len: 2,
+                out_of_domain: 1,
+                shift_queries: 2,
+            },
+            &ofresh,
+            &[ogenesis],
+        )
+        .unwrap();
+        assert_eq!(acc.instance.root.as_slice(), oacc.instance.root.as_slice());
+        assert_eq!(acc.instance.mu, oacc.instance.mu);
+        assert_eq!(acc.instance.eta, oacc.instance.eta);
+        assert_eq!(acc.instance.alpha.to_vec(), oacc.instance.alpha);
+    }
+
+    /// Repetition-code round trip (non-identity code), matching the oracle.
+    #[test]
+    fn prove_repetition_code_matches_the_oracle() {
+        let index = toy_index();
+        let fresh = Array::<WarpWitness<U4, U0>, U2>::from_fn(|i| {
+            if i == 0 { toy_witness(41, 43, 47) } else { toy_witness(53, 59, 61) }
+        });
+        let accumulators = Array::<WarpAcc<U8, U4, U3, U0, U15>, U0>::from_fn(|_| unreachable!("U0 is empty"));
+        // N=8 (U8), LOGN=U3, NODES=U15; R=U4, TW=U2, BETA=U0, SC=U8.
+        let (acc, _proof) = warp_prove_spec::<
+            U1, U4, U2, U4, U0, U8, U2, U0, U2, U1, U2, U4, U8, U2, U15, U0, _
+        >(&index, &WarpRepetitionCode, &fresh, &accumulators)
+        .unwrap();
+        warp_decide_spec(&index, &WarpRepetitionCode, &acc).unwrap();
+
+        let ofresh: Vec<_> = fresh.iter().map(oracle_witness).collect();
+        let (oacc, _oproof) = volar_iop::warp::warp_prove(
+            &oracle_index(),
+            &volar_iop::warp::RepetitionCode::new(4, 2).unwrap(),
+            volar_iop::warp::WarpSampling {
+                log_codeword_len: 3,
+                out_of_domain: 1,
+                shift_queries: 2,
+            },
+            &ofresh,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(acc.instance.root.as_slice(), oacc.instance.root.as_slice());
+        assert_eq!(acc.instance.mu, oacc.instance.mu);
+        assert_eq!(acc.instance.eta, oacc.instance.eta);
+    }
+
+    #[test]
+    fn unsatisfied_fresh_witness_is_rejected_before_proving() {
+        let index = toy_index();
+        let mut bad = toy_witness(3, 5, 7);
+        bad.witness[3] = bad.witness[3] + Galois128(1);
+        let fresh = Array::<WarpWitness<U4, U0>, U2>::from_fn(|i| {
+            if i == 0 { bad.clone() } else { toy_witness(9, 11, 13) }
+        });
+        let accumulators = Array::<WarpAcc<U4, U4, U2, U0, U7>, U0>::from_fn(|_| unreachable!("U0 is empty"));
+        assert_eq!(
+            warp_prove_spec::<U1, U4, U2, U4, U0, U4, U2, U0, U2, U1, U2, U4, U8, U2, U7, U0, _>(
+                &index,
+                &WarpIdentityCode,
+                &fresh,
+                &accumulators,
+            )
+            .unwrap_err(),
+            WarpError::UnsatisfiedPesat(0)
         );
     }
 }
