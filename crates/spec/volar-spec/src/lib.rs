@@ -11,6 +11,7 @@ pub mod byte_gen;
 pub mod curve;
 pub mod field_marker;
 pub mod fold;
+pub mod keccak;
 pub mod garble;
 pub mod lwe;
 pub mod mpc;

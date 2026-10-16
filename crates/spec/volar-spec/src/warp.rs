@@ -35,7 +35,8 @@ use cipher::typenum::{Logarithm2, Unsigned};
 
 use super::*;
 use crate::field::Galois128;
-use digest::{ExtendableOutput, FixedOutput, Update, XofReader};
+use crate::keccak::{SpecSponge, SHA3_256_RATE, SHAKE128_RATE};
+
 
 
 /// Type-level `log2` for the power-of-two size parameters WARP uses.
@@ -84,9 +85,14 @@ pub(crate) fn log2_pow2(n: usize) -> u32 {
 pub const WARP_TRANSCRIPT_DOMAIN: &[u8] = b"volar-iop/warp/eprint-2025-753/construction-10.4/v1";
 
 /// A running SHAKE128 sponge with the oracle's absorb/squeeze semantics.
+///
+/// The sponge is the spec Keccak ([`crate::keccak`]), so the whole WARP
+/// path lowers through LIR to VAFFLE without an extern hashing boundary;
+/// the byte schedule is pinned against the `sha3` crate by the keccak
+/// module's differential tests.
 #[derive(Clone)]
 pub struct WarpTranscript {
-    sponge: sha3::Shake128,
+    sponge: SpecSponge,
 }
 
 impl Default for WarpTranscript {
@@ -98,18 +104,18 @@ impl Default for WarpTranscript {
 impl WarpTranscript {
     pub fn new() -> Self {
         WarpTranscript {
-            sponge: sha3::Shake128::default(),
+            sponge: SpecSponge::new(SHAKE128_RATE),
         }
     }
 
     /// Absorb a domain-separation label (once, first).
     pub fn domain_sep(mut self, label: &[u8]) -> Self {
-        Update::update(&mut self.sponge, label);
+        self.sponge.absorb(label);
         self
     }
 
     pub fn absorb(&mut self, data: &[u8]) {
-        Update::update(&mut self.sponge, data);
+        self.sponge.absorb(data);
     }
 
     /// Length-prefixed absorb (`u64` LE length, then bytes) — the oracle's
@@ -151,7 +157,7 @@ impl WarpTranscript {
     /// byte-identical to the oracle's single `squeeze_bytes(16N)` + chunking
     /// (never N independent squeezes: each squeeze must advance one stream).
     pub fn squeeze_fields<N: ArraySize>(&self) -> Array<Galois128, N> {
-        let mut reader = self.sponge.clone().finalize_xof();
+        let mut reader = self.sponge.finalize_xof(0x1F);
         Array::from_fn(|_| {
             let mut bytes = [0u8; 16];
             reader.read(&mut bytes);
@@ -166,7 +172,7 @@ impl WarpTranscript {
     pub fn squeeze_field_grid<R: ArraySize, C: ArraySize>(
         &self,
     ) -> Array<Array<Galois128, C>, R> {
-        let mut reader = self.sponge.clone().finalize_xof();
+        let mut reader = self.sponge.finalize_xof(0x1F);
         Array::from_fn(|_| {
             Array::from_fn(|_| {
                 let mut bytes = [0u8; 16];
@@ -184,7 +190,7 @@ impl WarpTranscript {
         log_domain: u32,
     ) -> (Array<u32, SHIFTS>, Array<Galois128, LOGR>) {
         let index_bytes = ((log_domain as usize) + 7) / 8;
-        let mut reader = self.sponge.clone().finalize_xof();
+        let mut reader = self.sponge.finalize_xof(0x1F);
         let shifts = Array::<u32, SHIFTS>::from_fn(|_| {
             let mut value = 0usize;
             for position in 0..index_bytes.max(1) {
@@ -209,20 +215,26 @@ impl WarpTranscript {
 // ============================================================================
 
 pub(crate) fn warp_hash_leaf(parts: &[&[u8]]) -> WarpDigest {
-    let mut h = sha3::Sha3_256::new();
-    Digest::update(&mut h, [0x00]);
+    let mut h = SpecSponge::new(SHA3_256_RATE);
+    h.absorb(&[0x00]);
     for part in parts {
-        Digest::update(&mut h, part);
+        h.absorb(part);
     }
-    h.finalize_fixed()
+    let mut reader = h.finalize_xof(0x06);
+    let mut out = WarpDigest::default();
+    reader.read(&mut out);
+    out
 }
 
 pub(crate) fn warp_hash_node(left: &WarpDigest, right: &WarpDigest) -> WarpDigest {
-    let mut h = sha3::Sha3_256::new();
-    Digest::update(&mut h, [0x01]);
-    Digest::update(&mut h, left);
-    Digest::update(&mut h, right);
-    h.finalize_fixed()
+    let mut h = SpecSponge::new(SHA3_256_RATE);
+    h.absorb(&[0x01]);
+    h.absorb(left);
+    h.absorb(right);
+    let mut reader = h.finalize_xof(0x06);
+    let mut out = WarpDigest::default();
+    reader.read(&mut out);
+    out
 }
 
 /// A committed binary Merkle tree, nodes in level order (leaves first, root
@@ -358,12 +370,15 @@ where
 {
     // Streaming absorb is byte-identical to hashing the concatenated parts.
     let leaves = Array::<WarpDigest, N>::from_fn(|i| {
-        let mut h = sha3::Sha3_256::new();
-        Digest::update(&mut h, [0x00]);
+        let mut h = SpecSponge::new(SHA3_256_RATE);
+        h.absorb(&[0x00]);
         for codeword in codewords.iter() {
-            Digest::update(&mut h, codeword[i].0.to_le_bytes());
+            h.absorb(&codeword[i].0.to_le_bytes());
         }
-        h.finalize_fixed()
+        let mut reader = h.finalize_xof(0x06);
+        let mut out = WarpDigest::default();
+        reader.read(&mut out);
+        out
     });
     WarpMerkleTree::commit_leaves(&leaves)
 }
@@ -1819,12 +1834,15 @@ mod prove_tests {
 /// Hash one stacked fresh leaf: the concatenation of the first `FRESH`
 /// entries of an openings row (the oracle's fresh-leaf construction).
 fn warp_hash_fresh_row(row: &[Galois128]) -> WarpDigest {
-    let mut h = sha3::Sha3_256::new();
-    Digest::update(&mut h, [0x00]);
+    let mut h = SpecSponge::new(SHA3_256_RATE);
+    h.absorb(&[0x00]);
     for value in row {
-        Digest::update(&mut h, value.0.to_le_bytes());
+        h.absorb(&value.0.to_le_bytes());
     }
-    h.finalize_fixed()
+    let mut reader = h.finalize_xof(0x06);
+    let mut out = WarpDigest::default();
+    reader.read(&mut out);
+    out
 }
 
 /// Verify a Construction 10.4 accumulation proof.
