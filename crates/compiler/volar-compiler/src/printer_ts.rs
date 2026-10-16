@@ -3500,6 +3500,12 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         match self.ty {
             IrType::Primitive(p) => write!(f, "{}", ts_primitive(p))?,
+            // Marker-resolved field types emit as their marker-named class,
+            // mirroring the legacy `Galois*`/`Z3` primitives in
+            // `ts_primitive` (Display reverse-resolves the marker name).
+            IrType::ExtField { .. } | IrType::PrimeField { .. } => {
+                write!(f, "{}", self.ty)?;
+            }
             IrType::Vector { elem } => {
                 TsTypeWriter { ty: elem }.ts_fmt(f, cx)?;
                 write!(f, "[]")?;

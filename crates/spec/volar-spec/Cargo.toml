@@ -17,6 +17,7 @@ hybrid-array.workspace = true
 elliptic-curve = {workspace = true,features = ["arithmetic"]}
 volar-primitives = { git = "https://github.com/portal-co/volar.git" }
 volar-common = { git = "https://github.com/portal-co/volar.git" }
+volar-ir-common.workspace = true
 
 [dev-dependencies]
 proptest = "1"

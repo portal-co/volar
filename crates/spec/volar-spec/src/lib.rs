@@ -9,6 +9,7 @@ pub mod binfhe;
 pub mod bitgc;
 pub mod byte_gen;
 pub mod curve;
+pub mod field_marker;
 pub mod fold;
 pub mod garble;
 pub mod lwe;

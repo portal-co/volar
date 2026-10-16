@@ -245,6 +245,121 @@ mod native_type_tests {
 }
 
 #[cfg(test)]
+mod field_marker_tests {
+    use super::parse_source;
+    use crate::ir::{IrType, PrimitiveType};
+    use std::{format, string::ToString, vec, vec::Vec};
+
+    /// Parse one function's first parameter type out of the module.
+    fn first_param_type(source: &str) -> Result<IrType, crate::ir::CompilerError> {
+        let module = parse_source(source, "field_marker_test", &[])?;
+        Ok(module.functions[0].params[0].ty.clone())
+    }
+
+    #[test]
+    fn extension_field_marker_resolves_to_concrete_field_type() {
+        let ty = first_param_type("fn f(x: Gf2_128) -> Gf2_128 { x }").unwrap();
+        let IrType::ExtField {
+            wrapped,
+            degree,
+            irreducible,
+        } = &ty
+        else {
+            panic!("Gf2_128 must resolve to IrType::ExtField, got {ty:?}");
+        };
+        assert_eq!(wrapped.as_ref(), &IrType::Primitive(PrimitiveType::Bit));
+        assert_eq!(*degree, 128);
+        assert_eq!(
+            irreducible.as_slice(),
+            volar_ir_common::field_markers::GF2_128.irreducible
+        );
+    }
+
+    #[test]
+    fn prime_field_marker_resolves_to_concrete_field_type() {
+        let ty = first_param_type("fn f(x: Fp3) -> Fp3 { x }").unwrap();
+        assert_eq!(
+            ty,
+            IrType::PrimeField {
+                k: 2,
+                n: vec![1]
+            }
+        );
+    }
+
+    #[test]
+    fn qualified_marker_path_resolves_via_last_segment() {
+        let ty = first_param_type("fn f(x: field_marker::Gf2_8) -> field_marker::Gf2_8 { x }")
+            .unwrap();
+        let IrType::ExtField { degree: 8, .. } = &ty else {
+            panic!("qualified marker path must resolve to IrType::ExtField, got {ty:?}");
+        };
+    }
+
+    #[test]
+    fn unknown_reserved_marker_name_is_rejected() {
+        // Reserved namespace, unregistered marker: fail closed, never a
+        // silent TypeParam.
+        let err = first_param_type("fn f(x: Gf2_127) -> Gf2_127 { x }").unwrap_err();
+        assert!(
+            matches!(err, crate::ir::CompilerError::InvalidType(_)),
+            "expected InvalidType, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn marker_with_type_arguments_is_rejected() {
+        let err = first_param_type("fn f<T>(x: Gf2_128<T>) -> Gf2_128<T> { x }").unwrap_err();
+        assert!(
+            matches!(err, crate::ir::CompilerError::InvalidType(_)),
+            "expected InvalidType, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_primitives_resolve_identically_through_their_markers() {
+        // Back-compat alias check: each legacy PrimitiveType field variant's
+        // hardcoded lowering parameters equal its marker's registry entry.
+        // (Mirrors volar-lir-codegen's `primitive_to_lir` tables; the LIR
+        // equality check itself is M2.)
+        let cases: &[(PrimitiveType, u32, &[usize])] = &[
+            (PrimitiveType::Galois, 8, &[0, 1, 3, 4, 8]),
+            (PrimitiveType::Galois64, 64, &[0, 1, 3, 4, 64]),
+            (PrimitiveType::Galois128, 128, &[0, 1, 2, 7, 128]),
+            (PrimitiveType::Galois256, 256, &[0, 2, 5, 10, 256]),
+        ];
+        for (primitive, degree, exponents) in cases {
+            let marker_name = format!("Gf2_{degree}");
+            let spec = volar_ir_common::field_markers::resolve_ext_field_marker(&marker_name)
+                .unwrap_or_else(|| panic!("marker for {primitive} must be registered"));
+            assert_eq!(spec.degree, *degree);
+            let actual: Vec<usize> = spec
+                .irreducible
+                .iter()
+                .enumerate()
+                .filter_map(|(e, &c)| (c != 0).then_some(e))
+                .collect();
+            assert_eq!(
+                &actual,
+                exponents,
+                "marker {marker_name} must carry the same field as {primitive}"
+            );
+        }
+        // Z3's prime field is the Fp3 marker.
+        let spec = volar_ir_common::field_markers::resolve_prime_field_marker("Fp3").unwrap();
+        assert_eq!((spec.k, spec.n), (2, &[1][..]));
+    }
+
+    #[test]
+    fn marker_types_display_as_their_marker_name() {
+        let ty = first_param_type("fn f(x: Gf2_128) -> Gf2_128 { x }").unwrap();
+        assert_eq!(ty.to_string(), "Gf2_128");
+        let ty = first_param_type("fn f(x: Fp3) -> Fp3 { x }").unwrap();
+        assert_eq!(ty.to_string(), "Fp3");
+    }
+}
+
+#[cfg(test)]
 mod typed_integer_literal_tests {
     use super::parse_source;
     use crate::ir::{IrExprKind, IrStmtKind, IrType, PrimitiveType};
@@ -1004,6 +1119,38 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 return Ok(IrType::Primitive(prim));
             }
 
+            // Field markers: reserved names (`Gf2_<degree>`, `Fp<p>`) resolve
+            // to concrete field types via the volar-ir-common registry — the
+            // single source of truth for irreducibles/moduli. Markers are
+            // nullary: a reserved name is either a registered marker or a
+            // fail-closed error, never a silent `TypeParam`/struct fallback
+            // (a typo'd or parameterized marker must not compile).
+            if volar_ir_common::field_markers::is_reserved_marker_name(&name) {
+                if !matches!(&last.arguments, syn::PathArguments::None) {
+                    return Err(CompilerError::InvalidType(format!(
+                        "field marker {name} is nullary (no type arguments)"
+                    )));
+                }
+                if let Some(spec) = volar_ir_common::field_markers::resolve_ext_field_marker(&name)
+                {
+                    return Ok(IrType::ExtField {
+                        wrapped: Box::new(IrType::Primitive(PrimitiveType::Bit)),
+                        degree: spec.degree,
+                        irreducible: spec.irreducible.to_vec(),
+                    });
+                }
+                if let Some(spec) = volar_ir_common::field_markers::resolve_prime_field_marker(&name)
+                {
+                    return Ok(IrType::PrimeField {
+                        k: spec.k,
+                        n: spec.n.to_vec(),
+                    });
+                }
+                return Err(CompilerError::InvalidType(format!(
+                    "unknown field marker: {name} (registered markers are listed in volar_ir_common::field_markers)"
+                )));
+            }
+
             // Multi-segment generic paths (e.g. `Delta<N, U>` where `Delta`
             // has type args) must keep the args — a bare TypeParam would
             // silently drop the impl's own generic from operator-impl
@@ -1096,6 +1243,25 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 ))
             }
         }
+        // `dyn Trait` (e.g. `&mut dyn SpecRng` RNG parameters): the same
+        // opaque existential as `impl Trait` — an unsized, host-provided
+        // object; lowering already maps `Existential` to an opaque pointer.
+        Type::TraitObject(it) => Ok(IrType::Existential {
+            bounds: it
+                .bounds
+                .iter()
+                .map(|bound| {
+                    if let syn::TypeParamBound::Trait(tb) = bound {
+                        Ok(Some(convert_trait_bound(tb)?))
+                    } else {
+                        Ok(None)
+                    }
+                })
+                .collect::<Result<Vec<Option<_>>>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
+        }),
         Type::ImplTrait(it) => Ok(IrType::Existential {
             bounds: it
                 .bounds

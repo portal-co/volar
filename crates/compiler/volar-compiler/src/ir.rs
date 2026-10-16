@@ -1490,6 +1490,27 @@ pub struct IrClosureParam {
 ))]
 pub enum IrType {
     Primitive(PrimitiveType),
+    /// An extension-field element resolved from a **field marker** name
+    /// (`volar_ir_common::field_markers`): `GF(2^degree)` in polynomial
+    /// basis over `wrapped` with modulus `irreducible` (low coefficient
+    /// first, monic, length `degree + 1`). Marker resolution is fail-closed
+    /// in the parser; the six legacy `PrimitiveType` field variants remain
+    /// as aliases of their markers (lowering must produce the identical
+    /// `LirType`).
+    ExtField {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        wrapped: Box<IrType>,
+        degree: u32,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        irreducible: Vec<u64>,
+    },
+    /// A prime-field element resolved from a field marker: `p = 2^k - n`,
+    /// canonical per `volar_ir_common`'s `prime.rs` interning rules.
+    PrimeField {
+        k: u32,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
+        n: Vec<u64>,
+    },
     Array {
         kind: ArrayKind,
         #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
@@ -1571,6 +1592,20 @@ impl fmt::Display for IrType {
                     write!(f, ">")?;
                 }
                 Ok(())
+            }
+            Self::ExtField {
+                degree,
+                irreducible,
+                ..
+            } => match volar_ir_common::field_markers::ext_marker_name(*degree, irreducible) {
+                Some(name) => write!(f, "{}", name),
+                None => write!(f, "ExtField(d{})", degree),
+            },
+            Self::PrimeField { k, n } => {
+                match volar_ir_common::field_markers::prime_marker_name(*k, n) {
+                    Some(name) => write!(f, "{}", name),
+                    None => write!(f, "PrimeField(2^{} - {:?})", k, n),
+                }
             }
             Self::TypeParam(p) => write!(f, "{}", p),
             Self::Tuple(elems) => {
