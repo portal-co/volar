@@ -298,15 +298,15 @@ impl<NODES: ArraySize> WarpMerkleTree<NODES> {
     }
 }
 
-/// Verify that `leaf` (pre-hashed parts) is committed at `index` under
-/// `root` given `path`.
-pub fn warp_merkle_verify<LOG2_LEAVES: ArraySize>(
+/// Verify that `leaf_hash` (already leaf-hashed) is committed at `index`
+/// under `root` given `path`.
+pub fn warp_merkle_verify_hashed<LOG2_LEAVES: ArraySize>(
     root: &WarpDigest,
-    leaf_parts: &[&[u8]],
+    leaf_hash: &WarpDigest,
     index: usize,
     path: &WarpAuthPath<LOG2_LEAVES>,
 ) -> bool {
-    let mut cur = warp_hash_leaf(leaf_parts);
+    let mut cur = leaf_hash.clone();
     let mut idx = index;
     for sibling in path.siblings.iter() {
         cur = if idx % 2 == 0 {
@@ -317,6 +317,17 @@ pub fn warp_merkle_verify<LOG2_LEAVES: ArraySize>(
         idx /= 2;
     }
     cur == *root
+}
+
+/// Verify that `leaf` (raw parts, hashed here) is committed at `index`
+/// under `root` given `path`.
+pub fn warp_merkle_verify<LOG2_LEAVES: ArraySize>(
+    root: &WarpDigest,
+    leaf_parts: &[&[u8]],
+    index: usize,
+    path: &WarpAuthPath<LOG2_LEAVES>,
+) -> bool {
+    warp_merkle_verify_hashed(root, &warp_hash_leaf(leaf_parts), index, path)
 }
 
 /// Commit to one codeword: leaf `i` is the hash of element `i`'s 16 LE
@@ -994,7 +1005,7 @@ mod tests {
     fn toy_witness(a: u128, b: u128, c: u128) -> WarpWitness<U4, U0> {
         let d = Galois128(a) * Galois128(b) + Galois128(c);
         WarpWitness {
-            public: Array::default(),
+            public: Array::<Galois128, U0>::default(),
             witness: Array::from_fn(|i| [Galois128(a), Galois128(b), Galois128(c), d][i]),
         }
     }
@@ -1377,7 +1388,7 @@ where
     let mut codewords = Array::<Array<Galois128, N>, ELL>::default();
     let mut witnesses = Array::<Array<Galois128, K>, ELL>::default();
     for i in 0..FRESH::USIZE {
-        alphas[i] = Array::default();
+        alphas[i] = Array::<Galois128, Log2<N>>::default();
         mus[i] = fresh_mus[i];
         let mut beta = Array::<Galois128, BETA>::default();
         for j in 0..X::USIZE {
@@ -1416,7 +1427,7 @@ where
     };
 
     let mut first_sumcheck = Array::<WarpUni<SC>, Log2<ELL>>::from_fn(|_| WarpUni {
-        evaluations: Array::default(),
+        evaluations: Array::<Galois128, SC>::default(),
         count: 0,
     });
     let mut gamma = Array::<Galois128, Log2<ELL>>::default();
@@ -1492,7 +1503,7 @@ where
 
     // ---- Construction 8.2: batch the claims into one ----
     let mut second_sumcheck = Array::<WarpUni<SC>, Log2<N>>::from_fn(|_| WarpUni {
-        evaluations: Array::default(),
+        evaluations: Array::<Galois128, SC>::default(),
         count: 0,
     });
     let mut alpha = Array::<Galois128, Log2<N>>::default();
@@ -1596,7 +1607,7 @@ mod prove_tests {
     fn toy_witness(a: u128, b: u128, c: u128) -> WarpWitness<U4, U0> {
         let d = Galois128(a) * Galois128(b) + Galois128(c);
         WarpWitness {
-            public: Array::default(),
+            public: Array::<Galois128, U0>::default(),
             witness: Array::from_fn(|i| [Galois128(a), Galois128(b), Galois128(c), d][i]),
         }
     }
@@ -1797,6 +1808,480 @@ mod prove_tests {
             )
             .unwrap_err(),
             WarpError::UnsatisfiedPesat(0)
+        );
+    }
+}
+
+// ============================================================================
+// The verifier (W4) — Construction 10.4's V_ACC.
+// ============================================================================
+
+/// Hash one stacked fresh leaf: the concatenation of the first `FRESH`
+/// entries of an openings row (the oracle's fresh-leaf construction).
+fn warp_hash_fresh_row(row: &[Galois128]) -> WarpDigest {
+    let mut h = sha3::Sha3_256::new();
+    Digest::update(&mut h, [0x00]);
+    for value in row {
+        Digest::update(&mut h, value.0.to_le_bytes());
+    }
+    h.finalize_fixed()
+}
+
+/// Verify a Construction 10.4 accumulation proof.
+///
+/// Every shape the verifier relies on is carried in types (part of the
+/// verification key, compile-time fixed) and cross-checked fail-closed at
+/// entry — the verifier never infers a shape from prover-controlled data
+/// (the oracle's `WarpSampling::log_codeword_len` lesson: here `LOGN` comes
+/// from the proof/output *types*, which the caller picks).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn warp_verify_spec<M, TERMS, DEG, X, FRESH, A, ELL, S, SHIFTS, R, SC, TW, LOGN, BETA>(
+    index: &WarpIndex<M, TERMS, DEG>,
+    fresh_publics: &Array<Array<Galois128, X>, FRESH>,
+    input_accumulators: &Array<WarpAccInstance<LOGN, BETA>, A>,
+    output: &WarpAccInstance<LOGN, BETA>,
+    proof: &WarpProof<FRESH, ELL, A, S, SHIFTS, SC, LOGN>,
+) -> WarpResult<()>
+where
+    M: ArraySize + Logarithm2,
+    TERMS: ArraySize,
+    DEG: ArraySize,
+    X: ArraySize,
+    FRESH: ArraySize,
+    A: ArraySize,
+    ELL: ArraySize + Logarithm2,
+    S: ArraySize,
+    SHIFTS: ArraySize,
+    R: ArraySize + Logarithm2,
+    SC: ArraySize,
+    TW: ArraySize,
+    LOGN: ArraySize,
+    BETA: ArraySize,
+    Log2<M>: ArraySize,
+    Log2<ELL>: ArraySize,
+    Log2<R>: ArraySize,
+{
+    index.validate()?;
+    let log_m = index.log_constraints();
+    let log_ell = log2_pow2(ELL::USIZE) as usize;
+    let log_n = LOGN::USIZE;
+    if FRESH::USIZE == 0
+        || !is_pow2(ELL::USIZE)
+        || ELL::USIZE != FRESH::USIZE + A::USIZE
+        || !is_pow2(R::USIZE)
+        || R::USIZE != 1 + S::USIZE + SHIFTS::USIZE
+        || TW::USIZE != log_ell + 1
+        || BETA::USIZE != index.public_len + log_m
+        || X::USIZE != index.public_len
+    {
+        return Err(WarpError::ShapeMismatch);
+    }
+
+    // ---- transcript prefix ----
+    let mut transcript = warp_transcript_for(index, fresh_publics, input_accumulators);
+    transcript.absorb_len_prefixed(&proof.initial_root);
+    // log_m == 0 squeezes zero bytes here (the oracle's explicit skip).
+    let taus: Array<Array<Galois128, Log2<M>>, FRESH> = transcript.squeeze_field_grid();
+    transcript.absorb_fields(&proof.fresh_mus);
+
+    // ---- instance vectors (fresh then accumulators) ----
+    let mut alphas = Array::<Array<Galois128, LOGN>, ELL>::default();
+    let mut mus = Array::<Galois128, ELL>::default();
+    let mut betas = Array::<Array<Galois128, BETA>, ELL>::default();
+    let mut etas = Array::<Galois128, ELL>::default();
+    for i in 0..FRESH::USIZE {
+        mus[i] = proof.fresh_mus[i];
+        let mut beta = Array::<Galois128, BETA>::default();
+        for j in 0..X::USIZE {
+            beta[j] = fresh_publics[i][j];
+        }
+        for j in 0..log_m {
+            beta[X::USIZE + j] = taus[i][j];
+        }
+        betas[i] = beta;
+        etas[i] = Galois128(0);
+    }
+    for i in 0..A::USIZE {
+        let acc = &input_accumulators[i];
+        alphas[FRESH::USIZE + i] = acc.alpha.clone();
+        mus[FRESH::USIZE + i] = acc.mu;
+        betas[FRESH::USIZE + i] = acc.beta.clone();
+        etas[FRESH::USIZE + i] = acc.eta;
+    }
+
+    // ---- Construction 6.3: twin pseudo-batching ----
+    let tau_omega: Array<Galois128, TW> = transcript.squeeze_fields();
+    let tau = Array::<Galois128, Log2<ELL>>::from_fn(|i| tau_omega[i]);
+    let omega = tau_omega[TW::USIZE - 1];
+    let mut gamma = Array::<Galois128, Log2<ELL>>::default();
+    for (round, poly) in proof.first_sumcheck.iter().enumerate() {
+        transcript.absorb_field_slice(&poly.evaluations[..poly.count as usize]);
+        gamma[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
+    }
+    let sigma1 = {
+        let eq_tau = warp_eq_evals::<Log2<ELL>, ELL>(&tau)?;
+        let mut out = Galois128(0);
+        for ((mu, eta), weight) in mus.iter().zip(etas.iter()).zip(eq_tau.iter()) {
+            out = out + *weight * (*mu + omega * *eta);
+        }
+        out
+    };
+    let zeta0 = warp_combine_vectors(&alphas, &gamma)?;
+    let beta = warp_combine_vectors(&betas, &gamma)?;
+    if beta != output.beta {
+        return Err(WarpError::ShapeMismatch);
+    }
+    if !warp_check_sumcheck(proof.first_sumcheck.as_slice(), sigma1, &gamma, {
+        warp_eq_scalar(&tau, &gamma) * (proof.nu0 + omega * output.eta)
+    }) {
+        return Err(WarpError::SumcheckMismatch);
+    }
+
+    // ---- Construction 7.2 ----
+    transcript.absorb_len_prefixed(&output.root);
+    transcript.absorb_field(proof.nu0);
+    transcript.absorb_field(output.eta);
+    let ood_points: Array<Array<Galois128, LOGN>, S> = transcript.squeeze_field_grid();
+    transcript.absorb_fields(&proof.ood_answers);
+    let (shift_indices, xi): (Array<u32, SHIFTS>, Array<Galois128, Log2<R>>) =
+        transcript.squeeze_shift_and_xi(log_n as u32);
+
+    // Openings: fresh share one stacked commitment; each prior accumulator
+    // keeps its own root.
+    for (query, path) in proof.initial_paths.iter().enumerate() {
+        let row = &proof.openings[query];
+        let leaf = warp_hash_fresh_row(&row[..FRESH::USIZE]);
+        if !warp_merkle_verify_hashed(
+            &proof.initial_root,
+            &leaf,
+            shift_indices[query] as usize,
+            path,
+        ) {
+            return Err(WarpError::MerkleMismatch);
+        }
+    }
+    for (accumulator_index, paths) in proof.accumulator_paths.iter().enumerate() {
+        for (query, path) in paths.iter().enumerate() {
+            let value = proof.openings[query][FRESH::USIZE + accumulator_index];
+            let leaf = warp_hash_leaf(&[&value.0.to_le_bytes()]);
+            if !warp_merkle_verify_hashed(
+                &input_accumulators[accumulator_index].root,
+                &leaf,
+                shift_indices[query] as usize,
+                path,
+            ) {
+                return Err(WarpError::MerkleMismatch);
+            }
+        }
+    }
+
+    // ---- claim assembly ----
+    let mut claim_points = Array::<Array<Galois128, LOGN>, R>::default();
+    let mut claim_values = Array::<Galois128, R>::default();
+    claim_points[0] = zeta0;
+    claim_values[0] = proof.nu0;
+    for i in 0..S::USIZE {
+        claim_points[1 + i] = ood_points[i].clone();
+        claim_values[1 + i] = proof.ood_answers[i];
+    }
+    let eq_gamma = warp_eq_evals::<Log2<ELL>, ELL>(&gamma)?;
+    for i in 0..SHIFTS::USIZE {
+        claim_points[1 + S::USIZE + i] = warp_binary_point(shift_indices[i] as usize);
+        let row = &proof.openings[i];
+        let mut value = Galois128(0);
+        for (opening, weight) in row.iter().zip(eq_gamma.iter()) {
+            value = value + *opening * *weight;
+        }
+        claim_values[1 + S::USIZE + i] = value;
+    }
+    let sigma2 = {
+        let eq_xi = warp_eq_evals::<Log2<R>, R>(&xi)?;
+        let mut out = Galois128(0);
+        for (value, weight) in claim_values.iter().zip(eq_xi.iter()) {
+            out = out + *value * *weight;
+        }
+        out
+    };
+
+    // ---- Construction 8.2 ----
+    let mut alpha = Array::<Galois128, LOGN>::default();
+    for (round, poly) in proof.second_sumcheck.iter().enumerate() {
+        transcript.absorb_field_slice(&poly.evaluations[..poly.count as usize]);
+        alpha[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
+    }
+    if alpha != output.alpha {
+        return Err(WarpError::ShapeMismatch);
+    }
+    if !warp_check_sumcheck(proof.second_sumcheck.as_slice(), sigma2, &alpha, {
+        let eq = warp_eq_star_at(&claim_points, &xi, &output.alpha)?;
+        output.mu * eq
+    }) {
+        return Err(WarpError::SumcheckMismatch);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod verify_tests {
+    use super::*;
+    use cipher::consts::*;
+
+    fn toy_index() -> WarpIndex<U1, U4, U2> {
+        let mk = |vars: [usize; 2], n_vars: u32| WarpTerm::<U2> {
+            coeff: Galois128(1),
+            vars: Array::from_fn(|i| vars[i]),
+            n_vars,
+        };
+        WarpIndex {
+            constraints: Array::from_fn(|_| WarpConstraint::<U4, U2> {
+                terms: Array::from_fn(|i| match i {
+                    0 => mk([0, 1], 2),
+                    1 => mk([2, 0], 1),
+                    2 => mk([3, 0], 1),
+                    _ => mk([0, 0], 0),
+                }),
+                n_terms: 3,
+            }),
+            public_len: 0,
+            witness_len: 4,
+            degree_bound: 2,
+        }
+    }
+
+    fn toy_witness(a: u128, b: u128, c: u128) -> WarpWitness<U4, U0> {
+        let d = Galois128(a) * Galois128(b) + Galois128(c);
+        WarpWitness {
+            public: Array::<Galois128, U0>::default(),
+            witness: Array::from_fn(|i| [Galois128(a), Galois128(b), Galois128(c), d][i]),
+        }
+    }
+
+    /// The shared two-fresh shape: index, fresh inputs, empty accumulators.
+    fn two_fresh() -> (
+        WarpIndex<U1, U4, U2>,
+        Array<WarpWitness<U4, U0>, U2>,
+        WarpAcc<U4, U4, U2, U0, U7>,
+        WarpProof<U2, U2, U0, U1, U2, U8, U2>,
+    ) {
+        let index = toy_index();
+        let fresh = Array::<WarpWitness<U4, U0>, U2>::from_fn(|i| {
+            if i == 0 { toy_witness(3, 5, 7) } else { toy_witness(9, 11, 13) }
+        });
+        let accumulators = Array::<WarpAcc<U4, U4, U2, U0, U7>, U0>::from_fn(|_| unreachable!());
+        let (acc, proof) = warp_prove_spec::<
+            U1, U4, U2, U4, U0, U4, U2, U0, U2, U1, U2, U4, U8, U2, U7, U0, _
+        >(&index, &WarpIdentityCode, &fresh, &accumulators)
+        .unwrap();
+        (index, fresh, acc, proof)
+    }
+
+    fn verify_two_fresh(
+        index: &WarpIndex<U1, U4, U2>,
+        fresh: &Array<WarpWitness<U4, U0>, U2>,
+        acc: &WarpAcc<U4, U4, U2, U0, U7>,
+        proof: &WarpProof<U2, U2, U0, U1, U2, U8, U2>,
+    ) -> WarpResult<()> {
+        let fresh_publics = Array::<Array<Galois128, U0>, U2>::default();
+        let inputs = Array::<WarpAccInstance<U2, U0>, U0>::from_fn(|_| unreachable!("U0 is empty"));
+        warp_verify_spec::<U1, U4, U2, U0, U2, U0, U2, U1, U2, U4, U8, U2, U2, U0>(
+            index,
+            &fresh_publics,
+            &inputs,
+            &acc.instance,
+            proof,
+        )
+    }
+
+    #[test]
+    fn honest_two_fresh_verifies() {
+        let (index, fresh, acc, proof) = two_fresh();
+        verify_two_fresh(&index, &fresh, &acc, &proof).unwrap();
+        warp_decide_spec(&index, &WarpIdentityCode, &acc).unwrap();
+    }
+
+    #[test]
+    fn tampered_first_sumcheck_is_rejected() {
+        let (index, fresh, acc, mut proof) = two_fresh();
+        proof.first_sumcheck[0].evaluations[0] =
+            proof.first_sumcheck[0].evaluations[0] + Galois128(1);
+        assert_eq!(
+            verify_two_fresh(&index, &fresh, &acc, &proof),
+            Err(WarpError::SumcheckMismatch)
+        );
+    }
+
+    #[test]
+    fn tampered_merkle_path_is_rejected() {
+        let (index, fresh, acc, mut proof) = two_fresh();
+        proof.initial_paths[0].siblings[0][0] ^= 1;
+        assert_eq!(
+            verify_two_fresh(&index, &fresh, &acc, &proof),
+            Err(WarpError::MerkleMismatch)
+        );
+    }
+
+    #[test]
+    fn tampered_output_root_is_rejected() {
+        let (index, fresh, mut acc, proof) = two_fresh();
+        acc.instance.root[0] ^= 1;
+        assert!(verify_two_fresh(&index, &fresh, &acc, &proof).is_err());
+    }
+
+    #[test]
+    fn tampered_output_alpha_is_rejected() {
+        let (index, fresh, mut acc, proof) = two_fresh();
+        acc.instance.alpha[0] = acc.instance.alpha[0] + Galois128(1);
+        assert!(verify_two_fresh(&index, &fresh, &acc, &proof).is_err());
+    }
+}
+
+#[cfg(test)]
+mod public_tests {
+    use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use cipher::consts::*;
+
+    /// Two constraints over one public input: `x*w0 + w1 = 0` and
+    /// `x + w2 + w3 = 0` — the oracle's `public_index` (M=2, so log_m=1 and
+    /// the `tau` squeeze is exercised).
+    fn public_index() -> WarpIndex<U2, U4, U2> {
+        let mk = |vars: [usize; 2], n_vars: u32| WarpTerm::<U2> {
+            coeff: Galois128(1),
+            vars: Array::from_fn(|i| vars[i]),
+            n_vars,
+        };
+        WarpIndex {
+            constraints: Array::from_fn(|c| match c {
+                0 => WarpConstraint::<U4, U2> {
+                    terms: Array::from_fn(|i| match i {
+                        0 => mk([0, 1], 2),
+                        1 => mk([2, 0], 1),
+                        _ => mk([0, 0], 0),
+                    }),
+                    n_terms: 2,
+                },
+                _ => WarpConstraint::<U4, U2> {
+                    terms: Array::from_fn(|i| match i {
+                        0 => mk([0, 0], 1),
+                        1 => mk([3, 0], 1),
+                        2 => mk([4, 0], 1),
+                        _ => mk([0, 0], 0),
+                    }),
+                    n_terms: 3,
+                },
+            }),
+            public_len: 1,
+            witness_len: 4,
+            degree_bound: 2,
+        }
+    }
+
+    fn public_witness(x: u128, w0: u128, w2: u128) -> WarpWitness<U4, U1> {
+        let (x, w0, w2) = (Galois128(x), Galois128(w0), Galois128(w2));
+        let w1 = x * w0;
+        let w3 = x + w2;
+        WarpWitness {
+            public: Array::from_fn(|_| x),
+            witness: Array::from_fn(|i| [w0, w1, w2, w3][i]),
+        }
+    }
+
+    #[test]
+    fn public_inputs_and_multi_constraint_bundling_match_the_oracle() {
+        let index = public_index();
+        let fresh = Array::<WarpWitness<U4, U1>, U2>::from_fn(|i| {
+            if i == 0 {
+                public_witness(5, 7, 11)
+            } else {
+                public_witness(13, 17, 19)
+            }
+        });
+        let accumulators =
+            Array::<WarpAcc<U4, U4, U2, U2, U7>, U0>::from_fn(|_| unreachable!("U0 is empty"));
+        // BETA = public_len + log2(M) = 1 + 1 = 2.
+        let (acc, proof) = warp_prove_spec::<
+            U2, U4, U2, U4, U1, U4, U2, U0, U2, U1, U2, U4, U8, U2, U7, U2, _
+        >(&index, &WarpIdentityCode, &fresh, &accumulators)
+        .unwrap();
+        warp_decide_spec(&index, &WarpIdentityCode, &acc).unwrap();
+
+        let fresh_publics =
+            Array::<Array<Galois128, U1>, U2>::from_fn(|i| fresh[i].public.clone());
+        let inputs =
+            Array::<WarpAccInstance<U2, U2>, U0>::from_fn(|_| unreachable!("U0 is empty"));
+        warp_verify_spec::<U2, U4, U2, U1, U2, U0, U2, U1, U2, U4, U8, U2, U2, U2>(
+            &index,
+            &fresh_publics,
+            &inputs,
+            &acc.instance,
+            &proof,
+        )
+        .unwrap();
+
+        // Oracle differential.
+        let oracle_index = {
+            use volar_iop::warp::{PesatConstraint, PesatIndex, PesatTerm};
+            let mk = |vars: Vec<usize>| PesatTerm {
+                coeff: volar_primitives::Galois128(1),
+                vars,
+            };
+            PesatIndex {
+                constraints: vec![
+                    PesatConstraint {
+                        terms: vec![mk(vec![0, 1]), mk(vec![2])],
+                    },
+                    PesatConstraint {
+                        terms: vec![mk(vec![0]), mk(vec![3]), mk(vec![4])],
+                    },
+                ],
+                public_len: 1,
+                witness_len: 4,
+                degree_bound: 2,
+            }
+        };
+        let ofresh: Vec<_> = fresh
+            .iter()
+            .map(|w| volar_iop::warp::PesatWitness {
+                public: w.public.to_vec(),
+                witness: w.witness.to_vec(),
+            })
+            .collect();
+        let (oacc, _oproof) = volar_iop::warp::warp_prove(
+            &oracle_index,
+            &volar_iop::warp::IdentityCode::new(4).unwrap(),
+            volar_iop::warp::WarpSampling {
+                log_codeword_len: 2,
+                out_of_domain: 1,
+                shift_queries: 2,
+            },
+            &ofresh,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(acc.instance.root.as_slice(), oacc.instance.root.as_slice());
+        assert_eq!(acc.instance.mu, oacc.instance.mu);
+        assert_eq!(acc.instance.eta, oacc.instance.eta);
+        assert_eq!(acc.instance.beta.to_vec(), oacc.instance.beta);
+
+        // Wrong public input must reject.
+        let wrong_publics = Array::<Array<Galois128, U1>, U2>::from_fn(|i| {
+            if i == 0 {
+                Array::from_fn(|_| Galois128(23))
+            } else {
+                fresh[i].public.clone()
+            }
+        });
+        assert!(
+            warp_verify_spec::<U2, U4, U2, U1, U2, U0, U2, U1, U2, U4, U8, U2, U2, U2>(
+                &index,
+                &wrong_publics,
+                &inputs,
+                &acc.instance,
+                &proof,
+            )
+            .is_err(),
+            "changing a public input must change the transcript and reject"
         );
     }
 }
