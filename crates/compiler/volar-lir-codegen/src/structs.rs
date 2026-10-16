@@ -880,6 +880,24 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             }
         }
 
+        // Marker-resolved field types lower to the same LIR field types the
+        // legacy primitives produce — the alias made concrete (the M1
+        // back-compat test in volar-compiler's `field_marker_tests` pins the
+        // parameter equality against `primitive_to_lir`'s tables).
+        IrType::ExtField {
+            wrapped,
+            degree,
+            irreducible,
+        } => LirType::ExtField {
+            wrapped: Box::new(ir_type_to_lir_inner(wrapped, registry)),
+            degree: *degree,
+            irreducible: irreducible.clone(),
+        },
+        IrType::PrimeField { k, n } => LirType::PrimeField {
+            k: *k,
+            n: n.clone(),
+        },
+
         // `impl Trait` / `dyn Trait` (e.g. `R: SpecRng` RNG parameters):
         // host-provided state passed by reference; an opaque pointer is the
         // LIR value representation.
