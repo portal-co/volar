@@ -1436,6 +1436,61 @@ mod tests {
         }
     }
 
+    /// §5.4: WARP accumulates over the VOLE field `Galois128`. This oracle
+    /// instance is the differential reference for the `volar-spec` port.
+    #[test]
+    fn oracle_runs_over_the_vole_field() {
+        type F = volar_primitives::Galois128;
+        let f = |v: u64| volar_primitives::Galois128(v as u128);
+        let index = PesatIndex {
+            constraints: vec![PesatConstraint {
+                terms: vec![
+                    PesatTerm {
+                        coeff: f(1),
+                        vars: vec![0, 1],
+                    },
+                    PesatTerm {
+                        coeff: f(1),
+                        vars: vec![2],
+                    },
+                    PesatTerm {
+                        coeff: f(1),
+                        vars: vec![3],
+                    },
+                ],
+            }],
+            public_len: 0,
+            witness_len: 4,
+            degree_bound: 2,
+        };
+        let witness = |a: u64, b: u64, c: u64| {
+            let d = f(a).mul(&f(b)).add(&f(c));
+            PesatWitness {
+                public: Vec::new(),
+                witness: vec![f(a), f(b), f(c), d],
+            }
+        };
+        let code = IdentityCode::new(4).unwrap();
+        let sampling = WarpSampling {
+            log_codeword_len: 2,
+            out_of_domain: 1,
+            shift_queries: 2,
+        };
+        let fresh = vec![witness(3, 5, 7), witness(9, 11, 13)];
+        let (accumulator, proof) = warp_prove(&index, &code, sampling, &fresh, &[]).unwrap();
+        let publics: Vec<Vec<F>> = fresh.iter().map(|item| item.public.clone()).collect();
+        warp_verify(
+            &index,
+            sampling,
+            &publics,
+            &[],
+            &accumulator.instance,
+            &proof,
+        )
+        .unwrap();
+        warp_decide(&index, &code, &accumulator).unwrap();
+    }
+
     #[test]
     fn honest_two_fresh_accumulation_proves_verifies_and_decides() {
         let index = toy_index();

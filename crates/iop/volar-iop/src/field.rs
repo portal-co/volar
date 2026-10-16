@@ -115,6 +115,27 @@ impl Field for Galois {
     }
 }
 
+/// The VOLE field GF(2^128) (GCM polynomial `x^128 + x^7 + x^2 + x + 1`) as
+/// a WARP accumulation field — the plan's §5.4 decision (volar-ir's
+/// `docs/warp-vole-verifier-zksnark-plan.md`): WARP accumulates over the
+/// VOLE field directly, and oracle-vs-spec differentials run the
+/// `crate::warp` oracle over this impl.
+impl Field for volar_primitives::Galois128 {
+    const BITS: u32 = 128;
+    const ZERO: Self = volar_primitives::Galois128(0);
+    const ONE: Self = volar_primitives::Galois128(1);
+
+    fn add(&self, rhs: &Self) -> Self {
+        volar_primitives::Galois128(self.0 ^ rhs.0)
+    }
+    fn mul(&self, rhs: &Self) -> Self {
+        (*self) * (*rhs)
+    }
+    fn to_bytes(&self) -> alloc::vec::Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+}
+
 /// One quadratic-extension tower level: `F[x]/(x^2 + x + BETA)`, elements
 /// `lo + hi·x`. `BETA` is an `F`-element (see the module doc for how it was
 /// derived and verified).

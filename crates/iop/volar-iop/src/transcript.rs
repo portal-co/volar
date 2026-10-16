@@ -171,6 +171,17 @@ impl FromBytes for volar_primitives::Galois {
     }
 }
 
+impl FromBytes for volar_primitives::Galois128 {
+    /// Exactly 16 bytes, little-endian (matching `Field::to_bytes`).
+    ///
+    /// Callers must zero-pad shorter values themselves — a short slice
+    /// would silently truncate the field element's high half.
+    fn from_bytes(bytes: &[u8]) -> Self {
+        assert_eq!(bytes.len(), 16, "Galois128::from_bytes needs 16 bytes");
+        volar_primitives::Galois128(u128::from_le_bytes(bytes.try_into().unwrap()))
+    }
+}
+
 impl<F: Field + FromBytes, B: crate::field::BetaOf<F>> FromBytes for crate::field::Ext<F, B> {
     fn from_bytes(bytes: &[u8]) -> Self {
         let half = bytes.len() / 2;
