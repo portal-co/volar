@@ -7,29 +7,37 @@
 //!
 //! This module is the single-source-of-truth port of
 //! `volar-iop`'s `warp.rs` oracle: same transcript byte schedule, same
-//! domain separators, same Merkle layout — the differential tests in
-//! `volar-lir-codegen`/`volar-iop` pin byte-for-byte agreement over
-//! `Galois128` (the §5.4 field decision in `volar-ir`'s
-//! `docs/warp-vole-verifier-zksnark-plan.md`). Differences from the oracle
-//! are representational only:
+//! domain separators, same Merkle layout — the differential tests pin
+//! byte-for-byte agreement over `Galois128` (the §5.4 field decision in
+//! `volar-ir`'s `docs/warp-vole-verifier-zksnark-plan.md`). Differences from
+//! the oracle are representational only:
 //!
 //! - concrete `Galois128` instead of a generic `Field` (the tower stays an
 //!   oracle-side test fixture);
 //! - `Array<T, N>` typenum sizing instead of `Vec` (the spec subset bans
 //!   `Vec`; see `volar-compiler-passes`' `vec_lint`);
+//! - **total functions**: the spec dialect has no `Result` construction and
+//!   no `panic!`, so errors become `Option` (construction boundaries:
+//!   genesis/prove) or `bool` (verify/decide — the verifier-as-computation
+//!   accept bit). Rejection is fail-closed: verify returns `false`, the
+//!   constructors return `None`;
 //! - capacity-plus-count bounded vectors (`WarpTerm.vars`,
-//!   `WarpConstraint.terms`, `WarpUni.evals`) with fail-closed count checks
-//!   instead of growable vectors;
+//!   `WarpConstraint.terms`, `WarpUni.evals`) with boundary checks instead of
+//!   growable vectors;
 //! - Merkle trees restricted to power-of-two leaf counts (every WARP use —
 //!   `n` codeword positions — is a power of two; the oracle's pad-by-
 //!   duplicate path is unreachable here);
 //! - the `Log2<N>` type-level logarithm (`typenum::Logarithm2`) sizes
-//!   evaluation points, with runtime power-of-two checks at every boundary.
+//!   evaluation points.
+//!
+//! Type-level shape invariants (`ELL = FRESH + A`, `R = 1 + S + SHIFTS`,
+//! `BETA = public_len + log2(M)`, `NODES = 2N - 1`, power-of-two `N`/`M`/
+//! `ELL`/`R`) are checked at the boundary functions and trusted inside.
 //!
 //! Like the oracle, this is a construction-faithful algebraic reference: the
-//! bundled `IdentityCode`/`RepetitionCode` fixtures carry no proximity
-//! soundness claim, and parameter selection against the paper's bounds is a
-//! separate reviewed step.
+//! bundled `WarpIdentityCode`/`WarpRepetitionCode` fixtures carry no
+//! proximity soundness claim, and parameter selection against the paper's
+//! bounds is a separate reviewed step.
 
 use cipher::typenum::{Logarithm2, Unsigned};
 
@@ -37,42 +45,18 @@ use super::*;
 use crate::field::Galois128;
 use crate::keccak::{SpecSponge, SHA3_256_RATE, SHAKE128_RATE};
 
-
-
 /// Type-level `log2` for the power-of-two size parameters WARP uses.
 pub type Log2<N> = <N as Logarithm2>::Output;
 
 /// A 32-byte SHA3-256 digest (the dialect's native array form).
 pub type WarpDigest = Array<u8, cipher::consts::U32>;
 
-/// Errors returned by the spec WARP construction — mirroring the oracle's
-/// `WarpError` variants one-for-one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WarpError {
-    /// The PESAT index is malformed or exceeds its degree bound.
-    MalformedIndex,
-    /// An input, witness, codeword, proof, or accumulator has the wrong shape.
-    ShapeMismatch,
-    /// A dimension that the paper requires to be a power of two is not.
-    NonPowerOfTwo,
-    /// A fresh PESAT witness does not satisfy a constraint (constraint index).
-    UnsatisfiedPesat(u32),
-    /// A sumcheck link or final target check failed.
-    SumcheckMismatch,
-    /// A Merkle path did not verify against the bound root.
-    MerkleMismatch,
-    /// The accumulator witness does not match its public commitment.
-    CommitmentMismatch,
-}
-
-pub type WarpResult<T> = Result<T, WarpError>;
-
 pub(crate) fn is_pow2(n: usize) -> bool {
     n != 0 && n.is_power_of_two()
 }
 
-pub(crate) fn log2_pow2(n: usize) -> u32 {
-    n.trailing_zeros()
+pub(crate) fn log2_pow2(n: usize) -> usize {
+    n.trailing_zeros() as usize
 }
 
 // ============================================================================
@@ -138,18 +122,19 @@ impl WarpTranscript {
     /// Count-then-elements absorb — the oracle's `absorb_field_vec`.
     pub fn absorb_fields<N: ArraySize>(&mut self, values: &Array<Galois128, N>) {
         self.absorb_usize(N::USIZE);
-        for value in values.iter() {
-            self.absorb_field(*value);
+        for i in 0..N::USIZE {
+            self.absorb_field(values[i]);
         }
     }
 
-    /// Count-then-elements absorb over a slice — for capacity-plus-count
-    /// vectors (sumcheck polynomials) where the absorbed length is the
-    /// *count*, not the capacity. The oracle's `absorb_polynomial`.
-    pub fn absorb_field_slice(&mut self, values: &[Galois128]) {
-        self.absorb_usize(values.len());
-        for value in values {
-            self.absorb_field(*value);
+    /// Absorb one sumcheck polynomial: the count prefix then the fields —
+    /// the oracle's `absorb_polynomial`. `CNT` is the polynomial's
+    /// evaluation count (a shape constant: first-degree+1 or 3), so the
+    /// loop bound is concrete; the boundary check ties it to `poly.count`.
+    pub fn absorb_poly<SC: ArraySize, CNT: ArraySize>(&mut self, poly: &WarpUni<SC>) {
+        self.absorb_usize(CNT::USIZE);
+        for i in 0..CNT::USIZE {
+            self.absorb_field(poly.evaluations[i]);
         }
     }
 
@@ -187,9 +172,9 @@ impl WarpTranscript {
     /// oracle's `squeeze_shift_and_xi`.
     pub fn squeeze_shift_and_xi<SHIFTS: ArraySize, LOGR: ArraySize>(
         &self,
-        log_domain: u32,
+        log_domain: usize,
     ) -> (Array<u32, SHIFTS>, Array<Galois128, LOGR>) {
-        let index_bytes = ((log_domain as usize) + 7) / 8;
+        let index_bytes = (log_domain + 7) / 8;
         let mut reader = self.sponge.finalize_xof(0x1F);
         let shifts = Array::<u32, SHIFTS>::from_fn(|_| {
             let mut value = 0usize;
@@ -214,11 +199,11 @@ impl WarpTranscript {
 // leaf counts only (see module doc).
 // ============================================================================
 
-pub(crate) fn warp_hash_leaf(parts: &[&[u8]]) -> WarpDigest {
+pub(crate) fn warp_hash_leaf_parts(parts: &[&[u8]]) -> WarpDigest {
     let mut h = SpecSponge::new(SHA3_256_RATE);
     h.absorb(&[0x00]);
-    for part in parts {
-        h.absorb(part);
+    for i in 0..parts.len() {
+        h.absorb(parts[i]);
     }
     let mut reader = h.finalize_xof(0x06);
     let mut out = WarpDigest::default();
@@ -238,7 +223,8 @@ pub(crate) fn warp_hash_node(left: &WarpDigest, right: &WarpDigest) -> WarpDiges
 }
 
 /// A committed binary Merkle tree, nodes in level order (leaves first, root
-/// last). `leaves` must be a power of two and `NODES == 2 * leaves - 1`.
+/// last). `leaves` must be a power of two and `NODES == 2 * leaves - 1`
+/// (checked by the boundary functions).
 #[derive(Clone, Debug)]
 pub struct WarpMerkleTree<NODES: ArraySize> {
     /// Number of committed leaves (a power of two).
@@ -254,33 +240,35 @@ pub struct WarpAuthPath<LOG2_LEAVES: ArraySize> {
 }
 
 impl<NODES: ArraySize> WarpMerkleTree<NODES> {
-    /// Commit to pre-hashed leaves in level order.
-    pub fn commit_leaves<LEAVES: ArraySize>(
-        leaves: &Array<WarpDigest, LEAVES>,
-    ) -> WarpResult<Self> {
-        if !is_pow2(LEAVES::USIZE) || NODES::USIZE != 2 * LEAVES::USIZE - 1 {
-            return Err(WarpError::ShapeMismatch);
-        }
+    /// Commit to pre-hashed leaves in level order. Requires `LEAVES` a power
+    /// of two and `NODES == 2 * LEAVES - 1` (boundary-checked).
+    pub fn commit_leaves<LEAVES: ArraySize>(leaves: &Array<WarpDigest, LEAVES>) -> Self {
         let mut nodes = Array::<WarpDigest, NODES>::default();
         for i in 0..LEAVES::USIZE {
             nodes[i] = leaves[i].clone();
         }
         // Level i starts at offset LEAVES + LEAVES/2 + ... + LEAVES/2^(i-1).
+        // Exactly log2(LEAVES) level transitions; guarded over LEAVES so the
+        // loop bound is concrete (the spec dialect's requirement).
         let mut level_start = 0usize;
         let mut level_len = LEAVES::USIZE;
-        while level_len > 1 {
-            let next_start = level_start + level_len;
-            for j in 0..(level_len / 2) {
-                nodes[next_start + j] =
-                    warp_hash_node(&nodes[level_start + 2 * j], &nodes[level_start + 2 * j + 1]);
+        for _level in 0..LEAVES::USIZE {
+            if level_len > 1 {
+                let next_start = level_start + level_len;
+                for j in 0..(level_len / 2) {
+                    nodes[next_start + j] = warp_hash_node(
+                        &nodes[level_start + 2 * j],
+                        &nodes[level_start + 2 * j + 1],
+                    );
+                }
+                level_start = next_start;
+                level_len /= 2;
             }
-            level_start = next_start;
-            level_len /= 2;
         }
-        Ok(WarpMerkleTree {
+        WarpMerkleTree {
             leaves: LEAVES::USIZE,
             nodes,
-        })
+        }
     }
 
     pub fn root(&self) -> WarpDigest {
@@ -290,21 +278,16 @@ impl<NODES: ArraySize> WarpMerkleTree<NODES> {
     /// Open leaf `index` — siblings bottom-up. `LOG2` must equal
     /// `log2(self.leaves)`.
     pub fn open<LOG2: ArraySize>(&self, index: usize) -> WarpAuthPath<LOG2> {
-        assert!(
-            index < self.leaves && LOG2::USIZE == log2_pow2(self.leaves) as usize,
-            "WarpMerkleTree::open: index/log shape mismatch"
-        );
         let mut siblings = Array::<WarpDigest, LOG2>::default();
         let mut idx = index;
         let mut level_start = 0usize;
         let mut level_len = self.leaves;
-        let mut depth = 0usize;
-        while level_len > 1 {
+        // The path length is exactly log2(leaves) = LOG2 (bounded loop).
+        for depth in 0..LOG2::USIZE {
             siblings[depth] = self.nodes[level_start + (idx ^ 1)].clone();
             idx /= 2;
             level_start += level_len;
             level_len /= 2;
-            depth += 1;
         }
         WarpAuthPath { siblings }
     }
@@ -320,7 +303,8 @@ pub fn warp_merkle_verify_hashed<LOG2_LEAVES: ArraySize>(
 ) -> bool {
     let mut cur = leaf_hash.clone();
     let mut idx = index;
-    for sibling in path.siblings.iter() {
+    for i in 0..LOG2_LEAVES::USIZE {
+        let sibling = &path.siblings[i];
         cur = if idx % 2 == 0 {
             warp_hash_node(&cur, sibling)
         } else {
@@ -331,28 +315,17 @@ pub fn warp_merkle_verify_hashed<LOG2_LEAVES: ArraySize>(
     cur == *root
 }
 
-/// Verify that `leaf` (raw parts, hashed here) is committed at `index`
-/// under `root` given `path`.
-pub fn warp_merkle_verify<LOG2_LEAVES: ArraySize>(
-    root: &WarpDigest,
-    leaf_parts: &[&[u8]],
-    index: usize,
-    path: &WarpAuthPath<LOG2_LEAVES>,
-) -> bool {
-    warp_merkle_verify_hashed(root, &warp_hash_leaf(leaf_parts), index, path)
-}
-
 /// Commit to one codeword: leaf `i` is the hash of element `i`'s 16 LE
 /// bytes (the oracle's `single_codeword_tree`).
 pub fn warp_commit_codeword<N, NODES>(
     codeword: &Array<Galois128, N>,
-) -> WarpResult<WarpMerkleTree<NODES>>
+) -> WarpMerkleTree<NODES>
 where
     N: ArraySize,
     NODES: ArraySize,
 {
     let leaves = Array::<WarpDigest, N>::from_fn(|i| {
-        warp_hash_leaf(&[&codeword[i].0.to_le_bytes()])
+        warp_hash_leaf_parts(&[&codeword[i].0.to_le_bytes()])
     });
     WarpMerkleTree::commit_leaves(&leaves)
 }
@@ -362,7 +335,7 @@ where
 /// (the oracle's `codeword_leaves`).
 pub fn warp_commit_stacked<N, FRESH, NODES>(
     codewords: &Array<Array<Galois128, N>, FRESH>,
-) -> WarpResult<WarpMerkleTree<NODES>>
+) -> WarpMerkleTree<NODES>
 where
     N: ArraySize,
     FRESH: ArraySize,
@@ -372,8 +345,8 @@ where
     let leaves = Array::<WarpDigest, N>::from_fn(|i| {
         let mut h = SpecSponge::new(SHA3_256_RATE);
         h.absorb(&[0x00]);
-        for codeword in codewords.iter() {
-            h.absorb(&codeword[i].0.to_le_bytes());
+        for j in 0..FRESH::USIZE {
+            h.absorb(&codewords[j][i].0.to_le_bytes());
         }
         let mut reader = h.finalize_xof(0x06);
         let mut out = WarpDigest::default();
@@ -388,34 +361,36 @@ where
 // ============================================================================
 
 /// `eq(point, b)` for every Boolean `b`, little-endian — the oracle's
-/// `build_eq_evals`. `OUT` must equal `2^POINTS`.
+/// `build_eq_evals`. Boundary invariant: `OUT == 2^POINTS` (checked by the
+/// boundary functions' shape validation).
 pub fn warp_eq_evals<POINTS: ArraySize, OUT: ArraySize>(
     point: &Array<Galois128, POINTS>,
-) -> WarpResult<Array<Galois128, OUT>> {
-    if OUT::USIZE != (1usize << POINTS::USIZE) {
-        return Err(WarpError::ShapeMismatch);
-    }
+) -> Array<Galois128, OUT> {
     let mut out = Array::<Galois128, OUT>::default();
     out[0] = Galois128(1);
-    let mut len = 1usize;
-    for coordinate in point.iter() {
-        for index in 0..len {
-            let product = out[index] * *coordinate;
+    // At outer step c the live prefix has length 2^c; iterate it directly
+    // (a const-expr bound over the unrolled counter — the spec dialect
+    // requires concrete loop bounds).
+    for c in 0..POINTS::USIZE {
+        let coordinate = point[c];
+        for index in 0..(1usize << c) {
+            let product = out[index] * coordinate;
             // characteristic 2: subtraction is addition (XOR).
             out[index] = out[index] - product;
-            out[index + len] = product;
+            out[index + (1usize << c)] = product;
         }
-        len <<= 1;
     }
-    Ok(out)
+    out
 }
 
 /// Scalar equality polynomial `eq(a, b)` — the oracle's `eq_scalar`.
 pub fn warp_eq_scalar<L: ArraySize>(a: &Array<Galois128, L>, b: &Array<Galois128, L>) -> Galois128 {
     let mut out = Galois128(1);
-    for (left, right) in a.iter().zip(b.iter()) {
-        let same = *left * *right;
-        let different = (Galois128(1) - *left) * (Galois128(1) - *right);
+    for i in 0..L::USIZE {
+        let left = a[i];
+        let right = b[i];
+        let same = left * right;
+        let different = (Galois128(1) - left) * (Galois128(1) - right);
         out = out * (same + different);
     }
     out
@@ -433,24 +408,22 @@ pub fn warp_binary_point<LOG: ArraySize>(index: usize) -> Array<Galois128, LOG> 
 }
 
 /// MLE evaluation of a power-of-two table — the oracle's `mle_eval`.
+/// Boundary invariant: `N` a power of two, `LOGN == log2(N)`.
 pub fn warp_mle_eval<N, LOGN>(
     values: &Array<Galois128, N>,
     point: &Array<Galois128, LOGN>,
-) -> WarpResult<Galois128>
+) -> Galois128
 where
     N: ArraySize + Logarithm2,
     LOGN: ArraySize,
     Log2<N>: ArraySize,
 {
-    if !is_pow2(N::USIZE) || LOGN::USIZE != log2_pow2(N::USIZE) as usize {
-        return Err(WarpError::ShapeMismatch);
-    }
-    let eq = warp_eq_evals::<LOGN, N>(point)?;
+    let eq = warp_eq_evals::<LOGN, N>(point);
     let mut out = Galois128(0);
-    for (value, weight) in values.iter().zip(eq.iter()) {
-        out = out + *value * *weight;
+    for i in 0..N::USIZE {
+        out = out + values[i] * eq[i];
     }
-    Ok(out)
+    out
 }
 
 // ============================================================================
@@ -504,14 +477,16 @@ impl<DEG: ArraySize> WarpTerm<DEG> {
         witness: &Array<Galois128, K>,
     ) -> Galois128 {
         let mut out = self.coeff;
-        for i in 0..self.n_vars as usize {
-            let var = self.vars[i];
-            let value = if var < X::USIZE {
-                public[var]
-            } else {
-                witness[var - X::USIZE]
-            };
-            out = out * value;
+        for i in 0..DEG::USIZE {
+            if i < self.n_vars as usize {
+                let var = self.vars[i];
+                let value = if var < X::USIZE {
+                    public[var]
+                } else {
+                    witness[var - X::USIZE]
+                };
+                out = out * value;
+            }
         }
         out
     }
@@ -520,10 +495,12 @@ impl<DEG: ArraySize> WarpTerm<DEG> {
 impl<TERMS: ArraySize, DEG: ArraySize> WarpConstraint<TERMS, DEG> {
     fn degree(&self) -> usize {
         let mut out = 0usize;
-        for i in 0..self.n_terms as usize {
-            let d = self.terms[i].degree();
-            if d > out {
-                out = d;
+        for i in 0..TERMS::USIZE {
+            if i < self.n_terms as usize {
+                let d = self.terms[i].degree();
+                if d > out {
+                    out = d;
+                }
             }
         }
         out
@@ -535,8 +512,10 @@ impl<TERMS: ArraySize, DEG: ArraySize> WarpConstraint<TERMS, DEG> {
         witness: &Array<Galois128, K>,
     ) -> Galois128 {
         let mut out = Galois128(0);
-        for i in 0..self.n_terms as usize {
-            out = out + self.terms[i].evaluate(public, witness);
+        for i in 0..TERMS::USIZE {
+            if i < self.n_terms as usize {
+                out = out + self.terms[i].evaluate(public, witness);
+            }
         }
         out
     }
@@ -548,105 +527,107 @@ impl<M: ArraySize, TERMS: ArraySize, DEG: ArraySize> WarpIndex<M, TERMS, DEG> {
     }
 
     pub fn log_constraints(&self) -> usize {
-        log2_pow2(M::USIZE) as usize
+        log2_pow2(M::USIZE)
     }
 
-    pub fn validate(&self) -> WarpResult<()> {
+    /// Fail-closed index validation (returns `false` on any violation):
+    /// `M` a power of two, per-constraint degree within the bound, term
+    /// variable indices in range, counts within capacity.
+    pub fn is_valid(&self) -> bool {
         if !is_pow2(M::USIZE) {
-            return Err(WarpError::NonPowerOfTwo);
+            return false;
         }
-        for constraint in self.constraints.iter() {
+        for c in 0..M::USIZE {
+            let constraint = &self.constraints[c];
             if constraint.n_terms as usize > TERMS::USIZE {
-                return Err(WarpError::MalformedIndex);
+                return false;
             }
             if constraint.degree() > self.degree_bound {
-                return Err(WarpError::MalformedIndex);
+                return false;
             }
-            for i in 0..constraint.n_terms as usize {
-                let term = &constraint.terms[i];
-                if term.n_vars as usize > DEG::USIZE {
-                    return Err(WarpError::MalformedIndex);
-                }
-                for j in 0..term.n_vars as usize {
-                    if term.vars[j] >= self.variable_count() {
-                        return Err(WarpError::MalformedIndex);
+            for i in 0..TERMS::USIZE {
+                if i < constraint.n_terms as usize {
+                    let term = &constraint.terms[i];
+                    if term.n_vars as usize > DEG::USIZE {
+                        return false;
+                    }
+                    for j in 0..DEG::USIZE {
+                        if j < term.n_vars as usize && term.vars[j] >= self.variable_count() {
+                            return false;
+                        }
                     }
                 }
             }
         }
-        Ok(())
+        true
     }
 
     /// Evaluate the bundled polynomial `P_hat(beta, w)` from Definition 5.5.
     ///
     /// `beta` is `x || tau` (Construction 10.4 step 2(f)): the first
     /// `public_len` entries are the public input, the rest `tau` (length
-    /// `log M`).
+    /// `log M`). Boundary invariant: `BETA == public_len + log2(M)` and
+    /// `K == witness_len`.
     pub fn evaluate_bundled<K: ArraySize, BETA: ArraySize>(
         &self,
         beta: &Array<Galois128, BETA>,
         witness: &Array<Galois128, K>,
-    ) -> WarpResult<Galois128> {
+    ) -> Galois128 {
         let log_m = self.log_constraints();
-        if BETA::USIZE != self.public_len + log_m || K::USIZE != self.witness_len {
-            return Err(WarpError::ShapeMismatch);
-        }
         // eq evals over tau (beta's tail, length log M), indexed by
         // constraint — the same doubling loop as `warp_eq_evals`, written
         // out because `tau` is a runtime tail of `beta`, not an Array.
+        // Guarded form over M: exactly the first log2(M) rounds act (the
+        // spec dialect requires concrete loop bounds).
         let mut eq = Array::<Galois128, M>::default();
         eq[0] = Galois128(1);
-        let mut len = 1usize;
-        for j in 0..log_m {
-            let coordinate = beta[self.public_len + j];
-            for index in 0..len {
-                let product = eq[index] * coordinate;
-                eq[index] = eq[index] - product;
-                eq[index + len] = product;
+        for j in 0..M::USIZE {
+            if (1usize << j) < M::USIZE {
+                let coordinate = beta[self.public_len + j];
+                for index in 0..(1usize << j) {
+                    let product = eq[index] * coordinate;
+                    eq[index] = eq[index] - product;
+                    eq[index + (1usize << j)] = product;
+                }
             }
-            len <<= 1;
         }
         let mut out = Galois128(0);
-        for (index, constraint) in self.constraints.iter().enumerate() {
-            // Public part of beta is beta[..public_len]; read through the
-            // split helper below.
-            let value = {
-                let mut acc = Galois128(0);
-                for i in 0..constraint.n_terms as usize {
-                    let term = &constraint.terms[i];
-                    let mut product = term.coeff;
-                    for v in 0..term.n_vars as usize {
-                        let var = term.vars[v];
-                        let x = if var < self.public_len {
-                            beta[var]
-                        } else {
-                            witness[var - self.public_len]
-                        };
-                        product = product * x;
-                    }
-                    acc = acc + product;
+        for index in 0..M::USIZE {
+            let constraint = &self.constraints[index];
+            // Public part of beta is beta[..public_len]; witness follows.
+            let mut value = Galois128(0);
+            for i in 0..constraint.n_terms as usize {
+                let term = &constraint.terms[i];
+                let mut product = term.coeff;
+                for v in 0..term.n_vars as usize {
+                    let var = term.vars[v];
+                    let x = if var < self.public_len {
+                        beta[var]
+                    } else {
+                        witness[var - self.public_len]
+                    };
+                    product = product * x;
                 }
-                acc
-            };
+                value = value + product;
+            }
             out = out + eq[index] * value;
         }
-        Ok(out)
+        out
     }
 
-    /// Check ordinary PESAT satisfaction for a fresh prover input.
-    pub fn check_instance<K: ArraySize, X: ArraySize>(
+    /// Ordinary PESAT satisfaction of a fresh witness (all constraints
+    /// zero). Boundary invariant: `X == public_len`, `K == witness_len`.
+    pub fn is_instance_satisfied<K: ArraySize, X: ArraySize>(
         &self,
         instance: &WarpWitness<K, X>,
-    ) -> WarpResult<()> {
-        if X::USIZE != self.public_len || K::USIZE != self.witness_len {
-            return Err(WarpError::ShapeMismatch);
-        }
-        for (index, constraint) in self.constraints.iter().enumerate() {
+    ) -> bool {
+        for index in 0..M::USIZE {
+            let constraint = &self.constraints[index];
             if constraint.evaluate(&instance.public, &instance.witness) != Galois128(0) {
-                return Err(WarpError::UnsatisfiedPesat(index as u32));
+                return false;
             }
         }
-        Ok(())
+        true
     }
 
     /// Absorb the index into the transcript — byte-identical to the
@@ -657,14 +638,19 @@ impl<M: ArraySize, TERMS: ArraySize, DEG: ArraySize> WarpIndex<M, TERMS, DEG> {
         transcript.absorb_usize(self.public_len);
         transcript.absorb_usize(self.witness_len);
         transcript.absorb_usize(self.degree_bound);
-        for constraint in self.constraints.iter() {
+        for c in 0..M::USIZE {
+            let constraint = &self.constraints[c];
             transcript.absorb_usize(constraint.n_terms as usize);
-            for i in 0..constraint.n_terms as usize {
-                let term = &constraint.terms[i];
-                transcript.absorb_field(term.coeff);
-                transcript.absorb_usize(term.n_vars as usize);
-                for j in 0..term.n_vars as usize {
-                    transcript.absorb_usize(term.vars[j]);
+            for i in 0..TERMS::USIZE {
+                if i < constraint.n_terms as usize {
+                    let term = &constraint.terms[i];
+                    transcript.absorb_field(term.coeff);
+                    transcript.absorb_usize(term.n_vars as usize);
+                    for j in 0..DEG::USIZE {
+                        if j < term.n_vars as usize {
+                            transcript.absorb_usize(term.vars[j]);
+                        }
+                    }
                 }
             }
         }
@@ -693,7 +679,7 @@ impl<N: ArraySize> WarpCode<N, N> for WarpIdentityCode {
     }
 }
 
-/// A systematic repetition code `w -> (w, ..., w)` — `REPS` copies.
+/// A systematic repetition code `w -> (w, ..., w)` — `N / K` copies.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WarpRepetitionCode;
 
@@ -704,7 +690,7 @@ impl<K: ArraySize, N: ArraySize> WarpCode<K, N> for WarpRepetitionCode {
 }
 
 // ============================================================================
-// Sumcheck univariates — evaluations at 0..=degree (the oracle's
+// Sumcheck univariates — evaluations at 0..=count-1 (the oracle's
 // WarpUnivariate), capacity-plus-count.
 // ============================================================================
 
@@ -716,20 +702,6 @@ pub struct WarpUni<CAP: ArraySize> {
 }
 
 impl<CAP: ArraySize> WarpUni<CAP> {
-    pub fn from_evals(evals: &[Galois128]) -> WarpResult<Self> {
-        if evals.len() > CAP::USIZE {
-            return Err(WarpError::ShapeMismatch);
-        }
-        let mut out = Array::<Galois128, CAP>::default();
-        for (i, value) in evals.iter().enumerate() {
-            out[i] = *value;
-        }
-        Ok(WarpUni {
-            evaluations: out,
-            count: evals.len() as u32,
-        })
-    }
-
     pub fn at_zero(&self) -> Galois128 {
         self.evaluations[0]
     }
@@ -743,17 +715,20 @@ impl<CAP: ArraySize> WarpUni<CAP> {
     pub fn evaluate(&self, x: Galois128) -> Galois128 {
         let n = self.count as usize;
         let mut out = Galois128(0);
-        for i in 0..n {
-            let mut numerator = Galois128(1);
-            let mut denominator = Galois128(1);
-            for j in 0..n {
-                if i == j {
-                    continue;
+        // Guarded over the capacity: exactly the first `count` evaluations
+        // participate (concrete loop bound, runtime guard).
+        for i in 0..CAP::USIZE {
+            if i < n {
+                let mut numerator = Galois128(1);
+                let mut denominator = Galois128(1);
+                for j in 0..CAP::USIZE {
+                    if j < n && i != j {
+                        numerator = numerator * (x - Galois128(j as u128));
+                        denominator = denominator * (Galois128(i as u128) - Galois128(j as u128));
+                    }
                 }
-                numerator = numerator * (x - Galois128(j as u128));
-                denominator = denominator * (Galois128(i as u128) - Galois128(j as u128));
+                out = out + self.evaluations[i] * numerator * warp_inv(denominator);
             }
-            out = out + self.evaluations[i] * numerator * warp_inv(denominator);
         }
         out
     }
@@ -874,25 +849,26 @@ where
     let mut transcript = WarpTranscript::new().domain_sep(WARP_TRANSCRIPT_DOMAIN);
     index.absorb_into(&mut transcript);
     transcript.absorb_usize(FRESH::USIZE);
-    for public in fresh_publics.iter() {
+    for i in 0..FRESH::USIZE {
         transcript.absorb(b"fresh-public");
-        transcript.absorb_fields(public);
+        transcript.absorb_fields(&fresh_publics[i]);
     }
     transcript.absorb_usize(A::USIZE);
-    for accumulator in accumulators.iter() {
-        warp_absorb_instance(&mut transcript, accumulator);
+    for i in 0..A::USIZE {
+        warp_absorb_instance(&mut transcript, &accumulators[i]);
     }
     transcript
 }
 
 /// Construct a genesis accumulator for one fresh PESAT statement — the
 /// oracle's `warp_genesis` (Construction 5.10 with deterministic
-/// `tau = 0^{log M}`).
+/// `tau = 0^{log M}`). Returns `None` when the index is invalid, the shape
+/// is off, or the witness does not satisfy the PESAT instance.
 pub fn warp_genesis_spec<M, TERMS, DEG, K, X, N, C, NODES, BETA>(
     index: &WarpIndex<M, TERMS, DEG>,
     code: &C,
     instance: &WarpWitness<K, X>,
-) -> WarpResult<WarpAcc<N, K, Log2<N>, BETA, NODES>>
+) -> Option<WarpAcc<N, K, Log2<N>, BETA, NODES>>
 where
     M: ArraySize,
     TERMS: ArraySize,
@@ -905,24 +881,28 @@ where
     NODES: ArraySize,
     BETA: ArraySize,
 {
-    index.validate()?;
-    if !is_pow2(N::USIZE) {
-        return Err(WarpError::NonPowerOfTwo);
+    if !index.is_valid() || !is_pow2(N::USIZE) {
+        return None;
     }
-    index.check_instance(instance)?;
-    if BETA::USIZE != index.public_len + index.log_constraints() {
-        return Err(WarpError::ShapeMismatch);
+    if X::USIZE != index.public_len
+        || K::USIZE != index.witness_len
+        || BETA::USIZE != index.public_len + index.log_constraints()
+    {
+        return None;
+    }
+    if !index.is_instance_satisfied(instance) {
+        return None;
     }
     let codeword = code.encode(&instance.witness);
-    let tree = warp_commit_codeword::<N, NODES>(&codeword)?;
+    let tree = warp_commit_codeword::<N, NODES>(&codeword);
     let alpha = Array::<Galois128, Log2<N>>::default();
     let mut beta = Array::<Galois128, BETA>::default();
     for i in 0..X::USIZE {
         beta[i] = instance.public[i];
     }
-    let mu = warp_mle_eval(&codeword, &alpha)?;
-    let eta = index.evaluate_bundled(&beta, &instance.witness)?;
-    Ok(WarpAcc {
+    let mu = warp_mle_eval(&codeword, &alpha);
+    let eta = index.evaluate_bundled(&beta, &instance.witness);
+    Some(WarpAcc {
         instance: WarpAccInstance {
             root: tree.root(),
             alpha,
@@ -940,12 +920,12 @@ where
 
 /// Decide a split WARP accumulator — the oracle's `warp_decide` (D_ACC):
 /// Merkle root recomputation, `f = C(w)`, `f_hat(alpha) = mu`, and
-/// `P_hat(beta, w) = eta`.
+/// `P_hat(beta, w) = eta`. Returns the accept bit.
 pub fn warp_decide_spec<M, TERMS, DEG, N, K, LOGN, BETA, NODES, C>(
     index: &WarpIndex<M, TERMS, DEG>,
     code: &C,
     accumulator: &WarpAcc<N, K, LOGN, BETA, NODES>,
-) -> WarpResult<()>
+) -> bool
 where
     M: ArraySize,
     TERMS: ArraySize,
@@ -958,158 +938,30 @@ where
     C: WarpCode<K, N>,
     Log2<N>: ArraySize,
 {
-    index.validate()?;
-    if LOGN::USIZE != log2_pow2(N::USIZE) as usize
+    if !index.is_valid() {
+        return false;
+    }
+    if LOGN::USIZE != log2_pow2(N::USIZE)
         || BETA::USIZE != index.public_len + index.log_constraints()
         || K::USIZE != index.witness_len
         || accumulator.witness.tree.root() != accumulator.instance.root
     {
-        return Err(WarpError::ShapeMismatch);
+        return false;
     }
-    let recomputed = warp_commit_codeword::<N, NODES>(&accumulator.witness.codeword)?;
+    let recomputed = warp_commit_codeword::<N, NODES>(&accumulator.witness.codeword);
     if recomputed.root() != accumulator.instance.root {
-        return Err(WarpError::CommitmentMismatch);
+        return false;
     }
     if code.encode(&accumulator.witness.witness) != accumulator.witness.codeword {
-        return Err(WarpError::CommitmentMismatch);
+        return false;
     }
-    if warp_mle_eval(&accumulator.witness.codeword, &accumulator.instance.alpha)?
+    if warp_mle_eval(&accumulator.witness.codeword, &accumulator.instance.alpha)
         != accumulator.instance.mu
     {
-        return Err(WarpError::CommitmentMismatch);
+        return false;
     }
-    if index.evaluate_bundled(&accumulator.instance.beta, &accumulator.witness.witness)?
-        != accumulator.instance.eta
-    {
-        return Err(WarpError::CommitmentMismatch);
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::{vec, vec::Vec};
-    use cipher::consts::*;
-
-    /// The toy PESAT `w0*w1 + w2 + w3 = 0` (degree 2, one constraint) shared
-    /// with the oracle's `toy_index`.
-    fn toy_index() -> WarpIndex<U1, U4, U2> {
-        let mk = |vars: [usize; 2], n_vars: u32| WarpTerm::<U2> {
-            coeff: Galois128(1),
-            vars: Array::from_fn(|i| vars[i]),
-            n_vars,
-        };
-        WarpIndex {
-            constraints: Array::from_fn(|_| WarpConstraint::<U4, U2> {
-                terms: Array::from_fn(|i| match i {
-                    0 => mk([0, 1], 2),
-                    1 => mk([2, 0], 1),
-                    2 => mk([3, 0], 1),
-                    _ => mk([0, 0], 0),
-                }),
-                n_terms: 3,
-            }),
-            public_len: 0,
-            witness_len: 4,
-            degree_bound: 2,
-        }
-    }
-
-    /// In characteristic 2, `a*b + c + d = 0` means `d = a*b + c`.
-    fn toy_witness(a: u128, b: u128, c: u128) -> WarpWitness<U4, U0> {
-        let d = Galois128(a) * Galois128(b) + Galois128(c);
-        WarpWitness {
-            public: Array::<Galois128, U0>::default(),
-            witness: Array::from_fn(|i| [Galois128(a), Galois128(b), Galois128(c), d][i]),
-        }
-    }
-
-    /// The oracle's index with identical content, for differentials.
-    fn oracle_index() -> volar_iop::warp::PesatIndex<volar_primitives::Galois128> {
-        use volar_iop::warp::{PesatConstraint, PesatIndex, PesatTerm};
-        let mk = |vars: Vec<usize>| PesatTerm {
-            coeff: volar_primitives::Galois128(1),
-            vars,
-        };
-        PesatIndex {
-            constraints: vec![PesatConstraint {
-                terms: vec![mk(vec![0, 1]), mk(vec![2]), mk(vec![3])],
-            }],
-            public_len: 0,
-            witness_len: 4,
-            degree_bound: 2,
-        }
-    }
-
-    fn oracle_witness(a: u128, b: u128, c: u128) -> volar_iop::warp::PesatWitness<volar_primitives::Galois128> {
-        let spec = toy_witness(a, b, c);
-        volar_iop::warp::PesatWitness {
-            public: Vec::new(),
-            witness: spec.witness.to_vec(),
-        }
-    }
-
-    #[test]
-    fn genesis_matches_the_oracle_byte_for_byte() {
-        let index = toy_index();
-        let witness = toy_witness(3, 5, 7);
-        let acc = warp_genesis_spec::<_, _, _, _, _, U4, _, U7, U0>(
-            &index,
-            &WarpIdentityCode,
-            &witness,
-        )
-        .unwrap();
-        warp_decide_spec(&index, &WarpIdentityCode, &acc).unwrap();
-
-        let oracle = volar_iop::warp::warp_genesis(
-            &oracle_index(),
-            &volar_iop::warp::IdentityCode::new(4).unwrap(),
-            &oracle_witness(3, 5, 7),
-        )
-        .unwrap();
-        assert_eq!(
-            acc.instance.root.as_slice(),
-            oracle.instance.root.as_slice(),
-            "genesis Merkle roots must match the oracle"
-        );
-        assert_eq!(acc.instance.mu, oracle.instance.mu);
-        assert_eq!(acc.instance.eta, oracle.instance.eta);
-        assert_eq!(
-            acc.instance.beta.to_vec(),
-            oracle.instance.beta.clone()
-        );
-        assert_eq!(acc.instance.alpha.to_vec(), oracle.instance.alpha.clone());
-    }
-
-    #[test]
-    fn unsatisfied_witness_is_rejected() {
-        let index = toy_index();
-        let mut witness = toy_witness(3, 5, 7);
-        witness.witness[3] = witness.witness[3] + Galois128(1);
-        assert_eq!(
-            warp_genesis_spec::<_, _, _, _, _, U4, _, U7, U0>(&index, &WarpIdentityCode, &witness)
-                .unwrap_err(),
-            WarpError::UnsatisfiedPesat(0)
-        );
-    }
-
-    #[test]
-    fn decider_rejects_witness_that_does_not_encode_to_codeword() {
-        let index = toy_index();
-        let witness = toy_witness(17, 19, 23);
-        let mut acc = warp_genesis_spec::<_, _, _, _, _, U4, _, U7, U0>(
-            &index,
-            &WarpIdentityCode,
-            &witness,
-        )
-        .unwrap();
-        acc.witness.witness[0] = acc.witness.witness[0] + Galois128(1);
-        assert_eq!(
-            warp_decide_spec(&index, &WarpIdentityCode, &acc),
-            Err(WarpError::CommitmentMismatch)
-        );
-    }
+    index.evaluate_bundled(&accumulator.instance.beta, &accumulator.witness.witness)
+        == accumulator.instance.eta
 }
 
 // ============================================================================
@@ -1117,40 +969,43 @@ mod tests {
 // ============================================================================
 
 /// `eq`-weighted combination of `ELL` vectors by `point` (`log ELL`
-/// coordinates) — the oracle's `combine_vectors`.
+/// coordinates) — the oracle's `combine_vectors`. Boundary invariant:
+/// `ELL == 2^LOGL`.
 pub fn warp_combine_vectors<ELL, LOGL, LEN>(
     items: &Array<Array<Galois128, LEN>, ELL>,
     point: &Array<Galois128, LOGL>,
-) -> WarpResult<Array<Galois128, LEN>>
+) -> Array<Galois128, LEN>
 where
     ELL: ArraySize,
     LOGL: ArraySize,
     LEN: ArraySize,
 {
-    let weights = warp_eq_evals::<LOGL, ELL>(point)?;
+    let weights = warp_eq_evals::<LOGL, ELL>(point);
     let mut out = Array::<Galois128, LEN>::default();
-    for (item, weight) in items.iter().zip(weights.iter()) {
-        for (dst, value) in out.iter_mut().zip(item.iter()) {
-            *dst = *dst + *value * *weight;
+    for i in 0..ELL::USIZE {
+        let weight = weights[i];
+        for j in 0..LEN::USIZE {
+            out[j] = out[j] + items[i][j] * weight;
         }
     }
-    Ok(out)
+    out
 }
 
 /// `prefix || [current] || binary(suffix)` — the oracle's `point_with_suffix`.
 fn warp_point_with_suffix<LOG: ArraySize>(
-    prefix: &[Galois128],
+    prefix: &Array<Galois128, LOG>,
+    prefix_len: usize,
     current: Galois128,
     suffix: usize,
     suffix_len: usize,
 ) -> Array<Galois128, LOG> {
     Array::from_fn(|i| {
-        if i < prefix.len() {
+        if i < prefix_len {
             prefix[i]
-        } else if i == prefix.len() {
+        } else if i == prefix_len {
             current
         } else {
-            let bit = i - prefix.len() - 1;
+            let bit = i - prefix_len - 1;
             if bit < suffix_len && (suffix >> bit) & 1 == 1 {
                 Galois128(1)
             } else {
@@ -1168,7 +1023,7 @@ fn warp_evaluate_g<M, TERMS, DEG, N, K, LOGN, BETA>(
     alpha: &Array<Galois128, LOGN>,
     beta: &Array<Galois128, BETA>,
     omega: Galois128,
-) -> WarpResult<Galois128>
+) -> Galois128
 where
     M: ArraySize,
     TERMS: ArraySize,
@@ -1179,32 +1034,30 @@ where
     BETA: ArraySize,
     Log2<N>: ArraySize,
 {
-    let evaluation = warp_mle_eval(codeword, alpha)?;
-    let bundled = index.evaluate_bundled(beta, witness)?;
-    Ok(evaluation + omega * bundled)
+    let evaluation = warp_mle_eval(codeword, alpha);
+    let bundled = index.evaluate_bundled(beta, witness);
+    evaluation + omega * bundled
 }
 
 /// The Construction 8.2 eq-star sum — the oracle's `eq_star_at`.
+/// Boundary invariant: `R == 2^LOGR`.
 fn warp_eq_star_at<R, LOGR, LOGN>(
     claim_points: &Array<Array<Galois128, LOGN>, R>,
     xi: &Array<Galois128, LOGR>,
     point: &Array<Galois128, LOGN>,
-) -> WarpResult<Galois128>
+) -> Galois128
 where
     R: ArraySize,
     LOGR: ArraySize,
     LOGN: ArraySize,
 {
-    if !is_pow2(R::USIZE) || LOGR::USIZE != log2_pow2(R::USIZE) as usize {
-        return Err(WarpError::ShapeMismatch);
-    }
     let mut out = Galois128(0);
-    for (index, claim_point) in claim_points.iter().enumerate() {
+    for index in 0..R::USIZE {
         let claim_index = warp_binary_point::<LOGR>(index);
-        let weight = warp_eq_scalar(xi, &claim_index) * warp_eq_scalar(claim_point, point);
+        let weight = warp_eq_scalar(xi, &claim_index) * warp_eq_scalar(&claim_points[index], point);
         out = out + weight;
     }
-    Ok(out)
+    out
 }
 
 /// One first-sumcheck evaluation at `x` — the oracle's `first_sumcheck_eval`.
@@ -1217,9 +1070,10 @@ fn warp_first_sumcheck_eval<M, TERMS, DEG, K, N, ELL, LOGL, LOGN, BETA>(
     betas: &Array<Array<Galois128, BETA>, ELL>,
     tau: &Array<Galois128, LOGL>,
     omega: Galois128,
-    prefix: &[Galois128],
+    prefix: &Array<Galois128, LOGL>,
+    round: usize,
     x: Galois128,
-) -> WarpResult<Galois128>
+) -> Galois128
 where
     M: ArraySize,
     TERMS: ArraySize,
@@ -1232,20 +1086,22 @@ where
     BETA: ArraySize,
     Log2<N>: ArraySize,
 {
-    let log_ell = log2_pow2(ELL::USIZE) as usize;
-    let round = prefix.len();
+    let log_ell = log2_pow2(ELL::USIZE);
     let suffix_len = log_ell - round - 1;
     let mut out = Galois128(0);
-    for suffix in 0..(1usize << suffix_len) {
-        let point = warp_point_with_suffix::<LOGL>(prefix, x, suffix, suffix_len);
-        let codeword = warp_combine_vectors(codewords, &point)?;
-        let witness = warp_combine_vectors(witnesses, &point)?;
-        let alpha = warp_combine_vectors(alphas, &point)?;
-        let beta = warp_combine_vectors(betas, &point)?;
-        let g = warp_evaluate_g(index, &codeword, &witness, &alpha, &beta, omega)?;
+    // Suffix count = 2^(log_ell - round - 1) = ELL >> (round + 1) — a
+    // const-expr bound (the dialect requires concrete bounds; `round` is
+    // the unrolled outer counter, a per-iteration constant).
+    for suffix in 0..(ELL::USIZE >> (round + 1)) {
+        let point = warp_point_with_suffix::<LOGL>(prefix, round, x, suffix, suffix_len);
+        let codeword = warp_combine_vectors(codewords, &point);
+        let witness = warp_combine_vectors(witnesses, &point);
+        let alpha = warp_combine_vectors(alphas, &point);
+        let beta = warp_combine_vectors(betas, &point);
+        let g = warp_evaluate_g(index, &codeword, &witness, &alpha, &beta, omega);
         out = out + warp_eq_scalar(tau, &point) * g;
     }
-    Ok(out)
+    out
 }
 
 /// One second-sumcheck evaluation at `x` — the oracle's
@@ -1254,9 +1110,10 @@ fn warp_second_sumcheck_eval<N, R, LOGR, LOGN>(
     codeword: &Array<Galois128, N>,
     claim_points: &Array<Array<Galois128, LOGN>, R>,
     xi: &Array<Galois128, LOGR>,
-    prefix: &[Galois128],
+    prefix: &Array<Galois128, LOGN>,
+    round: usize,
     x: Galois128,
-) -> WarpResult<Galois128>
+) -> Galois128
 where
     N: ArraySize + Logarithm2,
     R: ArraySize,
@@ -1264,60 +1121,56 @@ where
     LOGN: ArraySize,
     Log2<N>: ArraySize,
 {
-    let log_n = log2_pow2(N::USIZE) as usize;
-    let round = prefix.len();
+    let log_n = log2_pow2(N::USIZE);
     let suffix_len = log_n - round - 1;
     let mut out = Galois128(0);
-    for suffix in 0..(1usize << suffix_len) {
-        let point = warp_point_with_suffix::<LOGN>(prefix, x, suffix, suffix_len);
-        let eq = warp_eq_star_at(claim_points, xi, &point)?;
-        out = out + eq * warp_mle_eval(codeword, &point)?;
+    // Suffix count = N >> (round + 1) — a const-expr bound (see the first
+    // sumcheck's note).
+    for suffix in 0..(N::USIZE >> (round + 1)) {
+        let point = warp_point_with_suffix::<LOGN>(prefix, round, x, suffix, suffix_len);
+        let eq = warp_eq_star_at(claim_points, xi, &point);
+        out = out + eq * warp_mle_eval(codeword, &point);
     }
-    Ok(out)
+    out
 }
 
 /// The sumcheck link/target check — the oracle's `check_sumcheck`.
-pub fn warp_check_sumcheck<SC: ArraySize>(
-    polys: &[WarpUni<SC>],
+pub fn warp_check_sumcheck<SC: ArraySize, ROUNDS: ArraySize>(
+    polys: &Array<WarpUni<SC>, ROUNDS>,
     initial_claim: Galois128,
-    challenges: &[Galois128],
+    challenges: &Array<Galois128, ROUNDS>,
     final_claim: Galois128,
 ) -> bool {
-    if polys.len() != challenges.len() {
-        return false;
-    }
-    if polys.is_empty() {
+    if ROUNDS::USIZE == 0 {
         return initial_claim == final_claim;
     }
     if polys[0].at_zero() + polys[0].at_one() != initial_claim {
         return false;
     }
-    for round in 1..polys.len() {
+    for round in 1..ROUNDS::USIZE {
         let expected = polys[round - 1].evaluate(challenges[round - 1]);
         if polys[round].at_zero() + polys[round].at_one() != expected {
             return false;
         }
     }
-    match polys.last() {
-        Some(poly) => poly.evaluate(challenges[challenges.len() - 1]) == final_claim,
-        None => false,
-    }
+    polys[ROUNDS::USIZE - 1].evaluate(challenges[ROUNDS::USIZE - 1]) == final_claim
 }
 
 /// Prove Construction 10.4 for fresh PESAT inputs plus prior accumulators.
 ///
-/// Shape parameters are carried in types; every derived relation
-/// (`ELL = FRESH + A`, `R = 1 + S + SHIFTS`, `TW = log2(ELL) + 1`,
+/// Returns `None` (fail-closed) on any shape violation — the type-level
+/// relations `ELL = FRESH + A`, `R = 1 + S + SHIFTS`, `TW = log2(ELL) + 1`,
 /// `BETA = public_len + log2(M)`, `NODES = 2N - 1`, power-of-two `N`/`M`/
-/// `ELL`/`R`) is checked fail-closed at entry. The first-sumcheck degree is
+/// `ELL`/`R`, plus PESAT satisfaction of every fresh witness and each
+/// accumulator's root consistency. The first-sumcheck degree is
 /// `1 + max(log n + 1, log M + degree_bound)` and must fit `SC - 1`.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn warp_prove_spec<M, TERMS, DEG, K, X, N, FRESH, A, ELL, S, SHIFTS, R, SC, TW, NODES, BETA, C>(
+pub fn warp_prove_spec<M, TERMS, DEG, K, X, N, FRESH, A, ELL, S, SHIFTS, R, SC, TW, FSD1, NODES, BETA, C>(
     index: &WarpIndex<M, TERMS, DEG>,
     code: &C,
     fresh: &Array<WarpWitness<K, X>, FRESH>,
     accumulators: &Array<WarpAcc<N, K, Log2<N>, BETA, NODES>, A>,
-) -> WarpResult<(
+) -> Option<(
     WarpAcc<N, K, Log2<N>, BETA, NODES>,
     WarpProof<FRESH, ELL, A, S, SHIFTS, SC, Log2<N>>,
 )>
@@ -1336,6 +1189,7 @@ where
     R: ArraySize + Logarithm2,
     SC: ArraySize,
     TW: ArraySize,
+    FSD1: ArraySize,
     NODES: ArraySize,
     BETA: ArraySize,
     C: WarpCode<K, N>,
@@ -1345,10 +1199,12 @@ where
     Log2<R>: ArraySize,
 {
     // ---- shape validation (the oracle's validate_input_shapes) ----
-    index.validate()?;
-    let log_n = log2_pow2(N::USIZE) as usize;
+    if !index.is_valid() {
+        return None;
+    }
+    let log_n = log2_pow2(N::USIZE);
     let log_m = index.log_constraints();
-    let log_ell = log2_pow2(ELL::USIZE) as usize;
+    let log_ell = log2_pow2(ELL::USIZE);
     if !is_pow2(N::USIZE)
         || !is_pow2(ELL::USIZE)
         || ELL::USIZE != FRESH::USIZE + A::USIZE
@@ -1361,18 +1217,20 @@ where
         || X::USIZE != index.public_len
         || NODES::USIZE != 2 * N::USIZE - 1
     {
-        return Err(WarpError::ShapeMismatch);
+        return None;
     }
     let first_degree = 1 + (log_n + 1).max(log_m + index.degree_bound);
-    if first_degree + 1 > SC::USIZE || 3 > SC::USIZE {
-        return Err(WarpError::ShapeMismatch);
+    if FSD1::USIZE != first_degree + 1 || FSD1::USIZE > SC::USIZE || 3 > SC::USIZE {
+        return None;
     }
-    for instance in fresh.iter() {
-        index.check_instance(instance)?;
+    for i in 0..FRESH::USIZE {
+        if !index.is_instance_satisfied(&fresh[i]) {
+            return None;
+        }
     }
-    for accumulator in accumulators.iter() {
-        if accumulator.witness.tree.root() != accumulator.instance.root {
-            return Err(WarpError::CommitmentMismatch);
+    for i in 0..A::USIZE {
+        if accumulators[i].witness.tree.root() != accumulators[i].instance.root {
+            return None;
         }
     }
 
@@ -1385,7 +1243,7 @@ where
     // ---- Construction 5.10 + Remark 5.9: encode, commit, zerocheck ----
     let fresh_codewords =
         Array::<Array<Galois128, N>, FRESH>::from_fn(|i| code.encode(&fresh[i].witness));
-    let initial_tree = warp_commit_stacked::<N, FRESH, NODES>(&fresh_codewords)?;
+    let initial_tree = warp_commit_stacked::<N, FRESH, NODES>(&fresh_codewords);
     let initial_root = initial_tree.root();
     transcript.absorb_len_prefixed(&initial_root);
 
@@ -1393,7 +1251,6 @@ where
     let zero_point_n = Array::<Galois128, Log2<N>>::default();
     let fresh_mus = Array::<Galois128, FRESH>::from_fn(|i| {
         warp_mle_eval(&fresh_codewords[i], &zero_point_n)
-            .expect("fresh codeword MLE at the zero point")
     });
 
     let mut alphas = Array::<Array<Galois128, Log2<N>>, ELL>::default();
@@ -1409,8 +1266,10 @@ where
         for j in 0..X::USIZE {
             beta[j] = fresh[i].public[j];
         }
-        for j in 0..log_m {
-            beta[X::USIZE + j] = taus[i][j];
+        for j in 0..M::USIZE {
+            if (1usize << j) < M::USIZE {
+                beta[X::USIZE + j] = taus[i][j];
+            }
         }
         betas[i] = beta;
         etas[i] = Galois128(0);
@@ -1433,10 +1292,10 @@ where
     let tau = Array::<Galois128, Log2<ELL>>::from_fn(|i| tau_omega[i]);
     let omega = tau_omega[TW::USIZE - 1];
     let sigma1 = {
-        let eq_tau = warp_eq_evals::<Log2<ELL>, ELL>(&tau)?;
+        let eq_tau = warp_eq_evals::<Log2<ELL>, ELL>(&tau);
         let mut out = Galois128(0);
-        for ((mu, eta), weight) in mus.iter().zip(etas.iter()).zip(eq_tau.iter()) {
-            out = out + *weight * (*mu + omega * *eta);
+        for i in 0..ELL::USIZE {
+            out = out + eq_tau[i] * (mus[i] + omega * etas[i]);
         }
         out
     };
@@ -1446,58 +1305,63 @@ where
         count: 0,
     });
     let mut gamma = Array::<Galois128, Log2<ELL>>::default();
-    for round in 0..log_ell {
-        let mut evals = Array::<Galois128, SC>::default();
-        for x in 0..=first_degree {
-            evals[x] = warp_first_sumcheck_eval(
-                index,
-                &codewords,
-                &witnesses,
-                &alphas,
-                &betas,
-                &tau,
-                omega,
-                &gamma[..round],
-                Galois128(x as u128),
-            )?;
+    // Guarded over ELL: exactly the first log2(ELL) rounds act (concrete
+    // bound, per the dialect's loop rule).
+    for round in 0..ELL::USIZE {
+        if (1usize << round) < ELL::USIZE {
+            let mut evals = Array::<Galois128, SC>::default();
+            for x in 0..FSD1::USIZE {
+                evals[x] = warp_first_sumcheck_eval(
+                    index,
+                    &codewords,
+                    &witnesses,
+                    &alphas,
+                    &betas,
+                    &tau,
+                    omega,
+                    &gamma,
+                    round,
+                    Galois128(x as u128),
+                );
+            }
+            let poly = WarpUni::<SC> {
+                evaluations: evals,
+                count: FSD1::USIZE as u32,
+            };
+            transcript.absorb_poly::<SC, FSD1>(&poly);
+            gamma[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
+            first_sumcheck[round] = poly;
         }
-        let poly = WarpUni::<SC> {
-            evaluations: evals,
-            count: (first_degree + 1) as u32,
-        };
-        transcript.absorb_field_slice(&poly.evaluations[..poly.count as usize]);
-        gamma[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
-        first_sumcheck[round] = poly;
     }
-    let zeta0 = warp_combine_vectors(&alphas, &gamma)?;
-    let beta = warp_combine_vectors(&betas, &gamma)?;
-    let folded_codeword = warp_combine_vectors(&codewords, &gamma)?;
-    let folded_witness = warp_combine_vectors(&witnesses, &gamma)?;
-    let nu0 = warp_mle_eval(&folded_codeword, &zeta0)?;
-    let eta = index.evaluate_bundled(&beta, &folded_witness)?;
-    if !warp_check_sumcheck(first_sumcheck.as_slice(), sigma1, &gamma, {
+    let zeta0 = warp_combine_vectors(&alphas, &gamma);
+    let beta = warp_combine_vectors(&betas, &gamma);
+    let folded_codeword = warp_combine_vectors(&codewords, &gamma);
+    let folded_witness = warp_combine_vectors(&witnesses, &gamma);
+    let nu0 = warp_mle_eval(&folded_codeword, &zeta0);
+    let eta = index.evaluate_bundled(&beta, &folded_witness);
+    if !warp_check_sumcheck(&first_sumcheck, sigma1, &gamma, {
         warp_eq_scalar(&tau, &gamma) * (nu0 + omega * eta)
     }) {
-        return Err(WarpError::SumcheckMismatch);
+        return None;
     }
 
     // ---- Construction 7.2: commit, OOD samples, shift queries ----
-    let output_tree = warp_commit_codeword::<N, NODES>(&folded_codeword)?;
+    let output_tree = warp_commit_codeword::<N, NODES>(&folded_codeword);
     let output_root = output_tree.root();
     transcript.absorb_len_prefixed(&output_root);
     transcript.absorb_field(nu0);
     transcript.absorb_field(eta);
     let ood_points: Array<Array<Galois128, Log2<N>>, S> = transcript.squeeze_field_grid();
     let ood_answers = Array::<Galois128, S>::from_fn(|i| {
-        warp_mle_eval(&folded_codeword, &ood_points[i]).expect("OOD MLE")
+        warp_mle_eval(&folded_codeword, &ood_points[i])
     });
     transcript.absorb_fields(&ood_answers);
 
     let (shift_indices, xi): (Array<u32, SHIFTS>, Array<Galois128, Log2<R>>) =
-        transcript.squeeze_shift_and_xi(log_n as u32);
+        transcript.squeeze_shift_and_xi(log_n);
     let mut claim_points = Array::<Array<Galois128, Log2<N>>, R>::default();
     let mut claim_values = Array::<Galois128, R>::default();
-    claim_points[0] = zeta0.clone();
+    claim_points[0] = zeta0;
     claim_values[0] = nu0;
     for i in 0..S::USIZE {
         claim_points[1 + i] = ood_points[i].clone();
@@ -1508,10 +1372,10 @@ where
         claim_values[1 + S::USIZE + i] = folded_codeword[shift_indices[i] as usize];
     }
     let sigma2 = {
-        let eq_xi = warp_eq_evals::<Log2<R>, R>(&xi)?;
+        let eq_xi = warp_eq_evals::<Log2<R>, R>(&xi);
         let mut out = Galois128(0);
-        for (value, weight) in claim_values.iter().zip(eq_xi.iter()) {
-            out = out + *value * *weight;
+        for i in 0..R::USIZE {
+            out = out + claim_values[i] * eq_xi[i];
         }
         out
     };
@@ -1522,31 +1386,34 @@ where
         count: 0,
     });
     let mut alpha = Array::<Galois128, Log2<N>>::default();
-    for round in 0..log_n {
-        let mut evals = Array::<Galois128, SC>::default();
-        for x in 0..=2usize {
-            evals[x] = warp_second_sumcheck_eval(
-                &folded_codeword,
-                &claim_points,
-                &xi,
-                &alpha[..round],
-                Galois128(x as u128),
-            )?;
+    for round in 0..N::USIZE {
+        if (1usize << round) < N::USIZE {
+            let mut evals = Array::<Galois128, SC>::default();
+            for x in 0..3usize {
+                evals[x] = warp_second_sumcheck_eval(
+                    &folded_codeword,
+                    &claim_points,
+                    &xi,
+                    &alpha,
+                    round,
+                    Galois128(x as u128),
+                );
+            }
+            let poly = WarpUni::<SC> {
+                evaluations: evals,
+                count: 3,
+            };
+            transcript.absorb_poly::<SC, cipher::consts::U3>(&poly);
+            alpha[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
+            second_sumcheck[round] = poly;
         }
-        let poly = WarpUni::<SC> {
-            evaluations: evals,
-            count: 3,
-        };
-        transcript.absorb_field_slice(&poly.evaluations[..poly.count as usize]);
-        alpha[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
-        second_sumcheck[round] = poly;
     }
-    let mu = warp_mle_eval(&folded_codeword, &alpha)?;
-    if !warp_check_sumcheck(second_sumcheck.as_slice(), sigma2, &alpha, {
-        let eq = warp_eq_star_at(&claim_points, &xi, &alpha)?;
+    let mu = warp_mle_eval(&folded_codeword, &alpha);
+    if !warp_check_sumcheck(&second_sumcheck, sigma2, &alpha, {
+        let eq = warp_eq_star_at(&claim_points, &xi, &alpha);
         mu * eq
     }) {
-        return Err(WarpError::SumcheckMismatch);
+        return None;
     }
 
     // ---- openings ----
@@ -1587,17 +1454,250 @@ where
         accumulator_paths,
         openings,
     };
-    Ok((accumulator, proof))
+    Some((accumulator, proof))
+}
+
+// ============================================================================
+// The verifier (W4) — Construction 10.4's V_ACC.
+// ============================================================================
+
+/// Hash one stacked fresh leaf: the concatenation of the first `FRESH`
+/// entries of an openings row (the oracle's fresh-leaf construction).
+fn warp_hash_fresh_row<ELL: ArraySize, FRESH: ArraySize>(
+    row: &Array<Galois128, ELL>,
+) -> WarpDigest {
+    let mut h = SpecSponge::new(SHA3_256_RATE);
+    h.absorb(&[0x00]);
+    for i in 0..FRESH::USIZE {
+        h.absorb(&row[i].0.to_le_bytes());
+    }
+    let mut reader = h.finalize_xof(0x06);
+    let mut out = WarpDigest::default();
+    reader.read(&mut out);
+    out
+}
+
+/// Verify a Construction 10.4 accumulation proof, returning the accept bit
+/// (the verifier-as-computation output: `true` = accept, `false` = reject —
+/// fail-closed on any mismatch).
+///
+/// Every shape the verifier relies on is carried in types (part of the
+/// verification key, compile-time fixed) and cross-checked fail-closed at
+/// entry — the verifier never infers a shape from prover-controlled data
+/// (the oracle's `WarpSampling::log_codeword_len` lesson: here `LOGN` comes
+/// from the proof/output *types*, which the caller picks).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn warp_verify_spec<M, TERMS, DEG, X, FRESH, A, ELL, S, SHIFTS, R, SC, TW, FSD1, N, BETA>(
+    index: &WarpIndex<M, TERMS, DEG>,
+    fresh_publics: &Array<Array<Galois128, X>, FRESH>,
+    input_accumulators: &Array<WarpAccInstance<Log2<N>, BETA>, A>,
+    output: &WarpAccInstance<Log2<N>, BETA>,
+    proof: &WarpProof<FRESH, ELL, A, S, SHIFTS, SC, Log2<N>>,
+) -> bool
+where
+    M: ArraySize + Logarithm2,
+    TERMS: ArraySize,
+    DEG: ArraySize,
+    X: ArraySize,
+    FRESH: ArraySize,
+    A: ArraySize,
+    ELL: ArraySize + Logarithm2,
+    S: ArraySize,
+    SHIFTS: ArraySize,
+    R: ArraySize + Logarithm2,
+    SC: ArraySize,
+    TW: ArraySize,
+    FSD1: ArraySize,
+    N: ArraySize + Logarithm2,
+    BETA: ArraySize,
+    Log2<M>: ArraySize,
+    Log2<ELL>: ArraySize,
+    Log2<R>: ArraySize,
+    Log2<N>: ArraySize,
+{
+    if !index.is_valid() {
+        return false;
+    }
+    let log_m = index.log_constraints();
+    let log_ell = log2_pow2(ELL::USIZE);
+    let log_n = Log2::<N>::USIZE;
+    // `N` is the codeword length, `Log2<N>` its log2 — the verification key's
+    // own shape, checked here (never inferred from prover-controlled data).
+    if FRESH::USIZE == 0
+        || !is_pow2(ELL::USIZE)
+        || ELL::USIZE != FRESH::USIZE + A::USIZE
+        || !is_pow2(R::USIZE)
+        || R::USIZE != 1 + S::USIZE + SHIFTS::USIZE
+        || TW::USIZE != log_ell + 1
+        || BETA::USIZE != index.public_len + log_m
+        || X::USIZE != index.public_len
+        || N::USIZE != (1usize << Log2::<N>::USIZE)
+        || FSD1::USIZE != 2 + (log_n + 1).max(log_m + index.degree_bound)
+    {
+        return false;
+    }
+
+    // ---- transcript prefix ----
+    let mut transcript = warp_transcript_for(index, fresh_publics, input_accumulators);
+    transcript.absorb_len_prefixed(&proof.initial_root);
+    // log_m == 0 squeezes zero bytes here (the oracle's explicit skip).
+    let taus: Array<Array<Galois128, Log2<M>>, FRESH> = transcript.squeeze_field_grid();
+    transcript.absorb_fields(&proof.fresh_mus);
+
+    // ---- instance vectors (fresh then accumulators) ----
+    let mut alphas = Array::<Array<Galois128, Log2<N>>, ELL>::default();
+    let mut mus = Array::<Galois128, ELL>::default();
+    let mut betas = Array::<Array<Galois128, BETA>, ELL>::default();
+    let mut etas = Array::<Galois128, ELL>::default();
+    for i in 0..FRESH::USIZE {
+        mus[i] = proof.fresh_mus[i];
+        let mut beta_i = Array::<Galois128, BETA>::default();
+        for j in 0..X::USIZE {
+            beta_i[j] = fresh_publics[i][j];
+        }
+        for j in 0..M::USIZE {
+            if (1usize << j) < M::USIZE {
+                beta_i[X::USIZE + j] = taus[i][j];
+            }
+        }
+        betas[i] = beta_i;
+        etas[i] = Galois128(0);
+    }
+    for i in 0..A::USIZE {
+        let acc = &input_accumulators[i];
+        alphas[FRESH::USIZE + i] = acc.alpha.clone();
+        mus[FRESH::USIZE + i] = acc.mu;
+        betas[FRESH::USIZE + i] = acc.beta.clone();
+        etas[FRESH::USIZE + i] = acc.eta;
+    }
+
+    // ---- Construction 6.3: twin pseudo-batching ----
+    let tau_omega: Array<Galois128, TW> = transcript.squeeze_fields();
+    let tau = Array::<Galois128, Log2<ELL>>::from_fn(|i| tau_omega[i]);
+    let omega = tau_omega[TW::USIZE - 1];
+    let mut gamma = Array::<Galois128, Log2<ELL>>::default();
+    for round in 0..ELL::USIZE {
+        if (1usize << round) < ELL::USIZE {
+            let poly = &proof.first_sumcheck[round];
+            transcript.absorb_poly::<SC, FSD1>(poly);
+            gamma[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
+        }
+    }
+    let sigma1 = {
+        let eq_tau = warp_eq_evals::<Log2<ELL>, ELL>(&tau);
+        let mut out = Galois128(0);
+        for i in 0..ELL::USIZE {
+            out = out + eq_tau[i] * (mus[i] + omega * etas[i]);
+        }
+        out
+    };
+    let zeta0 = warp_combine_vectors(&alphas, &gamma);
+    let beta = warp_combine_vectors(&betas, &gamma);
+    if beta != output.beta {
+        return false;
+    }
+    if !warp_check_sumcheck(&proof.first_sumcheck, sigma1, &gamma, {
+        warp_eq_scalar(&tau, &gamma) * (proof.nu0 + omega * output.eta)
+    }) {
+        return false;
+    }
+
+    // ---- Construction 7.2 ----
+    transcript.absorb_len_prefixed(&output.root);
+    transcript.absorb_field(proof.nu0);
+    transcript.absorb_field(output.eta);
+    let ood_points: Array<Array<Galois128, Log2<N>>, S> = transcript.squeeze_field_grid();
+    transcript.absorb_fields(&proof.ood_answers);
+    let (shift_indices, xi): (Array<u32, SHIFTS>, Array<Galois128, Log2<R>>) =
+        transcript.squeeze_shift_and_xi(log_n);
+
+    // Openings: fresh share one stacked commitment; each prior accumulator
+    // keeps its own root.
+    for query in 0..SHIFTS::USIZE {
+        let path = &proof.initial_paths[query];
+        let row = &proof.openings[query];
+        let leaf = warp_hash_fresh_row::<ELL, FRESH>(row);
+        if !warp_merkle_verify_hashed(
+            &proof.initial_root,
+            &leaf,
+            shift_indices[query] as usize,
+            path,
+        ) {
+            return false;
+        }
+    }
+    for accumulator_index in 0..A::USIZE {
+        for query in 0..SHIFTS::USIZE {
+            let path = &proof.accumulator_paths[accumulator_index][query];
+            let value = proof.openings[query][FRESH::USIZE + accumulator_index];
+            let leaf = warp_hash_leaf_parts(&[&value.0.to_le_bytes()]);
+            if !warp_merkle_verify_hashed(
+                &input_accumulators[accumulator_index].root,
+                &leaf,
+                shift_indices[query] as usize,
+                path,
+            ) {
+                return false;
+            }
+        }
+    }
+
+    // ---- claim assembly ----
+    let mut claim_points = Array::<Array<Galois128, Log2<N>>, R>::default();
+    let mut claim_values = Array::<Galois128, R>::default();
+    claim_points[0] = zeta0;
+    claim_values[0] = proof.nu0;
+    for i in 0..S::USIZE {
+        claim_points[1 + i] = ood_points[i].clone();
+        claim_values[1 + i] = proof.ood_answers[i];
+    }
+    let eq_gamma = warp_eq_evals::<Log2<ELL>, ELL>(&gamma);
+    for i in 0..SHIFTS::USIZE {
+        claim_points[1 + S::USIZE + i] = warp_binary_point(shift_indices[i] as usize);
+        let row = &proof.openings[i];
+        let mut value = Galois128(0);
+        for j in 0..ELL::USIZE {
+            value = value + row[j] * eq_gamma[j];
+        }
+        claim_values[1 + S::USIZE + i] = value;
+    }
+    let sigma2 = {
+        let eq_xi = warp_eq_evals::<Log2<R>, R>(&xi);
+        let mut out = Galois128(0);
+        for i in 0..R::USIZE {
+            out = out + claim_values[i] * eq_xi[i];
+        }
+        out
+    };
+
+    // ---- Construction 8.2 ----
+    let mut alpha = Array::<Galois128, Log2<N>>::default();
+    for round in 0..N::USIZE {
+        if (1usize << round) < N::USIZE {
+            let poly = &proof.second_sumcheck[round];
+            transcript.absorb_poly::<SC, cipher::consts::U3>(poly);
+            alpha[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
+        }
+    }
+    if alpha != output.alpha {
+        return false;
+    }
+    warp_check_sumcheck(&proof.second_sumcheck, sigma2, &alpha, {
+        let eq = warp_eq_star_at(&claim_points, &xi, &output.alpha);
+        output.mu * eq
+    })
 }
 
 #[cfg(test)]
-mod prove_tests {
+mod tests {
     use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
     use cipher::consts::*;
 
-    fn toy_index() -> WarpIndex<U1, U4, U2> {
+    /// The toy PESAT `w0*w1 + w2 + w3 = 0` (degree 2, one constraint) shared
+    /// with the oracle's `toy_index`.
+    pub(crate) fn toy_index() -> WarpIndex<U1, U4, U2> {
         let mk = |vars: [usize; 2], n_vars: u32| WarpTerm::<U2> {
             coeff: Galois128(1),
             vars: Array::from_fn(|i| vars[i]),
@@ -1619,7 +1719,8 @@ mod prove_tests {
         }
     }
 
-    fn toy_witness(a: u128, b: u128, c: u128) -> WarpWitness<U4, U0> {
+    /// In characteristic 2, `a*b + c + d = 0` means `d = a*b + c`.
+    pub(crate) fn toy_witness(a: u128, b: u128, c: u128) -> WarpWitness<U4, U0> {
         let d = Galois128(a) * Galois128(b) + Galois128(c);
         WarpWitness {
             public: Array::<Galois128, U0>::default(),
@@ -1627,7 +1728,8 @@ mod prove_tests {
         }
     }
 
-    fn oracle_index() -> volar_iop::warp::PesatIndex<volar_primitives::Galois128> {
+    /// The oracle's index with identical content, for differentials.
+    pub(crate) fn oracle_index() -> volar_iop::warp::PesatIndex<volar_primitives::Galois128> {
         use volar_iop::warp::{PesatConstraint, PesatIndex, PesatTerm};
         let mk = |vars: Vec<usize>| PesatTerm {
             coeff: volar_primitives::Galois128(1),
@@ -1643,12 +1745,81 @@ mod prove_tests {
         }
     }
 
-    fn oracle_witness(w: &WarpWitness<U4, U0>) -> volar_iop::warp::PesatWitness<volar_primitives::Galois128> {
+    pub(crate) fn oracle_witness(
+        w: &WarpWitness<U4, U0>,
+    ) -> volar_iop::warp::PesatWitness<volar_primitives::Galois128> {
         volar_iop::warp::PesatWitness {
             public: Vec::new(),
             witness: w.witness.to_vec(),
         }
     }
+
+    #[test]
+    fn genesis_matches_the_oracle_byte_for_byte() {
+        let index = toy_index();
+        let witness = toy_witness(3, 5, 7);
+        let acc = warp_genesis_spec::<_, _, _, _, _, U4, _, U7, U0>(
+            &index,
+            &WarpIdentityCode,
+            &witness,
+        )
+        .expect("genesis succeeds");
+        assert!(warp_decide_spec(&index, &WarpIdentityCode, &acc));
+
+        let oracle = volar_iop::warp::warp_genesis(
+            &oracle_index(),
+            &volar_iop::warp::IdentityCode::new(4).unwrap(),
+            &oracle_witness(&toy_witness(3, 5, 7)),
+        )
+        .unwrap();
+        assert_eq!(
+            acc.instance.root.as_slice(),
+            oracle.instance.root.as_slice(),
+            "genesis Merkle roots must match the oracle"
+        );
+        assert_eq!(acc.instance.mu, oracle.instance.mu);
+        assert_eq!(acc.instance.eta, oracle.instance.eta);
+        assert_eq!(acc.instance.beta.to_vec(), oracle.instance.beta.clone());
+        assert_eq!(acc.instance.alpha.to_vec(), oracle.instance.alpha.clone());
+    }
+
+    #[test]
+    fn unsatisfied_witness_is_rejected() {
+        let index = toy_index();
+        let mut witness = toy_witness(3, 5, 7);
+        witness.witness[3] = witness.witness[3] + Galois128(1);
+        assert!(
+            warp_genesis_spec::<_, _, _, _, _, U4, _, U7, U0>(&index, &WarpIdentityCode, &witness)
+                .is_none(),
+            "unsatisfied witness must reject"
+        );
+    }
+
+    #[test]
+    fn decider_rejects_witness_that_does_not_encode_to_codeword() {
+        let index = toy_index();
+        let witness = toy_witness(17, 19, 23);
+        let mut acc = warp_genesis_spec::<_, _, _, _, _, U4, _, U7, U0>(
+            &index,
+            &WarpIdentityCode,
+            &witness,
+        )
+        .expect("genesis succeeds");
+        acc.witness.witness[0] = acc.witness.witness[0] + Galois128(1);
+        assert!(
+            !warp_decide_spec(&index, &WarpIdentityCode, &acc),
+            "decider must reject a witness that does not encode to the codeword"
+        );
+    }
+}
+
+#[cfg(test)]
+mod prove_tests {
+    use super::*;
+    use super::tests::{oracle_index, oracle_witness, toy_index, toy_witness};
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use cipher::consts::*;
 
     /// Two-fresh accumulation: the spec prover must match the oracle
     /// byte-for-byte (roots, mus, both sumchecks, OOD answers, openings).
@@ -1658,29 +1829,27 @@ mod prove_tests {
         let fresh = Array::<WarpWitness<U4, U0>, U2>::from_fn(|i| {
             if i == 0 { toy_witness(3, 5, 7) } else { toy_witness(9, 11, 13) }
         });
-        let accumulators = Array::<WarpAcc<U4, U4, U2, U0, U7>, U0>::from_fn(|_| unreachable!("U0 is empty"));
+        let accumulators =
+            Array::<WarpAcc<U4, U4, U2, U0, U7>, U0>::from_fn(|_| unreachable!("U0 is empty"));
         let (acc, proof) = warp_prove_spec::<
-            U1, U4, U2, U4, U0, U4, U2, U0, U2, U1, U2, U4, U8, U2, U7, U0, _
+            U1, U4, U2, U4, U0, U4, U2, U0, U2, U1, U2, U4, U8, U2, U5, U7, U0, _
         >(&index, &WarpIdentityCode, &fresh, &accumulators)
-        .unwrap();
-        warp_decide_spec(&index, &WarpIdentityCode, &acc).unwrap();
+        .expect("proving succeeds");
+        assert!(warp_decide_spec(&index, &WarpIdentityCode, &acc));
 
-        let oacc = {
-            let ofresh: Vec<_> = fresh.iter().map(oracle_witness).collect();
-            volar_iop::warp::warp_prove(
-                &oracle_index(),
-                &volar_iop::warp::IdentityCode::new(4).unwrap(),
-                volar_iop::warp::WarpSampling {
-                    log_codeword_len: 2,
-                    out_of_domain: 1,
-                    shift_queries: 2,
-                },
-                &ofresh,
-                &[],
-            )
-            .unwrap()
-        };
-        let (oacc, oproof) = oacc;
+        let ofresh: Vec<_> = fresh.iter().map(oracle_witness).collect();
+        let (oacc, oproof) = volar_iop::warp::warp_prove(
+            &oracle_index(),
+            &volar_iop::warp::IdentityCode::new(4).unwrap(),
+            volar_iop::warp::WarpSampling {
+                log_codeword_len: 2,
+                out_of_domain: 1,
+                shift_queries: 2,
+            },
+            &ofresh,
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(acc.instance.root.as_slice(), oacc.instance.root.as_slice());
         assert_eq!(acc.instance.mu, oacc.instance.mu);
@@ -1738,14 +1907,14 @@ mod prove_tests {
             &WarpIdentityCode,
             &toy_witness(17, 19, 23),
         )
-        .unwrap();
+        .expect("genesis succeeds");
         let fresh = Array::<WarpWitness<U4, U0>, U1>::from_fn(|_| toy_witness(29, 31, 37));
         let accumulators = Array::<WarpAcc<U4, U4, U2, U0, U7>, U1>::from_fn(|_| genesis.clone());
         let (acc, _proof) = warp_prove_spec::<
-            U1, U4, U2, U4, U0, U4, U1, U1, U2, U1, U2, U4, U8, U2, U7, U0, _
+            U1, U4, U2, U4, U0, U4, U1, U1, U2, U1, U2, U4, U8, U2, U5, U7, U0, _
         >(&index, &WarpIdentityCode, &fresh, &accumulators)
-        .unwrap();
-        warp_decide_spec(&index, &WarpIdentityCode, &acc).unwrap();
+        .expect("proving succeeds");
+        assert!(warp_decide_spec(&index, &WarpIdentityCode, &acc));
 
         let ogenesis = volar_iop::warp::warp_genesis(
             &oracle_index(),
@@ -1779,13 +1948,15 @@ mod prove_tests {
         let fresh = Array::<WarpWitness<U4, U0>, U2>::from_fn(|i| {
             if i == 0 { toy_witness(41, 43, 47) } else { toy_witness(53, 59, 61) }
         });
-        let accumulators = Array::<WarpAcc<U8, U4, U3, U0, U15>, U0>::from_fn(|_| unreachable!("U0 is empty"));
+        let accumulators = Array::<WarpAcc<U8, U4, U3, U0, U15>, U0>::from_fn(|_| {
+            unreachable!("U0 is empty")
+        });
         // N=8 (U8), LOGN=U3, NODES=U15; R=U4, TW=U2, BETA=U0, SC=U8.
         let (acc, _proof) = warp_prove_spec::<
-            U1, U4, U2, U4, U0, U8, U2, U0, U2, U1, U2, U4, U8, U2, U15, U0, _
+            U1, U4, U2, U4, U0, U8, U2, U0, U2, U1, U2, U4, U8, U2, U6, U15, U0, _
         >(&index, &WarpRepetitionCode, &fresh, &accumulators)
-        .unwrap();
-        warp_decide_spec(&index, &WarpRepetitionCode, &acc).unwrap();
+        .expect("proving succeeds");
+        assert!(warp_decide_spec(&index, &WarpRepetitionCode, &acc));
 
         let ofresh: Vec<_> = fresh.iter().map(oracle_witness).collect();
         let (oacc, _oproof) = volar_iop::warp::warp_prove(
@@ -1813,266 +1984,26 @@ mod prove_tests {
         let fresh = Array::<WarpWitness<U4, U0>, U2>::from_fn(|i| {
             if i == 0 { bad.clone() } else { toy_witness(9, 11, 13) }
         });
-        let accumulators = Array::<WarpAcc<U4, U4, U2, U0, U7>, U0>::from_fn(|_| unreachable!("U0 is empty"));
-        assert_eq!(
-            warp_prove_spec::<U1, U4, U2, U4, U0, U4, U2, U0, U2, U1, U2, U4, U8, U2, U7, U0, _>(
+        let accumulators =
+            Array::<WarpAcc<U4, U4, U2, U0, U7>, U0>::from_fn(|_| unreachable!("U0 is empty"));
+        assert!(
+            warp_prove_spec::<U1, U4, U2, U4, U0, U4, U2, U0, U2, U1, U2, U4, U8, U2, U5, U7, U0, _>(
                 &index,
                 &WarpIdentityCode,
                 &fresh,
                 &accumulators,
             )
-            .unwrap_err(),
-            WarpError::UnsatisfiedPesat(0)
+            .is_none(),
+            "unsatisfied fresh witness must reject"
         );
     }
-}
-
-// ============================================================================
-// The verifier (W4) — Construction 10.4's V_ACC.
-// ============================================================================
-
-/// Hash one stacked fresh leaf: the concatenation of the first `FRESH`
-/// entries of an openings row (the oracle's fresh-leaf construction).
-fn warp_hash_fresh_row(row: &[Galois128]) -> WarpDigest {
-    let mut h = SpecSponge::new(SHA3_256_RATE);
-    h.absorb(&[0x00]);
-    for value in row {
-        h.absorb(&value.0.to_le_bytes());
-    }
-    let mut reader = h.finalize_xof(0x06);
-    let mut out = WarpDigest::default();
-    reader.read(&mut out);
-    out
-}
-
-/// Verify a Construction 10.4 accumulation proof.
-///
-/// Every shape the verifier relies on is carried in types (part of the
-/// verification key, compile-time fixed) and cross-checked fail-closed at
-/// entry — the verifier never infers a shape from prover-controlled data
-/// (the oracle's `WarpSampling::log_codeword_len` lesson: here `LOGN` comes
-/// from the proof/output *types*, which the caller picks).
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn warp_verify_spec<M, TERMS, DEG, X, FRESH, A, ELL, S, SHIFTS, R, SC, TW, LOGN, BETA>(
-    index: &WarpIndex<M, TERMS, DEG>,
-    fresh_publics: &Array<Array<Galois128, X>, FRESH>,
-    input_accumulators: &Array<WarpAccInstance<LOGN, BETA>, A>,
-    output: &WarpAccInstance<LOGN, BETA>,
-    proof: &WarpProof<FRESH, ELL, A, S, SHIFTS, SC, LOGN>,
-) -> WarpResult<()>
-where
-    M: ArraySize + Logarithm2,
-    TERMS: ArraySize,
-    DEG: ArraySize,
-    X: ArraySize,
-    FRESH: ArraySize,
-    A: ArraySize,
-    ELL: ArraySize + Logarithm2,
-    S: ArraySize,
-    SHIFTS: ArraySize,
-    R: ArraySize + Logarithm2,
-    SC: ArraySize,
-    TW: ArraySize,
-    LOGN: ArraySize,
-    BETA: ArraySize,
-    Log2<M>: ArraySize,
-    Log2<ELL>: ArraySize,
-    Log2<R>: ArraySize,
-{
-    index.validate()?;
-    let log_m = index.log_constraints();
-    let log_ell = log2_pow2(ELL::USIZE) as usize;
-    let log_n = LOGN::USIZE;
-    if FRESH::USIZE == 0
-        || !is_pow2(ELL::USIZE)
-        || ELL::USIZE != FRESH::USIZE + A::USIZE
-        || !is_pow2(R::USIZE)
-        || R::USIZE != 1 + S::USIZE + SHIFTS::USIZE
-        || TW::USIZE != log_ell + 1
-        || BETA::USIZE != index.public_len + log_m
-        || X::USIZE != index.public_len
-    {
-        return Err(WarpError::ShapeMismatch);
-    }
-
-    // ---- transcript prefix ----
-    let mut transcript = warp_transcript_for(index, fresh_publics, input_accumulators);
-    transcript.absorb_len_prefixed(&proof.initial_root);
-    // log_m == 0 squeezes zero bytes here (the oracle's explicit skip).
-    let taus: Array<Array<Galois128, Log2<M>>, FRESH> = transcript.squeeze_field_grid();
-    transcript.absorb_fields(&proof.fresh_mus);
-
-    // ---- instance vectors (fresh then accumulators) ----
-    let mut alphas = Array::<Array<Galois128, LOGN>, ELL>::default();
-    let mut mus = Array::<Galois128, ELL>::default();
-    let mut betas = Array::<Array<Galois128, BETA>, ELL>::default();
-    let mut etas = Array::<Galois128, ELL>::default();
-    for i in 0..FRESH::USIZE {
-        mus[i] = proof.fresh_mus[i];
-        let mut beta = Array::<Galois128, BETA>::default();
-        for j in 0..X::USIZE {
-            beta[j] = fresh_publics[i][j];
-        }
-        for j in 0..log_m {
-            beta[X::USIZE + j] = taus[i][j];
-        }
-        betas[i] = beta;
-        etas[i] = Galois128(0);
-    }
-    for i in 0..A::USIZE {
-        let acc = &input_accumulators[i];
-        alphas[FRESH::USIZE + i] = acc.alpha.clone();
-        mus[FRESH::USIZE + i] = acc.mu;
-        betas[FRESH::USIZE + i] = acc.beta.clone();
-        etas[FRESH::USIZE + i] = acc.eta;
-    }
-
-    // ---- Construction 6.3: twin pseudo-batching ----
-    let tau_omega: Array<Galois128, TW> = transcript.squeeze_fields();
-    let tau = Array::<Galois128, Log2<ELL>>::from_fn(|i| tau_omega[i]);
-    let omega = tau_omega[TW::USIZE - 1];
-    let mut gamma = Array::<Galois128, Log2<ELL>>::default();
-    for (round, poly) in proof.first_sumcheck.iter().enumerate() {
-        transcript.absorb_field_slice(&poly.evaluations[..poly.count as usize]);
-        gamma[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
-    }
-    let sigma1 = {
-        let eq_tau = warp_eq_evals::<Log2<ELL>, ELL>(&tau)?;
-        let mut out = Galois128(0);
-        for ((mu, eta), weight) in mus.iter().zip(etas.iter()).zip(eq_tau.iter()) {
-            out = out + *weight * (*mu + omega * *eta);
-        }
-        out
-    };
-    let zeta0 = warp_combine_vectors(&alphas, &gamma)?;
-    let beta = warp_combine_vectors(&betas, &gamma)?;
-    if beta != output.beta {
-        return Err(WarpError::ShapeMismatch);
-    }
-    if !warp_check_sumcheck(proof.first_sumcheck.as_slice(), sigma1, &gamma, {
-        warp_eq_scalar(&tau, &gamma) * (proof.nu0 + omega * output.eta)
-    }) {
-        return Err(WarpError::SumcheckMismatch);
-    }
-
-    // ---- Construction 7.2 ----
-    transcript.absorb_len_prefixed(&output.root);
-    transcript.absorb_field(proof.nu0);
-    transcript.absorb_field(output.eta);
-    let ood_points: Array<Array<Galois128, LOGN>, S> = transcript.squeeze_field_grid();
-    transcript.absorb_fields(&proof.ood_answers);
-    let (shift_indices, xi): (Array<u32, SHIFTS>, Array<Galois128, Log2<R>>) =
-        transcript.squeeze_shift_and_xi(log_n as u32);
-
-    // Openings: fresh share one stacked commitment; each prior accumulator
-    // keeps its own root.
-    for (query, path) in proof.initial_paths.iter().enumerate() {
-        let row = &proof.openings[query];
-        let leaf = warp_hash_fresh_row(&row[..FRESH::USIZE]);
-        if !warp_merkle_verify_hashed(
-            &proof.initial_root,
-            &leaf,
-            shift_indices[query] as usize,
-            path,
-        ) {
-            return Err(WarpError::MerkleMismatch);
-        }
-    }
-    for (accumulator_index, paths) in proof.accumulator_paths.iter().enumerate() {
-        for (query, path) in paths.iter().enumerate() {
-            let value = proof.openings[query][FRESH::USIZE + accumulator_index];
-            let leaf = warp_hash_leaf(&[&value.0.to_le_bytes()]);
-            if !warp_merkle_verify_hashed(
-                &input_accumulators[accumulator_index].root,
-                &leaf,
-                shift_indices[query] as usize,
-                path,
-            ) {
-                return Err(WarpError::MerkleMismatch);
-            }
-        }
-    }
-
-    // ---- claim assembly ----
-    let mut claim_points = Array::<Array<Galois128, LOGN>, R>::default();
-    let mut claim_values = Array::<Galois128, R>::default();
-    claim_points[0] = zeta0;
-    claim_values[0] = proof.nu0;
-    for i in 0..S::USIZE {
-        claim_points[1 + i] = ood_points[i].clone();
-        claim_values[1 + i] = proof.ood_answers[i];
-    }
-    let eq_gamma = warp_eq_evals::<Log2<ELL>, ELL>(&gamma)?;
-    for i in 0..SHIFTS::USIZE {
-        claim_points[1 + S::USIZE + i] = warp_binary_point(shift_indices[i] as usize);
-        let row = &proof.openings[i];
-        let mut value = Galois128(0);
-        for (opening, weight) in row.iter().zip(eq_gamma.iter()) {
-            value = value + *opening * *weight;
-        }
-        claim_values[1 + S::USIZE + i] = value;
-    }
-    let sigma2 = {
-        let eq_xi = warp_eq_evals::<Log2<R>, R>(&xi)?;
-        let mut out = Galois128(0);
-        for (value, weight) in claim_values.iter().zip(eq_xi.iter()) {
-            out = out + *value * *weight;
-        }
-        out
-    };
-
-    // ---- Construction 8.2 ----
-    let mut alpha = Array::<Galois128, LOGN>::default();
-    for (round, poly) in proof.second_sumcheck.iter().enumerate() {
-        transcript.absorb_field_slice(&poly.evaluations[..poly.count as usize]);
-        alpha[round] = transcript.squeeze_fields::<cipher::consts::U1>()[0];
-    }
-    if alpha != output.alpha {
-        return Err(WarpError::ShapeMismatch);
-    }
-    if !warp_check_sumcheck(proof.second_sumcheck.as_slice(), sigma2, &alpha, {
-        let eq = warp_eq_star_at(&claim_points, &xi, &output.alpha)?;
-        output.mu * eq
-    }) {
-        return Err(WarpError::SumcheckMismatch);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod verify_tests {
     use super::*;
+    use super::tests::{toy_index, toy_witness};
     use cipher::consts::*;
-
-    fn toy_index() -> WarpIndex<U1, U4, U2> {
-        let mk = |vars: [usize; 2], n_vars: u32| WarpTerm::<U2> {
-            coeff: Galois128(1),
-            vars: Array::from_fn(|i| vars[i]),
-            n_vars,
-        };
-        WarpIndex {
-            constraints: Array::from_fn(|_| WarpConstraint::<U4, U2> {
-                terms: Array::from_fn(|i| match i {
-                    0 => mk([0, 1], 2),
-                    1 => mk([2, 0], 1),
-                    2 => mk([3, 0], 1),
-                    _ => mk([0, 0], 0),
-                }),
-                n_terms: 3,
-            }),
-            public_len: 0,
-            witness_len: 4,
-            degree_bound: 2,
-        }
-    }
-
-    fn toy_witness(a: u128, b: u128, c: u128) -> WarpWitness<U4, U0> {
-        let d = Galois128(a) * Galois128(b) + Galois128(c);
-        WarpWitness {
-            public: Array::<Galois128, U0>::default(),
-            witness: Array::from_fn(|i| [Galois128(a), Galois128(b), Galois128(c), d][i]),
-        }
-    }
 
     /// The shared two-fresh shape: index, fresh inputs, empty accumulators.
     fn two_fresh() -> (
@@ -2085,23 +2016,23 @@ mod verify_tests {
         let fresh = Array::<WarpWitness<U4, U0>, U2>::from_fn(|i| {
             if i == 0 { toy_witness(3, 5, 7) } else { toy_witness(9, 11, 13) }
         });
-        let accumulators = Array::<WarpAcc<U4, U4, U2, U0, U7>, U0>::from_fn(|_| unreachable!());
+        let accumulators =
+            Array::<WarpAcc<U4, U4, U2, U0, U7>, U0>::from_fn(|_| unreachable!("U0 is empty"));
         let (acc, proof) = warp_prove_spec::<
-            U1, U4, U2, U4, U0, U4, U2, U0, U2, U1, U2, U4, U8, U2, U7, U0, _
+            U1, U4, U2, U4, U0, U4, U2, U0, U2, U1, U2, U4, U8, U2, U5, U7, U0, _
         >(&index, &WarpIdentityCode, &fresh, &accumulators)
-        .unwrap();
+        .expect("proving succeeds");
         (index, fresh, acc, proof)
     }
 
     fn verify_two_fresh(
         index: &WarpIndex<U1, U4, U2>,
-        fresh: &Array<WarpWitness<U4, U0>, U2>,
         acc: &WarpAcc<U4, U4, U2, U0, U7>,
         proof: &WarpProof<U2, U2, U0, U1, U2, U8, U2>,
-    ) -> WarpResult<()> {
+    ) -> bool {
         let fresh_publics = Array::<Array<Galois128, U0>, U2>::default();
         let inputs = Array::<WarpAccInstance<U2, U0>, U0>::from_fn(|_| unreachable!("U0 is empty"));
-        warp_verify_spec::<U1, U4, U2, U0, U2, U0, U2, U1, U2, U4, U8, U2, U2, U0>(
+        warp_verify_spec::<U1, U4, U2, U0, U2, U0, U2, U1, U2, U4, U8, U2, U5, U4, U0>(
             index,
             &fresh_publics,
             &inputs,
@@ -2112,44 +2043,38 @@ mod verify_tests {
 
     #[test]
     fn honest_two_fresh_verifies() {
-        let (index, fresh, acc, proof) = two_fresh();
-        verify_two_fresh(&index, &fresh, &acc, &proof).unwrap();
-        warp_decide_spec(&index, &WarpIdentityCode, &acc).unwrap();
+        let (index, _fresh, acc, proof) = two_fresh();
+        assert!(verify_two_fresh(&index, &acc, &proof));
+        assert!(warp_decide_spec(&index, &WarpIdentityCode, &acc));
     }
 
     #[test]
     fn tampered_first_sumcheck_is_rejected() {
-        let (index, fresh, acc, mut proof) = two_fresh();
+        let (index, _fresh, acc, mut proof) = two_fresh();
         proof.first_sumcheck[0].evaluations[0] =
             proof.first_sumcheck[0].evaluations[0] + Galois128(1);
-        assert_eq!(
-            verify_two_fresh(&index, &fresh, &acc, &proof),
-            Err(WarpError::SumcheckMismatch)
-        );
+        assert!(!verify_two_fresh(&index, &acc, &proof));
     }
 
     #[test]
     fn tampered_merkle_path_is_rejected() {
-        let (index, fresh, acc, mut proof) = two_fresh();
+        let (index, _fresh, acc, mut proof) = two_fresh();
         proof.initial_paths[0].siblings[0][0] ^= 1;
-        assert_eq!(
-            verify_two_fresh(&index, &fresh, &acc, &proof),
-            Err(WarpError::MerkleMismatch)
-        );
+        assert!(!verify_two_fresh(&index, &acc, &proof));
     }
 
     #[test]
     fn tampered_output_root_is_rejected() {
-        let (index, fresh, mut acc, proof) = two_fresh();
+        let (index, _fresh, mut acc, proof) = two_fresh();
         acc.instance.root[0] ^= 1;
-        assert!(verify_two_fresh(&index, &fresh, &acc, &proof).is_err());
+        assert!(!verify_two_fresh(&index, &acc, &proof));
     }
 
     #[test]
     fn tampered_output_alpha_is_rejected() {
-        let (index, fresh, mut acc, proof) = two_fresh();
+        let (index, _fresh, mut acc, proof) = two_fresh();
         acc.instance.alpha[0] = acc.instance.alpha[0] + Galois128(1);
-        assert!(verify_two_fresh(&index, &fresh, &acc, &proof).is_err());
+        assert!(!verify_two_fresh(&index, &acc, &proof));
     }
 }
 
@@ -2219,23 +2144,22 @@ mod public_tests {
             Array::<WarpAcc<U4, U4, U2, U2, U7>, U0>::from_fn(|_| unreachable!("U0 is empty"));
         // BETA = public_len + log2(M) = 1 + 1 = 2.
         let (acc, proof) = warp_prove_spec::<
-            U2, U4, U2, U4, U1, U4, U2, U0, U2, U1, U2, U4, U8, U2, U7, U2, _
+            U2, U4, U2, U4, U1, U4, U2, U0, U2, U1, U2, U4, U8, U2, U5, U7, U2, _
         >(&index, &WarpIdentityCode, &fresh, &accumulators)
-        .unwrap();
-        warp_decide_spec(&index, &WarpIdentityCode, &acc).unwrap();
+        .expect("proving succeeds");
+        assert!(warp_decide_spec(&index, &WarpIdentityCode, &acc));
 
         let fresh_publics =
             Array::<Array<Galois128, U1>, U2>::from_fn(|i| fresh[i].public.clone());
         let inputs =
             Array::<WarpAccInstance<U2, U2>, U0>::from_fn(|_| unreachable!("U0 is empty"));
-        warp_verify_spec::<U2, U4, U2, U1, U2, U0, U2, U1, U2, U4, U8, U2, U2, U2>(
+        assert!(warp_verify_spec::<U2, U4, U2, U1, U2, U0, U2, U1, U2, U4, U8, U2, U5, U4, U2>(
             &index,
             &fresh_publics,
             &inputs,
             &acc.instance,
             &proof,
-        )
-        .unwrap();
+        ));
 
         // Oracle differential.
         let oracle_index = {
@@ -2291,14 +2215,13 @@ mod public_tests {
             }
         });
         assert!(
-            warp_verify_spec::<U2, U4, U2, U1, U2, U0, U2, U1, U2, U4, U8, U2, U2, U2>(
+            !warp_verify_spec::<U2, U4, U2, U1, U2, U0, U2, U1, U2, U4, U8, U2, U5, U4, U2>(
                 &index,
                 &wrong_publics,
                 &inputs,
                 &acc.instance,
                 &proof,
-            )
-            .is_err(),
+            ),
             "changing a public input must change the transcript and reject"
         );
     }

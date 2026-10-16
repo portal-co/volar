@@ -6684,7 +6684,17 @@ fn concrete_usize_expr<T: LirTarget<P>, P: Clone>(
             .const_params
             .get(name)
             .or_else(|| ctx.mono.consts.get(name.as_str()))
-            .copied(),
+            .copied()
+            // Env-bound constant values (e.g. an unrolled loop's counter,
+            // bound to a per-iteration literal): a bound computed from them
+            // is concrete exactly when the value is a known constant.
+            .or_else(|| {
+                ctx.env
+                    .get(name)
+                    .and_then(|vals| vals.first())
+                    .and_then(|v| ctx.target.value_as_u128(v))
+                    .map(|v| v as usize)
+            }),
         IrExprKind::Path { segments, .. } if segments.len() == 2 && segments[1] == "USIZE" => ctx
             .mono
             .const_params
@@ -7417,6 +7427,53 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
 // Phase 2: free function calls
 // ============================================================================
 
+/// The LIR field type a constructor name builds, if any: the legacy field
+/// primitives (`Galois128`, ...) and the registered field markers
+/// (`Gf2_128`, `Fp3`, ...) both resolve through the marker registry — one
+/// field spec, two spellings (the M1 alias).
+fn field_ctor_lir_type(name: &str) -> Option<LirType> {
+    if let Some(p) = volar_compiler::ir::PrimitiveType::from_str(name) {
+        return if p.is_field_element() {
+            Some(crate::structs::primitive_to_lir(p))
+        } else {
+            None
+        };
+    }
+    if let Some(spec) = volar_ir_common::field_markers::resolve_ext_field_marker(name) {
+        return Some(LirType::ExtField {
+            wrapped: Box::new(LirType::Native(volar_ir_common::Type::Bit)),
+            degree: spec.degree,
+            irreducible: spec.irreducible.to_vec(),
+        });
+    }
+    if let Some(spec) = volar_ir_common::field_markers::resolve_prime_field_marker(name) {
+        return Some(LirType::PrimeField {
+            k: spec.k,
+            n: spec.n.to_vec(),
+        });
+    }
+    None
+}
+
+/// Lower `FieldName(payload)`: one typed field cell. Constant payloads
+/// become typed constants; runtime integer payloads reinterpret their bits
+/// as the field element (LSB-first) via the target's `int_to_field`.
+fn lower_field_construct<T: LirTarget<P>, P: Clone>(
+    payload: &IrExpr<P>,
+    field_lir: LirType,
+    ctx: &mut LowerCtx<T, P>,
+) -> T::Value {
+    let val = into_scalar(lower_expr(payload, ctx), "field constructor payload");
+    if let Some(v) = ctx.target.value_as_u128(&val) {
+        if let Ok(v) = i64::try_from(v) {
+            return ctx.target.iconst(field_lir, v);
+        }
+        // Wider-than-i64 constants fall through to the bit-reinterpretation
+        // path rather than truncating (fail-closed).
+    }
+    ctx.target.int_to_field(val, &field_lir)
+}
+
 fn lower_call<T: LirTarget<P>, P: Clone>(
     func: &IrExpr<P>,
     args: &[IrExpr<P>],
@@ -7742,6 +7799,25 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         return values;
     }
 
+    // ---- Field-element construction ------------------------------------------
+    // A bare `FieldName(payload)` call constructs one typed field cell:
+    // `Galois128(x)`/`Galois64(x)`/... (the legacy primitives) or
+    // `Gf2_128(x)`/`Fp3(x)`/... (field markers). Constant payloads become
+    // typed constants; runtime integer payloads reinterpret their bits as
+    // the field element via the target's `int_to_field`.
+    if args.len() == 1 {
+        let ctor_name = match &func.kind {
+            IrExprKind::Path { segments, .. } if segments.len() == 1 => Some(segments[0].as_str()),
+            IrExprKind::Var(name) => Some(name.as_str()),
+            _ => None,
+        };
+        if let Some(name) = ctor_name {
+            if let Some(field_lir) = field_ctor_lir_type(name) {
+                return vec![lower_field_construct(&args[0], field_lir, ctx)];
+            }
+        }
+    }
+
     // ---- Tuple-struct construction -----------------------------------------
     // A bare `StructName(payload)` call constructs a single-field tuple
     // struct (e.g. `FaestPublicKey(pk)`). The wrapper is transparent in the
@@ -7892,9 +7968,12 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
                 arg_tys.push(arg_ty);
                 flat_args.extend(values);
             }
-            return ctx
-                .target
-                .call_extern(emitted_name, &arg_tys, &flat_args, ret_ty);
+            // `call` (not `call_extern`): sibling calls are
+            // forward-reference-safe — a not-yet-lowered callee gets a
+            // pending slot the callee's own `end_function` patches in place,
+            // while `call_extern`'s import stub would stay orphaned (and
+            // unevaluable) when the callee lowers after this caller.
+            return ctx.target.call(emitted_name, &arg_tys, &flat_args, ret_ty);
         }
     }
 
