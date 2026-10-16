@@ -1,0 +1,3311 @@
+
+
+===== PAGE 1 =====
+Linear-Time Accumulation Schemes
+Benedikt Bünz
+bb@nyu.edu
+NYU
+Alessandro Chiesa
+alessandro.chiesa@epfl.ch
+EPFL
+Giacomo Fenzi
+giacomo.fenzi@epfl.ch
+EPFL
+William Wang
+ww@priv.pub
+NYU
+June 17, 2026
+Abstract
+Proof-carrying data (PCD) is a powerful cryptographic primitive for computational integrity
+in a distributed setting. State-of-the-art constructions of PCD are based on accumulation
+schemes (and, closely related, folding schemes).
+We presentWARP, the first accumulation scheme with linear prover time and logarithmic
+verifier time. Our scheme is hash-based (secure in the random oracle model), plausibly post-
+quantum secure, and supports unbounded accumulation depth.
+We achieve our result by constructing an interactive oracle reduction of proximity that works
+withanylinear code over a sufficiently large field. We take a novel approach by constructing
+a straightline extractor that relies onerasure correction, rather than error-tolerant decoding
+like prior extractors. Along the way, we introduce a variant of straightline round-by-round
+knowledge soundness that is compatible with our extraction strategy.
+Keywords: interactive oracle reductions; accumulation schemes; linear codes
+1
+
+===== PAGE 2 =====
+Contents
+1 Introduction 3
+1.1 Our results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+1.2 Related work . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+2 Technical overview 8
+2.1 On hash-based accumulation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+2.2 Limitations of prior work . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+2.3 Out-of-domain (and in-domain) sampling for every linear code . . . . . . . . . . . . . . . . . 9
+2.4 Codeword batching, with constraints . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+2.5 From PESAT to constrained codes . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13
+2.6 Twin constraint pseudo-batching . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+2.7 Straightline extraction for every linear code . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16
+2.8 Round-by-round extraction for every linear code . . . . . . . . . . . . . . . . . . . . . . . . . 19
+2.9 Summary and instantiations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+3 Preliminaries 25
+3.1 Relations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+3.2 Interactive oracle reductions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26
+3.3 Zero-evaders . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 27
+3.4 Codes . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+3.5 Out-of-domain samples . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+3.6 Mutual correlated agreement for proximity generators . . . . . . . . . . . . . . . . . . . . . . 29
+4 Round-by-round knowledge soundness for IORs 30
+5 Polynomial equation satisfiability 31
+5.1 Protocol . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+5.2 Security . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+6 Twin constraint pseudo-batching 35
+6.1 Protocol . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 35
+6.2 Security . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 38
+7 Codeword batching 43
+7.1 Protocol . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 43
+7.2 Security . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 44
+8 Multilinear constraint batching 46
+8.1 Protocol . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 46
+8.2 Security . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 48
+9 Combining the IORs 51
+10 Unbounded accumulation from any linear code 55
+10.1 Accumulation schemes in oracle models . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 55
+10.2WARP: our accumulation scheme . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 55
+A Succinct arguments vs. accumulation schemes 64
+B RBR knowledge soundness implies SR knowledge soundness 65
+C Comparison with prior notions of RBR knowledge soundness 68
+D Extension fields 70
+D.1 Definitions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 70
+D.2 Adapting the IORs . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 71
+D.3 Adapting the accumulation scheme . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 71
+Acknowledgments 72
+References 72
+2
+
+===== PAGE 3 =====
+1 Introduction
+Proof-carrying data (PCD) [CT10] is a powerful cryptographic primitive that allows mutually
+distrustful parties to perform distributed computation in an efficiently verifiable manner. PCD
+generalizes incrementally verifiable computation (IVC) [Val08], and has applications to enforcing
+language semantics [CTV13], verifiable MapReduce computations [CTV15], image/video prove-
+nance [NT16; ZYORJ24], memory-efficient succinct arguments [NDCTB24], consensus protocols
+[BCG24], blockchains [Min; KB20; BMRS20; CCDW20], and more.
+PCD was initially achieved via recursive proof composition of succinct arguments [BCCT13;
+BCTV14]. Subsequently, a successful line of work shows how to achieve highly-efficient PCD from
+a more lightweight primitive,accumulation schemes(and folding schemes) [BGH19; BCMS20;
+BCLMS21; KST22; BC23; KS24; EG23; BMNW25a; BC24; FKNP24; BMNW25b; BC25; NS25].
+In this paper we present the first accumulation scheme with linear prover time and logarithmic
+verifier complexity. We review accumulation schemes below, and refer the reader to the cited papers
+for how PCD is obtained from them.
+Accumulation schemes.Informally, an accumulation schemeACC= (P ACC,V ACC,D ACC)for an
+NP relationRenables verifiably propagating the bit that equals the conjunction of any number of
+membership checks forR, without holding onto the verified instance-witness pairs. This is done by
+maintaining an accumulatoracc. For each instance-witness pair to be accumulated, the proverPACC
+updatesaccand outputs a short proofpfattesting to the update’s correctness, which the verifier
+VACC checks. Afterwards, the accumulatoraccis given to the deciderD ACC, which outputs a bit.
+Provided all checks byVACC succeeded,D ACC’s output equals the conjunction of the membership
+checks on the accumulated instance-witness pairs.
+In fact, we consider a refined notion known as asplitaccumulation scheme [BCLMS21], in which
+the accumulatoraccis divided into a short “instance part”acc.xand long “witness part”acc.w.
+The verifierV ACC receives only instance parts, whereas the proverPACC and deciderD ACC receive
+both instance and witness parts. This refined notion enables particularly efficient accumulation,
+since the verifierVACC can be succinct in the witness parts.
+More formally, an accumulation schemeACC= (PACC,V ACC,D ACC)forRworks as follows.
+•Completeness.Let(x,w)∈ Randacc i be such thatD ACC(acci) = 1. ThenP ACC(acci,x,w)
+outputs(acc i+1,pf)such that
+VACC(acci.x,x,acc i+1.x,pf) = 1andD ACC(acci+1) = 1.
+•Knowledge soundness.There exists an efficient deterministic extractorEACC such that, for every
+acci.x,x,acc i+1,pfthat are efficiently generated, if
+VACC(acci.x,x,acc i+1.x,pf) = 1andD ACC(acci+1) = 1,
+then, except for a small error probability, the extractorEACC (given suitable inputs) outputs
+witnesses(w,acc i.w)such that(x,w)∈RandD ACC(acci) = 1(foracc i := (acci.x,acci.w)).
+More generally, an accumulation scheme supports any numberℓ1 of instance-witness pairs and any
+numberℓ 2 of input accumulators; in the above informal description we focus onℓ1 =ℓ 2 = 1.
+Prior art: superlinear provers.In PCD schemes obtained from accumulation schemes, the time
+complexity of the PCD prover depends linearly on the time complexities of the accumulation prover;
+3
+
+===== PAGE 4 =====
+moreover, each PCD steprecursivelyproves that the accumulation verifier accepts. While prior
+work has constructed accumulation schemes with asymptotically optimal accumulation verifiers, the
+same is not true for the prover side. Specifically, in prior constructions of accumulation schemes,
+provers run in superlinear time. Below we summarize the efficiency features of prior works, and
+postpone a more detailed discussion to Section 1.2.
+Prior accumulation schemes.Most accumulation schemes rely on additive homomorphisms
+[BCMS20; BCLMS21; KST22; BC23; KS24; EG23] that arise from commitments over prime-order
+groups or bilinear groups [Ped92; KZG10]. These constructions require multiscalar multiplications
+that involve a superlinear amount of group operations (even with Pippenger’s algorithm [Pip80]).
+Some accumulation schemes are based on lattices [BC24; FKNP24; BC25; NS25]. While lattice-
+based linear-time commitments are known [AHIKV17], challenges arise when handling noise growth
+towards accumulation. In particular, no prior lattice constructions achieve linear-time provers.
+Recent work constructs accumulation schemes in the random oracle model (ROM) by using, in
+particular, Merkle commitment schemes [BMNW25b]. Their prover runs in quasilinear time, due
+to the use of Reed–Solomon codes and polynomial quotients.
+Separately, we note that any succinct non-interactive argument directly implies a corresponding
+accumulation scheme (where the accumulation decider always accepts). Qualitatively, this impli-
+cation yields accumulation schemes that are less efficient than direct constructions of accumulation
+schemes, since succinct arguments rely on “heavier” tools (to achieve succinctness). Quantitatively,
+the efficiency tradeoffs are more nuanced, as explained in Section A.
+1.1 Our results
+We presentWARP, an accumulation scheme in the ROM where the accumulation prover runs
+in linear time (performs a linear number of field operations and random oracle queries) and the
+accumulation verifier runs in logarithmic time (performs a logarithmic number of field operations
+and random oracle queries).
+We state our main theorem for polynomial equation satisfaction (PESAT), an NP-complete
+problem that naturally captures R1CS [BCGTV13], GR1CS [DMS24], CCS [STW23], and more.
+Definition 1(informal).Apolynomial equation systemover a fieldFis a tuple( ˆp,M,N,k)
+specifying a list ofN-variate polynomials ˆp= (ˆp i)i∈[M] overFof constant (total) degree. An
+instance-witness pairz := (x∈F N−k,w∈F k)is asolutionifˆp i(z) = 0for everyi∈[M]. We
+write| ˆp|for the number of field operations required for evaluating the equation system. (Without
+loss of generality,k=O(| ˆp|).) The indexedPESAT relationR ⊚(F)is the set of triples(i,x,w)
+wherei= ( ˆp,M,N,k),x=x, andw=wsuch that(x,w)is a solution toi.
+Theorem 1(informal).In the random oracle model (ROM) with security parameterλro, there is
+an accumulation schemeACC= (PACC,V ACC,D ACC)for the PESAT relationR⊚(F)with the following
+properties for accumulatingℓinstance-witness pairs and accumulators.
+•P ACC performsO(ℓ·| ˆp|+λ·logk)field operations andO(k)random oracle queries of sizeℓ·log|F|
+andλ ro.
+•V ACC performsO(ℓ·(logN+ logM+λ) +λ·logk)field operations,O(ℓ·λ·logk)random oracle
+queries of sizeλ ro andO(ℓ·λ)random oracle queries of sizelog|F|.
+•D ACC performsO(| ˆp|)field operations andO(k)random oracle queries of sizelog|F|andλ ro.
+The protocol has knowledge soundness error≤2−λ, for sufficiently large|F|andλ ro.
+4
+
+===== PAGE 5 =====
+The accumulation prover runs in linear time because its time complexity is proportional to the
+time complexity to evaluate the polynomial equation system. Moreover, compared to [BMNW25b],
+our accumulation prover runs in linear time (instead of quasilinear time), and our accumulation ver-
+ifier has smaller arithmetic complexity (while retaining the same random oracle query complexity).
+See Table 1 for a comparison with known hash-based accumulation schemes.
+IOR over (almost) every code.To achieve Theorem 1 we follow the recipe of [BMNW25b],
+which compiles (suitable)interactive oracle reductions(IORs) into a corresponding accumulation
+scheme. Recall that an IOR is an interactive protocol between a prover and a verifier, in which the
+prover sends possibly long proof strings that the verifier does not read in their entirety, but rather
+queries as an oracle; after the interaction, the verifier queries the proof strings, and either rejects
+or outputs a new instance of a prescribed relation. In an IOR, instances themselves might contain
+oracle messages, which the verifier can also query. For our purposes, the efficiency metrics that we
+aim to minimize are prover time, verifier time, and query complexity.
+Our main technical contribution is two IORs that work over any given linear code, inheriting
+the efficiency features of the code (up to constants). Theorem 1 follows by fixing a linear code with
+linear encoding time and constant relative distance (e.g., the expander code in [GLSTW23] or the
+repeat-accumulate-accumulate code in [BCFRRZ25]), and applying the aforementioned recipe.
+Theorem 2(informal).Fix a linear codeC:F k→F n with encoding timeencC and a repetition
+parametert∈N. We define an accumulation relationR C (in Definition 5.7) and construct an
+IOR⊚ = (P⊚,V ⊚)fromR ⊚(F)toR C, where:
+•P ⊚ performsO(encC)field operations and sends a single oracle of lengthO(n).
+•V ⊚ performs no field operations and no queries.
+Further, we construct anIORC = (PC,VC)fromR ℓC toR C, where:
+•P C performsO(ℓ·(n+| ˆp|) +t·logn)field operations and sends a single oracle of lengthO(n).
+•V C performsO(ℓ·(logn+ logM+ logN+t) +λ·logn)field operations andℓ·tqueries.
+Both protocols have round-by-round knowledge soundness error≤2−λ providedt≥ λ−log(1−δ PG) and
+Fis sufficiently large, whereδPG isC’s proximity radius for mutual correlated agreement (see below).
+The field size requirement in Theorem 1 is directly inherited from Theorem 2. We defer the pre-
+cise requirements to Theorem 9.1. Here it suffices to say that the field size requirements are similar
+to those incurred in state-of-the-art IOPs/IORs of proximity. Roughly, to ensure round-by-round
+knowledge soundness error≤2−λ, the field size must be|F|= 2λ·poly(ℓ,logM,logn,|Λ(C,δ PG)|),
+where|Λ(C,δ PG)|denotes the list size ofCat distanceδ PG.
+Almost any code.Theorem 2 requiresno structurefrom the underlying linear codeC, apart
+from being defined over a sufficiently large field; our IORs do not rely on interleaving or tensoring
+ofC, contrary to prior linear-time IOPs. The property ofmutual correlated agreement[ACFY25]
+mentioned in Theorem 2 is known for every linear codeC[AHIV17; ACFY25; GKL24; Zei24];
+informally, this property states that, except for a small error, if the random linear combination of
+ℓfunctions has a large agreement set with the codeCthen this set coincides with the agreement
+set of theseℓfunctions with the interleaved codeCℓ (see Section 3.6 for a formal definition).
+Out-of-domain samples for every linear code.Out-of-domain samples in the Reed–Solomon
+proximity testing literature [BGKS20; ACFY24; ACFY25] are widely used to achieve efficient
+5
+
+===== PAGE 6 =====
+proximity testing in the list decoding regime. [BGKS20] suggested an abstract definition of out-
+of-domain samples for arbitrary linear codes, but did not use it beyond Reed–Solomon codes. Our
+results crucially rely on out-of-domain samples obtained via a carefully chosen specialization of
+[BGKS20]’s definition, leading to afirst application of out-of-domain sampling for arbitrary codes.
+Straightline extraction without efficient decoding.In the probabilistic proof literature,
+achieving straightline knowledge soundness is relatively straightforward when the underlying code
+has an efficient (error-tolerant) decoding algorithm (e.g., this is true for Reed–Solomon codes).
+Roughly, the extractor runs the decoding algorithm on a function that, by the security analysis, is
+sufficiently close to an encoding of a valid witness. When the code is not known to have an efficient
+decoding algorithm (this is the case for certain linear-time encodable codes), showing knowledge
+soundness is significantly more involved, and usually involves rewinding extraction.
+We introduce a weakening of round-by-round knowledge soundness, with straightline extrac-
+tion, that we show our IORs satisfyregardless of whether the given code has an efficient decoding
+algorithm. Moreover, we show that our notion implies (straightline) state-restoration knowledge
+soundness, thus sufficing for compilation into a (non-interactive) protocol in the ROM according to
+the recipe in [BMNW25b]. Our strategy is not specific to IORs, and we believe that the definitions
+and tools in this paper can be applied to obtain straightline extraction for existing IOPs that use
+linear-time encodable codes (e.g., [BCGGHJ17; BCG20; BCL22; GLSTW23; ZCF24; BCFRRZ25]).
+Small fields.The field size requirements in Theorem 1 and Theorem 2 (which imply that|F|≥2λ)
+can be relaxed, enabling the use of smaller fields. Given a fieldBand linear codeC:B k→B n,
+WARPcan be adapted to accumulate instances ofR⊚(B). We describe this adaption in Section D,
+which involves sampling challenges from a sufficiently large field extensionFof the fieldB(the
+requirementson|F|areasbefore). NotethatWARPisnotnecessarilylineartimewiththisadaption,
+since the accumulation prover would perform a linear number of field operations in theextension
+fieldF. In the (common) setting where|B|=O(1)and|F|≥2 λ, a field operation inFinducesO(λ)
+field operations inB, and thus the prover cost is superlinear. Nevertheless, using extension fields
+maybeconcretelyefficientandwell-suitedformanyrelationsofinterest. Achievinganaccumulation
+scheme that, for every fieldB, performs a linear number ofB-operations remains an open question.
+1.2 Related work
+The most relevant prior work is hash-based accumulation [BMNW25a; BMNW25b], which we
+discuss in Sections 2.1 and 2.2. Below we summarize other prior work on accumulation schemes.
+Group-based accumulation.Group-based accumulation schemes (e.g., [BCMS20; BCLMS21;
+KST22; KS24]) achieve asymptotically optimal verifier complexity (O(1)group operations). These
+constructions rely on a Pedersen commitment [Ped92] or a KZG commitment [KZG10] of the
+witness, which involves a large multi-scalar-multiplication. This takesO(λ·nlog(λ·n))group operations
+via Pippenger’s algorithm [Pip80], making them unsuitable for linear-time accumulation.
+Lattice-based accumulation.Lattice-based accumulation schemes can use [Ajt96] commit-
+ments, which are partially homomorphic. Nevertheless, the challenge of lattice-based accumulation
+lies in controlling the norm growth of the committed (and extracted) witness (thereby enabling un-
+bounded accumulation). A recent exciting line of work [BC24; FKNP24; BC25; NS25] constructs
+accumulation schemes overcoming this challenge, but, to our knowledge, no construction achieves
+a linear-time prover (either because of superlinear commitment costs or superlinearity in the accu-
+mulation prover). Achieving a lattice-based accumulation scheme that controls norm growth while
+6
+
+===== PAGE 7 =====
+maintaining a linear-time prover remains an open problem.
+Remark 1.1(concurrent work).[BMMS25] gives a linear-time accumulation scheme (in the ROM)
+that matches the verifier complexity ofWARP. A few differences limit its concrete efficiency.
+•The accumulation relation in [BMMS25] is less expressive than ours, which incurs concrete
+overheads. Specifically, their analogue of Construction 5.10 must invoke the sumcheck protocol.
+In practice, this requires the prover and verifier to perform more field operations.
+•In their analogue of Construction 9.4, the prover sends multiple oracles (at least three, compared
+to one in our case). This requires the prover and verifier to make more random oracle queries.
+•[BMMS25] only supports proximity bounds within the unique decoding regime. In practice, this
+requires the verifier to make more random oracle queries.
+Finally, [BMMS25] does not achieve straightline knowledge soundness when the underlying code
+is not known to have an efficient error-tolerant decoder. We believe that our techniques can be
+applied to their protocols to obtain straightline extraction.
+7
+
+===== PAGE 8 =====
+2 Technical overview
+We discuss the main ideas behind our results.
+2.1 On hash-based accumulation
+We review the general framework that underlies hash-based accumulation schemes.
+SNARGs in the ROM.Succinct non-interactive arguments in the ROM are obtained via the
+BCS transformation [BCS16]. The starting point is aninteractive oracle proof(IOP) [BCS16;
+RRR16], which is an interactive protocol between a prover and a verifier in which the prover sends
+possibly long messages that the verifier can query as oracles. The BCS transformation relies on:
+(i) Merkle commitment schemes (in the ROM) to enable the argument prover to succinctly commit
+and locally decommit to the prover’s long messages; and (ii) the Fiat–Shamir transformation (in the
+ROM) to enable the argument prover to derive the IOP verifier’s (random) messages. In practice,
+by heuristically instantiating the random oracle, this leads to so-calledhash-based SNARGs.
+Accumulation in the ROM.Accumulation schemes in the ROM are obtained in a way that
+mirrors the above strategy [BMNW25a; BMNW25b]; in practice, this leads tohash-based accumu-
+lation schemes. Such constructions share many benefits with hash-based SNARGs: a transparent
+setup (the choice of hash function to instantiate the random oracle), fast proving (due to flexibility
+in field choice and size), plausible post-quantum security,1 and more.
+The starting point is relaxed from an IOP to aninteractive oracle reduction(IOR) [BCGGRS19;
+BMNW25b]. Informally, an IOR is an interactive oracle protocol in which the verifier, rather than
+outputting a decision bit, either rejects or outputs an instance for the target relation; instances
+may contain oracle messages, which the verifier can also query. See Section 3.2 for a definition.
+The BCS transformation can then be adapted to map an IOR into a correspondingnon-
+interactive reductionin the ROM [BMNW25a; BMNW25b]. As discussed in Section 1, we seek
+an accumulation schemeACC= (P ACC,V ACC,D ACC)forRin the ROM. This directly follows from
+two IORs that are the main target in this paper.
+•An IOR that reduces checking membership inRto checking that a sent oracle (typically, an
+alleged encoding of a valid witness) is close to a certain code-based accumulation relationRC.
+•An IOR that reducesℓproximity claims toR C to a single proximity claim toRC.
+These two IORs are akin to the two main components of many IOPs: an “IOP preamble” that
+reduces deciding the relation to a proximity claim, and an IOP of proximity for that claim.
+Linear-time proving.A line of work [BCGGHJ17; BCG20; BCL22; GLSTW23] constructs IOPs
+with a linear-time prover. These directly lead to linear-time succinct arguments in the ROM (or
+in the plain model from linear-time collision resistant hash-function [AHIKV17]). From a technical
+perspective, we seek to replicate this success, by designing suitable IORs with a linear-time prover.
+2.2 Limitations of prior work
+We review the main features and limitations of prior IORs.
+1The BCS transformation is secure in the quantum random oracle model [CMS19]. We conjecture that a similar
+result holds for the strategy in [BMNW25a; BMNW25b], which adapts the BCS transformation to reductions.
+8
+
+===== PAGE 9 =====
+IORs for every linear code, but with distance loss.[BMNW25a] constructs IORs for
+batching proximity claims to a general linear code (via random linear combinations and spot-
+checking). However the IORsdo not preserve distance: the output proximity claim is always for
+a (strictly) smaller distance than for the input proximity claims. This limitation translates (after
+hash-based compilation) into achieving abounded-depthaccumulation scheme (a weaker notion of
+accumulation). Moreover, the IORs are proven secure only in theunique-decodingregime and the
+IOR prover sends two oracle messages (all other messages are short); this hinders performance.2
+Distance-preserving IORs, but only for Reed–Solomon codes.[BMNW25b] replaces the
+core component of [BMNW25a] with a protocol inspired by [ACFY24], using quotients to enforce
+in-domain and out-of-domain constraints. The resulting IOR isdistance-preservingand is proved
+secure in thelist-decodingregime, improving the number of queries performed by the verifier.
+However, quotienting has drawbacks. First, the protocol is restricted to Reed–Solomon codes,
+which have quasilinear encoding time. Second, polynomial quotients require the prover to run an
+additional quasilinear-time FFT, and the verifier performsO(ℓ·λ 2)field operations. Finally, the
+IOR prover sends two oracle messages (all other messages are short), which hinders performance.
+This paper.We design IORs for proximity claims to a general linear code, enforcing in-domain
+and out-of-domain constraints in a new way that avoids quotienting altogether. We address the
+other shortcomings as well: our IORs are secure in the list-decoding regime, and the IOR prover
+sends a single oracle message (all other messages are short).
+2.3 Out-of-domain (and in-domain) sampling for every linear code
+We reviewout-of-domain sampling[BGKS20] andin-domain sampling[ACFY24; ACFY25], tech-
+niques that are useful towards constructing IOPPs for Reed–Solomon codes with good soundness
+in the list-decoding regime. Then we extend these notions toanylinear codeC:Fk→F n.
+Throughout, we fix a functionf: [n]→F, and letΛ(C,f,δ)be the set of codewords inCat
+relative distance≤δfromf;Λ(C,δ)denotes the maximum ofΛ(C,f,δ)across all functionsf.
+Out-of-domain (and in-domain) sampling for RS codes.Consider the special case of a
+Reed–Solomon code:Cconsists of all evaluations on[n]⊆Fof univariate polynomials overFof
+degree less thand(interpret[n]as a domainLinF).
+Out-of-domain sampling is a technique that forces the prover to “choose” a single codeword in
+Λ(C,f,δ)(ifδ≥δ(C)/2then it can be that|Λ(C,f,δ)|>1). The verifier sends a random element
+τ∈F(the out-of-domain sample) and the prover answers with an elementσ∈F; in the honest
+casef∈Candσ := ˆf(τ)where ˆfis the univariate polynomial whose evaluation on[n]equalsf.
+The verifier then considers the claim “there existsu∈Λ(C,f,δ)such thatˆu(τ) =σ”. This forces
+the prover to “choose” (at most) one codeword inΛ(C,f,δ)because, with high probability overτ,
+no two codewordsu1,u 2∈Λ(C,f,δ)are such thatˆu 1(τ) = ˆu2(τ).
+In-domain sampling refers to a claim of the form “f(τ) =σ” for a random elementτ∈[n]
+(the in-domain sample) and a given responseσ∈F. Such claims are used to enforce consistency
+between different oracles sent by the prover (e.g., see domain shifting in [ACFY24; ACFY25]).
+Moreover, prior protocols exploit the fact that, for Reed–Solomon codes, in-domain sampling
+can be viewed as a special case of out-of-domain sampling [ACFY24; ACFY25]. In the honest
+case wheref∈C, it holds thatf= ˆf([n]), sof(τ) = ˆf(τ)for everyτ∈[n]. Hence, a claim
+such as “f(τ) =σ” can be replaced by the claim “there is a codewordu∈Λ(C,f,δ)such that
+2To be precise, the prover can commit to both messages as a single interleaved oracle, but this still incurs overhead.
+9
+
+===== PAGE 10 =====
+ˆu(τ) =σ” (whereˆuis the polynomial that evaluates tou). This enables batching out-of-domain
+and in-domain samples by using quotienting or the sumcheck protocol.
+What happens in general?For a general linear codeC, anin-domain claimis a statement of
+the form “givenτ∈[n]andσ∈F, there existsu∈Λ(C,f,δ)such thatu(τ) =σ”, namely, it is a
+claim on the value at a given position of a nearby codeword. Less clear is what anout-of-domain
+claimshould be: while a polynomial can be evaluated everywhere on the underlying field, there is
+no polynomial underlying a codeword in an arbitrary linear code. Nevertheless, we seek a notion
+of out-of-domain sampling for general linear codes that satisfies several requirements: (i) it should
+be a constraint on elements ofΛ(C,f,δ)that forces the prover to “choose” a single codeword in
+Λ(C,f,δ)(up to a small error); (ii) it should be compatible with in-domain samples (so both can be
+batched together); and, finally, (iii) it should be compatible with our goal of a linear-time prover.
+Our approach: multilinear extensions.We impose a polynomial structureon topof the linear
+codeC: we rely on themultilinear extensionof a codeword.3 For a codewordu∈C, we writeˆuto
+be the(logn)-variate multilinear polynomial that agrees withuon{0,1} logn≡[n]. The following
+(straightforward) lemma tells us that the multilinear extensions of distinct codewords in the list
+Λ(C,f,δ)agree at a random point with small probability.
+Lemma 1(informal).LetC:F k→F n be a linear-code. For everyf: [n]→Fandδ∈(0,1),
+Pr
+τ←F logn
+[
+∃distinctu,v∈Λ(C,f,δ)
+ˆu(τ) = ˆv(τ)
+]
+≤|Λ(C,f,δ)| 2·logn|F| ≤|Λ(C,δ)| 2·logn|F| .
+Proof sketch.The multilinear extensionsˆu,ˆvof distinct codewordsu,v∈Care distinct. Hence,
+by the polynomial identity lemma,Prτ←F logn [ˆu(τ) = ˆv(τ)]≤logn|F| . The lemma follows by taking a
+union bound over the elements of
+(Λ(C,f,δ)
+2
+)
+(all distinct pairs of codewords inΛ(C,f,δ)).
+We consider out-of-domain claims to be statements of the form “givenτ∈Flogn andσ∈F,
+there existsu∈Λ(C,f,δ)such thatˆu(τ) =σ”. This ensures several desiderata. First,ˆu(τ)is
+computable inO(n)field operations (givenuandτ), which is compatible with linear-time proving.
+Second, in-domain claims can be viewed as a special case of out-of-domain claims, as we now
+explain. Forτ∈[n],ˆu(binary(τ)) =u(τ), wherebinary: [n]→{0,1} logn converts an integer to its
+binary representation embedded inFlogn. This enables reinterpreting the statement “givenτ∈[n]
+andσ∈F, there existsu∈Λ(C,f,δ)such thatu(τ) =σ” as a statement “givenτ∈[n]andσ∈F,
+there existsu∈Λ(C,f,δ)such thatˆu(binary(τ)) =σ”. (Interestingly, these choices differ from
+those in prior work, even if the linear codeCis a Reed–Solomon code.)
+Towards batching and more.The above choices and considerations are the starting point of
+our work. We will show that, by working with multilinear extensions of codewords, we can design
+IORs that batch proximity claims for the (arbitrary) linear codeC. In the next few subsections we
+outline these ideas. Throughout, we use the notion ofconstrained codes[ACFY25].
+Definition 2.Forτ∈F logn andσ∈F, theconstrained codeC[(τ,σ)]is the set of codewords
+u∈Csuch thatˆu(τ) =σ.C[(τ 1,σ 1),...,(τ t,σt)]is similarly defined but with multiple constraints.
+3One can, e.g., also consider a univariate extension of a codeword. However, that would later lead to us to use
+tools such that as the univariate sumcheck protocol, which is not compatible with linear-time proving.
+10
+
+===== PAGE 11 =====
+Remark 2.1(linearconstraintsin action).[BGKS20] suggestsagenericdefinitionofout-of-domain
+sampling for an arbitrary linear codeC: they define linearly constrained codes where constraints
+on codewordsu∈Chave the form⟨z,C −1(u)⟩=µforz∈F k.
+A special case is the out-of-domain sampling for Reed–Solomon codes introduced in [BGKS20]:
+ifCis a Reed–Solomon code andz= (L i(τ))i∈[k] contains the evaluations atτ∈Fof the Lagrange
+polynomials(L i(X))i∈[k] thatdefineC, then⟨z,C −1(u)⟩equalstheunivariateextensionofuevaluated
+atτ. However, [BGKS20] demonstrated the use only of constraints⟨(Li(τ))i∈[k],C−1(u)⟩=µwhen
+Cis the Reed–Solomon code, relying on the fact that quotients enable translating such constraints
+to “pure” proximity claims about the Reed–Solomon code. For general constraints⟨z,C−1(u)⟩=µ,
+[BGKS20] proved a proximity gaps statement but provided no applications.
+The multilinear extension constraints that we use are a different special case, and our results
+are a powerful application of this class of constraints. Specifically, ifz= ( ˆGC(τ,b)) b∈{0,1}logk
+whereτ∈F logn and ˆGC is the multilinear extension of a generator matrixGC∈F n×k ofC, then
+⟨z,C−1(u)⟩equals the multilinear extension ofuevaluated atτ(i.e., the constraints we consider).
+In our work we design protocols that directly reason about constrained codes for a general linear
+codeC; moreover, we depart from [BGKS20] in that we separately exploit out-of-domain sampling
+and proximity gaps statements (we separately rely on Lemma 3.14 and Definition 3.15).
+2.4 Codeword batching, with constraints
+We outline a (simplified) protocol forcodeword batching, a key subroutine in our IOR. The prover
+and verifier have access to two (or more) oracles, along with claims about a linear combination of
+said oracles. The prover and verifier interact and, at the end of the interaction, the verifier outputs
+a list of claims about asingleoracle. This is essential for constructing a many-to-one reduction
+whose new instance size is independent of the number of old instances.
+Definition 3(informal).Acodeword batching protocolwith proximity radiusδ ⋆ is an inter-
+active (oracle) protocol(P,V)with the following properties.
+•Syntax:the verifierVgets as input randomnessγ 1,γ 2∈F, multilinear evaluation claim(α,µ),
+and oracle access tof1,f 2 : [n]→F. The proverPgets as (explicit) input(γ 1,γ 2,α,µ,f 1,f 2).
+At the end of the interaction,Voutputs a list of multilinear evaluation claims(τ i,σi)i and
+(implicitly) an oracleg: [n]→F.
+•Completeness:ifγ 1·f 1 +γ 2·f 2∈C[(α,µ)]theng∈C[(τ i,σi)i].
+•Soundness:for everyδ∈(0,δ ⋆), if∆(γ 1·f 1 +γ 2·f 2,C[(α,µ)])> δthen, except for a small
+error probability,∆(g,C[(τ i,σi)i])>δ.
+We describe a codeword batching protocol with proximity radiusδ⋆ = 1(i.e., distance is pre-
+served for everyδ∈(0,1)) that has a linear-time prover and small soundness error.
+Construction 1(sketch).Define(P,V)as follows.
+1.Psendsg: [n]→F. In the honest case,g :=γ 1·f 1 +γ 2·f 2.
+2.Vsamples and sendsτ←F logn.
+3.Psendsσ∈F. In the honest case,σ := ˆg(τ).
+4.Vsamplesx 1,...,x t←[n]. Fori∈[t], defineτ i :=binary(x i).
+5.V, for everyi∈[t], queriesf 1 andf 2 atτ i and computesσi :=γ 1·f 1(xi) +γ 2·f 2(xi).
+11
+
+===== PAGE 12 =====
+6.Voutputs the list of claims((α,µ),(τ,σ),(τ i,σi)i∈[t])and (implicitly) the oracleg.
+Regardlessof the linear codeCused, the prover runs in Construction 1 in linear time: computing
+the functiong :=γ 1·f 1 +γ 2·f 2 and field elementσ := ˆg(τ)can be done inO(n)field operations.
+The soundness of Construction 1 is captured by the following lemma.
+Lemma 2(informal).For every distanceδ∈(0,1), Construction 1 has soundness error
+|Λ(C,δ)| 2·logn
+|F| + (1−δ) t.
+Proof sketch.Suppose that∆(γ 1·f 1 +γ 2·f 2,C[(α,µ)])>δ. LetC ′ :=C[((α,µ),(τ,σ),(τ i,σi)i∈[t])].
+We argue that, except for the above error probability,∆(g,C′)>δover the choices ofτ,τ 1,...,τ t.
+By Lemma 1, except with probability at most |Λ(C,δ)| 2·logn|F| , there is at most one codeword
+u∈Λ(C,g,δ)such thatˆu(τ) =σ. Next, fix an arbitraryu∈Λ(C,g,δ).
+•Ifˆu(τ)̸=σ, thenu /∈C ′.
+•Ifˆu(τ) =σandˆu(α)̸=µ, then againu /∈C ′.
+•Ifˆu(τ) =σandˆu(α) =µ, it must be that∆(γ 1·f 1 +γ 2·f 2,u)>δ(as otherwise∆(γ 1·f 1 +γ 2·
+f2,C[(α,µ)])≤δ, contradicting our hypothesis). Hence, except with probability(1−δ) t, there
+existsi∈[t]such thatˆu(binary(x i))̸=σ i (i.e.,u(x i)̸=σ i), in which case once againu /∈C′.
+The soundness error in the lemma statement follows from the fact that the last case (the only one
+with an error) needs to be considered only once, if out-of-domain sampling succeeded (the prover
+was forced to choose a single codeword inΛ(C,g,δ)).
+Our complete protocol, presented in Construction 7.2, extends Construction 1 to handle an
+arbitrary number of input codewordsf1,...,f ℓ and multiple out-of-domain samplesτ1,...,τ s.
+BatchingΘ(λ)evaluation claims.Construction 1 receives a single multilinear evaluation claim
+(α,µ)as input, and outputsr :=t+ 2multilinear evaluation claims((α,µ),(τ,σ),(τ i,σi)i∈[t]). We
+cannot afford this increase in claims (as this would result in an accumulator whose size grows with
+the number of accumulations). Hence we seek to batch theserclaims into a single one.
+Standard techniques to batchrmultilinear evaluation claims into a single one would result in a
+proverthatrunsintimeΘ(r·n)[RR22; CBBZ23]. Inoursetting, however, thisistooexpensive. The
+soundness analysis of the codeword batching protocol shows that we needt≥ λ−log(1−δ) = Ω(λ)to
+achieveλbits of security. This would imply a prover that, to batchr=t+ 2multilinear evaluation
+claims, runs in timeΩ(r·n) = Ω(t·n) = Ω(λ·n), which is superlinear. 4
+We overcome this problem by taking advantage of the fact that, in our setting, in-domain claims
+correspondtomultilinearevaluationclaimsinside the boolean hypercube. Inmoredetail, thetclaims
+(τi,σi)i∈[t] in Construction 1 are special:τi∈{0,1} logn for everyi∈[t](while the remaining2
+claims are for general locations inFlogn). We show that, by adapting ideas in [CBBZ23, Sec 3.8.1],
+we obtain a batching protocol forrmultilinear evaluation claims, of whichtare in the boolean
+hypercube, where the prover runs in timeO((r−t)·n+t·logn). This isO(n+t·logn)when
+r=t+ 2, yielding the desired linear prover time. We describe and analyze this IOR in Section 8.
+4This superlinear time is analogous to the one incurred by the quotienting procedure in [BMNW25b], where the
+prover is required to compute aO(λ)-multi-point quotient of a witness polynomial, which requires an FFT. When
+batching via quotients, it is unknown how to avoid this additional computational overhead.
+12
+
+===== PAGE 13 =====
+2.5 From PESAT to constrained codes
+We reduce membership in theNPrelation PESATR ⊚(F)(see Definition 1) to proximity to a
+constrained code derived from a given arbitrary linear codeC. The ideas for this reduction are
+relatively standard (see [BMNW25b]). We sketch them here in order to motivate the definition of
+the constrained code relationRC that we accumulate via our IOR (our main technical contribution).
+See Section 5 for technical details of the IOR fromR⊚(F)toR C.
+Bundling PESAT.The PESAT relationR ⊚(F)consists of triples(i,x,w) = (( ˆp,M,N,k),x,w)
+such thatˆpi((x,w)) = 0for everyi∈[M]. We compress theMpolynomial constraints into a
+single one by defining thebundling of(ˆp,M,N,k):
+ˆP(R,Z) := ∑
+i∈{0,1}logM
+eq(R,i)·ˆpi(Z).
+The polynomial ˆP:F logM×FN→Fsatisfies the following: (i) if(x,w)satisfies( ˆp,M,N,k)then
+ˆP(τ,(x,w)) = 0for everyτ∈F logM ; (ii) if(x,w)does not satisfy( ˆp,M,N,k)then ˆP(τ,(x,w))̸=
+0with high probability overτ∈F logM .
+Twin constraints.We extend the constrained code in Definition 2 to additionally include (bun-
+dled) PESAT constraints.
+Definition 4.For(α,µ)∈F logn×Fand(β,η)∈F logM+N−k ×F, thetwin constrained code
+C[(α,µ),( ˆP,β,η)]is the set of codewordsu∈ Csuch thatˆu(α) =µand ˆP(β,C −1(u)) =η.
+C[(αi,µi)i∈[r],( ˆP,β,η)]is similarly defined but with multiple constraints.
+The codeword batching protocol discussed in Section 2.4 can be straightforwardly extended to
+carry forward a (bundled) PESAT constraint, with only minor syntactical changes in the soundness
+analysis. The main relation that we accumulate, denoted byRC (and defined formally in Defini-
+tion 5.7), consists of codewords satisfying the twin constraints.
+From PESAT to twin constraints.The IOR fromR⊚(F)toR C is immediate.
+Construction 2(sketch).The prover and verifier receive an explicit instancex=x∈F N−k, and
+the prover additionally receives a witnessw=w∈F k.
+1. The prover sendsf: [n]→F. In the honest case,f :=C(w).
+2. The verifier samplesτ←F logM .
+3. The verifier outputs the explicit instancex′ := ((τ,x),0)and implicit instancey ′ :=f, which
+represents the claim “f∈C[(),( ˆP,(τ,x),0)]” (namely, the claim “ ˆP(τ,x,C −1(f)) = 0”).
+The prover performsO(encC)field operations, whereenc C is the number of field operations
+required to encode a message for the linear codeC; in particular, the prover performsO(|w|) =O(k)
+field operations (i.e., runs in linear time) ifCis linear-time encodable.
+The following lemma bounds the soundness error of Construction 2.
+Lemma 3(informal).Fix a PESAT indexi= ( ˆp,M,N,k). Suppose that the PESAT instance
+x=x∈F N−k is such that there exists no PESAT witnessw=w∈Fk for whichˆpi((x,w)) = 0for
+everyi∈[M]. Then, for every distanceδ∈(0,1), the verifier in Construction 2 outputs explicit
+instancex′ := ((τ,x),0)and implicit instancey ′ :=fsuch that∆(f,C[(),( ˆP,(τ,x),0)])>δ, except
+with probability at most
+|Λ(C,δ)|·logM
+|F| .
+13
+
+===== PAGE 14 =====
+2.6 Twin constraint pseudo-batching
+We discusstwin constraint pseudo-batching, the problem of reducing multiple proximity claims for
+the twin constrained code (Definition 4) to a single proximity claim of a linear combination of the
+input functions. We call thispseudo-batching to emphasize the fact that the (twin) constraints
+are batched but not the codewords; this is compatible with the input of the codeword batching
+protocol discussed in Section 2.4 (after the modification to accommodate PESAT constraints).
+Definition 5(informal).Atwin constraint pseudo-batching protocolwith proximity radius
+δ⋆ is an interactive (oracle) protocol(P,V)with the following properties.
+•Syntax:The verifierVgets as input multilinear evaluation claims(α 0,µ 0),(α 1,µ 1)and (bun-
+dled) PESAT constraints(β0,η 0),(β 1,η 1), and oracle access tof0,f 1 : [n]→F. The proverP
+gets as (explicit) input(α0,µ 0,α 1,µ 1,β 0,η 0,β 1,η 1,f 0,f 1). At the end of the interaction,Vout-
+puts randomnessγ0,γ 1∈F, a multilinear evaluation claim(α,µ), a (bundled) PESAT constraint
+(β,η), and (implicitly) oraclesf0,f 1.
+•Completeness:if∀b∈{0,1}f b∈C[(α b,µb),( ˆP,β b,ηb)]thenγ 0·f0+γ1·f1∈C[(α,µ),( ˆP,β,η)].
+•Soundness:for everyδ∈(0,δ ⋆), if∃b∈{0,1}∆(f b,C[(αb,µb),( ˆP,β b,ηb)])> δthen, except
+for a small error probability,∆(γ0·f 0 +γ 1·f 1,C[(α,µ),( ˆP,β,η)])>δ.
+We describe a protocol for the above that has a linear-time prover and small soundness error.
+Our approach roughly follows an approach in [BMNW25b] that, in turn, is inspired by [EG23].
+There are two main differences. First, in order to facilitate a linear-time prover, we use a multilinear
+(rather than univariate) sumcheck by adapting ideas from [EG23]. Second, we simultaneously batch
+multilinear evaluation claims and (bundled) PESAT constraints with asingleoracle. In contrast,
+the quotient strategy in [BMNW25b] requires two oracles (intuitively this is because a quotiented
+codeword no longer satisfies PESAT constraints).
+Construction 3(sketch).Define(P,V)as follows.
+1.Vsamples and sendsτ←F.
+2.PandVdefine the linear (collections of) univariate polynomials
+ˆA(X) := (1−X)·α 0 +X·α 1 ∈(F <2[X])logn ,
+ˆB(X) := (1−X)·β 0 +X·β 1 ∈(F <2[X])logM+κ−k ,
+ˆF(X) := (1−X)·f 0 +X·f 1 ∈(F <2[X])n,
+ˆU(X) := (1−X)·C −1(f0) +X·C −1(f1)∈(F <2[X])k.
+3.Psends univariate polynomials ˆhC∈F <logn+2 [X], ˆhˆP∈F <logM+d+1 [X]. In the honest case:
+ˆhC(X) :=eq(X,τ)· ∑
+b∈{0,1}logn
+eq( ˆA(X),b)· ˆFb(X),
+ˆhˆP (X) :=eq(X,τ)· ˆP( ˆB(X), ˆU(X)).
+4.Vchecks that ˆhC(0) + ˆhC(1) = (1−τ)·µ 0 +τ·µ 1 and ˆhˆP (0) + ˆhˆP (1) = (1−τ)·η 0 +τ·η 1.
+14
+
+===== PAGE 15 =====
+5.Vsamplesγ←F, and setsγ 0 := 1−γ,γ 1 :=γ, and
+α := ˆA(γ), µ := ˆhC(γ)eq(γ,τ) ,
+β := ˆB(γ), η :=
+ˆhˆP (γ)
+eq(γ,τ) .
+6.Voutputs the new instance((γ 0,γ 1),(α,µ),(β,η))andf 0,f 1 (as oracles).
+The prover’s computational effort is dominated by computing the polynomialsˆhC, ˆhˆP. This can
+be done in linear time (specifically,O(n+|ˆp|)field operations), by adapting ideas from [EG23].
+The soundness analysis of the protocol is non-trivial, and relies on the notion ofmutual corre-
+lated agreement[ACFY25] (see Definition 3.15). Informally, a linear codeChas mutual correlated
+agreement with proximity radiusδPG and errorerr PG if, for everyf 0,f 1 : [n]→Fandδ∈(0,δ PG),
+the following holds with high probability at least1−err PG over a random choice ofγ∈F: if
+(1−γ)·f 0 +γ·f 1 agrees withConS⊆[n]with|S|≥(1−δ)·nthenf 0 andf 1 agree with the
+interleaved codeC 2 on thesameagreement setS. We prove that the protocol preserves distance,
+with small soundness error, and has proximity radiusδ⋆ :=δ PG.
+Lemma 4(informal).Suppose that the linear codeChas mutual correlated agreement with prox-
+imity radiusδ PG and errorerr PG. For everyδ∈(0,δ PG), Construction 3 has soundness error
+|Λ(C2,δ)|·poly(logn,logM)
+|F| +err PG(δ).
+Proof sketch.For simplicity, we only consider PESAT constraints in this sketch. Extending the
+analysis to include codeword evaluation constraints is straightforward. As we are in the sound-
+ness case, for every(u 0,u 1)∈Λ(C,f 0,δ)×Λ(C,f 1,δ)it must be that ˆP(β 0,C−1(u0))̸=η 0 or
+ˆP(β 1,C−1(u1))̸=η 1. This implies that the same condition holds for every codeword(u0,u 1)∈
+Λ(C2,(f 0,f 1),δ)in the interleaved code.
+1. The initial statement consists of the proximity claim of the two input oracles to the respective
+constrained code. The first verifier message reduces these claims to a single proximity claim to
+theinterleaved code. We argue that, with probability at most|Λ(C2,δ)||F| over the choice ofτ, there
+is a pair of codewords(u0,u 1)∈Λ(C 2,(f 0,f 1),δ)such that
+∑
+b∈{0,1}
+eq(b,τ)· ˆP(βb,C−1(ub)) = (1−τ)·η 0 +τ·η 1.
+Fix a pair of codewords(u 0,u 1)∈Λ(C 2,(f 0,f 1),δ); by soundness,∃b∈ {0,1}such that
+ˆP(βb,C−1(ub))̸=η b. Hence ∑b∈{0,1} eq(b,X)· ˆP(βb,C−1(ub))̸≡ ∑b∈{0,1} eq(b,X)·η b, so by the
+polynomial identity lemma the equality atτholds with probability at most1|F|. Then we take a
+union bound over all|Λ(C2,δ)|pairs of codewords(u 0,u 1)∈Λ(C 2,(f 0,f 1),δ).
+2. We convert the proximity claim about interleaved codewords to the final proximity claim, again
+with respect to the constrained code. First, we show that, with high probability, the random
+combination of interleaved codewords does not satisfy the new claim. Second, mutual corre-
+lated agreement allows replacing this random linear combination of interleaved codewords with
+codewords close to the random linear combination of the original words.
+15
+
+===== PAGE 16 =====
+(a) We argue that, with probability at most|Λ(C2,δ)|·poly(logn,logM)|F| , there is a pair of codewords
+(u0,u 1)∈Λ(C 2,(f 0,f 1),δ)such that
+ˆhˆP (γ) =eq(γ,τ)· ˆP( ˆB(γ),C−1((1−γ)·u 0 +γ·u 1)).
+Fix(u 0,u 1)∈Λ(C 2,(f 0,f 1),δ). It must be thatˆhˆP (X)̸≡eq(X,τ)· ˆP( ˆB(X),C−1((1−X)·u 0+X·
+u1))as the left hand side sums to(1−τ)·η0+τ·η 1 (else the verifier immediately rejects) and
+the right hand side cannot (or else the conditions of Item 1 are violated). By the polynomial
+identity lemma the probability the two sides agree atγis at mostpoly(logn,logM)|F| . Then we
+take a union bound over all|Λ(C2,δ)|pairs of codewords(u 0,u 1)∈Λ(C 2,(f 0,f 1),δ).
+(b) By [ACFY25, Lemma 4.13], mutual correlated agreement ofCimplies that, except with
+probability at mosterrPG(δ)over the choice ofγ,
+Λ(C,(1−γ)·f 0 +γ·f 1,δ) ={(1−γ)·u 0 +γ·u 1 : (u 0,u 1)∈Λ(C 2,(f 0,f 1),δ)}.
+Letβ := ˆB(γ)andη := ˆh(γ)/eq(γ,τ)(asintheprotocol). If∆((1−γ)·f 0+γ·f1,C[(),( ˆP,β,η)])≤
+δthen there isu∈Λ(C,f 0 +γ·f 1,δ)such that ˆP(β,C −1(u)) =η. But then, by Item 2b,
+u= (1−γ)·u 0+γ·u 1 for some(u0,u 1)∈Λ(C 2,(f 0,f 1),δ)and so ˆP(β,C −1((1−γ)·u 0+γ·u 1)) =η,
+which contradicts Item 2a. Thus, no codeword close to the random linear combination of the
+original input words can satisfy the updated claim.
+See Section 6 for technical details about twin constraint pseudo-batching, including a more
+general protocol that handlesℓoraclesf 1,...,f ℓ, each with its own twin constraint.
+2.7 Straightline extraction for every linear code
+The IORs that we presented are used to obtain a corresponding accumulation schemeACCin the
+ROM, which is anon-interactiveprotocol. This requires the IORs to satisfy (an appropriate flavor
+of)state-restoration security[BCS16; CY24]. Specifically, in order to ensure thatACCsatisfies
+straightline knowledge soundness in the ROM, the IORs must satisfystraightline state-restoration
+knowledge soundness.5
+We prove that the IORs in this paper satisfy the aforementioned security notion,even if the
+underlying codeCdoes not have an efficient error-tolerant decoder. This is notable in the linear-
+time prover setting because there are linear-time-encodable codes of practical interest for which
+there are no known efficient error-tolerant decoders.
+Achieving straightline extraction for every linear codeC, however, demands a different approach
+comparedtopriorwork. Indeed, priorworkonIOPs/IORsachievesstraightlineextractionviaerror-
+tolerant decoders (or else, when no error-tolerant decoder is available, prior work only achieves the
+weaker notion of rewinding extraction, e.g., as in [BCGGHJ17; GLSTW23; DP24; ZCF24]).
+Below we sketch our approach, and then in Section 2.8 we explain how a new notion of round-
+by-round knowledge soundness aids in carrying out our approach.
+5Alternatively, one could aim for the weaker notion ofrewindingknowledge soundness forACC, which in turn
+would require the IORs to satisfy the weaker notion ofrewindingstate-restoration knowledge soundness. However
+rewinding extraction typically comes with downsides, such as worse error bounds and expected-time extraction.
+16
+
+===== PAGE 17 =====
+Straightline extraction in an SR game.The security property that we target considers
+a state-restoration game, which models the (idealized) Fiat–Shamir security of the public-coin
+interactiveprotocolathand. Informally, anadversary ˜Psr makesanumberofmoves(uptoabudget)
+that model queries to the random oracle and receives corresponding responses, and ultimately
+outputs a final choice of statement and prover messages. Straightline state-restoration knowledge
+soundness considers the probability that˜Psr’s output convinces the interactive protocol’s verifier
+and a straightline extractorE sr fails to find a witness for the statement. The extractorE sr is
+straightline in that it receives as input the statement, prover messages, and move-response trace
+from the state-restoration game (and, crucially, doesnotreceive black-box access to the adversary).
+Prior work has adapted these notions and definitions from IOPs to IORs [BMNW25b].
+The challenge.Prior work on IOPs/IORs that achieves straightline extraction relies on efficient
+error-tolerant decoding for the underlying code. Most notably, the Reed–Solomon code has efficient
+error-tolerant decoders (both in the unique-decoding and list-decoding regimes), which are then
+used by straightline extractors (see, e.g., [BBHR18; ACFY24; ACFY25]). Typically, the first prover
+message in the protocol allegedly encodes a valid witness, and one proves that, except for a small
+error probability, if the adversary outputs an accepting transcript in the state-restoration game
+then the first prover message is close to the encoding of a valid witness. The straightline extractor
+Esr then uses an error-tolerant decoder on that message to find the valid witness. Crucially,an
+efficient extractorE sr cannot do so if there is no efficient error-tolerant decoder(which is the case
+for a number of codes of interest). We wish to achieve an efficient straightline extractor for every
+linear codeC, without relying on error-tolerant decoding.
+The hope.In the state-restoration game the straightline extractorE sr receives additional infor-
+mation that we may be able to use to avoid error-tolerant decoding, as we now explain.
+Informally (and with simplifications), state-restoration knowledge soundness for an IOR from
+a relationRto a relationR ′ considers the following event (the probability is taken over the ran-
+domness of the state-restoration gameSRGame):
+
+ ∄y⋆∈B δ(y),(x,y ⋆,w)̸∈R∧∃y ′⋆∈B δ(y′),(x ′,y′⋆,w′)∈R ′
+⏐⏐⏐⏐⏐⏐⏐ (x,y,(π i)i∈[k],w′,(ρi)i∈[k]) trsr←−−SRGame(˜Psr)(x′,y′)←V y,(πi)i∈[k](x,(ρi)i∈[k])w←E sr(x,y,(π i)i∈[k],w′,(ρi)i∈[k],tr sr)  .
+whereB δ(·)denotes the ball of strings at relative distance≤δfrom the input.
+Observe that the straightline extractorEsr is given as input avalid witnessw′ for the new state-
+ment(x′,y′)(which considers the target relationR′). This is because the definition of straightline
+knowledge soundness of a non-interactive reduction also has such a witness, which in turn is jus-
+tified by the fact that, in an accumulation scheme, straightline knowledge soundness is predicated
+on the decider accepting. See [BMNW25b] for details.
+We outline how a valid witnessw′ for(x′,y′)helpsE sr find a valid witnesswfor(x,y)for the
+two main IORs that we construct in this paper.
+•Consider the IOR from the PESAT relationR⊚(F)to the twin constraint relationRC discussed
+in Section 2.5 (Construction 2). In this case, for a given index PESAT indexi= (ˆp,M,N,k),
+Esr receives the following inputs:
+–x=x∈F N−k (explicit instance);
+–y=⊥(there is no implicit instance forR ⊚(F));
+–π 1 =f: [n]→F(the prover sends one oracle);
+17
+
+===== PAGE 18 =====
+–w ′ =u: [n]→F(a witness for(x ′,y′)wherex ′ = ((τ,x),0)andy ′ =f); and
+–ρ 1 =τ∈F logM (the verifier sends one random message).
+The condition “∃y′⋆∈B δ(y′),(x ′,y′⋆,w′)∈R C” tells us thatu∈C[(),( ˆP,(τ,x),0)]isδ-close to
+the output oraclef. ThereforeE sr can obtain a PESAT witnessw=w∈F k simply by decoding
+the codewordu∈C(and ignoring the potentially corrupted functionf).
+•ConsidertheIORfromR ℓC toRC thatisobtainedbycombiningtheIORsdiscussedinSections2.4
+and 2.6. In this case, for a given index PESAT indexi= (ˆp,M,N,k),E sr receives the following
+inputs:
+–(x 1,...,x ℓ)wherex i = (αi,µi,βi,ηi)(explicit instances);
+–(y 1,...,y ℓ)wherey i =f i : [n]→F(implicit instances);
+–(π i)i∈[k] (the oracles sent by the prover);
+–w ′ =u: [n]→F(a witness for(x ′,y′)wherex ′ := (α,µ,β,η)andy ′ :=f: [n]→F); and
+–(ρ i)i∈[k] (the verifier random messages).
+The condition “∃y′⋆∈B δ(y′),(x ′,y′⋆,w′)∈R C” tells us thatu∈C[(α,µ),( ˆP,β,η)]isδ-close
+to the output oraclef. To succeed, the extractorE sr must findu 1,...,u ℓ, with eachu i ∈
+C[(αi,µi),( ˆP,β i,ηi)], that areδ-close tof 1,...,f ℓ, respectively.
+Our key insight is toleverage mutual correlated agreement for this extraction task. Specifically,
+duetothemutualcorrelatedagreementpropertyofC, ourIORissuchthat, withhighprobability
+over the choice of verifier randomness, eachfi agrees with a codewordui∈C[(α i,µi),( ˆP,β i,ηi)]
+at (exactly) the locations wherefagrees with the codewordu∈C[(α,µ),( ˆP,β,η)]. 6
+This motivates the following extraction strategy. First,Esr finds the setS⊆[n]of locations
+wherefanduagree; note thatScontains at least(1−δ)·nlocations. Next,E sr restricts each
+fi toS, by replacing symbols in[n]\Swith⊥. Finally, for eachi∈[ℓ],E sr erasure corrects
+the restriction offi toS, thereby obtaining the corresponding codewordui. The extractorE sr
+outputs the desired witnesses(w1,...,w ℓ) := (u1,...,u ℓ).
+Crucially, everylinearcodehasanefficienterasurecorrectionalgorithm(whichconsistsofsolving
+a linear system induced by the generator matrix); see [GRS12, Exercise 2.16].
+(Note that, in both cases, the extractorEsr does not take advantage of the move-response trace
+trsr.) Formalizing the above intuition into an analysis requires some care, as we discuss next.
+Remark 2.2(efficiency benefits of erasure correction).Erasure correction isbeneficial even for
+linear codes with efficient error-tolerant decoding, because erasure correctors can be (and typically
+are) faster than error-tolerant decoders. Fixing a distanceδ∈(0,δ(C)), an error tolerant decoder
+returns all codewords at distanceδfrom the input word, which implies that the decoder time is at
+leastΩ(|Λ(C,δ)|·n). Instead, an erasure corrector is only required to output the unique erasure
+correction of the input word, and thus may run in timeO(n). In fact, Reed–Solomon codes can be
+erasure corrected in timeO(n)·polylog(n). Since the (straightline state-restoration) extractorEsr
+uses either the decoder or the corrector as a subroutine, the improvement in asymptotics implies a
+more efficient accumulation scheme (by way of a faster security reduction).
+6Prior notions of correlated agreement do not suffice, since they do not relate the agreement sets between the
+input oracles and the output oracle.
+18
+
+===== PAGE 19 =====
+2.8 Round-by-round extraction for every linear code
+Directly proving state-restoration security for an IOP/IOR can be cumbersome, so one typically
+proves that the IOP/IOR satisfies a stronger property that is known to imply (the desired fla-
+vor of) state-restoration security (see [CY24] for more). Turning to our setting, the common
+approach to show that an IOP/IOR satisfies straightline state-restoration knowledge soundness is
+to show that the IOP/IOR satisfies round-by-round knowledge soundness [CCHLRR18; CMS19;
+CY24; BMNW25b]. Prior definitions, however, appear too strong. We explain this subtle point
+and propose a relaxation that we submit as the “right” notion of RBR knowledge soundness for
+IOPs/IORs.7 Crucially, we prove the following: (i) our relaxation still implies straightline state-
+restoration knowledge soundness; and (ii) our IORs satisfy the relaxation.
+Warm-up: RBR soundness.We review the notion of RBR soundness [CCHLRR18], generalized
+to IORs [BMNW25b]. Informally, an IOR fromRtoR ′ is RBR sound if its soundness can be
+modeled as a sequential composition of one-round reductions (each individually sound). This is
+expressed via astate functionthat captures whether a given instance-transcript pair is good for
+the prover.
+•Before the interaction (the transcript is empty), the instances that are good for the prover are
+those close to the languageL(R).
+•In intermediate rounds of the protocol, the probability (over the verifier’s randomness for that
+round) that a state transitions from bad into good (for the prover) is small.
+•After the interaction (the transcript is full), the instance-transcript pairs that are good for the
+prover are those that cause the verifier to output instances close to the languageL(R′).
+Theround-by-round soundness errorupper bounds the transition probability in each round.
+Definition 2.3(informal).Astate functionfor an IOR fromRtoR ′ with proximity radiusδ⋆
+is a (possibly inefficient) functionStateparameterized by a proximity boundδ∈(0,δ ⋆)that, on
+input an explicit instancex, implicit instancey, and interaction transcripttr, outputs a bit.
+Definition 2.4(informal).An IOR fromRtoR ′ with proximity radiusδ⋆ hasround-by-round
+soundness errorε rbr if there exist a state functionStatefor the IOR with such that, for every
+δ∈(0,δ ⋆), statement(x,y), and interaction transcripttr, the following holds.
+•Empty transcript:iftr=∅is the empty transcript, thenState δ(x,y,tr) = 1if and only if there
+existsy ⋆∈B δ(y)andwwith(x,y ⋆,w)∈R.
+•Prover moves:iftris a transcript where the prover is about to move andState δ(x,y,tr) = 0,
+thenState δ(x,y,tr∥π) = 0for any prover messageπ.
+•Verifier moves:iftris a transcript where the verifier is about to move, then
+Prρi
+[
+Stateδ(x,y,tr) = 0
+∧State δ(x,y,tr∥ρ i) = 1
+]
+≤ε rbr.
+•Fulltranscript:iftr= (π 1,ρ 1,...,π k,ρ k)is a full transcript, thenStateδ(x,y,tr) = 1if and only if
+Vy,(πi)i∈[k](x,(ρi)i∈[k]) outputs(x′,y′)such that there existy′⋆∈B δ(y′)andw ′ with(x′,y′⋆,w′)∈R ′.
+RBR knowledge soundness in prior work.RBR knowledge soundness, introduced for IOPs
+in [CMS19], strengthens the above notion to enable (straightline) witness extraction. The definition
+7IORs generalize IOPs in the sense that an IOP for a relationRis an IOR fromRto the trivial language{1}.
+Even restricted to IOPs, our relaxation differs from prior notions of RBR knowledge soundness.
+19
+
+===== PAGE 20 =====
+is motivated by the fact that, in many IOPs/IORs of interest, the prover sends an encoding of the
+witness as a message in some (usually, the first) round; hence the extractor’s only responsibility is to
+decode this message. Roughly, while RBR soundness upper bounds the state function’s transition
+probability, RBR knowledge soundness upper bounds the state function’s transition probability
+provided that the extractor fails. The definition below is adapted to IORs [BMNW25b].
+Definition 2.5(informal).An IOR fromRtoR ′ with proximity radiusδ⋆ hasround-by-round
+knowledge soundness errorε rbr if there exist a state functionStatefor the IOR and an effi-
+cient deterministic extractorErbr such that, for everyδ∈(0,δ ⋆), statement(x,y), and interaction
+transcripttr, the following holds.
+•Empty transcript:Iftr=∅is the empty transcript, thenState δ(x,y,tr) = 0.
+•Prover moves:iftris a transcript where the prover is about to move andState δ(x,y,tr) = 0,
+thenState δ(x,y,tr∥π) = 0for any prover messageπ.
+•Verifier moves:iftris a transcript where the verifier is about to move, then
+Prρi
+
+ Stateδ(x,y,tr) = 0∧State δ(x,y,tr∥ρ i) = 1
+∧∀y ⋆∈B δ(y),
+(
+x,y⋆,E rbr(x,y,tr)
+)
+̸∈R
+
+≤ε rbr.
+•Fulltranscript:iftr= (π 1,ρ 1,...,π k,ρ k)is a full transcript, thenStateδ(x,y,tr) = 1if and only if
+Vy,(πi)i∈[k](x,(ρi)i∈[k]) outputs(x′,y′)such that there existy′⋆∈B δ(y′)andw ′ with(x′,y′⋆,w′)∈R ′.
+ThestatefunctioninDefinition2.5playsadifferentrolethanthestatefunctioninDefinition2.4:
+it encodes whether the extractor should succeed in outputting a valid witness, not just whether the
+current state is good for the prover.
+We outline how protocols typically satisfy RBR knowledge soundness. For simplicity, assume
+the prover sends an encoding of the witness in the first round of the protocol. There will exist some
+critical round of the protocol where: (i) the extractor is defined to output a decoding of the prover’s
+first message; and (ii) the transition probability can be upper bounded assuming the extractor’s
+output is not a valid witness. Outside of the critical round, the transition probability can be upper
+bounded,regardlessof whether or not the extractor succeeds (indeed, the extractor can simply be
+defined to output⊥outside of the critical round). See [ACFY24, Section 7] for an example of how
+RBR knowledge soundness is established for an IOP.
+Unfortunately, our protocols do not satisfy Definition 2.5.8 As discussed in Section 2.7, our
+extraction strategy relies on using a witness for the output instance in order to deduce (via erasure
+correction) a witness for the input instance. This is simply not possible in Definition 2.5, because
+the extractor sees only the prover’s messages up to the current round.
+The main problem here is that, once the critical round occurs, the extractor is expected to
+immediately output a valid witness. Relaxing this necessitates a new definition.
+A relaxation: RBR extraction.We propose a relaxation of RBR knowledge soundness that is
+compatible with our extraction strategy outlined in Section 2.7. Below, for clarity, we informally
+refer to this notion asRBR extraction.
+Recall that an IOP/IOR is RBR sound if it can be expressed as a sequential composition of
+one-round reductions each of which is individually sound. In analogy, we say that an IOP/IOR is
+8To be precise, our protocols are not known to satisfy Definition 2.5 when instantiated with an arbitrary linear
+code. If the code has an efficient error-tolerant decoder, then they satisfy Definition 2.5.
+20
+
+===== PAGE 21 =====
+RBR extractable if it can be expressed as a sequential composition of one-round reductions each of
+which is individually knowledge sound. This is arguably more natural than relying on a “global”
+extractor as in Definition 2.5.
+In more detail, we consider aknowledge state function, which captures each round’s intermediate
+relation by taking as additional input a candidate witness (for that intermediate relation); this is
+in analogy to a state function, which captures each round’s intermediate language. Then we define
+a notion of RBR knowledge soundness, where in every round, the extractor is given a valid witness
+for this round’s relation and is tasked with deducing a witness for the prior round’s relation.
+Definition 2.6(informal).Aknowledge state functionfor an IOR fromRtoR ′ with proximity
+radiusδ ⋆ is a (possibly inefficient) functionKStateparameterized by a proximity boundδ∈(0,δ ⋆)
+that, on input an explicit instancex, implicit instancey, interaction transcripttr, andknowledge
+state witnessw, outputs a bit.
+Definition 2.7(informal).An IOR fromRtoR ′ with proximity radiusδ⋆ hasround-by-round
+knowledge soundness errorε rbr if there exist a knowledge state functionKStatefor the IOR
+and an efficient deterministic extractorErbr such that, for everyδ∈(0,δ ⋆), statement(x,y), and
+interaction transcripttr, and knowledge state witnessw, the following holds.
+•Empty transcript:iftr=∅is the empty transcript, thenKState δ(x,y,tr,w) = 1if and only if
+there existsy⋆∈B δ(y)with(x,y ⋆,w)∈R.
+•Prover moves:iftris a transcript where the prover is about to move andKStateδ(x,y,tr,w) = 0,
+thenKState δ(x,y,tr∥π,w) = 0for every prover messageπ.
+•Verifier moves:iftris a transcript where the verifier is about to move, then
+Prρi
+[
+∃w: KStateδ
+(
+x,y,tr,E rbr(x,y,tr∥ρ i,w)
+)
+= 0
+∧KState δ(x,y,tr∥ρ i,w) = 1
+]
+≤ε rbr.
+•Full transcript:iftr= (π 1,ρ 1,...,π k,ρ k)is a full transcript, thenKStateδ(x,y,tr,w) = 1if and
+only ifV y,(πi)i∈[k](x,(ρi)i∈[k]) outputs(x ′,y′)such that there existsy′⋆∈B δ(y′)with(x ′,y′⋆,w)∈
+R′.
+All IORs in this paper are proved to satisfy RBR extraction, regardless of the underlying linear
+code. Note that Definition 2.7 is a (strict) relaxation of Definition 2.5 (see Section C). Nevertheless,
+we prove that RBR extraction still implies (straightline) state-restoration knowledge soundness (the
+low-level notion of straightline knowledge soundness that ensures Fiat–Shamir security).
+Theorem 2.8(informal).If ak-round IOR has round-by-round knowledge soundness errorε rbr
+(per our Definition 2.7), then the IOR has straightline state-restoration knowledge soundness error
+εsr(t)≤(t+k)·ε rbr.
+Technical details.In Section 4 we formally define (our relaxation of) round-by-round knowledge
+soundness for IORs; all IORs in this paper are proved to satisfy this notion. Separately, in Section B
+we state and prove a formal version of Theorem 2.8.
+2.9 Summary and instantiations
+In the prior sections we discussed the IORs, based on a given linear codeC, claimed in Theorem 2:
+21
+
+===== PAGE 22 =====
+prior definitions of
+RBR knowledge soundness
+our variant of
+RBR knowledge soundness RBR soundness
+straightline
+SR knowledge soundness SR soundness
+Figure 1:Implications between various notions of round-by-round (RBR) and state-restoration (SR)
+soundness for IOPs/IORs. In Section B we prove that our variant of RBR knowledge soundness implies
+straightline SR knowledge soundness. In Section C we prove that prior definitions of RBR knowledge
+soundness imply our variant of RBR knowledge soundness. Other implications are known.
+•an IOR fromR ⊚(F)toR C (outlined in Section 2.5), where the prover performsO(encC)field
+operations and the verifier makes no queries; and
+•an IOR fromR ℓC toR C (resulting from discussions in Sections 2.4 and 2.6), where the prover
+performsO(ℓ·(n+| ˆp|) +t·logn)field operations and the verifier makesℓ·tqueries.
+Both IORs have error≤2−λ providedFis sufficiently large andt > λ−log(1−δ PG), whereδ PG is theproximity radius for the mutual correlated agreement property ofC.
+In Section 10 we explain how, via compilation in the ROM, these two IORs imply a correspond-
+ing accumulation schemeACC= (PACC,V ACC,D ACC)forR ⊚(F). In general, the efficiency parameters
+ofACCdepend on properties of the linear codeC: (i) the encoding timeenc C affects the proving
+time of the accumulation proverPACC and accumulation deciderDACC; and (ii) the proximity radius
+δPG and errorerr PG of the mutual correlated agreement property affect the query complexity of the
+accumulation verifierV ACC and the minimum size of the fieldF. See Theorem 10.3 for a formal
+theorem statement that details efficiency and security parameters.
+Statements for mutual correlated agreement are known for every linear code, both in the unique
+decoding and list-decoding regime.
+•Unique decoding:every linear codeChas mutual correlated agreement with proximity radius
+δPG = δ(C)3 and errorerr PG = n|F| [AHIV17; ACFY25].
+•List decoding:every linear codeChas mutual correlated agreement with proximity radiusδPG =
+1− 3√1−δ(C) +η(forη >0) and errorerr PG = O(n)+ 23√1−δ(C)+η−√1−δ(C)+ηη·|F| [GKL24; Zei24].
+Any improvements in these bounds imply corresponding efficiency improvements in our protocols.
+Instantiation with linear-time encodable codes.If we fixCto be a linear-time encodable
+code (with constant relative distance) then we obtain Theorem 1.9 Codes satisfying these require-
+ment include, e.g., expander-based codes [Spi96; GI05; DI14; GLSTW23] and repeat-accumulate-
+accumulate codes [BCFRRZ25]. Deriving improved mutual correlated agreement parameters for
+these special cases (compared to the generic bounds) is an important research direction.
+Instantiation with Reed–Solomon codes.Reed–Solomon codes are a popular code choice,
+because they have quasilinear encoding time and they are maximum distance separable (i.e., they
+meet the Singleton bound, so they enjoy an optimal rate-distance tradeoff). Better results on
+mutual correlated agreement hold (or are believed to hold) for this case.
+9Both the unique decoding and list decoding parameters yield the claimed asymptotic efficiency.
+22
+
+===== PAGE 23 =====
+•Unique decoding:Reed–Solomon codes have mutual correlated agreement with proximity radius
+δPG = δ(C)2 and errorerr PG = n|F| [BCIKS20; ACFY25].
+•List decoding:Reed–Solomon codes have correlated agreement with proximity radiusδ PG =
+1−
+√
+δ(C)−ηforη >0witherrorerr PG = n2·(1−δ(C)) 2(2η)7·|F| [BCIKS20]; moreover, [ACFY25]conjectures
+that this result extends (with similar parameters) to mutual correlated agreement.
+Choice of parameters.Configuring theWARPprotocol requires care, due to tradeoffs that arise
+in the choice of linear codeCand proximity boundδ.
+•Which codeC?Choosing a linear-time encodable code is necessary to achieve linear-time accu-
+mulation. However, the situation is more nuanced when considering concrete efficiency.
+Linear-time encodable codes of practical interest typically have some drawbacks: (i) smaller min-
+imum distance than a Reed–Solomon code of the same rate (Reed–Solomon codes are maximum
+distance separable); and (ii) worse (known) bounds for mutual correlated agreement compared
+to Reed–Solomon codes. This results in an IOR verifier with larger query complexity and,
+consequently, an accumulation verifier with larger hash complexity; in turn, this impacts the
+overallprover timeof the PCD construction obtained from the accumulation scheme (as the
+PCD construction proves correctness of a circuit that includes the accumulation verifier).
+In light of this, the quasilinear encoding time of Reed–Solomon codes might be (concretely)
+small enough that the better query complexity offsets the performance gains in the prover that
+come from using a linear-time encodable code.
+•Which proximity boundδ?SupposeChas mutual correlated agreement with proximity radius
+δPG and errorerr PG. Our IORs preserve distance for every proximity boundδ∈(0,δPG)(i.e., the
+IORs have proximity radiusδ⋆ :=δ PG). We generally recommend setting the proximity boundδ
+to be as large as possible (using the largest proximity radiusδPG known forC), because largerδ
+results in fewer queries and thereby a smaller accumulation verifier.
+Smaller choices ofδcan, however, offer useful tradeoffs. First, known mutual correlated agree-
+ment errors worsen asδincreases, which translates into using larger fields to ensure soundness.
+Using a smallerδmight then allow saving on field size, improving the efficiency of field arith-
+metic for both the prover and verifier. Second, whenδ≤δ(C)/2(i.e., the proximity radius is at
+most the code’s unique decoding radius), the protocols we presented can be simplified to avoid
+using out-of-domain samples. This improves the accumulation prover’s efficiency (and round
+complexity). Nevertheless, we suspect that the benefits of choosing a smaller proximity radius
+δare not sufficient to offset the increased verifier complexity.
+Carefully navigating these tradeoffs requires an implementation (and suitable optimizations). We
+leave such efforts to future work.
+Comparisonofhash-basedaccumulationschemes.Table1comparesWARPwithotherhash-
+based accumulation schemes [BMNW25b; BMMS25] and a bounded-depth accumulation scheme
+[BMNW25a].WARPachieves the smallest prover and verifier arithmetic costs, matched only by
+concurrent work [BMMS25]. Moreover,WARPachieves the smallest cryptographic costs, in the
+numberofMerklecommitmentscomputedbytheproverandthenumberofMerkleopeningschecked
+by the verifier. The latter is due to working in the list-decoding regime (as does [BMNW25b]).
+23
+
+===== PAGE 24 =====
+prover
+arithmetic cost
+prover Merkle
+commitments
+verifier
+arithmetic cost
+verifier Merkle
+openings
+repetition
+parametert
+list
+decoding
+[BMNW25a][RS]O
+(
+ℓ1·nlogn
++ℓ·logℓ·n
+)
+MT(n,Fℓ1)
++MT(n,F) O(ℓ·d acc·t) (2 +ℓ 2)·t λ−log(1−d acc·δud(C))
+[BMNW25a][C]O
+(
+ℓ1·encC
++ℓ·logℓ·n
+)
+MT(n,Fℓ1)
++MT(n,F 2) O(ℓ·d acc·t) (2 +ℓ 2)·t λ−log(1−d acc·δud(C))
+[BMNW25b]O
+(
+ℓ1·n·logn
++ℓ·logℓ·n
+)
+MT(n,Fℓ1)
++MT(n,F 2) O(ℓ·t 2) (1 +ℓ 2)·t λ−log(1−δ ca(C)) ✓
+WARP[C]O
+(
+ℓ1·encC
++ℓ·n+λ·logn
+)
+MT(n,Fℓ1)
++MT(n,F) O
+(
+ℓ·(logn+t)
++t·logn
+)
+(1 +ℓ 2)·t λ−log(1−δ mca(C)) ✓
+[BMMS25][C]O
+(
+(ℓ1 + 1/ρ(C))·enc C
++ℓ·n+λ·logn
+) MT(n,Fℓ1)
++ 2·MT(n,F)
++MT(n,F 1/ρ(C))
+O
+(
+ℓ·(logn+t)
++t·logn
+)
+(3 +ℓ 2)·t λ−log(1−δ ud(C))
+Table 1:Comparison of hash-based accumulation schemes. For ease of notation we assume that
+N,M,| ˆp|=O(n)andd=O(1). In the first two rows,d acc denotes the depth for the bounded-depth
+accumulation scheme in [BMNW25a]. For the given codeC,ρ(C)is the rate,δca(C),δ mca(C)are the prox-
+imity radii for correlated agreement and mutual correlated agreement, andδud(C) := min{δca(C),δ(C)/2}.
+Moreover,MT(n,Σ)denotes the cost of computing a Merkle commitment to a vector inΣn, and Merkle
+openings refers to the number of authentication paths.
+24
+
+===== PAGE 25 =====
+3 Preliminaries
+We define objects and state results that we use in this paper. We use the following notation.
+•The set of powers of two is2N :={2 n :n∈N}.
+•The preimage set oft∈Tunder a functionf:S→Tisf −1(t) :={s∈S:f(s) =t}.
+•For two functionsf,g: [n]→Fand a setS⊆[n], we writef(S) =g(S)to mean thatf(x) =g(x)
+for everyx∈S. Conversely, iff(S)̸=g(S), then there existsx∈Ssuch thatf(x)̸=g(x).
+•For two functionsf,g: [n]→F,∆(f,g)is the fractional Hamming distance betweenfandg
+(the fraction of points in which they disagree). For a setS⊆F [n],∆(f,S) := minh∈S ∆(f,h)
+(or ifSis empty,∆(f,S) := 1).
+•Fori∈[n], letbinary(i)∈F logn denote the binary representation ofi(embedded inF).
+•For a polynomialˆp, letdeg tot(ˆp)∈Ndenote the total degree ofˆp.
+•The equality polynomialeqformvariables iseq(X,Y) :=∏mi=1 (Xi·Yi + (1−X i)·(1−Y i)).
+•For a functionf:S→Fwhere|S|∈2 N, let ˆfdenote the multilinear extension off, implicitly
+identifyingSwith{0,1} log|S|.
+Claim 3.1.For every ˆf∈F <2[X1,...,X m]andτ∈F m,
+ˆf(τ) = ∑
+b∈{0,1}m
+ˆf(b)·eq(τ,b).
+Lemma 3.2(Ore–DeMillo–Lipton–Schwartz–Zippel lemma).Letˆp∈F <d[X1,...,X m]be a non-
+zero polynomial. Then,
+Pr
+τ←Fm
+[ˆp(τ) = 0]≤m·(d−1)|F| .
+3.1 Relations
+Forthepurposesofthiswork, arelationRconsistsofquadruples(i,x,y,w)∈R, whereiistheindex,
+xthe explicit instance,ythe implicit instance, andwthe witness. For a relationR={(i,x,y,w)},
+letL(R) :={(i,x,y) :∃w,(i,x,y,w)∈R}be the language induced byR.
+Multi-instance relations.Forℓ∈N, we define themulti-instance relation
+Rℓ :={(i,(x 1,...,x ℓ),(y 1,...,y ℓ),(w 1,...,w ℓ)) :∀i∈[ℓ],(i,x i,yi,wi)∈R}.
+Distance from a relation.LetRbe a relation. For any statement(i,x,y)(not necessarily in
+the language), we associate anoracle, denotedπR(i,x,y). Unless stated otherwise, we define this to
+be the implicit instance (ify= (y1,...,y ℓ)is a tuple of words, thenπR(i,x,y)should be interpreted
+as an interleaved word). LetΠR(i,x) :={πR(i,x,y) : (i,x,y)∈L(R)}be the set of oracles in the
+relation induced by a given index and explicit instance. We define the distance of a statement
+(i,x,y)from the relationRto be
+∆R(i,x,y) := ∆(πR(i,x,y),Π R(i,x)).
+25
+
+===== PAGE 26 =====
+3.2 Interactive oracle reductions
+Interactive Oracle Reductions(IORs) [BCGGRS19; BMNW25b] are a generalization of Interactive
+Oracle Proofs (IOPs) [BCS16; RRR16]. Below we describe the flavor of IOR relevant to this paper.
+A public-coin holographic IOR of proximity from a relationRtoR′ is a tripleIOR= (I,P,V)
+that works as follows.
+•Offline phase.The indexerIis a deterministic algorithm that receives as input an indexiand
+outputs a tuple(i′,ι,I)consisting of a new indexi ′, a short indexι(an explicit input forV),
+and a long indexI(an implicit input forV).
+In this paper, all IORs satisfyi′ =i(the index is unchanged) andI=⊥(no long index). To
+simplify notation, we writeI(i) =ι(Iis tasked to output the short indexιonly).
+•Online phase.The proverPis an interactive algorithm that receives as input(i,x,y,w)∈R,
+and the verifierVis an interactive oracle algorithm that receives as (explicit) input(ι,x)and
+query access toy. They interact overkrounds as follows. In each roundi∈[k],Psends a proof
+stringπ i andVsends a uniformly random messageρ i∈{0,1} ri. Afterkrounds of interaction,
+Vmakes queries toyand proof stringsπ 1,...,π k sent byP. After that:
+–Veither rejects or outputs a new explicit instancex′ and implicit instancey′, and
+–Poutputs a new witnessw ′ such that(i,x′,y′,w′)∈R ′.
+Without loss of generality,V’s output is a deterministic function of its input and the transcript.
+Note thatVspecifiesy ′ implicitly, in terms ofyandπ 1,...,π k.
+We say thatIORhas (perfect) completeness and soundness errorβwith proximity radiusδ⋆∈[0,1]
+if the following hold.
+•Completeness.For every(i,x,y,w)∈R,
+Prρ1,...,ρk
+
+ (i,x′,y′,w′)∈R ′
+⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐ π1←P(i,x,y,w)ρ1←{0,1} r1...(πk,w′)←P(i,x,y,w,ρ 1,...,ρ k−1)ρk←{0,1} rk(x′,y′)←V y,π1,...,πk(I(i),x,ρ 1,...,ρ k)  = 1.
+•Soundness.For every proximity boundδ∈(0,δ ⋆), statement(i,x,y)/∈L(R)with∆ R(i,x,y)>
+δ, and unbounded malicious prover˜P,
+Prρ1,...,ρk
+
+ ∆R(i,x′,y′)≤δ
+⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐ π1← ˜Pρ1←{0,1} r1...πk← ˜P(ρ1,...,ρ k−1)ρk←{0,1} rk(x′,y′)←V y,π1,...,πk(I(i),x,ρ 1,...,ρ k) ≤β(i,x,y,δ).
+Sometimes we leave implicit some parameters ofβif they are clear from context.
+26
+
+===== PAGE 27 =====
+Remark 3.3.The above soundness property describes adistance-preserving IOR, in the sense
+that both the old and new statements use the same proximity boundδ. More generally, an IOR may
+be specified with a new proximity boundδ′ (which is a function ofδand possibly other parameters).
+All IORs in this paper are distance-preserving, so we have specialized the definition to this case.
+In this paper we construct IORs that satisfy a stronger security notion,round-by-round
+knowledge soundness, that we introduce in Section 4. This ensures Fiat–Shamir security of the
+corresponding non-interactive reduction in the ROM, as we prove in Section B.
+Efficiency measures.We study several efficiency measures, which are implicitly functions of the
+indexiand explicit instancex.
+•Roundsk: there arekrounds of interaction (a round is a prover message and verifier message).
+•AlphabetΣ: the implicit instanceyand each prover messageπ i is over the alphabetΣ; in this
+paper, the alphabet is always a finite fieldF.
+•Proof lengthl: the total number of symbols in the proofsπ1,...,π k.
+•Input queriesq y: the number of alphabet elements read by the verifier fromy.
+•Proof queriesq π: the number of alphabet elements read by the verifier fromπ1,...,π k.
+•Randomnessr: the verifier’si-th messageρ i has lengthri andr :=∑ki=1 ri is the total number
+of random bits sent by the verifier.
+•Prover timept:Pruns in timeptmeasured in algebraic field operations.
+•Verifier timevt:Vruns in timevtmeasured in algebraic field operations.
+3.3 Zero-evaders
+Definition 3.4.Azero-evaderoverFwith errorε zero is a functionZE:D ZE→F m such that
+∀v∈F m\{0},Pr
+ρ←DZE
+[⟨ZE(ρ),v⟩= 0]≤ε zero.
+Lemma 3.5.LetG∈F n×k be an injective linear map. LetˆGbe the multilinear extension ofG.
+The functionZE:F logn→F k defined by
+ZE(α) := (ˆG(α,b))b∈{0,1}logk
+is a zero-evader with errorlogn|F| .
+Proof.For everyα∈F logn andv∈F k,
+∑
+b∈{0,1}logk
+ˆG(α,b)·v(b) = ∑
+b∈{0,1}logk,b′∈{0,1}logn
+eq(α,b′)·G(b ′,b)·v(b)
+=
+∑
+b′∈{0,1}logn
+eq(α,b′)·(Gv)(b ′).
+Ifv̸=0thenGv̸=0, sinceGis linear and injective. Then, by Lemma 3.2:
+Prα [⟨ZE(α),v⟩= 0] = Prα
+
+ ∑
+b′∈{0,1}logn
+eq(α,b′)·(Gv)(b ′) = 0
+
+≤ logn|F| .
+27
+
+===== PAGE 28 =====
+3.4 Codes
+We state several definitions and facts about (error-correcting) codes.
+Definition 3.6.Acodeover an alphabetΣwith message lengthkand codeword lengthnis an
+injective mapC: Σ k→Σ n. A codeCis alinear codeifΣ =Fis a field andCis linear. In this
+paper we assume thatn∈2 N.
+We often viewC⊆Σ n as the map’s image and codewordsu∈Cas functionsu: [n]→Σ.
+Definition 3.7.Theminimum distanceof a codeCis defined asδ(C) := minu̸=v∈C ∆(u,v).
+Definition 3.8.A codeC: Σ k→Σ n issystematicif, for allx∈Σ k, the firstkentries ofC(x)
+are equal tox.
+Algorithmic measures.We consider several algorithmic measures associated toC.
+•enc C is the number of field operations required to encode a messagex∈Σk into its corresponding
+codewordu :=C(x).
+•dec C is the number of field operations required to decode a codewordu∈Cinto its corresponding
+messagex :=C −1(u); ifCis systematic, thendec C = 0(sincexis the firstkelements ofu).
+•ecor C is the number of field operations required toerasure correcta codeword (Definition 3.9);
+every linear code has efficient erasure correction (Lemma 3.10).
+Definition 3.9.A codeC⊆Σ n supportserasure correction with correction timeecor C if
+there exists a deterministic algorithmEC (theerasure corrector) that, given inputf: [n]→Σ∪{⊥}:
+•if|f −1(⊥)|< δ(C)·nand there exists a codewordu∈ Csuch thatf(i) =u(i)for alli∈
+[n]\f −1(⊥), thenEC(f) =u(note that such a codeworduis unique); and
+•otherwise,E C(f) =⊥.
+Moreover,EC performs at mostecorC field operations.
+Lemma 3.10([GRS12]).Every linear codeC:F k→F n has erasure correction with correction time
+ecorC =O(n 3).
+Definition 3.11.For a codeC⊆Σ n, functionf: [n]→Σ, and proximity parameterδ∈[0,1], we
+define thelist decodingoffwithin distanceδas
+Λ(C,f,δ) :={u∈C|∆(f,u)≤δ}.
+We also define|Λ(C,δ)| := maxf|Λ(C,f,δ)|.
+Definition 3.12.Them-interleavingof a codeC⊆Σ n is the codeCm⊆(Σ m)n. The alphabet
+ofC m isΣ m, so distance is measured with respect to this alphabet.
+The following lemma states that if a code is list-decodable then so is its interleaving.
+Lemma 3.13([GGR11]).LetCbe a code and letδ∈[0,δ(C)). Letb :=⌈ δδ(C)−δ⌉andr :=
+⌈log δ(C)δ(C)−δ⌉. For everym≥1,|Λ(C m,δ)|≤ (b+rr )·|Λ(C,δ)| r.
+28
+
+===== PAGE 29 =====
+3.5 Out-of-domain samples
+We describe a generalization of out-of-domain sampling for general linear codes.
+Lemma 3.14.LetC:F k→F n be a linear code,f: [n]→Fbe a function,s∈Nbe a repetition
+parameter, andδ∈[0,1]be a distance parameter. LetZE:D ZE→F k be a zero-evader with error
+εzero (Definition 3.4). Then,
+Pr
+ρ1,...,ρs←DZE
+[
+∃distinctu,v∈Λ(C,f,δ)
+∀i∈[s],⟨ZE(ρ i),C−1(u)⟩=⟨ZE(ρ i),C−1(v)⟩
+]
+≤|Λ(C,δ)| 2
+2 ·εszero.
+Proof.Fix two distinct codewordsu,v∈Λ(C,f,δ). Sinceu̸=vandCis injective, it must be
+thatC −1(u)̸=C −1(v). It follows thatPr ρ←DZE[⟨ZE(ρ),C−1(u)⟩=⟨ZE(ρ),C −1(v)⟩]≤ε zero. Hence
+the probability that⟨ZE(ρi),C−1(u)⟩=⟨ZE(ρ i),C−1(v)⟩for everyi∈[s]is at mostε szero (since the
+seedsρ 1,...,ρ s are sampled independently). The lemma follows from a union bound over the(|Λ(C,δ,f)|
+2
+)
+≤ |Λ(C,δ)| 22 pairs of distinct codewords inΛ(C,δ,f).
+Lemma3.14impliesacorrespondingstatementforReed–Solomoncodes, inparticular[ACFY24,
+Lemma 4.5] in STIR and [ACFY25, Lemma 4.25] in WHIR.
+3.6 Mutual correlated agreement for proximity generators
+We rely onmutual correlated agreement, a strengthening of correlated agreement for proximity
+generators introduced in [ACFY25], which for simplicity we refer to asstrongproximity generators.
+These ensure that, with high probability, the agreement domain of the function resulting from the
+proximity generator is identical to the set of correlated agreement domains between the functions.
+Definition 3.15([ACFY25]).LetC:F k→F n be a linear code. We say thatPG(ℓ,·):D PG→F ℓ
+is astrong proximity generatorforCwith proximity radiusδ PG and errorerr PG if, for all
+f1...,f ℓ : [n]→Fandδ∈(0,δ PG(ℓ)), the following holds:
+Pr
+α←DPG
+γ:=PG(ℓ,α)
+
+∃S⊆[n]s.t. |S|≥(1−δ)·n∧∃u∈C,u(S) = ∑j∈[ℓ]γj·fj(S)
+∧∃i∈[ℓ],∀v∈C,v(S)̸=f i(S)
+
+≤err PG(C,ℓ,δ).
+29
+
+===== PAGE 30 =====
+4 Round-by-round knowledge soundness for IORs
+We define our variant of round-by-round knowledge soundness for IORs.
+Definition 4.1.LetIOR= (I,P,V)be an IOR from a relationRtoR ′ with proximity radiusδ⋆.
+Aknowledge state functionforIORis a (possibly inefficient) functionKState, parameterized
+by a proximity boundδ∈(0,δ ⋆), that, on input a statement(i,x,y), interaction transcripttr, and
+knowledge state witnessw, outputs a bit and has the following properties.
+•Empty transcript: iftr=∅is the empty transcript, thenKState δ(i,x,y,tr,w) = 1if and only if
+there existsy⋆ satisfying(i,x,y ⋆,w)∈Rand∆(π R(i,x,y),π R(i,x,y ⋆))≤δ.
+•Prover moves: iftris a transcript where the prover is about to move andKStateδ(i,x,y,tr,w) = 0,
+thenKState δ(i,x,y,tr∥π,w) = 0for every prover messageπ.
+•Full transcript: iftr= (π 1,ρ 1,...,π k,ρ k)is a full transcript, thenKState δ(i,x,y,tr,w) = 1
+if and only ifV y,π1,...,πk(I(i),x,ρ 1,...,ρ k)outputs(x ′,y′)such that there existsy ′⋆ satisfying
+(i,x′,y′⋆,w)∈R ′ and∆(πR′(i,x′,y′),πR′(i,x′,y′⋆))≤δ.
+Definition 4.2.IOR= (I,P,V)from a relationRtoR ′ with proximity radiusδ⋆ hasround-by-
+round knowledge soundness with errors(ε1,...,ε k)and extraction times(et 1,...,et k)if
+there exist a knowledge state functionKStateforIORand a deterministic extractorE rbr with the
+following property: for every proximity boundδ∈(0,δ ⋆), statement(i,x,y), round indexi∈[k],
+and interaction transcripttr= (π 1,ρ 1,...,π i−1,ρi−1,πi)where the verifier is about to move,Erbr
+runs in time at mosteti and
+Prρi
+[
+∃w: KStateδ
+(
+i,x,y,tr,E rbr(i,x,y,tr∥ρ i,w)
+)
+= 0
+∧KState δ(i,x,y,tr∥ρ i,w) = 1
+]
+≤ε i(i,x,y,δ).
+Thetotal extraction timeis defined to ∑i∈[k] eti.
+In Section B we prove that (our variant of) round-by-round knowledge soundness implies
+straightline state-restoration knowledge soundness.
+Remark 4.3.Similar to the soundness property given in Section 3.2, Definitions 4.1 and 4.2 are for
+a distance-preserving IOR. In full generality, as discussed in Remark 3.3, an IOR may be specified
+with a new proximity boundδ′ forR′. In this case, in Definition 4.1 the knowledge state function
+would useδandδ ′ in the empty and full transcript requirements, respectively; Definition 4.2 would
+be updated accordingly.
+30
+
+===== PAGE 31 =====
+5 Polynomial equation satisfiability
+We describepolynomial equations satisfiability(PESAT), theNP-complete problem that we use.
+Definition 5.1.Asystem of polynomial equationsover the finite fieldFis a triple( ˆp,M,N)
+where ˆp= (ˆpi)i∈[M] is a list ofMpolynomials inNvariables overF. Thedegreeof the system is
+the maximum total degree of any individual polynomial:d:= maxi degtot(ˆpi). We denote by|ˆp|the
+number of field operations needed to evaluate the polynomial system on a vectorz∈FN.
+Definition 5.2.For a fieldF, thepolynomial equations satisfiability (PESAT) relation
+R⊚(F)is defined as
+R⊚(F) :=
+
+
+(i,x,⊥,w)
+⏐⏐⏐⏐⏐⏐⏐⏐⏐ i= ( ˆp,M,N,k)x=x∈F N−kw=w∈F kˆp(z) =0wherez := (x,w)  .
+We assume thatM∈2 N. We writeκ :=N−kto denote the length ofx=x.
+Throughout, when we writeiwe refer to the index of the PESAT relation:i= (ˆp,M,N,k). All
+the IORs that we consider have indexerI(i) = (M,N,k), so we omit this in protocol description.
+Remark 5.3(R1CS).We outline how PESAT overFcaptures R1CS [BCGTV13], which consists
+of triples(i,x,w) = ((A,B,C,k),x,w)whereA,B,CareM×Nmatrices overF,x∈F N−k,
+andw∈F k such thatAz◦Bz=Czforz := (x,w); here◦denotes the Hadamard (entry-wise)
+product. R1CS is a degree-2PESAT: for everyi∈[M], we defineˆpi(Z) :=⟨a i,Z⟩·⟨b i,Z⟩−⟨c i,Z⟩
+wherea i,bi,ci are thei-th rows ofA,B,Crespectively. Note that| ˆp|=O(S)whereSis a bound
+on the number of non-zero entries in each ofA,B,C.
+Remark 5.4(CCS).We outline how PESAT overFcaptures CCS [STW23], which consists of
+triples(i,x,w) = ((M 1,...,M t,S 1,...,S q,c 1,...,c q,k),x,w)whereM 1,...,M t areM×Nma-
+trices overF,S 1,...,S q are multisets in[t]with|S i|≤d,c 1,...,c q∈F,x∈F N−k, andw∈F k
+such that∑j∈[q]cj·⃝a∈SjMaz=0forz := (x,w). CCS is a degree-dPESAT: for everyi∈[M],
+we defineˆpi(Z) :=∑j∈[q]cj·∏a∈Sj⟨ma,i,Z⟩, wherem a,i is thei-th row ofMa.
+We work with a bundled form of PESAT where theMconstraints are reduced to a single one.
+Definition 5.5.Leti= ( ˆp,M,N,k)and letZE:D ZE→F M be a zero-evader (Definition 3.4). The
+ZE-bundlingof ˆpis the function ˆP[ZE, ˆp]:D ZE×FN→Fdefined as
+ˆP[ZE, ˆp](ρ,z) :=⟨ZE(ρ), ˆp(z)⟩.
+In this paper, we fixZE:F logM →F M whereτ↦→(eq(τ,i)) i∈{0,1}logM , in which caseˆP[ZE, ˆp]is
+the polynomial
+ˆP(τ,z) := ∑
+i∈{0,1}logM
+eq(τ,i)·ˆpi(z).
+We often writeˆPinstead of ˆP[ZE, ˆp]when ˆpis clear from context (andZEis fixed as above).
+We define notation for codewords on which evaluation and bundled constraints are enforced.
+31
+
+===== PAGE 32 =====
+Definition 5.6.LetC:F k→F n be a linear code andi= ( ˆp,M,N,k). For an evaluation point
+α∈F logn, circuit evaluation pointβ∈F logM+κ , and targetsµ,η∈F, we define
+C[(α,µ),( ˆP,β,η)] =
+{
+u∈C: ˆu(α) =µ∧ ˆP(β,C −1(u)) =η
+}
+.
+Moreover, we define a multi-constraint version as
+C[(αi,µi)i∈[r],( ˆP,β,η)] = ⋂
+i∈[r]
+C[(αi,µi),( ˆP,β,η)].
+We writem := logM+κto denote the length ofβ.
+We use the bundled form to define the main relation that our protocols accumulate. The relation
+is defined with respect to a linear code which is fixed throughout this work.10
+Definition 5.7.LetC:F k→F n be a linear code andr∈N. Themulti-evaluation relation
+RC,r is
+RC,r =
+{
+(i,((αi,µi)i∈[r],β,η),u,u)
+⏐⏐⏐⏐⏐ i= ( ˆp,M,N,k)u∈C[(α i,µi)i∈[r],( ˆP,β,η)] } .
+Thetwin constraint relationisR C :=RC,1.
+We present an IOR that reduces an arbitrary PESAT relation to (a simpler version of) the main
+relation.
+Theorem 5.8.Fix a linear codeC:F k→F n. Construction 5.10 is a public-coin IOR fromR⊚(F)
+(Definition 5.2) toRC,0 (Definition 5.7) with the following parameters.
+•Rounds.The protocol has 1 round.
+•Proof length.The prover sends a single message consisting ofnfield elements.
+•Query complexity.The verifier makes no queries.
+•Prover time.The prover performsO(enc C)field operations.
+•Verifier time.The verifier performs no field operations.
+For everyδ∈(0,1), if
+|F|≥2 λ·logM·|Λ(C,δ)|,(1)
+the IOR has round-by-round knowledge soundness error≤2−λ. Moreover, the total extraction time
+isO(dec C)field operations.
+In Section 5.1 we describe the protocol and in Section 5.2 we prove its security.
+Remark 5.9.Theorem 5.8 provides an IOR fromR⊚(F)toR C,0. Later, Theorem 6.2 provides an
+IOR forRC =RC,1̸=RC,0. This mismatch can be resolved in a few ways.
+•Construction 6.3 can be adapted to handleRC,0 straightforwardly; we do not explicitly perform
+the adaptation, as it complicates notation.
+•The prover can send an evaluation of ˆfat an arbitrary point (say0, this does not have to be
+chosen at random).
+These do not affect the asymptotics of our constructions, nor significantly the efficiency, so we
+ignore them for the purpose of this work.
+10In full generality, we fix a family of linear codes parameterized by the message lengthk.
+32
+
+===== PAGE 33 =====
+5.1 Protocol
+Construction 5.10.We describe an IOR fromR⊚(F)(Definition 5.2) toR C,0 (Definition 5.7).
+•Inputs.The verifier receives the explicit instancex :=x∈F κ. In the honest case, the prover
+additionally receives a witnessw:=w∈F k such that(i,x,⊥,w)∈R ⊚(F).
+•Interaction phase.
+1.Encoded witness:The prover sendsf: [n]→F. In the honest case,f :=C(w).
+2.Zerocheck randomness:The verifier samplesτ←F logM .
+•Decision phase.Defineβ := (τ,x). The verifier outputs the explicit instancex′ := (β,0)and
+implicit instancey′ :=f. In the honest case, the prover outputs the new witnessw′ :=f∈C.
+5.2 Security
+Lemma 5.11.Construction 5.10 is an IOR fromR ⊚(F)toR C,0 with round-by-round knowledge
+soundness errorε zc where:
+•ε zc≤ |Λ(C,δ)|·logM|F| .
+Moreover, the total extraction time isO(decC)field operations.
+Proof.First we define the knowledge state function and extractor; then we upper bound the round-
+by-round knowledge soundness error. Throughout,i= ( ˆp,M,N,k),x=x, andy=⊥.
+Knowledge state function and extractor.We define the knowledge state function and ex-
+tractor’s behavior in each round:
+0.Initial transcript:We setKState δ(i,x,y,∅,w) = 1if and only ifw∈F k and ˆp(x,w) =0.
+1.Zerocheck randomness:At this stage the transcripttrhas the formtr= (f). The verifier
+samplesτ←F logℓ.
+Knowledge state function:We setKState δ(i,x,y,tr∥τ,u) = 1if and only ifu∈Λ(C,f,δ)
+and
+ˆP(τ,x,C −1(u)) = 0.
+This corresponds to whether the verifier’s output isδ-close toRC,0.
+Extractor:The extractor isE rbr(i,x,y,tr∥τ,u) :=C −1(u)and runs in timeet 1 =O(decC).
+RBR knowledge soundness.We upper bound the round-by-round knowledge soundness errors
+based on the knowledge state function and extractor described above.
+1.Zerocheck randomness:We show that
+Prτ
+[
+∃u: KStateδ(i,x,y,tr,C −1(u)) = 0KStateδ(i,x,y,tr∥τ,u) = 1 ]≤|Λ(C,δ)|·logM|F| .
+Fixu∈Λ(C,f,δ)and assume thatKState δ(i,x,y,tr,C −1(u)) = 0. We show that
+Prτ [KStateδ(i,x,y,tr∥τ,u) = 1]≤ logM|F| .(2)
+33
+
+===== PAGE 34 =====
+The error bound follows from a union bound over the codewords inΛ(C,f,δ), as these are
+the only choices ofuwhich allowKState δ(i,x,y,tr∥τ,u) = 1for some choice ofτ. Since
+KStateδ(i,x,y,tr,C −1(u)) = 0, it must be that ˆp(x,C−1(u))̸=0. Equation 2’s bound follows
+from the definition ofˆPas theZE-bundling of ˆp, whereZEis a zero-evader with error logM|F| .
+34
+
+===== PAGE 35 =====
+6 Twin constraint pseudo-batching
+Definition 6.1.LetC:F k→F n be a linear-code andℓ,r∈N. Thepseudo-batching accumu-
+lation relationRC,r,ℓ is
+RC,r,ℓ =
+{
+(i,(γ,(α i,µi)i∈[r],β,η),(u 1,...,u ℓ),u)
+⏐⏐⏐⏐⏐ i= ( ˆp,M,N,k)u= ∑i∈[ℓ]γi·ui∈C[(α i,µi)i∈[r],( ˆP,β,η)] } .
+For any statement(i,x= (γ,...),y= (f 1,...,f ℓ))(not necessarily in the language), the associated
+oracle is defined to beπRC,r,ℓ(i,x,y) :=∑i∈[ℓ]γi·fi.
+Theorem 6.2.Fix a linear codeC:F k→F n and parameterℓ∈2 N, and leti= ( ˆp,M,N,k)be of
+degreed. Construction 6.3 is a public-coin IOR fromRℓC (Definition 5.7) toRC,1,ℓ (Definition 6.1)
+with the following parameters.
+•Rounds.The protocol haslogℓ+ 1rounds.
+•Proof length.The prover sendslogℓ·(1 + max{logn+ 1,logM+d}) + 2field elements.
+•Query complexity.The verifier makes no queries.
+•Prover time.The prover performsO(ℓ·(n+d·(| ˆp|+M))field operations (see Lemma 6.4).
+•Verifier time.The verifier performsO(ℓ·(logn+ logM+κ) + logℓ·d)field operations.
+Suppose thatPG(2,α) = (1−α,α)is a strong proximity generator forCwith proximity radiusδ PG
+and errorerr PG. For everyδ∈(0,min{δ(C),δ PG(2)}), as long as
+|F|≥2 λ·max
+{
+(logℓ+ 1)·|Λ(C ℓ,δ)|,
+(1 + max{logn+ 1,logM+d})·|Λ(C ℓ,δ)|+ℓ/2·err PG(C,2,δ)·|F|
+}
+,
+the IOR has round-by-round knowledge soundness error≤2−λ. Moreover, the total extraction time
+isO(ℓ·ecor C)field operations.
+In Section 6.1 we describe the protocol and in Section 6.2 we prove its security.
+6.1 Protocol
+Construction 6.3.We describe an IOR fromRℓC (Definition 5.7) toRC,1,ℓ (Definition 6.1).
+•Inputs.Fori∈{0,1} logℓ, the verifier receives the explicit instancexi = (αi,µi,βi,ηi)and
+oracle access to the implicit instanceyi :=f i : [n]→F. In the honest case,(i,x i,yi)∈L(R C)for
+everyi∈{0,1} logℓ.
+•Interaction phase.
+1.Zerocheck randomness:The verifier samplesτ←F logℓ andξ←F.
+35
+
+===== PAGE 36 =====
+2.Sumcheck protocol:Define the following(logℓ)-variate multilinear polynomials:
+ˆF(I) := ∑
+i∈{0,1}logℓ
+eq(I,i)·f i ∈(F <2[I])n,
+ˆw(I) :=
+∑
+i∈{0,1}logℓ
+eq(I,i)·C −1(fi)∈(F <2[I])k,
+ˆA(I) := ∑
+i∈{0,1}logℓ
+eq(I,i)·α i ∈(F <2[I])logn ,
+ˆB(I) := ∑
+i∈{0,1}logℓ
+eq(I,i)·β i ∈(F <2[I])m.
+Note that ˆwis well-defined in the honest case and, assuming the code is systematic, equivalent
+to the firstkentries of ˆF. Define the following:
+ˆG(F,W,A,B) :=
+
+ ∑
+b∈{0,1}logn
+eq(A,b)·F b
+
+ +ξ· ˆP(B,W),
+σ :=
+∑
+i∈{0,1}logℓ
+eq(τ,i)·(µ i +ξ·η i).
+The prover and verifier engage in a(logℓ)-round sumcheck protocol for the following claim:
+∑
+i∈{0,1}logℓ
+eq(τ,i)· ˆG( ˆF(i), ˆw(i), ˆA(i), ˆB(i)) =σ.
+During the interaction, the prover sendslogℓsumcheck polynomials ˆh1,..., ˆhlogℓ of degree
+1 + max{logn+ 1,logM+d}, and the verifier replies with randomnessγ := (γ1,...,γ logℓ ).
+3.New target:The prover sendsµ,η∈F. In the honest case:
+µ := ˆg(ˆA(γ)),
+η := ˆP( ˆB(γ),C −1(f))wheref := ∑
+i∈{0,1}logℓ
+eq(γ,i)·f i.
+•Decision phase.(The verifier rejects if any check fails.)
+1.Sumcheck decision:The verifier checks that
+ˆh1(0) + ˆh1(1) =σand∀j∈{1,...,logℓ−1}, ˆhj+1(0) + ˆhj+1(1) = ˆhj(γj).
+2.New target decision:The verifier checks that ˆhlogℓ (γlogℓ ) =eq(τ,γ)·(µ+ξ·η).
+3.Outputs:Setγ ′ := (eq(γ,i))i∈{0,1}logℓ. The verifier outputs the new explicit instancex′ :=
+(γ′, ˆA(γ),µ, ˆB(γ),η)and implicit instancey ′ := (f1,...,f ℓ).
+We analyze the prover time of Construction 6.3; other complexity parameters are clear.
+Lemma 6.4.The prover in Construction 6.3 can be implemented to perform
+O(ℓ·(n+d·(| ˆp|+M)))
+field operations.
+36
+
+===== PAGE 37 =====
+Proof.Letj∈[logℓ]. In thej-th sumcheck round, letγ j−1 := (γ1,...,γ j−1)∈F j−1. The prover
+maintains five tables:T j,F ∈F (ℓ/2j−1)·n,T j,w∈F (ℓ/2j−1)·k,T j,A∈F (ℓ/2j−1)·logn,T j,B∈F (ℓ/2j−1)·m,
+andT j,eq∈F ℓ/2j−1. The table entries are defined as follows: for everyi∈{0,1}logℓ−j+1,
+Tj,F [i,·] = ˆF(γj−1,i)∈F n,
+Tj,w[i,·] = ˆw(γj−1,i)∈F k,
+Tj,A[i,·] = ˆA(γj−1,i)∈F logn ,
+Tj,B[i,·] = ˆB(γj−1,i)∈F m,
+Tj,eq[i] =eq(τ,γ j−1,i)∈F.
+Using [VSBW13], these tables can be initialized and maintained in time that is linear in their initial
+size (during the entire execution of the protocol). The total number of field operations is
+O(ℓ·(n+k+ logn+m+ 1)) =O(ℓ·(n+N+ logM)).
+Next, we show how these tables can be used to compute the sumcheck polynomials in linear
+time. For everyi∈{0,1} logℓ−j, define ˆFj,i(X) := ˆF(γj−1,X,i); define ˆwj,i, ˆAj,i, ˆBj,i analogously.
+The prover must compute the following sumcheck polynomial:
+ˆhj(X) := ∑
+i∈{0,1}logℓ−j
+eq(τ,(γ j−1,X,i))· ˆG( ˆFj,i(X), ˆwj,i(X), ˆAj,i(X), ˆBj,i(X)).
+Fixi∈{0,1} logℓ−j. Observe thateq(r,(γ j−1,X,i))can be obtained fromT j,eq inO(1)time. We
+are left to show that ˆG( ˆFj,i(X), ˆwj,i(X), ˆAj,i(X), ˆBj,i(X))can be efficiently computed; unwrapping
+the definition of ˆG, this is
+
+ ∑
+b∈{0,1}logn
+eq( ˆAj,i(X,b))· ˆFj,i,b(X)
+
+ +ξ· ˆP( ˆBj,i(X), ˆwj,i(X)).
+We handle the terms separately, in both cases reducing to a strategy described in [EG23] and
+formally given in Claim 6.5.
+Claim 6.5.Let ˆc(X) := (ˆc1(X),...,ˆc m(X))be a vector of linear univariate polynomials andˆq(X) :=
+(ˆqb(X))b∈{0,1}m be a list of univariate polynomials of degree at mostd. Given ˆcand ˆqone can
+compute the univariate polynomial
+∑
+b∈{0,1}m
+eq(ˆc(X),b)· ˆqb(X)(3)
+inO(2 m·d)field operations. Note that the above polynomial has degree at mostd+m.
+Proof.For everyb∈{0,1} m−1, define the degree-(d+ 1)polynomial
+ˆq(1)b := ˆq0,b(X)·(1−ˆc 1(X)) + ˆq1,b(X)·ˆc1(X).
+The polynomial in Equation 3 is equivalent to
+∑
+b∈{0,1}m−1
+eq(ˆc2(X),...,ˆc m(X),b)·ˆq (1)b (X),
+37
+
+===== PAGE 38 =====
+By recursively applying this procedure, we can efficiently obtain the polynomial. In more detail,
+let ˆq(0) := ˆq. Fori∈[m], we compute, for everyb∈{0,1} m−i, the degree-(d+i)polynomial
+ˆq(i)b := ˆq(i−1)0,b (X)·(1−ˆc i−1(X)) + ˆq(i−1)1,b (X)·ˆci−1(X).
+Notethatˆq(i)b canbecomputedfrom ˆq(i−1) inO(d+i)fieldoperations. Subsequently, thepolynomial
+in Equation 3 is equivalent toˆq(ℓ). The overall time (measured in field operations) is
+m∑
+i=1
+O(2m−i·(d+i)) =O(2 m·d).
+We use Claim 6.5 to efficiently computeˆG( ˆFj,i(X), ˆwj,i(X), ˆAj,i(X), ˆBj,i(X)).
+•The linear polynomials ˆAj,i(X)and ˆFj,i,b(X)can be obtained fromT j,A andT j,F inO((ℓ/2 j)·
+logn)andO((ℓ/2 j)·n)time, respectively. We use Claim 6.5 to compute the degree-(logn+ 1)
+polynomial ∑
+b∈{0,1}logn
+eq( ˆAj,i(X),b)· ˆFj,i,b(X)
+inO(2 logn·1) =O(n)field operations.
+•The linear polynomials ˆBj,i(X)and ˆwj,i(X)can be obtained fromTj,B andT j,w inO((ℓ/2 j)·m)
+andO((ℓ/2 j)·k)time, respectively. We split the entries ofˆBj,i(X)into two components: the first
+logMentries (which correspond to the bundling randomness), denotedˆc(X), and the remaining
+entries (which correspond to the instance), denotedˆs(X). Recall from Definition 5.5 that
+ˆP( ˆwj,i(X), ˆBj,i(X)) = ∑
+b∈{0,1}logM
+eq(ˆc(X),b)·ˆpb(ˆs(X), ˆwi(X)).(4)
+We can compute allˆpb(ˆs(X), ˆwj,i(X))polynomials inO(d·| ˆp|)time (recall that| ˆp|represents the
+number of field operations required to evaluate the polynomial system). Claim 6.5 then shows
+how to compute the polynomial in Equation 4 inO(M·d)time.
+Overall, we have shown how to computeˆG( ˆFi(X), ˆwi(X), ˆAi(X), ˆBi(X))inO(n+d·(| ˆp|+M))time.
+The prover’s overall time in thej-th sumcheck round is thereforeO(ℓ/2j·(n+d·(| ˆp|+M))), and
+summing the complexity across all sumcheck rounds (plus the cost of maintaining tables) yields
+the lemma statement.
+6.2 Security
+Lemma 6.6.Suppose that:
+•PG(2,α) = (1−α,α)is a strong proximity generator forCwith proximity radiusδ PG and error
+errPG;
+•δ∈(0,min{δ(C),δ PG(2)}).
+Construction 6.3 is an IOR fromRℓC toR C,1,ℓ with round-by-round knowledge soundness errors
+(εzc,ε sum,1,...,ε sum,logℓ )where:
+38
+
+===== PAGE 39 =====
+•ε zc≤ |Λ(Cℓ,δ)|·(logℓ+1)|F| ;
+•ε sum,i≤ (1+max{logn+1,logM+d})·|Λ(C ℓ/2i−1,δ)||F| + ℓ2i·err PG(C,2,δ).
+Moreover, the total extraction time isO(ℓ·ecorC)field operations.
+Proof.First we define the knowledge state function and extractor; then we upper bound the round-
+by-round knowledge soundness errors. Throughout,i= (ˆp,M,N,k),x= ((α i,µi,βi,ηi))i∈{0,1}logℓ,
+andy= (f i)i∈{0,1}logℓ.
+Knowledge state function and extractor.We define the knowledge state function and ex-
+tractor’s behavior in each round:
+0.Initial transcript:We setKState δ(i,x,y,∅,u) = 1if and only if the following hold:
+(a)u∈Λ(C ℓ,(fi)i∈{0,1}logℓ,δ).
+(b) For everyi∈{0,1} logℓ,ˆui(αi) =µ i and ˆP(βi,C−1(ui)) =η i.
+1.Zerocheck randomness:At this stage the transcripttris empty. The verifier samplesτ←
+Flogℓ andξ←F.
+Knowledge state function:We setKStateδ(i,x,y,tr∥(τ,ξ),u) = 1if and only if the following
+hold:
+(a)u∈Λ(C ℓ,(fi)i∈{0,1}logℓ,δ).
+(b) ∑
+i∈{0,1}logℓ
+eq(τ,i)· ˆG( ˆU(i), ˆw′(i), ˆA(i), ˆB(i)) =σ,
+where ˆU(I) :=∑i∈{0,1}logℓ eq(I,i)·u i and ˆw′(I) :=∑i∈{0,1}logℓ eq(I,i)·C −1(ui).
+Extractor:The extractor isE rbr(i,x,y,tr∥(τ,ξ),u) :=u(the identity function on the witness).
+2.Sumcheck protocol:At this stage the transcript has the form
+tr=
+(
+(τ,ξ),( ˆhi,γi)i<j, ˆhj
+)
+.
+The verifier samplesγj←F. Defineγ j := (γ1,...,γ j). Fori∈{0,1} logℓ, definef 0,i :=f i. For
+i∈[j]andi∈{0,1} logℓ−i, definefi,i :=∑b∈{0,1} eq(γi,b)·f i−1,(b,i).
+Knowledge state function:We setKState δ(i,x,y,tr∥γ j,u) = 1if and only if the following
+hold:
+(a)u∈Λ(C ℓ/2j,(fj,i)i∈{0,1}logℓ−j,δ).
+(b) ˆh1(0) + ˆh1(1) =σand, for everyi<j, ˆhi+1(0) + ˆhi+1(1) = ˆhi(γi).
+(c) ∑
+i∈{0,1}logℓ−j
+eq(τ,(γ j,i))· ˆG( ˆU(i), ˆw′(i), ˆA(γj,i), ˆB(γj,i)) = ˆhj(γj),
+where ˆU(I) :=∑i∈{0,1}logℓ−j eq(I,i)·u i and ˆw′(I) :=∑i∈{0,1}logℓ−j eq(I,i)·C −1(ui).
+Extractor:The extractorE rbr(i,x,y,tr∥γ j,u)computes the set of indicesS⊆[n]on whichu
+agrees with(fj,i)i∈{0,1}logℓ−j, and outputs the erasure correction of(fj,i(S))i∈{0,1}logℓ−(j−1) (using
+EC per Definition 3.9); if correction fails, it aborts.Erbr runs in timeetj+1 =O(ℓ/2 j−1·ecorC).
+39
+
+===== PAGE 40 =====
+3.New target:Before the prover’s final message, the transcript has the form
+tr=
+(
+(τ,ξ),( ˆhi,γi)i∈[logℓ]
+)
+.
+The prover sends the new target valuesµandηin the final message.
+Knowledge state function:We setKStateδ(i,x,y,tr∥(µ,η),u) = 1if and only if the following
+hold:
+(a)u∈Λ(C, ∑i∈[ℓ]γ′i·fi,δ).
+(b) ˆh1(0) + ˆh1(1) =σand, for everyi<logℓ, ˆhi+1(0) + ˆhi+1(1) = ˆhi(γi).
+(c)ˆu( ˆA(γ)) =µ.
+(d) ˆP( ˆB(γ),C −1(u)) =η.
+Recall from Definition 4.1 (in particular, the requirement for prover moves) that we must show
+the following: ifKState δ(i,x,y,tr,u) = 0, thenKState δ(i,x,y,tr∥(µ,η),u) = 0for any pair of
+new targets(µ,η), i.e., the verifier’s output isδ-far fromR C,1,ℓ. Assume Item 2a holds, since
+otherwise we immediately haveKStateδ(i,x,y,tr∥(µ,η),u) = 0. Further assume Item 2b holds,
+since otherwise the verifier immediately rejects. Then it must be that Item 2c does not hold:
+eq(τ,γ)·
+(
+ˆu(ˆA(γ)) +ξ· ˆP( ˆB(γ),C −1(u)))̸= ˆhlogℓ (γlogℓ ).
+Assume thatˆu( ˆA(γ))̸=µor ˆP( ˆB(γ),C −1(u))̸=η, since otherwise the verifier immediately
+rejects. We conclude thatKStateδ(i,x,y,tr∥(µ,η),u) = 0.
+RBR knowledge soundness.We upper bound the round-by-round knowledge soundness errors
+based on the knowledge state function and extractor described above.
+1.Zerocheck randomness:We show that
+Pr
+τ,ξ
+[
+∃u: KStateδ(i,x,y,tr,u) = 0KStateδ(i,x,y,tr∥(τ,ξ),u) = 1
+]
+≤|Λ(Cℓ,δ)|·(logℓ+ 1)|F| .
+Fixu∈Λ(C ℓ,(fi)i∈{0,1}logℓ,δ)and assume thatKState δ(i,x,y,tr,u) = 0. We show that
+Pr
+τ,ξ
+[KStateδ(i,x,y,tr∥(τ,ξ),u) = 1]≤ logℓ+ 1|F| .(5)
+The error bound follows from a union bound over the codewords inΛ(Cℓ,(fi)i∈{0,1}logℓ,δ), as
+these are the only choices ofuwhich allowKState δ(i,x,y,tr∥(τ,ξ),u) = 1for some choice of
+(τ,ξ). Since Item 0a holds, it must be that Item 0b does not, i.e., there existsi∗∈{0,1} logℓ such
+thatˆui∗(αi∗)̸=µ i∗ or ˆP(βi∗,C−1(ui∗))̸=η i∗. Observe that we have the following polynomial
+inequality (where the formal variables areXandY):
+∑
+i∈{0,1}logℓ
+eq(X,i)·
+
+
+
+ ∑
+b∈{0,1}logn
+eq( ˆA(i),b)· ˆUb(i)
+
+ +Y· ˆP( ˆB(i), ˆM(i))
+
+
+̸≡
+∑
+i∈{0,1}logℓ
+eq(X,i)·(µ i +Y·η i).
+Equation 5’s bound follows from Lemma 3.2.
+40
+
+===== PAGE 41 =====
+2.Sumcheck protocol:Letv ⋆ :=E rbr(i,x,y,tr∥γ j,u)denote the extractor’s output on the knowl-
+edge state witnessu. We show that
+Prγj
+[
+∃u: KStateδ(i,x,y,tr,v ⋆) = 0KStateδ(i,x,y,tr∥γ j,u) = 1 ] (6)
+≤ (1 + max{logn+ 1,logM+d})·|Λ(C ℓ/2j−1,δ)||F| + logℓ/2j·err PG(C,2,δ).
+For notational convenience, we define the following forj∈[logℓ],u∈C ℓ/2j, andi∈F logℓ−j:
+Smdj[u,i] :=eq(τ,(γ j,i))· ˆG( ˆU(i), ˆw′(i), ˆA(γj,i), ˆB(γj,i)),
+Sumj[u] :=
+∑
+i∈{0,1}logℓ−j
+Smdj[u,i],
+where ˆU(I) :=∑i∈{0,1}logℓ−j eq(I,i)·u i and ˆw′(I) :=∑i∈{0,1}logℓ−j eq(I,i)·C −1(ui).
+Observe that in order for Equation 6’s event to hold, Item 2b must hold. Hence, Equation 6’s
+probability is at most
+Prγj
+[
+∃u∈Λ(C ℓ/2j,fj,δ) : (∆(v⋆,fj−1)>δ∨Sum j−1[v⋆]̸= ˆhj(0) + ˆhj(1))∧Sum j[u] = ˆhj(γj) ] .(7)
+Claim 6.7.It holds that
+Prγj
+[
+∃v∈Λ(C ℓ/2j−1,fj−1,δ) : Sumj−1[v]̸= ˆhj(0) + ˆhj(1)∧ ∑i∈{0,1}logℓ−j Smdj−1[v,(γj,i)] = ˆhj(γj) ]
+≤ (1 + max{logn+ 1,logM+d})·|Λ(C logℓ/2k−1,δ)||F| .
+Proof.Fixv∈Λ(C ℓ/2j−1,fj−1,δ)and assume thatSum j−1[v]̸= ˆhj(0) +ˆhj(1). Observe that we
+have the following polynomial inequality (where the formal variable isX):
+∑
+i∈{0,1}logℓ−j
+Smdj−1[v,(X,i)]̸≡ ˆhj(X),
+since the two polynomials do not sum to the same value over{0,1}. The claim follows from
+Lemma 3.2 and a union bound over the codewords inΛ(Cℓ/2j−1,fj−1,δ).
+Claim 6.8.It holds that
+Prγj
+
+∃S⊆[n],u∈C ℓ/2j : |S|≥(1−δ)·n∧u(S) =f j(S)
+∧v ⋆(S)̸=f j−1(S)
+
+≤ℓ/2 j·err PG(C,2,δ).
+Proof.Recall that we are assumingPG(2,α) = (1−α,α)is a strong proximity generator forC
+with proximity radiusδPG andδ <δ PG(2). From Definition 3.15 and a union bound over eachui,
+we have
+Prγj
+
+∃S⊆[n],u∈C ℓ/2j : |S|≥(1−δ)·n∧u(S) =f j(S)
+∧∀v∈C ℓ/2j−1,v(S)̸=f j−1(S)
+
+≤ℓ/2 j·err PG(C,2,δ).(8)
+41
+
+===== PAGE 42 =====
+Fixγ j such that Equation 8’s event does not hold. Then for arbitrarySandusuch that
+|S|≥(1−δ)·nandu(S) =f j(S), it must be thatfj−1 on agrees withCℓ/2j−1 onS. Recall
+that we are assumingδ <δ(C); this guarantees that erasure correction succeeds. In particular,
+we havev⋆(S) =f j−1(S), and the claim follows.
+Fixγ j such that the events of Claims 6.7 and 6.8 do not hold; by a union bound, there are at
+least
+(
+1− (1 + max{logn+ 1,logM+d})·|Λ(C logℓ/2k−1,δ)||F| −ℓ/2j·err PG(C,2,δ) )·|F|
+such choices forγj. Consider arbitraryu∈Λ(C ℓ/2j,fj,δ)satisfyingSum[u] = ˆhj(γj); this is
+required for Equation 7’s event to hold. LetS⊆[n]be set of indices on whichuagrees withfj;
+sinceuisδ-close tof j, it must be that|S|≥(1−δ)·n. Sinceγ j is such that Claim 6.8’s event
+does not hold, it must be thatv⋆(S) =f j−1(S). Observe the following:
+•∆(v ⋆,fj−1)≤δ, since they agree onS.
+•For alli∈{0,1} logℓ−j, bothui and the codeword
+∑
+b∈{0,1}
+eq(γj,b)·v ⋆b,i
+agree withf j,i onS. Recall that we are assumingδ < δ(C); this guarantees that these
+codewords are in fact the same. It follows that
+ˆhj(γj) = ∑
+i∈{0,1}logℓ−j
+Smdj[u,i] =
+∑
+i∈{0,1}logℓ−j
+Smdj−1[v⋆,(γj,i)].
+Sinceγ j is such that Claim 6.7’s event does not hold, it must be thatSumj−1[v⋆] = ˆhj(0) +
+ˆhj(1).
+Hence, Equation 7’s event cannot hold and the bound follows.
+42
+
+===== PAGE 43 =====
+7 Codeword batching
+Theorem 7.1.Fix a linear codeC:F k →F n and parametersℓ,r,s,t∈N. Construction 7.2
+is a public-coin IOR fromRC,r,ℓ (Definition 6.1) toRC,r+s+t (Definition 5.7) with the following
+parameters.
+•Rounds.The protocol has2rounds.
+•Proof length.The prover sendsn+sfield elements.
+•Query complexity.The verifier makesℓ·tqueries.
+•Prover time.The prover performsO((ℓ+s)·n)field operations.
+•Verifier time.The verifier performsO(ℓ·t)field operations.
+Moreover, the IOR outputstbinary evaluations points andr+snon-binary evaluations points.
+For everyδ∈(0,1), if the fieldFand repetition parameterst,sare such that
+|F|≥2 λ/s−1·|Λ(C,δ)| 2/s·lognandt≥ λ−log(1−δ) ,
+the IOR has round-by-round knowledge soundness error≤2 −λ. Moreover, the round-by-round
+extractor is the identity function on the witness.
+In Section 7.1 we describe the protocol and in Section 7.2 we prove its security.
+7.1 Protocol
+Construction 7.2.We describe the IOR fromRC,r,ℓ (Definition 6.1) toRC,r+s+t (Definition 5.7).
+•Inputs.The verifier is given the explicit instancex= (γ,(α i,µi)i∈[r],β,η)and oracle access to
+the implicit instancey= (f 1,...,f ℓ). In the honest case,(i,x,y)∈L(R C,r,ℓ).
+•Protocol:
+1.New oracle:The prover sendsf: [n]→F. In the honest case,f :=∑i∈[ℓ]γi·fi.
+2.OOD samples:The verifier samplesα r+1,...,α r+s←F logn.
+3.OOD answers:The prover sendsµ r+1,...,µ r+s∈F. In the honest case,µr+k := ˆf(αr+k)
+for everyk∈[s].
+4.Shift queries:The verifier samplesx 1,...,x t ←[n]. Fork∈[t], defineα r+s+k :=
+binary(xk)∈F logn.
+5.Outputs:For everyk∈[t], the verifier queriesf 1,...,f ℓ atx k and computes
+µr+s+k :=
+∑
+i∈[ℓ]
+γi·fi(xk).
+The verifier outputs the new explicit instancex′ := ((αi,µi)i∈[r+s+t],β,η)and implicit in-
+stancey′ :=f.
+43
+
+===== PAGE 44 =====
+7.2 Security
+Lemma 7.3.Construction 7.2 is an IOR fromRC,r,ℓ toR C,r+s+t with round-by-round knowledge
+soundness errors(ε out,ε shift)where:
+•ε out≤ |Λ(C,δ)| 22 ·( logn|F| )s;
+•ε shift≤(1−δ) t.
+Moreover, the round-by-round extractor is the identity function on the witness.
+Proof.First we define the knowledge state function and extractor; then we upper bound the round-
+by-round knowledge soundness errors. Throughout,i= (ˆp,M,N,k),x= (γ,(α i,µi)i∈[r],β,η), and
+y= (f i)i∈[ℓ].
+Knowledge state function and extractor.We define the knowledge state function and ex-
+tractor’s behavior in each round:
+0.Initial transcript:We setKState δ(i,x,y,∅,u) = 1if and only ifu∈Λ(C, ∑i∈[ℓ]γi·fi,δ)and
+u∈C[(α i,µi)i∈[r],( ˆP,β,η)].
+1.OOD samples:At this stage the transcript has the formtr= (f). The verifier samples
+αr+1,...,α r+s.
+Knowledge state function:We setKState δ(i,x,y,tr∥(α r+1,...,α r+s),u) = 1if and only if
+one of the following holds:
+(a)u∈Λ(C, ∑i∈[ℓ]γi·fi,δ)andu∈C[(α i,µi)i∈[r],( ˆP,β,η)].
+(b) There exist distinctv,v′∈Λ(C,f,δ)such thatˆv(α r+k) = ˆv′(αr+k)for everyk∈[s].
+Extractor:The extractor isE rbr(i,x,y,tr∥(α r+1,...,α r+s),u) :=u(the identity function on
+the witness).
+2.Shift queries:At this stage the transcript has the form
+tr= (f,(α r+1,...,α r+s),(µr+1,...,µ r+s)).
+The verifier samplesx 1,...,x t←[n]. Defineα r+s+1,...,α r+s+t andµ r+s+1,...,µ r+s+t as in
+Construction 7.2.
+Knowledge state function:We setKState δ(i,x,y,tr∥(x 1,...,x t),u) = 1if and only ifu∈
+Λ(C,f,δ)andu∈C[(α i,µi)i∈[r+s+t],( ˆP,β,η)]. This corresponds to whether the verifier’s output
+isδ-close toR C,r+s+t.
+Extractor:The extractor isE rbr(i,x,y,tr∥(x 1,...,x t),u) :=u(the identity function on the
+witness).
+RBR knowledge soundness.We upper bound the round-by-round knowledge soundness errors
+based on the knowledge state function and extractor described above.
+1.OOD samples:We argue that
+Prαr+1,...,αr+s
+[
+∃u: KStateδ(i,x,y,tr,u) = 0KStateδ(i,x,y,tr∥(α r+1,...,α r+s),u) = 1
+]
+≤|Λ(C,δ)| 2
+2 ·
+(logn
+|F|
+)s
+.
+44
+
+===== PAGE 45 =====
+IfKState δ(i,x,y,tr,u) = 0, then Item 1a cannot hold. Hence it suffices to bound the probability
+that Item 1b holds. LetZEbe the zero-evader from Lemma 3.5; observe that, forv∈Cand
+α∈F logn,ˆv(α) =⟨ZE(α),C −1(v)⟩. Then the bound follows from Lemma 3.14.
+2.Shift queries.We argue that
+Prx1,...,xt
+[
+∃u: KStateδ(i,x,y,tr,u) = 0KStateδ(i,x,y,tr∥(x 1,...,x t),u) = 1
+]
+≤(1−δ) t.
+DefineS ood :={u∈Λ(C,f,δ) :∀k∈[s],ˆu(α r+k) =µ r+k}andg :=∑i∈[ℓ]γi·fi. We consider
+the following cases.
+•There are no codewords inΛ(C,f,δ)∩S ood.For everyu∈Λ(C,f,δ), there existsk∈[s]such
+thatˆu(αr+k)̸=µ r+k. Hence, we unconditionally haveKStateδ(i,x,y,tr∥(x 1,...,x t),u) = 0.
+•There is exactly one codewordu∈Λ(C,f,δ)∩S ood.Fixu∈Λ(C,f,δ)∩S ood and assume that
+KStateδ(i,x,y,tr,u) = 0. We show that
+Prx1,...,xt [KStateδ(i,x,y,tr∥(x 1,...,x t),u) = 1]≤(1−δ) t.(9)
+The error bound follows from the fact that this is the only possible choice ofuwhich
+allowsKState δ(i,x,y,tr∥(x 1,...,x t),u) = 1for some choice of(x 1,...,x t). Assume that
+u∈C[(α i,µi)i∈[r],( ˆP,β,η)], since otherwise Equation 9’s event cannot hold. Since Item 1a
+does not hold, it must be that∆(u,g)> δ. Equation 9’s bound follows from the fact that,
+except with probability at most(1−δ)t, for at least one of the randomly sampled locations
+x1,...,x t←[n], we haveˆu(binary(xi)) =u(x i)̸=g(x i) =µ r+s+i.
+•There are multiple codewords inΛ(C,f,δ)∩S ood.Item 1b holds so we unconditionally have
+KStateδ(i,x,y,tr,u) = 1.
+45
+
+===== PAGE 46 =====
+8 Multilinear constraint batching
+Theorem 8.1.Fix a linear codeC:F k→F n andr∈2 N. Construction 8.2 is a public-coin IOR
+fromRC,r (Definition 5.7) toRC,1 =RC (Definition 5.7) with the following parameters.
+•Rounds.The protocol haslogn+ 1rounds.
+•Proof length.The prover sends3·logn+ 1field elements.
+•Query complexity.The verifier makes no queries.
+•Prover time.The prover performsO(max{1,r−t}·n+t·logn)field operations, wheret∈
+{0,...,r}is the number of evaluations claims in the boolean hypercube (see Lemma 8.3).
+•Verifier time.The verifier performsO(r·logn)field operations.
+For everyδ∈(0,1), if
+|F|≥2 λ·|Λ(C,δ)|·max{2,logr},
+the IOR has round-by-round knowledge soundness error≤2 −λ. Moreover, the round-by-round
+extractor is the identity function on the witness.
+In Section 8.1 we describe the protocol and in Section 8.2 we prove its security.
+8.1 Protocol
+Construction 8.2.We describe the IOR fromRC,r (Definition 5.7) toRC,1 =RC (Definition 5.7).
+We present the protocol in terms of a general zero-evaderZE:DZE→F r (Definition 3.4), which in
+the theorem we fix to the zero-evaderZE:Flogr→F r whose mapping isτ↦→(eq(τ,i)) i∈{0,1}logr.
+•Inputs.The verifier is given the explicit instancex= ((α i,µi)i∈{0,1}logr,β,η)and oracle access
+to the implicit instancey=f: [n]→F. In the honest case,(i,x,y)∈L(R C,r).
+•Interaction phase.
+1.Zerocheck randomness:The verifier samples and sendsρ←D ZE. Setξ :=ZE(ρ).
+2.Sumcheck batching:Define the following:
+eq⋆(X) := ∑
+i∈{0,1}logr
+ξi·eq(αi,X), σ:=
+∑
+i∈{0,1}logr
+ξi·µi.
+The prover and verifier engage in a(logn)-round sumcheck protocol for the following claim:
+∑
+a∈{0,1}logn
+eq⋆(a)· ˆf(a) =σ.
+During the interaction, the prover sends quadratic sumcheck polynomialsˆh1,..., ˆhlogn, and
+the verifier sends randomnessγ∈F logn.
+3.New target:The prover sendsµ∈F. In the honest case,µ := ˆf(γ).
+•Decision phase.(The verifier rejects if any check fails.)
+1.Sumcheck decision:The verifier checks that
+ˆh1(0) + ˆh1(1) =σand∀j∈{1,...,logn−1}, ˆhj+1(0) + ˆhj+1(1) = ˆhj(γj).
+46
+
+===== PAGE 47 =====
+2.New target decision:The verifier checks that ˆhlogn (γlogn ) =eq ⋆(γ)·µ.
+3.Outputs:Setα :=γ. The verifier outputs the new explicit instancex′ := (α,µ,β,η)and
+implicit instancey′ :=f.
+We analyze the prover time of Construction 8.2; other complexity parameters are clear.
+Lemma 8.3.The prover in Construction 8.2 can be implemented to perform
+O(max{1,s}·n+t·logn)
+field operations, wheret :=|{i:α i∈{0,1} logn}|ands :=r−t.
+Proof.We use a technique from [CBBZ23, Sec 3.8.1]. We partition the index set{0,1}logr into
+IID :={i:α i∈{0,1} logn}andI OOD :={0,1} logr\I ID. Letj∈[logn]. In thej-th sumcheck round,
+defineγ j−1 = (γ1,...,γ j−1). The prover must compute the following sumcheck polynomial:
+ˆhj(X) = ∑
+a∈{0,1}logn−j
+eq⋆(γj−1,X,a)· ˆf(γj−1,X,a).
+Rewriting the equation, we get
+ˆhj(X) = ∑
+a∈{0,1}logn−j
+ˆf(γj−1,X,a)· ∑
+i∈{0,1}logr
+ξi·eq(αi,γj−1,X,a)
+=
+∑
+a∈{0,1}logn−j
+ˆf(γj−1,X,a)·
+
+ ∑
+i∈IOOD
+ξi·eq(αi,γi−1,X,a) +
+∑
+i∈IID
+ξi·eq(αi,γj−1,X,a)
+
+ .
+We show that the following linear polynomials can be efficiently computed.
+•The polynomials( ˆf(γj−1,X,a)) a∈{0,1}logn−j can be obtained from a table that is maintained
+across rounds, as in [VSBW13]. The table is initially of sizenand is initialized withf; in
+thej-th sumcheck round, it is updated (and halved in size) via a linear-time computation that
+depends onγj. This takesO(n)field operations across all rounds.
+•The polynomials( ∑i∈IOODξi·eq(α i,γj−1,X,a)) a∈{0,1}logn−j can be obtained froms=|I OOD|
+tables that are maintained across rounds, as in [VSBW13]. For everyi∈IOOD, thei-th table is
+initialized with{ξi·eq(αi,a)}a∈{0,1}logn; in thej-th sumcheck round, it is updated (and halved
+in size) via a linear-time computation that depends onγj. This takesO(s·n)field operations
+across all rounds.
+•The polynomials( ∑i∈IIDξi·eq(α i,γj−1,X,a)) a∈{0,1}logn−j can be obtained inO(n+t·logn)
+field operations across all rounds, using a technique from [CBBZ23, Sec 3.8.1]. The key obser-
+vation is that, sinceαi∈{0,1} logn, there are at mosttvalues ofa∈{0,1} logn−j for which∑
+i∈IIDξi·eq(αi,γj−1,X,a)is non-zero. The non-zero polynomials can be maintained and up-
+dated dynamically in each rounds.
+Observe that ˆhj(X)is the sum of the following quadratic polynomials, which we show can be
+efficiently computed from the linear polynomials.
+47
+
+===== PAGE 48 =====
+•The polynomial ∑
+a∈{0,1}logn−j
+ˆf(γj−1,X,a)· ∑
+i∈IOOD
+ξi·eq(αi,γi−1,X,a)
+can be obtained inO(n/2j·s)field operations.
+•The polynomial ∑
+a∈{0,1}logn−j
+ˆf(γj−1,X,a)· ∑
+i∈IID
+ξi·eq(αi,γi−1,X,a)
+can be obtained inO(t)field operations by restricting the sum to the (at mosttvalues of)
+a∈{0,1} logn−j for which∑i∈IIDξi·eq(αi,γj−1,X,a)is non-zero.
+The prover’s overall time in thej-th sumcheck round is thereforeO(n/2j·s+t), and summing
+the complexity across all sumcheck rounds (plus the cost of maintaining tables) yields the lemma
+statement.
+8.2 Security
+Lemma 8.4.Suppose that the zero-evaderZEhas errorε zero. Construction 8.2 is an IOR from
+RC,r toR C with round-by-round knowledge soundness errors(εzc,ε sum,...,ε sum)where:
+•ε zc≤|Λ(C,δ)|·ε zero;
+•ε sum≤|Λ(C,δ)|· 2|F|.
+Moreover, the round-by-round extractor is the identity function on the witness.
+Proof.First we define the knowledge state function and extractor; then we upper bound the round-
+by-round knowledge soundness errors. Throughout,i= ( ˆp,M,N,k),x= ((α i,µi)i∈[r],β,η), and
+y=f.
+Knowledge state function and extractor.We define the knowledge state function and ex-
+tractor’s behavior in each round.
+0.Initial transcript:We setKState δ(i,x,y,∅,u) = 1if and only if the following hold:
+(a)u∈Λ(C,f,δ)andu∈C[( ˆP,β,η)].
+(b) For everyi∈{0,1} logr,ˆu(αi) =µ i.
+1.Zerocheck randomness:At this stage, the transcripttris empty. The verifier samplesρ←
+DZE.
+Knowledge state function:We setKState δ(i,x,y,tr∥ρ,u) = 1for someu∈Cif and only if
+the following hold:
+(a)u∈Λ(C,f,δ)andu∈C[( ˆP,β,η)].
+(b) ∑i∈{0,1}logr ξi·ˆu(αi) =σ.
+Extractor:The extractorE rbr(i,x,y,tr∥ρ,u) :=uis the identity function on the witness.
+48
+
+===== PAGE 49 =====
+2.Sumcheck rounds:At this stage, the transcript has the form
+tr=
+(
+ρ,( ˆhi,γi)i<j, ˆhj
+)
+.
+The verifier samplesγj←F. Defineγ j = (γ1,...,γ j), andeq⋆ be defined as in Construction 8.2.
+Knowledge state function:We setKState δ(i,x,y,tr∥γ i,u) = 1if and only if the following
+hold:
+(a)u∈Λ(C,f,δ)andu∈C[( ˆP,β,η)].
+(b) ˆh1(0) + ˆh1(1) =σ, and, fori<j, ˆhi+1(0) + ˆhi+1(1) = ˆhi(γi).
+(c) ∑i∈{0,1}logr−i eq⋆(γj,i)·ˆu(γj,i) = ˆhj(γj).
+Extractor:The extractorE rbr(i,x,y,tr∥γ i,u) :=uis the identity function on the witness.
+3.New target:Before the prover’s final message, the transcript has the form
+tr=
+(
+ρ,( ˆhj,γj)j∈[logn]
+)
+.
+The prover sends the new target valueµin the final message.
+Knowledge state function:We setKState δ(i,x,y,tr∥µ,u) = 0if any only if the following
+hold:
+(a)u∈Λ(C,f,δ)andu∈C[( ˆP,β,η)].
+(b) ˆh1(0) + ˆh1(1) =σ, and, fori<logn, ˆhi+1(0) + ˆhi+1(1) = ˆhi(γi).
+(c)ˆu(γ) =µ.
+Recall from Definition 4.1 (in particular, the requirement for prover moves) that we must show
+the following: ifKStateδ(i,x,y,tr,u) = 0, thenKState δ(i,x,y,tr∥µ,u) = 0for any new targetµ,
+i.e., the verifier’s output isδ-far fromRC. Assume Item 2a holds, since otherwise we immediately
+haveKState δ(i,x,y,tr∥µ,u) = 0. Further assume Item 2b holds, since otherwise the verifier
+immediately rejects. Then it must be that Item 2c does not hold:
+eq⋆(γ)·ˆu(γ)̸= ˆhlogn (γlogn ).
+Assume thatˆu(γ)̸=µ, since otherwise the verifier immediately rejects. We conclude that
+KStateδ(i,x,y,tr∥µ,u) = 0.
+RBR knowledge soundness.We upper bound the round-by-round knowledge soundness errors
+based on the knowledge state function and extractor described above.
+1.Zerocheck randomness:We show that
+Prρ
+[
+∃u: KStateδ(i,x,y,tr,u) = 0KStateδ(i,x,y,tr∥ρ,u) = 1
+]
+≤|Λ(C,δ)|·ε zero.
+Fixu∈Λ(C,f,δ)and assume thatKState δ(i,x,y,tr,u) = 0. We show that
+Prρ [KStateδ(i,x,y,tr∥ρ,u) = 1]≤ε zero.(10)
+The error bound follows from a union bound over the codewords inΛ(C,f,δ), as these are the
+only choices ofuwhich allowKState δ(i,x,y,tr∥ρ,u) = 1for some choice ofρ. Assume Item 0a
+holds, since otherwise we immediately haveKStateδ(i,x,y,tr∥ρ,u) = 0. Then it must be that
+Item 0b does not hold, i.e., there existsi∈{0,1}logr such thatˆu(xi)̸=µ i. Equation 10 follows
+from the fact thatZEis a zero-evader.
+49
+
+===== PAGE 50 =====
+2.Sumcheck rounds:We show that
+Prγi
+[
+∃u: KStateδ(i,x,y,tr,u) = 0KStateδ(i,x,y,tr∥γ j,u) = 1
+]
+≤|Λ(C,δ)|· 2|F|.
+Fixu∈Λ(C,f,δ)and assume thatKState δ(i,x,y,tr,u) = 0. We show that
+Prγj [KStateδ(i,x,y,tr∥γ j,u) = 1]≤ 2|F|.(11)
+The error bound follows from a union bound over the codewords inΛ(C,f,δ), as these are the
+only choices ofuwhich allowKState δ(i,x,y,tr∥γ j,u) = 1for some choice ofγ j. We handle the
+case wherej >1; the case wherej= 1is identical up to minor syntactic modifications. Assume
+Items 2a and 2b hold, since otherwise we immediately haveKStateδ(i,x,y,tr∥γ j,u) = 0. Then it
+must be that Item 2c does not hold. Observe that we have the following polynomial inequality
+(where the formal variable isX):
+∑
+i∈{0,1}logn−j
+eq⋆(γj−1,X,i)·ˆu(γ j−1,X,i)̸≡ ˆhj(X),
+since the right hand side sums toˆhj−1(γj−1)whereas the left hand side does not by virtue of
+Item 2c not holding. Equation 11’s bound follows from Lemma 3.2.
+50
+
+===== PAGE 51 =====
+9 Combining the IORs
+We obtain an IOR fromR ℓC toR C by combining the IORs described in Section 6, Section 7,
+Section 8. Below we state and prove the corresponding theorem. For ease of understanding, we
+additionally provide in one description the IOR resulting from this combination (Construction 9.4)
+as well as the corresponding straightline state-restoration extractor (Construction 9.5).
+Theorem 9.1.Fix a linear codeC:F k→F n andℓ∈2 N, and leti= ( ˆp,M,N,k)be of degreed.
+Recall thatκ :=N−k. Fix parameterss,t∈Nsuch that1 +s+t∈2 N.
+Construction 9.4 is a public-coin IOR fromRℓC (Definition 5.7) toRC (Definition 5.7) with the
+following parameters.
+•Rounds.The protocol haslogℓ+ logn+ 3rounds.
+•Proof length.The prover sendsn+ logℓ·(1 + max{logn+ 1,logM+d}) + 3·logn+s+ 3field
+elements.
+•Query complexity.The verifier makesℓ·tqueries.
+•Prover time.The prover performsO(ℓ·(n+d·(| ˆp|+M)) +s·n+t·logn)field operations.
+•Verifier time.The verifier performsO(ℓ·(logn+ logM+κ+t) + logℓ·d+ (t+s)·logn)field
+operations.
+Suppose thatPG(2,α) = (1−α,α)is a strong proximity generator forCwith proximity radiusδ PG
+and errorerr PG. For everyδ∈(0,min{δ(C),δ PG(2)}), if
+|F|≥2 λ·max
+
+
+
+(logℓ+ 1)·|Λ(C ℓ,δ)|,
+(1 + max{logn+ 1,logM+d})·|Λ(C ℓ,δ)|+ℓ/2·err PG(C,2,δ)·|F|,
+2λ/s−1·|Λ(C,δ)| 2/s·logn,
+|Λ(C,δ)|·max{2,log(1 +s+t)}
+
+
+ (12)
+and
+t≥ λ−log(1−δ) ,(13)
+the IOR has round-by-round knowledge soundness error≤2−λ. Moreover, the total extraction time
+isO(ℓ·ecor C)field operations.
+Proof.The IOR fromR ℓC toRC is the result of concatenating IORs described in prior sections.
+•The IOR in Section 6 (Construction 6.3), which reduces fromRℓC toRC,1,ℓ.
+•The IOR in Section 7 (Construction 7.2), which reducesRC,1,ℓ toRC,1+s+t.
+•The IOR in Section 8 (Construction 8.2), which reducesRC,1+s+t toRC.
+The claimed efficiency and security of this IOR is the result of careful bookkeeping across the three
+relevant theorems (Theorems 6.2, 7.1 and 8.1).
+Theorem 2 in Section 1.1 is an informal statement that summarizes the IORs provided by
+Theorem 5.8 (IOR fromR⊚(F)toR C, given Remark 5.9) and Theorem 9.1 (IOR fromRℓC toRC).
+51
+
+===== PAGE 52 =====
+Remark 9.2.Theorem 9.1 depends on the codeword lengthn, but not the encoding time ofC.
+The encoding time only matters for Theorem 5.8.
+Remark 9.3.Theorem 9.1 mandates thatn,M,ℓ,1 +s+t∈2 N. The restriction can be straight-
+forwardly lifted by standard techniques (e.g., adding dummy claims) with only a constant impact
+on the asymptotics.
+Lifting abstractions.The IOR fromR ℓC toRC underlying Theorem 9.1 is obtained by combining
+three IORs. Below we make explicit the resulting IOR by lifting abstraction barriers between the
+IORs. After that we make explicit the straightline state-restoration extractor that is obtained by
+concatenating each round’s round-by-round extractor.
+Construction 9.4.We describe the IOR fromRℓC toRC underlying Theorem 9.1.
+•Inputs.Fori∈{0,1} logℓ, the verifier receives(αi,µi,βi,ηi)and has oracle access tofi : [n]→
+F. In the honest case, for everyi∈{0,1} logℓ,(i,(α i,µi,βi,ηi),fi)∈L(R C).
+•Interaction phase.
+1.Zerocheck randomness:The verifier samplesτ←F logℓ andω←F.
+2.Sumcheck protocol:Define the following(logℓ)-variate multilinear polynomials:
+ˆF(I) := ∑
+i∈{0,1}logℓ
+eq(I,i)·f i ∈(F <2[I])n,
+ˆw(I) :=
+∑
+i∈{0,1}logℓ
+eq(I,i)·C −1(fi)∈(F <2[I])k,
+ˆA(I) := ∑
+i∈{0,1}logℓ
+eq(I,i)·α i ∈(F <2[I])logn ,
+ˆB(I) := ∑
+i∈{0,1}logℓ
+eq(I,i)·β i ∈(F <2[I])m.
+(14)
+Note that ˆwis well-defined in the honest case and, assuming the code is systematic, equivalent
+to the firstkentries of ˆF. Define the following:
+ˆG(F,W,A,B) :=
+
+ ∑
+b∈{0,1}logn
+eq(A,b)·F b
+
+ +ω· ˆP(B,W),
+σ(1) := ∑
+i∈{0,1}logℓ
+eq(τ,i)·(µ i +ω·η i).
+(15)
+The prover and verifier engage in a(logℓ)-round sumcheck protocol for the following claim:
+∑
+i∈{0,1}logℓ
+eq(τ,i)· ˆG( ˆF(i), ˆw(i), ˆA(i), ˆB(i)) =σ (1).
+During the interaction, the prover sendslogℓsumcheck polynomials ˆh(1)1 ,..., ˆh(1)logℓ of degree
+1 + max{logn+ 1,logM+d}, and the verifier replies with randomnessγ := (γ1,...,γ logℓ )∈
+Flogℓ. The prover and verifier set
+ζ0 := ˆA(γ),β := ˆB(γ).
+52
+
+===== PAGE 53 =====
+3.New oracle and target:The prover sendsf: [n]→Fandν 0,η∈F. In the honest case,
+f :=
+∑
+i∈{0,1}logℓ
+eq(γ,i)·f i, ν 0 := ˆf(ζ 0), η := ˆP(β,C −1(f)).
+4.OOD samples:The verifier samplesζ 1,...,ζ s←F logn.
+5.OOD answers:The prover sendsν 1,...,ν s ∈F. In the honest case, for everyk∈[s],
+νk := ˆf(ζk).
+6.Shift queries and zerocheck randomness:The verifier samplesx 1,...,x t ←[n]and
+ξ←F logr. For everyk∈[t], the verifier queries(f i)i∈{0,1}logℓ atx k and sets
+νs+k :=
+∑
+i∈{0,1}logℓ
+eq(γ,i)·f i(xk).
+Setr := 1 +s+t. Fork∈[t], defineζ s+k :=binary(x k)∈F logn. In the rest of the protocol,
+we abuse notation by writingζbinary(i) :=ζ i andν binary(i) :=ν i fori∈{0,...,r−1}.
+7.Sumcheck batching:Define the following:
+eq⋆(X) := ∑
+i∈{0,1}logr
+eq(i,ξ)·eq(ζ i,X), σ (2) := ∑
+i∈{0,1}logr
+eq(i,ξ)·ν i.(16)
+The prover and verifier engage in a(logn)-round sumcheck protocol for the following claim:
+∑
+a∈{0,1}logn
+eq⋆(a)· ˆf(a) =σ (2).
+During the interaction, the prover sends quadratic sumcheck polynomialsˆh(2)1 ,..., ˆh(2)logn, and
+the verifier sends randomnessα∈F logn.
+8.New target:The prover sendsµ∈F. In the honest case,µ := ˆf(α).
+•Decision phase.(The verifier rejects if any check fails.)
+1.Sumcheck decisions:The verifier checks that
+– ˆh(1)1 (0) + ˆh(1)1 (1) =σ (1) and ˆh(2)1 (0) + ˆh(2)1 (1) =σ (2);
+–∀j∈{1,...,logℓ−1}, ˆh(1)j+1(0) + ˆh(1)j+1(1) = ˆh(1)j (γj); and
+–∀j∈{1,...,logn−1}, ˆh(2)j+1(0) + ˆh(2)j+1(1) = ˆh(2)j (αj).
+2.New target decision:The verifier checks that
+ˆh(1)logℓ (γlogℓ ) =eq(τ,γ)·(ν 0 +ω·η)and ˆh(2)logn (αlogn ) =µ·eq ⋆(α).
+3.Outputs:The verifier outputs the new explicit instancex ′ := (α,µ,β,η)and implicit in-
+stancey′ :=f.
+Construction 9.5.We describe the straightline state-restoration extractorEsr for the IOR from
+RℓC toRC inConstruction9.4(seeDefinitionB.2). Below,i= ( ˆp,M,N,k),x= ((α i,µi,βi,ηi))i∈{0,1}logℓ,
+andy= (f i)i∈{0,1}logℓ.
+53
+
+===== PAGE 54 =====
+Esr(i,x,y,(π i)i∈[k],w′,(ρi)i∈[k],tr sr):
+1. Parse the verifier randomness(ρ i)i∈[k] according to the different types of randomness per
+round according to Construction 9.4:
+((τ,ω),γ 1,...,γ logℓ,(σ 1,...,σ s),(x 1,...,x t,ξ),x 1,...,x logn ).
+Letγ := (γ1,...,γ logℓ )∈F logℓ be the first sumcheck protocol’s randomness.
+2. Identify the subset of indicesS⊆[n]on whichw ′∈Cagrees with ∑i∈{0,1}logℓ eq(γ,i)·f i.
+3. For everyi∈{0,1} logℓ, erasure correct the restrictionfi(S)usingE C (see Definition 3.9) to
+obtain a codewordui∈C; if correction fails, the extractor aborts.
+4. Outputw := (ui)i∈{0,1}logℓ.
+Construction 9.5 is functionally equivalent to the concatenation of each round’s round-by-round
+extractors, consistent with Construction B.5 (used to prove Theorem B.4). Indeed, the round-by-
+round extractors for Construction 7.2 and Construction 8.2 are the identity function, and the above
+extractor results from the composition of the round-by-round extractors for Construction 6.3.
+54
+
+===== PAGE 55 =====
+10 Unbounded accumulation from any linear code
+We present the accumulation scheme implied by our IORs. In Section 10.1 we recall the definition
+of an accumulation scheme in an oracle model (such as the ROM) for a relationR; our definition
+is specialized to straightline extraction. Then in Section 10.2 we state our main result about an
+accumulation scheme for the PESAT relationR⊚(F)(Definition 5.2). Note that in this section we
+considerternaryrelationsR(such asR ⊚(F)), which consist of triples(i,x,w); since the verifier
+does not have query access to its inputs, there is no implicit instancey.
+10.1 Accumulation schemes in oracle models
+A tuple of algorithmsACC= (IACC,P ACC,V ACC,D ACC)is anaccumulation schemein the oracle model
+Dfor a (ternary) relationRif it satisfies completeness and knowledge soundness as defined below.
+Definition 10.1.ACCis(perfectly) completeif, for every security parameterλ ro for the oracle,
+indexi, instance-witness pairs(x i,wi)i∈[ℓ1], and accumulators(accj)j∈[ℓ2],
+Pr
+
+
+∀i∈[ℓ 1] : (i,xi,wi)∈R
+∧∀j∈[ℓ 2] :D roACC(i,accj) = 1
+⇓
+VroACC
+
+
+vkACC,(xi)i∈[ℓ1],
+(accj.x)j∈[ℓ2],
+acc.x,pf
+
+ = 1
+∧D roACC(i,acc) = 1
+⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐ ro←D(λ ro)(pkACC,vk ACC)←I roACC(i)(acc,pf)←P roACC( pkACC,(xi,wi)i∈[ℓ1],(accj)j∈[ℓ2] )  = 1.
+Definition 10.2.ACChasstraightline knowledge soundness errorκ ACC with extraction
+timeet ACC if there exists a relaxed deciderˆDACC (i.e.,D ACC accepting implies ˆDACC accepting) and
+deterministic extractorE ACC such that, for every security parameterλro for the oracle, index size
+boundn i, instance size boundn x, accumulator size boundn acc, number of instance-witness pairs
+ℓ1, number of accumulatorsℓ2, and stateful adversary ˜Pthat performs at mostt ro queries to the
+random oracle,E ACC runs in time at mostetACC(λro,t ro,n i,n x,n acc,ℓ 1,ℓ 2)and
+Pr
+
+
+|i|≤n i
+∧∀i∈[ℓ 1] :|x i|≤n x
+∧∀j∈[ℓ 2] :|acc j.x|≤n acc
+∧V roACC
+
+
+vkACC,(xi)i∈[ℓ1],
+(accj.x)j∈[ℓ2],
+acc.x,pf
+
+ = 1
+∧ ˆDroACC(i,acc) = 1
+⇓
+∃i∈[ℓ 1] : (i,xi,wi)̸∈R
+∨∃j∈[ℓ 2] : ˆDroACC(i,accj)̸= 1
+⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐ ro←D(λ ro)i tr1←− ˜Pro(pkACC,vk ACC)←I roACC(i) (xi)i∈[ℓ1],(accj.x)j∈[ℓ2],acc,pf  tr2←− ˜Pro(pkACC,vk ACC)( (wi)i∈[ℓ1],(accj.w)j∈[ℓ2] )←E ACC i,pk ACC,vk ACC,(xi)i∈[ℓ1],(accj.x)j∈[ℓ2],acc,pf,tr 1,tr 2  
+is at mostκ ACC(λro,t ro,n i,n x,n acc,ℓ 1,ℓ 2).
+10.2WARP: our accumulation scheme
+Our IORs directly imply a corresponding accumulation scheme in (a suitable configuration of) the
+random oracle model (ROM), which we callWARP.
+55
+
+===== PAGE 56 =====
+Building blocks.The theorem below is stated with respect to building blocks from prior work.
+•Merklecommitments.WerelyonaMerklecommitmentschemeMTintheROM,asdescribed
+in [CY24]. This is a tuple of algorithms
+MT= (MT.Commit,MT.Open,MT.Check)
+in a setting where the random oracleroMT is sampled fromU(σMT)(the uniform distribution over
+functions from{0,1} ∗ to{0,1} σMT). We rely on the (multi-)extraction property ofMT, which
+is quantified via two functions as follows (under minor conditions on the input parameters):
+–κ MT(σMT,t MT,ℓ MT,n MT,k MT) =O( t2MT2σMT )is the (multi-)extraction error; and
+–et MT(σMT,Σ MT,ℓ MT,t MT,n MT) =O
+(
+nMT·t MT·ℓ MT·(log|Σ MT|+σ MT)
+)
+is the extraction time.
+Theinputparametersarethefollowing: (i)σ MT istheoutputsizeofro MT; (ii)tMT istheadversary’s
+query bound toro MT; (iii)Σ MT is the message alphabet; (iv)ℓMT is the message length; (v)nMT
+is the number of commitments output by the adversary; and (vi)kMT is the number of openings
+output by the adversary. See [CY24] for more details; here we ignore the salt size (it is0)
+because we do not rely on hiding properties ofMT.
+•Fiat–Shamir transformation.We rely on a Fiat–Shamir transformationFSin the ROM
+for suitably deriving the randomness for the verifiers in the used IORs. For convenience of
+presentation (and implementation), we use the duplex-sponge variant in [CO25], which is a
+tuple of algorithms
+FS= (FS.Init,FS.Absorb,FS.Squeeze)
+whereFS.Initinitializes a state given an input string,FS.Absorbupdates the state given an input
+string, andFS.Squeezeoutputs derived randomness given an input state. This duplex-sponge
+variant is in a setting where the random oracle is an ideal permutation, and its efficiency and
+security depend on the permutation’s alphabetΣ FS, capacityc FS, and rater FS. Accordingly,
+we consider a random oraclero FS sampled fromS(Σ FS,c FS,r FS), the uniform distribution over
+permutations onΣrFS+cFSFS . The security ofFSis quantified via two functions as follows (under
+minor conditions on the input parameters):
+–κ FS(tFS) =O( t2FS|ΣFS|cFS )is the extraction error; and
+–et FS(tFS,n) =O(t 2FS·logt FS·((r FS +c 2FS)·log|Σ FS|+n))is the extraction time.
+The input parameters are the following: (i)tFS is the adversary’s query bound toroFS; (ii)nis
+a bound on instance size. See [CO25] for more details.
+One technicality is thatFSneeds to know how to convert from prover messages to strings
+overΣ FS and from strings overΣ FS to verifier messages. We leave this implicit, and assume
+that this information is hardcoded, i.e.,FSknows in each round (determined by the sequence
+of absorbs/squeezes) what is to be absorbed/squeezed. Explicitly handling these translations
+involves specifying acodec, and accounting for negligible errors introduced by translation biases.
+Our result.We consider the random oracle model given by the following distribution:
+D(λro) :=
+
+
+ro:
+roMT←U(σ MT)
+roFS←S(Σ FS,c FS,r FS)
+ro := (roMT,ro FS)
+
+
+ ,
+56
+
+===== PAGE 57 =====
+where we think ofσMT,Σ FS,c FS,r FS as (implicitly) functions of the security parameterλro. Note that
+tMT +t FS≤t ro, wheret MT,t FS,t ro are the adversary’s query bounds toroMT,ro FS,rorespectively. We
+keep track of the query bounds to each oracle for the sake of concrete security bounds. Finally,
+note thatD(λ ro)can be “implemented” via a single random oracle sampled fromU(λro)(a “plain”
+ROM) but we do not do so since the above oracle distribution is closer to practice.11
+Theorem 10.3.FixF,C,i,s,tas in Theorem 9.1; recall thatκ :=N−k. Construction 10.4 is an
+accumulation scheme in the ROM
+ACC= (I ACC,P ACC,V ACC,D ACC)
+for the PESAT relationR⊚(F)(Definition 5.2) with the following parameters. (Belowℓ1 andℓ 2 are
+the number of statements and accumulators being accumulated, respectively; we letℓ:=ℓ 1 +ℓ 2.)
+•Prover cost:
+–O(ℓ 1·encC +ℓ·(n+d·(| ˆp|+M)) +s·n+t·logn)field operations,
+–absorbing/squeezingO(ℓ 1·logM+ logℓ·max{logn,logM+d}+s·logn+ log(t+s))field
+elements andO(ℓ 1·n x +ℓ 2·n acc +σ MT +t·logn)bits via queries to theFSrandom oracle, and
+–O(n)queries to theMTrandom oracle of sizeℓ 1·log|F|andσ MT.
+•Verifier cost:
+–O(ℓ·(logn+ logM+κ+t) + logℓ·d+ (t+s)·logn)field operations,
+–absorbing/squeezing the same information as the prover (via queries to theFSrandom oracle),
+–O(t)queries to theMTrandom oracle of sizeℓ 1·log|F|,
+–O(ℓ 2·t)queries to theMTrandom oracle of sizelog|F|, and
+–O(ℓ 2·t·logn)queries to theMTrandom oracle of sizeσ MT.
+•Decider cost:
+–O(| ˆp|+enc C)field operations, and
+–O(n)queries to theMTrandom oracle of sizelog|F|andσ MT.
+•Security.If Equations 1, 12 and 13 (in Theorems 5.8 and 9.1) hold thenACChas straightline
+knowledge soundness error
+κACC(λro,t ro,n i,n x,n acc,ℓ 1,ℓ 2)≤(t FS + logℓ+ logn+ 4)·2 −λ
++κ MT(σMT,t MT,n,t FS·(ℓ 2 + 2),ℓ 2 + 2)
++κ FS(tFS)
+(17)
+with extraction time
+etACC≤O(ℓ 1·decC +ℓ·ecor C)field operations
++et MT(σMT,Fℓ1,n,t MT,t FS·(ℓ 2 + 2)) +et FS(tFS,ℓ 1·n x +ℓ 2·n acc)bit operations. (18)
+Theorem 1 in Section 1.1 is an informal statement that summarizesACCfrom Theorem 10.3,
+after having fixed a linear codeCwith linear encoding time and constant relative distance over
+a sufficiently large finite field (e.g., the expander code in [GLSTW23] and the repeat-accumulate-
+accumulate code in [BCFRRZ25]).
+We prove Theorem 10.3 by following the strategy in [BMNW25b], which adapts the IOP-
+to-SNARG transformation of [BCS16] to the setting of accumulation schemes. We construct an
+11Implementingro FS in the plain ROM can be done via a Feistel network [FNS75], whileroMT can be implemented
+with standard input/output extension techniques. Domain separation should be used to separate the two oracles.
+57
+
+===== PAGE 58 =====
+IOR fromR ⊚(F)ℓ1×Rℓ2C toR C by composingℓ 1 parallel invocations of Construction 5.10 with1
+invocation of Construction 9.4 whereℓ:=ℓ 1 +ℓ 2. [BMNW25b] shows how to compile such an IOR
+into a corresponding non-interactive reduction, which can be recast as an accumulation scheme
+forR ⊚(F).12 For convenience, in Construction 10.4 we make the construction explicit, and then
+elaborate on the (efficiency and security) parameters claimed in the theorem statement.
+Construction 10.4(WARP).Below we describe each algorithm of the accumulation scheme
+ACC= (I ACC,P ACC,V ACC,D ACC).
+The construction relies on a Merkle commitment schemeMTand a Fiat–Shamir transformation
+FS, which are the two building blocks described above.
+•I roACC(i)
+1. Parseias a PESAT index( ˆp,M,N,k).
+2. Setst FS :=FS.Init roFS(i).
+3. Setpk ACC := (stFS, ˆp,M,N,k).
+4. Setvk ACC := (stFS,M,N,k).
+5. Return(pk ACC,vk ACC).
+•P roACC(pkACC,(xi,wi)i∈[ℓ1],(accj)j∈[ℓ2]):
+1.Parsing phase.
+(a)Index:parsepk ACC as(st FS, ˆp,M,N,k).
+(b)Statements:for everyi∈[ℓ 1], parsexi asx i∈F N−k andw i asw i∈F k.
+(c)Accumulators:for everyj∈[ℓ 2], parseacc j.xas(rt j,αℓ1+j,µℓ1+j,βℓ1+j,ηℓ1+j)and
+accj.was(td j,fℓ1+j,wℓ1+j).
+(d)Absorb parameters:setst FS :=FS.Absorb roFS(((xi)i∈[ℓ1],(accj.x)j∈[ℓ2]),st FS).
+2.PESAT reduction.
+(a)Encode witnesses:for everyi∈[ℓ 1], setfi :=C(w i).
+(b)Evaluation claims:for everyi∈[ℓ 1], setαi := 0logn andµ i := ˆfi(αi).13
+(c)Commit to witnesses:set(rt 0,td 0) :=MT.Commit roMT((f1,...,f ℓ1)).
+(d)Absorbcommitmentandcodeevaluations:setst FS :=FS.Absorb roFS((rt0,(µi)i∈[ℓ1]),st FS).
+(e)Zerocheckrandomness:set((τ 1,...,τ ℓ1),st FS) :=FS.Squeeze roFS(stFS)whereτ i∈F logM
+fori∈[ℓ 1].
+(f)Bundle evaluations:for everyi∈[ℓ 1], setβi := (xi,τi)andη i := 0.
+3.Constrained code accumulation.
+(a)Zerocheck randomness:set((τ,ω),st FS) :=FS.Squeeze roFS(stFS)whereτ∈F logℓ and
+ω∈F.
+(b) Foreveryi∈[ℓ], definef binary(i−1) :=f i,w binary(i−1) :=w i,α binary(i−1) :=α i,µ binary(i−1) :=
+µi,β binary(i−1) :=β i,η binary(i−1) :=η i.
+12In [BMNW25b], accumulation schemes are defined for non-interactive arguments (rather than relations). In our
+case the non-interactive argument is trivial: the prover sends the witness and the verifier checks it.
+13Construction 5.10 is a reduction fromR⊚(F)toR C,0, while Construction 9.4 instead expects as input instances
+ofR C =R C,1. Here, the prover converts an instance ofRC,0 into an instance ofRC by revealing the evaluation claims
+(µi)i∈[ℓ1], as mentioned in Remark 5.9.
+58
+
+===== PAGE 59 =====
+(c)Sumcheck protocol:define the(logℓ)-variate multilinear polynomials ˆF(I), ˆw(I),
+ˆA(I), ˆB(I)as in Equation 14 and ˆG(F,W,A,B)as in Equation 15.
+(d) For everyi∈[logℓ]:
+i. Setγ i−1 := (γ1,...,γ i−1)∈F i−1.
+ii.Sumcheck polynomial:compute
+ˆh(1)i (X) := ∑
+i∈{0,1}logℓ−i
+eq(τ,(γ i,X,i))· ˆG( ˆF(γi,X,i), ˆw(γi,X,i), ˆA(γi,X,i), ˆB(γi,X,i)).
+iii.Absorb sumcheck polynomial:setst FS :=FS.Absorb roFS(ˆh(1)i ,st FS).
+iv.Sumcheck randomness:set(γ i,st FS) :=FS.Squeeze roFS(stFS)whereγ i∈F.
+(e)New oracle and target:setγ := (γ1,...,γ logℓ ),ζ 0 := ˆA(γ),β := ˆB(γ)and
+f :=
+∑
+i∈{0,1}logℓ
+eq(γ,i)·f i,w :=
+∑
+i∈{0,1}logℓ
+eq(γ,i)·w i, ν 0 := ˆf(ζ 0), η := ˆP(β,w).
+(f)New commitment:compute(rt,td) :=MT.Commit roMT(f).
+(g)Absorb new commitment and target:setst FS :=FS.Absorb roFS((rt,ν 0,η),st FS).
+(h)OODsamples:set((ζ 1,...,ζ s),st FS) :=FS.Squeeze roFS(stFS)whereζ i∈F logn fori∈[s].
+(i)OOD answers:for everyi∈[s], setν i := ˆf(ζi).
+(j)Absorb OOD answers:setst FS :=FS.Absorb roFS((ν1,...,ν s),st FS).
+(k)Shiftqueriesandzerocheckrandomness:set((x 1,...,x t,ξ),st FS) :=FS.Squeeze roFS(stFS)
+wherex i∈[n]fori∈[t]andξ∈F logr. For everyk∈[t], defineζ s+k :=binary(x k)∈
+Flogn. Setr := 1 +s+t. In the rest of the protocol, we abuse notation by writing
+ζbinary(i) :=ζ i andν binary(i) :=ν i fori∈{0,...,r−1}.
+(l) For everyi∈[logn]:
+i.Sumcheck polynomials:compute
+ˆh(2)i (X) := ∑
+i∈{0,1}logn−i
+eq⋆(α1,...,α i−1,X,i)· ˆf(α 1,...,α i−1,X,i),
+whereeq ⋆ is defined as in Equation 16.
+ii.Absorb sumcheck polynomials:setst FS :=FS.Absorb roFS(ˆh(2)i ,st FS).
+iii.Sumcheck randomness:set(α i,st FS) :=FS.Squeeze roFS(stFS)whereα i∈F.
+(m)New target:setα := (α1,...,α logn )and computeµ := ˆf(α).
+(n)Compute authentication paths:
+–auth 0 :=MT.Open(td 0,(x 1,...,x t)),
+–∀j∈[ℓ 2],auth j :=MT.Open(td j,(x 1,...,x t)).
+4. Return(acc,pf)whereacc.x := (rt,α,µ,β,η),acc.w := (td,f,w), and
+pf :=
+(
+rt0,(µi)i∈[ℓ1],( ˆh(1)i )i∈[logℓ],ν 0,(νi)i∈[s],( ˆh(2)i )i∈[logn],auth 0,(authj)j∈[ℓ2],(fi(xj))i∈[ℓ],j∈[t]) .
+•V roACC(vkACC,(xi)i∈[ℓ1],(accj.x)j∈[ℓ2],acc.x,pf):
+59
+
+===== PAGE 60 =====
+1.Parsing phase.
+(a)Verification key:parsevk ACC as(st FS,M,N,k).
+(b)Instances:for everyi∈[ℓ 1]parsex i asx i∈F N−k.
+(c)Accumulators:for everyj∈[ℓ 2]parseacc j.xas(rt j,αℓ1+j,µℓ1+j,βℓ1+j,ηℓ1+j).
+(d)Final accumulator:parseacc.xas(rt,α,µ,β,η).
+(e)Accumulation proof:parsepfas
+(
+rt0,(µi)i∈[ℓ1],( ˆh(1)i )i∈[logℓ],ν 0,(νi)i∈[s],( ˆh(2)i )i∈[logn],auth 0,(authj)j∈[ℓ2],(vi,j)i∈[t],j∈[ℓ]) .
+(f)Absorb parameters:setst FS :=FS.Absorb roFS(((xi)i∈[ℓ1],(accj.x)j∈[ℓ2]),st FS)
+2.Derive randomness.
+(a)Absorb commitment:setst FS :=FS.Absorb roFS(rt0,st FS).
+(b)Zerocheck:set((τ 1,...,τ ℓ1),st FS) :=FS.Squeeze roFS(stFS)whereτ i∈F logM fori∈[ℓ 1].
+(c)Absorb code evaluations:setst FS :=FS.Absorb roFS((µi)i∈[ℓ1],st FS).
+(d)Zerocheck:set((τ,ω),st FS) :=FS.Squeeze roFS(stFS)whereτ∈F logℓ andω∈F.
+(e)Sumcheck:For everyi∈[logℓ]:
+i.Absorb sumcheck polynomials:setst FS :=FS.Absorb roFS(ˆh(1)i ,st FS).
+ii.Sumcheck randomness:set(γ i,st FS) :=FS.Squeeze roFS(stFS)whereγ i∈F.
+(f)Absorb new commitment and target:setst FS :=FS.Absorb roFS((rt,ν 0,η),st FS).
+(g)OODsamples:set((ζ 1,...,ζ s),st FS) :=FS.Squeeze roFS(stFS)whereζ i∈F logn fori∈[s].
+(h)Absorb OOD answers:setst FS :=FS.Absorb roFS((ν1,...,ν s),st FS).
+(i)Shift queries and zerocheck:set((x 1,...,x t,ξ),st FS) :=FS.Squeeze roFS(stFS)where
+xi∈[n]fori∈[t]andξ∈F logr.
+(j)Sumcheck:For everyi∈[logn]:
+i.Absorb sumcheck polynomial:setst FS :=FS.Absorb roFS(ˆh(2)i ,st FS).
+ii.Sumcheck randomness:set(α i,st FS) :=FS.Squeeze roFS(stFS)whereα i∈F.
+3.Derive values.
+(a) For everyi∈[ℓ], setα binary(i−1) :=α i,µ binary(i−1) :=µ i,β binary(i−1) :=β i, and
+ηbinary(i−1) :=η i.
+(b) Setγ= (γ 1,...,γ logℓ )and computeζ 0 := ˆA(γ)where ˆA(I)is defined as in Equation 14.
+For everyk∈[t], set
+νs+k :=
+∑
+i∈{0,1}logℓ
+eq(γ,i)·v k,i,
+and defineζs+k :=binary(x k)∈F logn.
+(c) Setr := 1 +s+t. In the rest of the protocol, we abuse notation by writingζbinary(i) :=ζ i
+andν binary(i) :=ν i fori∈{0,...,r−1}.
+(d) Setσ (1) :=∑i∈{0,1}logℓ eq(τ,i)·(µ i +ω·η i)andσ (2) :=∑i∈{0,1}logr eq(i,ξ)·ν i.
+4.Decision phase.(The verifier rejects if any check fails.)
+(a)New code evaluation point:check thatα= (α 1,...,α logn ).
+60
+
+===== PAGE 61 =====
+(b)New circuit evaluation point:check thatβ= ˆB(γ), where ˆB(I)is defined as in
+Equation 14.
+(c)Check authentication paths:check that
+–MT.Check roMT(rt0,(xi)i∈[t],((vi,j)j∈[ℓ1])i∈[t],auth 0) = 1; and
+–∀j∈[ℓ 2],MT.Check roMT(rtj,(xi)i∈[t],(vi,ℓ1+j)i∈[t],authj) = 1.
+(d)Sumcheck decisions:check that
+– ˆh(1)1 (0) + ˆh(1)1 (1) =σ (1) and ˆh(2)1 (0) + ˆh(2)1 (1) =σ (2);
+–∀j∈{1,...,logℓ−1}, ˆh(1)j+1(0) + ˆh(1)j+1(1) = ˆh(1)j (γj); and
+–∀j∈{1,...,logn−1}, ˆh(2)j+1(0) + ˆh(2)j+1(1) = ˆh(2)j (αj).
+(e)New target decision:check that
+ˆh(1)logℓ (γlogℓ ) =eq(τ,γ)·(ν 0 +ω·η), ˆh(2)logn (αlogn ) =µ·eq ⋆(α),
+whereeq ⋆ is defined as in Equation 16.
+•D roACC(i,acc):
+1. Parseias( ˆp,M,N,k).
+2. Parseacc.xas(rt,α,µ,β,η)andacc.was(td,f,w).
+3. Check the following:
+(a)(rt,td) =MT.Commit roMT(f).
+(b) ˆf(α) =µ, ˆP(β,w) =η, andf=C(w).
+Proof of Theorem 10.3.TheaccumulationschemeWARPinConstruction10.4istheresultofapply-
+ing the (adapted) IOP-to-SNARG compilation [BCS16; BMNW25b] to an IOR fromR⊚(F)ℓ1×Rℓ2C
+toRC, which we callIORWARP and now describe. This IOR results from concatenating two IORs:
+•An IOR fromR ⊚(F)ℓ1×R ℓ2C toR ℓ1C ×R ℓ2C =R ℓC, which is obtained by consideringℓ1 parallel
+invocations of the IOR fromR⊚(F)toR C in Construction 5.10 (given Remark 5.9’s adaptation).
+•The IOR fromR ℓC toRC in Construction 9.4.
+We discuss the efficiency and security ofWARP.
+Efficiency.The efficiency parameters come from careful bookkeeping, and here we only highlight
+an efficiency feature coming from parallel execution. SinceIORWARP involvesℓ 1 parallel instances of
+the IOR in Construction 5.10, the accumulation proverPACC commits to theℓ1 encoded witnesses
+via asingleMerkle commitment with alphabetF ℓ1 (by stacking the encoded witnesses), instead
+of withℓ 1 Merkle commitments with alphabetF. Hence, the accumulation proofpfcontainst
+authentication paths to this single Merkle commitment, as well astauthentication paths to the
+Merkle commitments in theℓ2 input accumulators.V ACC then must only verify those authentication
+paths, viaO(ℓ 2·t·logn)queries to theMTrandom oracle (which in the theorem statement we
+split according to query size). Note that ifIORWARP were to run Construction 5.10 serially (rather
+than in parallel) thenVACC would instead performO(ℓ·t·logn)queries to theMTrandom oracle.
+Security.The security bounds follow from [BMNW25b; CY24; CO25]. The error termκACC for
+ACCin Equation 17 is obtained as follows.
+61
+
+===== PAGE 62 =====
+•The first error term is the state-restoration knowledge soundness error ofIORWARP:
+εsr(tFS)
+≤(t FS +k)·ε rbr (by Theorem B.4)
+≤(t FS +k)·2 −λ (sinceε rbr≤2−λ)
+= (tFS + logℓ+ logn+ 4)·2 −λ.(sincek= logℓ+ logn+ 4)
+We outline whyεrbr≤2−λ.
+The concatenation of two IORs (with matching output and input relations) yields an IOR
+with round-by-round knowledge soundness error equal to the maximum of the round-by-round
+knowledge soundness errors of the two IORs.IOR WARP is an IOR fromR ⊚(F)ℓ1×R ℓ2C toR C
+obtained as the concatenation of two IORs, each having error≤2−λ, as discussed next.
+–FromR ⊚(F)ℓ1×R ℓ2C toR ℓ1C ×R ℓ2C =R ℓC.Construction 5.10 is an IOR fromR ⊚(F)toR C
+with error≤2 −λ (Equation 1 holds). Repeatingℓ1 times in parallel this IOR yields an IOR
+fromR ⊚(F)ℓ1 toR ℓ1C with the same error: if at least one of theℓ1 input instances is not in
+L(R⊚(F))then, except with a small error, at least one of theℓ1 output instances is far from
+RC; the same error is achieved by defining the knowledge state function of new IOR to be the
+disjunction of base IOR’s knowledge state function on the individual instances. Separately,
+theℓ 2 instances forRℓ2C are left untouched (in particular, no error is incurred for this).
+–FromR ℓC toR C.Construction 9.4 is an IOR fromRℓC toR C with error≤2 −λ (Equations 12
+and 13 hold).
+•The second error term is the (multi-)extraction errorκMT(σMT,t MT,n,t FS·(ℓ 2 + 2),ℓ 2 + 2)of the
+Merkle commitment schemeMT, where:
+–σ MT is the output size ofroMT;
+–t MT is the adversary’s query bound toroMT;
+–nis the message length;
+–t FS·(ℓ 2 + 2)is the number of Merkle commitments output by the adversary; and
+–ℓ 2 + 2is the number of Merkle commitment extractions.
+The reduction to state-restoration knowledge soundness ofIORWARP produces, for each of≤t FS
+state-restoration moves,ℓ2 + 2IOR oracles (ℓ2 oracles come from theℓ2 inputRC instances, one
+oracle overF ℓ1 is produced from the parallel executions of Construction 5.10, and one oracle
+comes from the function batching protocol Construction 6.3 executed within Construction 9.4).
+Overall, the reduction outputst FS·(ℓ 2 + 2)Merkle commitments and performsℓ 2 + 2Merkle
+commitment extractions, for Merkle commitments of sizen.
+•The third error termκ FS(tFS)is the Fiat–Shamir transformation extraction error.
+Finally, the extraction timeetACC forACCin Equation 18 is obtained as follows. The accumulation
+extractorE ACC runs in turn three extractors.
+1. A Fiat–Shamir extractor that, given the malicious prover’s query-answer trace, reconstructs the
+“virtual” moves of the adversary in a state-restoration game for an interactive protocol where
+only Merkle commitments are used. This takesetFS(tFS,ℓ 1·n x +ℓ 2·n acc)bit operations.
+62
+
+===== PAGE 63 =====
+2. A Merkle commitment extractor that is invoked on the moves of the adversary in the interactive
+protocol state-restoration game, to obtain corresponding moves for the IOR state restoration
+game. This takeset MT(σMT,Fℓ1,n,t MT,t FS·(ℓ 2 + 2))bit operations.
+3. A state-restoration extractorE sr forIOR WARP that invokes two further state-restoration extrac-
+tors: the extractor described in Construction 9.5 (which usesO(ℓ·ecorC)field operations) and
+ℓ1 instances of the extractor in Construction 5.10 (each of which usesO(decC)field operations).
+Overall, this takesO(ℓ1·decC +ℓ·ecor C)field operations.
+63
+
+===== PAGE 64 =====
+A Succinct arguments vs. accumulation schemes
+A key efficiency metric of PCD is therecursion overhead: the additional computation whose cor-
+rectness is proven beyond the PCD predicate’s correctness. The recursion overhead differs across
+PCD constructions. Belowℓrefers to the arity of the PCD predicate.
+1. For PCD based on a succinct non-interactive argumentARG= (P ARG,V ARG), the recursion
+overhead isℓexecutions ofV ARG.
+2. For PCD based on an accumulation schemeACC= (PACC,V ACC,D ACC), the recursion overhead is
+1execution ofV ACC onℓinstance-witness pairs andℓaccumulators.
+The latter is typically more efficient, and motivates the study of accumulation schemes. A detailed
+quantitative comparison, however, is more nuanced due to the fact that a succinct non-interactive
+argument leads to PCD via an alternate “indirect” construction that yields different tradeoffs.
+A succinct non-interactive argumentARG= (PARG,V ARG)implies a corresponding accumulation
+schemeACC= (P ACC,V ACC,D ACC)with a trivial deciderDACC: (i)P ACC runsP ARG on the (conjunction
+of)ℓinstance-witness pairs; (ii)V ACC runsV ARG on theℓinstances; and (iii)D ACC always accepts.
+One can then construct PCD from this accumulation schemeACC(following Item 2 above).14
+In particular, ifP ARG is linear time then so isP ACC, which directly yields constructions of
+linear-time accumulation schemes from corresponding linear-time succinct non-interactive argu-
+ments [BCGGHJ17; BCG20; BCL22; XZS22; RR22; GLSTW23; BCFRRZ25; NST24; BMMS25].
+The corresponding accumulation schemes areincomparabletoWARPin the following sense. (Below
+λisthesecurityparameterand, forconcreteness, weconsiderthePESATrelationfromDefinition1.)
+•The verifierV ACC of accumulation schemes obtained via direct “non-succinct” constructions
+typically runs in timeℓ·f(λ,k)for some functionf(thinkf=O λ(logk)).
+•The verifierV ACC of accumulation schemes obtained from succinct arguments typically run in
+timeg(λ,ℓ·(M+N))for some functiong=ω(f).
+These costs are incomparable in that the first approach is better for small to medium aritiesℓ(e.g.,
+IVC corresponds toℓ= 1), whereas the second approach is better for larger aritiesℓ. In this paper
+we focus on direct accumulation schemes (and the regime where they are better).
+14This indirect construction isnot the sameas the direct PCD construction: recursive proof composition ofARG
+yieldssuccinctPCD proofs whereas PCD based onACCdoes not. On the other hand, usingACCleads to a smaller
+recursion overhead, as we informally explain next. LetVARG(|C|)denote the complexity ofVARG on a circuit of size|C|.
+In the direct PCD construction, the recursion overhead isℓ·VARG(|C|). In the indirect PCD construction the recursion
+overhead isV ARG(ℓ·|C|). Hence the indirect construction may be beneficial to recursion overhead:VARG(ℓ·|C|)can
+be smaller thanℓ·V ARG(|C|)depending on the arityℓ.
+64
+
+===== PAGE 65 =====
+B RBR knowledge soundness implies SR knowledge soundness
+We prove that (our relaxation of) round-by-round knowledge soundness (Section 4) implies straight-
+line state-restoration knowledge soundness. For notational convenience, letR≤δ denote the set of
+statements up toδ-far from some relationR:
+R≤δ :={(i,x,y,w)|∃y ⋆ s.t.(i,x,y ⋆,w)∈Rand∆(π R(i,x,y),π R(i,x,y ⋆))≤δ}.
+This matches the definition of a knowledge state function, in the sense that iftr=∅is the empty
+transcript, thenKState δ(i,x,y,tr,w) = 1if and only if(i,x,y,w)∈R ≤δ. Similarly, iftris a full
+transcript, thenKStateδ(i,x,y,tr,w) = 1if and only ifVoutputs(x ′,y′)such that(i,x′,y′,w)∈R ′≤δ.
+Definition B.1.The IOR state restoration game with salt sizes, functionsrnd= (rnd i)i∈[k] and
+adversary ˜Psr, denotedSRGame(s,rnd, ˜Psr), is defined as follows.
+1. Repeat the following until˜Psr exits the loop:
+(a) ˜Psr sends a move (i,x,y,(π 1,...,π i),(σ 1,...,σ i)) wherei∈[k],(π 1,...,π i)are prover
+messages for the firstirounds, and(σ 1,...,σ i)are salts strings in{0,1} s.
+(b) Setρ i :=rnd i
+(
+i,x,y,(π 1,...,π i),(σ 1,...,σ i)
+)
+.
+(c) Giveρ i as response to˜Psr.
+2. ˜Psr outputs(i,x,y,(π i)i∈[k],(σi)i∈[k],w′) where(πi)i∈[k] are prover messages for all rounds,(σi)i∈[k]
+are salt strings in{0,1}s, andw′ is a (candidate) witness.
+3. For everyi∈[k], setρ i :=rnd i
+(
+i,x,y,(π 1,...,π i),(σ 1,...,σ i)
+)
+.
+4. Output
+(
+i,x,y,(π i)i∈[k],(σi)i∈[k],w′,(ρi)i∈[k]).
+We denote bytrsr the list of move-response pairs of the form
+((
+i,x,y,(π 1,...,π i),(σ 1,...,σ i)
+)
+,ρi
+)
+in the loop.
+Definition B.2.Ak-round IOR(I,P,V)from a relationRtoR ′ with proximity radiusδ⋆ has
+straightline state-restoration knowledge soundnessfor a statement setZwith errorεsr and
+extraction timeetif there exists a deterministic extractorEsr that runs in time at mostetwith the
+following property: for every salt sizes∈N, move budgett∈N, proximity boundδ∈(0,δ ⋆), and
+t-move deterministic state-restoration prover˜Psr,
+Pr
+
+ (i,x,y)∈Z∧(i,x,y,w)̸∈R ≤δ∧(i,x ′,y′,w′)∈R ′≤δ
+⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐ rnd= (rnd i)i∈[k]←U((r i)i∈[k])(i,x,y,(π i)i∈[k],(σi)i∈[k],w′,(ρi)i∈[k]) trsr←−−SRGame(s,rnd, ˜Psr)(x′,y′)←V y,(πi)i∈[k](I(i),x,(ρ i)i∈[k])w←E sr(i,x,y,(π i)i∈[k],(σi)i∈[k],w′,(ρi)i∈[k],tr sr) ≤ε sr(s,t,δ).
+(Note thatE sr does not needx′ andy′ as inputs, as they are determined byEsr’s other inputs.)
+RemarkB.3.[BMNW25b]generalizesthenotionofstraightlinestate-restorationknowledgesound-
+ness [BCS16; CY24] from IOPs to IORs. There are minor differences between Definitions B.1
+and B.2 and those in [BMNW25b].
+•[BMNW25b] consider an IOR indexer in full generality, which outputs a new index forR′ and an
+index string to which the verifier has oracle access. These additional features do not meaningfully
+affect the state restoration definitions.
+65
+
+===== PAGE 66 =====
+•We give the state-restoration extractor the random challenges from the state-restoration game’s
+output transcript, whereas [BMNW25b] does not.
+•[BMNW25b] additionally allows the state-restoration prover to erase characters in the new
+implicit instancey ′. This is a technical detail required to model the capabilities of a non-
+interactive prover (which can analogously omit Merkle path openings). For proximity claims
+(and more generally,monotone relationsas defined in [BMNW25b]), erasing characters cannot
+help the state-restoration prover. In this case, any bound on the state-restoration error in
+Definition B.2 translates into a bound on the state-restoration error in [BMNW25b]’s definition.
+Theorem B.4.LetIOR= (I,P,V)be ak-round IOR with round-by-round knowledge soundness
+with errors(ε 1,...,ε k)and extraction times(et 1,...,et k)(Definition 4.2). LetZbe an arbitrary
+statement set and defineε rbr(δ) := maxi∈[k],(i,x,y)∈Zεi(i,x,y,δ). ThenIORhas straightline state-
+restoration knowledge soundness for the statement setZ(Definition B.2) with error
+εsr(s,t,δ)≤(t+k)·ε rbr(δ)
+and extraction timeet≤ ∑i∈[k] eti. (The upper bounds are unaffected by salt size.)
+Construction B.5.LetE rbr be the round-by-round knowledge extractor for(I,P,V). We con-
+struct a state-restoration extractorEsr as follows.
+Esr
+(
+i,x,y,(π i)i∈[k],(σi)i∈[k],w′,(ρi)i∈[k],tr sr):
+1. Definew k :=w′.
+2. Fori=k,...,1: computew i−1←E rbr
+(
+i,x,y,(π 1,ρ 1,...,π i,ρi),wi
+)
+.
+3. Outputw :=w 0.
+The time ofEsr equals the sum of thekinvocations ofE rbr.
+Proof.The state-restoration game’s output is of the form
+(
+i,x,y,(π i)i∈[k],(σi)i∈[k],w′,(ρi)i∈[k]). De-
+fine thefull traceto be the concatenation of the state-restoration game trace and the move-response
+pairs ((
+i,x,y,(π 1,...,π i),(σ 1,...,σ i)
+)
+,ρi
+)
+i∈[k]
+,
+namely, the move-response pairs obtained from each prefix of the state-restoration game’s output
+transcript. The full trace contains at mostt+kmoves.
+For eacha∈[t+k], we define the indicator variableX a as follows. Consider thea-th unique
+move in the full trace, denoted by
+((
+i,x,y,(π 1,...,π i),(σ 1,...,σ i)
+)
+,ρi
+)
+.
+Forj < i, letρj :=rnd j
+(
+i,x,y,(π 1,...,π j),(σ 1,...,σ j)
+)
+. We letXa = 1if and only if there exists
+wsuch that the following holds:
+•KState δ(i,x,y,(π 1,ρ 1,...,π i),E rbr(i,x,y,(π 1,ρ 1,...,π i,ρi),w)) = 0.
+•KState δ(i,x,y,(π 1,ρ 1,...,π i,ρi),w) = 1.
+LetX :=∨ a∈[t+k]Xa. For everyi∈[k]anda∈[t+k], we defineY i,a to be the indicator variable
+for the event where thea-th unique move in the full trace is for roundi.
+66
+
+===== PAGE 67 =====
+ClaimB.6.Consider the state-restoration experiment in Definition B.2, where the state-restoration
+game outputs
+(
+i,x,y,(π i)i∈[k],(σi)i∈[k],w′,(ρi)i∈[k]), the IOR verifier outputs(x′,y′), and the state-
+restoration extractor outputsw. If(i,x,y,w)̸∈R ≤δ and(i,x ′,y′,w′)∈R ′≤δ, thenX= 1.
+Proof.For eachi∈[k], leta (i)∈[t+k]be such that thea (i)-th unique move in the full trace is
+equal to ((
+i,x,y,(π 1,...,π i),(σ 1,...,σ i)
+)
+,ρi
+)
+;
+this is guaranteed to exist by construction of the full trace. Assume that(i,x,y,w)̸∈R ≤δ and
+(i,x′,y′,w′)∈R ′≤δ. We show there existsi∈[k]whereX a(i) = 1; the claim follows.
+Definew k :=w ′. Since(i,x ′,y′,w′)∈ R≤δ, by the definition of a knowledge state func-
+tion (Definition 4.1), it must be thatKState
+(
+i,x,y,(π 1,ρ 1,...,π k,ρ k),w k
+)
+= 1. Definew k−1 :=
+Erbr
+(
+i,x,y,(π 1,ρ 1,...,π k,ρ k),w k
+)
+. IfKState δ
+(
+i,x,y,(π 1,ρ 1,...,π k),w k−1
+)
+= 0, thenX a(k) = 1and
+we are done. Otherwise, by the definition of a knowledge state function (in particular, the require-
+ment for prover moves), it must be thatKStateδ
+(
+i,x,y,(π 1,ρ 1,...,π k−1,ρ k−1),w k−1
+)
+= 1.
+This argument continues until we arrive at the situation whereKStateδ
+(
+i,x,y,(π 1,ρ 1),w 1
+)
+= 1.
+Definew 0 :=E rbr
+(
+i,x,y,(π 1,ρ 1),w 1
+)
+and observe that the state-restoration extractor outputsw
+which is precisely equal tow0. Since(i,x,y,w)̸∈R ≤δ, it must be thatKState(i,x,y,∅,w 0) = 0.
+ThenX a(1) = 1and we are done.
+Claim B.6 implies that the state-restoration knowledge error is at most
+Pr
+
+ (i,x,y)∈ZX= 1
+⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐⏐ rnd= (rnd i)i∈[k]←U((r i)i∈[k])(i,x,y,(π i)i∈[k],(σi)i∈[k],w′,(ρi)i∈[k]) trsr←−−SRGame(rnd, ˜Psr)(x′,y′)←V y,(πi)i∈[k](I(i),x,(ρ i)i∈[k])w←E sr(i,x,y,(π i)i∈[k],(σi)i∈[k],w′,(ρi)i∈[k],tr sr)  .
+Fix anyi∈[k]anda∈[t+k], and consider the execution of the state-restoration prover conditioned
+onY i,a = 1. Note that the eventY i,a depends only on the moves and responses up to thea-th
+unique move, not including its response. In thea-th move, the state-restoration prover outputs
+some move
+(
+i,x,y,(π 1,...,π i),(σ 1,...,σ i)
+)
+. Since the state-restoration game has not yet answered
+this move (here we use the fact that the move is unique), the prover’s output is independent of the
+responseρ i :=rnd i
+(
+i,x,y,(π 1,...,π i),(σ 1,...,σ i)
+)
+. By the definition of round-by-round knowledge
+soundness (Definition 4.2), we have
+Pr[(i,x,y)∈Z∧X a = 1|Y i,a = 1]≤ε rbr(δ).
+Since this bound holds for anyi∈[k], it follows thatPr[(i,x,y)∈Z∧X a = 1]≤ε rbr. Taking a
+union bound overa∈[t+k]yields the desired bound.
+67
+
+===== PAGE 68 =====
+C Comparison with prior notions of RBR knowledge soundness
+We prove that our variant of round-by-round knowledge soundness (Section 4) is a relaxation of
+prior definitions [CMS19; BMNW25b], in the sense that any IOR that is knowledge sound under
+prior definitions is also knowledge sound under our variant (with the same error). As this is not
+essential to our results, we use the informal definitions from Section 2.8.
+For a non-empty interaction transcripttr, we writetrim(tr)to denote the transcript obtained
+as follows:
+•Iftris of the form(π 1,ρ 1,...,π i,ρi), thentrim(tr)is(π 1,ρ 1,...,π i), i.e.,trwithρ i is removed.
+•Otherwise,trim(tr)istr.
+For efficiency reasons, we assume Definition 2.5’s extractorErbr is “consistent” in the following
+sense: ifState(x,y,tr) = 1, thenE rbr(x,y,trim(tr′)) =E rbr(x,y,trim(tr))for any continuationtr ′ of
+tr; this is in line with the definition in [CY24].
+Theorem C.1(informal).If an IOR has round-by-round knowledge soundness errorεrbr per Def-
+inition 2.5, then the IOR has round-by-round knowledge soundness errorεrbr per Definition 2.7.
+Proof.Fix an IOR fromRtoR ′ with proximity radiusδ ⋆. LetStatebe a state function and
+Eold be an extractor under which the IOR has round-by-round knowledge soundness errorεrbr, per
+Definition 2.5.
+We define a knowledge state functionKStateas follows.
+•Empty transcript:iftr=∅is the empty transcript, thenKState δ(x,y,tr,w) = 1if and only if
+there existsy⋆∈B δ(y)with(x,y ⋆,w)∈R.
+•Partial transcript:iftris a transcript that is neither empty nor full, thenKStateδ(x,y,tr,w) = 1
+if and only if at least one of the following hold:
+–There existsy ⋆∈B δ(y)with(x,y ⋆,w)∈R.
+–State δ(x,y,tr) = 1andw=E old(x,y,trim(tr)), wheretrim(tr)returnstrwithout the last
+message if it is verifier randomness.
+•Full transcript:iftr= (π 1,ρ 1,...,π k,ρ k)is a full transcript, thenKStateδ(x,y,tr,w) = 1if and
+only ifV y,(πi)i∈[k](x,(ρi)i∈[k])outputs(x ′,y′)such that there existsy′⋆∈B δ(y′)with(x ′,y′⋆,w)∈
+R′.
+We also define the extractor
+Enew(x,y,tr∥ρ i,w) :=
+{
+Eold(x,y,tr)tr∥ρ i is a full transcript
+wotherwise.
+Claim C.2.For everyδ∈(0,δ ⋆), statement(x,y), interaction transcripttrwhere the prover is
+about to move, and knowledge state witnessw, the following holds. IfKStateδ(x,y,tr,w) = 0, then
+KStateδ(x,y,tr∥π,w) = 0for every prover messageπ.
+Proof.Suppose thatKState δ(x,y,tr,w) = 0and letπbe an arbitrary prover message. Then for
+everyy ⋆∈B δ(y), it holds that(x,y⋆,w)̸∈R. There are two cases:
+•Iftr=∅is the empty transcript, thenState(x,y,tr) = 0, and henceState(x,y,tr∥π) = 0, follows
+from Definition 2.5 (in particular, the requirements for empty transcripts and prover moves).
+68
+
+===== PAGE 69 =====
+•Iftris not empty, there are two cases:
+–State(x,y,tr) = 0. By Definition 2.5 (in particular, the requirement for prover moves), this
+impliesState(x,y,tr∥π) = 0.
+–State(x,y,tr) = 1andw̸=E old(x,y,trim(tr)). By consistency ofE old, this impliesw̸=
+Eold(x,y,tr∥π).
+We conclude thatKStateδ(x,y,tr∥π,w) = 0.
+Claim C.3.For everyδ∈(0,δ ⋆), statement(x,y), interaction transcripttrwhere the verifier is
+about to move, and knowledge state witnessw,
+Prρi
+[
+∃w: KStateδ
+(
+x,y,tr,E new(x,y,tr∥ρ i,w)
+)
+= 0
+∧KState δ(x,y,tr∥ρ i,w) = 1
+]
+≤ε rbr.
+Proof.For an arbitrary verifier randomnessρi, there are two cases:
+•Iftr∥ρ i is not a full transcript, then the event in the claim’s probability is equivalent to the
+following:
+{
+∃w: KStateδ(x,y,tr,w) = 0∧KState δ(x,y,tr∥ρ i,w) = 1
+}
+≡
+
+
+∃w:
+(
+Stateδ(x,y,tr) = 0∨w̸=E old(x,y,tr)
+)
+∧State δ(x,y,tr∥ρ i) = 1∧w=E old(x,y,tr)
+∧∀y ⋆∈B δ(y),(x,y ⋆,w)̸∈R
+
+
+
+≡
+
+
+∃w:
+Stateδ(x,y,tr) = 0
+∧State δ(x,y,tr∥ρ i) = 1∧w=E old(x,y,tr)
+∧∀y ⋆∈B δ(y),(x,y ⋆,w)̸∈R
+
+
+
+≡
+
+
+
+Stateδ(x,y,tr) = 0
+∧State δ(x,y,tr∥ρ i) = 1
+∧∀y ⋆∈B δ(y),
+(
+x,y⋆,E old(x,y,tr)
+)
+̸∈R
+
+
+
+•Iftr∥ρ i is a full transcript, then the event in the claim’s probability is equivalent to the following:
+{
+∃w: KStateδ
+(
+x,y,tr,E old(x,y,tr)
+)
+= 0
+∧KState δ(x,y,tr∥ρ i,w) = 1
+}
+≡
+
+
+
+Stateδ(x,y,tr) = 0
+∧State δ(x,y,tr∥ρ i) = 1
+∧∀y ⋆∈B δ(y),
+(
+x,y⋆,E old(x,y,tr)
+)
+̸∈R
+
+
+
+The claim then follows from Definition 2.5.
+By construction,KStatesatisfies the requirements for empty and full transcripts in Defini-
+tion 2.7. In conjunction with Claims C.2 and C.3, this shows that the IOR has round-by-round
+knowledge soundness errorεrbr per Definition 2.7.
+69
+
+===== PAGE 70 =====
+D Extension fields
+Throughout the paper we considered a PESAT relationR⊚(F)and a linear codeC:F k→F n defined
+over a fieldFthat is required to be large enough for soundness. Here we discuss how to adapt
+our two main IORs to the setting offield extensions: the PESAT relationR⊚(B)and linear code
+CB :B k→B n are defined over a base fieldB(e.g.,B=F 2), and we wish to benefit from a larger
+field extensionF(e.g.,F=F 2160) for soundness. We wish to adjust our IORs so that the verifier
+samples field elements fromF(rather thanB) while usingBfor the reduction from PESAT.
+D.1 Definitions
+We review definitions about extension fields and codes defined over extension fields.
+Definition D.1.A tuple(B,F,e,ψ,φ)is aextension field presentationif:
+•B,Fare fields;
+•ψ:B↪→Fis an injective field homomorphism;
+•e∈Nis the dimension ofFas aB-vector space;
+•φ:F→B e is aB-linear isomorphism.
+For eachi∈[e],φ i :F→Bdenotes thei-th component ofφ. An extension field presentation
+(B,F,e,ψ,φ)issystematicif, for everyx∈B,φ(ψ(x)) = (x,0,...,0).
+We also applyψto vectors of base field elements andφ,φ1,...,φ e to vectors of extension field
+elements by applying each of these maps componentwise.
+An extension code defines a code over a field extension for a linear code over the base field.
+Definition D.2.LetC B :B k→B n be a linear code. Theextension code ofC B overF(with
+respect to the extension field presentation(B,F,e,ψ,φ)) is the linear codeCF :F k→F n defined as
+CF(v) :=φ−1
+(
+CB(φ1(v)),...,C B(φe(v))
+)
+.
+If the extension field presentation is systematic, thenCF(ψ(v)) =ψ(C B(v))for anyv∈B k.
+The distance of the extension codeCF equals the distance of the given codeCB, i.e.,δ(CB) =δ(C F)
+[DP25, Thm 3.2].
+The list size of the extension code is the list size of thee-interleaved base code (which in turn
+is related to the list size of the base code by Lemma 3.13).
+Lemma D.3.LetC B :B k→B n be a linear code and(B,F,e,ψ,φ)be a extension field presentation.
+For everyδ∈(0,1),|Λ(C F,δ)|=|Λ(C eB,δ)|.
+Proof.We prove two inequalities.
+•|Λ(C F,δ)|≤|Λ(C eB,δ)|.
+Letf: [n]→Fandu∈Λ(C F,f,δ). For everyi∈[e], definef i :=φ i◦fandu i :=φ i◦u. We
+show that(ui)i∈[e]∈Λ(C eB,(fi)i∈[e],δ). For everyi∈[e], observe thatu i∈C B. Letv∈F k be
+such thatu=C F(v). Then,
+ui =φ i◦u=φ i◦C F(v) =φ i◦φ−1
+(
+CB(φ1(v)),...,C B(φe(v))
+)
+=C B(φi(v)).
+Since∆(f,u)≤δ, there existsS⊆[n]with|S|≥(1−δ)·nsuch thatf(x) =u(x)for every
+x∈S. Then, for everyx∈Sandi∈[e],f i(x) =φ i◦f(x) =φ i◦u(x) =u i(x). We conclude
+that∆((f i)i∈[e],(ui)i∈[e])≤δ.
+70
+
+===== PAGE 71 =====
+•|Λ(C F,δ)|≥|Λ(C eB,δ)|.
+Let(f i)i∈[e] : [n]→B e and(u i)∈Λ(C e,(fi)i∈[e],δ). Definef :=φ −1◦(f 1,...,f e)andu :=
+φ−1◦(u 1,...,u e). We show thatu∈Λ(C F,f,δ). Observe thatu∈C F: for everyi∈[e], letv i
+be such thatui =C B(vi)and definev :=φ−1(v1,...,v e); then,
+CF(v) =φ−1
+(
+CB(φ1(v)),...,C B(φe(v))
+)
+=φ−1
+(
+CB(v1),...,C B(ve)
+)
+=φ−1(u1,...,u e) =u.
+Since∆((f i)i∈[e],(u)i∈[e])≤δ, there existsS⊆[n]with|S|≥(1−δ)·nsuch thatf i(x) =u i(x)
+for everyx∈Sandi∈[e]. Sincef(x) =φ −1(f1(x),...,f e(x)) =φ−1(u1(x),...,u e(x)) =u(x)
+for everyx∈S, we conclude that∆(f,u)≤δ.
+D.2 Adapting the IORs
+Let(B,F,e,ψ,φ)be a systematic extension field presentation, and letC B :B k→B n be a linear
+code with extension codeC F overF. We denote byR (F)CB,r the relaxation ofRCB,r (Definition 5.7)
+where((α i,µi)i∈[r],β,η)are defined overFinstead ofB.
+Reduction from PESAT.We adapt Construction 5.10 to be an IOR fromR⊚(B)toR (F)CB,0 as
+follows. The prover encodes the witnessw∈B k usingC B; this involvesO(encCB)operations in
+thebase fieldB, and the sent oraclef: [n]→Bis over the alphabetB. The IOR verifier samples
+τ←F logM . In the security analysis, Equation 1 in Theorem 5.8 changes to the following condition:
+|F|≥2 λ·logM·|Λ(C B,δ)|.
+Constrained code reduction.We adapt Construction 9.4 to be an IOR from(R(F)CB,0)ℓ1 +Rℓ2CF
+toRCF. This is identical to the IOR fromRℓCF toRCF whereℓ:=ℓ 1 +ℓ 2, except some of the input
+oraclesf i are over the alphabetBinstead ofF. Accordingly, the IOR verifier appliesψto convert
+them to elements in the extension fieldF. This is sound since, by virtue of the presentation being
+systematic,C F(ψ(v)) =ψ(C B(v))for everyv∈B k. The security analysis depends on the list size
+ofC F, which Lemma D.3 relates to the list size of (thee-interleaving of)CB.
+D.3 Adapting the accumulation scheme
+Theorem 10.3 and Construction 10.4 can be adapted to handle base and extension fields by com-
+piling the adapted IORs described in Section D.2. The soundness analysis is identical, and follows
+the sketch in Section 10.2. Concretely, this results in a verifier forACCsimilar to that in the (un-
+modified)WARPconstruction, which additionally checks that opened locations are in the relevant
+alphabet of the Merkle commitment (base field elements inBor extension field elements inF).
+Remark D.4.Construction 10.4 benefits particularly fromIORWARP running Construction 5.10 in
+parallel (rather than sequentially). Sequentially, committing toℓ1 encoded witnesses over the base
+field would involveO(ℓ1·n)random oracle queries of sizelog|B|. By running Construction 5.10 in
+parallel instead, this cost is reduced toO(n)random oracle queries of sizeℓ1·log|B|. Ifℓ 1≈e, then
+this corresponds to the cost of committing to asingleencoded witness over the extension field.
+71
+
+===== PAGE 72 =====
+Acknowledgments
+Alessandro Chiesa and Giacomo Fenzi are supported in part by the Ethereum Foundation and
+the Sui Foundation. Benedikt Bünz and William Wang are supported in part by Alpen Labs,
+Chaincode, Google, and the Sui Foundation.
+References
+[ACFY24] Gal Arnon, Alessandro Chiesa, Giacomo Fenzi, and Eylon Yogev. “STIR: Reed–Solomon
+Proximity Testing with Fewer Queries”. In:Proceedings of the 44th Annual International
+Cryptology Conference. CRYPTO ’24. 2024, pp. 380–413.
+[ACFY25] Gal Arnon, Alessandro Chiesa, Giacomo Fenzi, and Eylon Yogev. “WHIR: Reed–Solomon
+Proximity Testing with Super-Fast Verification”. In:Proceedings of the 44th Annual In-
+ternational Conference on Theory and Application of Cryptographic Techniques. EURO-
+CRYPT ’25. 2025.
+[AHIKV17] Benny Applebaum, Naama Haramaty, Yuval Ishai, Eyal Kushilevitz, and Vinod Vaikun-
+tanathan. “Low-Complexity Cryptographic Hash Functions”. In:Proceedings of the 8th In-
+novations in Theoretical Computer Science Conference. ITCS ’17. 2017, pp. 1–31.
+[AHIV17] Scott Ames, Carmit Hazay, Yuval Ishai, and Muthuramakrishnan Venkitasubramaniam.
+“Ligero: Lightweight Sublinear Arguments Without a Trusted Setup”. In:Proceedings of the
+24th ACM Conference on Computer and Communications Security. CCS ’17. 2017, pp. 2087–
+2104.
+[Ajt96] Miklós Ajtai. “Generating hard instances of lattice problems”. In:Proceedings of the 28th
+Annual ACM Symposium on the Theory of Computing. STOC ’96. 1996, pp. 99–108.
+[BBHR18] Eli Ben-Sasson, Iddo Bentov, Yinon Horesh, and Michael Riabzev. “Fast Reed–Solomon
+Interactive Oracle Proofs of Proximity”. In:Proceedings of the 45th International Colloquium
+on Automata, Languages and Programming. ICALP ’18. 2018, 14:1–14:17.
+[BC23] Benedikt Bünz and Binyi Chen. “Protostar: Generic Efficient Accumulation/Folding for
+Special-Sound Protocols”. In:Proceedings of the 29th International Conference on the Theory
+and Application of Cryptology and Information Security. ASIACRYPT ’23. 2023, pp. 77–110.
+[BC24] Dan Boneh and Binyi Chen.LatticeFold: A Lattice-based Folding Scheme and its Applications
+to Succinct Proof Systems. Cryptology ePrint Archive, Paper 2024/257. 2024.
+[BC25] Dan Boneh and Binyi Chen.Faster, Simpler, Shorter Lattice-Based Folding for Succinct
+Proof Systems. Cryptology ePrint Archive, Paper 2025/247. 2025.
+[BCCT13] Nir Bitansky, Ran Canetti, Alessandro Chiesa, and Eran Tromer. “Recursive Composition
+and Bootstrapping for SNARKs and Proof-Carrying Data”. In:Proceedings of the 45th ACM
+Symposium on the Theory of Computing. STOC ’13. 2013, pp. 111–120.
+[BCFRRZ25] Martijn Brehm, Binyi Chen, Ben Fisch, Nicolas Resch, Ron D. Rothblum, and Hadas Zeil-
+berger. “Blaze: Fast SNARKs from Interleaved RAA Codes”. In:Proceedings of the 44th
+Annual International Conference on Theory and Application of Cryptographic Techniques.
+EUROCRYPT ’25. 2025.
+[BCG20] Jonathan Bootle, Alessandro Chiesa, and Jens Groth. “Linear-Time Arguments with Sub-
+linear Verification from Tensor Codes”. In:Proceedings of the 18th Theory of Cryptography
+Conference. TCC ’20. 2020, pp. 19–46.
+[BCG24] Elette Boyle, Ran Cohen, and Aarushi Goel. “Breaking theO( √n)-Bit Barrier: Byzantine
+Agreement with Polylog Bits Per Party”. In:Journal of Cryptology37.1 (2024), p. 2.
+72
+
+===== PAGE 73 =====
+[BCGGHJ17] Jonathan Bootle, Andrea Cerulli, Essam Ghadafi, Jens Groth, Mohammad Hajiabadi, and
+Sune K. Jakobsen. “Linear-Time Zero-Knowledge Proofs for Arithmetic Circuit Satisfiabil-
+ity”. In:Proceedings of the 23rd International Conference on the Theory and Applications of
+Cryptology and Information Security. ASIACRYPT ’17. 2017, pp. 336–365.
+[BCGGRS19] Eli Ben-Sasson, Alessandro Chiesa, Lior Goldberg, Tom Gur, Michael Riabzev, and Nicholas
+Spooner. “Linear-Size Constant-Query IOPs for Delegating Computation”. In:Proceedings
+of the 17th Theory of Cryptography Conference. TCC ’19. 2019, pp. 494–521.
+[BCGTV13] EliBen-Sasson,AlessandroChiesa,DanielGenkin,EranTromer,andMadarsVirza.“SNARKs
+for C: Verifying Program Executions Succinctly and in Zero Knowledge”. In:Proceedings of
+the 33rd Annual International Cryptology Conference. CRYPTO ’13. 2013, pp. 90–108.
+[BCIKS20] Eli Ben-Sasson, Dan Carmon, Yuval Ishai, Swastik Kopparty, and Shubhangi Saraf. “Prox-
+imity Gaps for Reed–Solomon Codes”. In:Proceedings of the 61st Annual IEEE Symposium
+on Foundations of Computer Science. FOCS ’20. 2020, pp. 900–909.
+[BCL22] Jonathan Bootle, Alessandro Chiesa, and Siqi Liu. “Zero-Knowledge IOPs with Linear-Time
+Prover and Polylogarithmic-Time Verifier”. In:Proceedings of the 41st Annual International
+Conference on Theory and Application of Cryptographic Techniques. EUROCRYPT ’22.
+2022, pp. 275–304.
+[BCLMS21] Benedikt Bünz, Alessandro Chiesa, William Lin, Pratyush Mishra, and Nicholas Spooner.
+“Proof-Carrying Data Without Succinct Arguments”. In:Proceedings of the 41st Annual
+International Cryptology Conference. CRYPTO ’21. 2021, pp. 681–710.
+[BCMS20] Benedikt Bünz, Alessandro Chiesa, Pratyush Mishra, and Nicholas Spooner. “Recursive
+Proof Composition from Accumulation Schemes”. In:Proceedings of the 18th Theory of Cryp-
+tography Conference. TCC ’20. 2020, pp. 1–18.
+[BCS16] Eli Ben-Sasson, Alessandro Chiesa, and Nicholas Spooner. “Interactive Oracle Proofs”. In:
+Proceedings of the 14th Theory of Cryptography Conference. TCC ’16-B. 2016, pp. 31–60.
+[BCTV14] Eli Ben-Sasson, Alessandro Chiesa, Eran Tromer, and Madars Virza. “Scalable Zero Knowl-
+edge via Cycles of Elliptic Curves”. In:Proceedings of the 34th Annual International Cryp-
+tology Conference. CRYPTO ’14. 2014, pp. 276–294.
+[BGH19] Sean Bowe, Jack Grigg, and Daira Hopwood.Halo: Recursive Proof Composition without a
+Trusted Setup. Cryptology ePrint Archive, Report 2019/1021. 2019.
+[BGKS20] Eli Ben-Sasson, Lior Goldberg, Swastik Kopparty, and Shubhangi Saraf. “DEEP-FRI: Sam-
+pling Outside the Box Improves Soundness”. In:Proceedings of the 11th Innovations in
+Theoretical Computer Science Conference. ITCS ’20. 2020, 5:1–5:32.
+[BMMS25] Anubhav Baweja, Pratyush Mishra, Tushar Mopuri, and Matan Shtepel.FICS and FACS:
+Fast IOPPs and Accumulation via Code-Switching.CryptologyePrintArchive,Report2025/737.
+2025.
+[BMNW25a] Benedikt Bünz, Pratyush Mishra, Wilson Nguyen, and William Wang. “Accumulation With-
+out Homomorphism”. In:Proceedings of the 16th Innovations in Theoretical Computer Sci-
+ence Conference. ITCS ’25. 2025, 23:1–23:25.
+[BMNW25b] Benedikt Bünz, Pratyush Mishra, Wilson Nguyen, and William Wang. “Arc: Accumulation
+for Reed–Solomon Codes”. In:Proceedings of the 45th Annual International Cryptology Con-
+ference. CRYPTO ’25. 2025.
+[BMRS20] JosephBonneau,IzaakMeckler,VanishreeRao,andEvanShapiro.Coda: Decentralized Cryp-
+tocurrency at Scale. Cryptology ePrint Archive, Report 2020/352. 2020.
+73
+
+===== PAGE 74 =====
+[CBBZ23] Binyi Chen, Benedikt Bünz, Dan Boneh, and Zhenfei Zhang. “HyperPlonk: Plonk with
+Linear-Time Prover and High-Degree Custom Gates”. In:Proceedings of the 42nd Annual
+International Conference on the Theory and Applications of Cryptographic Techniques. EU-
+ROCRYPT ’23. 2023, pp. 499–530.
+[CCDW20] Weikeng Chen, Alessandro Chiesa, Emma Dauterman, and Nicholas P. Ward.Reducing Par-
+ticipation Costs via Incremental Verification for Ledger Systems. Cryptology ePrint Archive,
+Report 2020/1522. 2020.
+[CCHLRR18] Ran Canetti, Yilei Chen, Justin Holmgren, Alex Lombardi, Guy N. Rothblum, and Ron
+D. Rothblum.Fiat–Shamir From Simpler Assumptions. Cryptology ePrint Archive, Report
+2018/1004. 2018.
+[CMS19] AlessandroChiesa,PeterManohar,andNicholasSpooner.“SuccinctArgumentsintheQuan-
+tum Random Oracle Model”. In:Proceedings of the 17th Theory of Cryptography Conference.
+TCC ’19. 2019, pp. 1–29.
+[CO25] Alessandro Chiesa and Michele Orrù.A Fiat–Shamir Transformation From Duplex Sponges.
+Cryptology ePrint Archive, Report 2025/536. 2025.
+[CT10] Alessandro Chiesa and Eran Tromer. “Proof-Carrying Data and Hearsay Arguments from
+Signature Cards”. In:Proceedings of the 1st Symposium on Innovations in Computer Science.
+ICS ’10. 2010, pp. 310–331.
+[CTV13] Stephen Chong, Eran Tromer, and Jeffrey A. Vaughan.Enforcing Language Semantics Using
+Proof-Carrying Data. Cryptology ePrint Archive, Report 2013/513. 2013.
+[CTV15] Alessandro Chiesa, Eran Tromer, and Madars Virza. “Cluster Computing in Zero Knowl-
+edge”. In:Proceedings of the 34th Annual International Conference on Theory and Applica-
+tion of Cryptographic Techniques. EUROCRYPT ’15. 2015, pp. 371–403.
+[CY24] Alessandro Chiesa and Eylon Yogev.Building Cryptographic Proofs from Hash Functions.
+2024.url:https://github.com/hash-based-snargs-book.
+[DI14] Erez Druk and Yuval Ishai. “Linear-time encodable codes meeting the Gilbert–Varshamov
+bound and their cryptographic applications”. In:Proceedings of the 5th Innovations in The-
+oretical Computer Science Conference. ITCS ’14. 2014, pp. 169–182.
+[DMS24] Michel Dellepere, Pratyush Mishra, and Alireza Shirzad.Garuda and Pari: Faster and
+Smaller SNARKs via Equifficient Polynomial Commitments. Cryptology ePrint Archive,
+Paper 2024/1245. 2024.
+[DP24] Benjamin E. Diamond and Jim Posen. “Proximity Testing with Logarithmic Randomness”.
+In:IACR Communications in Cryptology1.1 (2024).
+[DP25] Benjamin Diamond and Jim Posen. “Succinct Arguments over Towers of Binary Fields”.
+In:Proceedings of the 44th Annual International Conference on Theory and Application of
+Cryptographic Techniques. EUROCRYPT ’25. 2025.
+[EG23] Liam Eagen and Ariel Gabizon.ProtoGalaxy: Efficient ProtoStar-style folding of multiple
+instances. Cryptology ePrint Archive, Report 2023/1106. 2023.
+[FKNP24] Giacomo Fenzi, Christian Knabenhans, Ngoc Khanh Nguyen, and Duc Tu Pham. “Lova:
+Lattice-Based Folding Scheme from Unstructured Lattices”. In:Proceedings of the 30th Inter-
+national Conference on the Theory and Application of Cryptology and Information Security.
+ASIACRYPT ’24. 2024, pp. 303–326.
+[FNS75] Horst Feistel, William A. Notz, and J. Lynn Smith. “Some cryptographic techniques for
+machine-to-machinedatacommunications”.In:Proceedings of the IEEE63.11(1975),pp.1545–
+1554.
+74
+
+===== PAGE 75 =====
+[GGR11] ParikshitGopalan,VenkatesanGuruswami,andPrasadRaghavendra.“ListDecodingTensor
+Products and Interleaved Codes”. In:SIAM Journal on Computing40.5 (2011). Preliminary
+version appeared in STOC ’09., pp. 1432–1462.
+[GI05] Venkatesan Guruswami and Piotr Indyk. “Linear-time encodable/decodable codes with near-
+optimal rate”. In:IEEE Transactions on Information Theory51.10 (2005). Preliminary ver-
+sion appeared in STOC ’03., pp. 3393–3400.
+[GKL24] Yiwen Gao, Haibin Kan, and Yuan Li.Linear Proximity Gap for Linear Codes within the
+1.5 Johnson Bound. Cryptology ePrint Archive, Report 2024/1810. 2024.
+[GLSTW23] Alexander Golovnev, Jonathan Lee, Srinath T. V. Setty, Justin Thaler, and Riad S. Wahby.
+“Brakedown: Linear-time and field-agnostic SNARKs for R1CS”. In:Proceedings of the 43rd
+Annual International Cryptology Conference. CRYPTO ’23. 2023.
+[GRS12] Venkatesan Guruswami, Atri Rudra, and Madhu Sudan.Essential coding theory. Vol. 2. 1.
+2012.
+[KB20] Assimakis Kattis and Joseph Bonneau.Proof of Necessary Work: Succinct State Verification
+with Fairness Guarantees. Cryptology ePrint Archive, Report 2020/190. 2020.
+[KS24] Abhiram Kothapalli and Srinath T. V. Setty. “HyperNova: Recursive Arguments for Cus-
+tomizable Constraint Systems”. In:Proceedings of the 44th Annual International Cryptology
+Conference. CRYPTO ’24. 2024, pp. 345–379.
+[KST22] AbhiramKothapalli,SrinathT.V.Setty,andIoannaTzialla.“Nova:RecursiveZero-Knowledge
+Arguments from Folding Schemes”. In:Proceedings of the 42nd Annual International Cryp-
+tology Conference. CRYPTO ’22. 2022, pp. 359–388.
+[KZG10] Aniket Kate, Gregory M. Zaverucha, and Ian Goldberg. “Constant-Size Commitments to
+Polynomials and Their Applications”. In:Proceedings of the 16th International Conference
+on the Theory and Application of Cryptology and Information Security. ASIACRYPT ’10.
+2010, pp. 177–194.
+[Min]Mina.https://minaprotocol.com/.
+[NDCTB24] Wilson D. Nguyen, Trisha Datta, Binyi Chen, Nirvan Tyagi, and Dan Boneh. “Mangrove:
+A Scalable Framework for Folding-Based SNARKs”. In:Proceedings of the 44th Annual
+International Cryptology Conference. CRYPTO ’24. 2024, pp. 308–344.
+[NS25] Wilson Nguyen and Srinath Setty.Neo: Lattice-based folding scheme for CCS over small
+fields and pay-per-bit commitments. Cryptology ePrint Archive, Paper 2025/294. 2025.
+[NST24] Vineet Nair, Ashish Sharma, and Bhargav Thankey.BrakingBase - a linear prover, poly-
+logarithmic verifier, field agnostic polynomial commitment scheme.CryptologyePrintArchive,
+Report 2024/1825. 2024.
+[NT16] Assa Naveh and Eran Tromer. “PhotoProof: Cryptographic Image Authentication for Any
+Set of Permissible Transformations”. In:Proceedings of the 2016 IEEE Symposium on Secu-
+rity and Privacy. SP ’16. 2016, pp. 255–271.
+[Ped92] Torben P. Pedersen. “Non-Interactive and Information-Theoretic Secure Verifiable Secret
+Sharing”.In:Proceedings of the 11th Annual International Cryptology Conference.CRYPTO’91.
+1992, pp. 129–140.
+[Pip80] Nicholas Pippenger. “On the Evaluation of Powers and Monomials”. In:SIAM Journal on
+Computing9.2 (1980), pp. 230–250.
+[RR22] Noga Ron-Zewi and Ron D. Rothblum. “Proving as Fast as Computing: Succinct Arguments
+with Constant Prover Overhead”. In:Proceedings of the 54th ACM Symposium on the Theory
+of Computing. STOC ’22. 2022, pp. 1353–1363.
+75
+
+===== PAGE 76 =====
+[RRR16] Omer Reingold, Ron Rothblum, and Guy Rothblum. “Constant-Round Interactive Proofs
+for Delegating Computation”. In:Proceedings of the 48th ACM Symposium on the Theory
+of Computing. STOC ’16. 2016, pp. 49–62.
+[STW23] Srinath Setty, Justin Thaler, and Riad Wahby.Customizable constraint systems for succinct
+arguments. Cryptology ePrint Archive, Report 2023/552. 2023.
+[Spi96] Daniel A. Spielman. “Linear-time encodable and decodable error-correcting codes”. In:IEEE
+Transactions on Information Theory42.6(1996).PreliminaryversionappearedinSTOC’95.,
+pp. 1723–1731.
+[VSBW13] Victor Vu, Srinath Setty, Andrew J. Blumberg, and Michael Walfish. “A hybrid architecture
+for interactive verifiable computation”. In:Proceedings of the 34th IEEE Symposium on
+Security and Privacy. Oakland ’13. 2013, pp. 223–237.
+[Val08] PaulValiant.“IncrementallyVerifiableComputationorProofsofKnowledgeImplyTime/Space
+Efficiency”. In:Proceedings of the 5th Theory of Cryptography Conference. TCC ’08. 2008,
+pp. 1–18.
+[XZS22] Tiancheng Xie, Yupeng Zhang, and Dawn Song. “Orion: Zero Knowledge Proof with Lin-
+ear Prover Time”. In:Proceedings of the 42nd Annual International Cryptology Conference.
+CRYPTO ’22. 2022, pp. 299–328.
+[ZCF24] HadasZeilberger,BinyiChen,andBenFisch. “BaseFold:EfficientField-AgnosticPolynomial
+Commitment Schemes from Foldable Codes”. In:Proceedings of the 44th Annual Interna-
+tional Cryptology Conference. Vol. 14929. CRYPTO ’24. 2024, pp. 138–169.
+[ZYORJ24] Chenru Zhang, Xiao Yang, David Oswald, Mark Ryan, and Philipp Jovanovic.Eva: Effi-
+cient IVC-Based Authentication of Lossy-Encoded Videos. Cryptology ePrint Archive, Report
+2024/1436. 2024.
+[Zei24] HadasZeilberger.Khatam: Reducing the Communication Complexity of Code-Based SNARKs.
+Cryptology ePrint Archive, Report 2024/1843. 2024.
+76
