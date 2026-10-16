@@ -1,6 +1,7 @@
 # WARP paper pinning and Volar implementation map
 
-**Status:** research pinned, implementation in progress.
+**Status:** research pinned; paper-faithful algebraic reference implementation
+landed in `volar-iop` as commit `417320a`.
 **Paper:** Benedikt Bünz, Alessandro Chiesa, Giacomo Fenzi, and William
 Wang, *Linear-Time Accumulation Schemes*, IACR ePrint 2025/753, major TCC
 2025 revision dated 2026-06-17.
@@ -51,11 +52,23 @@ be powers of two. The implementation must reject non-power-of-two shapes
 rather than silently padding protocol objects in a way that changes the
 statement.
 
-## Ordering detail
+## Ordering and transcript details
 
 Construction 5.10's prose shows `β := (τ, x)`, while Construction 10.4 step
 2(f) explicitly sets `β_i := (x_i, τ_i)`. The Volar port follows
 Construction 10.4's `x || τ` order and documents that choice at the code seam.
+
+Construction 10.4's prover text groups “absorb commitment and code
+evaluations” before sampling the per-fresh `τ_i`, while the verifier text
+absorbs the commitment, squeezes `τ_i`, and only then absorbs the code
+evaluations. Fiat–Shamir requires one canonical order. The Volar port follows
+the verifier's printed order: `rt₀ -> τ_i -> (μ_i) -> (τ, ω)`. This keeps each
+`τ_i` bound to the fresh-witness commitment and binds the claimed `μ_i` before
+the first batching challenge.
+
+The implementation squeezes vector-valued challenges from one XOF output
+block, rather than making repeated non-advancing calls to `IopTranscript`'s
+intentionally non-destructive `squeeze_bytes` API.
 
 ## Reference implementation found
 
@@ -96,11 +109,32 @@ and IOP modules:
   code, distance/MCA parameters, field size, and query counts are all bound to
   a reviewed parameter set.
 
+## Landed Volar implementation
+
+`crates/iop/volar-iop/src/warp.rs` now provides:
+
+- sparse constant-degree PESAT indices and satisfaction checks;
+- a generic `LinearCode` trait plus identity and repetition-code fixtures;
+- split accumulator instances/witnesses;
+- `warp_genesis`, `warp_prove`, `warp_verify`, and `warp_decide`;
+- the Construction 6.3 and Construction 8.2 sumchecks inlined as Construction
+  9.4, compiled with the existing domain-separated Volar IOP transcript;
+- stacked fresh-witness Merkle commitments and prior-accumulator opening
+  paths, with query-major opened field values;
+- power-of-two shape enforcement for `M`, `ℓ`, `n`, and `r = 1+s+t`.
+
+Validation in commit `417320a`: the focused WARP suite passes 9/9, and the
+full `volar-iop` suite passes 49/49 library tests plus its compile-fail
+doc-test. Tests cover two-fresh accumulation, prior-accumulator folding,
+identity and repetition codes, public inputs and multi-constraint bundling,
+unsatisfied PESAT rejection, sumcheck tampering, Merkle-path tampering,
+output-root tampering, and decider witness/codeword mismatch.
+
 ## Security and implementation boundaries
 
-The first Volar milestone is a construction-faithful algebraic implementation
-and differential test harness. It is not a production soundness claim. A
-usable deployment still needs:
+The landed Volar milestone is a construction-faithful algebraic reference and
+differential test harness. It is not a production soundness claim. A usable
+deployment still needs:
 
 - a linear code with proved distance and mutual-correlated-agreement
   parameters;
