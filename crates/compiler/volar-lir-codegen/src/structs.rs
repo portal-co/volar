@@ -98,6 +98,7 @@ impl StructRegistry {
                     .iter()
                     .position(|n| n == field)
                     .unwrap_or_else(|| {
+                        
                         panic!(
                             "struct S{id} has no field '{field}' (fields: {:?})",
                             entry.field_names
@@ -364,6 +365,7 @@ pub fn ensure_struct_instance<T: LirTarget<P>, P: Clone>(
     all_structs: &[IrStruct],
     all_enums: &[IrEnum],
 ) {
+    
     if ir_struct.kind == StructKind::GenericArray {
         return;
     }
@@ -390,7 +392,8 @@ pub fn ensure_struct_instance<T: LirTarget<P>, P: Clone>(
         return;
     }
 
-    let local = struct_instance_env(ir_struct, &concrete_args, outer);
+    
+let local = struct_instance_env(ir_struct, &concrete_args, outer);
     // Pre-register nested nominal dependencies from field types.
     for field in &ir_struct.fields {
         // Cross-module enum field types parse as bare TypeParams; point them
@@ -412,6 +415,7 @@ pub fn ensure_struct_instance<T: LirTarget<P>, P: Clone>(
         register_tuples_in_type(&field_ty, registry, target, &local);
     }
 
+    
     let lir_fields: Vec<(String, LirType)> = ir_struct
         .fields
         .iter()
@@ -753,8 +757,17 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                     if registry.lenient {
                         // Opaque widen: unknown const-generic length → empty array.
                         0
+                    } else if let Ok(n) = name.parse::<usize>() {
+                        // Numeric const-generic spelling (`TypeParam("16")`).
+                        return LirType::Arr(Box::new(ir_type_to_lir_inner(elem, registry)), n);
+                    } else if let Some(n) = crate::mono::typenum_usize(name) {
+                        // Typenum name (`U16`) reaching here un-substituted.
+                        return LirType::Arr(Box::new(ir_type_to_lir_inner(elem, registry)), n);
                     } else {
-                        panic!("unsubstituted TypeParam length '{name}' — add it to MonoEnv")
+                        panic!(
+                            "unsubstituted TypeParam length '{name}' [{}]",
+                            crate::CURRENT_INSTANCE_DEBUG.with(|c| c.borrow().clone())
+                        )
                     }
                 }
                 ArrayLength::Projection { r#type, field, .. } => {

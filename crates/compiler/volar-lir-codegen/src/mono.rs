@@ -75,6 +75,21 @@ pub(crate) fn type_args_to_len(len_ty: Option<&IrType>, env: &MonoEnv) -> ArrayL
             ArrayLength::TypeParam(name.clone()) // unresolved
         }
         Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::Usize)) => ArrayLength::Const(1),
+        // `<N as Logarithm2>::Output` as an array length: evaluate the
+        // type-level log2 once the base resolves to a concrete size.
+        Some(IrType::Projection {
+            base,
+            assoc,
+            trait_path,
+            ..
+        }) if assoc.to_string() == "Output" && trait_path.as_deref() == Some("Logarithm2") => {
+            match type_args_to_len(Some(base), env) {
+                ArrayLength::Const(n) if n != 0 => {
+                    ArrayLength::Const(n.trailing_zeros() as usize)
+                }
+                _ => ArrayLength::Const(0),
+            }
+        }
         None => ArrayLength::Const(0),
         _ => ArrayLength::Const(0), // unknown — default to 0; lowering will panic with a clear message
     }
@@ -721,6 +736,15 @@ pub fn plan_flat_module<P: Clone>(
             let mut env = env;
             env.consts.extend(module_consts.clone());
             env.mul_impl_structs = mul_impl_structs.clone();
+            // Module type aliases (`type WarpDigest = Array<u8, U32>`) must
+            // resolve during planning too — otherwise a call argument typed
+            // through an alias can't unify against the callee's generic and
+            // the instance never specializes.
+            for alias in &module.type_aliases {
+                env.aliases
+                    .entry(alias.name.clone())
+                    .or_insert_with(|| alias.target.clone());
+            }
             queue.push_back((instance_key(&name, &env), env));
         }
     }
@@ -958,14 +982,16 @@ pub fn plan_flat_module<P: Clone>(
                 .as_ref()
                 .map(|resolved| resolved.trait_arg_bindings.as_slice())
                 .unwrap_or(&[]);
-            let mut callee_env = bind_call_args_with_trait_args(
+            let mut callee_env_res = bind_call_args_with_trait_args(
                 callee_def,
                 &type_args,
                 &arg_tys,
                 &env,
                 expected.as_ref(),
                 trait_arg_bindings,
-            )?;
+            );
+            
+            let mut callee_env = callee_env_res?;
             if let Some(self_ty) = static_self_ty {
                 let self_ty = resolve_explicit_type_arg(&self_ty, &struct_table);
                 let self_ty = mono_type(&self_ty, &callee_env);
@@ -1279,6 +1305,12 @@ fn ambient_callee_env<P: Clone>(function: &IrFunction<P>, caller_env: &MonoEnv) 
             env.projections.insert(key.clone(), value.clone());
         }
     }
+    // Module type aliases carry through calls — a callee's parameter typed
+    // through an alias (e.g. `&WarpDigest`) must resolve to its target when
+    // unifying with the call-site argument type.
+    for (name, value) in &caller_env.aliases {
+        env.aliases.insert(name.clone(), value.clone());
+    }
     env
 }
 
@@ -1468,6 +1500,64 @@ fn unify_into<P: Clone>(
             },
         ) => {
             unify_into(env, p_elem, c_elem, function, caller_env)?;
+            // Resolve a concrete numeric array length (const literal,
+            // typenum `U$n`, or numeric TypeParam) for binding below.
+            let concrete_len: Option<usize> = match &c_len {
+                ArrayLength::Const(n) => Some(*n),
+                ArrayLength::TypeNum(tn) => Some(tn.to_usize()),
+                ArrayLength::TypeParam(cname) => cname
+                    .parse::<usize>()
+                    .ok()
+                    .or_else(|| typenum_usize(cname)),
+                // `<N as Logarithm2>::Output`: type-level log2 of a concrete
+                // size (the WARP spec's Log2<N>-sized points).
+                ArrayLength::Projection {
+                    r#type,
+                    field,
+                    trait_path,
+                } if field == "Output" && trait_path.as_deref() == Some("Logarithm2") => {
+                    match type_args_to_len(Some(r#type.as_ref()), caller_env) {
+                        ArrayLength::Const(n) if n != 0 => Some(n.trailing_zeros() as usize),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            
+            if let (ArrayLength::TypeParam(name), Some(n)) = (&p_len, concrete_len) {
+                if function.generics.iter().any(|g| {
+                    g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Const
+                }) {
+                    if let Some(existing) = env.const_params.get(name) {
+                        if *existing != n {
+                            return Err(MonoError::new(format!(
+                                "generic local call '{}': contradictory const binding for '{}'",
+                                function.name, name
+                            )));
+                        }
+                    } else {
+                        env.const_params.insert(name.clone(), n);
+                    }
+                } else if function.generics.iter().any(|g| {
+                    g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Type
+                }) {
+                    // `N: ArraySize` (hybrid-array) params appear as type
+                    // params used in array-length position; bind them as
+                    // concrete numeric type params so the layout check
+                    // below sees them as resolved.
+                    let concrete = IrType::TypeParam(n.to_string());
+                    if let Some(existing) = env.type_params.get(name) {
+                        if existing != &concrete {
+                            return Err(MonoError::new(format!(
+                                "generic local call '{}': contradictory binding for '{}'",
+                                function.name, name
+                            )));
+                        }
+                    } else {
+                        env.type_params.insert(name.clone(), concrete);
+                    }
+                }
+            }
             if let (ArrayLength::TypeParam(name), ArrayLength::Const(n)) = (p_len, c_len) {
                 if function.generics.iter().any(|g| {
                     g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Const
@@ -1796,6 +1886,9 @@ fn infer_expr_type<P: Clone>(
             IrType::Reference { elem, .. } => Some(*elem),
             other => Some(other),
         },
+        // `Array::<T, N>::default()` and friends carry their type on the
+        // node — read it (substituted) instead of failing inference.
+        IrExprKind::DefaultValue { ty } => ty.as_ref().map(|t| mono_type(t, env)),
         _ => None,
     }
 }
@@ -2414,6 +2507,7 @@ fn call_result_type<P: Clone>(
         ),
         _ => return None,
     };
+    
     let callee = *defs.get(&name)?;
     let mut arg_tys: Vec<Option<IrType>> = receiver
         .map(|receiver| infer_expr_type(receiver, env, Some(var_types), Some(structs)))
@@ -2727,6 +2821,13 @@ fn collect_expr_calls<P: Clone>(
             }
         }
         Return(Some(expr)) => collect_expr_calls(expr, env, defs, structs, var_types, calls),
+        // `Array::from_fn` / closure bodies may contain local calls (e.g.
+        // the WARP Merkle leaf hash inside `warp_commit_codeword`'s
+        // `from_fn`) — walk them so the callee is planned and lowered.
+        ArrayGenerate { body, .. } => {
+            collect_expr_calls(body, env, defs, structs, var_types, calls)
+        }
+        Closure { body, .. } => collect_expr_calls(body, env, defs, structs, var_types, calls),
         _ => {}
     }
 }
@@ -3183,6 +3284,21 @@ pub(crate) fn mono_len(len: &ArrayLength, env: &MonoEnv) -> ArrayLength {
                 return ArrayLength::Const(n);
             }
             len.clone()
+        }
+        // `<N as Logarithm2>::Output` in array-length position: evaluate the
+        // type-level log2 directly when `N` resolves to a concrete size.
+        volar_compiler::ir::ArrayLength::Projection {
+            r#type,
+            field,
+            trait_path,
+        } if field == "Output"
+            && trait_path.as_deref() == Some("Logarithm2") =>
+        {
+            let base = type_args_to_len(Some(r#type.as_ref()), env);
+            match base {
+                ArrayLength::Const(n) if n != 0 => ArrayLength::Const(n.trailing_zeros() as usize),
+                _ => len.clone(),
+            }
         }
         // Projection might reference a const param indirectly; leave for now.
         other => other.clone(),

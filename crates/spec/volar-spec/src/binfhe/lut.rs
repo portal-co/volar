@@ -210,12 +210,8 @@ impl<
 
 /// Standard two-input gates as associated constants, indexed by
 /// `addr = a + 2*b` (first operand is the least-significant address bit).
-impl<
-    const BIG_N: usize,
-    const LOG_Q: u32,
-    const LOG_Q_LWE: u32,
-    const K_MAX: usize,
-> Lut<2, 4, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>
+impl<const BIG_N: usize, const LOG_Q: u32, const LOG_Q_LWE: u32, const K_MAX: usize>
+    Lut<2, 4, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>
 {
     /// AND: `[false, false, false, true]`.
     pub const AND: Result<Self, LutError> = Self::new([false, false, false, true]);
@@ -232,12 +228,8 @@ impl<
 }
 
 /// Standard one-input tables, indexed by `addr = a`.
-impl<
-    const BIG_N: usize,
-    const LOG_Q: u32,
-    const LOG_Q_LWE: u32,
-    const K_MAX: usize,
-> Lut<1, 2, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>
+impl<const BIG_N: usize, const LOG_Q: u32, const LOG_Q_LWE: u32, const K_MAX: usize>
+    Lut<1, 2, BIG_N, LOG_Q, LOG_Q_LWE, K_MAX>
 {
     /// Identity: `[false, true]`.
     pub const IDENTITY: Result<Self, LutError> = Self::new([false, true]);
@@ -276,23 +268,19 @@ mod tests {
     fn invalid_shapes_are_rejected() {
         // Table length must be 2^ADDR_BITS.
         assert!(matches!(
-            Lut::<2, 3, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 2>::new(
-                [false, true, false]
-            ),
+            Lut::<2, 3, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 2>::new([
+                false, true, false
+            ]),
             Err(LutError::AddressShapeInvalid)
         ));
         // Arity over the circuit max.
         assert!(matches!(
-            Lut::<3, 8, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 2>::new(
-                [false; 8]
-            ),
+            Lut::<3, 8, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 2>::new([false; 8]),
             Err(LutError::ArityExceedsCircuitMax)
         ));
         // K_MAX over the profile cap (LOG_Q_LWE = 7 -> K_MAX <= 5).
         assert!(matches!(
-            Lut::<6, 64, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 6>::new(
-                [false; 64]
-            ),
+            Lut::<6, 64, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 6>::new([false; 64]),
             Err(LutError::ShapeUnsupported)
         ));
         // Non-power-of-two ring.
@@ -310,9 +298,8 @@ mod tests {
         for (i, e) in table.iter_mut().enumerate() {
             *e = i % 3 == 0;
         }
-        let lut =
-            Lut::<4, 16, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 4>::new(table)
-                .unwrap();
+        let lut = Lut::<4, 16, { toy::BIG_N }, { toy::LOG_Q }, { toy::LOG_Q_LWE }, 4>::new(table)
+            .unwrap();
         // Delta_out(q=128, K=4) = 128/2^5 = 4; toy has Q = q (no upscale).
         let tp = lut.test_polynomial();
         for addr in 0..16usize {

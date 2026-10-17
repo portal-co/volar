@@ -51,13 +51,31 @@ fn lower_seeded(
     module: &volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>,
     seeds: &[&str],
 ) -> VaffleTarget {
+    lower_seeded_loops(module, seeds, volar_lir_codegen::LoopLowering::Unroll)
+}
+
+/// Lower with an explicit loop mode. `Native` keeps loops as VAFFLE/Volar IR
+/// CFG cycles (the WARP path's loop-heavy hashing/accumulation stays compact
+/// instead of unrolling).
+fn lower_seeded_loops(
+    module: &volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>,
+    seeds: &[&str],
+    loop_lowering: volar_lir_codegen::LoopLowering,
+) -> VaffleTarget {
     let mut target = VaffleTarget::new();
-    volar_lir_codegen::lower_module_seeded(
+    volar_lir_codegen::lower_module_monomorphized(
         module,
         &mut target,
-        &volar_lir_codegen::mono::MonoEnv::new(""),
-        seeds,
-    );
+        volar_lir_codegen::MonoPlanOptions {
+            roots: seeds
+                .iter()
+                .map(|s| volar_lir_codegen::MonoRoot::new(*s, volar_lir_codegen::mono::MonoEnv::new("")))
+                .collect(),
+            loop_lowering,
+            ..Default::default()
+        },
+    )
+    .expect("seeded lowering succeeds");
     target
 }
 
@@ -182,4 +200,91 @@ fn warp_mle_eval_compiles_via_ir_and_matches_native() {
             "compiled MLE must match native field arithmetic"
         );
     }
+}
+
+/// Genesis: index construction + transcript + Merkle + MLE + bundled eval,
+/// all through IR, differentially against the native spec.
+///
+/// `#[ignore]`: with `LoopLowering::Native` the genesis lowering completes
+/// (the earlier unroll-scale blowup is gone), but the lowered module is not
+/// yet evaluable end-to-end: eval-time cross-block value threading in the
+/// native-loop path surfaces values defined in one loop block referenced in
+/// another as "value not in table" in the interpreter. The compile-via-IR +
+/// differential machinery is proven by the lighter probes above
+/// (identity/ref-array/elem-sum/doubling-loop/MLE).
+#[ignore = "native-loop genesis lowers but its eval-time cross-block threading is open; see module note"]
+#[test]
+fn warp_genesis_compiles_via_ir_and_matches_native() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_genesis(w0: Galois128, w1: Galois128, w2: Galois128) -> Array<u8, U32> {\n\
+             let mk0 = WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|i| match i { 0 => 0usize, _ => 1usize }), n_vars: 2 };\n\
+             let mk1 = WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|i| match i { 0 => 2usize, _ => 0usize }), n_vars: 1 };\n\
+             let mk2 = WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|i| match i { 0 => 3usize, _ => 0usize }), n_vars: 1 };\n\
+             let mkz = WarpTerm::<U2> { coeff: Galois128(0), vars: Array::<usize, U2>::default(), n_vars: 0 };\n\
+             let constraint = WarpConstraint::<U4, U2> { terms: Array::<WarpTerm<U2>, U4>::from_fn(|i| match i { 0 => mk0, 1 => mk1, 2 => mk2, _ => mkz }), n_terms: 3 };\n\
+             let index = WarpIndex::<U1, U4, U2> { constraints: Array::<WarpConstraint<U4, U2>, U1>::from_fn(|_| constraint), public_len: 0, witness_len: 4, degree_bound: 2 };\n\
+             let w3 = w0 * w1 + w2;\n\
+             let witness = WarpWitness::<U4, U0> { public: Array::<Galois128, U0>::default(), witness: Array::<Galois128, U4>::from_fn(|i| match i { 0 => w0, 1 => w1, 2 => w2, _ => w3 }) };\n\
+             let acc = warp_genesis_spec::<U1, U4, U2, U4, U0, U4, WarpIdentityCode, U7, U0>(&index, &WarpIdentityCode, &witness);\n\
+             match acc {\n\
+                 Some(a) => a.instance.root,\n\
+                 None => Array::<u8, U32>::default(),\n\
+             }\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_genesis"], volar_lir_codegen::LoopLowering::Native);
+    for (i, f) in target.module.funcs.iter().enumerate() {
+        if let vaffle::FuncDecl::Import { name, .. } = f {
+            panic!("leftover Import func[{i}] name={name}");
+        }
+    }
+    let fid = target.module.exports["probe_genesis"];
+    // w0*w1 + w2 + w3 = 0 → w3 = w0*w1 + w2 (char 2).
+    let (a, b, c) = (3u128, 5u128, 7u128);
+    let out = eval_vaffle(
+        &target.module,
+        fid,
+        &[bits_of(a, 128), bits_of(b, 128), bits_of(c, 128)],
+    )
+    .expect("compiled genesis evaluates");
+    // Native reference: the spec's own genesis, constructed inline.
+    use cipher::consts::*;
+    use volar_spec::warp::{WarpConstraint, WarpIndex, WarpTerm, WarpWitness};
+    let mk = |vars: [usize; 2], n_vars: u32| WarpTerm::<U2> {
+        coeff: volar_primitives::Galois128(1),
+        vars: volar_spec::Array::from_fn(|i| vars[i]),
+        n_vars,
+    };
+    let index = WarpIndex::<U1, U4, U2> {
+        constraints: volar_spec::Array::from_fn(|_| WarpConstraint::<U4, U2> {
+            terms: volar_spec::Array::from_fn(|i| match i {
+                0 => mk([0, 1], 2),
+                1 => mk([2, 0], 1),
+                2 => mk([3, 0], 1),
+                _ => mk([0, 0], 0),
+            }),
+            n_terms: 3,
+        }),
+        public_len: 0,
+        witness_len: 4,
+        degree_bound: 2,
+    };
+    let d = Galois128(a) * Galois128(b) + Galois128(c);
+    let witness = WarpWitness::<U4, U0> {
+        public: volar_spec::Array::default(),
+        witness: volar_spec::Array::from_fn(|i| [Galois128(a), Galois128(b), Galois128(c), d][i]),
+    };
+    let native = volar_spec::warp::warp_genesis_spec::<_, _, _, _, _, U4, _, U7, U0>(
+        &index,
+        &volar_spec::warp::WarpIdentityCode,
+        &witness,
+    )
+    .expect("native genesis succeeds");
+    let got: Vec<u8> = out[0]
+        .chunks(8)
+        .map(|bits| bits.iter().enumerate().fold(0u8, |acc, (i, b)| if *b { acc | (1 << i) } else { acc }))
+        .collect();
+    assert_eq!(got.as_slice(), native.instance.root.as_slice(),
+        "compiled genesis root must match the native spec's");
 }

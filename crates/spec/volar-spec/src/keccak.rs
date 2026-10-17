@@ -69,17 +69,24 @@ pub fn keccak_f1600(st: &mut [u64; 25]) {
             bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
         }
         for i in 0..5 {
-            let t = bc[(i + 4) % 5] ^ bc[(i + 1) % 5].rotate_left(1);
+            // rotate_left(1) written as shifts (see the ρ+π note below).
+            let t = bc[(i + 4) % 5] ^ ((bc[(i + 1) % 5] << 1) | (bc[(i + 1) % 5] >> 63));
             for jj in 0..5 {
                 st[jj * 5 + i] ^= t;
             }
         }
-        // ρ + π
+        // ρ + π — the rotation is written as shifts+or rather than
+        // `u64::rotate_left` because the spec dialect's parser reserves the
+        // name `rotate_left` for the VOLE `Delta` method; for k in 1..64
+        // (every ROTC entry is nonzero) `(t << k) | (t >> (64 - k))` is
+        // exactly `t.rotate_left(k)`.
         let mut t = st[1];
         for i in 0..24 {
             let j = KECCAK_PILN[i];
+            let k = KECCAK_ROTC[i];
             let tmp = st[j];
-            st[j] = t.rotate_left(KECCAK_ROTC[i]);
+            // `64u32` keeps the subtraction width-consistent with `k: u32`.
+            st[j] = (t << k) | (t >> (64u32 - k));
             t = tmp;
         }
         // χ
@@ -131,41 +138,66 @@ pub struct SpecSponge {
     pos: usize,
 }
 
-impl SpecSponge {
-    /// A fresh absorb-phase sponge with the given rate (in bytes).
-    pub fn new(rate: usize) -> Self {
-        SpecSponge {
-            state: [0u8; 200],
-            rate,
-            pos: 0,
+/// A fresh absorb-phase sponge with the given rate (in bytes).
+pub fn spec_sponge_new(rate: usize) -> SpecSponge {
+    SpecSponge {
+        state: [0u8; 200],
+        rate,
+        pos: 0,
+    }
+}
+
+/// Absorb bytes (incremental, order-preserving). Slice form for native
+/// callers; the dialect path uses [`spec_sponge_absorb_array`] (concrete
+/// loop bounds).
+pub fn spec_sponge_absorb(sponge: &mut SpecSponge, data: &[u8]) {
+    // Destructure to locals: the dialect's native loops lower
+    // local-array writes, not struct-field array writes.
+    let mut state = sponge.state;
+    let mut pos = sponge.pos;
+    let rate = sponge.rate;
+    for i in 0..data.len() {
+        state[pos] ^= data[i];
+        pos += 1;
+        if pos == rate {
+            permute_bytes(&mut state);
+            pos = 0;
         }
     }
+    sponge.state = state;
+    sponge.pos = pos;
+}
 
-    /// Absorb bytes (incremental, order-preserving).
-    pub fn absorb(&mut self, data: &[u8]) {
-        for i in 0..data.len() {
-            self.state[self.pos] ^= data[i];
-            self.pos += 1;
-            if self.pos == self.rate {
-                permute_bytes(&mut self.state);
-                self.pos = 0;
-            }
+/// Absorb a fixed-size byte array — the dialect form (concrete `N`
+/// loop bound).
+pub fn spec_sponge_absorb_array<N: ArraySize>(sponge: &mut SpecSponge, data: &Array<u8, N>) {
+    let mut state = sponge.state;
+    let mut pos = sponge.pos;
+    let rate = sponge.rate;
+    for i in 0..N::USIZE {
+        state[pos] ^= data[i];
+        pos += 1;
+        if pos == rate {
+            permute_bytes(&mut state);
+            pos = 0;
         }
     }
+    sponge.state = state;
+    sponge.pos = pos;
+}
 
-    /// Finalize with the pad10*1 rule and domain `suffix` (which must not
-    /// have the top bit set — SHA3's `0x06` and SHAKE's `0x1F` qualify),
-    /// returning a squeeze-phase reader. Non-destructive: `self` is cloned.
-    pub fn finalize_xof(&self, suffix: u8) -> SpecXofReader {
-        let mut state = self.state;
-        state[self.pos] ^= suffix;
-        state[self.rate - 1] ^= 0x80;
-        permute_bytes(&mut state);
-        SpecXofReader {
-            state,
-            rate: self.rate,
-            pos: 0,
-        }
+/// Finalize with the pad10*1 rule and domain `suffix` (which must not
+/// have the top bit set — SHA3's `0x06` and SHAKE's `0x1F` qualify),
+/// returning a squeeze-phase reader. Non-destructive: the sponge is cloned.
+pub fn spec_sponge_finalize_xof(sponge: &SpecSponge, suffix: u8) -> SpecXofReader {
+    let mut state = sponge.state;
+    state[sponge.pos] ^= suffix;
+    state[sponge.rate - 1] ^= 0x80;
+    permute_bytes(&mut state);
+    SpecXofReader {
+        state,
+        rate: sponge.rate,
+        pos: 0,
     }
 }
 
@@ -178,37 +210,58 @@ pub struct SpecXofReader {
     pos: usize,
 }
 
-impl SpecXofReader {
-    /// Read bytes into `out` (streaming; continues across calls).
-    pub fn read(&mut self, out: &mut [u8]) {
-        for i in 0..out.len() {
-            if self.pos == self.rate {
-                permute_bytes(&mut self.state);
-                self.pos = 0;
-            }
-            out[i] = self.state[self.pos];
-            self.pos += 1;
+/// Read bytes into `out` (streaming; continues across calls). Slice
+/// form for native callers; the dialect path uses [`spec_xof_read_array`].
+pub fn spec_xof_read(reader: &mut SpecXofReader, out: &mut [u8]) {
+    let mut state = reader.state;
+    let mut pos = reader.pos;
+    let rate = reader.rate;
+    for i in 0..out.len() {
+        if pos == rate {
+            permute_bytes(&mut state);
+            pos = 0;
         }
+        out[i] = state[pos];
+        pos += 1;
     }
+    reader.state = state;
+    reader.pos = pos;
+}
+
+/// Read into a fixed-size array — the dialect form (concrete `N` bound).
+pub fn spec_xof_read_array<N: ArraySize>(reader: &mut SpecXofReader, out: &mut Array<u8, N>) {
+    let mut state = reader.state;
+    let mut pos = reader.pos;
+    let rate = reader.rate;
+    for i in 0..N::USIZE {
+        if pos == rate {
+            permute_bytes(&mut state);
+            pos = 0;
+        }
+        out[i] = state[pos];
+        pos += 1;
+    }
+    reader.state = state;
+    reader.pos = pos;
 }
 
 /// One-shot SHA3-256 of a byte string.
 pub fn spec_sha3_256(input: &[u8]) -> [u8; 32] {
-    let mut sponge = SpecSponge::new(SHA3_256_RATE);
-    sponge.absorb(input);
-    let mut reader = sponge.finalize_xof(0x06);
+    let mut sponge = spec_sponge_new(SHA3_256_RATE);
+    spec_sponge_absorb(&mut sponge, input);
+    let mut reader = spec_sponge_finalize_xof(&sponge, 0x06);
     let mut out = [0u8; 32];
-    reader.read(&mut out);
+    spec_xof_read(&mut reader, &mut out);
     out
 }
 
 /// One-shot SHAKE128 of a byte string, `N` output bytes.
 pub fn spec_shake128<N: ArraySize>(input: &[u8]) -> Array<u8, N> {
-    let mut sponge = SpecSponge::new(SHAKE128_RATE);
-    sponge.absorb(input);
-    let mut reader = sponge.finalize_xof(0x1F);
+    let mut sponge = spec_sponge_new(SHAKE128_RATE);
+    spec_sponge_absorb(&mut sponge, input);
+    let mut reader = spec_sponge_finalize_xof(&sponge, 0x1F);
     let mut out = Array::<u8, N>::default();
-    reader.read(&mut out);
+    spec_xof_read(&mut reader, &mut out);
     out
 }
 
@@ -250,11 +303,11 @@ mod tests {
             let mut expected = [0u8; 400];
             crate_reader.read(&mut expected);
 
-            let mut sponge = SpecSponge::new(SHAKE128_RATE);
-            sponge.absorb(input);
-            let mut reader = sponge.finalize_xof(0x1F);
+            let mut sponge = spec_sponge_new(SHAKE128_RATE);
+            spec_sponge_absorb(&mut sponge, input);
+            let mut reader = spec_sponge_finalize_xof(&sponge, 0x1F);
             let mut got = [0u8; 400];
-            reader.read(&mut got);
+            spec_xof_read(&mut reader, &mut got);
             assert_eq!(got, expected, "SHAKE128 stream must match the sha3 crate");
         }
     }
@@ -263,9 +316,9 @@ mod tests {
     fn incremental_absorb_matches_one_shot() {
         // Absorb in odd-sized pieces; the stream must not depend on the split.
         let data: Vec<u8> = (0..500u32).map(|i| (i % 251) as u8).collect();
-        let mut one_shot = SpecSponge::new(SHAKE128_RATE);
-        one_shot.absorb(&data);
-        let mut piecewise = SpecSponge::new(SHAKE128_RATE);
+        let mut one_shot = spec_sponge_new(SHAKE128_RATE);
+        spec_sponge_absorb(&mut one_shot, &data);
+        let mut piecewise = spec_sponge_new(SHAKE128_RATE);
         // Piece boundaries at triangular-stepped offsets.
         let mut off = 0usize;
         for step in 0..data.len() {
@@ -273,13 +326,13 @@ mod tests {
                 break;
             }
             let take = ((step % 7) + 1).min(data.len() - off);
-            piecewise.absorb(&data[off..off + take]);
+            spec_sponge_absorb(&mut piecewise, &data[off..off + take]);
             off += take;
         }
         let mut a = [0u8; 64];
         let mut b = [0u8; 64];
-        one_shot.finalize_xof(0x1F).read(&mut a);
-        piecewise.finalize_xof(0x1F).read(&mut b);
+        spec_xof_read(&mut spec_sponge_finalize_xof(&one_shot, 0x1F), &mut a);
+        spec_xof_read(&mut spec_sponge_finalize_xof(&piecewise, 0x1F), &mut b);
         assert_eq!(a, b);
     }
 }

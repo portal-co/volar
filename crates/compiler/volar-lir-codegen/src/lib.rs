@@ -1753,6 +1753,9 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     }
 
     for (key, env) in &plan.instances {
+        if std::env::var("WARP_DEBUG_INSTANCES").is_ok() {
+            eprintln!("[instances] lowering {} as {}", key.source_name, plan.emitted_name(key));
+        }
         // Materialized method instances lower from their derived definition
         // (receiver promoted to a typed `self` param).
         let func = plan
@@ -2696,6 +2699,15 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             if let Some(value) = volar_compiler::ir::digit_var_as_literal(name) {
                 return vec![ctx.target.iconst(LirType::U64, value as i64)];
             }
+            // A unit struct used as a value (e.g. `WarpIdentityCode` passed
+            // as the `code: &C` argument) is zero-width: no scalars.
+            if ctx
+                .module_structs
+                .iter()
+                .any(|s| s.kind.to_string() == *name && s.fields.is_empty())
+            {
+                return Vec::new();
+            }
             // A bare `None` carries no payload, so its layout comes from
             // context: the enclosing function's `Option` return type. Lower
             // to the canonical all-zero None value (`lower_try` uses the
@@ -2817,7 +2829,17 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
         IrExprKind::Cast { expr: inner, ty } => {
             let v = into_scalar(lower_expr(inner, ctx), "cast operand");
             let dst = ir_type_to_lir_prim(ty, ctx.mono);
-            vec![ctx.target.zext(v, dst)]
+            // A cast is a width change: zero-extend when widening, truncate
+            // when narrowing (`as u32` on a wider value must drop high bits).
+            let src_bits = ctx.target.value_scalar_type(&v).bit_width() as usize;
+            let dst_bits = dst.bit_width() as usize;
+            vec![if src_bits > dst_bits {
+                ctx.target.trunc(v, dst)
+            } else if src_bits < dst_bits {
+                ctx.target.zext(v, dst)
+            } else {
+                v
+            }]
         }
 
         IrExprKind::Return(val) => {
@@ -4128,6 +4150,18 @@ fn lower_int_to_bytes<T: LirTarget<P>, P: Clone>(
     let n_bytes = (bits / 8) as usize;
 
     let val = into_scalar(lower_expr(receiver, ctx), "to_le_bytes receiver");
+    // A field element's bytes come from its bit view (the field value is one
+    // typed cell, not a shiftable integer bit-vector).
+    let (val, shift_ty) = if matches!(
+        &recv_lir,
+        LirType::ExtField { .. } | LirType::PrimeField { .. }
+    ) {
+        let bits_val = ctx.target.field_to_bits(val);
+        let shift_ty = ctx.target.value_scalar_type(&bits_val);
+        (bits_val, shift_ty)
+    } else {
+        (val, recv_lir.clone())
+    };
     (0..n_bytes)
         .map(|k| {
             let shift_bits = if little {
@@ -4138,7 +4172,7 @@ fn lower_int_to_bytes<T: LirTarget<P>, P: Clone>(
             let shifted = if shift_bits == 0 {
                 val.clone()
             } else {
-                let sh = ctx.target.iconst(recv_lir.clone(), shift_bits as i64);
+                let sh = ctx.target.iconst(shift_ty.clone(), shift_bits as i64);
                 ctx.target.lshr(val.clone(), sh)
             };
             ctx.target.trunc(shifted, LirType::U8)
@@ -4552,12 +4586,16 @@ fn resolve_const_expr_len<P: Clone>(len: &IrExpr<P>, mono: &MonoEnv) -> usize {
 // ============================================================================
 
 fn lower_array_generate<T: LirTarget<P>, P: Clone>(
-    _elem_ty: Option<&IrType>,
+    elem_ty: Option<&IrType>,
     len: &ArrayLength,
     index_var: &str,
     body: &IrExpr<P>,
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
+    // The declared element type (from the turbofish, e.g. `Array::<u8,
+    // U1>::from_fn`) is authoritative: the body's values are cast to it, so
+    // a `0u8`-style literal doesn't widen the element to `U64`.
+    let elem_lir = elem_ty.map(|ty| ctx.registry.ir_type_to_lir(ty, ctx.mono));
     let mut n = const_len(len, ctx.mono);
 
     // A turbofish-less `core::array::from_fn(|i| ..)` carries no length
@@ -4606,6 +4644,32 @@ fn lower_array_generate<T: LirTarget<P>, P: Clone>(
         let values = lower_expr(body, ctx);
         ctx.env.remove(index_var);
         ctx.env_types.remove(index_var);
+        // Reconcile the element's produced type with the declared turbofish
+        // element type (cast each scalar to the declared width). Only scalar
+        // (primitive/field) elements reconcile — structs/arrays carry their
+        // own layout.
+        let values = if let Some(elem_lir) = &elem_lir {
+            if elem_lir.is_scalar() {
+                let want = elem_lir.bit_width() as usize;
+                values
+                    .into_iter()
+                    .map(|v| {
+                        let got = ctx.target.value_scalar_type(&v).bit_width() as usize;
+                        if got > want {
+                            ctx.target.trunc(v, elem_lir.clone())
+                        } else if got < want {
+                            ctx.target.zext(v, elem_lir.clone())
+                        } else {
+                            v
+                        }
+                    })
+                    .collect()
+            } else {
+                values
+            }
+        } else {
+            values
+        };
         result.extend(values);
     }
     result
@@ -5284,6 +5348,11 @@ struct NativeLoopBodyInfo {
     /// Names assigned through aggregates (whole-var / indexed / field):
     /// alloca-promoted, memory-backed across the back-edge.
     agg_assigned: std::collections::BTreeSet<String>,
+    /// Names bound by a `let` inside the body: per-iteration temporaries
+    /// that are NOT loop-carried (each iteration re-binds them). Assignment
+    /// to such a name (e.g. `let mut t = …; …; t = t * x`) is a fresh local
+    /// accumulation, not a cross-iteration carry.
+    body_defined: std::collections::BTreeSet<String>,
 }
 
 fn scan_native_block<T: LirTarget<P>, P: Clone>(
@@ -5297,6 +5366,13 @@ fn scan_native_block<T: LirTarget<P>, P: Clone>(
     if let Some(expr) = &block.expr {
         scan_native_expr(expr, ctx, info)?;
     }
+    // Per-iteration temporaries (bound by `let` in the body) are not
+    // loop-carried: drop them from the carried/promoted sets so the
+    // eligibility check below doesn't demand a pre-loop value.
+    info.scalar_assigned
+        .retain(|name| !info.body_defined.contains(name));
+    info.agg_assigned
+        .retain(|name| !info.body_defined.contains(name));
     Ok(())
 }
 
@@ -5306,7 +5382,9 @@ fn scan_native_stmt<T: LirTarget<P>, P: Clone>(
     info: &mut NativeLoopBodyInfo,
 ) -> Result<(), String> {
     match &stmt.kind {
-        IrStmtKind::Let { init, .. } => {
+        IrStmtKind::Let { pattern, init, .. } => {
+            // A `let` binding in the body is a per-iteration temporary.
+            collect_pattern_binding_names(pattern, &mut info.body_defined);
             if let Some(init) = init {
                 scan_native_expr(init, ctx, info)?;
             }
@@ -6255,6 +6333,15 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     let expected_scalars = n
         .checked_mul(elem_width)
         .expect("LIR index: array scalar count overflow");
+    // Empty (length-0) array: the index is statically out of bounds, so the
+    // value is dead (dead guard bodies lower both arms). Yield `elem_width`
+    // zero scalars of the element type so enclosing if/else branch widths
+    // stay consistent (a dead arm must not be narrower than the live one).
+    if expected_scalars == 0 {
+        return (0..elem_width)
+            .map(|_| ctx.target.iconst(elem_lir_ty.clone(), 0))
+            .collect();
+    }
     let base_desc = match &base.kind {
         IrExprKind::Var(name) => format!("variable '{name}'"),
         IrExprKind::Field { field, .. } => format!("field .{field}"),
@@ -6610,6 +6697,23 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
             let base_ir_ty = match base_ir_ty {
                 IrType::Reference { elem, .. } => *elem,
                 other => other,
+            };
+            // A bare `TypeParam` naming a module struct (a nominal the
+            // parser left unresolved) resolves to the struct — same rule as
+            // the expression-side field access.
+            let base_ir_ty = match &base_ir_ty {
+                IrType::TypeParam(name)
+                    if ctx
+                        .module_structs
+                        .iter()
+                        .any(|s| s.kind.to_string() == *name) =>
+                {
+                    IrType::Struct {
+                        kind: StructKind::Custom(name.clone()),
+                        type_args: Vec::new(),
+                    }
+                }
+                other => other.clone(),
             };
             let IrType::Struct { kind, .. } = &base_ir_ty else {
                 unimplemented!("lower_assign: field assign on non-struct {base_ir_ty:?}");
@@ -7243,6 +7347,20 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
         MethodKind::Known(StdMethod::ToLeBytes) => lower_int_to_bytes(receiver, true, ctx),
         MethodKind::Known(StdMethod::ToBeBytes) => lower_int_to_bytes(receiver, false, ctx),
 
+        // `n.is_power_of_two()` = `n != 0 && (n & (n - 1)) == 0` — a std
+        // integer method any spec code may use (the WARP shape checks).
+        MethodKind::Known(StdMethod::IsPowerOfTwo) => {
+            let n = into_scalar(lower_expr(receiver, ctx), "is_power_of_two receiver");
+            let zero = ctx.target.iconst(LirType::U64, 0);
+            let nonzero = ctx.target.icmp(IcmpPred::Ne, n.clone(), zero);
+            let one = ctx.target.iconst(LirType::U64, 1);
+            let minus_one = ctx.target.sub(n.clone(), one);
+            let anded = ctx.target.and(n, minus_one);
+            let zero2 = ctx.target.iconst(LirType::U64, 0);
+            let and_is_zero = ctx.target.icmp(IcmpPred::Eq, anded, zero2);
+            vec![ctx.target.and(nonzero, and_is_zero)]
+        }
+
         MethodKind::Known(StdMethod::TrailingZeros) => {
             // Unrolled select chain over the 64 bit positions:
             // result = lowest set bit index, or 64 when the value is zero.
@@ -7331,9 +7449,12 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
                 arg_tys.push(a_ty);
                 flat_args.extend(values);
             }
-            return ctx
-                .target
-                .call_extern(emitted_name, &arg_tys, &flat_args, ret_ty);
+            // `call` (not `call_extern`): sibling calls are
+            // forward-reference-safe — a not-yet-lowered callee gets a
+            // pending slot the callee's own `end_function` patches in place,
+            // while `call_extern`'s import stub would stay orphaned (and
+            // unevaluable) when the callee lowers after this caller.
+            return ctx.target.call(emitted_name, &arg_tys, &flat_args, ret_ty);
         }
     }
 

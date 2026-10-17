@@ -29,7 +29,11 @@ pub const fn level_shift(log: u32, base_log: u32, j: usize) -> u32 {
 /// Number of bits in level `j`'s digit (the last level may be narrower).
 pub const fn level_bits(log: u32, base_log: u32, j: usize) -> u32 {
     let remaining = log.saturating_sub(base_log * j as u32);
-    if remaining < base_log { remaining } else { base_log }
+    if remaining < base_log {
+        remaining
+    } else {
+        base_log
+    }
 }
 
 /// Gadget factor of level `j`: `2^shift_j` as an element of `Z_{2^LOG}`.
@@ -42,7 +46,9 @@ pub const fn level_factor<const LOG: u32>(base_log: u32, j: usize) -> u32 {
 /// Returns digits ordered most-significant first (level 0 = top bits).
 /// Exact: `sum_j digits[j] << shift_j == x` whenever
 /// `ELL * BASE_LOG >= LOG`.
-pub fn gadget_decompose<const LOG: u32, const ELL: usize, const BASE_LOG: u32>(x: u32) -> [u32; ELL] {
+pub fn gadget_decompose<const LOG: u32, const ELL: usize, const BASE_LOG: u32>(
+    x: u32,
+) -> [u32; ELL] {
     debug_assert!(
         ELL as u32 * BASE_LOG >= LOG,
         "gadget decomposition must cover the modulus"
@@ -51,14 +57,23 @@ pub fn gadget_decompose<const LOG: u32, const ELL: usize, const BASE_LOG: u32>(x
     for (j, d) in digits.iter_mut().enumerate() {
         let shift = level_shift(LOG, BASE_LOG, j);
         let bits = level_bits(LOG, BASE_LOG, j);
-        let m = if bits >= 32 { u32::MAX } else { (1u32 << bits) - 1 };
+        let m = if bits >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << bits) - 1
+        };
         *d = (x >> shift) & m;
     }
     digits
 }
 
 /// Coefficient-wise decomposition of a polynomial.
-pub fn gadget_poly_decompose<const N: usize, const LOG: u32, const ELL: usize, const BASE_LOG: u32>(
+pub fn gadget_poly_decompose<
+    const N: usize,
+    const LOG: u32,
+    const ELL: usize,
+    const BASE_LOG: u32,
+>(
     p: &[u32; N],
 ) -> [[u32; N]; ELL] {
     let mut out = [[0u32; N]; ELL];

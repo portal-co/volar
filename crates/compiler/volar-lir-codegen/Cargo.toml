@@ -17,3 +17,5 @@ volar-vaffle-target.workspace = true
 volar-fuzz.workspace = true
 volar-primitives = { git = "https://github.com/portal-co/volar.git" }
 vaffle.workspace = true
+volar-spec = { path = "../../spec/volar-spec" }
+cipher = { workspace = true }

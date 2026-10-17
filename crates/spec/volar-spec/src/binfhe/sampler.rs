@@ -26,7 +26,11 @@ pub fn cbd<const ETA: u32, R: SpecRng>(rng: &mut R) -> i32 {
         return 0;
     }
     debug_assert!(ETA <= 32, "one RNG word supplies at most 32 bits per half");
-    let mask = if ETA >= 32 { u32::MAX } else { (1u32 << ETA) - 1 };
+    let mask = if ETA >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << ETA) - 1
+    };
     let a = (rng.next_u32() & mask).count_ones() as i32;
     let b = (rng.next_u32() & mask).count_ones() as i32;
     a - b
@@ -79,7 +83,11 @@ mod tests {
         let mut same = true;
         let mut differ = false;
         for _ in 0..256 {
-            let (x, y, z) = (cbd::<16, _>(&mut a), cbd::<16, _>(&mut b), cbd::<16, _>(&mut c));
+            let (x, y, z) = (
+                cbd::<16, _>(&mut a),
+                cbd::<16, _>(&mut b),
+                cbd::<16, _>(&mut c),
+            );
             same &= x == y;
             differ |= x != z;
         }
