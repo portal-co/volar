@@ -329,6 +329,150 @@ fn probe_le_bytes_roundtrip() {
     assert_eq!(bits_to_u128(&flat) as u64, 0x1234567890ABCDEFu64, "from_le_bytes(to_le_bytes(x)) == x");
 }
 
+/// Isolate a range-index + copy_from_slice write to a `&mut` *parameter*
+/// pointer (the `lanes_to_bytes` write-back shape: `b[i*8..i*8+8]`).
+#[test]
+fn probe_range_write_param_ptr() {
+    let module = parse_driver_only(
+        "fn write_into(s: &mut [u8; 16]) {\n\
+             let src = [9u8, 8, 7, 6];\n\
+             s[4..8].copy_from_slice(&src);\n\
+         }\n\
+         pub fn probe_rangewrite() -> u64 {\n\
+             let mut b = [0u8; 16];\n\
+             write_into(&mut b);\n\
+             b[4] as u64\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_rangewrite"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_rangewrite"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("range write evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 9, "b[4] == 9 after the range write");
+}
+
+/// Read-then-write on a `&mut` param pointer (the `permute_bytes` shape:
+/// bytes_to_lanes reads the state, lanes_to_bytes writes it back).
+#[test]
+fn probe_read_write_param_ptr() {
+    let module = parse_driver_only(
+        "fn read_write(s: &mut [u64; 16]) {\n\
+             let x = s[0];\n\
+             s[1] = x + 1u64;\n\
+         }\n\
+         pub fn probe_rw() -> u64 {\n\
+             let mut b = [0u64; 16];\n\
+             b[0] = 41u64;\n\
+             read_write(&mut b);\n\
+             b[1]\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_rw"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_rw"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("read-write evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 42, "b[1] == b[0]+1 == 42");
+}
+
+/// The full permute chain with a LOCAL output array (vs the param-pointer
+/// write-back in `permute_bytes`): isolates whether writing back to a
+/// `&mut [u8;200]` *parameter* is the broken step.
+#[test]
+fn probe_full_chain_local_out() {
+    let module = parse_with_driver(
+        "pub fn probe_full() -> u64 {\n\
+             let mut state = [0u8; 200];\n\
+             let mut st = [0u64; 25];\n\
+             bytes_to_lanes(&state, &mut st);\n\
+             keccak_f1600(&mut st);\n\
+             let mut out_state = [0u8; 200];\n\
+             lanes_to_bytes(&st, &mut out_state);\n\
+             let mut out = 0u64;\n\
+             for i in 0..8 {\n\
+                 out = out | ((out_state[i] as u64) << (i * 8));\n\
+             }\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_full"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_full"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("full chain evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 0xF1258F7940E1DDE7u64, "full chain lane 0");
+}
+
+/// Isolate the permute chain's shared local: `bytes_to_lanes` then
+/// `keccak_f1600` both take `&mut st` — the second call must reuse the first's
+/// promoted slot (not a fresh copy).
+#[test]
+fn probe_permute_chain() {
+    let module = parse_with_driver(
+        "pub fn probe_chain() -> u64 {\n\
+             let mut state = [0u8; 200];\n\
+             let mut st = [0u64; 25];\n\
+             bytes_to_lanes(&state, &mut st);\n\
+             keccak_f1600(&mut st);\n\
+             st[0]\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_chain"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_chain"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("chain evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 0xF1258F7940E1DDE7u64, "chained permute lane 0");
+}
+
+/// Isolate `bytes_to_lanes` (the permute read): write a known byte pattern and
+/// read lane 0 back as a u64.
+#[test]
+fn probe_bytes_to_lanes() {
+    let module = parse_with_driver(
+        "pub fn probe_b2l() -> u64 {\n\
+             let mut b = [0u8; 200];\n\
+             b[0] = 0xE7; b[1] = 0xDD; b[2] = 0xE1; b[3] = 0x40;\n\
+             b[4] = 0x79; b[5] = 0x8F; b[6] = 0x25; b[7] = 0xF1;\n\
+             let mut st = [0u64; 25];\n\
+             bytes_to_lanes(&b, &mut st);\n\
+             st[0]\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_b2l"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_b2l"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("bytes_to_lanes evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 0xF1258F7940E1DDE7u64, "lane 0 from LE bytes");
+}
+
+/// Isolate `lanes_to_bytes` (the permute write-back): write a known lane into
+/// a zero byte state and read the first 8 bytes back as a u64.
+#[test]
+fn probe_lanes_to_bytes() {
+    let module = parse_with_driver(
+        "pub fn probe_l2b() -> u64 {\n\
+             let mut st = [0u64; 25];\n\
+             st[0] = 0xF1258F7940E1DDE7u64;\n\
+             let mut b = [0u8; 200];\n\
+             lanes_to_bytes(&st, &mut b);\n\
+             let mut out = 0u64;\n\
+             for i in 0..8 {\n\
+                 out = out | ((b[i] as u64) << (i * 8));\n\
+             }\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_l2b"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_l2b"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("lanes_to_bytes evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 0xF1258F7940E1DDE7u64, "lane 0 LE bytes");
+}
+
 /// KNOWN-OPEN (genesis blocker): `permute_bytes` of the zero state yields zeros
 /// — the absorb path now works (struct refs), but the byte<->lane conversion
 /// write-back (`lanes_to_bytes`' `b[i*8..i*8+8].copy_from_slice(..)` in nested
