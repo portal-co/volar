@@ -1077,6 +1077,67 @@ fn target_alloca<T: LirTarget<P>, P: Clone>(
     ext.alloca(elem_ty, count)
 }
 
+/// Promote a flattened local to a fresh alloca so a `&mut local` (or `&local`)
+/// call argument aliases the local's real memory: the callee's writes through
+/// the pointer are then visible to the caller's later reads, which go through
+/// the promoted slot (`lower_expr(Var)` consults `ctx.promoted` first).
+/// Without this, the generic spill path copies the local into a *fresh* alloca
+/// per call and the caller's `env` copy is never updated — the `keccak_f1600`
+/// driver pattern (`let mut st = …; keccak_f1600(&mut st); st[0]`). Returns
+/// the alloca pointer, or `None` if the name isn't a flattened local.
+fn promote_local_to_memory<T: LirTarget<P>, P: Clone>(
+    name: &str,
+    ctx: &mut LowerCtx<T, P>,
+) -> Option<T::Value> {
+    if let Some(slot) = ctx.promoted.get(name) {
+        return Some(slot.ptr.clone());
+    }
+    let ty = ctx.env_types.get(name)?.clone();
+    let base_ty = match &ty {
+        IrType::Reference { elem, .. } => (**elem).clone(),
+        other => other.clone(),
+    };
+    let lir = ctx.registry.ir_type_to_lir(&base_ty, ctx.mono);
+    let init_vals = ctx.env.get(name)?.clone();
+    // Allocate on the SHARED stack (`alloca_shared`), so the pointer passed to
+    // the callee resolves to the same cells the caller wrote — a per-site
+    // alloca's storage id is lost across a call boundary.
+    let shared_alloca = |ctx: &mut LowerCtx<T, P>, elem_ty: LirType, count: usize| {
+        ctx.target
+            .stack_alloc_ext()
+            .expect("promote_local_to_memory requires a target with StackAllocExt")
+            .alloca_shared(elem_ty, count)
+    };
+    let slot = if let IrType::Array { elem, len, .. } = &base_ty {
+        let elem_lir = ctx.registry.ir_type_to_lir(elem, ctx.mono);
+        let elem_width = flatten_count(&elem_lir, ctx.registry);
+        let n = mono::array_len_const(&mono_len(len, ctx.mono))?;
+        let ptr = shared_alloca(ctx, elem_lir.clone(), n);
+        let slot = PromotedSlot {
+            ptr,
+            layout: PromotedLayout::Array {
+                elem_ty: elem_lir,
+                n,
+                elem_width,
+            },
+        };
+        promoted_whole_store(&slot.ptr, &slot.layout, &init_vals, ctx);
+        slot
+    } else {
+        let ptr = shared_alloca(ctx, lir.clone(), 1);
+        let slot = PromotedSlot {
+            ptr,
+            layout: PromotedLayout::Whole { agg_ty: lir },
+        };
+        promoted_whole_store(&slot.ptr, &slot.layout, &init_vals, ctx);
+        slot
+    };
+    let ptr = slot.ptr.clone();
+    ctx.env.remove(name);
+    ctx.promoted.insert(name.to_owned(), slot);
+    Some(ptr)
+}
+
 /// Threshold (flattened scalars) above which a by-value fixed-array param
 /// becomes a pointer in the local-call ABI. Above this, per-call by-value
 /// copies plus runtime-index select muxes dominate generated code size;
@@ -1180,6 +1241,43 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
                 return (ty, vec![ptr]);
             }
         }
+        // Borrowed local: `&mut local` / `&local` where `local` is a flattened
+        // aggregate. Promote it to memory FIRST so the pointer aliases the
+        // local — a fresh spill per call would drop the callee's writes.
+        // Borrowed local: `&mut local` / `&local` where `local` is an
+        // aggregate. The pointer must alias the local's real memory so the
+        // callee's writes are visible to the caller — a fresh spill per call
+        // would drop them. If the local is already memory-backed (promoted),
+        // pass its existing slot pointer; otherwise promote it to a
+        // shared-stack frame first.
+        if let IrExprKind::Unary {
+            op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
+            expr: inner,
+        } = &arg.kind
+        {
+            if let IrExprKind::Var(name) = &inner.kind {
+                let existing = ctx.promoted.get(name.as_str()).map(|s| s.ptr.clone());
+                let ptr = match existing {
+                    Some(ptr) => Some(ptr),
+                    None if ctx.env.contains_key(name.as_str()) => {
+                        promote_local_to_memory(name, ctx)
+                    }
+                    None => None,
+                };
+                if let Some(ptr) = ptr {
+                    let elem_ty = ctx
+                        .promoted
+                        .get(name.as_str())
+                        .map(|s| match &s.layout {
+                            PromotedLayout::Array { elem_ty, .. } => elem_ty.clone(),
+                            PromotedLayout::Whole { agg_ty } => agg_ty.clone(),
+                        })
+                        .unwrap_or(LirType::U64);
+                    let ty = declared.cloned().unwrap_or(LirType::Ptr(Box::new(elem_ty)));
+                    return (ty, vec![ptr]);
+                }
+            }
+        }
         // Spill: lower flat, allocate, store element-wise.
         let elem_lir = match declared {
             Some(LirType::Ptr(e)) => (**e).clone(),
@@ -1210,6 +1308,49 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
             .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
             .unwrap_or(LirType::U64)
     });
+    // Reborrow deref: the argument is a `&mut`/`&` fixed-array reference (its
+    // value is a pointer, because the caller holds it as one), but the
+    // callee's parameter is a transparent immutable array — value semantics —
+    // so the flat pointee scalars must be read back out of the pointer. This
+    // is the `permute_bytes(state_bytes: &mut [u8;200])` ->
+    // `bytes_to_lanes(state_bytes, ..)` reborrow.
+    let arg_ir_ty = ctx.infer_type(arg);
+    let is_ref_to_array = matches!(
+        &arg_ir_ty,
+        Some(IrType::Reference { elem, .. }) if matches!(elem.as_ref(), IrType::Array { .. })
+    );
+    let declared_is_aggregate = matches!(&ty, LirType::Arr(_, _) | LirType::Struct(_));
+    if is_ref_to_array && declared_is_aggregate {
+        if let Some(IrType::Reference { elem, .. }) = &arg_ir_ty {
+            if let IrType::Array {
+                elem: arr_elem, len, ..
+            } = elem.as_ref()
+            {
+                let ptr_vals = lower_expr(arg, ctx);
+                // Only deref when the arg's value is genuinely a single pointer
+                // (a `&mut` array ref carried as a pointer), not a flat aggregate.
+                let is_single_ptr = ptr_vals.len() == 1
+                    && matches!(ctx.target.value_scalar_type(&ptr_vals[0]), LirType::Ptr(_));
+                if is_single_ptr {
+                    let ptr = ptr_vals.into_iter().next().unwrap();
+                    let elem_lir = ctx.registry.ir_type_to_lir(arr_elem, ctx.mono);
+                    let elem_width = flatten_count(&elem_lir, ctx.registry);
+                    let n = mono::array_len_const(&mono_len(len, ctx.mono))
+                        .unwrap_or_else(|| panic!("reborrow deref: non-const array length"));
+                    let mut out = Vec::with_capacity(n * elem_width);
+                    for k in 0..n {
+                        let k_val = ctx.target.iconst(LirType::U64, k as i64);
+                        out.extend(ctx.target.ptr_index_load(
+                            ptr.clone(),
+                            k_val,
+                            &elem_lir,
+                        ));
+                    }
+                    return (ty, out);
+                }
+            }
+        }
+    }
     let values = lower_expr(arg, ctx);
     // Reconcile the arg's scalar width to the declared param width: an
     // unsuffixed literal lowers as `U64` but a `suffix: u8` param expects 8
@@ -4028,10 +4169,12 @@ fn lower_struct_expr<T: LirTarget<P>, P: Clone>(
         fields.iter().map(|(n, e)| (n.as_str(), e)).collect();
 
     let decl_names: Vec<String> = ctx.registry.field_names(struct_id).to_vec();
+    let decl_field_tys: Vec<LirType> = ctx.registry.field_types(struct_id).to_vec();
     // Concatenate flat scalar lists for all fields in declaration order.
     decl_names
         .iter()
-        .flat_map(|name| {
+        .zip(decl_field_tys.iter())
+        .flat_map(|(name, field_lir)| {
             let expr = field_map
                 .get(name.as_str())
                 .copied()
@@ -4071,10 +4214,64 @@ fn lower_struct_expr<T: LirTarget<P>, P: Clone>(
                 let field_mono = mono_type(&field_ty, &local);
                 return lower_default_zero_values(&field_mono, ctx);
             }
-            lower_expr(expr, ctx)
+            let lowered = lower_expr(expr, ctx);
+            // Reconcile the field value's scalar widths to the field's
+            // DECLARED width: an unsuffixed literal (`20`) lowers as U64 but a
+            // `u32` field is 32 bits, and a width mismatch shifts every later
+            // field's offset (the genesis `n_vars`/`b` reads landed in `a`'s
+            // high bits). Cast each scalar to the declared leaf width.
+            reconcile_scalars_to_lir(lowered, field_lir, ctx)
         })
         .collect()
 }
+
+/// Cast each scalar of `vals` to the declared leaf scalar width of `lir`,
+/// truncating or zero-extending as needed. Aggregates recurse leaf-wise.
+fn reconcile_scalars_to_lir<T: LirTarget<P>, P: Clone>(
+    vals: Vec<T::Value>,
+    lir: &LirType,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    // The declared leaf scalar types for this LIR type, in flatten order.
+    fn leaf_tys<'a>(ty: &'a LirType, registry: &'a StructRegistry, out: &mut Vec<&'a LirType>) {
+        match ty {
+            LirType::Arr(elem, n) => {
+                for _ in 0..*n {
+                    leaf_tys(elem, registry, out);
+                }
+            }
+            LirType::Struct(id) => {
+                for ft in registry.field_types(*id) {
+                    leaf_tys(ft, registry, out);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    let mut want: Vec<&LirType> = Vec::new();
+    leaf_tys(lir, ctx.registry, &mut want);
+    if want.len() != vals.len() {
+        // Structure mismatch we can't reconcile leaf-wise — return as-is (the
+        // downstream arity checks catch a real bug).
+        return vals;
+    }
+    vals.into_iter()
+        .zip(want.iter())
+        .map(|(v, want_ty)| {
+            let got = ctx.target.value_scalar_type(&v).bit_width() as usize;
+            let want_w = want_ty.bit_width() as usize;
+            if got == want_w {
+                return v;
+            }
+            if got > want_w {
+                ctx.target.trunc(v, (*want_ty).clone())
+            } else {
+                ctx.target.zext(v, (*want_ty).clone())
+            }
+        })
+        .collect()
+}
+
 
 /// A zero-arg `T::default()` call with no turbofish (any receiver path).
 fn is_bare_default_call<P: Clone>(expr: &IrExpr<P>) -> bool {
@@ -5251,7 +5448,14 @@ fn is_slice_ref(ty: &IrType) -> bool {
     matches!(ty,
         IrType::Reference { elem, .. }
             if matches!(elem.as_ref(), IrType::Array { kind: ArrayKind::Slice, .. })
-    ) || matches!(
+    )
+    // A mutable reference to a fixed-size array lowers to a pointer (see
+    // `ir_type_to_lir_inner`), so route its reads/writes through the pointer.
+    || matches!(ty,
+        IrType::Reference { mutable: true, elem }
+            if matches!(elem.as_ref(), IrType::Array { .. })
+    )
+    || matches!(
         volar_compiler::ir::as_box_type(ty),
         Some(IrType::Array { .. })
     )
@@ -5619,7 +5823,18 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
                     loop {
                         match &cursor.kind {
                             IrExprKind::Var(name) => {
-                                info.agg_assigned.insert(name.clone());
+                                // A reference-typed name (a `&mut` param lowered to
+                                // a pointer) is already memory-backed: an indexed
+                                // write goes through the pointer to memory that
+                                // persists across the back-edge, so it needs no
+                                // promotion or carrying. Skip it.
+                                let is_ref = matches!(
+                                    ctx.env_types.get(name),
+                                    Some(IrType::Reference { .. })
+                                );
+                                if !is_ref {
+                                    info.agg_assigned.insert(name.clone());
+                                }
                                 return Ok(());
                             }
                             IrExprKind::Index { base: inner, .. }

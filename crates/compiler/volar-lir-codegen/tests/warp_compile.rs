@@ -23,6 +23,20 @@ fn spec_source(file: &str) -> String {
     .expect("volar-spec source is readable")
 }
 
+/// Parse ONLY the driver source (no spec warp/keccak modules) — for
+/// micro-probes that use only driver-local types and don't need the spec.
+fn parse_driver_only(driver: &str) -> volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction> {
+    parse_sources(
+        &[SourceInput {
+            source: driver,
+            name: "warp_driver",
+        }],
+        "warp_compile_probe",
+        &[],
+    )
+    .expect("driver-only parse")
+}
+
 fn parse_with_driver(driver: &str) -> volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction> {
     let warp = spec_source("warp.rs");
     let keccak = spec_source("keccak.rs");
@@ -242,15 +256,225 @@ fn probe_native_loop_if_assign() {
 /// all through IR, differentially against the native spec.
 ///
 /// `#[ignore]`: with `LoopLowering::Native` the genesis lowering completes
-/// and the module is now well-formed — the cross-block threading gap is
-/// fixed (branch-assigned outer variables merge through join-block params in
-/// `lower_if`; validated by `probe_native_loop_if_assign`). The remaining
-/// gap is eval *scale*: the in-circuit Keccak module flattens to millions of
-/// VAFFLE values, so the tree-walking interpreter is too slow to finish the
-/// genesis evaluation in a test budget. The compile-via-IR + differential
-/// machinery is proven by the lighter probes above (identity/ref-array/
-/// elem-sum/doubling-loop/if-assign/MLE).
-#[ignore = "genesis lowers + threads correctly but the interpreter is too slow over the in-circuit Keccak module; see module note"]
+/// and the interpreter (dense value table + shared stack) now runs the eval to
+/// completion in a test budget. Cross-block threading is fixed (`lower_if`
+/// merge), Keccak is correct (`probe_keccak_f1600_zero_state`), and the
+/// mutable-array-reference aliasing works (shared `StorageId::STACK`). The one
+/// remaining correctness gap is the match-of-captured-struct lowering bug —
+/// the toy PESAT index built by the driver's `from_fn(|i| match i { 0 => mk0,
+/// ... })` miscompiles (see `probe_match_captured_struct`), so the constraint
+/// eval reads `n_vars` as 0 and the genesis returns `None`. Fix that bug and
+/// this probe should match the native spec. The lighter probes above prove
+/// the compile-via-IR + differential machinery end-to-end.
+/// Focused Keccak-f[1600] differential: one permutation of the zero state,
+/// lane 0 has a known answer. Isolates the Keccak lowering from the rest of
+/// the genesis path. Fast (a single permute), unlike the full genesis probe.
+#[test]
+fn probe_keccak_f1600_zero_state() {
+    let module = parse_with_driver(
+        "pub fn probe_keccak() -> u64 {\n\
+             let mut st = [0u64; 25];\n\
+             keccak_f1600(&mut st);\n\
+             st[0]\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_keccak"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_keccak"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("keccak_f1600 evaluates");
+    let flat: Vec<bool> = out.concat();
+    // Keccak-f[1600] of the all-zero state: lane 0 = 0xF1258F7940E1DDE7.
+    assert_eq!(bits_to_u128(&flat) as u64, 0xF1258F7940E1DDE7u64, "keccak lane 0");
+}
+
+
+/// A `match` on a runtime index returning captured struct values — the
+/// `from_fn(|i| match i { 0 => m0, ... })` shape. Isolates the multi-scalar
+/// (struct) match-result threading from the array wrapping.
+/// KNOWN-OPEN BUG (genesis blocker): a `match` on a runtime index whose arms
+/// return *captured* (let-bound) struct values miscompiles — the join threads a
+/// wrong/garbage value instead of the selected struct's scalars. Inline struct
+/// literals in the arms work; captured lets do not. This is the
+/// `from_fn(|i| match i { 0 => mk0, ... })` shape used to build the toy PESAT
+/// index in the genesis probe, so the genesis constraint eval is wrong until
+/// this is fixed. `#[ignore]`d: the match lowering produces both wrong values
+/// and a block blowup; needs investigation in `lower_match_arm_chain`.
+#[ignore = "match returning a captured struct miscompiles; see doc comment"]
+#[test]
+fn probe_match_captured_struct() {
+    let module = parse_driver_only(
+        "use cipher::consts::*;\n\
+         struct LT { a: u32, n_vars: u32 }\n\
+         pub fn probe_match(i: u64) -> u32 {\n\
+             let m0 = LT { a: 100, n_vars: 7 };\n\
+             let m1 = LT { a: 200, n_vars: 9 };\n\
+             let sel = match i { 0 => m0, _ => m1 };\n\
+             sel.n_vars\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_match"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_match"];
+    // i is a pure-bit u64 → 64 single-bit inputs.
+    for (i, want) in [(0u64, 7u128), (1u64, 9u128)] {
+        let input: Vec<Vec<bool>> = (0..64).map(|b| vec![(i >> b) & 1 == 1]).collect();
+        let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &input, 64)
+            .expect("match");
+        let flat: Vec<bool> = out.concat();
+        assert_eq!(bits_to_u128(&flat), want, "match i={i}");
+    }
+}
+
+/// Nested struct-array isolation: a struct with an array-of-structs field,
+/// read a leaf field of an element (`o.items[i].v`). This is the
+/// `constraint.terms[i].n_vars` shape — a struct array nested in a struct.
+#[test]
+fn probe_nested_struct_array() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         struct LocalTerm<D: ArraySize> { coeff: Galois128, vars: Array<usize, D>, n_vars: u32 }\n\
+         struct LocalCon<N: ArraySize, D: ArraySize> { terms: Array<LocalTerm<D>, N>, n_terms: u32 }\n\
+         fn get_it(o: &LocalCon<U4, U2>, i: usize) -> u32 { o.terms[i].n_vars }\n\
+         pub fn probe_nested() -> u32 {\n\
+             let m0 = LocalTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::default(), n_vars: 2 };\n\
+             let o = LocalCon::<U4, U2> { terms: Array::<LocalTerm<U2>, U4>::from_fn(|_| m0), n_terms: 3 };\n\
+             get_it(&o, 0)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_nested"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_nested"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("nested struct array");
+    let flat: Vec<bool> = out.concat();
+    // every element is the captured m0 (n_vars=2).
+    assert_eq!(bits_to_u128(&flat), 2, "captured m0.n_vars == 2");
+}
+
+/// Minimal struct-array element field read: `arr[1].b` where the elements
+/// have distinct field values. Isolates the array-element field-offset
+/// computation (the `constraint.terms[i].n_vars` shape) from the WARP types.
+#[test]
+fn probe_struct_array_elem_field() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         struct Pair { a: u32, b: u32 }\n\
+         fn get_a(arr: &Array<Pair, U3>, i: usize) -> u32 { arr[i].a }\n\
+         fn get_b(arr: &Array<Pair, U3>, i: usize) -> u32 { arr[i].b }\n\
+         pub fn probe_pair() -> u32 {\n\
+             let arr = Array::<Pair, U3>::from_fn(|i| match i {\n\
+                 0 => Pair { a: 1, b: 10 },\n\
+                 1 => Pair { a: 2, b: 20 },\n\
+                 _ => Pair { a: 3, b: 30 },\n\
+             });\n\
+             get_a(&arr, 1) * 1000 + get_b(&arr, 1) * 100 + get_a(&arr, 2)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_pair"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_pair"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("struct array elem field");
+    let flat: Vec<bool> = out.concat();
+    // arr[1].a=2, arr[1].b=20, arr[2].a=3 → 2*1000 + 20*100 + 3 = 4003.
+    assert_eq!(bits_to_u128(&flat), 4003, "arr[1].a=2, arr[1].b=20, arr[2].a=3");
+}
+
+
+/// Direct `warp_eval_term` with explicit turbofish — isolates the term
+/// evaluation (coeff * witness[vars[0]] * witness[vars[1]]) from the
+/// constraint aggregation.
+#[test]
+fn probe_warp_eval_term() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         fn eval_one(t: &WarpTerm<U2>, w: &Array<Galois128, U4>) -> Galois128 {\n\
+             warp_eval_term::<U2, U0, U4>(t, &Array::<Galois128, U0>::default(), w)\n\
+         }\n\
+         pub fn probe_term(w0: Galois128, w1: Galois128) -> Galois128 {\n\
+             let t = WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|i| match i { 0 => 0usize, _ => 1usize }), n_vars: 2 };\n\
+             let witness = Array::<Galois128, U4>::from_fn(|i| match i { 0 => w0, 1 => w1, _ => Galois128(0) });\n\
+             eval_one(&t, &witness)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_term"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_term"];
+    let (a, b) = (3u128, 5u128);
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(
+        &target.module,
+        fid,
+        &[bits_of(a, 128), bits_of(b, 128)],
+        64,
+    )
+    .expect("term eval");
+    assert_eq!(bits_to_u128(&out[0]), (Galois128(a) * Galois128(b)).0, "term == w0*w1");
+}
+
+/// Micro-isolation: a `usize` array built by `from_fn` + `match`, then read
+/// back — the `term.vars[i]` shape in `warp_eval_term`. A misread index would
+/// make the term eval pick the wrong witness element.
+#[test]
+fn probe_usize_array_from_fn() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_vars() -> u64 {\n\
+             let vars = Array::<usize, U2>::from_fn(|i| match i { 0 => 0usize, _ => 1usize });\n\
+             vars[1]\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_vars"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_vars"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("vars read");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 1, "vars[1] == 1");
+}
+
+/// Micro-isolation: a native loop bounded by a generic const (`0..DEG::USIZE`)
+/// inside a generic function — the constraint term-eval loop's shape. If the
+/// const bound misresolves (e.g. to 0), the variable products are dropped.
+#[test]
+fn probe_generic_const_loop_bound() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         fn loop_count<DEG: ArraySize>() -> u64 {\n\
+             let mut c = 0u64;\n\
+             for i in 0..DEG::USIZE {\n\
+                 c = c + 1u64;\n\
+             }\n\
+             c\n\
+         }\n\
+         pub fn probe_bound() -> u64 { loop_count::<U2>() }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_bound"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_bound"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("loop bound");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 2, "0..U2::USIZE runs twice");
+}
+
+/// Micro-isolation: read the `n_vars` field of a constructed `WarpTerm`.
+/// The constraint probe showed every term reducing to its coeff (the variable
+/// product dropped), consistent with `n_vars` reading 0 — so this checks the
+/// struct field offset directly.
+#[test]
+fn probe_term_n_vars_field() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         fn get_nvars<DEG: ArraySize>(t: &WarpTerm<DEG>) -> u32 { t.n_vars }\n\
+         pub fn probe_nvars() -> u32 {\n\
+             let t = WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|i| i), n_vars: 5 };\n\
+             get_nvars(&t)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_nvars"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_nvars"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("n_vars read");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 5, "WarpTerm.n_vars field");
+}
+
+
+#[ignore = "genesis lowers + runs to completion; the match-of-captured-struct lowering bug makes the constraint eval wrong; see module note"]
 #[test]
 fn warp_genesis_compiles_via_ir_and_matches_native() {
     let module = parse_with_driver(

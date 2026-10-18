@@ -828,7 +828,7 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             }
         }
 
-        IrType::Reference { elem, .. } => {
+        IrType::Reference { mutable, elem } => {
             // References to slices become pointers — slices are dynamically
             // sized, so they can't be flattened to a fixed number of scalars.
             if let IrType::Array {
@@ -838,8 +838,23 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             } = elem.as_ref()
             {
                 LirType::Ptr(Box::new(ir_type_to_lir_inner(inner_elem, registry)))
+            } else if *mutable && matches!(elem.as_ref(), IrType::Array { .. }) {
+                // A MUTABLE reference to a fixed-size array must alias the
+                // referent: the lowering never copies a by-value aggregate back
+                // to the caller, so value semantics would silently drop the
+                // callee's writes (`keccak_f1600(&mut st)` mutating a copy).
+                // Lower to a pointer into memory like a slice. Immutable
+                // references stay value-transparent. (`&mut Struct` stays
+                // transparent for now — struct field access on a pointer is a
+                // separate lowering path.)
+                let inner_elem = match elem.as_ref() {
+                    IrType::Array { elem: inner_elem, .. } => inner_elem,
+                    _ => unreachable!("matched Array above"),
+                };
+                LirType::Ptr(Box::new(ir_type_to_lir_inner(inner_elem, registry)))
             } else {
-                // Non-slice references are transparent in LIR (value semantics).
+                // Non-slice immutable references are transparent in LIR (value
+                // semantics).
                 ir_type_to_lir_inner(elem, registry)
             }
         }

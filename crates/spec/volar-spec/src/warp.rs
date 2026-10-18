@@ -546,7 +546,7 @@ fn warp_eval_constraint<TERMS: ArraySize, DEG: ArraySize, X: ArraySize, K: Array
     let mut out = Galois128(0);
     for i in 0..TERMS::USIZE {
         if i < constraint.n_terms as usize {
-            out = out + warp_eval_term(&constraint.terms[i], public, witness);
+            out = out + warp_eval_term::<DEG, X, K>(&constraint.terms[i], public, witness);
         }
     }
     out
