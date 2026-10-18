@@ -838,7 +838,9 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             } = elem.as_ref()
             {
                 LirType::Ptr(Box::new(ir_type_to_lir_inner(inner_elem, registry)))
-            } else if *mutable && matches!(elem.as_ref(), IrType::Array { .. }) {
+            } else if *mutable
+                && matches!(elem.as_ref(), IrType::Array { .. } | IrType::Struct { .. })
+            {
                 // A MUTABLE reference to a fixed-size array must alias the
                 // referent: the lowering never copies a by-value aggregate back
                 // to the caller, so value semantics would silently drop the

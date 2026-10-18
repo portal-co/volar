@@ -288,6 +288,40 @@ fn probe_keccak_f1600_zero_state() {
 }
 
 
+/// KNOWN-OPEN BUG (genesis blocker): the spec sponge's absorb doesn't land —
+/// the compiled `spec_sha3_256` of a fixed input diverges from native (the
+/// output is the finalize suffix + zeros, i.e. the absorbed bytes never reach
+/// the state). The Keccak permutation itself is correct
+/// (`probe_keccak_f1600_zero_state`), so the divergence is in the sponge's
+/// `&mut SpecSponge` / nested-reference chain. `#[ignore]`d pending a fix.
+#[ignore = "spec sponge absorb doesn't land; see doc comment"]
+#[test]
+fn probe_sponge_sha3() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_sponge() -> Array<u8, U32> {\n\
+             let mut s = spec_sponge_new(SHA3_256_RATE);\n\
+             let data = Array::<u8, U3>::from_fn(|i| match i { 0 => 0x61u8, 1 => 0x62u8, _ => 0x63u8 });\n\
+             spec_sponge_absorb_array(&mut s, &data);\n\
+             let mut r = spec_sponge_finalize_xof(&s, 0x06);\n\
+             let mut out = Array::<u8, U32>::default();\n\
+             spec_xof_read_array(&mut r, &mut out);\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_sponge"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_sponge"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("sponge evaluates");
+    let flat: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got: Vec<u8> = flat
+        .chunks(8)
+        .map(|bits| bits.iter().enumerate().fold(0u8, |acc, (i, b)| if *b { acc | (1 << i) } else { acc }))
+        .collect();
+    let native = volar_spec::keccak::spec_sha3_256(b"abc");
+    assert_eq!(got.as_slice(), native.as_slice(), "compiled sponge == native sha3_256");
+}
+
 /// A `match` on a runtime index returning captured struct values — the
 /// `from_fn(|i| match i { 0 => m0, ... })` shape. Isolates the multi-scalar
 /// (struct) match-result threading from the array wrapping.

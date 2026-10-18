@@ -4107,6 +4107,26 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
     let offset = struct_field_scalar_offset(ctx.registry, struct_id, field_idx);
     let width = struct_field_scalar_width(ctx.registry, struct_id, field_idx);
 
+    // A `&mut Struct` base lowers to a pointer into memory (the struct is not
+    // flattened into `env`): read the whole struct out of the pointer, then
+    // slice the field. This is the `sponge.state` read in the sponge
+    // destructure/write-back pattern.
+    if matches!(&base_ir_ty, IrType::Reference { mutable: true, elem }
+        if matches!(elem.as_ref(), IrType::Struct { .. }))
+    {
+        let ptr_vals = lower_expr(base, ctx);
+        let ptr = ptr_vals
+            .into_iter()
+            .next()
+            .expect("mutable struct ref is a single pointer");
+        let struct_lir = ctx.registry.ir_type_to_lir(&peeled, ctx.mono);
+        // ptr_index_load at index 0 reads the whole pointee and returns it as
+        // per-leaf scalars (the codegen's flat model).
+        let zero = ctx.target.iconst(LirType::U64, 0);
+        let whole = ctx.target.ptr_index_load(ptr, zero, &struct_lir);
+        return whole[offset..offset + width].to_vec();
+    }
+
     let base_vals = lower_expr(base, ctx);
     base_vals[offset..offset + width].to_vec()
 }
@@ -6999,6 +7019,13 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
                     std::mem::discriminant(&base.kind)
                 )
             });
+            // A `&mut Struct` base is a pointer into memory (the struct is not
+            // flattened): the field write is a load-modify-store through it.
+            let is_mut_struct_ref = matches!(
+                &base_ir_ty,
+                IrType::Reference { mutable: true, elem }
+                    if matches!(elem.as_ref(), IrType::Struct { .. })
+            );
             let base_ir_ty = match base_ir_ty {
                 IrType::Reference { elem, .. } => *elem,
                 other => other,
@@ -7053,6 +7080,25 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
             let IrExprKind::Var(name) = &base.kind else {
                 unimplemented!("lower_assign: field assign on non-variable base");
             };
+            // `&mut Struct` base is a pointer into memory: load the whole
+            // struct, splice the field's scalars, store back.
+            if is_mut_struct_ref {
+                let ptr_vals = lower_expr(base, ctx);
+                let ptr = ptr_vals
+                    .into_iter()
+                    .next()
+                    .expect("mutable struct ref is a single pointer");
+                let struct_lir = ctx.registry.ir_type_to_lir(&base_ir_ty, ctx.mono);
+                let zero = ctx.target.iconst(LirType::U64, 0);
+                let mut whole = ctx
+                    .target
+                    .ptr_index_load(ptr.clone(), zero.clone(), &struct_lir);
+                for j in 0..field_width {
+                    whole[offset + j] = rhs_vals[j].clone();
+                }
+                ctx.target.ptr_index_store(ptr, zero, &whole, &struct_lir);
+                return;
+            }
             // Promoted struct base: load whole, splice the field's scalars,
             // store back (memory-backed, survives the back-edge).
             if let Some(slot) = ctx.promoted.get(name.as_str()).cloned() {

@@ -111,14 +111,21 @@ impl WarpTranscript {
 
     /// Absorb a domain-separation label (once, first).
     pub fn domain_sep<N: ArraySize>(mut self, label: &Array<u8, N>) -> Self {
-        spec_sponge_absorb_array(&mut self.sponge, label);
+        let mut sponge = self.sponge.clone();
+        spec_sponge_absorb_array(&mut sponge, label);
+        self.sponge = sponge;
         self
     }
 
     /// Absorb a fixed-size byte array (the dialect form — concrete `N` loop
     /// bound, no runtime-length slice loops).
     pub fn absorb_array<N: ArraySize>(&mut self, data: &Array<u8, N>) {
-        spec_sponge_absorb_array(&mut self.sponge, data);
+        // Destructure the sponge into a local, mutate it, write back — the
+        // nested `&mut self.sponge` field reference doesn't alias across the
+        // call boundary, so operate on a local and store it back.
+        let mut sponge = self.sponge.clone();
+        spec_sponge_absorb_array(&mut sponge, data);
+        self.sponge = sponge;
     }
 
     /// Length-prefixed absorb (`u64` LE length, then bytes) — the oracle's
