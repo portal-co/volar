@@ -1204,9 +1204,13 @@ fn bind_call_args_with_trait_args<P: Clone>(
                 function.name
             )));
         }
-        // Keep the caller's layout bindings. An empty env would re-plan the same
-        // non-generic body without `N`/`U1` and panic during type conversion.
-        return Ok(caller_env.clone());
+        // Use the ambient env (module consts + typenum consts + aliases), NOT
+        // the caller's full env: the caller's generic bindings (`N`, `BETA`,
+        // …) are irrelevant to a non-generic body and only pollute the
+        // instance key, producing one duplicate instance per caller env.
+        // `ambient_callee_env` already filters name-shadowing and keeps the
+        // module/typenum consts a non-generic body needs.
+        return Ok(ambient_callee_env(function, caller_env));
     }
     // Seed with ambient caller bindings that this function does not shadow
     // (typenum defaults, VOLE `U1`/`U0`, hash suffix, etc.).
@@ -1352,21 +1356,15 @@ fn ambient_callee_env<P: Clone>(function: &IrFunction<P>, caller_env: &MonoEnv) 
         .filter(|(name, _)| !shadows(name))
         .map(|(name, value)| (name.clone(), *value))
         .collect();
-    for (name, value) in &caller_env.const_params {
-        if !shadows(name) {
-            env.const_params.insert(name.clone(), *value);
-        }
-    }
-    for (name, value) in &caller_env.type_params {
-        if !shadows(name) {
-            env.type_params.insert(name.clone(), value.clone());
-        }
-    }
-    for (key, value) in &caller_env.projections {
-        if !shadows(&key.0) {
-            env.projections.insert(key.clone(), value.clone());
-        }
-    }
+    // Do NOT inherit the caller's generic bindings (`const_params` /
+    // `type_params` / `projections`): those are scoped to the caller's own
+    // generics, and a callee never references them — the callee's own
+    // generics are bound by `bind_call_args` at the call site. Inheriting
+    // them only pollutes the callee's instance key with caller-specific
+    // bindings, producing duplicate identical instances (a non-generic helper
+    // like `keccak_f1600` was getting one copy per caller env). Module
+    // `consts` and type `aliases` still carry through (they're module-level,
+    // not caller-generic).
     // Module type aliases carry through calls — a callee's parameter typed
     // through an alias (e.g. `&WarpDigest`) must resolve to its target when
     // unifying with the call-site argument type.
