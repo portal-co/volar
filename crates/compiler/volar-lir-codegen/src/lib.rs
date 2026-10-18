@@ -1156,6 +1156,22 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
 ) -> (LirType, Vec<T::Value>) {
     let ptr_needed = matches!(declared, Some(LirType::Ptr(_)));
     if ptr_needed {
+        // The arg is already a pointer (a `&mut` param being forwarded to
+        // another callee): pass it through unchanged. Spilling it would store
+        // the ADDRESS BITS into a fresh alloca and hand the callee a pointer
+        // to the copy — the callee's writes would then land in the copy, not
+        // the original referent (the `outer(s) -> helper_write(s)` handoff in
+        // `permute_bytes`).
+        if let IrExprKind::Var(name) = &arg.kind {
+            if let Some(vals) = ctx.env.get(name.as_str()) {
+                if vals.len() == 1
+                    && matches!(ctx.target.value_scalar_type(&vals[0]), LirType::Ptr(_))
+                {
+                    let ty = declared.cloned().unwrap_or_else(|| ctx.target.value_scalar_type(&vals[0]));
+                    return (ty, vals.clone());
+                }
+            }
+        }
         // Rust's `&Vec<T>` → `&[T]` coercion passes the Vec's backing-data
         // pointer, not the handle's pointer/length/capacity cells.
         if let Some(arg_ir_ty) = ctx.infer_type(arg) {

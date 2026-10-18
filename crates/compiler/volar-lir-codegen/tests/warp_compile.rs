@@ -352,6 +352,36 @@ fn probe_range_write_param_ptr() {
     assert_eq!(bits_to_u128(&flat) as u64, 9, "b[4] == 9 after the range write");
 }
 
+/// KNOWN-OPEN (genesis blocker): passing a `&mut` param pointer through TWO
+/// function calls (caller -> outer -> helper) loses the callee's write — the
+/// second callee's store doesn't reach the original caller's memory. This is
+/// the `permute_bytes` shape (state_bytes -> bytes_to_lanes / keccak_f1600 /
+/// lanes_to_bytes). Single-callee writes work (probe_read_write_param_ptr);
+/// the double handoff is the open bug. `#[ignore]`d pending a fix.
+#[test]
+fn probe_readwrite_via_calls() {
+    let module = parse_driver_only(
+        "fn read_it(s: &[u64; 4]) -> u64 { s[0] }\n\
+         fn write_it(s: &mut [u64; 4], v: u64) { s[0] = v; }\n\
+         fn outer(s: &mut [u64; 4]) {\n\
+             let x = read_it(s);\n\
+             write_it(s, x + 1);\n\
+         }\n\
+         pub fn probe_rwc() -> u64 {\n\
+             let mut b = [0u64; 4];\n\
+             b[0] = 41;\n\
+             outer(&mut b);\n\
+             b[0]\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_rwc"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_rwc"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("readwrite via calls");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 42, "b[0] == 42 after read+write via calls");
+}
+
 /// Read-then-write on a `&mut` param pointer (the `permute_bytes` shape:
 /// bytes_to_lanes reads the state, lanes_to_bytes writes it back).
 #[test]
@@ -477,7 +507,6 @@ fn probe_lanes_to_bytes() {
 /// — the absorb path now works (struct refs), but the byte<->lane conversion
 /// write-back (`lanes_to_bytes`' `b[i*8..i*8+8].copy_from_slice(..)` in nested
 /// native loops) doesn't land. `keccak_f1600` itself is correct.
-#[ignore = "permute_bytes conversions don't land; see doc comment"]
 #[test]
 fn probe_permute_bytes() {
     let module = parse_with_driver(
@@ -506,7 +535,6 @@ fn probe_permute_bytes() {
 /// the state). The Keccak permutation itself is correct
 /// (`probe_keccak_f1600_zero_state`), so the divergence is in the sponge's
 /// `&mut SpecSponge` / nested-reference chain. `#[ignore]`d pending a fix.
-#[ignore = "spec sponge absorb works but the permute conversions don't land; see probe_permute_bytes"]
 #[test]
 fn probe_sponge_sha3() {
     let module = parse_with_driver(
@@ -720,7 +748,7 @@ fn probe_term_n_vars_field() {
 }
 
 
-#[ignore = "genesis lowers + runs to completion; the match-of-captured-struct lowering bug makes the constraint eval wrong; see module note"]
+#[ignore = "genesis runs to completion and produces a real Merkle root, but it diverges from native; the content being hashed differs; see module note"]
 #[test]
 fn warp_genesis_compiles_via_ir_and_matches_native() {
     let module = parse_with_driver(
