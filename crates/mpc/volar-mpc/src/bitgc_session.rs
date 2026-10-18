@@ -34,8 +34,9 @@ use volar_spec::SpecRng;
 use volar_spec::bitgc::Variant;
 use volar_spec::bitgc::common::{Circuit, Gate};
 use volar_spec::bitgc::pinned::{
-    DriverError, GarblerWireLabels, LabelPoly, PrfKey, RoleDdGarbler,
-    evaluate_role_circuit_with_labels, garble_role_circuit,
+    DriverError, GarblerWireLabels, LabelPoly, PrfKey, RoleDdGarbler, RoleMaterialCodec,
+    RoleMaterialError, decode_role_tables, encode_role_tables, evaluate_role_circuit_with_labels,
+    garble_role_circuit,
 };
 use volar_spec::vole::VoleArray;
 
@@ -56,6 +57,14 @@ const INPUT_CHUNK_HEADER_BYTES: usize = 1 + 8 + 4 + 4 + 4;
 const OUTPUT_COMMIT_TAG: u8 = 0x20;
 const OUTPUT_COMMIT_BYTES: usize = 1 + 4 + 4 + 8 + 32 + 32;
 const BITGC_OUTPUT_MAX_COUNT: usize = 1 << 20;
+/// Garbler-to-evaluator evaluator-material chunk (Phase 4 delivery).
+const MATERIAL_CHUNK_TAG: u8 = 0x30;
+const MATERIAL_CHUNK_HEADER_BYTES: usize = 1 + 8 + 4 + 4;
+/// Maximum canonical byte length of one evaluator-material package.
+pub const BITGC_MATERIAL_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Garbler-to-evaluator direct delivery of one garbler-owned input label.
+const GARBLER_INPUT_TAG: u8 = 0x40;
+const GARBLER_INPUT_HEADER_BYTES: usize = 1 + 8 + 8;
 const AUTH_TAG_BYTES: usize = 32;
 const AUTH_BLOCK_BYTES: usize = 64;
 const AUTH_DOMAIN: &[u8] = b"Volar BitGC frame auth v1\0";
@@ -453,6 +462,10 @@ pub enum BitGcSessionError {
     InvalidInputDescriptor,
     /// An output commitment record does not match the expected output/wire.
     InvalidOutputCommitment,
+    /// An evaluator-material chunk is malformed or out of its declared order.
+    InvalidMaterial,
+    /// A garbler-input delivery frame is malformed or out of order.
+    InvalidGarblerInput,
     /// The evaluator's active output label matches neither committed label.
     OutputLabelMismatch,
     /// An authenticated session frame did not carry the required tag.
@@ -467,6 +480,20 @@ pub enum BitGcSessionError {
     SequenceExhausted,
     /// The session has already been cancelled or aborted.
     Terminal,
+}
+
+/// Ownership of one circuit input in the shared protocol.
+///
+/// Garbler-owned inputs are delivered directly (the garbler knows the bit);
+/// evaluator-owned inputs are transferred by OT so the garbler learns
+/// nothing about them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitGcInputOwner {
+    /// The garbler supplies this input bit; its active label is sent
+    /// directly in one Data frame.
+    Garbler,
+    /// The evaluator supplies this input bit; its label arrives by OT.
+    Evaluator,
 }
 
 /// Transport seam for bounded BitGC session frames.
@@ -1210,6 +1237,29 @@ impl BitGcSession {
         Ok(encoded)
     }
 
+    /// Exchange hello frames over a bidirectional transport: send the local
+    /// hello, then receive and validate the peer hello. Failures abort the
+    /// session and best-effort cancel the transport.
+    pub fn handshake_over<T: BitGcFrameTransport>(
+        &mut self,
+        transport: &mut T,
+    ) -> Result<(), BitGcIoError<T::Error>> {
+        let encoded = match self.hello() {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                let _ = transport.cancel();
+                return Err(BitGcIoError::Protocol(error));
+            }
+        };
+        if let Err(error) = transport.send_frame(&encoded) {
+            self.state = BitGcSessionState::Aborted;
+            let _ = transport.cancel();
+            return Err(BitGcIoError::Transport(error));
+        }
+        self.receive_over(transport)?;
+        Ok(())
+    }
+
     /// Send cancellation and interrupt the transport. Cancellation is
     /// terminal even if transport shutdown itself fails.
     pub fn cancel_over<T: BitGcFrameTransport>(
@@ -1580,6 +1630,234 @@ impl BitGcSession {
             clear_outputs.push(matches1);
         }
         Ok(clear_outputs)
+    }
+
+    /// Deliver one evaluator-material package (evaluator setup material
+    /// followed by canonical [`RoleEvaluatorTables`][tables] bytes) to the
+    /// evaluator as bounded Data frames.
+    ///
+    /// [tables]: volar_spec::bitgc::pinned::RoleEvaluatorTables
+    ///
+    /// Chunks are `[tag][u64 total_bytes][u32 chunk_index][u32 chunk_count][chunk]`
+    /// frames sent after hello and before input OTs; because they are Data
+    /// frames, they advance the unified frame/OT transcript, so the material
+    /// is transcript-bound (and authenticated when the session has a key).
+    /// The garbler role sends, the evaluator role receives; any mismatch,
+    /// reorder, or bound violation aborts both the frame transport and the
+    /// session.
+    pub fn send_material_over<T: BitGcFrameTransport>(
+        &mut self,
+        transport: &mut T,
+        material: &[u8],
+    ) -> Result<(), BitGcIoError<T::Error>> {
+        if self.local_role != BitGcRole::Garbler {
+            return self.abort_over(transport, BitGcSessionError::WrongRole);
+        }
+        if material.is_empty() || material.len() > BITGC_MATERIAL_MAX_BYTES {
+            return self.abort_over(transport, BitGcSessionError::InvalidMaterial);
+        }
+        let chunk_capacity = BITGC_FRAME_MAX_PAYLOAD
+            .saturating_sub(MATERIAL_CHUNK_HEADER_BYTES)
+            .saturating_sub(AUTH_TAG_BYTES);
+        let chunk_count = match chunk_count(material.len(), chunk_capacity) {
+            Some(count) if count <= u32::MAX as usize => count as u32,
+            _ => return self.abort_over(transport, BitGcSessionError::InvalidMaterial),
+        };
+        let total_bytes = material.len() as u64;
+        for chunk_index in 0..chunk_count {
+            let start = chunk_index as usize * chunk_capacity;
+            let end = core::cmp::min(start + chunk_capacity, material.len());
+            let chunk = &material[start..end];
+            let mut payload = Vec::new();
+            if payload
+                .try_reserve_exact(MATERIAL_CHUNK_HEADER_BYTES + chunk.len())
+                .is_err()
+            {
+                return self.abort_over(
+                    transport,
+                    BitGcSessionError::Frame(FrameError::AllocationFailed),
+                );
+            }
+            payload.push(MATERIAL_CHUNK_TAG);
+            payload.extend_from_slice(&total_bytes.to_le_bytes());
+            payload.extend_from_slice(&chunk_index.to_le_bytes());
+            payload.extend_from_slice(&chunk_count.to_le_bytes());
+            payload.extend_from_slice(chunk);
+            self.send_over(transport, BitGcFrameKind::Data, &payload)?;
+        }
+        Ok(())
+    }
+
+    /// Receive one evaluator-material package delivered by
+    /// [`Self::send_material_over`], enforcing order, count, total, and the
+    /// [`BITGC_MATERIAL_MAX_BYTES`] bound before allocation.
+    pub fn receive_material_over<T: BitGcFrameTransport>(
+        &mut self,
+        transport: &mut T,
+    ) -> Result<Vec<u8>, BitGcIoError<T::Error>> {
+        if self.local_role != BitGcRole::Evaluator {
+            return self.abort_over(transport, BitGcSessionError::WrongRole);
+        }
+        let mut material: Option<(Vec<u8>, u64, u32)> = None;
+        let mut next_index = 0u32;
+        loop {
+            let encoded = self.receive_over(transport)?;
+            let frame = match BitGcFrame::decode(&encoded) {
+                Ok(frame) if frame.kind == BitGcFrameKind::Data => frame,
+                _ => return self.abort_over(transport, BitGcSessionError::InvalidMaterial),
+            };
+            let payload = match self.payload_without_auth(&frame) {
+                Ok(payload) => payload,
+                Err(error) => return self.abort_over(transport, error),
+            };
+            if payload.len() < MATERIAL_CHUNK_HEADER_BYTES
+                || payload[0] != MATERIAL_CHUNK_TAG
+                || payload.len() > MATERIAL_CHUNK_HEADER_BYTES + BITGC_FRAME_MAX_PAYLOAD
+            {
+                return self.abort_over(transport, BitGcSessionError::InvalidMaterial);
+            }
+            let total_bytes = u64::from_le_bytes(
+                payload[1..9]
+                    .try_into()
+                    .map_err(|_| BitGcIoError::Protocol(BitGcSessionError::InvalidMaterial))?,
+            );
+            let chunk_index = u32::from_le_bytes(
+                payload[9..13]
+                    .try_into()
+                    .map_err(|_| BitGcIoError::Protocol(BitGcSessionError::InvalidMaterial))?,
+            );
+            let chunk_count = u32::from_le_bytes(
+                payload[13..17]
+                    .try_into()
+                    .map_err(|_| BitGcIoError::Protocol(BitGcSessionError::InvalidMaterial))?,
+            );
+            let body = &payload[MATERIAL_CHUNK_HEADER_BYTES..];
+            if chunk_count == 0 || chunk_index >= chunk_count || total_bytes == 0 {
+                return self.abort_over(transport, BitGcSessionError::InvalidMaterial);
+            }
+            if total_bytes > BITGC_MATERIAL_MAX_BYTES as u64 {
+                return self.abort_over(transport, BitGcSessionError::InvalidMaterial);
+            }
+            if chunk_index != next_index {
+                return self.abort_over(transport, BitGcSessionError::InvalidMaterial);
+            }
+            if material.is_none() {
+                let total = total_bytes as usize;
+                let mut buffer = Vec::new();
+                if buffer.try_reserve_exact(total).is_err() {
+                    return self.abort_over(
+                        transport,
+                        BitGcSessionError::Frame(FrameError::AllocationFailed),
+                    );
+                }
+                material = Some((buffer, total_bytes, chunk_count));
+            }
+            let (buffer, expected_total, expected_count) = match material.as_mut() {
+                Some(state) => state,
+                None => return self.abort_over(transport, BitGcSessionError::InvalidMaterial),
+            };
+            if *expected_total != total_bytes || *expected_count != chunk_count {
+                return self.abort_over(transport, BitGcSessionError::InvalidMaterial);
+            }
+            buffer.extend_from_slice(body);
+            next_index = next_index.saturating_add(1);
+            if next_index == chunk_count {
+                let (buffer, expected_total, _) = match material.take() {
+                    Some(state) => state,
+                    None => {
+                        return self.abort_over(transport, BitGcSessionError::InvalidMaterial);
+                    }
+                };
+                if buffer.len() as u64 != expected_total {
+                    return self.abort_over(transport, BitGcSessionError::InvalidMaterial);
+                }
+                return Ok(buffer);
+            }
+        }
+    }
+
+    /// Deliver one garbler-owned input's active label directly to the
+    /// evaluator.
+    ///
+    /// Garbler-owned inputs need no OT: the garbler knows the bit, so it
+    /// sends the active label and its masked bit in one Data frame. The
+    /// evaluator uses the label as the wire's evaluation input. Frames carry
+    /// `[tag][u64 input_index][u64 byte_len][label bytes][u8 masked]`.
+    pub fn send_garbler_input_over<T: BitGcFrameTransport>(
+        &mut self,
+        transport: &mut T,
+        input_index: u64,
+        plaintext_modulus: u64,
+        ring_degree: usize,
+        label: &(LabelPoly, bool),
+    ) -> Result<(), BitGcIoError<T::Error>> {
+        if self.local_role != BitGcRole::Garbler {
+            return self.abort_over(transport, BitGcSessionError::WrongRole);
+        }
+        let encoded = match encode_input_branch(&label.0, label.1, plaintext_modulus, ring_degree) {
+            Ok(encoded) => encoded,
+            Err(error) => return self.abort_over(transport, error),
+        };
+        let mut payload = Vec::new();
+        if payload
+            .try_reserve_exact(GARBLER_INPUT_HEADER_BYTES + encoded.len())
+            .is_err()
+        {
+            return self.abort_over(
+                transport,
+                BitGcSessionError::Frame(FrameError::AllocationFailed),
+            );
+        }
+        payload.push(GARBLER_INPUT_TAG);
+        payload.extend_from_slice(&input_index.to_le_bytes());
+        payload.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+        payload.extend_from_slice(&encoded);
+        self.send_over(transport, BitGcFrameKind::Data, &payload)
+    }
+
+    /// Receive one garbler-owned input label delivered by
+    /// [`Self::send_garbler_input_over`], binding it to the expected input
+    /// index and profile shape.
+    pub fn receive_garbler_input_over<T: BitGcFrameTransport>(
+        &mut self,
+        transport: &mut T,
+        expected_input_index: u64,
+        plaintext_modulus: u64,
+        ring_degree: usize,
+    ) -> Result<(LabelPoly, bool), BitGcIoError<T::Error>> {
+        if self.local_role != BitGcRole::Evaluator {
+            return self.abort_over(transport, BitGcSessionError::WrongRole);
+        }
+        let encoded = self.receive_over(transport)?;
+        let frame = match BitGcFrame::decode(&encoded) {
+            Ok(frame) if frame.kind == BitGcFrameKind::Data => frame,
+            _ => return self.abort_over(transport, BitGcSessionError::InvalidGarblerInput),
+        };
+        let payload = match self.payload_without_auth(&frame) {
+            Ok(payload) => payload,
+            Err(error) => return self.abort_over(transport, error),
+        };
+        if payload.len() < GARBLER_INPUT_HEADER_BYTES || payload[0] != GARBLER_INPUT_TAG {
+            return self.abort_over(transport, BitGcSessionError::InvalidGarblerInput);
+        }
+        let input_index = u64::from_le_bytes(
+            payload[1..9]
+                .try_into()
+                .map_err(|_| BitGcIoError::Protocol(BitGcSessionError::InvalidGarblerInput))?,
+        );
+        let byte_len = u64::from_le_bytes(
+            payload[9..17]
+                .try_into()
+                .map_err(|_| BitGcIoError::Protocol(BitGcSessionError::InvalidGarblerInput))?,
+        );
+        let body = &payload[GARBLER_INPUT_HEADER_BYTES..];
+        if input_index != expected_input_index || body.len() as u64 != byte_len {
+            return self.abort_over(transport, BitGcSessionError::InvalidGarblerInput);
+        }
+        match decode_input_branch(body, plaintext_modulus, ring_degree) {
+            Ok(label) => Ok(label),
+            Err(error) => self.abort_over(transport, error),
+        }
     }
 
     fn receive_input_chunk_descriptor<T: BitGcFrameTransport>(
@@ -2200,6 +2478,8 @@ pub enum BitGcCircuitRunnerError<E> {
     Session(E),
     /// The circuit driver rejected its inputs or material.
     Driver(DriverError),
+    /// Canonical evaluator-material or tables bytes failed to decode.
+    Material(RoleMaterialError),
     /// A garbler/evaluator ownership mismatch is structurally impossible.
     WrongRole,
 }
@@ -2214,6 +2494,9 @@ where
             Self::SessionState(error) => write!(f, "BitGC session state failed: {error:?}"),
             Self::Session(error) => write!(f, "BitGC session failed: {error:?}"),
             Self::Driver(error) => write!(f, "BitGC circuit driver failed: {error:?}"),
+            Self::Material(error) => {
+                write!(f, "BitGC evaluator material decode failed: {error:?}")
+            }
             Self::WrongRole => f.write_str("BitGC runner role mismatch"),
         }
     }
@@ -2402,6 +2685,269 @@ where
         dd.p(),
         dd.degree(),
     )
+}
+
+/// Run the garbler side of one role-separated BitGC circuit over real
+/// caller-owned frame and OT transports.
+///
+/// After the hello handshake, the garbler delivers the evaluator setup
+/// material and canonical [`RoleEvaluatorTables`][tables] through
+/// [`BitGcSession::send_material_over`], delivers garbler-owned inputs
+/// through [`BitGcSession::send_garbler_input_over`], transfers each
+/// evaluator-owned input by OT through
+/// [`BitGcSession::send_evaluator_input_over`], and finally sends the
+/// output-label commitments. The garbler learns nothing back except
+/// transport success.
+///
+/// [tables]: volar_spec::bitgc::pinned::RoleEvaluatorTables
+///
+/// This is a correctness/integration seam only: it does not admit BitGC for
+/// protected data, and its transcript authentication is exactly what the
+/// underlying [`BitGcSession`] was constructed with.
+///
+/// TODO(provider-ledger: BITGC-LEDGER-07): keep out of protected-data
+/// profiles until independent protocol/parameter review passes.
+#[allow(clippy::too_many_arguments)]
+pub fn run_garbler_over<G, N, TF, TO, R>(
+    session: &mut BitGcSession,
+    circuit: &Circuit,
+    dd: &G,
+    prf: &PrfKey,
+    prg_bits: &[bool],
+    random: &mut R,
+    pis: &[bool],
+    modulus_chain: &[u64],
+    input_owners: &[BitGcInputOwner],
+    garbler_inputs: &[bool],
+    frames: &mut TF,
+    ot: &mut TO,
+) -> Result<(), BitGcCircuitRunnerError<BitGcIoError<TF::Error>>>
+where
+    G: RoleDdGarbler,
+    G::Evaluator: RoleMaterialCodec,
+    N: VoleArray<u8>,
+    TF: BitGcFrameTransport,
+    TO: BitGcInputOt<N>,
+    R: SpecRng,
+{
+    let variant = session.binding().variant;
+    if session.state() != BitGcSessionState::Handshaking {
+        return Err(BitGcCircuitRunnerError::SessionState(
+            BitGcSessionError::UnexpectedKind,
+        ));
+    }
+    circuit
+        .validate()
+        .map_err(|_| BitGcCircuitRunnerError::Binding(BitGcDigestError::InvalidCircuit))?;
+    if input_owners.len() != circuit.inputs
+        || garbler_inputs.len()
+            != input_owners
+                .iter()
+                .filter(|owner| matches!(owner, BitGcInputOwner::Garbler))
+                .count()
+    {
+        return Err(BitGcCircuitRunnerError::Driver(DriverError::BadInputCount));
+    }
+    let expected_binding = canonical_session_binding(
+        session.binding().session_id,
+        variant,
+        dd.p(),
+        dd.degree(),
+        modulus_chain,
+        circuit,
+    )
+    .map_err(BitGcCircuitRunnerError::Binding)?;
+    if session.binding() != expected_binding {
+        return Err(BitGcCircuitRunnerError::Binding(
+            BitGcDigestError::InvalidParameters,
+        ));
+    }
+    let (garbler_labels, tables, evaluator_material) =
+        garble_role_circuit(variant, circuit, dd, pis, prf, prg_bits, random)
+            .map_err(BitGcCircuitRunnerError::Driver)?;
+    session
+        .handshake_over(frames)
+        .map_err(BitGcCircuitRunnerError::Session)?;
+
+    let tables_bytes = encode_role_tables(&evaluator_material, &tables)
+        .map_err(BitGcCircuitRunnerError::Material)?;
+    let setup_bytes = evaluator_material.encode_evaluator_material();
+    let mut material = Vec::new();
+    material
+        .try_reserve_exact(8 + setup_bytes.len() + tables_bytes.len())
+        .map_err(|_| BitGcCircuitRunnerError::Material(RoleMaterialError::CountOverflow))?;
+    material.extend_from_slice(&(setup_bytes.len() as u64).to_le_bytes());
+    material.extend_from_slice(&setup_bytes);
+    material.extend_from_slice(&tables_bytes);
+    session
+        .send_material_over(frames, &material)
+        .map_err(BitGcCircuitRunnerError::Session)?;
+
+    let mut garbler_index = 0usize;
+    for (input_index, owner) in input_owners.iter().enumerate() {
+        match owner {
+            BitGcInputOwner::Garbler => {
+                let value = garbler_inputs[garbler_index];
+                garbler_index += 1;
+                let pair = garbler_labels
+                    .input_label_pair(input_index)
+                    .map_err(BitGcCircuitRunnerError::Driver)?;
+                let selected = pair[usize::from(value)].clone();
+                session
+                    .send_garbler_input_over(
+                        frames,
+                        input_index as u64,
+                        dd.p(),
+                        dd.degree(),
+                        &selected,
+                    )
+                    .map_err(BitGcCircuitRunnerError::Session)?;
+            }
+            BitGcInputOwner::Evaluator => {
+                let pair = garbler_labels
+                    .input_label_pair(input_index)
+                    .map_err(BitGcCircuitRunnerError::Driver)?;
+                session
+                    .send_evaluator_input_over::<N, _, _>(
+                        frames,
+                        ot,
+                        input_index as u64,
+                        dd.p(),
+                        dd.degree(),
+                        &pair,
+                    )
+                    .map_err(BitGcCircuitRunnerError::Session)?;
+            }
+        }
+    }
+
+    session
+        .send_output_commitments_over(frames, &garbler_labels, dd.p(), dd.degree())
+        .map_err(BitGcCircuitRunnerError::Session)
+}
+
+/// Run the evaluator side of one role-separated BitGC circuit over real
+/// caller-owned frame and OT transports.
+///
+/// After the hello handshake, the evaluator receives the material package
+/// (setup material + canonical tables) through
+/// [`BitGcSession::receive_material_over`], decodes it against the declared
+/// `E` profile, receives garbler-owned inputs directly and evaluator-owned
+/// inputs by OT with its local choices, evaluates the circuit with the
+/// decoded evaluator-only material, and opens the output commitments.
+///
+/// No garbler Δ, PRF key, or secret key material ever enters this function.
+/// This is a correctness/integration seam only: it does not admit BitGC for
+/// protected data.
+///
+/// TODO(provider-ledger: BITGC-LEDGER-07): keep out of protected-data
+/// profiles until independent protocol/parameter review passes.
+pub fn run_evaluator_over<E, N, TF, TO>(
+    session: &mut BitGcSession,
+    circuit: &Circuit,
+    modulus_chain: &[u64],
+    input_owners: &[BitGcInputOwner],
+    evaluator_choices: &[bool],
+    frames: &mut TF,
+    ot: &mut TO,
+) -> Result<Vec<bool>, BitGcCircuitRunnerError<BitGcIoError<TF::Error>>>
+where
+    E: RoleMaterialCodec,
+    N: VoleArray<u8>,
+    TF: BitGcFrameTransport,
+    TO: BitGcInputOt<N>,
+{
+    let variant = session.binding().variant;
+    if session.state() != BitGcSessionState::Handshaking {
+        return Err(BitGcCircuitRunnerError::SessionState(
+            BitGcSessionError::UnexpectedKind,
+        ));
+    }
+    circuit
+        .validate()
+        .map_err(|_| BitGcCircuitRunnerError::Binding(BitGcDigestError::InvalidCircuit))?;
+    if input_owners.len() != circuit.inputs
+        || evaluator_choices.len()
+            != input_owners
+                .iter()
+                .filter(|owner| matches!(owner, BitGcInputOwner::Evaluator))
+                .count()
+    {
+        return Err(BitGcCircuitRunnerError::Driver(DriverError::BadInputCount));
+    }
+    session
+        .handshake_over(frames)
+        .map_err(BitGcCircuitRunnerError::Session)?;
+
+    let material = session
+        .receive_material_over(frames)
+        .map_err(BitGcCircuitRunnerError::Session)?;
+    if material.len() < 8 {
+        return Err(BitGcCircuitRunnerError::Material(
+            RoleMaterialError::LengthMismatch,
+        ));
+    }
+    let setup_len = u64::from_le_bytes(
+        material[..8]
+            .try_into()
+            .map_err(|_| BitGcCircuitRunnerError::Material(RoleMaterialError::LengthMismatch))?,
+    ) as usize;
+    if material.len() < 8 + setup_len {
+        return Err(BitGcCircuitRunnerError::Material(
+            RoleMaterialError::LengthMismatch,
+        ));
+    }
+    let evaluator_material = E::decode_evaluator_material(&material[8..8 + setup_len]).ok_or(
+        BitGcCircuitRunnerError::Material(RoleMaterialError::NonCanonical),
+    )?;
+    let tables = decode_role_tables(&evaluator_material, variant, &material[8 + setup_len..])
+        .map_err(BitGcCircuitRunnerError::Material)?;
+    let p = evaluator_material.p();
+    let degree = evaluator_material.degree();
+    // The decoded profile must reproduce the session's parameter
+    // fingerprint, so a garbler cannot silently swap profiles mid-session.
+    let expected_fingerprint = canonical_parameter_fingerprint(variant, p, degree, modulus_chain)
+        .map_err(BitGcCircuitRunnerError::Binding)?;
+    if expected_fingerprint != session.binding().parameter_fingerprint {
+        return Err(BitGcCircuitRunnerError::Binding(
+            BitGcDigestError::InvalidParameters,
+        ));
+    }
+
+    let mut inputs: Vec<(LabelPoly, bool)> = Vec::with_capacity(circuit.inputs);
+    let mut choice_index = 0usize;
+    for (input_index, owner) in input_owners.iter().enumerate() {
+        match owner {
+            BitGcInputOwner::Garbler => {
+                let label = session
+                    .receive_garbler_input_over(frames, input_index as u64, p, degree)
+                    .map_err(BitGcCircuitRunnerError::Session)?;
+                inputs.push(label);
+            }
+            BitGcInputOwner::Evaluator => {
+                let choice = evaluator_choices[choice_index];
+                choice_index += 1;
+                let label = session
+                    .receive_evaluator_input_over::<N, _, _>(
+                        frames,
+                        ot,
+                        input_index as u64,
+                        p,
+                        degree,
+                        choice,
+                    )
+                    .map_err(BitGcCircuitRunnerError::Session)?;
+                inputs.push(label);
+            }
+        }
+    }
+
+    let outputs =
+        evaluate_role_circuit_with_labels(variant, circuit, &evaluator_material, &tables, &inputs)
+            .map_err(BitGcCircuitRunnerError::Driver)?;
+    session
+        .receive_committed_outputs_over(frames, &outputs, &circuit.outputs, p, degree)
+        .map_err(BitGcCircuitRunnerError::Session)
 }
 
 fn is_terminal(state: BitGcSessionState) -> bool {
@@ -3766,5 +4312,190 @@ mod tests {
             BitGcFrame::decode(&e_hello).unwrap().role,
             BitGcRole::Evaluator
         );
+    }
+
+    #[test]
+    fn material_delivery_roundtrip_and_bounds() {
+        let (mut garbler, mut evaluator) = pair();
+        handshake(&mut garbler, &mut evaluator);
+        let (mut garbler_frames, mut evaluator_frames) = pipe_pair();
+        let material: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let send_material = material.clone();
+        let send = thread::spawn(move || {
+            garbler
+                .send_material_over(&mut garbler_frames, &send_material)
+                .map(|_| garbler)
+        });
+        let receive = thread::spawn(move || {
+            evaluator
+                .receive_material_over(&mut evaluator_frames)
+                .map(|bytes| (bytes, evaluator))
+        });
+        let garbler = send.join().unwrap().unwrap();
+        let (received, evaluator) = receive.join().unwrap().unwrap();
+        assert_eq!(received, material);
+        assert_eq!(garbler.state(), BitGcSessionState::Active);
+        assert_eq!(evaluator.state(), BitGcSessionState::Active);
+
+        // Oversized material is rejected before sending.
+        let mut garbler2 = BitGcSession::new(BitGcRole::Garbler, binding()).unwrap();
+        let mut io = TestTransport::new();
+        let oversized = vec![0u8; BITGC_MATERIAL_MAX_BYTES + 1];
+        assert!(matches!(
+            garbler2.send_material_over(&mut io, &oversized),
+            Err(BitGcIoError::Protocol(BitGcSessionError::InvalidMaterial))
+        ));
+        assert_eq!(garbler2.state(), BitGcSessionState::Aborted);
+
+        // A reordered chunk index aborts the evaluator.
+        let (mut garbler3, mut evaluator3) = pair();
+        handshake(&mut garbler3, &mut evaluator3);
+        let (mut g_frames, mut e_frames) = pipe_pair();
+        let mut payload = Vec::new();
+        payload.push(MATERIAL_CHUNK_TAG);
+        payload.extend_from_slice(&100u64.to_le_bytes());
+        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(&10u32.to_le_bytes());
+        payload.extend_from_slice(&[7u8; 10]);
+        let send = thread::spawn(move || {
+            garbler3.send_over(&mut g_frames, BitGcFrameKind::Data, &payload)
+        });
+        let receive = thread::spawn(move || evaluator3.receive_material_over(&mut e_frames));
+        send.join().unwrap().unwrap();
+        assert!(matches!(
+            receive.join().unwrap(),
+            Err(BitGcIoError::Protocol(BitGcSessionError::InvalidMaterial))
+        ));
+    }
+
+    #[test]
+    fn garbler_input_direct_delivery_roundtrip() {
+        let (mut garbler, mut evaluator) = pair();
+        handshake(&mut garbler, &mut evaluator);
+        let (mut garbler_frames, mut evaluator_frames) = pipe_pair();
+        let label = (vec![3u64, 1, 4, 1, 5, 9, 2, 6], true);
+        let send_label = label.clone();
+        let send = thread::spawn(move || {
+            garbler.send_garbler_input_over(&mut garbler_frames, 7, 97, 8, &send_label)
+        });
+        let receive = thread::spawn(move || {
+            evaluator.receive_garbler_input_over(&mut evaluator_frames, 7, 97, 8)
+        });
+        send.join().unwrap().unwrap();
+        let (got_label, got_masked) = receive.join().unwrap().unwrap();
+        assert_eq!(got_label, label.0);
+        assert_eq!(got_masked, label.1);
+
+        // Wrong expected index aborts the evaluator.
+        let (mut garbler, mut evaluator) = pair();
+        handshake(&mut garbler, &mut evaluator);
+        let (mut garbler_frames, mut evaluator_frames) = pipe_pair();
+        let send = thread::spawn(move || {
+            garbler.send_garbler_input_over(&mut garbler_frames, 7, 97, 8, &label)
+        });
+        let receive = thread::spawn(move || {
+            evaluator.receive_garbler_input_over(&mut evaluator_frames, 8, 97, 8)
+        });
+        send.join().unwrap().unwrap();
+        assert!(matches!(
+            receive.join().unwrap(),
+            Err(BitGcIoError::Protocol(
+                BitGcSessionError::InvalidGarblerInput
+            ))
+        ));
+    }
+
+    #[test]
+    fn per_role_runners_drive_circuit_over_pipes() {
+        for variant in [Variant::Small, Variant::Fast] {
+            let (circuit, dd, prf, prg_bits, pis, modulus_chain) =
+                role_runner_fixture(variant, 0x9004_0001 + variant as u64);
+            let mut rng = SeedRng::new(0x9004_0002 + variant as u64);
+            let owners = vec![
+                BitGcInputOwner::Garbler,
+                BitGcInputOwner::Evaluator,
+                BitGcInputOwner::Evaluator,
+            ];
+            let garbler_inputs = [true];
+            let evaluator_choices = [true, false];
+            let want = vec![(true && true) ^ false];
+            let key = [0x77; 32];
+
+            let (garbler_frames, evaluator_frames) = pipe_pair();
+            let (garbler_ot_transport, evaluator_ot_transport) = pipe_pair();
+
+            let garbler_binding =
+                canonical_session_binding([0x9a; 32], variant, 97, 8, &modulus_chain, &circuit)
+                    .unwrap();
+            let evaluator_binding = garbler_binding;
+
+            let garbler_circuit = circuit.clone();
+            let garbler_modulus_chain = modulus_chain.clone();
+            let garbler_owners = owners.clone();
+            let garbler_handle = thread::spawn(move || {
+                let circuit = garbler_circuit;
+                let modulus_chain = garbler_modulus_chain;
+                let owners = garbler_owners;
+                let mut session =
+                    BitGcSession::new_authenticated(BitGcRole::Garbler, garbler_binding, key)
+                        .unwrap();
+                let auth_transport = session
+                    .authenticated_ot_transport(garbler_ot_transport)
+                    .unwrap();
+                let mut ot = ChouOrlandiBitGcOt::<U16, _, _>::new(
+                    BitGcRole::Garbler,
+                    auth_transport,
+                    SeedRng::new(0x4752_424c),
+                );
+                let mut frames = garbler_frames;
+                run_garbler_over::<_, U16, _, _, _>(
+                    &mut session,
+                    &circuit,
+                    &dd,
+                    &prf,
+                    &prg_bits,
+                    &mut rng,
+                    &pis,
+                    &modulus_chain,
+                    &owners,
+                    &garbler_inputs,
+                    &mut frames,
+                    &mut ot,
+                )
+            });
+
+            let evaluator_handle = thread::spawn(move || {
+                let mut session =
+                    BitGcSession::new_authenticated(BitGcRole::Evaluator, evaluator_binding, key)
+                        .unwrap();
+                let auth_transport = session
+                    .authenticated_ot_transport(evaluator_ot_transport)
+                    .unwrap();
+                let mut ot = ChouOrlandiBitGcOt::<U16, _, _>::new(
+                    BitGcRole::Evaluator,
+                    auth_transport,
+                    SeedRng::new(0x4556_414c),
+                );
+                let mut frames = evaluator_frames;
+                run_evaluator_over::<
+                    volar_spec::bitgc::lattice_dd_rns::LatticeRnsEvaluator,
+                    U16,
+                    _,
+                    _,
+                >(
+                    &mut session,
+                    &circuit,
+                    &modulus_chain,
+                    &owners,
+                    &evaluator_choices,
+                    &mut frames,
+                    &mut ot,
+                )
+            });
+
+            garbler_handle.join().unwrap().unwrap();
+            let got = evaluator_handle.join().unwrap().unwrap();
+            assert_eq!(got, want, "{variant:?}");
+        }
     }
 }

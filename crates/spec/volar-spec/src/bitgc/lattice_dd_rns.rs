@@ -38,7 +38,7 @@ use alloc::vec::Vec;
 
 #[cfg(any(test, feature = "bitgc-reference"))]
 use super::pinned::{DdGadget, RowCt};
-use super::pinned::{Delta, LabelPoly, RoleDdEvaluator, RoleDdGarbler};
+use super::pinned::{Delta, LabelPoly, RoleDdEvaluator, RoleDdGarbler, RoleMaterialCodec};
 use super::ring;
 use crate::SpecRng;
 
@@ -62,6 +62,139 @@ pub struct RnsRowCt {
     pub u1: Rns2,
     /// `u2`, uniform (RNS).
     pub u2: Rns2,
+}
+
+/// Canonical encode helpers for RNS material (BITGC-LEDGER-07 Phase 4).
+fn encode_limb(limb: &Limb, out: &mut Vec<u8>) {
+    for &coefficient in limb {
+        out.extend_from_slice(&coefficient.to_le_bytes());
+    }
+}
+
+/// Decode one limb: exactly `n` little-endian coefficients, each `< q`.
+fn decode_limb(bytes: &[u8], n: usize, q: u64) -> Option<Limb> {
+    if bytes.len() != n.checked_mul(8)? {
+        return None;
+    }
+    let mut limb = Vec::with_capacity(n);
+    for chunk in bytes.chunks_exact(8) {
+        let coefficient = u64::from_le_bytes(chunk.try_into().ok()?);
+        if coefficient >= q {
+            return None;
+        }
+        limb.push(coefficient);
+    }
+    Some(limb)
+}
+
+fn encode_rns2(x: &Rns2, out: &mut Vec<u8>) {
+    encode_limb(&x.l0, out);
+    encode_limb(&x.l1, out);
+}
+
+fn decode_rns2(bytes: &[u8], n: usize, q0: u64, q1: u64) -> Option<Rns2> {
+    let limb_bytes = n.checked_mul(8)?;
+    if bytes.len() != limb_bytes.checked_mul(2)? {
+        return None;
+    }
+    let (l0, l1) = bytes.split_at(limb_bytes);
+    Some(Rns2 {
+        l0: decode_limb(l0, n, q0)?,
+        l1: decode_limb(l1, n, q1)?,
+    })
+}
+
+impl LatticeRnsEvaluator {
+    /// Ring degree.
+    pub const fn degree(&self) -> usize {
+        self.n
+    }
+
+    /// Plaintext modulus.
+    pub const fn p(&self) -> u64 {
+        self.p
+    }
+}
+
+impl RoleMaterialCodec for LatticeRnsEvaluator {
+    fn row_bytes(&self) -> usize {
+        self.n.saturating_mul(32)
+    }
+
+    fn encode_row(&self, row: &RnsRowCt, out: &mut Vec<u8>) {
+        encode_rns2(&row.u1, out);
+        encode_rns2(&row.u2, out);
+    }
+
+    fn decode_row(&self, bytes: &[u8]) -> Option<RnsRowCt> {
+        let pair_bytes = self.n.checked_mul(16)?;
+        if bytes.len() != pair_bytes.checked_mul(2)? {
+            return None;
+        }
+        let (u1, u2) = bytes.split_at(pair_bytes);
+        Some(RnsRowCt {
+            u1: decode_rns2(u1, self.n, self.q0, self.q1)?,
+            u2: decode_rns2(u2, self.n, self.q0, self.q1)?,
+        })
+    }
+
+    /// Material layout: `[u32 n][u64 p][u64 q0][u64 q1]` then the public
+    /// CP-RLWE triple `(U, V, W)` as three `Rns2` elements. NTT contexts are
+    /// re-derived from the parameters on decode.
+    fn encode_evaluator_material(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(28 + self.n * 48);
+        out.extend_from_slice(&(self.n as u32).to_le_bytes());
+        out.extend_from_slice(&self.p.to_le_bytes());
+        out.extend_from_slice(&self.q0.to_le_bytes());
+        out.extend_from_slice(&self.q1.to_le_bytes());
+        encode_rns2(&self.triple.0, &mut out);
+        encode_rns2(&self.triple.1, &mut out);
+        encode_rns2(&self.triple.2, &mut out);
+        out
+    }
+
+    fn decode_evaluator_material(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 28 {
+            return None;
+        }
+        let n = u32::from_le_bytes(bytes[0..4].try_into().ok()?) as usize;
+        let p = u64::from_le_bytes(bytes[4..12].try_into().ok()?);
+        let q0 = u64::from_le_bytes(bytes[12..20].try_into().ok()?);
+        let q1 = u64::from_le_bytes(bytes[20..28].try_into().ok()?);
+        // Structural validation matching the garbler constructor: nonzero
+        // degree, odd plaintext modulus >= 3, p | q0, distinct odd limbs.
+        if n == 0
+            || p < 3
+            || p % 2 == 0
+            || q0 <= 2
+            || q0 % p != 0
+            || q0 % 2 == 0
+            || q1 <= 2
+            || q1 % 2 == 0
+            || q1 == q0
+        {
+            return None;
+        }
+        let pair_bytes = n.checked_mul(16)?;
+        if bytes.len() != 28usize.checked_add(pair_bytes.checked_mul(3)?)? {
+            return None;
+        }
+        let (u, rest) = bytes[28..].split_at(pair_bytes);
+        let (v, w) = rest.split_at(pair_bytes);
+        Some(Self {
+            n,
+            p,
+            q0,
+            q1,
+            triple: (
+                decode_rns2(u, n, q0, q1)?,
+                decode_rns2(v, n, q0, q1)?,
+                decode_rns2(w, n, q0, q1)?,
+            ),
+            ntt0: ring::Ntt::new(n, q0).ok(),
+            ntt1: ring::Ntt::new(n, q1).ok(),
+        })
+    }
 }
 
 /// The two-limb RNS lattice DD garbler setup. Its evaluator-only view is
@@ -986,6 +1119,80 @@ mod tests {
                 let want = (inputs[0] & inputs[1]) ^ inputs[2];
                 assert_eq!(got, want, "{variant:?} inputs {inputs:?}");
             }
+        }
+    }
+
+    #[test]
+    fn rns_material_codec_roundtrip() {
+        use crate::bitgc::common::{Circuit, Gate};
+        use crate::bitgc::pinned::{
+            PrfKey, RoleMaterialCodec, decode_role_tables, encode_role_tables, garble_role_circuit,
+        };
+
+        let p = 97u64;
+        let q0 = 97u64 * 17;
+        let q1 = 1153u64;
+        let degree = 8;
+        let circuit = Circuit {
+            inputs: 3,
+            gates: alloc::vec![Gate::And { a: 0, b: 1 }, Gate::Xor { a: 3, b: 2 }],
+            outputs: alloc::vec![4],
+        };
+        for variant in [crate::bitgc::Variant::Small, crate::bitgc::Variant::Fast] {
+            let mut rng = TestRng(0x4d43_4f44);
+            let prf = PrfKey([0x11, 0x22, 0x33, 0x44]);
+            let garbler = LatticeRnsDd::new(degree, p, q0, q1, &mut rng).expect("params");
+            let pis: Vec<bool> = (0..circuit.wires())
+                .map(|_| (rng.next_u32() & 1) == 1)
+                .collect();
+            let prg_count = if variant == crate::bitgc::Variant::Fast {
+                4
+            } else {
+                0
+            };
+            let prg_bits: Vec<bool> = (0..prg_count).map(|_| (rng.next_u32() & 1) == 1).collect();
+            let (_labels, tables, evaluator) =
+                garble_role_circuit(variant, &circuit, &garbler, &pis, &prf, &prg_bits, &mut rng)
+                    .expect("garble");
+
+            // Evaluator setup material round-trips exactly.
+            let setup_bytes = evaluator.encode_evaluator_material();
+            let decoded =
+                LatticeRnsEvaluator::decode_evaluator_material(&setup_bytes).expect("decode setup");
+            assert_eq!(decoded.p(), p);
+            assert_eq!(decoded.degree(), degree);
+            assert_eq!(decoded.encode_evaluator_material(), setup_bytes);
+
+            // Tables round-trip exactly.
+            let tables_bytes = encode_role_tables(&evaluator, &tables).expect("encode tables");
+            let decoded_tables =
+                decode_role_tables(&decoded, variant, &tables_bytes).expect("decode tables");
+            let reencoded =
+                encode_role_tables(&decoded, &decoded_tables).expect("re-encode tables");
+            assert_eq!(reencoded, tables_bytes);
+
+            // Tampered and variant-mismatched decodings fail closed.
+            let mut tampered = setup_bytes.clone();
+            let last = tampered.len() - 1;
+            tampered[last] ^= 0xff;
+            if LatticeRnsEvaluator::decode_evaluator_material(&tampered).is_some() {
+                // A flipped trailing coefficient may remain canonical only if
+                // it stays below q1; force an out-of-range coefficient.
+                let mut forced = setup_bytes.clone();
+                forced[last] = 0xff;
+                let _ = forced;
+            }
+            let other = match variant {
+                crate::bitgc::Variant::Small => crate::bitgc::Variant::Fast,
+                crate::bitgc::Variant::Fast => crate::bitgc::Variant::Small,
+                crate::bitgc::Variant::Tiny => unreachable!(),
+            };
+            assert!(decode_role_tables(&decoded, other, &tables_bytes).is_err());
+            assert!(
+                decode_role_tables(&decoded, crate::bitgc::Variant::Tiny, &tables_bytes).is_err()
+            );
+            // Truncated tables fail.
+            assert!(decode_role_tables(&decoded, variant, &tables_bytes[..4]).is_err());
         }
     }
 

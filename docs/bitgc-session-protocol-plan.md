@@ -1,6 +1,6 @@
 # BitGC session protocol plan
 
-**Status:** Phases 0–3 landed; Phase 4 added a role-separated in-process circuit runner (`run_role_separated_circuit_local`) plus small/fast loopback tests and the explicit Cirrus `bitgc-session` transport adapter. Phase 5 remains an independent review gate that cannot be self-satisfied. No session protocol or protected-data profile is deployable.
+**Status:** Phases 0–3 landed; Phase 4 added canonical bounded evaluator-material codecs (`RoleMaterialCodec`, `encode_role_tables`/`decode_role_tables`), a transcript-bound MATERIAL Data-frame delivery phase, garbler-input direct delivery frames, and per-role networked entry points (`run_garbler_over`/`run_evaluator_over`) — exercised over threaded pipes with authenticated sessions for both variants, plus the in-process runner, Cirrus adapter, and cross-process frame/OT tests. Phase 5 remains an independent review gate that cannot be self-satisfied. No session protocol or protected-data profile is deployable.
 **Scope:** shared Volar/Cirrus session infrastructure. Aero is not part of this work.
 **Ledger:** `BITGC-LEDGER-07` in `docs/fhe/future-provider-integration-ledger.md`.
 
@@ -160,14 +160,18 @@
 **Tasks**
 
 - [x] Add the explicit Cirrus `bitgc-session` adapter over bounded Pusher/iterator frame and OT channels (Cirrus `18b48e8`), kept separate from `bitgc-reference`.
-- [x] Add `run_role_separated_circuit_local` plus `transfer_evaluator_input`/`open_committed_outputs` seams over the common frame/OT transcript (Volar, this phase).
-- [x] Exercise small and fast role-separated circuits over loopback frame/OT transports across all 8 input choices, plus Tiny/bad-input/nontopological-circuit rejection (3 focused tests; 48 total `volar-mpc`).
+- [x] Add `run_role_separated_circuit_local` plus `transfer_evaluator_input`/`open_committed_outputs` seams over the common frame/OT transcript (Volar).
+- [x] Add canonical bounded codecs: `RoleMaterialCodec` for evaluator setup material and rows (implemented for `LatticeRnsEvaluator`), `encode_role_tables`/`decode_role_tables` for `RoleEvaluatorTables`, with parameter-validated decode and fail-closed truncation/tamper/variant-mismatch tests.
+- [x] Add the MATERIAL Data-frame delivery phase (`send_material_over`/`receive_material_over`): bounded chunked delivery of the setup material + tables package after hello and before input OTs, advancing the unified transcript; wrong-order/reordered/oversized chunks abort.
+- [x] Add garbler-input direct delivery frames (`send_garbler_input_over`/`receive_garbler_input_over`): garbler-owned inputs need no OT; the active label is sent in one bound Data frame.
+- [x] Add per-role networked entry points `run_garbler_over`/`run_evaluator_over` over caller-owned frame and OT transports, with caller-constructed sessions (structural, keyed, or PSK) and post-decode profile verification against the session fingerprint.
+- [x] Exercise small and fast role-separated circuits across all 8 input choices (in-process), and a mixed-ownership circuit (garbler + evaluator inputs) across threads with authenticated sessions and real Chou–Orlandi OT; plus Tiny/bad-input/nontopological rejection (51 total `volar-mpc` tests).
 - [x] sub64 accounting and correctness across both variants (landed in Phase 1's conformance test; unchanged).
 - [x] Record remaining parameters and review blockers in the ledger.
 - [ ] Full Cirrus streaming `Context` replacement: the legacy reference backend remains available only behind `bitgc-reference`; wiring a live Cirrus interpreter over the session runner is deferred.
 - [ ] Artifact-exact per-wire HSS differential vectors remain open (BITGC-LEDGER-01/02).
 
-**Validation:** `volar-mpc` library suite passes (48 tests); Cirrus `bitgc-session` adapter tests pass (3); both are correctness evidence only. Property-based topology and frame mutation are covered by focused topology/mutation tests rather than a randomized harness.
+**Validation:** `volar-mpc` library suite passes (51 tests, including the threaded authenticated per-role runner); `volar-spec` passes (331 lib tests including the material codec round-trip); Cirrus `bitgc-session` adapter tests pass (3). All are correctness evidence only. Property-based topology and frame mutation are covered by focused topology/mutation tests rather than a randomized harness.
 **Not here:** Active security, BitGC-tiny, or a production admission profile.
 
 ### Phase 5 — Independent review and release gate

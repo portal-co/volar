@@ -1204,6 +1204,257 @@ pub struct RoleEvaluatorTables<R> {
     pub prf_offsets: Vec<LabelPoly>,
 }
 
+/// Errors from canonical role-material decoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleMaterialError {
+    /// Truncated, trailing, or mis-sized bytes.
+    LengthMismatch,
+    /// A coefficient exceeds its modulus.
+    NonCanonical,
+    /// A count overflows the bounded material profile.
+    CountOverflow,
+    /// A record or row tag does not match the declared variant.
+    WrongVariant,
+}
+
+/// Maximum rows, records, or wires accepted in one material package.
+const ROLE_MATERIAL_MAX_COUNT: usize = 1 << 20;
+
+/// Canonical bounded codec seam for evaluator-only material over the wire
+/// (BITGC-LEDGER-07 Phase 4 material delivery).
+///
+/// Implementations encode rows and the public evaluator setup material
+/// canonically; decode validates coefficients and parameters against the
+/// local profile. The material is public/evaluation-only by construction —
+/// no Δ, garbler labels, or PRF seed ever appears in these encodings.
+pub trait RoleMaterialCodec: RoleDdEvaluator {
+    /// Canonical byte length of one row under this profile.
+    fn row_bytes(&self) -> usize;
+    /// Append the canonical encoding of one row.
+    fn encode_row(&self, row: &Self::Row, out: &mut Vec<u8>);
+    /// Decode one row, rejecting noncanonical coefficients.
+    fn decode_row(&self, bytes: &[u8]) -> Option<Self::Row>;
+    /// Canonical encoding of the public evaluator setup material.
+    fn encode_evaluator_material(&self) -> Vec<u8>;
+    /// Decode evaluator setup material, validating its parameters.
+    fn decode_evaluator_material(bytes: &[u8]) -> Option<Self>
+    where
+        Self: Sized;
+}
+
+/// Canonical encoding of [`RoleEvaluatorTables`] for the material-delivery
+/// phase. Layout:
+///
+/// ```text
+/// [u32 and_count][u32 record_count][u32 wire_count]
+/// delta_row
+/// and_count × { u8 tag (1=Small→3 rows, 2=Fast→4 rows); rows }
+/// record_count × { u8 tag; u8 bits }
+/// wire_count × degree × u64-le PRF-offset coefficients
+/// ```
+pub fn encode_role_tables<E: RoleMaterialCodec>(
+    codec: &E,
+    tables: &RoleEvaluatorTables<E::Row>,
+) -> Result<Vec<u8>, RoleMaterialError> {
+    if tables.and_rows.len() > ROLE_MATERIAL_MAX_COUNT
+        || tables.records.len() > ROLE_MATERIAL_MAX_COUNT
+        || tables.prf_offsets.len() > ROLE_MATERIAL_MAX_COUNT
+    {
+        return Err(RoleMaterialError::CountOverflow);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&(tables.and_rows.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(tables.records.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(tables.prf_offsets.len() as u32).to_le_bytes());
+    codec.encode_row(&tables.delta_row, &mut out);
+    for rows in &tables.and_rows {
+        match rows {
+            RoleAndRows::Small(rows) => {
+                out.push(1);
+                for row in rows {
+                    codec.encode_row(row, &mut out);
+                }
+            }
+            RoleAndRows::Fast(rows) => {
+                out.push(2);
+                for row in rows {
+                    codec.encode_row(row, &mut out);
+                }
+            }
+        }
+    }
+    for record in &tables.records {
+        match record {
+            GateRecord::SmallAnd(bit) => out.extend_from_slice(&[1, u8::from(*bit)]),
+            GateRecord::SmallXor(bit) => out.extend_from_slice(&[2, u8::from(*bit)]),
+            GateRecord::FastAnd { masks, det } => {
+                let bits = u8::from(masks[0])
+                    | (u8::from(masks[1]) << 1)
+                    | (u8::from(masks[2]) << 2)
+                    | (u8::from(masks[3]) << 3)
+                    | (u8::from(*det) << 4);
+                out.extend_from_slice(&[3, bits]);
+            }
+            GateRecord::FastXor => out.extend_from_slice(&[4, 0]),
+        }
+    }
+    for offset in &tables.prf_offsets {
+        for &coefficient in offset {
+            out.extend_from_slice(&coefficient.to_le_bytes());
+        }
+    }
+    Ok(out)
+}
+
+/// Decode [`RoleEvaluatorTables`] canonically, validating counts, row tags
+/// against `variant`, coefficient moduli, and exact byte consumption.
+pub fn decode_role_tables<E: RoleMaterialCodec>(
+    codec: &E,
+    variant: Variant,
+    bytes: &[u8],
+) -> Result<RoleEvaluatorTables<E::Row>, RoleMaterialError> {
+    if variant == Variant::Tiny {
+        return Err(RoleMaterialError::WrongVariant);
+    }
+    let mut cursor = Cursor(bytes);
+    let and_count = cursor.u32()? as usize;
+    let record_count = cursor.u32()? as usize;
+    let wire_count = cursor.u32()? as usize;
+    if and_count > ROLE_MATERIAL_MAX_COUNT
+        || record_count > ROLE_MATERIAL_MAX_COUNT
+        || wire_count > ROLE_MATERIAL_MAX_COUNT
+    {
+        return Err(RoleMaterialError::CountOverflow);
+    }
+    let degree = codec.degree();
+    let p = codec.p();
+    let row_bytes = codec.row_bytes();
+    let delta_row = cursor.row(codec, row_bytes)?;
+    let mut and_rows = Vec::new();
+    and_rows
+        .try_reserve_exact(and_count)
+        .map_err(|_| RoleMaterialError::CountOverflow)?;
+    for _ in 0..and_count {
+        let tag = cursor.byte()?;
+        match (variant, tag) {
+            (Variant::Small, 1) => {
+                let rows = [
+                    cursor.row(codec, row_bytes)?,
+                    cursor.row(codec, row_bytes)?,
+                    cursor.row(codec, row_bytes)?,
+                ];
+                and_rows.push(RoleAndRows::Small(rows));
+            }
+            (Variant::Fast, 2) => {
+                let rows = [
+                    cursor.row(codec, row_bytes)?,
+                    cursor.row(codec, row_bytes)?,
+                    cursor.row(codec, row_bytes)?,
+                    cursor.row(codec, row_bytes)?,
+                ];
+                and_rows.push(RoleAndRows::Fast(rows));
+            }
+            _ => return Err(RoleMaterialError::WrongVariant),
+        }
+    }
+    let mut records = Vec::new();
+    records
+        .try_reserve_exact(record_count)
+        .map_err(|_| RoleMaterialError::CountOverflow)?;
+    for _ in 0..record_count {
+        let tag = cursor.byte()?;
+        let bits = cursor.byte()?;
+        let record = match (variant, tag) {
+            (Variant::Small, 1) if bits <= 1 => GateRecord::SmallAnd(bits == 1),
+            (Variant::Small, 2) if bits <= 1 => GateRecord::SmallXor(bits == 1),
+            (Variant::Fast, 3) if bits < 32 => GateRecord::FastAnd {
+                masks: [bits & 1 == 1, bits & 2 == 2, bits & 4 == 4, bits & 8 == 8],
+                det: bits & 16 == 16,
+            },
+            (Variant::Fast, 4) if bits == 0 => GateRecord::FastXor,
+            _ => return Err(RoleMaterialError::WrongVariant),
+        };
+        records.push(record);
+    }
+    let mut prf_offsets = Vec::new();
+    prf_offsets
+        .try_reserve_exact(wire_count)
+        .map_err(|_| RoleMaterialError::CountOverflow)?;
+    for _ in 0..wire_count {
+        let mut offset = Vec::new();
+        offset
+            .try_reserve_exact(degree)
+            .map_err(|_| RoleMaterialError::CountOverflow)?;
+        for _ in 0..degree {
+            let coefficient = cursor.u64()?;
+            if coefficient >= p {
+                return Err(RoleMaterialError::NonCanonical);
+            }
+            offset.push(coefficient);
+        }
+        prf_offsets.push(offset);
+    }
+    cursor.finish()?;
+    Ok(RoleEvaluatorTables {
+        delta_row,
+        and_rows,
+        records,
+        prf_offsets,
+    })
+}
+
+/// Byte cursor for canonical material decoding; rejects trailing bytes.
+struct Cursor<'a>(&'a [u8]);
+
+impl<'a> Cursor<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], RoleMaterialError> {
+        if self.0.len() < n {
+            return Err(RoleMaterialError::LengthMismatch);
+        }
+        let (head, tail) = self.0.split_at(n);
+        self.0 = tail;
+        Ok(head)
+    }
+
+    fn byte(&mut self) -> Result<u8, RoleMaterialError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, RoleMaterialError> {
+        let bytes: [u8; 4] = self
+            .take(4)?
+            .try_into()
+            .map_err(|_| RoleMaterialError::LengthMismatch)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn u64(&mut self) -> Result<u64, RoleMaterialError> {
+        let bytes: [u8; 8] = self
+            .take(8)?
+            .try_into()
+            .map_err(|_| RoleMaterialError::LengthMismatch)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn row<E: RoleMaterialCodec>(
+        &mut self,
+        codec: &E,
+        row_bytes: usize,
+    ) -> Result<E::Row, RoleMaterialError> {
+        codec
+            .decode_row(self.take(row_bytes)?)
+            .ok_or(RoleMaterialError::NonCanonical)
+    }
+
+    fn finish(self) -> Result<(), RoleMaterialError> {
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(RoleMaterialError::LengthMismatch)
+        }
+    }
+}
+
 fn role_gate_output<G: RoleDdGarbler>(
     dd: &G,
     evaluator: &G::Evaluator,
