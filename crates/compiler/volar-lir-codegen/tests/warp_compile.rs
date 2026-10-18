@@ -503,6 +503,57 @@ fn probe_lanes_to_bytes() {
     assert_eq!(bits_to_u128(&flat) as u64, 0xF1258F7940E1DDE7u64, "lane 0 LE bytes");
 }
 
+/// KNOWN-OPEN (genesis blocker): `le16` (the field->bytes conversion for the
+/// Merkle leaf encoding) produces 1 byte instead of 16 — the field cell's bit
+/// width is being read as 8 bits, not 128. This makes the Merkle leaves wrong,
+/// so the genesis root diverges from native. `#[ignore]`d pending a fix.
+#[ignore = "le16 field->bytes conversion produces 1 byte; see doc comment"]
+#[test]
+fn probe_le16() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_le16() -> u64 {\n\
+             let b = le16(Galois128(0x0102));\n\
+             let mut out = 0u64;\n\
+             for i in 0..8 {\n\
+                 out = out | ((b[i] as u64) << (i * 8));\n\
+             }\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_le16"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_le16"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("le16 evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 0x0102u64, "le16(Galois128(0x0102)) LE bytes");
+}
+
+/// Merkle leaf-hash differential: `warp_hash_leaf_field(Galois128(5))` vs the
+/// native spec. Isolates the leaf encoding (`le16`) + absorb schedule from the
+/// tree structure.
+#[ignore = "Merkle leaf hash diverges (the le16 field->bytes conversion); see probe_le16"]
+#[test]
+fn probe_hash_leaf() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_leaf() -> Array<u8, U32> {\n\
+             warp_hash_leaf_field(Galois128(5))\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_leaf"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_leaf"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("leaf hash evaluates");
+    let flat: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got: Vec<u8> = flat.chunks(8).map(|bits| bits.iter().enumerate().fold(0u8, |acc,(i,b)| if *b {acc|(1<<i)} else {acc})).collect();
+    // Native: sha3_256 of [0x00] ++ le16(Galois128(5)).
+    let mut input = vec![0x00u8];
+    input.extend_from_slice(&5u128.to_le_bytes());
+    let native = volar_spec::keccak::spec_sha3_256(&input);
+    assert_eq!(got.as_slice(), native.as_slice(), "leaf hash of Galois128(5)");
+}
+
 /// KNOWN-OPEN (genesis blocker): `permute_bytes` of the zero state yields zeros
 /// — the absorb path now works (struct refs), but the byte<->lane conversion
 /// write-back (`lanes_to_bytes`' `b[i*8..i*8+8].copy_from_slice(..)` in nested

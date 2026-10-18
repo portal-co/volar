@@ -4458,35 +4458,43 @@ fn lower_int_to_bytes<T: LirTarget<P>, P: Clone>(
         IrType::Primitive(p) => primitive_to_lir(*p),
         other => panic!("to_le_bytes/to_be_bytes: receiver must be an integer, got {other:?}"),
     };
-    let bits = match &recv_lir {
-        LirType::ExtField {
-            degree, wrapped, ..
-        } => {
-            let wrapped_bits = lir_int_bits(wrapped).unwrap_or(1);
-            *degree * wrapped_bits
-        }
-        _ => lir_int_bits(&recv_lir).unwrap_or_else(|| {
-            panic!(
-                "to_le_bytes/to_be_bytes: receiver is not a scalar integer (recv_lir={:?})",
-                std::mem::discriminant(&recv_lir)
-            )
-        }),
-    };
-    let n_bytes = (bits / 8) as usize;
-
     let val = into_scalar(lower_expr(receiver, ctx), "to_le_bytes receiver");
     // A field element's bytes come from its bit view (the field value is one
-    // typed cell, not a shiftable integer bit-vector).
-    let (val, shift_ty) = if matches!(
+    // typed cell, not a shiftable integer bit-vector). Check the VALUE's
+    // scalar type, not just the declared type: a `v.0` read of a
+    // `#[repr(transparent)]` field wrapper yields a field cell typed as the
+    // inner integer (`u128`), so the declared type alone misses it.
+    let val_scalar_ty = ctx.target.value_scalar_type(&val);
+    let is_field = matches!(
         &recv_lir,
         LirType::ExtField { .. } | LirType::PrimeField { .. }
-    ) {
+    ) || matches!(
+        &val_scalar_ty,
+        LirType::ExtField { .. } | LirType::PrimeField { .. }
+    );
+    let (val, shift_ty, bits) = if is_field {
         let bits_val = ctx.target.field_to_bits(val);
         let shift_ty = ctx.target.value_scalar_type(&bits_val);
-        (bits_val, shift_ty)
+        let field_bits = shift_ty.bit_width() as usize;
+        (bits_val, shift_ty, field_bits)
     } else {
-        (val, recv_lir.clone())
+        let bits = match &recv_lir {
+            LirType::ExtField {
+                degree, wrapped, ..
+            } => {
+                let wrapped_bits = lir_int_bits(wrapped).unwrap_or(1);
+                *degree * wrapped_bits
+            }
+            _ => lir_int_bits(&recv_lir).unwrap_or_else(|| {
+                panic!(
+                    "to_le_bytes/to_be_bytes: receiver is not a scalar integer (recv_lir={:?})",
+                    std::mem::discriminant(&recv_lir)
+                )
+            }),
+        };
+        (val, recv_lir.clone(), bits as usize)
     };
+    let n_bytes = bits / 8;
     (0..n_bytes)
         .map(|k| {
             let shift_bits = if little {
