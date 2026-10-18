@@ -202,17 +202,55 @@ fn warp_mle_eval_compiles_via_ir_and_matches_native() {
     }
 }
 
+/// Native-loop `if`-with-outer-assignment: the branch rebinds `acc`/`pos`,
+/// which must be merged through the join block's params (the cross-block
+/// threading fix). Without it, the join references a then/else-block value
+/// directly and the interpreter reports "value not in table".
+#[test]
+fn probe_native_loop_if_assign() {
+    let module = parse_with_driver(
+        "pub fn probe(x: u64) -> u64 {\n\
+             let mut acc = 0u64;\n\
+             let mut pos = 0u64;\n\
+             for i in 0..8u64 {\n\
+                 acc = acc + i;\n\
+                 pos = pos + 1u64;\n\
+                 if pos == 3u64 {\n\
+                     acc = acc * 2u64 + x;\n\
+                     pos = 0u64;\n\
+                 }\n\
+             }\n\
+             acc + pos\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe"];
+    // x=0: acc folds +i with a doubling (and +0) whenever pos wraps at 3.
+    // i=0: a=0,p=1; i=1: a=1,p=2; i=2: a=3,p=3→a=6,p=0; i=3: a=9,p=1;
+    // i=4: a=13,p=2; i=5: a=18,p=3→a=36,p=0; i=6: a=42,p=1; i=7: a=49,p=2.
+    // result = 49 + 2 = 51.
+    // A pure-bit u64 param flattens to 64 single-bit entry params.
+    let input: Vec<Vec<bool>> = (0..64).map(|_| vec![false]).collect();
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &input, 64)
+        .expect("native loop with if-assign evaluates");
+    // acc+pos = 51 as one U64 output value.
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 51, "acc+pos");
+}
+
 /// Genesis: index construction + transcript + Merkle + MLE + bundled eval,
 /// all through IR, differentially against the native spec.
 ///
 /// `#[ignore]`: with `LoopLowering::Native` the genesis lowering completes
-/// (the earlier unroll-scale blowup is gone), but the lowered module is not
-/// yet evaluable end-to-end: eval-time cross-block value threading in the
-/// native-loop path surfaces values defined in one loop block referenced in
-/// another as "value not in table" in the interpreter. The compile-via-IR +
-/// differential machinery is proven by the lighter probes above
-/// (identity/ref-array/elem-sum/doubling-loop/MLE).
-#[ignore = "native-loop genesis lowers but its eval-time cross-block threading is open; see module note"]
+/// and the module is now well-formed — the cross-block threading gap is
+/// fixed (branch-assigned outer variables merge through join-block params in
+/// `lower_if`; validated by `probe_native_loop_if_assign`). The remaining
+/// gap is eval *scale*: the in-circuit Keccak module flattens to millions of
+/// VAFFLE values, so the tree-walking interpreter is too slow to finish the
+/// genesis evaluation in a test budget. The compile-via-IR + differential
+/// machinery is proven by the lighter probes above (identity/ref-array/
+/// elem-sum/doubling-loop/if-assign/MLE).
+#[ignore = "genesis lowers + threads correctly but the interpreter is too slow over the in-circuit Keccak module; see module note"]
 #[test]
 fn warp_genesis_compiles_via_ir_and_matches_native() {
     let module = parse_with_driver(
@@ -242,10 +280,11 @@ fn warp_genesis_compiles_via_ir_and_matches_native() {
     let fid = target.module.exports["probe_genesis"];
     // w0*w1 + w2 + w3 = 0 → w3 = w0*w1 + w2 (char 2).
     let (a, b, c) = (3u128, 5u128, 7u128);
-    let out = eval_vaffle(
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(
         &target.module,
         fid,
         &[bits_of(a, 128), bits_of(b, 128), bits_of(c, 128)],
+        64,
     )
     .expect("compiled genesis evaluates");
     // Native reference: the spec's own genesis, constructed inline.

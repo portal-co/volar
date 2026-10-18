@@ -1211,6 +1211,31 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
             .unwrap_or(LirType::U64)
     });
     let values = lower_expr(arg, ctx);
+    // Reconcile the arg's scalar width to the declared param width: an
+    // unsuffixed literal lowers as `U64` but a `suffix: u8` param expects 8
+    // bits, and the callee's entry block is sized to the declared type.
+    let values = if let Some(d) = declared {
+        if d.is_scalar() {
+            let want = d.bit_width() as usize;
+            values
+                .into_iter()
+                .map(|v| {
+                    let got = ctx.target.value_scalar_type(&v).bit_width() as usize;
+                    if got > want {
+                        ctx.target.trunc(v, d.clone())
+                    } else if got < want {
+                        ctx.target.zext(v, d.clone())
+                    } else {
+                        v
+                    }
+                })
+                .collect()
+        } else {
+            values
+        }
+    } else {
+        values
+    };
     (ty, values)
 }
 
@@ -1753,9 +1778,6 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     }
 
     for (key, env) in &plan.instances {
-        if std::env::var("WARP_DEBUG_INSTANCES").is_ok() {
-            eprintln!("[instances] lowering {} as {}", key.source_name, plan.emitted_name(key));
-        }
         // Materialized method instances lower from their derived definition
         // (receiver promoted to a typed `self` param).
         let func = plan
@@ -3255,8 +3277,10 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
 
     let then_block = ctx.target.create_block();
     let else_block = ctx.target.create_block();
+    // Create the join block up front; its params are added after both branches
+    // lower (we only know the merged-assignment set once both have run).
+    let join_block = ctx.target.create_block();
 
-    // Branch to then/else — join block created lazily below.
     ctx.target.branch(
         cond_val,
         then_block.clone(),
@@ -3265,11 +3289,20 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
         BranchTarget::args([]),
     );
 
-    // Lower the then-branch first so we discover N (the result scalar count).
+    // Snapshot the pre-branch environment so outer-variable assignments made
+    // inside a branch can be detected (env diff) and merged through join-block
+    // params — otherwise a value computed in the then/else block would be
+    // referenced from the join block directly, an untreaded cross-block use.
+    let pre_env = ctx.env.clone();
+    let pre_env_types = ctx.env_types.clone();
+
+    // Lower the then-branch (its last block may be a nested join; remember it).
     ctx.target.switch_to_block(then_block.clone());
     ctx.current_block = then_block;
     let then_vals = lower_block(then_branch, ctx);
     let n = then_vals.len();
+    let then_last = ctx.current_block.clone();
+    let then_env = ctx.env.clone();
 
     // Recover the scalar LirType of each then-value to use as join-block param types.
     let scalar_tys: Vec<LirType> = then_vals
@@ -3277,19 +3310,11 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
         .map(|v| ctx.target.value_scalar_type(v))
         .collect();
 
-    // Create the join block now that we know N.
-    let join_block = ctx.target.create_block();
-    let join_params: Vec<T::Value> = scalar_tys
-        .iter()
-        .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
-        .collect();
-
-    ctx.target
-        .jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
-
-    // Lower the else-branch.
+    // Lower the else-branch from the same pre-branch environment.
     ctx.target.switch_to_block(else_block.clone());
     ctx.current_block = else_block;
+    ctx.env = pre_env.clone();
+    ctx.env_types = pre_env_types.clone();
     let else_vals: Vec<T::Value> = if let Some(else_expr) = else_branch {
         lower_expr(else_expr, ctx)
     } else {
@@ -3305,11 +3330,76 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
         "if/else branches produce different numbers of scalars ({n} vs {})",
         else_vals.len()
     );
-    ctx.target
-        .jump(join_block.clone(), BranchTarget::args(else_vals.clone()));
+    let else_last = ctx.current_block.clone();
+    let else_env = ctx.env.clone();
 
+    // Outer variables (present pre-branch) whose rebound value differs between
+    // the branches need a join-block phi. Deterministic (sorted) order.
+    let mut merged_names: Vec<String> = Vec::new();
+    for name in pre_env.keys() {
+        if then_env.get(name) != else_env.get(name) {
+            merged_names.push(name.clone());
+        }
+    }
+
+    // Join params: the branch RESULT values, then one param per scalar of each
+    // merged outer variable (ordered by merged_names).
+    let mut join_params: Vec<T::Value> = scalar_tys
+        .iter()
+        .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
+        .collect();
+    let mut merged_join: Vec<Vec<T::Value>> = Vec::new();
+    for name in &merged_names {
+        let vals = then_env
+            .get(name)
+            .or_else(|| else_env.get(name))
+            .cloned()
+            .unwrap_or_default();
+        let group: Vec<T::Value> = vals
+            .iter()
+            .map(|v| {
+                let ty = ctx.target.value_scalar_type(v);
+                ctx.target.add_block_param(join_block.clone(), ty)
+            })
+            .collect();
+        merged_join.push(group);
+    }
+
+    // Emit the branch → join jumps (result values ++ merged values, in order).
+    let then_args: Vec<T::Value> = then_vals
+        .iter()
+        .cloned()
+        .chain(
+            merged_names
+                .iter()
+                .flat_map(|nm| then_env.get(nm).cloned().unwrap_or_default()),
+        )
+        .collect();
+    ctx.target.switch_to_block(then_last.clone());
+    ctx.current_block = then_last;
+    ctx.target
+        .jump(join_block.clone(), BranchTarget::args(then_args));
+
+    let else_args: Vec<T::Value> = else_vals
+        .iter()
+        .cloned()
+        .chain(
+            merged_names
+                .iter()
+                .flat_map(|nm| else_env.get(nm).cloned().unwrap_or_default()),
+        )
+        .collect();
+    ctx.target.switch_to_block(else_last.clone());
+    ctx.current_block = else_last;
+    ctx.target
+        .jump(join_block.clone(), BranchTarget::args(else_args));
+
+    // In the join block, rebind merged names to their phi params and continue.
     ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
+    for (name, group) in merged_names.iter().zip(merged_join) {
+        ctx.env.insert(name.clone(), group);
+    }
     join_params
 }
 

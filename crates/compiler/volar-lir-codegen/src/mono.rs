@@ -278,7 +278,69 @@ impl MonoEnv {
 }
 
 pub(crate) fn canonical_type(ty: &IrType) -> String {
-    format!("{ty:?}")
+    // Canonicalize recursively, normalizing `IrType::Array`'s `kind`:
+    // `FixedArray` and `GenericArray` are layout-identical (same elem + len),
+    // so they must produce the SAME instance key — otherwise a type inferred
+    // as `[u8; N]` at one stage and `Array<u8, N>` at another splits one
+    // monomorphized instance into two colliding call-site keys.
+    fn go(ty: &IrType, out: &mut String) {
+        match ty {
+            IrType::Array { elem, len, .. } => {
+                out.push_str("Array[");
+                go(elem, out);
+                out.push_str(&format!("; {len:?}]"));
+            }
+            // References canonicalize identically regardless of mutability:
+            // the call-site key disambiguates instances by layout, and `&T` /
+            // `&mut T` share a layout. The planner historically dropped `mut`
+            // while lowering preserved it, splitting one instance's key.
+            IrType::Reference { elem, .. } => {
+                out.push('&');
+                go(elem, out);
+            }
+            IrType::Vector { elem } => {
+                out.push_str("Vector[");
+                go(elem, out);
+                out.push(']');
+            }
+            // A surviving `TypeParam(name)` and the resolved `Struct{Custom(
+            // name)}` denote the same nominal type; canonicalize both to the
+            // same string so planning (which may not resolve the struct) and
+            // lowering (which does) agree on the instance key.
+            IrType::TypeParam(name) => {
+                out.push_str(&format!("Struct{{{name}}}<>"));
+            }
+            IrType::Struct { kind, type_args } => {
+                out.push_str(&format!("Struct{{{kind}}}<", ));
+                for a in type_args {
+                    go(a, out);
+                    out.push(',');
+                }
+                out.push('>');
+            }
+            IrType::Tuple(ts) => {
+                out.push('(');
+                for t in ts {
+                    go(t, out);
+                    out.push(',');
+                }
+                out.push(')');
+            }
+            IrType::ExtField {
+                wrapped,
+                degree,
+                irreducible,
+            } => {
+                out.push_str("ExtField{");
+                go(wrapped, out);
+                out.push_str(&format!("; {degree}; {irreducible:?}}}"));
+            }
+            other => out.push_str(&format!("{other:?}")),
+        }
+    }
+    let mut s = String::new();
+    go(ty, &mut s);
+    s
 }
 
 fn resolve_explicit_type_arg(ty: &IrType, structs: &StructTable) -> IrType {
@@ -1873,10 +1935,10 @@ fn infer_expr_type<P: Clone>(
         }
         IrExprKind::MethodCall { receiver, .. } => infer_expr_type(receiver, env, vars, structs),
         IrExprKind::Unary {
-            op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
+            op: op @ (SpecUnaryOp::Ref | SpecUnaryOp::RefMut),
             expr,
         } => infer_expr_type(expr, env, vars, structs).map(|elem| IrType::Reference {
-            mutable: false,
+            mutable: matches!(op, SpecUnaryOp::RefMut),
             elem: Box::new(elem),
         }),
         IrExprKind::Unary {
