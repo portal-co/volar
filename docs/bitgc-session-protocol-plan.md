@@ -164,14 +164,15 @@
 - [x] Add canonical bounded codecs: `RoleMaterialCodec` for evaluator setup material and rows (implemented for `LatticeRnsEvaluator`), `encode_role_tables`/`decode_role_tables` for `RoleEvaluatorTables`, with parameter-validated decode and fail-closed truncation/tamper/variant-mismatch tests.
 - [x] Add the MATERIAL Data-frame delivery phase (`send_material_over`/`receive_material_over`): bounded chunked delivery of the setup material + tables package after hello and before input OTs, advancing the unified transcript; wrong-order/reordered/oversized chunks abort.
 - [x] Add garbler-input direct delivery frames (`send_garbler_input_over`/`receive_garbler_input_over`): garbler-owned inputs need no OT; the active label is sent in one bound Data frame.
-- [x] Add per-role networked entry points `run_garbler_over`/`run_evaluator_over` over caller-owned frame and OT transports, with caller-constructed sessions (structural, keyed, or PSK) and post-decode profile verification against the session fingerprint.
+- [x] Add per-role networked entry points `run_garbler_over`/`run_evaluator_over` over caller-owned frame and OT transports, with caller-constructed sessions (structural, keyed, or PSK), post-decode profile verification against the session fingerprint, and an OT factory invoked after the handshake so PSK-derived keys are usable.
+- [x] Add a caller-declared `max_and_depth` budget check (`DepthBudgetExceeded`) computed from `circuit_and_depth`, so over-depth circuits fail fast instead of surfacing as late output-label mismatches; profiles may declare a hint via `RoleMaterialCodec::online_and_budget` (the RNS reference profile declares none pending BITGC-LEDGER-03).
 - [x] Exercise small and fast role-separated circuits across all 8 input choices (in-process), and a mixed-ownership circuit (garbler + evaluator inputs) across threads with authenticated sessions and real Chou–Orlandi OT; plus Tiny/bad-input/nontopological rejection (51 total `volar-mpc` tests).
 - [x] sub64 accounting and correctness across both variants (landed in Phase 1's conformance test; unchanged).
 - [x] Record remaining parameters and review blockers in the ledger.
 - [ ] Full Cirrus streaming `Context` replacement: the legacy reference backend remains available only behind `bitgc-reference`; wiring a live Cirrus interpreter over the session runner is deferred.
 - [ ] Artifact-exact per-wire HSS differential vectors remain open (BITGC-LEDGER-01/02).
 
-**Validation:** `volar-mpc` library suite passes (51 tests, including the threaded authenticated per-role runner); `volar-spec` passes (331 lib tests including the material codec round-trip); Cirrus `bitgc-session` adapter tests pass (3). All are correctness evidence only. Property-based topology and frame mutation are covered by focused topology/mutation tests rather than a randomized harness.
+**Validation:** `volar-mpc` library suite passes (52 tests, including the threaded authenticated per-role runner and the depth-budget early-rejection test); `volar-spec` passes (331 lib tests including the material codec round-trip); Cirrus `bitgc-session` adapter tests pass (3). All are correctness evidence only. Property-based topology and frame mutation are covered by focused topology/mutation tests rather than a randomized harness.
 **Not here:** Active security, BitGC-tiny, or a production admission profile.
 
 ### Phase 5 — Independent review and release gate

@@ -541,6 +541,13 @@ pub trait BitGcInputOt<N: VoleArray<u8>> {
 
 /// Bounded, fallible message channel for one Chou–Orlandi OT session.
 /// Implementations must enforce `max_bytes` before allocating peer data.
+///
+/// Bounds discipline: `max_bytes` is a **payload** bound on the OT message
+/// bytes this trait carries. When messages are wrapped (for example by
+/// [`AuthenticatedBitGcOtTransport`], which adds `OT_ENVELOPE_OVERHEAD`
+/// bytes per message), the bound applies to the unwrapped payload, not the
+/// wire envelope; adapters that mux their own framing must account for the
+/// wrapper's overhead when sizing their own channel limits.
 pub trait BitGcOtTransport {
     /// Transport error.
     type Error;
@@ -548,6 +555,7 @@ pub trait BitGcOtTransport {
     /// Send one bounded OT message.
     fn send_ot_message(&mut self, message: &[u8]) -> Result<(), Self::Error>;
     /// Receive one OT message, enforcing the supplied limit before allocation.
+    /// The limit is a payload bound; see the trait docs.
     fn receive_ot_message(&mut self, max_bytes: usize) -> Result<Vec<u8>, Self::Error>;
     /// Bind the next OT message sequence to the current unified frame/OT
     /// transcript.
@@ -2480,6 +2488,15 @@ pub enum BitGcCircuitRunnerError<E> {
     Driver(DriverError),
     /// Canonical evaluator-material or tables bytes failed to decode.
     Material(RoleMaterialError),
+    /// The circuit's AND-depth exceeds the caller-declared profile budget.
+    /// The budget comes from the negotiated profile, not from this crate's
+    /// cryptography; exceeding it would surface later as a label mismatch.
+    DepthBudgetExceeded {
+        /// Computed longest AND chain in the circuit.
+        depth: usize,
+        /// Declared maximum for the profile.
+        budget: usize,
+    },
     /// A garbler/evaluator ownership mismatch is structurally impossible.
     WrongRole,
 }
@@ -2497,6 +2514,10 @@ where
             Self::Material(error) => {
                 write!(f, "BitGC evaluator material decode failed: {error:?}")
             }
+            Self::DepthBudgetExceeded { depth, budget } => write!(
+                f,
+                "BitGC circuit AND-depth {depth} exceeds profile budget {budget}"
+            ),
             Self::WrongRole => f.write_str("BitGC runner role mismatch"),
         }
     }
@@ -2719,8 +2740,9 @@ pub fn run_garbler_over<G, N, TF, TO, R>(
     modulus_chain: &[u64],
     input_owners: &[BitGcInputOwner],
     garbler_inputs: &[bool],
+    max_and_depth: Option<usize>,
     frames: &mut TF,
-    ot: &mut TO,
+    make_ot: impl FnOnce(&BitGcSession) -> Result<TO, BitGcSessionError>,
 ) -> Result<(), BitGcCircuitRunnerError<BitGcIoError<TF::Error>>>
 where
     G: RoleDdGarbler,
@@ -2765,9 +2787,19 @@ where
     let (garbler_labels, tables, evaluator_material) =
         garble_role_circuit(variant, circuit, dd, pis, prf, prg_bits, random)
             .map_err(BitGcCircuitRunnerError::Driver)?;
+    let budget = max_and_depth.or_else(|| evaluator_material.online_and_budget());
+    if let Some(budget) = budget {
+        let depth = circuit_and_depth(circuit);
+        if depth > budget {
+            return Err(BitGcCircuitRunnerError::DepthBudgetExceeded { depth, budget });
+        }
+    }
     session
         .handshake_over(frames)
         .map_err(BitGcCircuitRunnerError::Session)?;
+    // The OT wrapper is built only after the handshake so PSK-mode sessions
+    // (whose key is derived during hello exchange) can supply it.
+    let mut ot = make_ot(session).map_err(BitGcCircuitRunnerError::SessionState)?;
 
     let tables_bytes = encode_role_tables(&evaluator_material, &tables)
         .map_err(BitGcCircuitRunnerError::Material)?;
@@ -2810,7 +2842,7 @@ where
                 session
                     .send_evaluator_input_over::<N, _, _>(
                         frames,
-                        ot,
+                        &mut ot,
                         input_index as u64,
                         dd.p(),
                         dd.degree(),
@@ -2848,8 +2880,9 @@ pub fn run_evaluator_over<E, N, TF, TO>(
     modulus_chain: &[u64],
     input_owners: &[BitGcInputOwner],
     evaluator_choices: &[bool],
+    max_and_depth: Option<usize>,
     frames: &mut TF,
-    ot: &mut TO,
+    make_ot: impl FnOnce(&BitGcSession) -> Result<TO, BitGcSessionError>,
 ) -> Result<Vec<bool>, BitGcCircuitRunnerError<BitGcIoError<TF::Error>>>
 where
     E: RoleMaterialCodec,
@@ -2878,6 +2911,8 @@ where
     session
         .handshake_over(frames)
         .map_err(BitGcCircuitRunnerError::Session)?;
+    // Built post-handshake so PSK-mode sessions can supply the derived key.
+    let mut ot = make_ot(session).map_err(BitGcCircuitRunnerError::SessionState)?;
 
     let material = session
         .receive_material_over(frames)
@@ -2902,6 +2937,13 @@ where
     )?;
     let tables = decode_role_tables(&evaluator_material, variant, &material[8 + setup_len..])
         .map_err(BitGcCircuitRunnerError::Material)?;
+    let budget = max_and_depth.or_else(|| evaluator_material.online_and_budget());
+    if let Some(budget) = budget {
+        let depth = circuit_and_depth(circuit);
+        if depth > budget {
+            return Err(BitGcCircuitRunnerError::DepthBudgetExceeded { depth, budget });
+        }
+    }
     let p = evaluator_material.p();
     let degree = evaluator_material.degree();
     // The decoded profile must reproduce the session's parameter
@@ -2930,7 +2972,7 @@ where
                 let label = session
                     .receive_evaluator_input_over::<N, _, _>(
                         frames,
-                        ot,
+                        &mut ot,
                         input_index as u64,
                         p,
                         degree,
@@ -2948,6 +2990,24 @@ where
     session
         .receive_committed_outputs_over(frames, &outputs, &circuit.outputs, p, degree)
         .map_err(BitGcCircuitRunnerError::Session)
+}
+
+/// Longest chain of AND gates in the circuit (XOR/NOT are free).
+///
+/// This is the online multiplicative depth the SWHEwDD profile must
+/// support; profiles declare their budget via
+/// [`RoleMaterialCodec::online_and_budget`].
+pub fn circuit_and_depth(circuit: &Circuit) -> usize {
+    let mut depth = alloc::vec![0usize; circuit.wires()];
+    for (gate_index, gate) in circuit.gates.iter().enumerate() {
+        let wire = circuit.inputs + gate_index;
+        let (a, b) = gate.operands();
+        depth[wire] = match gate {
+            Gate::And { .. } => core::cmp::max(depth[a], depth[b]) + 1,
+            _ => core::cmp::max(depth[a], depth[b]),
+        };
+    }
+    depth.into_iter().max().unwrap_or(0)
 }
 
 fn is_terminal(state: BitGcSessionState) -> bool {
@@ -4439,15 +4499,8 @@ mod tests {
                 let mut session =
                     BitGcSession::new_authenticated(BitGcRole::Garbler, garbler_binding, key)
                         .unwrap();
-                let auth_transport = session
-                    .authenticated_ot_transport(garbler_ot_transport)
-                    .unwrap();
-                let mut ot = ChouOrlandiBitGcOt::<U16, _, _>::new(
-                    BitGcRole::Garbler,
-                    auth_transport,
-                    SeedRng::new(0x4752_424c),
-                );
                 let mut frames = garbler_frames;
+                let ot_transport = garbler_ot_transport;
                 run_garbler_over::<_, U16, _, _, _>(
                     &mut session,
                     &circuit,
@@ -4459,8 +4512,17 @@ mod tests {
                     &modulus_chain,
                     &owners,
                     &garbler_inputs,
+                    Some(2),
                     &mut frames,
-                    &mut ot,
+                    |session| {
+                        session.authenticated_ot_transport(ot_transport).map(|t| {
+                            ChouOrlandiBitGcOt::<U16, _, _>::new(
+                                BitGcRole::Garbler,
+                                t,
+                                SeedRng::new(0x4752_424c),
+                            )
+                        })
+                    },
                 )
             });
 
@@ -4468,15 +4530,8 @@ mod tests {
                 let mut session =
                     BitGcSession::new_authenticated(BitGcRole::Evaluator, evaluator_binding, key)
                         .unwrap();
-                let auth_transport = session
-                    .authenticated_ot_transport(evaluator_ot_transport)
-                    .unwrap();
-                let mut ot = ChouOrlandiBitGcOt::<U16, _, _>::new(
-                    BitGcRole::Evaluator,
-                    auth_transport,
-                    SeedRng::new(0x4556_414c),
-                );
                 let mut frames = evaluator_frames;
+                let ot_transport = evaluator_ot_transport;
                 run_evaluator_over::<
                     volar_spec::bitgc::lattice_dd_rns::LatticeRnsEvaluator,
                     U16,
@@ -4488,8 +4543,17 @@ mod tests {
                     &modulus_chain,
                     &owners,
                     &evaluator_choices,
+                    Some(2),
                     &mut frames,
-                    &mut ot,
+                    |session| {
+                        session.authenticated_ot_transport(ot_transport).map(|t| {
+                            ChouOrlandiBitGcOt::<U16, _, _>::new(
+                                BitGcRole::Evaluator,
+                                t,
+                                SeedRng::new(0x4556_414c),
+                            )
+                        })
+                    },
                 )
             });
 
@@ -4497,5 +4561,48 @@ mod tests {
             let got = evaluator_handle.join().unwrap().unwrap();
             assert_eq!(got, want, "{variant:?}");
         }
+    }
+
+    #[test]
+    fn depth_budget_rejects_deep_circuits_early() {
+        assert_eq!(
+            circuit_and_depth(&role_runner_fixture(Variant::Small, 1).0),
+            1
+        );
+        let (circuit, dd, prf, prg_bits, pis, modulus_chain) =
+            role_runner_fixture(Variant::Small, 0x0bad_de17);
+        let mut rng = SeedRng::new(0x0bad_de17);
+        let owners = vec![BitGcInputOwner::Evaluator; 3];
+        let key = [0x78; 32];
+        let binding =
+            canonical_session_binding([0x9b; 32], Variant::Small, 97, 8, &modulus_chain, &circuit)
+                .unwrap();
+        let mut session =
+            BitGcSession::new_authenticated(BitGcRole::Garbler, binding, key).unwrap();
+        let mut frames = LoopbackFrames::default();
+        let mut loopback = LoopbackOt::<U16>::new();
+        let result = run_garbler_over::<_, U16, _, InfallibleBitGcOt<'_, U16>, _>(
+            &mut session,
+            &circuit,
+            &dd,
+            &prf,
+            &prg_bits,
+            &mut rng,
+            &pis,
+            &modulus_chain,
+            &owners,
+            &[],
+            Some(0),
+            &mut frames,
+            |_session| Ok(InfallibleBitGcOt::new(&mut loopback)),
+        );
+        // The budget check fires before any handshake/OT traffic.
+        assert!(matches!(
+            result,
+            Err(BitGcCircuitRunnerError::DepthBudgetExceeded {
+                depth: 1,
+                budget: 0
+            })
+        ));
     }
 }

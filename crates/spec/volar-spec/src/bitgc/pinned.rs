@@ -1230,6 +1230,14 @@ const ROLE_MATERIAL_MAX_COUNT: usize = 1 << 20;
 pub trait RoleMaterialCodec: RoleDdEvaluator {
     /// Canonical byte length of one row under this profile.
     fn row_bytes(&self) -> usize;
+    /// Maximum online AND-chain depth this profile supports, when known.
+    ///
+    /// `None` means the implementation does not declare a bound; runners
+    /// must not infer one. A returned budget is a conservative correctness
+    /// bound for the parameter profile — not a security statement.
+    fn online_and_budget(&self) -> Option<usize> {
+        None
+    }
     /// Append the canonical encoding of one row.
     fn encode_row(&self, row: &Self::Row, out: &mut Vec<u8>);
     /// Decode one row, rejecting noncanonical coefficients.

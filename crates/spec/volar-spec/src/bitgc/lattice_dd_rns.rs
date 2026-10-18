@@ -121,6 +121,11 @@ impl RoleMaterialCodec for LatticeRnsEvaluator {
         self.n.saturating_mul(32)
     }
 
+    /// No declared budget: the reference profile's wrap-around failure
+    /// boundary has not been pinned to a paper-backed noise analysis
+    /// (BITGC-LEDGER-03). Runners may still enforce a caller-supplied
+    /// `max_and_depth`; a wrong guess there fails with a distinct
+    /// `DepthBudgetExceeded` instead of a late output-label mismatch.
     fn encode_row(&self, row: &RnsRowCt, out: &mut Vec<u8>) {
         encode_rns2(&row.u1, out);
         encode_rns2(&row.u2, out);
