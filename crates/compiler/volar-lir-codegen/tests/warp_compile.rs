@@ -480,11 +480,14 @@ fn warp_genesis_compiles_via_ir_and_matches_native() {
     let module = parse_with_driver(
         "use cipher::consts::*;\n\
          pub fn probe_genesis(w0: Galois128, w1: Galois128, w2: Galois128) -> Array<u8, U32> {\n\
-             let mk0 = WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|i| match i { 0 => 0usize, _ => 1usize }), n_vars: 2 };\n\
-             let mk1 = WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|i| match i { 0 => 2usize, _ => 0usize }), n_vars: 1 };\n\
-             let mk2 = WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|i| match i { 0 => 3usize, _ => 0usize }), n_vars: 1 };\n\
-             let mkz = WarpTerm::<U2> { coeff: Galois128(0), vars: Array::<usize, U2>::default(), n_vars: 0 };\n\
-             let constraint = WarpConstraint::<U4, U2> { terms: Array::<WarpTerm<U2>, U4>::from_fn(|i| match i { 0 => mk0, 1 => mk1, 2 => mk2, _ => mkz }), n_terms: 3 };\n\
+             // Inline struct literals in the match arms (not captured lets) to
+             // sidestep the open match-of-captured-struct lowering bug.
+             let constraint = WarpConstraint::<U4, U2> { terms: Array::<WarpTerm<U2>, U4>::from_fn(|i| match i {\
+                 0 => WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|j| match j { 0 => 0usize, _ => 1usize }), n_vars: 2 },\
+                 1 => WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|j| match j { 0 => 2usize, _ => 0usize }), n_vars: 1 },\
+                 2 => WarpTerm::<U2> { coeff: Galois128(1), vars: Array::<usize, U2>::from_fn(|j| match j { 0 => 3usize, _ => 0usize }), n_vars: 1 },\
+                 _ => WarpTerm::<U2> { coeff: Galois128(0), vars: Array::<usize, U2>::default(), n_vars: 0 }\
+             }), n_terms: 3 };\n\
              let index = WarpIndex::<U1, U4, U2> { constraints: Array::<WarpConstraint<U4, U2>, U1>::from_fn(|_| constraint), public_len: 0, witness_len: 4, degree_bound: 2 };\n\
              let w3 = w0 * w1 + w2;\n\
              let witness = WarpWitness::<U4, U0> { public: Array::<Galois128, U0>::default(), witness: Array::<Galois128, U4>::from_fn(|i| match i { 0 => w0, 1 => w1, 2 => w2, _ => w3 }) };\n\
@@ -544,7 +547,10 @@ fn warp_genesis_compiles_via_ir_and_matches_native() {
         &witness,
     )
     .expect("native genesis succeeds");
-    let got: Vec<u8> = out[0]
+    // The return is Array<u8, U32> flattened to 32 separate byte scalars (one
+    // IrValue per scalar) — concatenate them all, then chunk into bytes.
+    let flat_bits: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got: Vec<u8> = flat_bits
         .chunks(8)
         .map(|bits| bits.iter().enumerate().fold(0u8, |acc, (i, b)| if *b { acc | (1 << i) } else { acc }))
         .collect();
