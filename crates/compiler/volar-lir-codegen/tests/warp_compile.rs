@@ -288,13 +288,81 @@ fn probe_keccak_f1600_zero_state() {
 }
 
 
+/// Minimal struct-pointer field-write test: a callee writes a field of a
+/// `&mut Struct` and the caller reads it back. This is the sponge's
+/// write-back pattern (`sponge.state = state`).
+#[test]
+fn probe_struct_ref_field_write() {
+    let module = parse_driver_only(
+        "struct S { x: u32 }\n\
+         fn set_x(s: &mut S) { s.x = 42; }\n\
+         pub fn probe_sref() -> u32 {\n\
+             let mut s = S { x: 0 };\n\
+             set_x(&mut s);\n\
+             s.x\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_sref"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_sref"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("struct ref field write");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 42, "callee's field write must reach the caller");
+}
+
+/// Byte<->lane conversion round-trip: `u64::from_le_bytes(x.to_le_bytes())`
+/// must be the identity. Isolates the conversions used by permute_bytes.
+#[test]
+fn probe_le_bytes_roundtrip() {
+    let module = parse_driver_only(
+        "pub fn probe_le(x: u64) -> u64 {\n\
+             let b = x.to_le_bytes();\n\
+             u64::from_le_bytes(b)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_le"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_le"];
+    let input: Vec<Vec<bool>> = (0..64).map(|i| vec![(0x1234567890ABCDEFu64 >> i) & 1 == 1]).collect();
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &input, 64)
+        .expect("le roundtrip");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 0x1234567890ABCDEFu64, "from_le_bytes(to_le_bytes(x)) == x");
+}
+
+/// KNOWN-OPEN (genesis blocker): `permute_bytes` of the zero state yields zeros
+/// — the absorb path now works (struct refs), but the byte<->lane conversion
+/// write-back (`lanes_to_bytes`' `b[i*8..i*8+8].copy_from_slice(..)` in nested
+/// native loops) doesn't land. `keccak_f1600` itself is correct.
+#[ignore = "permute_bytes conversions don't land; see doc comment"]
+#[test]
+fn probe_permute_bytes() {
+    let module = parse_with_driver(
+        "pub fn probe_permute() -> u64 {\n\
+             let mut state = [0u8; 200];\n\
+             permute_bytes(&mut state);\n\
+             let mut out = 0u64;\n\
+             for i in 0..8 {\n\
+                 out = out | ((state[i] as u64) << (i * 8));\n\
+             }\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_permute"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_permute"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("permute evaluates");
+    let flat: Vec<bool> = out.concat();
+    // Keccak-f[1600] zero-state lane 0 = 0xF1258F7940E1DDE7 (LE bytes).
+    assert_eq!(bits_to_u128(&flat) as u64, 0xF1258F7940E1DDE7u64, "permute zero state lane 0");
+}
+
 /// KNOWN-OPEN BUG (genesis blocker): the spec sponge's absorb doesn't land —
 /// the compiled `spec_sha3_256` of a fixed input diverges from native (the
 /// output is the finalize suffix + zeros, i.e. the absorbed bytes never reach
 /// the state). The Keccak permutation itself is correct
 /// (`probe_keccak_f1600_zero_state`), so the divergence is in the sponge's
 /// `&mut SpecSponge` / nested-reference chain. `#[ignore]`d pending a fix.
-#[ignore = "spec sponge absorb doesn't land; see doc comment"]
+#[ignore = "spec sponge absorb works but the permute conversions don't land; see probe_permute_bytes"]
 #[test]
 fn probe_sponge_sha3() {
     let module = parse_with_driver(

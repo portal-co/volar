@@ -839,7 +839,10 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             {
                 LirType::Ptr(Box::new(ir_type_to_lir_inner(inner_elem, registry)))
             } else if *mutable
-                && matches!(elem.as_ref(), IrType::Array { .. } | IrType::Struct { .. })
+                && (matches!(elem.as_ref(), IrType::Array { .. } | IrType::Struct { .. })
+                    // A `TypeParam` that names a module struct is that struct (the
+                    // parser leaves `&mut S` params with an unresolved nominal).
+                    || matches!(elem.as_ref(), IrType::TypeParam(name) if registry.id_for_name(name).is_some()))
             {
                 // A MUTABLE reference to a fixed-size array must alias the
                 // referent: the lowering never copies a by-value aggregate back
@@ -849,11 +852,15 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                 // references stay value-transparent. (`&mut Struct` stays
                 // transparent for now — struct field access on a pointer is a
                 // separate lowering path.)
-                let inner_elem = match elem.as_ref() {
-                    IrType::Array { elem: inner_elem, .. } => inner_elem,
-                    _ => unreachable!("matched Array above"),
+                // For an array the pointee is the element; for a struct (or a
+                // `TypeParam` naming one) the pointee is the whole struct.
+                let pointee = match elem.as_ref() {
+                    IrType::Array { elem: inner_elem, .. } => {
+                        ir_type_to_lir_inner(inner_elem, registry)
+                    }
+                    other => ir_type_to_lir_inner(other, registry),
                 };
-                LirType::Ptr(Box::new(ir_type_to_lir_inner(inner_elem, registry)))
+                LirType::Ptr(Box::new(pointee))
             } else {
                 // Non-slice immutable references are transparent in LIR (value
                 // semantics).

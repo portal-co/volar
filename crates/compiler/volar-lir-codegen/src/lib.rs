@@ -4112,7 +4112,9 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
     // slice the field. This is the `sponge.state` read in the sponge
     // destructure/write-back pattern.
     if matches!(&base_ir_ty, IrType::Reference { mutable: true, elem }
-        if matches!(elem.as_ref(), IrType::Struct { .. }))
+        if matches!(elem.as_ref(), IrType::Struct { .. })
+            || matches!(elem.as_ref(), IrType::TypeParam(name)
+                if ctx.module_structs.iter().any(|s| s.kind.to_string() == *name)))
     {
         let ptr_vals = lower_expr(base, ctx);
         let ptr = ptr_vals
@@ -7021,10 +7023,14 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
             });
             // A `&mut Struct` base is a pointer into memory (the struct is not
             // flattened): the field write is a load-modify-store through it.
+            // The `TypeParam` arm covers a `&mut S` param whose nominal the
+            // parser left unresolved.
             let is_mut_struct_ref = matches!(
                 &base_ir_ty,
                 IrType::Reference { mutable: true, elem }
                     if matches!(elem.as_ref(), IrType::Struct { .. })
+                        || matches!(elem.as_ref(), IrType::TypeParam(name)
+                            if ctx.module_structs.iter().any(|s| s.kind.to_string() == *name))
             );
             let base_ir_ty = match base_ir_ty {
                 IrType::Reference { elem, .. } => *elem,
@@ -7080,6 +7086,14 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
             let IrExprKind::Var(name) = &base.kind else {
                 unimplemented!("lower_assign: field assign on non-variable base");
             };
+            if std::env::var("WARP_DEBUG_FASSIGN").is_ok() {
+                eprintln!(
+                    "[fassign] base={:?} is_mut_struct_ref={} base_ir_ty={:?}",
+                    std::mem::discriminant(&base.kind),
+                    is_mut_struct_ref,
+                    ctx.infer_type(base)
+                );
+            }
             // `&mut Struct` base is a pointer into memory: load the whole
             // struct, splice the field's scalars, store back.
             if is_mut_struct_ref {
