@@ -255,17 +255,16 @@ fn probe_native_loop_if_assign() {
 /// Genesis: index construction + transcript + Merkle + MLE + bundled eval,
 /// all through IR, differentially against the native spec.
 ///
-/// `#[ignore]`: with `LoopLowering::Native` the genesis lowering completes
-/// and the interpreter (dense value table + shared stack) now runs the eval to
-/// completion in a test budget. Cross-block threading is fixed (`lower_if`
-/// merge), Keccak is correct (`probe_keccak_f1600_zero_state`), and the
-/// mutable-array-reference aliasing works (shared `StorageId::STACK`). The one
-/// remaining correctness gap is the match-of-captured-struct lowering bug —
-/// the toy PESAT index built by the driver's `from_fn(|i| match i { 0 => mk0,
-/// ... })` miscompiles (see `probe_match_captured_struct`), so the constraint
-/// eval reads `n_vars` as 0 and the genesis returns `None`. Fix that bug and
-/// this probe should match the native spec. The lighter probes above prove
-/// the compile-via-IR + differential machinery end-to-end.
+/// THE M4 GATE: this passes end-to-end (~240s). With `LoopLowering::Native`
+/// the lowering completes, and the interpreter (dense value table, shared
+/// cell-granular stack, disjoint spill/sp regions) evaluates the full
+/// Keccak-sponge Merkle tree to exactly the native root. The toy PESAT index
+/// inlines its `WarpTerm` struct literals into the `from_fn` match arms to
+/// sidestep the still-open match-of-captured-struct bug
+/// (`probe_match_captured_struct`, `#[ignore]`d). The lighter probes above
+/// decompose the gate: Keccak permutation, sponge absorb/finalize/read,
+/// leaf encoding, and the two-call absorb schedule each have their own
+/// focused differential.
 /// Focused Keccak-f[1600] differential: one permutation of the zero state,
 /// lane 0 has a known answer. Isolates the Keccak lowering from the rest of
 /// the genesis path. Fast (a single permute), unlike the full genesis probe.
@@ -503,11 +502,8 @@ fn probe_lanes_to_bytes() {
     assert_eq!(bits_to_u128(&flat) as u64, 0xF1258F7940E1DDE7u64, "lane 0 LE bytes");
 }
 
-/// KNOWN-OPEN (genesis blocker): `le16` (the field->bytes conversion for the
-/// Merkle leaf encoding) produces 1 byte instead of 16 — the field cell's bit
-/// width is being read as 8 bits, not 128. This makes the Merkle leaves wrong,
-/// so the genesis root diverges from native. `#[ignore]`d pending a fix.
-#[ignore = "le16 field->bytes conversion produces 1 byte; see doc comment"]
+/// `le16` (the field→bytes conversion for the Merkle leaf encoding): the
+/// field cell expands to its 128-bit view and returns 16 LE byte scalars.
 #[test]
 fn probe_le16() {
     let module = parse_with_driver(
@@ -531,8 +527,8 @@ fn probe_le16() {
 
 /// Merkle leaf-hash differential: `warp_hash_leaf_field(Galois128(5))` vs the
 /// native spec. Isolates the leaf encoding (`le16`) + absorb schedule from the
-/// tree structure.
-#[ignore = "Merkle leaf hash diverges (the le16 field->bytes conversion); see probe_le16"]
+/// tree structure. The sponge absorb loops are memory-backed (cell-granular
+/// storage); this runs in ~20s.
 #[test]
 fn probe_hash_leaf() {
     let module = parse_with_driver(
@@ -624,8 +620,8 @@ fn probe_sponge_sha3() {
 /// index in the genesis probe, so the genesis constraint eval is wrong until
 /// this is fixed. `#[ignore]`d: the match lowering produces both wrong values
 /// and a block blowup; needs investigation in `lower_match_arm_chain`.
-#[ignore = "match returning a captured struct miscompiles; see doc comment"]
 #[test]
+#[ignore = "match-of-captured-struct mis-threading in lower_match_arm_chain (open)"]
 fn probe_match_captured_struct() {
     let module = parse_driver_only(
         "use cipher::consts::*;\n\
@@ -799,7 +795,6 @@ fn probe_term_n_vars_field() {
 }
 
 
-#[ignore = "genesis runs to completion and produces a real Merkle root, but it diverges from native; the content being hashed differs; see module note"]
 #[test]
 fn warp_genesis_compiles_via_ir_and_matches_native() {
     let module = parse_with_driver(
@@ -881,4 +876,533 @@ fn warp_genesis_compiles_via_ir_and_matches_native() {
         .collect();
     assert_eq!(got.as_slice(), native.instance.root.as_slice(),
         "compiled genesis root must match the native spec's");
+}
+
+/// Minimal repro for the absorb-loop blowup: a native loop writing
+/// `state[pos] ^= data[i]` with a runtime `pos` over a local [u8; 200].
+/// The promoted array should be memory-backed: ~1.6K stmts total, not ~5M.
+#[test]
+fn probe_runtime_index_write_size() {
+    let module = parse_driver_only(
+        "pub fn probe_absorb() -> u8 {\n\
+             let mut state = [0u8; 200];\n\
+             let mut pos = 0usize;\n\
+             let data = [1u8, 2, 3, 4];\n\
+             for i in 0..4 {\n\
+                 state[pos] ^= data[i];\n\
+                 pos += 1;\n\
+             }\n\
+             state[3]\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_absorb"], volar_lir_codegen::LoopLowering::Native);
+    // Size regression guard: the promoted [u8; 200] init + a 4-iteration
+    // native loop with a runtime-indexed `^=` must stay memory-backed — the
+    // cell-granular storage model keeps this in the tens of thousands of
+    // values (the per-bit select-mux model produced ~4M).
+    for f in target.module.funcs.iter() {
+        if let vaffle::FuncDecl::Body(b) = f {
+            assert!(
+                b.values.len() < 500_000,
+                "absorb loop module blew up: {} values (select-mux regression?)",
+                b.values.len()
+            );
+        }
+    }
+    let fid = target.module.exports["probe_absorb"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 4u8 as u64, "state[3] == 4 after absorb");
+}
+
+/// Size regression guard: a `[u8; 200]` repeat + one read must stay in the
+/// tens of thousands of values (the pre-cell-storage model produced ~3.7M).
+#[test]
+fn probe_repeat_alone_size() {
+    let module = parse_driver_only(
+        "pub fn probe_r() -> u8 {\n\
+             let state = [0u8; 200];\n\
+             state[3]\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_r"], volar_lir_codegen::LoopLowering::Native);
+    for f in target.module.funcs.iter() {
+        if let vaffle::FuncDecl::Body(b) = f {
+            assert!(
+                b.values.len() < 500_000,
+                "[0u8; 200] init blew up: {} values (per-bit storage regression?)",
+                b.values.len()
+            );
+        }
+    }
+    let fid = target.module.exports["probe_r"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 0u64, "state[3] == 0");
+}
+
+/// Size + value guard for a mutable `[u8; 200]` with a constant-index write.
+#[test]
+fn probe_mut_repeat_alone_size() {
+    let module = parse_driver_only(
+        "pub fn probe_r() -> u8 {\n\
+             let mut state = [0u8; 200];\n\
+             state[0] = 7u8;\n\
+             state[3] + state[0]\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_r"], volar_lir_codegen::LoopLowering::Native);
+    for f in target.module.funcs.iter() {
+        if let vaffle::FuncDecl::Body(b) = f {
+            assert!(
+                b.values.len() < 500_000,
+                "mutable [u8; 200] blew up: {} values",
+                b.values.len()
+            );
+        }
+    }
+    let fid = target.module.exports["probe_r"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat) as u64, 7u64, "state[3] + state[0] == 7");
+}
+
+/// Two sequential absorbs into one sponge — the hash_leaf absorb schedule.
+#[test]
+fn probe_two_absorbs() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_2a() -> Array<u8, U32> {\n\
+             let mut h = spec_sponge_new(SHA3_256_RATE);\n\
+             spec_sponge_absorb_array(&mut h, &Array::<u8, U1>::from_fn(|_| 0x61u8));\n\
+             spec_sponge_absorb_array(&mut h, &Array::<u8, U2>::from_fn(|i| if i == 0 { 0x62u8 } else { 0x63u8 }));\n\
+             let mut reader = spec_sponge_finalize_xof(&h, 0x06u8);\n\
+             let mut out: Array<u8, U32> = Array::<u8, U32>::default();\n\
+             spec_xof_read_array(&mut reader, &mut out);\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_2a"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_2a"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("two-absorb evaluates");
+    let flat: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got: Vec<u8> = flat.chunks(8).map(|bits| bits.iter().enumerate().fold(0u8, |acc,(i,b)| if *b {acc|(1<<i)} else {acc})).collect();
+    let native = volar_spec::keccak::spec_sha3_256(b"abc");
+    assert_eq!(got.as_slice(), native.as_slice(), "two-absorb sha3(abc)");
+}
+
+/// hash_leaf shape with CONSTANT 16 payload bytes (no le16 call).
+#[test]
+fn probe_leaf_const_bytes() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_lcb() -> Array<u8, U32> {\n\
+             let mut h = spec_sponge_new(SHA3_256_RATE);\n\
+             spec_sponge_absorb_array(&mut h, &Array::<u8, U1>::from_fn(|_| 0x00u8));\n\
+             spec_sponge_absorb_array(&mut h, &Array::<u8, U16>::from_fn(|i| if i == 0 { 5u8 } else { 0u8 }));\n\
+             let mut reader = spec_sponge_finalize_xof(&h, 0x06u8);\n\
+             let mut out: Array<u8, U32> = Array::<u8, U32>::default();\n\
+             spec_xof_read_array(&mut reader, &mut out);\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_lcb"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_lcb"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got: Vec<u8> = flat.chunks(8).map(|bits| bits.iter().enumerate().fold(0u8, |acc,(i,b)| if *b {acc|(1<<i)} else {acc})).collect();
+    let mut input = vec![0x00u8];
+    input.extend_from_slice(&5u128.to_le_bytes());
+    let native = volar_spec::keccak::spec_sha3_256(&input);
+    assert_eq!(got.as_slice(), native.as_slice(), "const-bytes leaf hash");
+}
+
+/// hash_leaf shape with the real le16(Galois128(5)) payload.
+#[test]
+fn probe_leaf_le16_bytes() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_llb() -> Array<u8, U32> {\n\
+             let mut h = spec_sponge_new(SHA3_256_RATE);\n\
+             spec_sponge_absorb_array(&mut h, &Array::<u8, U1>::from_fn(|_| 0x00u8));\n\
+             let v_bytes: Array<u8, U16> = le16(Galois128(5));\n\
+             spec_sponge_absorb_array(&mut h, &v_bytes);\n\
+             let mut reader = spec_sponge_finalize_xof(&h, 0x06u8);\n\
+             let mut out: Array<u8, U32> = Array::<u8, U32>::default();\n\
+             spec_xof_read_array(&mut reader, &mut out);\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_llb"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_llb"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got: Vec<u8> = flat.chunks(8).map(|bits| bits.iter().enumerate().fold(0u8, |acc,(i,b)| if *b {acc|(1<<i)} else {acc})).collect();
+    let mut input = vec![0x00u8];
+    input.extend_from_slice(&5u128.to_le_bytes());
+    let native = volar_spec::keccak::spec_sha3_256(&input);
+    assert_eq!(got.as_slice(), native.as_slice(), "le16-bytes leaf hash");
+}
+
+/// Dump all 16 bytes of le16(Galois128(5)).
+#[test]
+fn probe_le16_all_bytes() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_l16() -> Array<u8, U16> {\n\
+             le16(Galois128(5))\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_l16"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_l16"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got: Vec<u8> = flat.chunks(8).map(|bits| bits.iter().enumerate().fold(0u8, |acc,(i,b)| if *b {acc|(1<<i)} else {acc})).collect();
+    let native = 5u128.to_le_bytes();
+    assert_eq!(got.as_slice(), native.as_slice(), "le16 all bytes");
+}
+
+/// Const 16 bytes bound to a local then passed by reference.
+#[test]
+fn probe_leaf_letbound_bytes() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_lbb() -> Array<u8, U32> {\n\
+             let mut h = spec_sponge_new(SHA3_256_RATE);\n\
+             spec_sponge_absorb_array(&mut h, &Array::<u8, U1>::from_fn(|_| 0x00u8));\n\
+             let v_bytes: Array<u8, U16> = Array::<u8, U16>::from_fn(|i| if i == 0 { 5u8 } else { 0u8 });\n\
+             spec_sponge_absorb_array(&mut h, &v_bytes);\n\
+             let mut reader = spec_sponge_finalize_xof(&h, 0x06u8);\n\
+             let mut out: Array<u8, U32> = Array::<u8, U32>::default();\n\
+             spec_xof_read_array(&mut reader, &mut out);\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_lbb"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_lbb"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got: Vec<u8> = flat.chunks(8).map(|bits| bits.iter().enumerate().fold(0u8, |acc,(i,b)| if *b {acc|(1<<i)} else {acc})).collect();
+    let mut input = vec![0x00u8];
+    input.extend_from_slice(&5u128.to_le_bytes());
+    let native = volar_spec::keccak::spec_sha3_256(&input);
+    assert_eq!(got.as_slice(), native.as_slice(), "let-bound const-bytes leaf hash");
+}
+
+/// Mem-backed let-bound array: store then read back, no call involved.
+#[test]
+fn probe_letbound_array_read() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_lar() -> u64 {\n\
+             let a: Array<u8, U16> = Array::<u8, U16>::from_fn(|i| if i == 3 { 42u8 } else { 0u8 });\n\
+             (a[0] as u64) + 10 * (a[3] as u64)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_lar"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_lar"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 420, "a[0] + 10*a[3] == 420");
+}
+
+/// Reference-to-array call arg: `read1(&a)` where `a` is a mem-backed local.
+#[test]
+fn probe_letbound_array_ref_call() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         fn read1(a: &Array<u8, U16>) -> u64 {\n\
+             (a[0] as u64) + 10 * (a[3] as u64)\n\
+         }\n\
+         pub fn probe_lrc() -> u64 {\n\
+             let a: Array<u8, U16> = Array::<u8, U16>::from_fn(|i| if i == 3 { 42u8 } else { 0u8 });\n\
+             read1(&a)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_lrc"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_lrc"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 420, "read1(&a) == 420");
+}
+
+/// Two-reference call: &mut array + &array, non-generic callee.
+#[test]
+fn probe_two_refs_nongeneric() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         fn put(s: &mut Array<u8, U4>, d: &Array<u8, U16>) {\n\
+             s[0] = d[3];\n\
+         }\n\
+         pub fn probe_2r() -> u64 {\n\
+             let mut s: Array<u8, U4> = Array::<u8, U4>::default();\n\
+             let d: Array<u8, U16> = Array::<u8, U16>::from_fn(|i| if i == 3 { 42u8 } else { 0u8 });\n\
+             put(&mut s, &d);\n\
+             s[0] as u64\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_2r"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_2r"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 42, "s[0] == 42 after put(&mut s, &d)");
+}
+
+/// Generic two-reference call: &mut array + &array<u8, N>.
+#[test]
+fn probe_two_refs_generic() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         fn putg<N: ArraySize>(s: &mut Array<u8, U4>, d: &Array<u8, N>) {\n\
+             s[0] = d[3];\n\
+         }\n\
+         pub fn probe_2g() -> u64 {\n\
+             let mut s: Array<u8, U4> = Array::<u8, U4>::default();\n\
+             let d: Array<u8, U16> = Array::<u8, U16>::from_fn(|i| if i == 3 { 42u8 } else { 0u8 });\n\
+             putg(&mut s, &d);\n\
+             s[0] as u64\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_2g"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_2g"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 42, "s[0] == 42 after putg(&mut s, &d)");
+}
+
+/// Native-loop runtime-indexed copy from a reference param into a &mut array.
+#[test]
+fn probe_loop_copy_from_ref() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         fn abs_tiny(s: &mut Array<u8, U32>, d: &Array<u8, U16>) {\n\
+             let mut pos = 0usize;\n\
+             for i in 0..16 {\n\
+                 s[pos] = d[i];\n\
+                 pos += 1;\n\
+             }\n\
+         }\n\
+         pub fn probe_lcr() -> u64 {\n\
+             let mut s: Array<u8, U32> = Array::<u8, U32>::default();\n\
+             let d: Array<u8, U16> = Array::<u8, U16>::from_fn(|i| i as u8);\n\
+             abs_tiny(&mut s, &d);\n\
+             (s[3] as u64) + 100 * (s[15] as u64)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_lcr"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_lcr"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 1503, "s[3] + 100*s[15] == 3 + 1500");
+}
+
+/// ONE absorb of 16 bytes (the spilled-param case), no tag absorb first.
+#[test]
+fn probe_absorb_16() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_a16() -> Array<u8, U32> {\n\
+             let mut h = spec_sponge_new(SHA3_256_RATE);\n\
+             spec_sponge_absorb_array(&mut h, &Array::<u8, U16>::from_fn(|i| if i == 0 { 5u8 } else { 0u8 }));\n\
+             let mut reader = spec_sponge_finalize_xof(&h, 0x06u8);\n\
+             let mut out: Array<u8, U32> = Array::<u8, U32>::default();\n\
+             spec_xof_read_array(&mut reader, &mut out);\n\
+             out\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_a16"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_a16"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got: Vec<u8> = flat.chunks(8).map(|bits| bits.iter().enumerate().fold(0u8, |acc,(i,b)| if *b {acc|(1<<i)} else {acc})).collect();
+    let native = volar_spec::keccak::spec_sha3_256(&5u128.to_le_bytes());
+    assert_eq!(got.as_slice(), native.as_slice(), "absorb-16 sha3");
+}
+
+/// Minimal two-call sponge replica with a driver-local struct.
+#[test]
+fn probe_two_absorb_struct() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         struct MySp { state: [u8; 32], rate: usize, pos: usize }\n\
+         fn new_sp() -> MySp { MySp { state: [0u8; 32], rate: 32, pos: 0 } }\n\
+         fn abs1(sp: &mut MySp) {\n\
+             let mut st = sp.state;\n\
+             st[sp.pos] ^= 0x61u8;\n\
+             sp.state = st;\n\
+             sp.pos = sp.pos + 1;\n\
+         }\n\
+         fn abs16(sp: &mut MySp, d: &Array<u8, U16>) {\n\
+             let mut state = sp.state;\n\
+             let mut pos = sp.pos;\n\
+             for i in 0..16 {\n\
+                 state[pos] ^= d[i];\n\
+                 pos += 1;\n\
+             }\n\
+             sp.state = state;\n\
+             sp.pos = pos;\n\
+         }\n\
+         pub fn probe_tas() -> u64 {\n\
+             let mut sp = new_sp();\n\
+             abs1(&mut sp);\n\
+             let d: Array<u8, U16> = Array::<u8, U16>::from_fn(|i| if i == 0 { 5u8 } else { 0u8 });\n\
+             abs16(&mut sp, &d);\n\
+             (sp.state[0] as u64) + 10 * (sp.state[1] as u64) + 1000 * (sp.pos as u64)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_tas"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_tas"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    // state[0]=0x61, state[1]=5, pos=17 → 0x61 + 50 + 17000 = 97 + 50 + 17000 = 17147
+    assert_eq!(bits_to_u128(&flat), 17147, "state[0]=0x61 state[1]=5 pos=17");
+}
+
+/// Same two-call shape but abs16 writes a CONSTANT (no d read).
+#[test]
+fn probe_two_absorb_struct_constwrite() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         struct MySp { state: [u8; 32], rate: usize, pos: usize }\n\
+         fn new_sp() -> MySp { MySp { state: [0u8; 32], rate: 32, pos: 0 } }\n\
+         fn abs1(sp: &mut MySp) {\n\
+             let mut st = sp.state;\n\
+             st[sp.pos] ^= 0x61u8;\n\
+             sp.state = st;\n\
+             sp.pos = sp.pos + 1;\n\
+         }\n\
+         fn abs16(sp: &mut MySp, d: &Array<u8, U16>) {\n\
+             let mut state = sp.state;\n\
+             let mut pos = sp.pos;\n\
+             for i in 0..16 {\n\
+                 state[pos] = d[i] + 9u8;\n\
+                 pos += 1;\n\
+             }\n\
+             sp.state = state;\n\
+             sp.pos = pos;\n\
+         }\n\
+         pub fn probe_tcw() -> u64 {\n\
+             let mut sp = new_sp();\n\
+             abs1(&mut sp);\n\
+             let d: Array<u8, U16> = Array::<u8, U16>::from_fn(|i| if i == 0 { 5u8 } else { 0u8 });\n\
+             abs16(&mut sp, &d);\n\
+             (sp.state[0] as u64) + 10 * (sp.state[1] as u64) + 1000 * (sp.state[2] as u64)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_tcw"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_tcw"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    // state[0]=0x61, state[1]=d[0]+9=14, state[2]=d[1]+9=9 → 97 + 140 + 9000 = 9237
+    assert_eq!(bits_to_u128(&flat), 9237, "state[0]=0x61 state[1]=14 state[2]=9");
+}
+
+/// ^= on a promoted local in a native loop, constant rhs: single application?
+#[test]
+fn probe_assignop_promoted() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_aop() -> u64 {\n\
+             let mut state = [0u8; 32];\n\
+             let mut pos = 1usize;\n\
+             for i in 0..4 {\n\
+                 state[pos] ^= 5u8;\n\
+                 pos += 1;\n\
+             }\n\
+             (state[1] as u64) + 10 * (state[2] as u64)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_aop"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_aop"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 55, "state[1]=5 state[2]=5");
+}
+
+/// ^= on a struct-destructured local inside a callee (single call).
+#[test]
+fn probe_assignop_struct_destructure() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         struct MySp { state: [u8; 32], rate: usize, pos: usize }\n\
+         fn new_sp() -> MySp { MySp { state: [0u8; 32], rate: 32, pos: 0 } }\n\
+         fn abs16(sp: &mut MySp) {\n\
+             let mut state = sp.state;\n\
+             let mut pos = sp.pos;\n\
+             for i in 0..4 {\n\
+                 state[pos] ^= 5u8;\n\
+                 pos += 1;\n\
+             }\n\
+             sp.state = state;\n\
+             sp.pos = pos;\n\
+         }\n\
+         pub fn probe_asd() -> u64 {\n\
+             let mut sp = new_sp();\n\
+             abs16(&mut sp);\n\
+             (sp.state[0] as u64) + 10 * (sp.state[1] as u64) + 100 * (sp.pos as u64)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_asd"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_asd"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    assert_eq!(bits_to_u128(&flat), 455, "state[0]=5 state[1]=5 pos=4");
+}
+
+/// Two sequential calls; the second ^=s into the destructured state.
+#[test]
+fn probe_assignop_two_calls() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         struct MySp { state: [u8; 32], rate: usize, pos: usize }\n\
+         fn new_sp() -> MySp { MySp { state: [0u8; 32], rate: 32, pos: 0 } }\n\
+         fn abs1(sp: &mut MySp) {\n\
+             let mut st = sp.state;\n\
+             st[sp.pos] ^= 0x61u8;\n\
+             sp.state = st;\n\
+             sp.pos = sp.pos + 1;\n\
+         }\n\
+         fn abs16(sp: &mut MySp) {\n\
+             let mut state = sp.state;\n\
+             let mut pos = sp.pos;\n\
+             for i in 0..4 {\n\
+                 state[pos] ^= 5u8;\n\
+                 pos += 1;\n\
+             }\n\
+             sp.state = state;\n\
+             sp.pos = pos;\n\
+         }\n\
+         pub fn probe_a2c() -> u64 {\n\
+             let mut sp = new_sp();\n\
+             abs1(&mut sp);\n\
+             abs16(&mut sp);\n\
+             (sp.state[0] as u64) + 10 * (sp.state[1] as u64) + 1000 * (sp.pos as u64)\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_a2c"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_a2c"];
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &[], 64)
+        .expect("evaluates");
+    let flat: Vec<bool> = out.concat();
+    // abs16 starts at pos=1 (abs1's write), so state[0] stays 0x61;
+    // state[1..5] ^= 5; pos = 5 → 97 + 50 + 5000 = 5147.
+    assert_eq!(bits_to_u128(&flat), 5147, "state[0]=0x61 state[1]=5 pos=5");
 }
