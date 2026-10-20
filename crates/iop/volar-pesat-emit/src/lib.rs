@@ -19,9 +19,11 @@ use volar_ir::ir::IRBlock;
 use volar_ir_common::TypeTable as IRTypes;
 use volar_primitives::Galois128;
 
+pub mod chain;
 pub mod emit;
 pub mod eval;
 
+pub use chain::{ChainManifest, LinkError, chain_manifest, verify_chain};
 pub use emit::{EmitError, StepEmission, build_witness, emit_step_index};
 pub use eval::eval_step_wires;
 

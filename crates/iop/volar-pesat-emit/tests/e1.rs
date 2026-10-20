@@ -61,6 +61,13 @@ fn e1_movfuscate_emit_satisfies() {
     let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
     let step_block = &circuit.blocks[0];
 
+    if std::env::var("E1_DUMP").is_ok() {
+        let n_params = step_block.params.len();
+        eprintln!("[DUMP] n_params={} param_widths={:?}", n_params, param_widths(&step_block, &types));
+        if let IRTerminator::Jmp { target } = &step_block.terminator {
+            eprintln!("[DUMP] return args: {}", target.args.len());
+        }
+    }
     let emission = emit_step_index(step_block, &types).expect("emit step index");
     emission.index.validate().expect("emitted index is valid");
 
@@ -143,4 +150,8 @@ fn return_arg_wires(block: &IRBlock<()>) -> Vec<IRVarId> {
         }
         other => panic!("step block must return; got {other:?}"),
     }
+}
+
+fn param_widths(block: &IRBlock<()>, types: &TypeTable) -> Vec<usize> {
+    block.params.iter().map(|&t| types.value_bit_width(t).unwrap()).collect()
 }
