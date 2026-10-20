@@ -2952,11 +2952,31 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
                     ctx,
                 )]
             } else if lv.len() == rv.len() && !lv.is_empty() {
-                // Element-wise operation over aggregate types (e.g. Vope addition).
-                lv.into_iter()
-                    .zip(rv)
-                    .map(|(l, r)| lower_binop(*op, l, r, ctx))
-                    .collect()
+                if matches!(*op, SpecBinOp::Eq | SpecBinOp::Ne) {
+                    // Aggregate `==` / `!=` reduces to a single bool (Rust
+                    // semantics): `==` is the AND of element-wise `==`, `!=`
+                    // is the OR of element-wise `!=`. Without this the
+                    // element-wise path returns an aggregate of bools, which
+                    // then fails to combine with scalar bools in `&&`/`||`.
+                    let mut it = lv.into_iter().zip(rv);
+                    let (l0, r0) = it.next().expect("non-empty checked above");
+                    let mut acc = lower_binop(*op, l0, r0, ctx);
+                    for (l, r) in it {
+                        let e = lower_binop(*op, l, r, ctx);
+                        acc = match *op {
+                            SpecBinOp::Eq => ctx.target.and(acc, e),
+                            SpecBinOp::Ne => ctx.target.or(acc, e),
+                            _ => unreachable!("only Eq/Ne reach here"),
+                        };
+                    }
+                    vec![acc]
+                } else {
+                    // Element-wise operation over aggregate types (e.g. Vope addition).
+                    lv.into_iter()
+                        .zip(rv)
+                        .map(|(l, r)| lower_binop(*op, l, r, ctx))
+                        .collect()
+                }
             } else {
                 panic!(
                     "Binary {:?}: operand widths {} vs {} — cannot apply element-wise [caller {:?}] left={:?} right={:?} left_ty={:?} right_ty={:?}",

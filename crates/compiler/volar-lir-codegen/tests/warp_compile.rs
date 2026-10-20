@@ -1662,3 +1662,172 @@ fn probe_e5_canonical_check() {
     assert_eq!(bits_to_u128(&result), 1, "canonical checker accepts honest trace");
     println!("[E5-CANON] canonical warp_is_instance_satisfied works via parse_with_driver");
 }
+
+/// E6: in-circuit decision. A toy accumulator chain (genesis over the emitted
+/// self-loop step instance) is decided in-circuit: `warp_decide_spec`'s loops
+/// (index validity, Merkle-root recompute + codeword commit, MLE eval, bundled
+/// eval) compile via the M4 path and evaluate to the native decider's verdict,
+/// differentially. Required a fix: aggregate `==`/`!=` now reduce to a scalar
+/// bool (AND of element-wise Eq / OR of element-wise Ne) in lower_expr — the
+/// decider's `WarpDigest != WarpDigest` / `codeword != codeword` comparisons
+/// previously lowered element-wise and failed the `||` width check.
+///
+/// Slow (~25 min: full warp.rs parse + native-loop lowering + in-circuit
+/// Merkle/Keccak eval), so #[ignore]d — run explicitly to re-validate.
+#[test]
+#[ignore = "correct-but-slow (~25 min): in-circuit decider eval; run explicitly"]
+fn e6_in_circuit_decision() {
+    use cipher::consts::*;
+    use volar_spec::warp::{
+        WarpAcc, WarpAccInstance, WarpAccWitness, WarpConstraint, WarpIndex, WarpMerkleTree,
+        WarpTerm, WarpWitness,
+    };
+    let (flat, fields) = e5_self_loop_instance();
+    // Native const-generic index matching the emitted instance (M=16, TERMS=3,
+    // DEG=2), rebuilt from the flattened constraints.
+    let index = WarpIndex::<U16, U3, U2> {
+        constraints: volar_spec::Array::from_fn(|c| WarpConstraint::<U3, U2> {
+            terms: volar_spec::Array::from_fn(|t| WarpTerm::<U2> {
+                coeff: flat.coeffs[c * 3 + t],
+                vars: volar_spec::Array::from_fn(|j| flat.vars[(c * 3 + t) * 2 + j]),
+                n_vars: flat.n_vars[c * 3 + t],
+            }),
+            n_terms: flat.n_terms[c],
+        }),
+        public_len: 1,
+        witness_len: 8,
+        degree_bound: 2,
+    };
+    let witness = WarpWitness::<U8, U1> {
+        public: volar_spec::Array::from_fn(|i| fields[i]),
+        witness: volar_spec::Array::from_fn(|i| fields[1 + i]),
+    };
+    // Native genesis over the toy instance → a toy accumulator. N=8 (identity
+    // code: codeword == witness, len 8), LOGN=3, BETA=1+log2(16)=5, NODES=15.
+    let acc = volar_spec::warp::warp_genesis_spec::<
+        U16, U3, U2, U8, U1, U8, volar_spec::warp::WarpIdentityCode, U15, U5,
+    >(&index, &volar_spec::warp::WarpIdentityCode, &witness)
+    .expect("native genesis over the toy instance");
+    let native_verdict = volar_spec::warp::warp_decide_spec::<
+        U16, U3, U2, U8, U8, U3, U5, U15, volar_spec::warp::WarpIdentityCode,
+    >(&index, &volar_spec::warp::WarpIdentityCode, &acc);
+    assert!(native_verdict, "native decide accepts the genesis acc");
+
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_decide(\n\
+             coeffs: Array<Galois128, U48>,\n\
+             nvars: Array<usize, U48>,\n\
+             vars: Array<usize, U96>,\n\
+             nterms: Array<usize, U16>,\n\
+             root: Array<u8, U32>,\n\
+             alpha: Array<Galois128, U3>,\n\
+             mu: Galois128,\n\
+             beta: Array<Galois128, U5>,\n\
+             eta: Galois128,\n\
+             leaves: usize,\n\
+             nodes: Array<u8, U480>,\n\
+             codeword: Array<Galois128, U8>,\n\
+             witness: Array<Galois128, U8>,\n\
+         ) -> u8 {\n\
+             let index = WarpIndex::<U16, U3, U2> {\n\
+                 constraints: Array::<WarpConstraint<U3, U2>, U16>::from_fn(|c| WarpConstraint::<U3, U2> {\n\
+                     terms: Array::<WarpTerm<U2>, U3>::from_fn(|t| WarpTerm::<U2> {\n\
+                         coeff: coeffs[c * 3 + t],\n\
+                         vars: Array::<usize, U2>::from_fn(|j| vars[(c * 3 + t) * 2 + j]),\n\
+                         n_vars: nvars[c * 3 + t],\n\
+                     }),\n\
+                     n_terms: nterms[c],\n\
+                 }),\n\
+                 public_len: 1,\n\
+                 witness_len: 8,\n\
+                 degree_bound: 2,\n\
+             };\n\
+             let acc = WarpAcc::<U8, U8, U3, U5, U15> {\n\
+                 instance: WarpAccInstance::<U3, U5> {\n\
+                     root: Array::<u8, U32>::from_fn(|j| root[j]),\n\
+                     alpha: Array::<Galois128, U3>::from_fn(|i| alpha[i]),\n\
+                     mu: mu,\n\
+                     beta: Array::<Galois128, U5>::from_fn(|i| beta[i]),\n\
+                     eta: eta,\n\
+                 },\n\
+                 witness: WarpAccWitness::<U8, U8, U15> {\n\
+                     tree: WarpMerkleTree::<U15> {\n\
+                         leaves: leaves,\n\
+                         nodes: Array::<WarpDigest, U15>::from_fn(|i| Array::<u8, U32>::from_fn(|j| nodes[i * 32 + j])),\n\
+                     },\n\
+                     codeword: Array::<Galois128, U8>::from_fn(|i| codeword[i]),\n\
+                     witness: Array::<Galois128, U8>::from_fn(|i| witness[i]),\n\
+                 },\n\
+             };\n\
+             if warp_decide_spec::<U16, U3, U2, U8, U8, U3, U5, U15, WarpIdentityCode>(&index, &WarpIdentityCode, &acc) { 1u8 } else { 0u8 }\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_decide"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_decide"];
+
+    // Assemble inputs in param order. Field param = one 128-bit slot; usize =
+    // 64 one-bit slots; u8 = 8 one-bit slots; Array<u8, U*> flattens per byte.
+    let mut inputs: Vec<Vec<bool>> = Vec::new();
+    let mut push_field = |inputs: &mut Vec<Vec<bool>>, v: u128| inputs.push(bits_of(v, 128));
+    let mut push_usize = |inputs: &mut Vec<Vec<bool>>, v: usize| {
+        for i in 0..64 {
+            inputs.push(vec![(v >> i) & 1 == 1]);
+        }
+    };
+    let mut push_u8 = |inputs: &mut Vec<Vec<bool>>, v: u8| {
+        for i in 0..8 {
+            inputs.push(vec![(v >> i) & 1 == 1]);
+        }
+    };
+    for c in &flat.coeffs {
+        push_field(&mut inputs, c.0);
+    }
+    for v in &flat.n_vars {
+        push_usize(&mut inputs, *v as usize);
+    }
+    for v in &flat.vars {
+        push_usize(&mut inputs, *v);
+    }
+    for v in &flat.n_terms {
+        push_usize(&mut inputs, *v as usize);
+    }
+    for j in 0..32 {
+        push_u8(&mut inputs, acc.instance.root[j]);
+    }
+    for i in 0..3 {
+        push_field(&mut inputs, acc.instance.alpha[i].0);
+    }
+    push_field(&mut inputs, acc.instance.mu.0);
+    for i in 0..5 {
+        push_field(&mut inputs, acc.instance.beta[i].0);
+    }
+    push_field(&mut inputs, acc.instance.eta.0);
+    push_usize(&mut inputs, acc.witness.tree.leaves);
+    for i in 0..15 {
+        for j in 0..32 {
+            push_u8(&mut inputs, acc.witness.tree.nodes[i][j]);
+        }
+    }
+    for i in 0..8 {
+        push_field(&mut inputs, acc.witness.codeword[i].0);
+    }
+    for i in 0..8 {
+        push_field(&mut inputs, acc.witness.witness[i].0);
+    }
+
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(
+        &target.module,
+        fid,
+        &inputs,
+        1 << 27,
+    )
+    .expect("in-circuit decision evaluates");
+    let result: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    let got = bits_to_u128(&result);
+    assert_eq!(
+        got, native_verdict as u128,
+        "in-circuit decider verdict matches native ({native_verdict})"
+    );
+    println!("[E6] in-circuit decision: verdict {got} matches native {native_verdict}");
+}
