@@ -1481,14 +1481,12 @@ fn e5_self_loop_instance() -> (volar_pesat_emit::FlattenedIndex, Vec<volar_primi
 /// E5: the satisfaction checker compiles via IR and runs in-circuit.
 ///
 /// NOTE: this drives the satisfaction RELATION (per-constraint `Σ terms ==
-/// 0` over `public || witness`) directly over the flattened instance arrays,
-/// rather than calling the canonical `warp_is_instance_satisfied` — the
-/// const-generic `WarpIndex<M, TERMS, DEG>` built as an in-circuit local hits
-/// a struct-registration gap in volar-lir-codegen ("struct ... not in
-/// registry" for the from_fn-constructed generic struct; the E5/E6
-/// const-generic bridge in docs/pesat-loop-emitter-plan.md). The relation
-/// here is validated differentially against the native `check_instance` on
-/// the same emitted instance (the honest trace satisfies, a tampered trace
+/// 0` over `public || witness`) directly over the flattened instance arrays
+/// for speed (~110s). The canonical `warp_is_instance_satisfied` also works
+/// (see `probe_e5_canonical_check`, #[ignore]d at ~14 min) — it requires
+/// `parse_with_driver` so `warp.rs` (and thus the checker) is in-module. The
+/// relation here is validated differentially against the native
+/// `check_instance` on the same emitted instance (honest satisfies, tampered
 /// does not), which is the semantics-preservation signal.
 #[test]
 fn e5_in_circuit_step_satisfaction() {
@@ -1588,4 +1586,79 @@ fn e5_in_circuit_step_satisfaction() {
         "tampered step trace must be rejected in-circuit"
     );
     eprintln!("[E5] in-circuit satisfaction check: honest accepted, tampered rejected");
+}
+
+/// Evidence probe: the canonical `warp_is_instance_satisfied` (the actual spec
+/// checker) compiles and accepts the honest step trace in-circuit when the
+/// driver is parsed with `parse_with_driver` (warp.rs in-module). This proves
+/// the earlier "struct not in registry" E5 failure was a *harness* issue —
+/// `parse_driver_only` omits warp.rs so the callee is never planned and its
+/// `WarpIndex` never registered — not a volar-lir-codegen registration bug.
+/// Slow (~14 min: full warp.rs parse + native-loop lowering), so #[ignore].
+#[test]
+#[ignore = "correct-but-slow (~14 min): full warp.rs parse + lowering; run explicitly"]
+fn probe_e5_canonical_check() {
+    let (flat, fields) = e5_self_loop_instance();
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn probe_check(\n\
+             coeffs: Array<Galois128, U48>,\n\
+             nvars: Array<usize, U48>,\n\
+             vars: Array<usize, U96>,\n\
+             nterms: Array<usize, U16>,\n\
+             pub_in: Array<Galois128, U1>,\n\
+             wit: Array<Galois128, U8>,\n\
+         ) -> u8 {\n\
+             let index = WarpIndex::<U16, U3, U2> {\n\
+                 constraints: Array::<WarpConstraint<U3, U2>, U16>::from_fn(|c| WarpConstraint::<U3, U2> {\n\
+                     terms: Array::<WarpTerm<U2>, U3>::from_fn(|t| WarpTerm::<U2> {\n\
+                         coeff: coeffs[c * 3 + t],\n\
+                         vars: Array::<usize, U2>::from_fn(|j| vars[(c * 3 + t) * 2 + j]),\n\
+                         n_vars: nvars[c * 3 + t],\n\
+                     }),\n\
+                     n_terms: nterms[c],\n\
+                 }),\n\
+                 public_len: 1,\n\
+                 witness_len: 8,\n\
+                 degree_bound: 2,\n\
+             };\n\
+             let witness = WarpWitness::<U8, U1> {\n\
+                 public: Array::<Galois128, U1>::from_fn(|i| pub_in[i]),\n\
+                 witness: Array::<Galois128, U8>::from_fn(|i| wit[i]),\n\
+             };\n\
+             if warp_is_instance_satisfied::<U16, U3, U2, U8, U1>(&index, &witness) { 1u8 } else { 0u8 }\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_check"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_check"];
+    let mut inputs: Vec<Vec<bool>> = Vec::new();
+    for c in &flat.coeffs {
+        inputs.push(bits_of(c.0, 128));
+    }
+    for v in &flat.n_vars {
+        for i in 0..64 {
+            inputs.push(vec![((*v as usize) >> i) & 1 == 1]);
+        }
+    }
+    for v in &flat.vars {
+        for i in 0..64 {
+            inputs.push(vec![(*v >> i) & 1 == 1]);
+        }
+    }
+    for v in &flat.n_terms {
+        for i in 0..64 {
+            inputs.push(vec![((*v as usize) >> i) & 1 == 1]);
+        }
+    }
+    inputs.push(bits_of(fields[0].0, 128));
+    for w in &fields[1..] {
+        inputs.push(bits_of(w.0, 128));
+    }
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(
+        &target.module, fid, &inputs, 1 << 26,
+    )
+    .expect("canonical in-circuit satisfaction evaluates");
+    let result: Vec<bool> = out.iter().flat_map(|v| v.iter().copied()).collect();
+    assert_eq!(bits_to_u128(&result), 1, "canonical checker accepts honest trace");
+    println!("[E5-CANON] canonical warp_is_instance_satisfied works via parse_with_driver");
 }
