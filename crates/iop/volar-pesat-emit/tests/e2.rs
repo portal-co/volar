@@ -78,10 +78,12 @@ fn run_chain(
     let mut state: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
 
     let mut storage = Default::default();
+    let mut my_storage = volar_pesat_emit::StorageMap::default();
     let mut traces = Vec::new();
     loop {
-        let wires = eval_step_wires(step_block, &types, &state).expect("eval");
-        traces.push(build_witness(&emission, &wires));
+        let mut accesses = Vec::new();
+        let wires = eval_step_wires(step_block, &types, &state, &mut my_storage, &mut accesses).expect("eval");
+        traces.push(build_witness(&emission, &wires, volar_primitives::Galois128(0), volar_primitives::Galois128(0), volar_primitives::Galois128(0), &[], volar_primitives::Galois128(0), volar_primitives::Galois128(0)));
         let outputs = volar_fuzz::interpreter::ir::eval_ir_circuit_step(
             step_block,
             &types,

@@ -23,9 +23,9 @@ pub mod chain;
 pub mod emit;
 pub mod eval;
 
-pub use chain::{ChainManifest, LinkError, chain_manifest, verify_chain};
-pub use emit::{EmitError, StepEmission, build_witness, emit_step_index};
-pub use eval::eval_step_wires;
+pub use chain::{ChainManifest, LinkError, chain_manifest, step_accumulators, verify_chain};
+pub use emit::{EmitError, StepEmission, build_witness, derive_challenges, emit_step_index};
+pub use eval::{Access, StorageMap, eval_step_wires};
 
 /// One bit embedded into the PESAT field: `false → 0`, `true → 1`.
 pub(crate) fn bit_to_field(bit: bool) -> Galois128 {

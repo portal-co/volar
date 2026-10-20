@@ -6,11 +6,51 @@
 //! the step's own arithmetic, never a re-encoding). Differentially
 //! cross-checked against `volar-fuzz`'s `eval_ir_circuit_step` in tests.
 
+use std::collections::BTreeMap;
+
 use volar_ir::ir::{IRBlock, IRVarId};
-use volar_ir_common::{Constant, Stmt, TypeTable as IRTypes};
+use volar_ir_common::{Constant, Stmt, StorageId, TypeTable as IRTypes};
 use volar_ir_opt::common::stmt_output_type;
 
 use crate::EmitError;
+
+/// The shared cell storage a step stream reads/writes (persists across steps).
+/// Keyed by `(storage, address)`; each cell is a bit-vector.
+pub type StorageMap = BTreeMap<(StorageId, u64), Vec<bool>>;
+
+/// One recorded memory access within a step (for the accumulator chain).
+#[derive(Clone, Debug)]
+pub struct Access {
+    /// `true` for a write (absorbed into `mem_prod`), `false` for a read
+    /// (absorbed into `mem_cons`).
+    pub is_write: bool,
+    /// The cell address.
+    pub addr: u64,
+    /// The value read or written (bit-vector, LSB-first).
+    pub value: Vec<bool>,
+}
+
+/// Pack a bit-vector into a `Galois128` field element (`Σ bits[j]·2^j`).
+pub(crate) fn bits_to_field(bits: &[bool]) -> volar_primitives::Galois128 {
+    let mut acc = volar_primitives::Galois128(0);
+    let two = volar_primitives::Galois128(2);
+    let mut pow = volar_primitives::Galois128(1);
+    for &b in bits {
+        if b {
+            acc = acc + pow;
+        }
+        pow = pow * two;
+    }
+    acc
+}
+
+/// Read a bit-vector address to a `u64` (LSB-first).
+pub(crate) fn addr_to_u64(bits: &[bool]) -> u64 {
+    bits.iter()
+        .take(64)
+        .enumerate()
+        .fold(0u64, |acc, (i, &b)| if b { acc | (1 << i) } else { acc })
+}
 
 /// Bit width of a type, fail-closed on non-data types.
 pub(crate) fn width_of(ty: volar_ir_common::TypeId, types: &IRTypes) -> Result<usize, EmitError> {
@@ -40,6 +80,8 @@ pub fn eval_step_wires(
     block: &IRBlock<()>,
     types: &IRTypes,
     inputs: &[Vec<bool>],
+    storage: &mut StorageMap,
+    accesses: &mut Vec<Access>,
 ) -> Result<Vec<Vec<bool>>, EmitError> {
     let n_params = block.params.len();
     if inputs.len() != n_params {
@@ -60,7 +102,7 @@ pub fn eval_step_wires(
         wires.push(input.clone());
     }
     for node in &block.stmts {
-        let out = eval_stmt(&node.kind, &wires, types)?;
+        let out = eval_stmt(&node.kind, &wires, types, storage, accesses)?;
         wires.push(out);
     }
     Ok(wires)
@@ -71,6 +113,8 @@ fn eval_stmt(
     stmt: &Stmt<IRVarId>,
     wires: &[Vec<bool>],
     types: &IRTypes,
+    storage: &mut StorageMap,
+    accesses: &mut Vec<Access>,
 ) -> Result<Vec<bool>, EmitError> {
     let get = |v: IRVarId| -> Result<&[bool], EmitError> {
         wires
@@ -180,6 +224,37 @@ fn eval_stmt(
                 out[j] = bits.get((j + (n % w.max(1))) % w.max(1)).copied().unwrap_or(false);
             }
             Ok(out)
+        }
+        Stmt::StorageRead { storage: sid, ty, addr } => {
+            let w = width_of(*ty, types)?;
+            let a = addr_to_u64(get(*addr)?);
+            let mut val = storage.get(&(*sid, a)).cloned().unwrap_or_else(|| vec![false; w]);
+            val.truncate(w);
+            while val.len() < w {
+                val.push(false);
+            }
+            accesses.push(Access {
+                is_write: false,
+                addr: a,
+                value: val.clone(),
+            });
+            Ok(val)
+        }
+        Stmt::StorageWrite { storage: sid, src, ty, addr } => {
+            let w = width_of(*ty, types)?;
+            let a = addr_to_u64(get(*addr)?);
+            let mut val = get(*src)?.to_vec();
+            val.truncate(w);
+            while val.len() < w {
+                val.push(false);
+            }
+            storage.insert((*sid, a), val.clone());
+            accesses.push(Access {
+                is_write: true,
+                addr: a,
+                value: val,
+            });
+            Ok(vec![]) // a write has no output wire
         }
         other => Err(EmitError::UnsupportedStmt {
             discriminant: core::mem::discriminant(other),

@@ -5,11 +5,12 @@
 //! the next step's input boundary; the link is a literal field equality per
 //! boundary wire (B5), recorded here as a pairing of PESAT variable indices.
 
-use volar_ir::ir::{IRBlock, IRBlockTargetId, IRTerminator, IRVarId};
+use volar_ir::ir::IRBlock;
 use volar_iop::warp::PesatWitness;
 use volar_primitives::Galois128;
 
 use crate::emit::StepEmission;
+use crate::eval::{Access, bits_to_field};
 
 /// The boundary pairing for one step-instance chain.
 ///
@@ -60,38 +61,53 @@ impl core::fmt::Display for LinkError {
 
 impl std::error::Error for LinkError {}
 
-/// Derive the chain manifest for an emitted step circuit.
-///
-/// The boundary-in is the step block's whole parameter region (the `(pc,
-/// state)` inputs — the public prefix). The boundary-out is the `(pc',
-/// state')` portion of the step's return values: the movfuscated step circuit
-/// returns `[done, pc', state'..., out...]` (see
-/// `lower_to_circuit_ir`'s `WithTerminationFlag`), so the boundary-out return
-/// args are positions `1..=n_params` — the done flag (position 0) and the
-/// step's own outputs (positions after the state) are not fed back.
-pub fn chain_manifest(emission: &StepEmission, step_block: &IRBlock<()>) -> ChainManifest {
-    let n_params = step_block.params.len();
-    let boundary_in: Vec<usize> = (0..emission.public_len).collect();
-    let ret_args: &[IRVarId] = match &step_block.terminator {
-        IRTerminator::Jmp { target } if target.dest == IRBlockTargetId::Return => &target.args,
-        other => panic!("step block must return; got {other:?}"),
-    };
-    let mut boundary_out = Vec::new();
-    for arg in ret_args.iter().skip(1).take(n_params) {
-        let base = emission.var_base[arg.0 as usize];
-        let width = emission.var_width[arg.0 as usize];
-        boundary_out.extend(base..base + width);
-    }
-    assert_eq!(
-        boundary_in.len(),
-        boundary_out.len(),
-        "boundary-in and boundary-out widths must match"
-    );
+/// Derive the chain manifest for an emitted step circuit. The boundary
+/// (which variables link across steps) is computed at emission time and
+/// carried on the [`StepEmission`]; this just packages it.
+pub fn chain_manifest(emission: &StepEmission, _step_block: &IRBlock<()>) -> ChainManifest {
     ChainManifest {
         public_len: emission.public_len,
-        boundary_in,
-        boundary_out,
+        boundary_in: emission.boundary_in.clone(),
+        boundary_out: emission.boundary_out.clone(),
     }
+}
+
+/// Compute one step's memory-accumulator chain from its recorded accesses.
+///
+/// Returns `(acc_chain, mem_prod_out, mem_cons_out)`: one accumulator value
+/// per access (in statement order, writes chaining `mem_prod` and reads
+/// chaining `mem_cons`), then the boundary-out pair. The absorption shape is
+/// `acc' = acc + r0 + addr·r1 + value·r2 + ts·r3` (the `mem_acc_absorb`
+/// shape), matching the emitter's constraints.
+pub fn step_accumulators(
+    challenges: [Galois128; 4],
+    mem_prod_in: Galois128,
+    mem_cons_in: Galois128,
+    ts: Galois128,
+    accesses: &[Access],
+) -> (Vec<Galois128>, Galois128, Galois128) {
+    let [r0, r1, r2, r3] = challenges;
+    let mut chain = Vec::with_capacity(accesses.len());
+    let mut prod = mem_prod_in;
+    let mut cons = mem_cons_in;
+    for access in accesses {
+        let addr = bits_to_field(&u64_to_bits(access.addr));
+        let value = bits_to_field(&access.value);
+        let next = if access.is_write {
+            prod = prod + r0 + addr * r1 + value * r2 + ts * r3;
+            prod
+        } else {
+            cons = cons + r0 + addr * r1 + value * r2 + ts * r3;
+            cons
+        };
+        chain.push(next);
+    }
+    (chain, prod, cons)
+}
+
+/// `u64` → 64 bits, LSB-first.
+fn u64_to_bits(v: u64) -> Vec<bool> {
+    (0..64).map(|i| (v >> i) & 1 != 0).collect()
 }
 
 impl ChainManifest {

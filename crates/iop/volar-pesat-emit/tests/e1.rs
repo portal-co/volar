@@ -81,12 +81,14 @@ fn e1_movfuscate_emit_satisfies() {
     let mut state: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
 
     let mut storage = Default::default();
+    let mut my_storage = volar_pesat_emit::StorageMap::default();
     let mut steps = 0usize;
     loop {
         // The honest trace: the emitter's own evaluator, cross-checked
         // against the reference interpreter below.
-        let wires = eval_step_wires(step_block, &types, &state).expect("eval step");
-        let witness = build_witness(&emission, &wires);
+        let mut accesses = Vec::new();
+        let wires = eval_step_wires(step_block, &types, &state, &mut my_storage, &mut accesses).expect("eval step");
+        let witness = build_witness(&emission, &wires, volar_primitives::Galois128(0), volar_primitives::Galois128(0), volar_primitives::Galois128(0), &[], volar_primitives::Galois128(0), volar_primitives::Galois128(0));
         emission
             .index
             .check_instance(&witness)
