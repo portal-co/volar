@@ -1406,3 +1406,186 @@ fn probe_assignop_two_calls() {
     // state[1..5] ^= 5; pos = 5 → 97 + 50 + 5000 = 5147.
     assert_eq!(bits_to_u128(&flat), 5147, "state[0]=0x61 state[1]=5 pos=5");
 }
+
+// ============================================================================
+// E5: independent per-step proof — the satisfaction checker for an emitted
+// step instance compiled via IR, run in-circuit (plan §6 E5).
+// ============================================================================
+
+/// The minimal self-loop step circuit's emitted instance, flattened for the
+/// const-generic in-circuit driver. Returns (flattened, honest witness as
+/// field elements [public.., witness..]).
+fn e5_self_loop_instance() -> (volar_pesat_emit::FlattenedIndex, Vec<volar_primitives::Galois128>) {
+    use volar_ir::ir::*;
+    use volar_ir_common::{Constant, IrType, Node, PolyCoeffs, Type, TypeId, TypeTable};
+    let types = TypeTable(vec![IrType::Primitive(Type::Bit)]);
+    let mk = |kind: IRStmt| Node::new(kind, (), None);
+    // block0 (param b: Bit): out = b XOR 1; if out==1 loop else return out.
+    let block0 = IRBlock {
+        params: vec![TypeId(0)],
+        stmts: vec![mk(IRStmt::Poly {
+            ty: TypeId(0),
+            coeffs: PolyCoeffs::from_iter([(vec![IRVarId(0)], 1u8)]),
+            constant: Constant { hi: 0, lo: 1 },
+        })],
+        terminator: IRTerminator::JumpCond {
+            condition: IRVarId(1),
+            then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(0)), vec![IRVarId(1)]),
+            else_target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)]),
+        },
+    };
+    let blocks = IRBlocks::new(vec![block0]);
+    let bit_ty = IRTypeId(0);
+    let circuit = volar_ir_passes::lower_to_circuit::lower_to_circuit_ir(
+        &blocks,
+        &bit_ty,
+        1,
+        volar_ir_passes::lower_to_circuit::LoweringMode::WithTerminationFlag,
+    );
+    let step_block = &circuit.blocks[0];
+    let emission = volar_pesat_emit::emit_step_index(step_block, &types).expect("emit");
+    let flat = volar_pesat_emit::flatten_index(&emission);
+
+    // Honest trace for the step with input b = 0 (state bit 0): out = 1.
+    let mut storage = volar_pesat_emit::StorageMap::default();
+    let mut accesses = Vec::new();
+    let wires = volar_pesat_emit::eval_step_wires(
+        step_block,
+        &types,
+        &[vec![false]],
+        &mut storage,
+        &mut accesses,
+    )
+    .expect("eval step");
+    let witness = volar_pesat_emit::build_witness(
+        &emission,
+        &wires,
+        volar_primitives::Galois128(0),
+        volar_primitives::Galois128(0),
+        volar_primitives::Galois128(0),
+        &[],
+        volar_primitives::Galois128(0),
+        volar_primitives::Galois128(0),
+    );
+    // Sanity: the native oracle check accepts the honest trace.
+    emission
+        .index
+        .check_instance(&witness)
+        .expect("native honest trace satisfies");
+    // Flatten to [public..., witness...] field elements for the driver input.
+    let mut fields = witness.public.clone();
+    fields.extend_from_slice(&witness.witness);
+    (flat, fields)
+}
+
+/// E5: the satisfaction checker compiles via IR and runs in-circuit.
+///
+/// NOTE: this drives the satisfaction RELATION (per-constraint `Σ terms ==
+/// 0` over `public || witness`) directly over the flattened instance arrays,
+/// rather than calling the canonical `warp_is_instance_satisfied` — the
+/// const-generic `WarpIndex<M, TERMS, DEG>` built as an in-circuit local hits
+/// a struct-registration gap in volar-lir-codegen ("struct ... not in
+/// registry" for the from_fn-constructed generic struct; the E5/E6
+/// const-generic bridge in docs/pesat-loop-emitter-plan.md). The relation
+/// here is validated differentially against the native `check_instance` on
+/// the same emitted instance (the honest trace satisfies, a tampered trace
+/// does not), which is the semantics-preservation signal.
+#[test]
+fn e5_in_circuit_step_satisfaction() {
+    let (flat, fields) = e5_self_loop_instance();
+    // Sizes from the self-loop emission: M=16, TERMS=3, DEG=2, X=1, K=8.
+    assert_eq!((flat.m, flat.terms, flat.deg), (16, 3, 2));
+    assert_eq!((flat.public_len, flat.witness_len), (1, 8));
+
+    let module = parse_driver_only(
+        "use cipher::consts::*;\n\
+         pub fn probe_check(\n\
+             coeffs: Array<Galois128, U48>,\n\
+             nvars: Array<usize, U48>,\n\
+             vars: Array<usize, U96>,\n\
+             nterms: Array<usize, U16>,\n\
+             pub_in: Array<Galois128, U1>,\n\
+             wit: Array<Galois128, U8>,\n\
+         ) -> u8 {\n\
+             // Per-constraint satisfaction (the check_instance relation):\n\
+             // for each constraint, sum of terms over (public || witness) == 0.\n\
+             let mut ok = 1u8;\n\
+             for c in 0..16 {\n\
+                 let mut sum = Galois128(0);\n\
+                 for t in 0..3 {\n\
+                     if (t as usize) < nterms[c] {\n\
+                         let mut prod = coeffs[c * 3 + t];\n\
+                         for j in 0..2 {\n\
+                             if (j as usize) < nvars[c * 3 + t] {\n\
+                                 let v = vars[(c * 3 + t) * 2 + j];\n\
+                                 let x = if v < 1 { pub_in[v] } else { wit[v - 1] };\n\
+                                 prod = prod * x;\n\
+                             }\n\
+                         }\n\
+                         sum = sum + prod;\n\
+                     }\n\
+                 }\n\
+                 if sum != Galois128(0) { ok = 0u8; }\n\
+             }\n\
+             ok\n\
+         }\n",
+    );
+    let target = lower_seeded_loops(&module, &["probe_check"], volar_lir_codegen::LoopLowering::Native);
+    let fid = target.module.exports["probe_check"];
+
+    // Assemble the eval inputs in param order, one IrValue per VAFFLE entry
+    // slot: a Galois128 field param is one 128-bit value; a usize param is 64
+    // one-bit values.
+    // Param order: coeffs, nvars, vars, nterms, pub_in, wit. One IrValue per
+    // VAFFLE entry slot: a field param = one 128-bit value; a usize param = 64
+    // one-bit values.
+    let mut inputs: Vec<Vec<bool>> = Vec::new();
+    for c in &flat.coeffs {
+        inputs.push(bits_of(c.0, 128));
+    }
+    for v in &flat.n_vars {
+        for i in 0..64 {
+            inputs.push(vec![((*v as usize) >> i) & 1 == 1]);
+        }
+    }
+    for v in &flat.vars {
+        for i in 0..64 {
+            inputs.push(vec![(*v >> i) & 1 == 1]);
+        }
+    }
+    for v in &flat.n_terms {
+        for i in 0..64 {
+            inputs.push(vec![((*v as usize) >> i) & 1 == 1]);
+        }
+    }
+    inputs.push(bits_of(fields[0].0, 128)); // pub_in
+    for w in &fields[1..] {
+        inputs.push(bits_of(w.0, 128));
+    }
+
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &inputs, 64)
+        .expect("in-circuit check evaluates");
+    let flat_out: Vec<bool> = out.concat();
+    assert_eq!(
+        bits_to_u128(&flat_out),
+        1,
+        "honest step trace must satisfy the instance in-circuit"
+    );
+
+    // Tamper: flip a witness wire (the step's output bit, fields[1]) so the
+    // relational constraint no longer holds.
+    let mut bad_inputs = inputs.clone();
+    // Slot index of the first witness input: 48 field (coeffs) + (48+96+16)
+    // usize × 64 bits + 1 field (pub_in).
+    let wit_start = 48 + (48 + 96 + 16) * 64 + 1;
+    bad_inputs[wit_start] = bits_of(fields[1].0 ^ 1, 128);
+    let out = volar_fuzz::interpreter::vaffle::eval_vaffle_with_limits(&target.module, fid, &bad_inputs, 64)
+        .expect("tampered check evaluates");
+    let flat_out: Vec<bool> = out.concat();
+    assert_eq!(
+        bits_to_u128(&flat_out),
+        0,
+        "tampered step trace must be rejected in-circuit"
+    );
+    eprintln!("[E5] in-circuit satisfaction check: honest accepted, tampered rejected");
+}

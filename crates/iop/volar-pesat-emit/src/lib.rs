@@ -26,7 +26,7 @@ pub mod eval;
 
 pub use accum::{StreamAccumulator, stream_fold, stream_fold_segment, stream_start};
 pub use chain::{ChainManifest, LinkError, chain_manifest, step_accumulators, verify_chain};
-pub use emit::{EmitError, StepEmission, build_witness, derive_challenges, emit_step_index};
+pub use emit::{EmitError, FlattenedIndex, StepEmission, build_witness, derive_challenges, emit_step_index, flatten_index};
 pub use eval::{Access, StorageMap, eval_step_wires};
 
 /// One bit embedded into the PESAT field: `false → 0`, `true → 1`.

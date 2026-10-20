@@ -18,4 +18,7 @@ volar-fuzz.workspace = true
 volar-primitives = { git = "https://github.com/portal-co/volar.git" }
 vaffle.workspace = true
 volar-spec = { path = "../../spec/volar-spec" }
+volar-pesat-emit = { path = "../../iop/volar-pesat-emit" }
+volar-ir = { workspace = true }
+volar-ir-passes = { workspace = true }
 cipher = { workspace = true }

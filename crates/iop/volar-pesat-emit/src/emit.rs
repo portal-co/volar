@@ -554,6 +554,81 @@ fn emit_stmt_constraints(
     Ok(())
 }
 
+/// The emitted instance flattened to flat arrays, for driving the
+/// const-generic in-circuit satisfaction checker (E5). The const-generic
+/// `WarpIndex<M, TERMS, DEG>` is built in-circuit from these arrays.
+#[derive(Clone, Debug)]
+pub struct FlattenedIndex {
+    /// Constraint count (power of two).
+    pub m: usize,
+    /// Term capacity per constraint (max terms over all constraints).
+    pub terms: usize,
+    /// Variable capacity per term (the degree bound).
+    pub deg: usize,
+    /// `coeffs[c*terms + t]` = the coefficient of term `t` in constraint `c`.
+    pub coeffs: Vec<Galois128>,
+    /// `n_vars[c*terms + t]` = that term's variable count.
+    pub n_vars: Vec<u32>,
+    /// `vars[(c*terms + t)*deg + j]` = that term's j-th variable index.
+    pub vars: Vec<usize>,
+    /// `n_terms[c]` = constraint `c`'s term count.
+    pub n_terms: Vec<u32>,
+    /// Public variable count.
+    pub public_len: usize,
+    /// Witness variable count.
+    pub witness_len: usize,
+}
+
+/// Flatten an emitted instance for the const-generic in-circuit driver.
+pub fn flatten_index(emission: &StepEmission) -> FlattenedIndex {
+    let index = &emission.index;
+    let m = index.constraints.len();
+    let terms = index
+        .constraints
+        .iter()
+        .map(|c| c.terms.len())
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let deg = index.degree_bound.max(1);
+    let mut coeffs = Vec::with_capacity(m * terms);
+    let mut n_vars = Vec::with_capacity(m * terms);
+    let mut vars = Vec::with_capacity(m * terms * deg);
+    let mut n_terms = Vec::with_capacity(m);
+    for constraint in &index.constraints {
+        n_terms.push(constraint.terms.len() as u32);
+        for t in 0..terms {
+            match constraint.terms.get(t) {
+                Some(term) => {
+                    coeffs.push(term.coeff);
+                    n_vars.push(term.vars.len() as u32);
+                    for j in 0..deg {
+                        vars.push(term.vars.get(j).copied().unwrap_or(0));
+                    }
+                }
+                None => {
+                    coeffs.push(ZERO);
+                    n_vars.push(0);
+                    for _ in 0..deg {
+                        vars.push(0);
+                    }
+                }
+            }
+        }
+    }
+    FlattenedIndex {
+        m,
+        terms,
+        deg,
+        coeffs,
+        n_vars,
+        vars,
+        n_terms,
+        public_len: index.public_len,
+        witness_len: index.witness_len,
+    }
+}
+
 /// Build the witness for one step from its param inputs, the full wire trace
 /// (from [`crate::eval_step_wires`]), and the per-step memory-accumulator /
 /// timestamp field values (computed by the caller threading the chain).
