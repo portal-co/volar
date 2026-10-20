@@ -19,10 +19,12 @@ use volar_ir::ir::IRBlock;
 use volar_ir_common::TypeTable as IRTypes;
 use volar_primitives::Galois128;
 
+pub mod accum;
 pub mod chain;
 pub mod emit;
 pub mod eval;
 
+pub use accum::{StreamAccumulator, stream_fold, stream_fold_segment, stream_start};
 pub use chain::{ChainManifest, LinkError, chain_manifest, step_accumulators, verify_chain};
 pub use emit::{EmitError, StepEmission, build_witness, derive_challenges, emit_step_index};
 pub use eval::{Access, StorageMap, eval_step_wires};

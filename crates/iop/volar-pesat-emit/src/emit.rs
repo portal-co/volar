@@ -233,7 +233,11 @@ pub fn emit_step_index(
     } else {
         (0, 0)
     };
-    let witness_len = next - public_len;
+    // The witness region pads to a power of two: the WARP linear code
+    // (IdentityCode: message_len == codeword_len == witness_len) requires a
+    // power-of-two witness length. The padding variables are unconstrained
+    // and always zero in the honest witness.
+    let witness_len = (next - public_len).next_power_of_two().max(1);
 
     let map = VarMap { var_base, var_width };
 
@@ -592,6 +596,10 @@ pub fn build_witness(
         witness.extend_from_slice(acc_chain);
         witness.push(mem_prod_out);
         witness.push(mem_cons_out);
+    }
+    // Pad the witness region to the (power-of-two) witness length with zeros.
+    while witness.len() < emission.witness_len {
+        witness.push(ZERO);
     }
     volar_iop::warp::PesatWitness { public, witness }
 }
