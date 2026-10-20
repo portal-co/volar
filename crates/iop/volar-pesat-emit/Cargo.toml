@@ -1,0 +1,18 @@
+[package]
+name = "volar-pesat-emit"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-ir = { workspace = true }
+volar-ir-common = { workspace = true }
+volar-ir-opt = { workspace = true }
+volar-ir-passes = { workspace = true }
+volar-iop = { path = "../volar-iop" }
+volar-primitives = { path = "../../spec/volar-primitives" }
+
+[dev-dependencies]
+volar-fuzz = { workspace = true }
