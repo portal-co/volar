@@ -99,6 +99,9 @@ volar-ir-opt            = { version = "0.1.0", git = "https://github.com/portal-
 volar-ir-virt           = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 volar-ir-build          = { git = "https://github.com/portal-co/volar-ir", version = "0.1.0" }
 volar-fuzz              = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
+volar-ir-simd           = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
+volar-circuit-source    = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
+volar-evm-backend       = { version = "0.1.0", git = "https://github.com/portal-co/volar-ir.git" }
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
 portal-pc-waffle-frontend = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
@@ -143,3 +146,6 @@ volar-llvm-backend     = { path = "../volar-ir/crates/backends/volar-llvm-backen
 volar-c-backend        = { path = "../volar-ir/crates/backends/volar-c-backend" }
 volar-wasm-backend     = { path = "../volar-ir/crates/backends/volar-wasm-backend" }
 volar-fuzz             = { path = "../volar-ir/crates/fuzz/volar-fuzz" }
+volar-ir-simd          = { path = "../volar-ir/crates/ir/volar-ir-simd" }
+volar-circuit-source   = { path = "../volar-ir/crates/backends/volar-circuit-source" }
+volar-evm-backend      = { path = "../volar-ir/crates/backends/volar-evm-backend" }

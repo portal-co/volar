@@ -21,4 +21,6 @@ volar-spec = { path = "../../spec/volar-spec" }
 volar-pesat-emit = { path = "../../iop/volar-pesat-emit" }
 volar-ir = { workspace = true }
 volar-ir-passes = { workspace = true }
+volar-ir-simd = { workspace = true }
+volar-evm-backend = { workspace = true }
 cipher = { workspace = true }

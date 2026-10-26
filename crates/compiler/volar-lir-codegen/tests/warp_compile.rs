@@ -1831,3 +1831,303 @@ fn e6_in_circuit_decision() {
     );
     println!("[E6] in-circuit decision: verdict {got} matches native {native_verdict}");
 }
+
+/// Helper: compile a driver fn to a boolean circuit, returning gate/param/output
+/// counts or an error string. Validates the VAFFLE -> IR -> boolar -> circuit path.
+fn evm_circuit_size(driver: &str, name: &str) -> Result<(usize, u32, usize), String> {
+    let module = parse_with_driver(driver);
+    let target = lower_seeded(&module, &[name]);
+    let fid = target.module.exports[name];
+    let (blocks, types) =
+        volar_vaffle_target::lower_vaffle_to_ir_fully_inlined(target.module, &[fid])
+            .map_err(|e| format!("vaffle->ir: {e:?}"))?;
+    // Resolve the Dyn-based return continuations to static jumps by unrolling.
+    let blocks = volar_ir_passes::unroll_ir_everything(&blocks, &types)
+        .map_err(|e| format!("unroll: {e:?}"))?;
+    let biir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        volar_ir_passes::lower_ir_to_boolar::lower_ir_to_boolar(&blocks, &types)
+    }))
+    .map_err(|e| format!("boolar: {:?}", e.downcast::<String>().map(|s| *s).unwrap_or_default()))?;
+    let circuit = volar_ir_passes::fuse_to_circuit::lower_to_circuit_fused(
+        &biir,
+        1,
+        volar_ir_passes::LoweringMode::Unconditional,
+    )
+    .map_err(|e| format!("fuse: {e:?}"))?;
+    Ok((circuit.stmts.len(), circuit.params, circuit.outputs.len()))
+}
+
+/// Scale probe: measure boolean-circuit gate counts for representative ops.
+#[test]
+fn probe_evm_gate_counts() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("xor128", "use cipher::consts::*;\npub fn xor128(a: u128, b: u128) -> u128 { a ^ b }\n", "xor128"),
+        ("add128", "use cipher::consts::*;\npub fn add128(a: u128, b: u128) -> u128 { a + b }\n", "add128"),
+        ("mul128u", "use cipher::consts::*;\npub fn mul128u(a: u128, b: u128) -> u128 { a * b }\n", "mul128u"),
+        ("mulg128", "use cipher::consts::*;\npub fn mulg128(a: Galois128, b: Galois128) -> Galois128 { a * b }\n", "mulg128"),
+    ];
+    for (label, src, name) in cases {
+        match evm_circuit_size(src, name) {
+            Ok((gates, params, outputs)) => {
+                println!("[EVM] {label}: {gates} gates, {params} params, {outputs} outputs");
+            }
+            Err(e) => println!("[EVM] {label}: FAILED — {e}"),
+        }
+    }
+}
+
+// ==== EVM gas measurement (256-lane SIMD) ====
+// Minimal word helpers + bytecode-subset interpreter replicating
+// volar-evm-backend's tests/support/{word,evm}.rs gas model (YP appendix G:
+// AND/OR/XOR/NOT/MLOAD/MSTORE/CALLDATALOAD/PUSH1..32 = 3, PUSH0 = 2,
+// memory expansion C(a)=3a+a^2/512 charged incrementally).
+mod evm_gas {
+    pub type Word = [u64; 4];
+    pub const ZERO: Word = [0; 4];
+    pub fn and(a: Word, b: Word) -> Word { [a[0]&b[0], a[1]&b[1], a[2]&b[2], a[3]&b[3]] }
+    pub fn or(a: Word, b: Word) -> Word { [a[0]|b[0], a[1]|b[1], a[2]|b[2], a[3]|b[3]] }
+    pub fn xor(a: Word, b: Word) -> Word { [a[0]^b[0], a[1]^b[1], a[2]^b[2], a[3]^b[3]] }
+    pub fn not(a: Word) -> Word { [!a[0], !a[1], !a[2], !a[3]] }
+    pub fn as_u64(w: Word) -> Option<u64> { (w[1]==0 && w[2]==0 && w[3]==0).then_some(w[0]) }
+    pub fn bit(w: Word, lane: usize) -> bool { w[lane/64] >> (lane%64) & 1 != 0 }
+    pub fn set_bit(w: &mut Word, lane: usize) { w[lane/64] |= 1 << (lane%64) }
+
+    fn expansion(words: u64) -> u64 { 3*words + words*words/512 }
+    struct Vm { mem: std::collections::BTreeMap<u64, Word>, gas: u64, mem_words: u64 }
+    impl Vm {
+        fn touch(&mut self, hi: u64) {
+            let w = hi.div_ceil(32);
+            if w > self.mem_words { self.gas += expansion(w) - expansion(self.mem_words); self.mem_words = w; }
+        }
+    }
+    /// Run the emitted bytecode over packed calldata words; return (outputs, gas).
+    pub fn run(code: &[u8], calldata: &[Word]) -> Result<(Vec<Word>, u64), String> {
+        let mut vm = Vm { mem: Default::default(), gas: 0, mem_words: 0 };
+        let mut stack: Vec<Word> = Vec::new();
+        let mut pc = 0usize;
+        macro_rules! pop { () => { stack.pop().ok_or("stack underflow")? }; }
+        loop {
+            let op = *code.get(pc).ok_or("ran off the end without RETURN")?;
+            pc += 1;
+            match op {
+                0x5f => { vm.gas += 2; stack.push(ZERO); }
+                0x60..=0x7f => {
+                    let width = usize::from(op - 0x5f);
+                    let data = code.get(pc..pc+width).ok_or("truncated PUSH")?;
+                    pc += width;
+                    let mut b = [0u8; 32];
+                    b[32-width..].copy_from_slice(data);
+                    stack.push([
+                        u64::from_be_bytes(b[24..32].try_into().unwrap()),
+                        u64::from_be_bytes(b[16..24].try_into().unwrap()),
+                        u64::from_be_bytes(b[8..16].try_into().unwrap()),
+                        u64::from_be_bytes(b[0..8].try_into().unwrap()),
+                    ]);
+                    vm.gas += 3;
+                }
+                0x51 => { let a = as_u64(pop!()).ok_or("mload addr")?; if a%32!=0 { return Err("unaligned mload".into()); } vm.gas += 3; vm.touch(a+32); stack.push(vm.mem.get(&a).copied().unwrap_or(ZERO)); }
+                0x52 => { let a = as_u64(pop!()).ok_or("mstore addr")?; if a%32!=0 { return Err("unaligned mstore".into()); } let v = pop!(); vm.gas += 3; vm.touch(a+32); vm.mem.insert(a, v); }
+                0x35 => { let o = as_u64(pop!()).ok_or("calldata off")?; if o%32!=0 { return Err("unaligned calldataload".into()); } vm.gas += 3; stack.push(calldata.get((o/32) as usize).copied().unwrap_or(ZERO)); }
+                0x16|0x17|0x18 => { let b = pop!(); let a = pop!(); vm.gas += 3; stack.push(match op { 0x16 => and(a,b), 0x17 => or(a,b), _ => xor(a,b) }); }
+                0x19 => { let a = pop!(); vm.gas += 3; stack.push(not(a)); }
+                0xf3 => {
+                    let off = as_u64(pop!()).ok_or("return off")?;
+                    let len = as_u64(pop!()).ok_or("return len")?;
+                    if len%32!=0 { return Err("unaligned return".into()); }
+                    if len>0 { vm.touch(off+len); }
+                    let words = (0..len/32).map(|i| vm.mem.get(&(off+32*i)).copied().unwrap_or(ZERO)).collect();
+                    return Ok((words, vm.gas));
+                }
+                _ => return Err(format!("unsupported opcode {op:#04x} at {}", pc-1)),
+            }
+            if stack.len() > 1024 { return Err("stack overflow".into()); }
+        }
+    }
+}
+
+/// Compile a driver fn all the way to a lane-compatible boolean circuit:
+/// VAFFLE -> fully-inlined Volar IR -> unroll (resolve Dyn returns) -> boolar
+/// -> strip dead (write-only) storage -> fuse to a single-block BCircuit.
+///
+/// The VAFFLE calling convention stages the return value via StorageWrite to a
+/// caller return slot; for a top-level circuit there is no caller and no
+/// StorageRead, so the staging is dead. `StorageWrite` produces a dummy zero
+/// bit, so replacing it with `BIrStmt::Zero` preserves the var value and is
+/// semantics-preserving for the circuit outputs (validated by the per-lane
+/// correctness check in the gas probes).
+fn compile_warp_bcircuit(driver: &str, name: &str) -> volar_ir::circuit::BCircuit<()> {
+    let module = parse_with_driver(driver);
+    let target = lower_seeded(&module, &[name]);
+    let fid = target.module.exports[name];
+    let (blocks, types) =
+        volar_vaffle_target::lower_vaffle_to_ir_fully_inlined(target.module, &[fid])
+            .expect("vaffle->ir");
+    let blocks = volar_ir_passes::unroll_ir_everything(&blocks, &types).expect("unroll");
+    let mut biir = volar_ir_passes::lower_ir_to_boolar::lower_ir_to_boolar(&blocks, &types);
+    // Assert the storage is write-only (no reads), then strip the dead writes.
+    for b in &biir.blocks {
+        for st in &b.stmts {
+            assert!(
+                !matches!(st.kind, volar_ir::boolar::BIrStmt::StorageRead { .. }),
+                "unexpected StorageRead: storage is not dead"
+            );
+        }
+    }
+    for b in &mut biir.blocks {
+        for st in &mut b.stmts {
+            if matches!(st.kind, volar_ir::boolar::BIrStmt::StorageWrite { .. }) {
+                st.kind = volar_ir::boolar::BIrStmt::Zero;
+            }
+        }
+    }
+    volar_ir_passes::fuse_to_circuit::lower_to_circuit_fused(
+        &biir,
+        1,
+        volar_ir_passes::LoweringMode::Unconditional,
+    )
+    .expect("fuse")
+}
+
+/// Measure EVM gas for a circuit packed over 256 lanes vs the same bytecode run
+/// scalar (1 lane). Returns (gates, packed_gas, packed_outputs).
+/// Run a circuit's emitted bytecode over packed lanes; returns (outputs, gas).
+fn evm_run_packed(
+    circuit: &volar_ir::circuit::BCircuit<()>,
+    inputs_per_lane: &[Vec<bool>],
+) -> (Vec<evm_gas::Word>, u64) {
+    let code = volar_evm_backend::emit_circuit(
+        circuit,
+        volar_evm_backend::RawEvm::new(volar_evm_backend::RawEvmConfig::default()),
+    )
+    .expect("emit raw evm");
+    let n_params = circuit.params as usize;
+    let mut packed = vec![evm_gas::ZERO; n_params];
+    for (lane, inp) in inputs_per_lane.iter().enumerate() {
+        for (p, b) in inp.iter().enumerate() {
+            if *b {
+                evm_gas::set_bit(&mut packed[p], lane);
+            }
+        }
+    }
+    evm_gas::run(&code, &packed).expect("bytecode runs")
+}
+
+/// Measure a circuit packed over 256 lanes vs scalar (1 lane). Returns
+/// (gates, packed_gas, scalar_gas, packed_outputs). `scalar_gas` runs the SAME
+/// bytecode with only lane 0 populated (1 instance), so the packed:per-proof
+/// ratio against it is the 256x SIMD amortization.
+fn evm_measure(
+    circuit: &volar_ir::circuit::BCircuit<()>,
+    inputs_per_lane: &[Vec<bool>],
+) -> (usize, u64, u64, Vec<evm_gas::Word>) {
+    let (packed_out, packed_gas) = evm_run_packed(circuit, inputs_per_lane);
+    let (_, scalar_gas) = evm_run_packed(circuit, &inputs_per_lane[..1]);
+    (circuit.stmts.len(), packed_gas, scalar_gas, packed_out)
+}
+
+fn g_run(code: &[u8], calldata: &[evm_gas::Word]) -> (Vec<evm_gas::Word>, u64) {
+    evm_gas::run(code, calldata).expect("bytecode runs")
+}
+
+/// EVM gas: Galois128 field mul (the WARP verifier's core op) packed 256-lane
+/// vs scalar. Demonstrates the 256x SIMD amortization on a binary-field op.
+#[test]
+fn probe_evm_mulg128_gas() {
+    let circuit = compile_warp_bcircuit(
+        "use cipher::consts::*;\npub fn mulg128(a: Galois128, b: Galois128) -> Galois128 { a * b }\n",
+        "mulg128",
+    );
+
+    // 256 random (a, b) operand pairs, as per-lane bit vectors (256 params).
+    let mut rng = 0x9E3779B97F4A7C15u64;
+    let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+    let lanes: Vec<Vec<bool>> = (0..256)
+        .map(|_| (0..256).map(|_| next() & 1 == 1).collect())
+        .collect();
+    let (gates, packed_gas, scalar_gas, packed_out) = evm_measure(&circuit, &lanes);
+    // Correctness: lane j's output bits should equal the native mul.
+    let n_out = circuit.outputs.len();
+    let mut ok = true;
+    for lane in 0..256 {
+        let a_bits = &lanes[lane][..128];
+        let b_bits = &lanes[lane][128..256];
+        let a = a_bits.iter().enumerate().fold(0u128, |acc, (i, b)| if *b { acc | (1u128 << i) } else { acc });
+        let b = b_bits.iter().enumerate().fold(0u128, |acc, (i, b)| if *b { acc | (1u128 << i) } else { acc });
+        let expected = (Galois128(a) * Galois128(b)).0;
+        let got = (0..128).fold(0u128, |acc, i| if evm_gas::bit(packed_out[i], lane) { acc | (1u128 << i) } else { acc });
+        if got != expected { ok = false; break; }
+    }
+    println!(
+        "[EVM] mulg128: {gates} gates, {n_out} outputs | packed(256 lanes)={packed_gas} gas | scalar(1 lane)={scalar_gas} gas | per-mul packed={} gas | correct={ok}",
+        packed_gas / 256
+    );
+    assert!(ok, "packed lanes match native Galois128 mul");
+}
+
+/// Compile + measure + correctness-check a Galois128 kernel, packed vs scalar.
+/// `native` maps a lane's input bit-vector to the expected output u128.
+/// Returns (gates, packed_gas, scalar_gas).
+fn measure_g128_kernel(
+    label: &str,
+    driver: &str,
+    name: &str,
+    n_in_bits: usize,
+    native: impl Fn(&[bool]) -> u128,
+) -> (usize, u64, u64) {
+    let circuit = compile_warp_bcircuit(driver, name);
+    let mut rng = 0x9E3779B97F4A7C15u64;
+    let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+    let lanes: Vec<Vec<bool>> = (0..256)
+        .map(|_| (0..n_in_bits).map(|_| next() & 1 == 1).collect())
+        .collect();
+    let (gates, packed_gas, scalar_gas, packed_out) = evm_measure(&circuit, &lanes);
+    let mut ok = true;
+    for lane in 0..256 {
+        let expected = native(&lanes[lane]);
+        let got = (0..128).fold(0u128, |acc, i| {
+            if evm_gas::bit(packed_out[i], lane) { acc | (1u128 << i) } else { acc }
+        });
+        if got != expected { ok = false; break; }
+    }
+    println!(
+        "[EVM] {label}: {gates} gates | packed256={packed_gas} | scalar={scalar_gas} | per-proof packed={} | correct={ok}",
+        packed_gas / 256
+    );
+    assert!(ok, "{label} packed lanes match native");
+    (gates, packed_gas, scalar_gas)
+}
+
+#[test]
+#[ignore = "slow (~20s): multi-hundred-K-gate kernel compiles; run explicitly"]
+fn probe_evm_verifier_kernels() {
+    let g = |bits: &[bool]| -> u128 {
+        bits.iter().enumerate().fold(0u128, |acc, (i, b)| if *b { acc | (1u128 << i) } else { acc })
+    };
+    // Field mul chain scaling: 1, 2, 4 muls (shows the gas scaling with size).
+    measure_g128_kernel(
+        "g128_mul x1",
+        "use cipher::consts::*;\npub fn k(a: Galois128, b: Galois128) -> Galois128 { a * b }\n",
+        "k", 256,
+        |inp| (Galois128(g(&inp[..128])) * Galois128(g(&inp[128..256]))).0,
+    );
+    measure_g128_kernel(
+        "g128_mul x4",
+        "use cipher::consts::*;\npub fn k(a: Array<Galois128, U4>, b: Array<Galois128, U4>) -> Galois128 { a[0]*b[0]*a[1] + a[2]*b[2]*b[3] }\n",
+        "k", 1024,
+        |inp| {
+            let w = |i: usize| Galois128(g(&inp[i*128..(i+1)*128]));
+            (w(0)*w(4)*w(1) + w(2)*w(6)*w(7)).0
+        },
+    );
+    // dot4: the MLE / bundled-eval inner product (4 muls + 3 adds).
+    measure_g128_kernel(
+        "g128_dot4",
+        "use cipher::consts::*;\npub fn k(a: Array<Galois128, U4>, b: Array<Galois128, U4>) -> Galois128 { a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3] }\n",
+        "k", 1024,
+        |inp| {
+            let a: Vec<u128> = (0..4).map(|i| g(&inp[i*128..(i+1)*128])).collect();
+            let b: Vec<u128> = (0..4).map(|i| g(&inp[(4+i)*128..(5+i)*128])).collect();
+            (Galois128(a[0])*Galois128(b[0]) + Galois128(a[1])*Galois128(b[1]) + Galois128(a[2])*Galois128(b[2]) + Galois128(a[3])*Galois128(b[3])).0
+        },
+    );
+}
