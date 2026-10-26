@@ -2132,42 +2132,19 @@ fn probe_evm_verifier_kernels() {
     );
 }
 
-/// AST-to-Solidity codegen: compile a WARP field-arithmetic kernel to native
-/// Solidity and write it to the foundry project for gas measurement.
+/// AST-to-Solidity codegen: compile a WARP verifier field+hash kernel set to
+/// one native Solidity contract (a dot product = bundled-eval core, the MLE
+/// eval, and a native-Keccak Merkle commit) and write it for forge gas
+/// measurement. Content asserts are the self-contained regression.
 #[test]
-fn probe_sol_codegen_dot() {
+fn probe_sol_codegen() {
     let module = parse_with_driver(
         "use cipher::consts::*;\n\
          pub fn mle_dot(a: Array<Galois128, U4>, b: Array<Galois128, U4>) -> Galois128 {\n\
              let mut acc = Galois128(0);\n\
-             for i in 0..4 {\n\
-                 acc = acc + a[i] * b[i];\n\
-             }\n\
+             for i in 0..4 { acc = acc + a[i] * b[i]; }\n\
              acc\n\
-         }\n",
-    );
-    let sol = volar_compiler::printer_sol::print_module_solidity(&module, &["mle_dot"], "Generated")
-        .expect("print solidity");
-    // Self-contained regression: the codegen lowers the field arithmetic to the
-    // native Gf128 library (mul) and XOR (add), inside a word-level loop.
-    assert!(sol.contains("library Gf128"), "inlines the Gf128 field library");
-    assert!(sol.contains("function mle_dot(uint256[] memory a, uint256[] memory b)"), "fn signature");
-    assert!(sol.contains("acc = (acc ^ Gf128.mul(a[i], b[i]));"), "field mul + xor-add, not boolean gates");
-    // Write out for the forge gas measurement (docs/native-evm).
-    let out = std::env::var("SOL_OUT").unwrap_or_else(|_| "/tmp/warp-evm/src/Generated.sol".into());
-    if let Some(parent) = std::path::Path::new(&out).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&out, &sol);
-    println!("=== generated Solidity ===\n{sol}");
-}
-
-/// AST-to-Solidity: the MLE eval kernel (eq_evals doubling + dot product) —
-/// the decider's field-arithmetic core — compiled to native Solidity.
-#[test]
-fn probe_sol_codegen_mle8() {
-    let module = parse_with_driver(
-        "use cipher::consts::*;\n\
+         }\n\
          pub fn mle8(values: Array<Galois128, U8>, point: Array<Galois128, U4>) -> Galois128 {\n\
              let mut eq = Array::<Galois128, U8>::default();\n\
              eq[0] = Galois128(1);\n\
@@ -2180,24 +2157,34 @@ fn probe_sol_codegen_mle8() {
                  }\n\
              }\n\
              let mut out = Galois128(0);\n\
-             for i in 0..8 {\n\
-                 out = out + values[i] * eq[i];\n\
-             }\n\
+             for i in 0..8 { out = out + values[i] * eq[i]; }\n\
              out\n\
+         }\n\
+         pub fn merkle8(l: Array<Galois128, U8>) -> Galois128 {\n\
+             let a = keccak_pair(l[0], l[1]);\n\
+             let b = keccak_pair(l[2], l[3]);\n\
+             let c = keccak_pair(l[4], l[5]);\n\
+             let d = keccak_pair(l[6], l[7]);\n\
+             let e = keccak_pair(a, b);\n\
+             let f = keccak_pair(c, d);\n\
+             keccak_pair(e, f)\n\
          }\n",
     );
-    match volar_compiler::printer_sol::print_module_solidity(&module, &["mle8"], "Generated") {
-        Ok(sol) => {
-            // Regression: the field core lowers to native word-level Solidity.
-            assert!(sol.contains("uint256[] memory eq = new uint256[](8);"), "array alloc");
-            assert!(sol.contains("uint256 product = Gf128.mul(eq[index], coordinate);"), "field mul");
-            assert!(sol.contains("eq[index] = (eq[index] ^ product);"), "field sub as XOR");
-            assert!(sol.contains("out = (out ^ Gf128.mul(values[i], eq[i]));"), "dot-product term");
-            let out = std::env::var("SOL_OUT").unwrap_or_else(|_| "/tmp/warp-evm/src/GeneratedMle.sol".into());
-            if let Some(parent) = std::path::Path::new(&out).parent() { let _ = std::fs::create_dir_all(parent); }
-            let _ = std::fs::write(&out, &sol);
-            println!("=== mle8 Solidity ===\n{sol}");
-        }
-        Err(e) => panic!("codegen failed: {e}"),
-    }
+    let sol = volar_compiler::printer_sol::print_module_solidity(
+        &module,
+        &["mle_dot", "mle8", "merkle8"],
+        "GenWarp",
+    )
+    .expect("print solidity");
+    // Regression: field arithmetic lowers to Gf128.mul + XOR; hashing to KECCAK256.
+    assert!(sol.contains("library Gf128"), "inlines Gf128");
+    assert!(sol.contains("acc = (acc ^ Gf128.mul(a[i], b[i]));"), "dot: mul + xor-add");
+    assert!(sol.contains("uint256[] memory eq = new uint256[](8);"), "mle: array alloc");
+    assert!(sol.contains("uint256 product = Gf128.mul(eq[index], coordinate);"), "mle: field mul");
+    assert!(sol.contains("eq[index] = (eq[index] ^ product);"), "mle: field sub as xor");
+    assert!(sol.contains("uint256(keccak256(abi.encodePacked"), "merkle: native keccak");
+    let out = std::env::var("SOL_OUT").unwrap_or_else(|_| "/tmp/warp-evm/src/GenWarp.sol".into());
+    if let Some(parent) = std::path::Path::new(&out).parent() { let _ = std::fs::create_dir_all(parent); }
+    let _ = std::fs::write(&out, &sol);
+    println!("=== GenWarp Solidity ===\n{sol}");
 }

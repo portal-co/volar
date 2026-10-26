@@ -301,6 +301,17 @@ impl<'m> Printer<'m> {
         for a in args {
             rendered.push(self.render_expr(a)?);
         }
+        // Native Keccak extern: a spec-level `keccak_pair(l, r)` (the WARP
+        // Merkle node hash) maps to the native KECCAK256 opcode over the two
+        // 32-byte words, truncated to the 128-bit node width. This is the
+        // re-anchoring from the spec's bit-level SHAKE128 sponge to the
+        // EVM-native hash that makes the verifier's hashing cheap.
+        if fname == "keccak_pair" && rendered.len() == 2 {
+            return Ok(format!(
+                "((uint256(keccak256(abi.encodePacked(bytes32({}), bytes32({}))))) & ((1 << 128) - 1))",
+                rendered[0], rendered[1]
+            ));
+        }
         Ok(format!("{}({})", fname, rendered.join(", ")))
     }
 
