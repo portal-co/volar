@@ -103,12 +103,9 @@ impl<'m> Printer<'m> {
             IrType::Primitive(PrimitiveType::Galois128) => Ok("uint256".into()),
             IrType::Primitive(PrimitiveType::Bool) => Ok("bool".into()),
             IrType::Primitive(p) if Self::is_int(&IrType::Primitive(*p)) => Ok("uint256".into()),
-            IrType::Array { elem, len, .. } => {
+            IrType::Array { elem, .. } => {
                 let e = self.sol_ty(elem)?;
-                match self.array_len(len) {
-                    Some(n) => Ok(format!("{e}[{n}]")),
-                    None => Ok(format!("{e}[]")),
-                }
+                Ok(format!("{e}[]"))
             }
             other => err(format!("unsupported type {other:?}")),
         }
@@ -157,6 +154,8 @@ impl<'m> Printer<'m> {
                 }
             }
             IrExprKind::MethodCall { .. } => None,
+            // `Array::<T, N>::default()` / `T::default()` carries its type.
+            IrExprKind::DefaultValue { ty } => ty.as_deref().cloned(),
             _ => None,
         }
     }
@@ -225,6 +224,19 @@ impl<'m> Printer<'m> {
             IrExprKind::Return(e) => {
                 let _ = e;
                 err("return must be rendered as a statement")
+            }
+            IrExprKind::DefaultValue { ty } => {
+                // Array::default() -> a fresh zero-filled memory array.
+                match ty.as_deref() {
+                    Some(IrType::Array { elem, len, .. }) => {
+                        let e = self.sol_ty(elem)?;
+                        let n = self.array_len(len).ok_or_else(|| SolError("default array needs a concrete length".into()))?;
+                        Ok(format!("new {e}[]({n})"))
+                    }
+                    Some(IrType::Primitive(PrimitiveType::Galois128)) => Ok("0".into()),
+                    Some(t) if Self::is_int(t) => Ok("0".into()),
+                    _ => err(format!("unsupported default value {ty:?}")),
+                }
             }
             IrExprKind::TypenumUsize { ty } => {
                 match ty.as_ref() {
