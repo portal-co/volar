@@ -124,7 +124,7 @@ impl<'m> Printer<'m> {
     /// Best-effort static type of an expression (enough to pick field vs int ops).
     fn infer_ty(&self, e: &IrExpr) -> Option<IrType> {
         match &e.kind {
-            IrExprKind::Var(name) => self.env.get(name).cloned(),
+            IrExprKind::Var(name) => self.env.get(&sanitize_sol_ident(name)).cloned(),
             IrExprKind::Index { base, .. } => match self.infer_ty(base)? {
                 IrType::Array { elem, .. } => Some(*elem),
                 _ => None,
@@ -173,7 +173,7 @@ impl<'m> Printer<'m> {
     fn render_expr(&mut self, e: &IrExpr) -> core::result::Result<String, SolError> {
         match &e.kind {
             IrExprKind::Lit(l) => self.render_lit(l),
-            IrExprKind::Var(n) => Ok(n.clone()),
+            IrExprKind::Var(n) => Ok(sanitize_sol_ident(n)),
             IrExprKind::Index { base, index } => {
                 let b = self.render_expr(base)?;
                 let i = self.render_expr(index)?;
@@ -206,10 +206,18 @@ impl<'m> Printer<'m> {
                 err("inline block expression not supported; hoist to statements")
             }
             IrExprKind::If { cond, then_branch, else_branch } => {
-                // Ternary only when both branches are a single expr.
+                // Ternary only when both branches are single exprs (the else
+                // branch is an IrExpr; unwrap a bare Block to its tail expr).
                 let c = self.render_expr(cond)?;
+                let else_val: Option<&IrExpr> = match else_branch {
+                    Some(el) => match &el.kind {
+                        IrExprKind::Block(b) if b.stmts.is_empty() => b.expr.as_deref(),
+                        _ => Some(&**el),
+                    },
+                    None => None,
+                };
                 if then_branch.stmts.is_empty() {
-                    if let (Some(t), Some(el)) = (&then_branch.expr, else_branch) {
+                    if let (Some(t), Some(el)) = (&then_branch.expr, else_val) {
                         let t = self.render_expr(t)?;
                         let el = self.render_expr(el)?;
                         return Ok(format!("({c} ? {t} : {el})"));
@@ -382,6 +390,7 @@ impl<'m> Printer<'m> {
             IrExprKind::BoundedLoop { var, start, end, body, .. } => {
                 let s = self.render_expr(start)?;
                 let en = self.render_expr(end)?;
+                let var = sanitize_sol_ident(var);
                 writeln!(out, "{}for (uint256 {var} = {s}; {var} < {en}; {var}++) {{", self.pad()).ok();
                 self.indent += 1;
                 self.env.insert(var.clone(), IrType::Primitive(PrimitiveType::Usize));
@@ -486,9 +495,10 @@ impl<'m> Printer<'m> {
         let mut params = Vec::new();
         for p in &f.params {
             let ty = self.sol_ty(&p.ty)?;
-            self.env.insert(p.name.clone(), p.ty.clone());
+            let pname = sanitize_sol_ident(&p.name);
+            self.env.insert(pname.clone(), p.ty.clone());
             let loc = if matches!(p.ty, IrType::Array { .. }) { " memory" } else { "" };
-            params.push(format!("{ty}{loc} {}", p.name));
+            params.push(format!("{ty}{loc} {}", pname));
         }
         let ret = match &f.return_type {
             Some(t) => format!(" returns ({})", self.sol_ty_ret(t)?),
@@ -518,9 +528,26 @@ impl<'m> Printer<'m> {
     }
 }
 
+/// Sanitize a spec identifier for Solidity: prefix reserved keywords.
+/// (`var` is the one the WARP verifier's bundled-eval hits; the list covers
+/// the Solidity reserved words that could collide with spec names.)
+pub fn sanitize_sol_ident(name: &str) -> String {
+    const RESERVED: &[&str] = &[
+        "var", "function", "returns", "return", "if", "else", "for", "while", "do", "break",
+        "continue", "memory", "storage", "calldata", "pure", "view", "public", "private",
+        "internal", "external", "payable", "contract", "library", "struct", "mapping",
+        "modifier", "event", "error", "assembly", "let", "switch", "case", "default",
+    ];
+    if RESERVED.contains(&name) {
+        format!("_{name}")
+    } else {
+        String::from(name)
+    }
+}
+
 fn pattern_name(p: &IrPattern) -> String {
     match p {
-        IrPattern::Ident { name, .. } => name.clone(),
+        IrPattern::Ident { name, .. } => sanitize_sol_ident(name),
         _ => "_".into(),
     }
 }

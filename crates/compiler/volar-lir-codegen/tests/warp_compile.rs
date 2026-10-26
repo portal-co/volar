@@ -2188,3 +2188,33 @@ fn probe_sol_codegen() {
     let _ = std::fs::write(&out, &sol);
     println!("=== GenWarp Solidity ===\n{sol}");
 }
+
+/// AST-to-Solidity: the full toy WARP decider (Merkle commit + identity-code
+/// check + MLE eval + bundled eval + the four verdict checks), compiled to
+/// native Solidity.
+#[test]
+fn probe_sol_codegen_decider() {
+    let driver = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/decider_driver.spec"
+    ))
+    .expect("decider driver fixture");
+    let module = parse_with_driver(&driver);
+    let sol = volar_compiler::printer_sol::print_module_solidity(
+        &module,
+        &["mle_eval", "bundled_eval", "decide_toy"],
+        "GenDecider",
+    )
+    .expect("print decider solidity");
+    assert!(sol.contains("function decide_toy"), "decider fn");
+    assert!(sol.contains("keccak256(abi.encodePacked"), "native keccak");
+    assert!(sol.contains("function bundled_eval"), "bundled eval fn");
+    assert!(sol.contains("uint256 _var ="), "reserved keyword `var` sanitized");
+    assert!(sol.contains("product = Gf128.mul(product, x);"), "bundled term mul");
+    assert!(sol.contains("out = (out ^ Gf128.mul(eq[c], value));"), "bundled eq-weighted sum");
+    assert!(sol.contains("return true;"), "verdict");
+    let out = std::env::var("SOL_OUT").unwrap_or_else(|_| "/tmp/warp-evm/src/GenDecider.sol".into());
+    if let Some(parent) = std::path::Path::new(&out).parent() { let _ = std::fs::create_dir_all(parent); }
+    let _ = std::fs::write(&out, &sol);
+    println!("=== GenDecider Solidity ({} bytes) ===", sol.len());
+}
