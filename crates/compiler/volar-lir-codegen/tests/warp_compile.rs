@@ -2131,3 +2131,33 @@ fn probe_evm_verifier_kernels() {
         },
     );
 }
+
+/// AST-to-Solidity codegen: compile a WARP field-arithmetic kernel to native
+/// Solidity and write it to the foundry project for gas measurement.
+#[test]
+fn probe_sol_codegen_dot() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub fn mle_dot(a: Array<Galois128, U4>, b: Array<Galois128, U4>) -> Galois128 {\n\
+             let mut acc = Galois128(0);\n\
+             for i in 0..4 {\n\
+                 acc = acc + a[i] * b[i];\n\
+             }\n\
+             acc\n\
+         }\n",
+    );
+    let sol = volar_compiler::printer_sol::print_module_solidity(&module, &["mle_dot"], "Generated")
+        .expect("print solidity");
+    // Self-contained regression: the codegen lowers the field arithmetic to the
+    // native Gf128 library (mul) and XOR (add), inside a word-level loop.
+    assert!(sol.contains("library Gf128"), "inlines the Gf128 field library");
+    assert!(sol.contains("function mle_dot(uint256[4] memory a, uint256[4] memory b)"), "fn signature");
+    assert!(sol.contains("acc = (acc ^ Gf128.mul(a[i], b[i]));"), "field mul + xor-add, not boolean gates");
+    // Write out for the forge gas measurement (docs/native-evm).
+    let out = std::env::var("SOL_OUT").unwrap_or_else(|_| "/tmp/warp-evm/src/Generated.sol".into());
+    if let Some(parent) = std::path::Path::new(&out).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&out, &sol);
+    println!("=== generated Solidity ===\n{sol}");
+}
