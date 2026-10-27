@@ -24,7 +24,7 @@ use volar_pesat_emit::{
 use volar_primitives::Galois128;
 
 fn reference_llvm_ir() -> String {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../volar-ir/docs/steel");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../volar-ir/crates/tools/volar-steel/programs");
     std::fs::read_to_string(dir.join("reference.ll")).expect("reference.ll")
 }
 
