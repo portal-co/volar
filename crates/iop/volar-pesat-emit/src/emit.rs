@@ -26,6 +26,7 @@
 
 use volar_ir::ir::{IRBlock, IRVarId};
 use volar_ir_common::{Constant, Stmt, TypeId, TypeTable as IRTypes};
+use volar_iop::transcript::{IopTranscript, Sponge, SpongeTranscript};
 use volar_iop::warp::{PesatConstraint, PesatIndex, PesatTerm};
 use volar_primitives::Galois128;
 
@@ -113,22 +114,37 @@ fn pow2(j: usize) -> Galois128 {
 
 /// Derive the four memory-accumulator challenges `(r0, r1, r2, r3)`.
 ///
-/// **Placeholder derivation (E3)**: deterministic from the step block's shape
-/// (statement count × 4 rounds of a splitmix-style mix), NOT yet bound to the
-/// program digest. The Fiat–Shamir binding to the program digest (B1) is a
-/// later reviewed step; what E3 needs is determinism so every step in a chain
-/// derives the same challenges.
+/// **Fiat–Shamir binding (H5)**: the challenges are squeezed from a transcript
+/// that has absorbed the step block's canonical (Debug) serialization — the
+/// *program digest*. This replaces the E3 splitmix placeholder, binding the
+/// memory accumulator to the program so a different step circuit yields
+/// different challenges. The hash backend is generic (H1's `Sponge`); the
+/// default is SHAKE128, and Ascon-XOF is the cheap in-circuit option for the
+/// recursive verifier (see `docs/hash-cipher-generic-plan.md`).
 pub fn derive_challenges(block: &IRBlock<()>) -> [Galois128; 4] {
-    let mut state = (block.stmts.len() as u128) | ((block.params.len() as u128) << 64);
-    let mut next = move || {
-        // splitmix128-ish mix (deterministic, not cryptographic).
-        state = state
-            .wrapping_mul(0x9E3779B97F4A7C15_6A09E667F3BCC909u128)
-            .wrapping_add(0xB5297A4D_F95EEC72u128);
-        state ^= state >> 64;
-        Galois128(state)
-    };
-    [next(), next(), next(), next()]
+    let mut t = IopTranscript::new().domain_sep(b"volar-pesat-emit-mem-acc-v1");
+    t.absorb_len_prefixed(format!("{:?}", block).as_bytes());
+    squeeze_four(&mut t)
+}
+
+/// [`derive_challenges`] with an explicit hash backend `S` (which the recursive
+/// verifier must use in-circuit, matching the native prover's choice).
+pub fn derive_challenges_with<S: Sponge>(block: &IRBlock<()>) -> [Galois128; 4] {
+    let mut t = SpongeTranscript::<S>::new().domain_sep(b"volar-pesat-emit-mem-acc-v1");
+    t.absorb_len_prefixed(format!("{:?}", block).as_bytes());
+    squeeze_four(&mut t)
+}
+
+/// Squeeze four `Galois128` challenges (4 × 16 bytes, little-endian).
+fn squeeze_four<S: Sponge>(t: &mut SpongeTranscript<S>) -> [Galois128; 4] {
+    let bytes = t.squeeze_bytes(64);
+    let mut out = [Galois128(0); 4];
+    for i in 0..4 {
+        out[i] = Galois128(u128::from_le_bytes(
+            bytes[i * 16..i * 16 + 16].try_into().expect("16 bytes"),
+        ));
+    }
+    out
 }
 
 /// A constraint-under-construction: a sum of `coeff · ∏ vars` terms.
