@@ -83,24 +83,34 @@ rotations + xors — *very* cheap in-circuit), then Ascon-Hash / Ascon-Xof
 finalize / tag). **Differential targets:** the `ascon-hash` and
 `ascon-aead` RustCrypto crates.
 
-### D4. Selection mechanism (decision needed)
+### D4. Selection mechanism — RESOLVED: parallel free-function families (option 3)
 
 How spec functions (transcript, Merkle, the accumulator challenge) pick a
-hash. Options, in preference order:
+hash. Options considered:
 
 1. **A spec-dialect `SpecHash` trait** (`fn absorb`, `fn squeeze`) with one
-   impl per primitive, threaded as a type parameter. *Cleanest, but depends on
-   the codegen monomorphizing trait methods — unverified.*
-2. **Const-generic discriminant** dispatch (`const HASH: usize` selecting the
-   backend at compile time). Works within the proven const-generic path but is
-   uglier.
+   impl per primitive, threaded as a type parameter.
+2. **Const-generic discriminant** dispatch (`const HASH: usize`).
 3. **Parallel free-function families** (`keccak_sponge_*`, `blake2s_sponge_*`,
-   `ascon_sponge_*`) with the *driver* choosing which to instantiate. No
-   language support needed; the selection lives at the codegen entry point.
+   `ascon_sponge_*`) with the *driver* choosing which to instantiate.
 
-The gate for D4 is a probe: does `volar-lir-codegen` monomorphize a
-trait-method call in the spec dialect? (The M4 gate already showed
-const-generic free functions monomorphize.) Pick (1) if it does, else (3).
+**Probe result (H1, `probe_d4_trait_monomorphization` in
+`volar-lir-codegen/tests/warp_compile.rs`):** a generic function over a
+custom spec-dialect trait, instantiated for *multiple* backends,
+**mis-dispatches** — the trait method resolution is *first-wins* (both
+`use_sponge::<KeccakS>` and `use_sponge::<BlakeS>` dispatch to the first
+impl). So option (1) is **not viable** without fixing the codegen's
+monomorphization dispatch (a latent volar-lir-codegen bug — follow-up).
+Const-generic *values* monomorphize per-instantiation (the M4 gate), but
+type-param trait dispatch does not.
+
+**Decision: option (3).** Each hash gets a parallel free-function family
+(`keccak_sponge_*` already exists in `keccak.rs`; H2/H3 add
+`blake2s_sponge_*` / `ascon_sponge_*`), and the *driver* / codegen entry point
+selects which family to instantiate. This matches `keccak.rs`'s existing
+free-function shape and needs no language support. The (latent) first-wins
+trait-dispatch bug is filed as a separate follow-up — fixing it would unlock
+the cleaner option (1) later.
 
 ### D5. Fiat-Shamir-bind the memory accumulator
 

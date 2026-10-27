@@ -114,6 +114,46 @@ fn probe_field_identity() {
     assert_eq!(bits_to_u128(&out[0]), 0xDEADBEEF, "field identity");
 }
 
+/// D4 probe (volar `docs/hash-cipher-generic-plan.md`): does the codegen
+/// monomorphize a generic function over a *custom* spec-dialect trait? The
+/// spec already does this for RustCrypto traits (`scalar_from_hash<D:
+/// Digest>`); this confirms it for a user-defined `Sponge` trait — the
+/// hash-selection mechanism (D4 option 1) for H2/H3.
+#[test]
+fn probe_d4_trait_monomorphization() {
+    let module = parse_with_driver(
+        "use cipher::consts::*;\n\
+         pub trait Sponge { fn pick(&self, x: Galois128) -> Galois128; }\n\
+         pub struct KeccakS { tag: Galois128 }\n\
+         pub struct BlakeS { tag: Galois128 }\n\
+         impl Sponge for KeccakS { fn pick(&self, x: Galois128) -> Galois128 { x } }\n\
+         impl Sponge for BlakeS { fn pick(&self, x: Galois128) -> Galois128 { self.tag } }\n\
+         pub fn use_sponge<S: Sponge>(s: &S, x: Galois128) -> Galois128 { s.pick(x) }\n\
+         pub fn d4_keccak(x: Galois128) -> Galois128 { let s = KeccakS { tag: Galois128(0) }; use_sponge(&s, x) }\n\
+         pub fn d4_blake(x: Galois128) -> Galois128 { let s = BlakeS { tag: Galois128(0x42) }; use_sponge(&s, x) }\n",
+    );
+    let target = lower_seeded(&module, &["d4_keccak", "d4_blake"]);
+    let x = 0x1234567890abcdefu128;
+    // The single-impl instantiation works (KeccakS::pick = identity).
+    let kid = target.module.exports["d4_keccak"];
+    let out = eval_vaffle(&target.module, kid, &[bits_of(x, 128)]).expect("KeccakS impl evals");
+    assert_eq!(bits_to_u128(&out[0]), x, "KeccakS::pick must be the identity");
+    // FINDING: the trait method dispatch is *first-wins* — the second
+    // instantiation `use_sponge::<BlakeS>` also dispatches to `KeccakS::pick`
+    // (returns x, not the constant 0x42). So a generic function over a custom
+    // trait, instantiated for multiple backends, mis-dispatches. This drives
+    // the D4 decision: use parallel free-function families (option 3), not a
+    // shared generic-over-trait function (option 1). The first-wins dispatch
+    // is a latent volar-lir-codegen monomorphization bug — a follow-up.
+    let bid = target.module.exports["d4_blake"];
+    let out = eval_vaffle(&target.module, bid, &[bits_of(x, 128)]).expect("BlakeS impl evals");
+    assert_eq!(
+        bits_to_u128(&out[0]),
+        x,
+        "DOCUMENTED LIMITATION: trait dispatch is first-wins, so BlakeS also yields the identity"
+    );
+}
+
 /// Isolate: indexing a reference-to-array parameter.
 #[test]
 fn probe_ref_array_index() {
