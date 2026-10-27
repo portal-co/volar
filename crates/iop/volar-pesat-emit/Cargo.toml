@@ -16,3 +16,6 @@ volar-primitives = { path = "../../spec/volar-primitives" }
 
 [dev-dependencies]
 volar-fuzz = { workspace = true }
+volar-llvm-vaffle-import = { workspace = true }
+volar-vaffle-target = { workspace = true }
+inkwell = { workspace = true }
