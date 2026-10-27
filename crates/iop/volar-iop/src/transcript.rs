@@ -27,27 +27,63 @@ use sha3::{
 
 use crate::field::Field;
 
-/// A running SHAKE128 sponge. `absorb` is streaming/incremental (O(1)
+/// A streaming, non-destructive Fiat-Shamir sponge — the hash abstraction the
+/// transcript is parameterized over (see
+/// `docs/hash-cipher-generic-plan.md`). The default backend is SHAKE128
+/// (today's behavior); Blake2s and Ascon-XOF are the lighter backends for the
+/// Cirrus / recursive-proving / memory-accumulator consumers.
+///
+/// The interface is deliberately minimal — streaming `update`, non-destructive
+/// `squeeze` — so both native XOFs (SHAKE128, Ascon-XOF) and fixed-output
+/// hashes in a counter/XOF construction (Blake2s) can implement it.
+pub trait Sponge: Clone {
+    /// A fresh, empty sponge.
+    fn new() -> Self;
+    /// Absorb bytes (streaming/incremental).
+    fn update(&mut self, data: &[u8]);
+    /// Non-destructive squeeze: fill `out` from a clone, leaving `self`
+    /// unchanged (repeated squeezes without an intervening `update` return
+    /// identical output).
+    fn squeeze(&self, out: &mut [u8]);
+}
+
+impl Sponge for Shake128 {
+    fn new() -> Self {
+        Shake128::default()
+    }
+    fn update(&mut self, data: &[u8]) {
+        Update::update(self, data)
+    }
+    fn squeeze(&self, out: &mut [u8]) {
+        self.clone().finalize_xof().read(out);
+    }
+}
+
+/// A running Fiat-Shamir sponge over backend `S` (SHAKE128 by default).
+/// `absorb` is streaming/incremental (O(1)
 /// state — the sponge's internal state, not the absorbed history, is what's
 /// kept); `squeeze` is non-destructive (repeated squeezes without an
 /// intervening absorb return deterministic, independent output — mirroring
 /// `FaestTranscript::squeeze`'s own documented behavior).
 #[derive(Clone)]
-pub struct IopTranscript {
-    sponge: Shake128,
+pub struct SpongeTranscript<S: Sponge> {
+    sponge: S,
 }
 
-impl Default for IopTranscript {
+/// The default transcript: a `SpongeTranscript` over SHAKE128 (today's
+/// behavior). Other backends are selected by naming `SpongeTranscript<Blake2s>`
+/// / `SpongeTranscript<AsconXof>` directly (those types land in H2/H3).
+pub type IopTranscript = SpongeTranscript<Shake128>;
+
+impl<S: Sponge> Default for SpongeTranscript<S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl IopTranscript {
+impl<S: Sponge> SpongeTranscript<S> {
     pub fn new() -> Self {
-        IopTranscript {
-            sponge: Shake128::default(),
-        }
+        SpongeTranscript { sponge: S::new() }
     }
 
     /// Absorb a domain-separation label (call once, first, per logical
@@ -73,8 +109,7 @@ impl IopTranscript {
 
     pub fn squeeze_bytes(&self, n: usize) -> Vec<u8> {
         let mut out = vec![0u8; n];
-        let mut reader = self.sponge.clone().finalize_xof();
-        reader.read(&mut out);
+        self.sponge.squeeze(&mut out);
         out
     }
 
@@ -127,9 +162,8 @@ impl IopTranscript {
             let mut sub = self.sponge.clone();
             sub.update(&counter.to_le_bytes());
             counter += 1;
-            let mut reader = sub.finalize_xof();
             let mut buf = vec![0u8; bytes_needed.max(1)];
-            reader.read(&mut buf);
+            sub.squeeze(&mut buf);
             let mut v: u64 = 0;
             for b in buf.iter().rev() {
                 v = (v << 8) | (*b as u64);
