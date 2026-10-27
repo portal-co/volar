@@ -154,6 +154,42 @@ fn probe_d4_trait_monomorphization() {
     );
 }
 
+/// H2 gate (volar `docs/hash-cipher-generic-plan.md`): the in-circuit gate
+/// count of the spec-dialect Blake2s compression vs the Keccak-f1600
+/// permutation — the cost comparison driving the per-target hash choice.
+#[test]
+fn probe_blake2s_vs_keccak_gate_count() {
+    let blake2s = spec_source("blake2s.rs");
+    let keccak = spec_source("keccak.rs");
+    let driver = "use cipher::consts::*;\n\
+        pub fn blake2s_block(block: [u8; 64]) -> [u8; 32] {\n\
+            let mut h = blake2s_init();\n\
+            blake2s_compress(&mut h, &block, 64u64, true);\n\
+            blake2s_output(&h)\n\
+        }\n\
+        pub fn keccak_perm(st: [u64; 25]) -> [u64; 25] {\n\
+            let mut st = st;\n\
+            keccak_f1600(&mut st);\n\
+            st\n\
+        }\n";
+    let module = parse_sources(
+        &[
+            SourceInput { source: &blake2s, name: "blake2s" },
+            SourceInput { source: &keccak, name: "keccak" },
+            SourceInput { source: driver, name: "driver" },
+        ],
+        "gate_count_probe",
+        &[],
+    )
+    .expect("blake2s + keccak + driver parse");
+    let target = lower_seeded(&module, &["blake2s_block", "keccak_perm"]);
+    for (name, fid) in target.module.exports.iter() {
+        if let vaffle::FuncDecl::Body(b) = &target.module.funcs[fid.0] {
+            eprintln!("[GATE] {name}: {} values", b.values.len());
+        }
+    }
+}
+
 /// Isolate: indexing a reference-to-array parameter.
 #[test]
 fn probe_ref_array_index() {
