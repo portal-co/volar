@@ -9,7 +9,7 @@ repository.workspace = true
 [features]
 default = ["std"]
 std = ["volar-compiler/std"]
-parsing = ["volar-compiler/parsing", "dep:syn", "dep:quote"]
+parsing = ["volar-compiler/parsing", "dep:syn", "dep:quote", "dep:blake2"]
 
 [[bin]]
 name = "volar-codegen"
@@ -19,6 +19,7 @@ required-features = ["parsing"]
 [dependencies]
 volar-compiler = { git = "https://github.com/portal-co/volar.git" }
 thiserror = "1.0"
+blake2 = { version = "0.10.6", optional = true }
 # syn is needed by the volar-codegen binary's parse-time @volar-allow-vec
 # exemption scan; it is only used behind the `parsing` feature.
 syn = { version = "2.0", features = ["full", "parsing", "extra-traits", "visit"], optional = true }

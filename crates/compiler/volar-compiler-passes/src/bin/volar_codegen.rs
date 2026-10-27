@@ -50,12 +50,15 @@ enum Target {
     Ts,
     Dyn,
     Manifest,
+    /// Emit the Cirrus bindings module (`volar-spec/src/cirrus.rs`),
+    /// regenerating the drift-check digest from the hash/cipher sources.
+    Cirrus,
 }
 
 impl Target {
     fn default_spec_dir(self) -> &'static str {
         match self {
-            Target::Ts | Target::Dyn => "crates/spec/volar-spec/src",
+            Target::Ts | Target::Dyn | Target::Cirrus => "crates/spec/volar-spec/src",
             Target::Manifest => "crates/spec/volar-primitives/src",
         }
     }
@@ -81,6 +84,7 @@ impl Target {
             Target::Ts => "packages/volar-spec-ts/generated.ts",
             Target::Dyn => "crates/spec/volar-spec-dyn/src/generated.rs",
             Target::Manifest => "crates/spec/volar-primitives/volar-primitives.volar.d",
+            Target::Cirrus => "crates/spec/volar-spec/src/cirrus.rs",
         }
     }
 
@@ -89,6 +93,7 @@ impl Target {
             Target::Ts => "volar_ts",
             Target::Dyn => "volar_dyn",
             Target::Manifest => "volar_primitives",
+            Target::Cirrus => "volar_spec",
         }
     }
 }
@@ -114,9 +119,10 @@ fn parse_args() -> Result<Config, Box<dyn std::error::Error>> {
         .ok_or("Missing target. Usage: volar-codegen <ts|dyn> [OPTIONS]")?;
 
     let target = match target_str.as_str() {
-        "ts" => Target::Ts,
-        "dyn" => Target::Dyn,
-        "manifest" => Target::Manifest,
+    "ts" => Target::Ts,
+    "dyn" => Target::Dyn,
+    "manifest" => Target::Manifest,
+    "cirrus" => Target::Cirrus,
         other => {
             return Err(format!(
                 "Unknown target {:?}. Expected 'ts', 'dyn', or 'manifest'.",
@@ -412,6 +418,90 @@ fn write_dump(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Erro
 // Main
 // ---------------------------------------------------------------------------
 
+/// Emit the Cirrus bindings module (`volar-spec/src/cirrus.rs`). The
+/// re-exports + the hash/cipher selection are a fixed template; the
+/// drift-check digest is recomputed from the backing sources (blake2s.rs,
+/// ascon.rs, keccak.rs) with Blake2s-256 — the same hash the in-spec
+/// `cirrus_bindings_drift_check` test uses, so the two stay in lockstep.
+fn emit_cirrus_bindings(spec_dir: &Path) -> String {
+    use blake2::Digest;
+    let mut combined = Vec::new();
+    for file in ["blake2s.rs", "ascon.rs", "keccak.rs"] {
+        let src = fs::read_to_string(spec_dir.join(file))
+            .unwrap_or_else(|e| panic!("volar-codegen cirrus: read {file}: {e}"));
+        combined.extend_from_slice(src.as_bytes());
+    }
+    let digest: [u8; 32] = blake2::Blake2s256::digest(&combined).into();
+    let digest_list = digest
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    CIRRUSS_BINDINGS_TEMPLATE.replace("__DIGEST__", &digest_list)
+}
+
+/// The Cirrus bindings module template (`__DIGEST__` is replaced with the
+/// recomputed drift-check digest). Keep in sync with the checked-in
+/// `volar-spec/src/cirrus.rs`.
+const CIRRUSS_BINDINGS_TEMPLATE: &str = r#"// @reliability: normal
+//! @ai: assisted
+//! Cirrus bindings to the Volar spec's hash/cipher + VOLE API (H6 of
+//! `docs/hash-cipher-generic-plan.md`). **Auto-generated** by
+//! `volar-codegen cirrus` — do not hand-edit; the drift-check test below
+//! recomputes the digest of the backing sources and fails on any change.
+
+use super::*;
+
+// --- The hash/cipher backends (H2/H3/H4) ---
+pub use crate::blake2s;
+pub use crate::ascon;
+pub use crate::keccak;
+
+// --- The VOLE / OT / field surface Cirrus's `cirrus-volar-vole` consumes ---
+pub use crate::field;
+pub use crate::ot;
+pub use crate::vole;
+
+/// The hash backend selected for Cirrus's low-spec symbolic executors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CirrusHashBackend {
+    /// Blake2s (Cirrus-native default).
+    Blake2s,
+    /// Ascon (in-circuit / AEAD).
+    Ascon,
+    /// Keccak (on-chain).
+    Keccak,
+}
+
+/// The default hash backend for Cirrus's low-spec symbolic executors.
+pub const CIRrus_DEFAULT_HASH: CirrusHashBackend = CirrusHashBackend::Blake2s;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cirrus_bindings_drift_check() {
+        use super::blake2s::blake2s_256;
+        let mut combined = alloc::vec::Vec::new();
+        for src in [
+            include_str!("blake2s.rs"),
+            include_str!("ascon.rs"),
+            include_str!("keccak.rs"),
+        ] {
+            combined.extend_from_slice(src.as_bytes());
+        }
+        let digest = blake2s_256(&combined);
+        assert_eq!(
+            digest,
+            super::SPEC_HASH_SOURCES_DIGEST,
+            "Cirrus bindings drift: regenerate with `volar-codegen cirrus`."
+        );
+    }
+}
+
+/// The committed digest of the spec's hash/cipher module sources.
+pub const SPEC_HASH_SOURCES_DIGEST: [u8; 32] = [__DIGEST__];
+"#;
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = parse_args()?;
 
@@ -515,6 +605,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 manifest_bytes.len(),
                 cfg.out,
             );
+        }
+
+        Target::Cirrus => {
+            // Regenerate the Cirrus bindings module: the re-exports + the
+            // hash/cipher selection are a fixed template; the drift-check
+            // digest is recomputed from the backing sources.
+            let code = emit_cirrus_bindings(&cfg.spec_dir);
+            write_file(&cfg.out, &code)?;
+            eprintln!("[volar-codegen] wrote Cirrus bindings \u{2192} {:?}", cfg.out);
         }
     }
 
