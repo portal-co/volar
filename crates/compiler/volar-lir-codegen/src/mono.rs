@@ -593,6 +593,41 @@ pub(crate) fn call_site_key(
         )
     }
 }
+/// Re-resolve a custom-trait method to the impl whose `self_ty` matches the
+/// receiver's inferred type. The `definitions` map is first-wins by bare
+/// method name, so a trait with several impls (e.g. a hash `Sponge` backend
+/// per primitive — see `probe_d4_trait_monomorphization`) would otherwise
+/// dispatch every monomorphized instance to the first impl.
+fn reselect_method_by_receiver<'m, P: Clone>(
+    module: &'m IrModule<IrFunction<P>, P>,
+    method_name: &str,
+    receiver_ty: &IrType,
+    env: &MonoEnv,
+    structs: &StructTable,
+) -> Option<&'m IrFunction<P>> {
+    // Unwrap the receiver's reference (the impl's self_ty is the bare type).
+    let recv_inner = match receiver_ty {
+        IrType::Reference { elem, .. } => elem.as_ref().clone(),
+        other => other.clone(),
+    };
+    let recv_mono = mono_type(&resolve_explicit_type_arg(&recv_inner, structs), env);
+    let recv_canon = canonical_type(&recv_mono);
+    for ir_impl in &module.impls {
+        let impl_self = mono_type(&resolve_explicit_type_arg(&ir_impl.self_ty, structs), env);
+        if canonical_type(&impl_self) != recv_canon {
+            continue;
+        }
+        for item in &ir_impl.items {
+            if let volar_compiler::ir::IrImplItem::Method(method) = item {
+                if method.name == method_name && method.receiver.is_some() {
+                    return Some(method);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn instance_key(name: &str, env: &MonoEnv) -> FunctionInstanceKey {
     FunctionInstanceKey {
         source_name: name.to_owned(),
@@ -839,6 +874,22 @@ pub fn plan_flat_module<P: Clone>(
                 .unwrap_or(&callee);
             let Some(callee_def) = definitions.get(definition_name) else {
                 continue;
+            };
+            // Custom-trait method shared by several impls (e.g. a hash
+            // backend's `Sponge` impl per primitive): the `definitions` map is
+            // first-wins by bare method name, so re-resolve by the receiver's
+            // inferred type. Without this, every monomorphized instance of a
+            // generic-over-trait function dispatches to the first impl.
+            let callee_def = match (callee_def.receiver.is_some(), arg_tys.first()) {
+                (true, Some(Some(recv_ty))) => reselect_method_by_receiver(
+                    module,
+                    definition_name,
+                    recv_ty,
+                    &env,
+                    &struct_table,
+                )
+                .unwrap_or(callee_def),
+                _ => callee_def,
             };
             if callee_def.external_kind != volar_compiler::ir::ExternalKind::Normal {
                 continue;

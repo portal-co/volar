@@ -138,19 +138,18 @@ fn probe_d4_trait_monomorphization() {
     let kid = target.module.exports["d4_keccak"];
     let out = eval_vaffle(&target.module, kid, &[bits_of(x, 128)]).expect("KeccakS impl evals");
     assert_eq!(bits_to_u128(&out[0]), x, "KeccakS::pick must be the identity");
-    // FINDING: the trait method dispatch is *first-wins* — the second
-    // instantiation `use_sponge::<BlakeS>` also dispatches to `KeccakS::pick`
-    // (returns x, not the constant 0x42). So a generic function over a custom
-    // trait, instantiated for multiple backends, mis-dispatches. This drives
-    // the D4 decision: use parallel free-function families (option 3), not a
-    // shared generic-over-trait function (option 1). The first-wins dispatch
-    // is a latent volar-lir-codegen monomorphization bug — a follow-up.
+    // FIXED: the trait method dispatch now re-resolves by the receiver's
+    // inferred type (`reselect_method_by_receiver` in mono.rs), so the second
+    // instantiation `use_sponge::<BlakeS>` correctly dispatches to
+    // `BlakeS::pick` (the constant 0x42). Previously the `definitions` map was
+    // first-wins by bare method name, so a generic-over-trait function
+    // instantiated for multiple backends mis-dispatched to the first impl.
     let bid = target.module.exports["d4_blake"];
     let out = eval_vaffle(&target.module, bid, &[bits_of(x, 128)]).expect("BlakeS impl evals");
     assert_eq!(
         bits_to_u128(&out[0]),
-        x,
-        "DOCUMENTED LIMITATION: trait dispatch is first-wins, so BlakeS also yields the identity"
+        0x42,
+        "BlakeS::pick must be the constant (trait dispatch re-resolved by receiver type)"
     );
 }
 

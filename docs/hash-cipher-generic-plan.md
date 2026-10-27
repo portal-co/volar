@@ -94,23 +94,20 @@ hash. Options considered:
 3. **Parallel free-function families** (`keccak_sponge_*`, `blake2s_sponge_*`,
    `ascon_sponge_*`) with the *driver* choosing which to instantiate.
 
-**Probe result (H1, `probe_d4_trait_monomorphization` in
-`volar-lir-codegen/tests/warp_compile.rs`):** a generic function over a
-custom spec-dialect trait, instantiated for *multiple* backends,
-**mis-dispatches** — the trait method resolution is *first-wins* (both
-`use_sponge::<KeccakS>` and `use_sponge::<BlakeS>` dispatch to the first
-impl). So option (1) is **not viable** without fixing the codegen's
-monomorphization dispatch (a latent volar-lir-codegen bug — follow-up).
-Const-generic *values* monomorphize per-instantiation (the M4 gate), but
-type-param trait dispatch does not.
+**Probe result (H1, `probe_d4_trait_monomorphization`):** a generic function
+over a custom spec-dialect trait, instantiated for *multiple* backends,
+mis-dispatched — the trait method resolution was *first-wins* (the
+`definitions` map is keyed by bare method name with `or_insert`).
 
-**Decision: option (3).** Each hash gets a parallel free-function family
-(`keccak_sponge_*` already exists in `keccak.rs`; H2/H3 add
-`blake2s_sponge_*` / `ascon_sponge_*`), and the *driver* / codegen entry point
-selects which family to instantiate. This matches `keccak.rs`'s existing
-free-function shape and needs no language support. The (latent) first-wins
-trait-dispatch bug is filed as a separate follow-up — fixing it would unlock
-the cleaner option (1) later.
+**FIXED (follow-up):** `reselect_method_by_receiver` in `mono.rs` now
+re-resolves a custom-trait method to the impl whose `self_ty` matches the
+receiver's inferred type, so `use_sponge::<KeccakS>` and
+`use_sponge::<BlakeS>` dispatch correctly (the probe asserts this). So option
+(1) — a spec-dialect `SpecHash` trait — is now **viable**. H2/H3/H4 already
+used parallel free-function families (option 3), which remain correct and
+need no rework; a future refactor could unify them behind a trait now that
+the dispatch is fixed. Const-generic *values* always monomorphized
+per-instantiation (the M4 gate); type-param trait dispatch now does too.
 
 ### D5. Fiat-Shamir-bind the memory accumulator
 
