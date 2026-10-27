@@ -219,17 +219,10 @@ impl<F: Field> LinearCode<F> for ReedSolomonCode {
 
     fn encode(&self, message: &[F]) -> Vec<F> {
         assert_eq!(message.len(), self.message_len);
-        (0..self.codeword_len)
-            .map(|j| {
-                let point = F::from_u128(j as u128);
-                // Horner's method: p(point) = sum_i message[i] * point^i.
-                let mut acc = F::ZERO;
-                for i in (0..self.message_len).rev() {
-                    acc = acc.mul(&point).add(&message[i]);
-                }
-                acc
-            })
-            .collect()
+        // Additive FFT (`O(n log n)`) instead of the naive Horner (`O(n·k)`)
+        // — bit-exact (the `additive_fft` module's differential test asserts
+        // equality with the Horner reference over GF(2^128)).
+        crate::additive_fft::additive_fft_evaluate(message, self.codeword_len)
     }
 }
 

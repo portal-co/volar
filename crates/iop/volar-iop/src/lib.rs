@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+pub mod additive_fft;
 pub mod field;
 pub mod fold;
 pub mod ligero;
