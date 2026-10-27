@@ -146,6 +146,93 @@ impl<F: Field> LinearCode<F> for RepetitionCode {
     }
 }
 
+/// A Reed-Solomon code `[n, k]` over `F`: the message `[m_0..m_{k-1}]` is the
+/// coefficient vector of `p(X) = sum_i m_i X^i`, and the codeword is the
+/// evaluation `[p(0), p(1), ..., p(n-1)]` at `n` distinct points (the integer
+/// representatives `0..n` via [`Field::from_u128`]).
+///
+/// This is the paper's named **larger-distance** alternative to the
+/// linear-time Spielman code (ePrint 2025/753, "Choice of parameters"): RS is
+/// MDS, so its minimum distance is `d = n - k + 1` and its relative distance
+/// is `(n-k+1)/n ≈ 1 - rate`. The proximity parameter `δ` (Theorem 9.1) can be
+/// set up to the unique-decoding radius `(1 - rate)/2` with **no**
+/// out-of-domain samples (`s = 0`), giving the query count
+/// `t ≈ λ / -log2(1 - δ)`:
+///
+/// | rate | `δ` (unique-decoding) | `t` for λ=100 | `t` for λ=128 |
+/// |---|---|---|---|
+/// | 1/2 | 1/4 | 241 | 308 |
+/// | 1/4 | 3/8 | 171 | 219 |
+/// | 1/8 | 7/16 | 147 | 189 |
+///
+/// (The list-decoding / correlated-agreement regime reaches larger `δ` —
+/// `1 - sqrt(rate)` — at the cost of `s > 0` out-of-domain samples; that is
+/// *not* modelled here.)
+///
+/// Unlike [`IdentityCode`]/[`RepetitionCode`] (test fixtures with `δ -> 0`),
+/// this is a real proximity code: the `t` query count yields the claimed
+/// soundness. Encoding is `O(n·k)` here (naive Horner) — the honest-prover /
+/// decider path only; production would use an additive FFT (`O(n log n)`).
+#[derive(Clone, Debug)]
+pub struct ReedSolomonCode {
+    message_len: usize,
+    codeword_len: usize,
+}
+
+impl ReedSolomonCode {
+    /// Build an `[n, k]` RS code. Both `k` and `n` must be powers of two (the
+    /// codeword length must be a power of two for the MLE indexing in WARP),
+    /// with `n > k` (a non-trivial rate).
+    pub fn new(message_len: usize, codeword_len: usize) -> WarpResult<Self> {
+        if !message_len.is_power_of_two() || !codeword_len.is_power_of_two() {
+            return Err(WarpError::NonPowerOfTwo);
+        }
+        if codeword_len <= message_len {
+            return Err(WarpError::ShapeMismatch);
+        }
+        Ok(Self {
+            message_len,
+            codeword_len,
+        })
+    }
+
+    /// The rate `k / n`.
+    pub fn rate(&self) -> f64 {
+        self.message_len as f64 / self.codeword_len as f64
+    }
+
+    /// The unique-decoding proximity radius `(1 - rate) / 2` — the largest
+    /// `δ` that needs no out-of-domain samples.
+    pub fn unique_decoding_delta(&self) -> f64 {
+        (1.0 - self.rate()) / 2.0
+    }
+}
+
+impl<F: Field> LinearCode<F> for ReedSolomonCode {
+    fn message_len(&self) -> usize {
+        self.message_len
+    }
+
+    fn codeword_len(&self) -> usize {
+        self.codeword_len
+    }
+
+    fn encode(&self, message: &[F]) -> Vec<F> {
+        assert_eq!(message.len(), self.message_len);
+        (0..self.codeword_len)
+            .map(|j| {
+                let point = F::from_u128(j as u128);
+                // Horner's method: p(point) = sum_i message[i] * point^i.
+                let mut acc = F::ZERO;
+                for i in (0..self.message_len).rev() {
+                    acc = acc.mul(&point).add(&message[i]);
+                }
+                acc
+            })
+            .collect()
+    }
+}
+
 /// One term `coeff * prod_{var in vars} z_var` in a PESAT constraint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PesatTerm<F: Field> {

@@ -11,7 +11,7 @@ use volar_ir::ir::{
 use volar_ir_common::{Constant, IrType, Node, PolyCoeffs, Type, TypeId, TypeTable};
 use volar_ir_passes::lower_to_circuit::{LoweringMode, lower_to_circuit_ir};
 use volar_ir_passes::movfuscate::movfuscate_ir;
-use volar_iop::warp::{IdentityCode, WarpSampling, warp_decide, warp_verify};
+use volar_iop::warp::{ReedSolomonCode, WarpSampling, warp_decide, warp_verify};
 use volar_pesat_emit::{
     build_witness, emit_step_index, eval_step_wires, stream_fold, stream_start,
 };
@@ -109,23 +109,35 @@ fn collect_witnesses(
     (emission, traces)
 }
 
+// Slow E2E validation (~23 min): the naive O(n*k) Reed-Solomon encode plus the
+// 4x-longer codeword make the prover/verifier expensive. Run explicitly with
+// `cargo test -p volar-pesat-emit --test pipeline -- --ignored --nocapture`.
 #[test]
+#[ignore = "slow E2E WARP-over-Reed-Solomon pipeline validation (~23 min)"]
 fn pipeline_proof_and_verifier_structure() {
     let (blocks, types) = xor_chain_cfg(6);
     let (emission, traces) = collect_witnesses(&blocks, &types);
     let n = traces.len();
     let index = &emission.index;
     let witness_len = index.witness_len;
-    let code = IdentityCode::new(witness_len).expect("pow2 witness");
-
-    // Official-style sampling: lambda=100, delta=1/4 (unique decoding, s=0),
-    // t = 255 shift queries so 1 + s + t = 256 = 2^8.
+    // Reed-Solomon rate-1/4 (k=witness_len, n=4k): the paper's named
+    // larger-distance code. MDS => relative distance (1-rate)=3/4, so the
+    // unique-decoding proximity radius is delta=(1-rate)/2=3/8 with s=0
+    // out-of-domain samples. At delta=3/8, t=255 shift queries yield a REAL
+    // lambda = 255 * -log2(5/8) = 149-bit soundness (vs the IdentityCode's
+    // delta->0, i.e. no real soundness at the same t).
+    let code = ReedSolomonCode::new(witness_len, 4 * witness_len).expect("rate-1/4 RS");
     let sampling = WarpSampling {
-        log_codeword_len: witness_len.trailing_zeros() as usize,
+        log_codeword_len: (4 * witness_len).trailing_zeros() as usize,
         out_of_domain: 0,
         shift_queries: 255,
     };
     assert!((1 + sampling.out_of_domain + sampling.shift_queries).is_power_of_two());
+    eprintln!(
+        "[PIPELINE] RS rate-1/4: delta={:.3} (unique-decoding), real lambda at t=255 = {:.0}-bit",
+        code.unique_decoding_delta(),
+        255.0 * (1.0 - code.unique_decoding_delta()).log2().abs()
+    );
 
     // Fold the whole stream, keeping each fold's proof.
     let mut token = stream_start(index, &code, &traces[0]).expect("genesis");

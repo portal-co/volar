@@ -97,6 +97,11 @@ pub trait Field: Copy + Clone + PartialEq + Eq + core::fmt::Debug + Default {
     /// (`(lo, hi)` pairs are always little-endian: `lo` holds the embedded
     /// lower-degree half).
     fn to_bytes(&self) -> alloc::vec::Vec<u8>;
+
+    /// Construct the field element whose polynomial (binary-coefficient)
+    /// representation is the integer `x`. Distinct for `x < 2^BITS`; used for
+    /// Reed-Solomon evaluation points (which must be distinct field elements).
+    fn from_u128(x: u128) -> Self;
 }
 
 impl Field for Galois {
@@ -112,6 +117,10 @@ impl Field for Galois {
     }
     fn to_bytes(&self) -> alloc::vec::Vec<u8> {
         alloc::vec![self.0]
+    }
+    fn from_u128(x: u128) -> Self {
+        // Distinct only for `x < 256` (the base field is GF(2^8)).
+        Galois(x as u8)
     }
 }
 
@@ -133,6 +142,9 @@ impl Field for volar_primitives::Galois128 {
     }
     fn to_bytes(&self) -> alloc::vec::Vec<u8> {
         self.0.to_le_bytes().to_vec()
+    }
+    fn from_u128(x: u128) -> Self {
+        volar_primitives::Galois128(x)
     }
 }
 
@@ -217,6 +229,10 @@ impl<F: Field, B: BetaOf<F>> Field for Ext<F, B> {
         let mut v = self.lo.to_bytes();
         v.extend(self.hi.to_bytes());
         v
+    }
+    fn from_u128(x: u128) -> Self {
+        // Embed the integer in the low half (distinct for `x < 2^(BITS/2)`).
+        Ext::new(F::from_u128(x), F::ZERO)
     }
 }
 
