@@ -161,6 +161,7 @@ fn probe_d4_trait_monomorphization() {
 fn probe_blake2s_vs_keccak_gate_count() {
     let blake2s = spec_source("blake2s.rs");
     let keccak = spec_source("keccak.rs");
+    let ascon = spec_source("ascon.rs");
     let driver = "use cipher::consts::*;\n\
         pub fn blake2s_block(block: [u8; 64]) -> [u8; 32] {\n\
             let mut h = blake2s_init();\n\
@@ -171,18 +172,24 @@ fn probe_blake2s_vs_keccak_gate_count() {
             let mut st = st;\n\
             keccak_f1600(&mut st);\n\
             st\n\
+        }\n\
+        pub fn ascon_perm(st: [u64; 5]) -> [u64; 5] {\n\
+            let mut st = st;\n\
+            ascon_p12(&mut st);\n\
+            st\n\
         }\n";
     let module = parse_sources(
         &[
             SourceInput { source: &blake2s, name: "blake2s" },
             SourceInput { source: &keccak, name: "keccak" },
+            SourceInput { source: &ascon, name: "ascon" },
             SourceInput { source: driver, name: "driver" },
         ],
         "gate_count_probe",
         &[],
     )
-    .expect("blake2s + keccak + driver parse");
-    let target = lower_seeded(&module, &["blake2s_block", "keccak_perm"]);
+    .expect("blake2s + keccak + ascon + driver parse");
+    let target = lower_seeded(&module, &["blake2s_block", "keccak_perm", "ascon_perm"]);
     for (name, fid) in target.module.exports.iter() {
         if let vaffle::FuncDecl::Body(b) = &target.module.funcs[fid.0] {
             eprintln!("[GATE] {name}: {} values", b.values.len());

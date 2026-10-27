@@ -23,4 +23,5 @@ volar-ir-common.workspace = true
 proptest = "1"
 sha2 = { version = "0.11.0-rc.0", default-features = false }
 blake2 = "0.10.6"
+ascon-hash = "0.4"
 volar-iop = { path = "../../iop/volar-iop" }

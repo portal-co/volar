@@ -145,11 +145,18 @@ backend, in a form Cirrus's low-spec runtimes can consume. Concretely:
 Approximate boolean-circuit cost per permutation/block, to be measured in
 H2/H3 (these drive which backend each consumer picks):
 
-| primitive | in-circuit (raw VAFFLE values, un-optimized) | native | best consumer |
-|---|---|---|---|
+| primitive | in-circuit (raw VAFFLE values, un-optimized, core op) | native | best consumer |
+|---|---|---|---|---|
 | Keccak-f1600 | ~87.8M (measured, `keccak_f1600`) | medium | on-chain (native `KECCAK256` extern — already done) |
 | Blake2s | ~13.8M (measured, `blake2s_compress`) — **~6× cheaper than Keccak** | **fast (ARX)** | Cirrus symbolic executor |
-| Ascon-Hash | TBD (H3) — expected much cheaper (bit-sliced) | fast | recursive proving, PESAT accumulator |
+| Ascon-Hash | **~106K** (measured, `ascon_p12`) — **~830× cheaper than Keccak, ~130× cheaper than Blake2s** | fast | recursive proving, PESAT accumulator |
+
+The **bit-sliced Ascon permutation is the in-circuit winner by ~2 orders of
+magnitude** (the χ S-box is a handful of AND/XOR/NOT per 64-bit column; the
+linear layer is rotations + xors — vs Blake2s's ARX carry chains and Keccak's
+24-round S-box). This confirms the plan's per-target assignment: Keccak for
+on-chain (native opcode), Blake2s for Cirrus (native ARX speed), **Ascon for
+recursive proving + the memory accumulators (in-circuit cost)**.
 
 The measured counts are the **un-optimized VAFFLE lowering** (the raw IR size,
 `b.values.len()`), which includes the byte↔word conversions and the unrolled
@@ -169,7 +176,7 @@ backends, each consumer optimal.
 |---|---|---|
 | H1 | Abstraction layer + native genericity | **landed** (`SpongeTranscript<S>`/`MerkleTreeImpl<D>` + `Sponge`/`Digest` traits, `volar-iop` 50/50 green; D4 resolved to parallel free-function families after `probe_d4` found the trait dispatch is first-wins) |
 | H2 | Spec-dialect Blake2s | **landed** — `blake2s.rs` (RFC 7693) compiles via the codegen; **byte-exact differential vs `blake2::Blake2s256`** over 11 lengths incl. empty/partial/multi-block; in-circuit cost ~13.8M raw VAFFLE values (**~6× cheaper than Keccak's ~87.8M**), `probe_blake2s_vs_keccak_gate_count` |
-| H3 | Spec-dialect Ascon hash/XOF | `ascon.rs` compiles; differential vs `ascon-hash`; in-circuit gate count measured |
+| H3 | Spec-dialect Ascon hash/XOF | **landed** — `ascon.rs` (Ascon-p12 permutation matching `ascon-core`'s algebraic form + Ascon-Hash256) compiles; **byte-exact differential vs `ascon_hash::AsconHash256`** over 13 lengths; in-circuit cost ~106K raw VAFFLE values (**~830× cheaper than Keccak, ~130× cheaper than Blake2s**), confirming Ascon as the in-circuit backend |
 | H4 | Spec-dialect Ascon-AEAD | Ascon-128a AEAD compiles; differential vs `ascon-aead`; a non-conformance AES-GCM call site swapped as proof |
 | H5 | Accumulator Fiat-Shamir binding | `derive_challenges` transcript-bound; in-circuit per-op cost measured per backend; honest-chain acceptance + tamper rejection still hold |
 | H6 | Cirrus binding autogeneration | generator emits the Cirrus bindings from the spec with a hash/cipher parameter; committed bindings + a drift-detecting check |
