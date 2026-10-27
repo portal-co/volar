@@ -10,6 +10,7 @@ pub mod bitgc;
 pub mod blake2s;
 pub mod ascon;
 pub mod byte_gen;
+pub mod cirrus;
 pub mod curve;
 pub mod field_marker;
 pub mod fold;
