@@ -69,6 +69,18 @@ pub fn ascon_round(x: [u64; 5], c: u64) -> [u64; 5] {
     ]
 }
 
+/// The Ascon-p[8] permutation (the last 8 round constants) — used for the
+/// Ascon-128a AEAD's absorb/encrypt rounds (128a's wider 16-byte rate pairs
+/// with 8 rounds; 128 uses 6).
+pub fn ascon_p8(state: &mut [u64; 5]) {
+    for round in 4..12 {
+        let new = ascon_round(*state, ASCON_RC[round]);
+        for i in 0..5 {
+            state[i] = new[i];
+        }
+    }
+}
+
 /// The Ascon-p[12] permutation (12 rounds) on the 5-word state.
 pub fn ascon_p12(state: &mut [u64; 5]) {
     for round in 0..12 {
@@ -147,6 +159,124 @@ pub fn ascon_hash256_array<N: ArraySize>(input: &Array<u8, N>) -> [u8; 32] {
     out
 }
 
+// ============================================================================
+// Ascon-128a AEAD (the AEAD backend replacing AES-GCM where the AEAD is a
+// choice — recursive proving's channels, MPC, OT; never a conformance target).
+// Big-endian state words (unlike the little-endian Ascon-Hash), 16-byte rate.
+// ============================================================================
+
+/// The Ascon-128a AEAD IV.
+pub const ASCON_128A_IV: u64 = 0x80800c0800000000;
+
+/// Big-endian padding: the `0x80` bit right after `n` high-end bytes.
+fn aead_pad(n: usize) -> u64 {
+    0x80u64 << (56 - 8 * n)
+}
+
+/// Big-endian u64 from an 8-byte slice.
+fn be_u64(input: &[u8]) -> u64 {
+    let mut b = [0u8; 8];
+    b.copy_from_slice(input);
+    u64::from_be_bytes(b)
+}
+
+/// Big-endian u64 from a partial slice (the bytes at the *high* end).
+fn be_u64_partial(input: &[u8]) -> u64 {
+    let mut b = [0u8; 8];
+    b[..input.len()].copy_from_slice(input);
+    u64::from_be_bytes(b)
+}
+
+/// Ascon-128a AEAD encrypt (native slice form): returns `(ciphertext, tag)`.
+/// `key` and `nonce` are 16 bytes each. Matches `ascon_aead::Ascon128a`.
+pub fn ascon128a_encrypt(
+    key: &[u8; 16],
+    nonce: &[u8; 16],
+    ad: &[u8],
+    plaintext: &[u8],
+) -> (alloc::vec::Vec<u8>, [u8; 16]) {
+    let k1 = be_u64(&key[..8]);
+    let k2 = be_u64(&key[8..16]);
+    // Init: state = [IV, k1, k2, nonce0, nonce1]; permute_12; key into x3, x4.
+    let mut state = [
+        ASCON_128A_IV,
+        k1,
+        k2,
+        be_u64(&nonce[..8]),
+        be_u64(&nonce[8..16]),
+    ];
+    ascon_p12(&mut state);
+    state[3] ^= k1;
+    state[4] ^= k2;
+    // Absorb the associated data (16-byte blocks, permute_6 each).
+    if !ad.is_empty() {
+        let mut i = 0;
+        while ad.len() - i >= 16 {
+            state[0] ^= be_u64(&ad[i..i + 8]);
+            state[1] ^= be_u64(&ad[i + 8..i + 16]);
+            ascon_p8(&mut state);
+            i += 16;
+        }
+        // Last partial AD block (< 16 bytes).
+        let rem = ad.len() - i;
+        let (sidx, lastlen) = if rem >= 8 {
+            state[0] ^= be_u64(&ad[i..i + 8]);
+            (1, rem - 8)
+        } else {
+            (0, rem)
+        };
+        state[sidx] ^= aead_pad(lastlen);
+        if lastlen > 0 {
+            let off = i + if sidx == 1 { 8 } else { 0 };
+            state[sidx] ^= be_u64_partial(&ad[off..off + lastlen]);
+        }
+        ascon_p8(&mut state);
+    }
+    // Domain separation.
+    state[4] ^= 1;
+    // Encrypt (16-byte blocks, permute_6 each; the last partial block is NOT permuted).
+    let mut ciphertext = alloc::vec::Vec::with_capacity(plaintext.len());
+    let mut i = 0;
+    while plaintext.len() - i >= 16 {
+        state[0] ^= be_u64(&plaintext[i..i + 8]);
+        ciphertext.extend_from_slice(&state[0].to_be_bytes());
+        state[1] ^= be_u64(&plaintext[i + 8..i + 16]);
+        ciphertext.extend_from_slice(&state[1].to_be_bytes());
+        ascon_p8(&mut state);
+        i += 16;
+    }
+    // Last partial plaintext block (< 16 bytes, no trailing permute).
+    let rem = plaintext.len() - i;
+    if rem >= 8 {
+        state[0] ^= be_u64(&plaintext[i..i + 8]);
+        ciphertext.extend_from_slice(&state[0].to_be_bytes());
+        let rest = rem - 8;
+        state[1] ^= aead_pad(rest);
+        if rest > 0 {
+            state[1] ^= be_u64_partial(&plaintext[i + 8..i + 8 + rest]);
+            let keystream = state[1].to_be_bytes();
+            ciphertext.extend_from_slice(&keystream[..rest]);
+        }
+    } else {
+        state[0] ^= aead_pad(rem);
+        if rem > 0 {
+            state[0] ^= be_u64_partial(&plaintext[i..i + rem]);
+            let keystream = state[0].to_be_bytes();
+            ciphertext.extend_from_slice(&keystream[..rem]);
+        }
+    }
+    // Finalize: key into x2, x3; permute_12; key into x3, x4; tag = x3 || x4.
+    state[2] ^= k1;
+    state[3] ^= k2;
+    ascon_p12(&mut state);
+    state[3] ^= k1;
+    state[4] ^= k2;
+    let mut tag = [0u8; 16];
+    tag[..8].copy_from_slice(&state[3].to_be_bytes());
+    tag[8..].copy_from_slice(&state[4].to_be_bytes());
+    (ciphertext, tag)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +305,49 @@ mod tests {
         let arr: Array<u8, hybrid_array::typenum::U50> =
             Array::try_from(&data[..]).expect("50 bytes");
         assert_eq!(ascon_hash256_array(&arr), ascon_hash256(&data));
+    }
+
+    #[test]
+    fn ascon128a_encrypt_matches_reference() {
+        use ascon_aead::aead::{Aead, KeyInit, Payload};
+        let key = [0x42u8; 16];
+        let nonce = [0x24u8; 16];
+        // Spread of (ad, plaintext) lengths across the 16-byte rate boundary.
+        for (ad_len, pt_len) in [
+            (0usize, 0usize),
+            (0, 1),
+            (1, 0),
+            (0, 16),
+            (16, 16),
+            (0, 17),
+            (17, 0),
+            (8, 8),
+            (7, 9),
+            (16, 32),
+            (31, 33),
+            (100, 200),
+        ] {
+            let ad: alloc::vec::Vec<u8> = (0..ad_len).map(|i| (i % 251) as u8).collect();
+            let pt: alloc::vec::Vec<u8> = (0..pt_len).map(|i| (i % 239) as u8).collect();
+            let cipher = ascon_aead::Ascon128a::new((&key).into());
+            let expected = cipher
+                .encrypt(
+                    (&nonce).into(),
+                    Payload {
+                        msg: &pt,
+                        aad: &ad,
+                    },
+                )
+                .expect("reference encrypt");
+            let (got_ct, got_tag) = ascon128a_encrypt(&key, &nonce, &ad, &pt);
+            // The reference returns ciphertext || tag.
+            let mut mine = got_ct.clone();
+            mine.extend_from_slice(&got_tag);
+            assert_eq!(
+                mine,
+                expected.as_slice(),
+                "Ascon-128a mismatch at ad={ad_len} pt={pt_len}"
+            );
+        }
     }
 }
