@@ -3500,6 +3500,12 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         match self.ty {
             IrType::Primitive(p) => write!(f, "{}", ts_primitive(p))?,
+            // Marker-resolved field types emit as their marker-named class,
+            // mirroring the legacy `Galois*`/`Z3` primitives in
+            // `ts_primitive` (Display reverse-resolves the marker name).
+            IrType::ExtField { .. } | IrType::PrimeField { .. } => {
+                write!(f, "{}", self.ty)?;
+            }
             IrType::Vector { elem } => {
                 TsTypeWriter { ty: elem }.ts_fmt(f, cx)?;
                 write!(f, "[]")?;
@@ -5765,7 +5771,19 @@ fn emit_method_call(
             let name = format!("{:?}", v).to_lowercase();
             emit_other_method_call(receiver, &name, args, f, cx)
         }
-        MethodKind::Other(name) => emit_other_method_call(receiver, name, args, f, cx),
+        MethodKind::Other(name) => {
+            // Misrouting check: a name `StdMethod` knows about must go through
+            // `MethodKind::Known` → `emit_known_method_call`, not here. (The
+            // legitimate StdMethod→emit_other fall-through happens *inside*
+            // `emit_known_method_call`, bypassing this assert.)
+            debug_assert!(
+                StdMethod::try_from_str(name).is_none(),
+                "TS emit: {name:?} is a well-known StdMethod but was classified as \
+                 MethodKind::Other; classify it as MethodKind::Known(StdMethod::…) so \
+                 the TypeScript backend can apply the correct translation"
+            );
+            emit_other_method_call(receiver, name, args, f, cx)
+        }
     }
 }
 
@@ -6317,12 +6335,6 @@ fn emit_other_method_call(
     debug_assert!(
         name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
         "TS emit: method name is not a valid identifier: {name:?}"
-    );
-    debug_assert!(
-        StdMethod::try_from_str(name).is_none(),
-        "TS emit: {name:?} is a well-known StdMethod but was routed to \
-         emit_other_method_call; use MethodKind::Known(StdMethod::…) so the \
-         TypeScript backend can apply the correct translation"
     );
     // Option/Result query methods
     match name {

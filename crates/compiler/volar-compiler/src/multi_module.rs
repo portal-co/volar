@@ -335,6 +335,16 @@ pub(crate) fn collect_type_refs(module: &IrModule<IrFunction>) -> BTreeSet<Strin
             IrType::Primitive(p) => {
                 out.insert(p.to_string());
             }
+            // Marker-resolved field types name their marker (Display prints
+            // e.g. `Gf2_128`), which is the named type a field-markers spec
+            // group exports — same dependency-inference role as primitives.
+            IrType::ExtField { wrapped, .. } => {
+                out.insert(ty.to_string());
+                walk(wrapped, out);
+            }
+            IrType::PrimeField { .. } => {
+                out.insert(ty.to_string());
+            }
             IrType::Array { elem, .. } => walk(elem, out),
             IrType::Vector { elem } => walk(elem, out),
             IrType::Reference { elem, .. } => walk(elem, out),

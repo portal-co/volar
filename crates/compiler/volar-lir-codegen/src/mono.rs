@@ -75,6 +75,21 @@ pub(crate) fn type_args_to_len(len_ty: Option<&IrType>, env: &MonoEnv) -> ArrayL
             ArrayLength::TypeParam(name.clone()) // unresolved
         }
         Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::Usize)) => ArrayLength::Const(1),
+        // `<N as Logarithm2>::Output` as an array length: evaluate the
+        // type-level log2 once the base resolves to a concrete size.
+        Some(IrType::Projection {
+            base,
+            assoc,
+            trait_path,
+            ..
+        }) if assoc.to_string() == "Output" && trait_path.as_deref() == Some("Logarithm2") => {
+            match type_args_to_len(Some(base), env) {
+                ArrayLength::Const(n) if n != 0 => {
+                    ArrayLength::Const(n.trailing_zeros() as usize)
+                }
+                _ => ArrayLength::Const(0),
+            }
+        }
         None => ArrayLength::Const(0),
         _ => ArrayLength::Const(0), // unknown — default to 0; lowering will panic with a clear message
     }
@@ -263,7 +278,69 @@ impl MonoEnv {
 }
 
 pub(crate) fn canonical_type(ty: &IrType) -> String {
-    format!("{ty:?}")
+    // Canonicalize recursively, normalizing `IrType::Array`'s `kind`:
+    // `FixedArray` and `GenericArray` are layout-identical (same elem + len),
+    // so they must produce the SAME instance key — otherwise a type inferred
+    // as `[u8; N]` at one stage and `Array<u8, N>` at another splits one
+    // monomorphized instance into two colliding call-site keys.
+    fn go(ty: &IrType, out: &mut String) {
+        match ty {
+            IrType::Array { elem, len, .. } => {
+                out.push_str("Array[");
+                go(elem, out);
+                out.push_str(&format!("; {len:?}]"));
+            }
+            // References canonicalize identically regardless of mutability:
+            // the call-site key disambiguates instances by layout, and `&T` /
+            // `&mut T` share a layout. The planner historically dropped `mut`
+            // while lowering preserved it, splitting one instance's key.
+            IrType::Reference { elem, .. } => {
+                out.push('&');
+                go(elem, out);
+            }
+            IrType::Vector { elem } => {
+                out.push_str("Vector[");
+                go(elem, out);
+                out.push(']');
+            }
+            // A surviving `TypeParam(name)` and the resolved `Struct{Custom(
+            // name)}` denote the same nominal type; canonicalize both to the
+            // same string so planning (which may not resolve the struct) and
+            // lowering (which does) agree on the instance key.
+            IrType::TypeParam(name) => {
+                out.push_str(&format!("Struct{{{name}}}<>"));
+            }
+            IrType::Struct { kind, type_args } => {
+                out.push_str(&format!("Struct{{{kind}}}<", ));
+                for a in type_args {
+                    go(a, out);
+                    out.push(',');
+                }
+                out.push('>');
+            }
+            IrType::Tuple(ts) => {
+                out.push('(');
+                for t in ts {
+                    go(t, out);
+                    out.push(',');
+                }
+                out.push(')');
+            }
+            IrType::ExtField {
+                wrapped,
+                degree,
+                irreducible,
+            } => {
+                out.push_str("ExtField{");
+                go(wrapped, out);
+                out.push_str(&format!("; {degree}; {irreducible:?}}}"));
+            }
+            other => out.push_str(&format!("{other:?}")),
+        }
+    }
+    let mut s = String::new();
+    go(ty, &mut s);
+    s
 }
 
 fn resolve_explicit_type_arg(ty: &IrType, structs: &StructTable) -> IrType {
@@ -516,6 +593,41 @@ pub(crate) fn call_site_key(
         )
     }
 }
+/// Re-resolve a custom-trait method to the impl whose `self_ty` matches the
+/// receiver's inferred type. The `definitions` map is first-wins by bare
+/// method name, so a trait with several impls (e.g. a hash `Sponge` backend
+/// per primitive — see `probe_d4_trait_monomorphization`) would otherwise
+/// dispatch every monomorphized instance to the first impl.
+fn reselect_method_by_receiver<'m, P: Clone>(
+    module: &'m IrModule<IrFunction<P>, P>,
+    method_name: &str,
+    receiver_ty: &IrType,
+    env: &MonoEnv,
+    structs: &StructTable,
+) -> Option<&'m IrFunction<P>> {
+    // Unwrap the receiver's reference (the impl's self_ty is the bare type).
+    let recv_inner = match receiver_ty {
+        IrType::Reference { elem, .. } => elem.as_ref().clone(),
+        other => other.clone(),
+    };
+    let recv_mono = mono_type(&resolve_explicit_type_arg(&recv_inner, structs), env);
+    let recv_canon = canonical_type(&recv_mono);
+    for ir_impl in &module.impls {
+        let impl_self = mono_type(&resolve_explicit_type_arg(&ir_impl.self_ty, structs), env);
+        if canonical_type(&impl_self) != recv_canon {
+            continue;
+        }
+        for item in &ir_impl.items {
+            if let volar_compiler::ir::IrImplItem::Method(method) = item {
+                if method.name == method_name && method.receiver.is_some() {
+                    return Some(method);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn instance_key(name: &str, env: &MonoEnv) -> FunctionInstanceKey {
     FunctionInstanceKey {
         source_name: name.to_owned(),
@@ -721,6 +833,15 @@ pub fn plan_flat_module<P: Clone>(
             let mut env = env;
             env.consts.extend(module_consts.clone());
             env.mul_impl_structs = mul_impl_structs.clone();
+            // Module type aliases (`type WarpDigest = Array<u8, U32>`) must
+            // resolve during planning too — otherwise a call argument typed
+            // through an alias can't unify against the callee's generic and
+            // the instance never specializes.
+            for alias in &module.type_aliases {
+                env.aliases
+                    .entry(alias.name.clone())
+                    .or_insert_with(|| alias.target.clone());
+            }
             queue.push_back((instance_key(&name, &env), env));
         }
     }
@@ -753,6 +874,22 @@ pub fn plan_flat_module<P: Clone>(
                 .unwrap_or(&callee);
             let Some(callee_def) = definitions.get(definition_name) else {
                 continue;
+            };
+            // Custom-trait method shared by several impls (e.g. a hash
+            // backend's `Sponge` impl per primitive): the `definitions` map is
+            // first-wins by bare method name, so re-resolve by the receiver's
+            // inferred type. Without this, every monomorphized instance of a
+            // generic-over-trait function dispatches to the first impl.
+            let callee_def = match (callee_def.receiver.is_some(), arg_tys.first()) {
+                (true, Some(Some(recv_ty))) => reselect_method_by_receiver(
+                    module,
+                    definition_name,
+                    recv_ty,
+                    &env,
+                    &struct_table,
+                )
+                .unwrap_or(callee_def),
+                _ => callee_def,
             };
             if callee_def.external_kind != volar_compiler::ir::ExternalKind::Normal {
                 continue;
@@ -958,14 +1095,16 @@ pub fn plan_flat_module<P: Clone>(
                 .as_ref()
                 .map(|resolved| resolved.trait_arg_bindings.as_slice())
                 .unwrap_or(&[]);
-            let mut callee_env = bind_call_args_with_trait_args(
+            let mut callee_env_res = bind_call_args_with_trait_args(
                 callee_def,
                 &type_args,
                 &arg_tys,
                 &env,
                 expected.as_ref(),
                 trait_arg_bindings,
-            )?;
+            );
+            
+            let mut callee_env = callee_env_res?;
             if let Some(self_ty) = static_self_ty {
                 let self_ty = resolve_explicit_type_arg(&self_ty, &struct_table);
                 let self_ty = mono_type(&self_ty, &callee_env);
@@ -1116,9 +1255,13 @@ fn bind_call_args_with_trait_args<P: Clone>(
                 function.name
             )));
         }
-        // Keep the caller's layout bindings. An empty env would re-plan the same
-        // non-generic body without `N`/`U1` and panic during type conversion.
-        return Ok(caller_env.clone());
+        // Use the ambient env (module consts + typenum consts + aliases), NOT
+        // the caller's full env: the caller's generic bindings (`N`, `BETA`,
+        // …) are irrelevant to a non-generic body and only pollute the
+        // instance key, producing one duplicate instance per caller env.
+        // `ambient_callee_env` already filters name-shadowing and keeps the
+        // module/typenum consts a non-generic body needs.
+        return Ok(ambient_callee_env(function, caller_env));
     }
     // Seed with ambient caller bindings that this function does not shadow
     // (typenum defaults, VOLE `U1`/`U0`, hash suffix, etc.).
@@ -1264,20 +1407,20 @@ fn ambient_callee_env<P: Clone>(function: &IrFunction<P>, caller_env: &MonoEnv) 
         .filter(|(name, _)| !shadows(name))
         .map(|(name, value)| (name.clone(), *value))
         .collect();
-    for (name, value) in &caller_env.const_params {
-        if !shadows(name) {
-            env.const_params.insert(name.clone(), *value);
-        }
-    }
-    for (name, value) in &caller_env.type_params {
-        if !shadows(name) {
-            env.type_params.insert(name.clone(), value.clone());
-        }
-    }
-    for (key, value) in &caller_env.projections {
-        if !shadows(&key.0) {
-            env.projections.insert(key.clone(), value.clone());
-        }
+    // Do NOT inherit the caller's generic bindings (`const_params` /
+    // `type_params` / `projections`): those are scoped to the caller's own
+    // generics, and a callee never references them — the callee's own
+    // generics are bound by `bind_call_args` at the call site. Inheriting
+    // them only pollutes the callee's instance key with caller-specific
+    // bindings, producing duplicate identical instances (a non-generic helper
+    // like `keccak_f1600` was getting one copy per caller env). Module
+    // `consts` and type `aliases` still carry through (they're module-level,
+    // not caller-generic).
+    // Module type aliases carry through calls — a callee's parameter typed
+    // through an alias (e.g. `&WarpDigest`) must resolve to its target when
+    // unifying with the call-site argument type.
+    for (name, value) in &caller_env.aliases {
+        env.aliases.insert(name.clone(), value.clone());
     }
     env
 }
@@ -1468,6 +1611,64 @@ fn unify_into<P: Clone>(
             },
         ) => {
             unify_into(env, p_elem, c_elem, function, caller_env)?;
+            // Resolve a concrete numeric array length (const literal,
+            // typenum `U$n`, or numeric TypeParam) for binding below.
+            let concrete_len: Option<usize> = match &c_len {
+                ArrayLength::Const(n) => Some(*n),
+                ArrayLength::TypeNum(tn) => Some(tn.to_usize()),
+                ArrayLength::TypeParam(cname) => cname
+                    .parse::<usize>()
+                    .ok()
+                    .or_else(|| typenum_usize(cname)),
+                // `<N as Logarithm2>::Output`: type-level log2 of a concrete
+                // size (the WARP spec's Log2<N>-sized points).
+                ArrayLength::Projection {
+                    r#type,
+                    field,
+                    trait_path,
+                } if field == "Output" && trait_path.as_deref() == Some("Logarithm2") => {
+                    match type_args_to_len(Some(r#type.as_ref()), caller_env) {
+                        ArrayLength::Const(n) if n != 0 => Some(n.trailing_zeros() as usize),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            
+            if let (ArrayLength::TypeParam(name), Some(n)) = (&p_len, concrete_len) {
+                if function.generics.iter().any(|g| {
+                    g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Const
+                }) {
+                    if let Some(existing) = env.const_params.get(name) {
+                        if *existing != n {
+                            return Err(MonoError::new(format!(
+                                "generic local call '{}': contradictory const binding for '{}'",
+                                function.name, name
+                            )));
+                        }
+                    } else {
+                        env.const_params.insert(name.clone(), n);
+                    }
+                } else if function.generics.iter().any(|g| {
+                    g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Type
+                }) {
+                    // `N: ArraySize` (hybrid-array) params appear as type
+                    // params used in array-length position; bind them as
+                    // concrete numeric type params so the layout check
+                    // below sees them as resolved.
+                    let concrete = IrType::TypeParam(n.to_string());
+                    if let Some(existing) = env.type_params.get(name) {
+                        if existing != &concrete {
+                            return Err(MonoError::new(format!(
+                                "generic local call '{}': contradictory binding for '{}'",
+                                function.name, name
+                            )));
+                        }
+                    } else {
+                        env.type_params.insert(name.clone(), concrete);
+                    }
+                }
+            }
             if let (ArrayLength::TypeParam(name), ArrayLength::Const(n)) = (p_len, c_len) {
                 if function.generics.iter().any(|g| {
                     g.name == *name && g.kind == volar_compiler::ir::IrGenericParamKind::Const
@@ -1783,10 +1984,10 @@ fn infer_expr_type<P: Clone>(
         }
         IrExprKind::MethodCall { receiver, .. } => infer_expr_type(receiver, env, vars, structs),
         IrExprKind::Unary {
-            op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
+            op: op @ (SpecUnaryOp::Ref | SpecUnaryOp::RefMut),
             expr,
         } => infer_expr_type(expr, env, vars, structs).map(|elem| IrType::Reference {
-            mutable: false,
+            mutable: matches!(op, SpecUnaryOp::RefMut),
             elem: Box::new(elem),
         }),
         IrExprKind::Unary {
@@ -1796,6 +1997,9 @@ fn infer_expr_type<P: Clone>(
             IrType::Reference { elem, .. } => Some(*elem),
             other => Some(other),
         },
+        // `Array::<T, N>::default()` and friends carry their type on the
+        // node — read it (substituted) instead of failing inference.
+        IrExprKind::DefaultValue { ty } => ty.as_ref().map(|t| mono_type(t, env)),
         _ => None,
     }
 }
@@ -2414,6 +2618,7 @@ fn call_result_type<P: Clone>(
         ),
         _ => return None,
     };
+    
     let callee = *defs.get(&name)?;
     let mut arg_tys: Vec<Option<IrType>> = receiver
         .map(|receiver| infer_expr_type(receiver, env, Some(var_types), Some(structs)))
@@ -2727,6 +2932,13 @@ fn collect_expr_calls<P: Clone>(
             }
         }
         Return(Some(expr)) => collect_expr_calls(expr, env, defs, structs, var_types, calls),
+        // `Array::from_fn` / closure bodies may contain local calls (e.g.
+        // the WARP Merkle leaf hash inside `warp_commit_codeword`'s
+        // `from_fn`) — walk them so the callee is planned and lowered.
+        ArrayGenerate { body, .. } => {
+            collect_expr_calls(body, env, defs, structs, var_types, calls)
+        }
+        Closure { body, .. } => collect_expr_calls(body, env, defs, structs, var_types, calls),
         _ => {}
     }
 }
@@ -3183,6 +3395,21 @@ pub(crate) fn mono_len(len: &ArrayLength, env: &MonoEnv) -> ArrayLength {
                 return ArrayLength::Const(n);
             }
             len.clone()
+        }
+        // `<N as Logarithm2>::Output` in array-length position: evaluate the
+        // type-level log2 directly when `N` resolves to a concrete size.
+        volar_compiler::ir::ArrayLength::Projection {
+            r#type,
+            field,
+            trait_path,
+        } if field == "Output"
+            && trait_path.as_deref() == Some("Logarithm2") =>
+        {
+            let base = type_args_to_len(Some(r#type.as_ref()), env);
+            match base {
+                ArrayLength::Const(n) if n != 0 => ArrayLength::Const(n.trailing_zeros() as usize),
+                _ => len.clone(),
+            }
         }
         // Projection might reference a const param indirectly; leave for now.
         other => other.clone(),

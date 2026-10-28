@@ -43,6 +43,7 @@ pub mod multi_module;
 pub mod parser;
 pub mod printer;
 pub mod printer_ts;
+pub mod printer_sol;
 pub mod reachability;
 
 pub use chunk_module::{ChunkConfig, ChunkOptions, ChunkedModuleOutput};

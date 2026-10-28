@@ -97,6 +97,11 @@ pub trait Field: Copy + Clone + PartialEq + Eq + core::fmt::Debug + Default {
     /// (`(lo, hi)` pairs are always little-endian: `lo` holds the embedded
     /// lower-degree half).
     fn to_bytes(&self) -> alloc::vec::Vec<u8>;
+
+    /// Construct the field element whose polynomial (binary-coefficient)
+    /// representation is the integer `x`. Distinct for `x < 2^BITS`; used for
+    /// Reed-Solomon evaluation points (which must be distinct field elements).
+    fn from_u128(x: u128) -> Self;
 }
 
 impl Field for Galois {
@@ -112,6 +117,34 @@ impl Field for Galois {
     }
     fn to_bytes(&self) -> alloc::vec::Vec<u8> {
         alloc::vec![self.0]
+    }
+    fn from_u128(x: u128) -> Self {
+        // Distinct only for `x < 256` (the base field is GF(2^8)).
+        Galois(x as u8)
+    }
+}
+
+/// The VOLE field GF(2^128) (GCM polynomial `x^128 + x^7 + x^2 + x + 1`) as
+/// a WARP accumulation field — the plan's §5.4 decision (volar-ir's
+/// `docs/warp-vole-verifier-zksnark-plan.md`): WARP accumulates over the
+/// VOLE field directly, and oracle-vs-spec differentials run the
+/// `crate::warp` oracle over this impl.
+impl Field for volar_primitives::Galois128 {
+    const BITS: u32 = 128;
+    const ZERO: Self = volar_primitives::Galois128(0);
+    const ONE: Self = volar_primitives::Galois128(1);
+
+    fn add(&self, rhs: &Self) -> Self {
+        volar_primitives::Galois128(self.0 ^ rhs.0)
+    }
+    fn mul(&self, rhs: &Self) -> Self {
+        (*self) * (*rhs)
+    }
+    fn to_bytes(&self) -> alloc::vec::Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+    fn from_u128(x: u128) -> Self {
+        volar_primitives::Galois128(x)
     }
 }
 
@@ -196,6 +229,10 @@ impl<F: Field, B: BetaOf<F>> Field for Ext<F, B> {
         let mut v = self.lo.to_bytes();
         v.extend(self.hi.to_bytes());
         v
+    }
+    fn from_u128(x: u128) -> Self {
+        // Embed the integer in the low half (distinct for `x < 2^(BITS/2)`).
+        Ext::new(F::from_u128(x), F::ZERO)
     }
 }
 

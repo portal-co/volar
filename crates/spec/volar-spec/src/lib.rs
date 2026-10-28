@@ -7,9 +7,14 @@ pub use hybrid_array::{Array, ArraySize};
 pub use volar_common::hash_commitment as simple;
 pub mod binfhe;
 pub mod bitgc;
+pub mod blake2s;
+pub mod ascon;
 pub mod byte_gen;
+pub mod cirrus;
 pub mod curve;
+pub mod field_marker;
 pub mod fold;
+pub mod keccak;
 pub mod garble;
 pub mod lwe;
 pub mod mpc;
@@ -22,6 +27,7 @@ pub mod tfhe;
 #[cfg(test)]
 mod tfhe_ginx_oracle;
 pub mod tinylabels;
+pub mod warp;
 pub use volar_primitives as field;
 
 // ── Deterministic RNG trait ──────────────────────────────────────────────────

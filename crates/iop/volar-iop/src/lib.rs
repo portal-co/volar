@@ -16,12 +16,14 @@
 
 extern crate alloc;
 
+pub mod additive_fft;
 pub mod field;
 pub mod fold;
 pub mod ligero;
 pub mod merkle;
 pub mod transcript;
 pub mod verifier;
+pub mod warp;
 
 pub use fold::IopAccumulator;
 pub use verifier::{IopProof, IopVerifierFold, prove_verifier_iop, verify_iop};

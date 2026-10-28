@@ -20,10 +20,15 @@ hybrid-array.workspace = true
 elliptic-curve = {workspace = true,features = ["arithmetic"]}
 volar-primitives = { git = "https://github.com/portal-co/volar.git" }
 volar-common = { git = "https://github.com/portal-co/volar.git" }
+volar-ir-common.workspace = true
 
 [dev-dependencies]
 proptest = "1"
 sha2 = { version = "0.11.0-rc.0", default-features = false }
+blake2 = "0.10.6"
+ascon-hash = "0.4"
+ascon-aead = "0.4"
+volar-iop = { path = "../../iop/volar-iop" }
 
 [[test]]
 name = "bitgc_bench"

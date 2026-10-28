@@ -110,7 +110,10 @@ pub const fn check_profile(
     // Invariant 2: modulus chain Q >= modKS >= q.
     assert!(log_q >= log_mod_ks, "LOG_Q >= LOG_MOD_KS required");
     assert!(log_mod_ks >= log_q_lwe, "LOG_MOD_KS >= LOG_Q_LWE required");
-    assert!(log_q <= 32, "power-of-two moduli up to 2^32 are representable");
+    assert!(
+        log_q <= 32,
+        "power-of-two moduli up to 2^32 are representable"
+    );
     // Invariant 3: covering gadget decompositions.
     assert!(
         bs_ell as u32 * bs_base_log >= log_q,
@@ -163,8 +166,17 @@ pub mod toy {
 
     /// Const-checked at profile definition time.
     const _: () = super::check_profile(
-        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_BASE_LOG, BS_ELL, KS_BASE_LOG, KS_ELL,
-        PRIV_BASE_LOG, PRIV_ELL,
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_BASE_LOG,
+        BS_ELL,
+        KS_BASE_LOG,
+        KS_ELL,
+        PRIV_BASE_LOG,
+        PRIV_ELL,
     );
 }
 
@@ -196,8 +208,17 @@ pub mod toy_noisy {
     pub const CBD_ETA: u32 = 1;
 
     const _: () = super::check_profile(
-        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_BASE_LOG, BS_ELL, KS_BASE_LOG, KS_ELL,
-        PRIV_BASE_LOG, PRIV_ELL,
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_BASE_LOG,
+        BS_ELL,
+        KS_BASE_LOG,
+        KS_ELL,
+        PRIV_BASE_LOG,
+        PRIV_ELL,
     );
 }
 
@@ -223,8 +244,17 @@ pub mod std128 {
     pub const CBD_ETA: u32 = 16;
 
     const _: () = super::check_profile(
-        N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_BASE_LOG, BS_ELL, KS_BASE_LOG, KS_ELL,
-        PRIV_BASE_LOG, PRIV_ELL,
+        N_LWE,
+        BIG_N,
+        LOG_Q,
+        LOG_Q_LWE,
+        LOG_MOD_KS,
+        BS_BASE_LOG,
+        BS_ELL,
+        KS_BASE_LOG,
+        KS_ELL,
+        PRIV_BASE_LOG,
+        PRIV_ELL,
     );
 }
 

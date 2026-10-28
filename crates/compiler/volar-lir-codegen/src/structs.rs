@@ -98,6 +98,7 @@ impl StructRegistry {
                     .iter()
                     .position(|n| n == field)
                     .unwrap_or_else(|| {
+                        
                         panic!(
                             "struct S{id} has no field '{field}' (fields: {:?})",
                             entry.field_names
@@ -364,6 +365,7 @@ pub fn ensure_struct_instance<T: LirTarget<P>, P: Clone>(
     all_structs: &[IrStruct],
     all_enums: &[IrEnum],
 ) {
+    
     if ir_struct.kind == StructKind::GenericArray {
         return;
     }
@@ -390,7 +392,8 @@ pub fn ensure_struct_instance<T: LirTarget<P>, P: Clone>(
         return;
     }
 
-    let local = struct_instance_env(ir_struct, &concrete_args, outer);
+    
+let local = struct_instance_env(ir_struct, &concrete_args, outer);
     // Pre-register nested nominal dependencies from field types.
     for field in &ir_struct.fields {
         // Cross-module enum field types parse as bare TypeParams; point them
@@ -412,6 +415,7 @@ pub fn ensure_struct_instance<T: LirTarget<P>, P: Clone>(
         register_tuples_in_type(&field_ty, registry, target, &local);
     }
 
+    
     let lir_fields: Vec<(String, LirType)> = ir_struct
         .fields
         .iter()
@@ -753,8 +757,17 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                     if registry.lenient {
                         // Opaque widen: unknown const-generic length → empty array.
                         0
+                    } else if let Ok(n) = name.parse::<usize>() {
+                        // Numeric const-generic spelling (`TypeParam("16")`).
+                        return LirType::Arr(Box::new(ir_type_to_lir_inner(elem, registry)), n);
+                    } else if let Some(n) = crate::mono::typenum_usize(name) {
+                        // Typenum name (`U16`) reaching here un-substituted.
+                        return LirType::Arr(Box::new(ir_type_to_lir_inner(elem, registry)), n);
                     } else {
-                        panic!("unsubstituted TypeParam length '{name}' — add it to MonoEnv")
+                        panic!(
+                            "unsubstituted TypeParam length '{name}' [{}]",
+                            crate::CURRENT_INSTANCE_DEBUG.with(|c| c.borrow().clone())
+                        )
                     }
                 }
                 ArrayLength::Projection { r#type, field, .. } => {
@@ -815,7 +828,7 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             }
         }
 
-        IrType::Reference { elem, .. } => {
+        IrType::Reference { mutable, elem } => {
             // References to slices become pointers — slices are dynamically
             // sized, so they can't be flattened to a fixed number of scalars.
             if let IrType::Array {
@@ -825,8 +838,32 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             } = elem.as_ref()
             {
                 LirType::Ptr(Box::new(ir_type_to_lir_inner(inner_elem, registry)))
+            } else if *mutable
+                && (matches!(elem.as_ref(), IrType::Array { .. } | IrType::Struct { .. })
+                    // A `TypeParam` that names a module struct is that struct (the
+                    // parser leaves `&mut S` params with an unresolved nominal).
+                    || matches!(elem.as_ref(), IrType::TypeParam(name) if registry.id_for_name(name).is_some()))
+            {
+                // A MUTABLE reference to a fixed-size array must alias the
+                // referent: the lowering never copies a by-value aggregate back
+                // to the caller, so value semantics would silently drop the
+                // callee's writes (`keccak_f1600(&mut st)` mutating a copy).
+                // Lower to a pointer into memory like a slice. Immutable
+                // references stay value-transparent. (`&mut Struct` stays
+                // transparent for now — struct field access on a pointer is a
+                // separate lowering path.)
+                // For an array the pointee is the element; for a struct (or a
+                // `TypeParam` naming one) the pointee is the whole struct.
+                let pointee = match elem.as_ref() {
+                    IrType::Array { elem: inner_elem, .. } => {
+                        ir_type_to_lir_inner(inner_elem, registry)
+                    }
+                    other => ir_type_to_lir_inner(other, registry),
+                };
+                LirType::Ptr(Box::new(pointee))
             } else {
-                // Non-slice references are transparent in LIR (value semantics).
+                // Non-slice immutable references are transparent in LIR (value
+                // semantics).
                 ir_type_to_lir_inner(elem, registry)
             }
         }
@@ -879,6 +916,24 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                 }
             }
         }
+
+        // Marker-resolved field types lower to the same LIR field types the
+        // legacy primitives produce — the alias made concrete (the M1
+        // back-compat test in volar-compiler's `field_marker_tests` pins the
+        // parameter equality against `primitive_to_lir`'s tables).
+        IrType::ExtField {
+            wrapped,
+            degree,
+            irreducible,
+        } => LirType::ExtField {
+            wrapped: Box::new(ir_type_to_lir_inner(wrapped, registry)),
+            degree: *degree,
+            irreducible: irreducible.clone(),
+        },
+        IrType::PrimeField { k, n } => LirType::PrimeField {
+            k: *k,
+            n: n.clone(),
+        },
 
         // `impl Trait` / `dyn Trait` (e.g. `R: SpecRng` RNG parameters):
         // host-provided state passed by reference; an opaque pointer is the
@@ -1198,92 +1253,118 @@ pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
         if !ir_enum.generics.is_empty() {
             continue;
         }
-        let name = kind_name(&ir_enum.kind);
-
-        let mut variant_entries: Vec<VariantEntry> = Vec::new();
-        for (disc, variant) in ir_enum.variants.iter().enumerate() {
-            let (payload_lir_tys, field_names) = match &variant.fields {
-                IrEnumVariantData::Unit => (vec![], None),
-                IrEnumVariantData::Tuple(tys) => {
-                    let lir_tys: Vec<LirType> = tys
-                        .iter()
-                        .flat_map(|t| {
-                            let lir = ir_type_to_lir_inner(&mono_type(t, env), struct_registry);
-                            flatten_scalar_types(&lir, struct_registry)
-                        })
-                        .collect();
-                    (lir_tys, None)
-                }
-                IrEnumVariantData::Struct(fields) => {
-                    let mut all_tys = vec![];
-                    let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
-                    for f in fields {
-                        let lir = ir_type_to_lir_inner(&mono_type(&f.ty, env), struct_registry);
-                        all_tys.extend(flatten_scalar_types(&lir, struct_registry));
-                    }
-                    (all_tys, Some(names))
-                }
-            };
-            variant_entries.push(VariantEntry {
-                name: variant.name.clone(),
-                discriminant: disc as u64,
-                payload_lir_tys,
-                field_names,
-            });
-        }
-
-        let max_payload_width = variant_entries
-            .iter()
-            .map(|v| v.payload_lir_tys.len())
-            .max()
-            .unwrap_or(0);
-
-        // Register a synthetic struct: {_tag: U8, _p0: U8, ...} with 1 + max_payload_width fields.
-        // We use U8 for all payload slots as a uniform scalar placeholder — actual types
-        // are tracked in VariantEntry.payload_lir_tys for lowering.
-        let synthetic_name = format!("__Enum_{name}");
-        let mut fields = vec![FieldDef {
-            name: "_tag".into(),
-            ty: LirType::U8,
-        }];
-        for i in 0..max_payload_width {
-            fields.push(FieldDef {
-                name: format!("_p{i}"),
-                ty: LirType::U8,
-            });
-        }
-        let synthetic_id = target.define_struct(StructDef {
-            name: synthetic_name.clone(),
-            fields: fields.clone(),
-        });
-        let field_names = fields.iter().map(|f| f.name.clone()).collect();
-        let field_types = fields.into_iter().map(|f| f.ty).collect();
-        struct_registry.register_synthetic(
-            synthetic_name.clone(),
-            synthetic_id,
-            field_names,
-            field_types,
-        );
-
-        // Also register the enum kind name → synthetic_id so ir_type_to_lir can find it.
-        struct_registry.register_synthetic(
-            name.clone(),
-            synthetic_id,
-            // Field names/types not needed here since enum lookup uses EnumRegistry.
-            vec!["_tag".into()],
-            vec![LirType::U8],
-        );
-
-        registry.enums.insert(
-            name,
-            EnumEntry {
-                variants: variant_entries,
-                max_payload_width,
-                synthetic_id,
-            },
+        register_enum_instance_inner(
+            ir_enum,
+            &kind_name(&ir_enum.kind),
+            struct_registry,
+            &mut registry,
+            target,
+            env,
         );
     }
 
     struct_registry.lenient = outer_lenient;
     registry
+}
+
+fn register_enum_instance_inner<T, P: Clone>(
+    ir_enum: &IrEnum,
+    name: &str,
+    struct_registry: &mut StructRegistry,
+    enum_registry: &mut EnumRegistry,
+    target: &mut T,
+    env: &MonoEnv,
+) where
+    T: LirTarget<P>,
+{
+    if enum_registry.enums.contains_key(name) {
+        return;
+    }
+    let outer_lenient = struct_registry.lenient;
+    struct_registry.lenient = true;
+
+    let mut variant_entries: Vec<VariantEntry> = Vec::new();
+    for (disc, variant) in ir_enum.variants.iter().enumerate() {
+        let (payload_lir_tys, field_names) = match &variant.fields {
+            IrEnumVariantData::Unit => (vec![], None),
+            IrEnumVariantData::Tuple(tys) => {
+                let lir_tys: Vec<LirType> = tys
+                    .iter()
+                    .flat_map(|t| {
+                        let lir = ir_type_to_lir_inner(&mono_type(t, env), struct_registry);
+                        flatten_scalar_types(&lir, struct_registry)
+                    })
+                    .collect();
+                (lir_tys, None)
+            }
+            IrEnumVariantData::Struct(fields) => {
+                let mut all_tys = vec![];
+                let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                for f in fields {
+                    let lir = ir_type_to_lir_inner(&mono_type(&f.ty, env), struct_registry);
+                    all_tys.extend(flatten_scalar_types(&lir, struct_registry));
+                }
+                (all_tys, Some(names))
+            }
+        };
+        variant_entries.push(VariantEntry {
+            name: variant.name.clone(),
+            discriminant: disc as u64,
+            payload_lir_tys,
+            field_names,
+        });
+    }
+
+    let max_payload_width = variant_entries
+        .iter()
+        .map(|v| v.payload_lir_tys.len())
+        .max()
+        .unwrap_or(0);
+
+    // Register a synthetic struct: {_tag: U8, _p0: U8, ...} with
+    // 1 + max_payload_width fields. U8 payload slots are a uniform
+    // placeholder — actual types live in VariantEntry.payload_lir_tys.
+    let synthetic_name = format!("__Enum_{name}");
+    let mut fields = vec![FieldDef {
+        name: "_tag".into(),
+        ty: LirType::U8,
+    }];
+    for i in 0..max_payload_width {
+        fields.push(FieldDef {
+            name: format!("_p{i}"),
+            ty: LirType::U8,
+        });
+    }
+    let synthetic_id = target.define_struct(StructDef {
+        name: synthetic_name.clone(),
+        fields: fields.clone(),
+    });
+    let field_names = fields.iter().map(|f| f.name.clone()).collect();
+    let field_types = fields.into_iter().map(|f| f.ty).collect();
+    struct_registry.register_synthetic(
+        synthetic_name.clone(),
+        synthetic_id,
+        field_names,
+        field_types,
+    );
+
+    // Also register the instance name → synthetic_id so ir_type_to_lir can
+    // find it (id_for_instance looks the mangled instance name up).
+    struct_registry.register_synthetic(
+        name.to_string(),
+        synthetic_id,
+        vec!["_tag".into()],
+        vec![LirType::U8],
+    );
+
+    enum_registry.enums.insert(
+        name.to_string(),
+        EnumEntry {
+            variants: variant_entries,
+            max_payload_width,
+            synthetic_id,
+        },
+    );
+
+    struct_registry.lenient = outer_lenient;
 }

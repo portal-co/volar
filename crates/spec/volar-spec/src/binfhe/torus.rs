@@ -12,7 +12,11 @@
 /// Bit mask of the modulus `2^LOG`: `2^LOG - 1`, saturating at `u32::MAX`.
 #[inline]
 pub const fn mask<const LOG: u32>() -> u32 {
-    if LOG >= 32 { u32::MAX } else { (1u32 << LOG) - 1 }
+    if LOG >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << LOG) - 1
+    }
 }
 
 /// Reduce `x` modulo `2^LOG`.

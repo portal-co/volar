@@ -1077,6 +1077,67 @@ fn target_alloca<T: LirTarget<P>, P: Clone>(
     ext.alloca(elem_ty, count)
 }
 
+/// Promote a flattened local to a fresh alloca so a `&mut local` (or `&local`)
+/// call argument aliases the local's real memory: the callee's writes through
+/// the pointer are then visible to the caller's later reads, which go through
+/// the promoted slot (`lower_expr(Var)` consults `ctx.promoted` first).
+/// Without this, the generic spill path copies the local into a *fresh* alloca
+/// per call and the caller's `env` copy is never updated — the `keccak_f1600`
+/// driver pattern (`let mut st = …; keccak_f1600(&mut st); st[0]`). Returns
+/// the alloca pointer, or `None` if the name isn't a flattened local.
+fn promote_local_to_memory<T: LirTarget<P>, P: Clone>(
+    name: &str,
+    ctx: &mut LowerCtx<T, P>,
+) -> Option<T::Value> {
+    if let Some(slot) = ctx.promoted.get(name) {
+        return Some(slot.ptr.clone());
+    }
+    let ty = ctx.env_types.get(name)?.clone();
+    let base_ty = match &ty {
+        IrType::Reference { elem, .. } => (**elem).clone(),
+        other => other.clone(),
+    };
+    let lir = ctx.registry.ir_type_to_lir(&base_ty, ctx.mono);
+    let init_vals = ctx.env.get(name)?.clone();
+    // Allocate on the SHARED stack (`alloca_shared`), so the pointer passed to
+    // the callee resolves to the same cells the caller wrote — a per-site
+    // alloca's storage id is lost across a call boundary.
+    let shared_alloca = |ctx: &mut LowerCtx<T, P>, elem_ty: LirType, count: usize| {
+        ctx.target
+            .stack_alloc_ext()
+            .expect("promote_local_to_memory requires a target with StackAllocExt")
+            .alloca_shared(elem_ty, count)
+    };
+    let slot = if let IrType::Array { elem, len, .. } = &base_ty {
+        let elem_lir = ctx.registry.ir_type_to_lir(elem, ctx.mono);
+        let elem_width = flatten_count(&elem_lir, ctx.registry);
+        let n = mono::array_len_const(&mono_len(len, ctx.mono))?;
+        let ptr = shared_alloca(ctx, elem_lir.clone(), n);
+        let slot = PromotedSlot {
+            ptr,
+            layout: PromotedLayout::Array {
+                elem_ty: elem_lir,
+                n,
+                elem_width,
+            },
+        };
+        promoted_whole_store(&slot.ptr, &slot.layout, &init_vals, ctx);
+        slot
+    } else {
+        let ptr = shared_alloca(ctx, lir.clone(), 1);
+        let slot = PromotedSlot {
+            ptr,
+            layout: PromotedLayout::Whole { agg_ty: lir },
+        };
+        promoted_whole_store(&slot.ptr, &slot.layout, &init_vals, ctx);
+        slot
+    };
+    let ptr = slot.ptr.clone();
+    ctx.env.remove(name);
+    ctx.promoted.insert(name.to_owned(), slot);
+    Some(ptr)
+}
+
 /// Threshold (flattened scalars) above which a by-value fixed-array param
 /// becomes a pointer in the local-call ABI. Above this, per-call by-value
 /// copies plus runtime-index select muxes dominate generated code size;
@@ -1095,6 +1156,22 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
 ) -> (LirType, Vec<T::Value>) {
     let ptr_needed = matches!(declared, Some(LirType::Ptr(_)));
     if ptr_needed {
+        // The arg is already a pointer (a `&mut` param being forwarded to
+        // another callee): pass it through unchanged. Spilling it would store
+        // the ADDRESS BITS into a fresh alloca and hand the callee a pointer
+        // to the copy — the callee's writes would then land in the copy, not
+        // the original referent (the `outer(s) -> helper_write(s)` handoff in
+        // `permute_bytes`).
+        if let IrExprKind::Var(name) = &arg.kind {
+            if let Some(vals) = ctx.env.get(name.as_str()) {
+                if vals.len() == 1
+                    && matches!(ctx.target.value_scalar_type(&vals[0]), LirType::Ptr(_))
+                {
+                    let ty = declared.cloned().unwrap_or_else(|| ctx.target.value_scalar_type(&vals[0]));
+                    return (ty, vals.clone());
+                }
+            }
+        }
         // Rust's `&Vec<T>` → `&[T]` coercion passes the Vec's backing-data
         // pointer, not the handle's pointer/length/capacity cells.
         if let Some(arg_ir_ty) = ctx.infer_type(arg) {
@@ -1180,6 +1257,43 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
                 return (ty, vec![ptr]);
             }
         }
+        // Borrowed local: `&mut local` / `&local` where `local` is a flattened
+        // aggregate. Promote it to memory FIRST so the pointer aliases the
+        // local — a fresh spill per call would drop the callee's writes.
+        // Borrowed local: `&mut local` / `&local` where `local` is an
+        // aggregate. The pointer must alias the local's real memory so the
+        // callee's writes are visible to the caller — a fresh spill per call
+        // would drop them. If the local is already memory-backed (promoted),
+        // pass its existing slot pointer; otherwise promote it to a
+        // shared-stack frame first.
+        if let IrExprKind::Unary {
+            op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
+            expr: inner,
+        } = &arg.kind
+        {
+            if let IrExprKind::Var(name) = &inner.kind {
+                let existing = ctx.promoted.get(name.as_str()).map(|s| s.ptr.clone());
+                let ptr = match existing {
+                    Some(ptr) => Some(ptr),
+                    None if ctx.env.contains_key(name.as_str()) => {
+                        promote_local_to_memory(name, ctx)
+                    }
+                    None => None,
+                };
+                if let Some(ptr) = ptr {
+                    let elem_ty = ctx
+                        .promoted
+                        .get(name.as_str())
+                        .map(|s| match &s.layout {
+                            PromotedLayout::Array { elem_ty, .. } => elem_ty.clone(),
+                            PromotedLayout::Whole { agg_ty } => agg_ty.clone(),
+                        })
+                        .unwrap_or(LirType::U64);
+                    let ty = declared.cloned().unwrap_or(LirType::Ptr(Box::new(elem_ty)));
+                    return (ty, vec![ptr]);
+                }
+            }
+        }
         // Spill: lower flat, allocate, store element-wise.
         let elem_lir = match declared {
             Some(LirType::Ptr(e)) => (**e).clone(),
@@ -1210,7 +1324,75 @@ fn lower_call_arg_for_abi<T: LirTarget<P>, P: Clone>(
             .map(|ty| ctx.registry.ir_type_to_lir(&ty, ctx.mono))
             .unwrap_or(LirType::U64)
     });
+    // Reborrow deref: the argument is a `&mut`/`&` fixed-array reference (its
+    // value is a pointer, because the caller holds it as one), but the
+    // callee's parameter is a transparent immutable array — value semantics —
+    // so the flat pointee scalars must be read back out of the pointer. This
+    // is the `permute_bytes(state_bytes: &mut [u8;200])` ->
+    // `bytes_to_lanes(state_bytes, ..)` reborrow.
+    let arg_ir_ty = ctx.infer_type(arg);
+    let is_ref_to_array = matches!(
+        &arg_ir_ty,
+        Some(IrType::Reference { elem, .. }) if matches!(elem.as_ref(), IrType::Array { .. })
+    );
+    let declared_is_aggregate = matches!(&ty, LirType::Arr(_, _) | LirType::Struct(_));
+    if is_ref_to_array && declared_is_aggregate {
+        if let Some(IrType::Reference { elem, .. }) = &arg_ir_ty {
+            if let IrType::Array {
+                elem: arr_elem, len, ..
+            } = elem.as_ref()
+            {
+                let ptr_vals = lower_expr(arg, ctx);
+                // Only deref when the arg's value is genuinely a single pointer
+                // (a `&mut` array ref carried as a pointer), not a flat aggregate.
+                let is_single_ptr = ptr_vals.len() == 1
+                    && matches!(ctx.target.value_scalar_type(&ptr_vals[0]), LirType::Ptr(_));
+                if is_single_ptr {
+                    let ptr = ptr_vals.into_iter().next().unwrap();
+                    let elem_lir = ctx.registry.ir_type_to_lir(arr_elem, ctx.mono);
+                    let elem_width = flatten_count(&elem_lir, ctx.registry);
+                    let n = mono::array_len_const(&mono_len(len, ctx.mono))
+                        .unwrap_or_else(|| panic!("reborrow deref: non-const array length"));
+                    let mut out = Vec::with_capacity(n * elem_width);
+                    for k in 0..n {
+                        let k_val = ctx.target.iconst(LirType::U64, k as i64);
+                        out.extend(ctx.target.ptr_index_load(
+                            ptr.clone(),
+                            k_val,
+                            &elem_lir,
+                        ));
+                    }
+                    return (ty, out);
+                }
+            }
+        }
+    }
     let values = lower_expr(arg, ctx);
+    // Reconcile the arg's scalar width to the declared param width: an
+    // unsuffixed literal lowers as `U64` but a `suffix: u8` param expects 8
+    // bits, and the callee's entry block is sized to the declared type.
+    let values = if let Some(d) = declared {
+        if d.is_scalar() {
+            let want = d.bit_width() as usize;
+            values
+                .into_iter()
+                .map(|v| {
+                    let got = ctx.target.value_scalar_type(&v).bit_width() as usize;
+                    if got > want {
+                        ctx.target.trunc(v, d.clone())
+                    } else if got < want {
+                        ctx.target.zext(v, d.clone())
+                    } else {
+                        v
+                    }
+                })
+                .collect()
+        } else {
+            values
+        }
+    } else {
+        values
+    };
     (ty, values)
 }
 
@@ -2696,6 +2878,15 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
             if let Some(value) = volar_compiler::ir::digit_var_as_literal(name) {
                 return vec![ctx.target.iconst(LirType::U64, value as i64)];
             }
+            // A unit struct used as a value (e.g. `WarpIdentityCode` passed
+            // as the `code: &C` argument) is zero-width: no scalars.
+            if ctx
+                .module_structs
+                .iter()
+                .any(|s| s.kind.to_string() == *name && s.fields.is_empty())
+            {
+                return Vec::new();
+            }
             // A bare `None` carries no payload, so its layout comes from
             // context: the enclosing function's `Option` return type. Lower
             // to the canonical all-zero None value (`lower_try` uses the
@@ -2761,11 +2952,31 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
                     ctx,
                 )]
             } else if lv.len() == rv.len() && !lv.is_empty() {
-                // Element-wise operation over aggregate types (e.g. Vope addition).
-                lv.into_iter()
-                    .zip(rv)
-                    .map(|(l, r)| lower_binop(*op, l, r, ctx))
-                    .collect()
+                if matches!(*op, SpecBinOp::Eq | SpecBinOp::Ne) {
+                    // Aggregate `==` / `!=` reduces to a single bool (Rust
+                    // semantics): `==` is the AND of element-wise `==`, `!=`
+                    // is the OR of element-wise `!=`. Without this the
+                    // element-wise path returns an aggregate of bools, which
+                    // then fails to combine with scalar bools in `&&`/`||`.
+                    let mut it = lv.into_iter().zip(rv);
+                    let (l0, r0) = it.next().expect("non-empty checked above");
+                    let mut acc = lower_binop(*op, l0, r0, ctx);
+                    for (l, r) in it {
+                        let e = lower_binop(*op, l, r, ctx);
+                        acc = match *op {
+                            SpecBinOp::Eq => ctx.target.and(acc, e),
+                            SpecBinOp::Ne => ctx.target.or(acc, e),
+                            _ => unreachable!("only Eq/Ne reach here"),
+                        };
+                    }
+                    vec![acc]
+                } else {
+                    // Element-wise operation over aggregate types (e.g. Vope addition).
+                    lv.into_iter()
+                        .zip(rv)
+                        .map(|(l, r)| lower_binop(*op, l, r, ctx))
+                        .collect()
+                }
             } else {
                 panic!(
                     "Binary {:?}: operand widths {} vs {} — cannot apply element-wise [caller {:?}] left={:?} right={:?} left_ty={:?} right_ty={:?}",
@@ -2817,7 +3028,17 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
         IrExprKind::Cast { expr: inner, ty } => {
             let v = into_scalar(lower_expr(inner, ctx), "cast operand");
             let dst = ir_type_to_lir_prim(ty, ctx.mono);
-            vec![ctx.target.zext(v, dst)]
+            // A cast is a width change: zero-extend when widening, truncate
+            // when narrowing (`as u32` on a wider value must drop high bits).
+            let src_bits = ctx.target.value_scalar_type(&v).bit_width() as usize;
+            let dst_bits = dst.bit_width() as usize;
+            vec![if src_bits > dst_bits {
+                ctx.target.trunc(v, dst)
+            } else if src_bits < dst_bits {
+                ctx.target.zext(v, dst)
+            } else {
+                v
+            }]
         }
 
         IrExprKind::Return(val) => {
@@ -3233,8 +3454,10 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
 
     let then_block = ctx.target.create_block();
     let else_block = ctx.target.create_block();
+    // Create the join block up front; its params are added after both branches
+    // lower (we only know the merged-assignment set once both have run).
+    let join_block = ctx.target.create_block();
 
-    // Branch to then/else — join block created lazily below.
     ctx.target.branch(
         cond_val,
         then_block.clone(),
@@ -3243,11 +3466,20 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
         BranchTarget::args([]),
     );
 
-    // Lower the then-branch first so we discover N (the result scalar count).
+    // Snapshot the pre-branch environment so outer-variable assignments made
+    // inside a branch can be detected (env diff) and merged through join-block
+    // params — otherwise a value computed in the then/else block would be
+    // referenced from the join block directly, an untreaded cross-block use.
+    let pre_env = ctx.env.clone();
+    let pre_env_types = ctx.env_types.clone();
+
+    // Lower the then-branch (its last block may be a nested join; remember it).
     ctx.target.switch_to_block(then_block.clone());
     ctx.current_block = then_block;
     let then_vals = lower_block(then_branch, ctx);
     let n = then_vals.len();
+    let then_last = ctx.current_block.clone();
+    let then_env = ctx.env.clone();
 
     // Recover the scalar LirType of each then-value to use as join-block param types.
     let scalar_tys: Vec<LirType> = then_vals
@@ -3255,19 +3487,11 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
         .map(|v| ctx.target.value_scalar_type(v))
         .collect();
 
-    // Create the join block now that we know N.
-    let join_block = ctx.target.create_block();
-    let join_params: Vec<T::Value> = scalar_tys
-        .iter()
-        .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
-        .collect();
-
-    ctx.target
-        .jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
-
-    // Lower the else-branch.
+    // Lower the else-branch from the same pre-branch environment.
     ctx.target.switch_to_block(else_block.clone());
     ctx.current_block = else_block;
+    ctx.env = pre_env.clone();
+    ctx.env_types = pre_env_types.clone();
     let else_vals: Vec<T::Value> = if let Some(else_expr) = else_branch {
         lower_expr(else_expr, ctx)
     } else {
@@ -3283,11 +3507,76 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
         "if/else branches produce different numbers of scalars ({n} vs {})",
         else_vals.len()
     );
-    ctx.target
-        .jump(join_block.clone(), BranchTarget::args(else_vals.clone()));
+    let else_last = ctx.current_block.clone();
+    let else_env = ctx.env.clone();
 
+    // Outer variables (present pre-branch) whose rebound value differs between
+    // the branches need a join-block phi. Deterministic (sorted) order.
+    let mut merged_names: Vec<String> = Vec::new();
+    for name in pre_env.keys() {
+        if then_env.get(name) != else_env.get(name) {
+            merged_names.push(name.clone());
+        }
+    }
+
+    // Join params: the branch RESULT values, then one param per scalar of each
+    // merged outer variable (ordered by merged_names).
+    let mut join_params: Vec<T::Value> = scalar_tys
+        .iter()
+        .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
+        .collect();
+    let mut merged_join: Vec<Vec<T::Value>> = Vec::new();
+    for name in &merged_names {
+        let vals = then_env
+            .get(name)
+            .or_else(|| else_env.get(name))
+            .cloned()
+            .unwrap_or_default();
+        let group: Vec<T::Value> = vals
+            .iter()
+            .map(|v| {
+                let ty = ctx.target.value_scalar_type(v);
+                ctx.target.add_block_param(join_block.clone(), ty)
+            })
+            .collect();
+        merged_join.push(group);
+    }
+
+    // Emit the branch → join jumps (result values ++ merged values, in order).
+    let then_args: Vec<T::Value> = then_vals
+        .iter()
+        .cloned()
+        .chain(
+            merged_names
+                .iter()
+                .flat_map(|nm| then_env.get(nm).cloned().unwrap_or_default()),
+        )
+        .collect();
+    ctx.target.switch_to_block(then_last.clone());
+    ctx.current_block = then_last;
+    ctx.target
+        .jump(join_block.clone(), BranchTarget::args(then_args));
+
+    let else_args: Vec<T::Value> = else_vals
+        .iter()
+        .cloned()
+        .chain(
+            merged_names
+                .iter()
+                .flat_map(|nm| else_env.get(nm).cloned().unwrap_or_default()),
+        )
+        .collect();
+    ctx.target.switch_to_block(else_last.clone());
+    ctx.current_block = else_last;
+    ctx.target
+        .jump(join_block.clone(), BranchTarget::args(else_args));
+
+    // In the join block, rebind merged names to their phi params and continue.
     ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
+    for (name, group) in merged_names.iter().zip(merged_join) {
+        ctx.env.insert(name.clone(), group);
+    }
     join_params
 }
 
@@ -3854,6 +4143,28 @@ fn lower_field<T: LirTarget<P>, P: Clone>(
     let offset = struct_field_scalar_offset(ctx.registry, struct_id, field_idx);
     let width = struct_field_scalar_width(ctx.registry, struct_id, field_idx);
 
+    // A `&mut Struct` base lowers to a pointer into memory (the struct is not
+    // flattened into `env`): read the whole struct out of the pointer, then
+    // slice the field. This is the `sponge.state` read in the sponge
+    // destructure/write-back pattern.
+    if matches!(&base_ir_ty, IrType::Reference { mutable: true, elem }
+        if matches!(elem.as_ref(), IrType::Struct { .. })
+            || matches!(elem.as_ref(), IrType::TypeParam(name)
+                if ctx.module_structs.iter().any(|s| s.kind.to_string() == *name)))
+    {
+        let ptr_vals = lower_expr(base, ctx);
+        let ptr = ptr_vals
+            .into_iter()
+            .next()
+            .expect("mutable struct ref is a single pointer");
+        let struct_lir = ctx.registry.ir_type_to_lir(&peeled, ctx.mono);
+        // ptr_index_load at index 0 reads the whole pointee and returns it as
+        // per-leaf scalars (the codegen's flat model).
+        let zero = ctx.target.iconst(LirType::U64, 0);
+        let whole = ctx.target.ptr_index_load(ptr, zero, &struct_lir);
+        return whole[offset..offset + width].to_vec();
+    }
+
     let base_vals = lower_expr(base, ctx);
     base_vals[offset..offset + width].to_vec()
 }
@@ -3916,10 +4227,12 @@ fn lower_struct_expr<T: LirTarget<P>, P: Clone>(
         fields.iter().map(|(n, e)| (n.as_str(), e)).collect();
 
     let decl_names: Vec<String> = ctx.registry.field_names(struct_id).to_vec();
+    let decl_field_tys: Vec<LirType> = ctx.registry.field_types(struct_id).to_vec();
     // Concatenate flat scalar lists for all fields in declaration order.
     decl_names
         .iter()
-        .flat_map(|name| {
+        .zip(decl_field_tys.iter())
+        .flat_map(|(name, field_lir)| {
             let expr = field_map
                 .get(name.as_str())
                 .copied()
@@ -3959,10 +4272,64 @@ fn lower_struct_expr<T: LirTarget<P>, P: Clone>(
                 let field_mono = mono_type(&field_ty, &local);
                 return lower_default_zero_values(&field_mono, ctx);
             }
-            lower_expr(expr, ctx)
+            let lowered = lower_expr(expr, ctx);
+            // Reconcile the field value's scalar widths to the field's
+            // DECLARED width: an unsuffixed literal (`20`) lowers as U64 but a
+            // `u32` field is 32 bits, and a width mismatch shifts every later
+            // field's offset (the genesis `n_vars`/`b` reads landed in `a`'s
+            // high bits). Cast each scalar to the declared leaf width.
+            reconcile_scalars_to_lir(lowered, field_lir, ctx)
         })
         .collect()
 }
+
+/// Cast each scalar of `vals` to the declared leaf scalar width of `lir`,
+/// truncating or zero-extending as needed. Aggregates recurse leaf-wise.
+fn reconcile_scalars_to_lir<T: LirTarget<P>, P: Clone>(
+    vals: Vec<T::Value>,
+    lir: &LirType,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    // The declared leaf scalar types for this LIR type, in flatten order.
+    fn leaf_tys<'a>(ty: &'a LirType, registry: &'a StructRegistry, out: &mut Vec<&'a LirType>) {
+        match ty {
+            LirType::Arr(elem, n) => {
+                for _ in 0..*n {
+                    leaf_tys(elem, registry, out);
+                }
+            }
+            LirType::Struct(id) => {
+                for ft in registry.field_types(*id) {
+                    leaf_tys(ft, registry, out);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    let mut want: Vec<&LirType> = Vec::new();
+    leaf_tys(lir, ctx.registry, &mut want);
+    if want.len() != vals.len() {
+        // Structure mismatch we can't reconcile leaf-wise — return as-is (the
+        // downstream arity checks catch a real bug).
+        return vals;
+    }
+    vals.into_iter()
+        .zip(want.iter())
+        .map(|(v, want_ty)| {
+            let got = ctx.target.value_scalar_type(&v).bit_width() as usize;
+            let want_w = want_ty.bit_width() as usize;
+            if got == want_w {
+                return v;
+            }
+            if got > want_w {
+                ctx.target.trunc(v, (*want_ty).clone())
+            } else {
+                ctx.target.zext(v, (*want_ty).clone())
+            }
+        })
+        .collect()
+}
+
 
 /// A zero-arg `T::default()` call with no turbofish (any receiver path).
 fn is_bare_default_call<P: Clone>(expr: &IrExpr<P>) -> bool {
@@ -4111,23 +4478,43 @@ fn lower_int_to_bytes<T: LirTarget<P>, P: Clone>(
         IrType::Primitive(p) => primitive_to_lir(*p),
         other => panic!("to_le_bytes/to_be_bytes: receiver must be an integer, got {other:?}"),
     };
-    let bits = match &recv_lir {
-        LirType::ExtField {
-            degree, wrapped, ..
-        } => {
-            let wrapped_bits = lir_int_bits(wrapped).unwrap_or(1);
-            *degree * wrapped_bits
-        }
-        _ => lir_int_bits(&recv_lir).unwrap_or_else(|| {
-            panic!(
-                "to_le_bytes/to_be_bytes: receiver is not a scalar integer (recv_lir={:?})",
-                std::mem::discriminant(&recv_lir)
-            )
-        }),
-    };
-    let n_bytes = (bits / 8) as usize;
-
     let val = into_scalar(lower_expr(receiver, ctx), "to_le_bytes receiver");
+    // A field element's bytes come from its bit view (the field value is one
+    // typed cell, not a shiftable integer bit-vector). Check the VALUE's
+    // scalar type, not just the declared type: a `v.0` read of a
+    // `#[repr(transparent)]` field wrapper yields a field cell typed as the
+    // inner integer (`u128`), so the declared type alone misses it.
+    let val_scalar_ty = ctx.target.value_scalar_type(&val);
+    let is_field = matches!(
+        &recv_lir,
+        LirType::ExtField { .. } | LirType::PrimeField { .. }
+    ) || matches!(
+        &val_scalar_ty,
+        LirType::ExtField { .. } | LirType::PrimeField { .. }
+    );
+    let (val, shift_ty, bits) = if is_field {
+        let bits_val = ctx.target.field_to_bits(val);
+        let shift_ty = ctx.target.value_scalar_type(&bits_val);
+        let field_bits = shift_ty.bit_width() as usize;
+        (bits_val, shift_ty, field_bits)
+    } else {
+        let bits = match &recv_lir {
+            LirType::ExtField {
+                degree, wrapped, ..
+            } => {
+                let wrapped_bits = lir_int_bits(wrapped).unwrap_or(1);
+                *degree * wrapped_bits
+            }
+            _ => lir_int_bits(&recv_lir).unwrap_or_else(|| {
+                panic!(
+                    "to_le_bytes/to_be_bytes: receiver is not a scalar integer (recv_lir={:?})",
+                    std::mem::discriminant(&recv_lir)
+                )
+            }),
+        };
+        (val, recv_lir.clone(), bits as usize)
+    };
+    let n_bytes = bits / 8;
     (0..n_bytes)
         .map(|k| {
             let shift_bits = if little {
@@ -4138,7 +4525,7 @@ fn lower_int_to_bytes<T: LirTarget<P>, P: Clone>(
             let shifted = if shift_bits == 0 {
                 val.clone()
             } else {
-                let sh = ctx.target.iconst(recv_lir.clone(), shift_bits as i64);
+                let sh = ctx.target.iconst(shift_ty.clone(), shift_bits as i64);
                 ctx.target.lshr(val.clone(), sh)
             };
             ctx.target.trunc(shifted, LirType::U8)
@@ -4552,12 +4939,16 @@ fn resolve_const_expr_len<P: Clone>(len: &IrExpr<P>, mono: &MonoEnv) -> usize {
 // ============================================================================
 
 fn lower_array_generate<T: LirTarget<P>, P: Clone>(
-    _elem_ty: Option<&IrType>,
+    elem_ty: Option<&IrType>,
     len: &ArrayLength,
     index_var: &str,
     body: &IrExpr<P>,
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
+    // The declared element type (from the turbofish, e.g. `Array::<u8,
+    // U1>::from_fn`) is authoritative: the body's values are cast to it, so
+    // a `0u8`-style literal doesn't widen the element to `U64`.
+    let elem_lir = elem_ty.map(|ty| ctx.registry.ir_type_to_lir(ty, ctx.mono));
     let mut n = const_len(len, ctx.mono);
 
     // A turbofish-less `core::array::from_fn(|i| ..)` carries no length
@@ -4606,6 +4997,32 @@ fn lower_array_generate<T: LirTarget<P>, P: Clone>(
         let values = lower_expr(body, ctx);
         ctx.env.remove(index_var);
         ctx.env_types.remove(index_var);
+        // Reconcile the element's produced type with the declared turbofish
+        // element type (cast each scalar to the declared width). Only scalar
+        // (primitive/field) elements reconcile — structs/arrays carry their
+        // own layout.
+        let values = if let Some(elem_lir) = &elem_lir {
+            if elem_lir.is_scalar() {
+                let want = elem_lir.bit_width() as usize;
+                values
+                    .into_iter()
+                    .map(|v| {
+                        let got = ctx.target.value_scalar_type(&v).bit_width() as usize;
+                        if got > want {
+                            ctx.target.trunc(v, elem_lir.clone())
+                        } else if got < want {
+                            ctx.target.zext(v, elem_lir.clone())
+                        } else {
+                            v
+                        }
+                    })
+                    .collect()
+            } else {
+                values
+            }
+        } else {
+            values
+        };
         result.extend(values);
     }
     result
@@ -5097,7 +5514,14 @@ fn is_slice_ref(ty: &IrType) -> bool {
     matches!(ty,
         IrType::Reference { elem, .. }
             if matches!(elem.as_ref(), IrType::Array { kind: ArrayKind::Slice, .. })
-    ) || matches!(
+    )
+    // A mutable reference to a fixed-size array lowers to a pointer (see
+    // `ir_type_to_lir_inner`), so route its reads/writes through the pointer.
+    || matches!(ty,
+        IrType::Reference { mutable: true, elem }
+            if matches!(elem.as_ref(), IrType::Array { .. })
+    )
+    || matches!(
         volar_compiler::ir::as_box_type(ty),
         Some(IrType::Array { .. })
     )
@@ -5284,6 +5708,11 @@ struct NativeLoopBodyInfo {
     /// Names assigned through aggregates (whole-var / indexed / field):
     /// alloca-promoted, memory-backed across the back-edge.
     agg_assigned: std::collections::BTreeSet<String>,
+    /// Names bound by a `let` inside the body: per-iteration temporaries
+    /// that are NOT loop-carried (each iteration re-binds them). Assignment
+    /// to such a name (e.g. `let mut t = …; …; t = t * x`) is a fresh local
+    /// accumulation, not a cross-iteration carry.
+    body_defined: std::collections::BTreeSet<String>,
 }
 
 fn scan_native_block<T: LirTarget<P>, P: Clone>(
@@ -5297,6 +5726,13 @@ fn scan_native_block<T: LirTarget<P>, P: Clone>(
     if let Some(expr) = &block.expr {
         scan_native_expr(expr, ctx, info)?;
     }
+    // Per-iteration temporaries (bound by `let` in the body) are not
+    // loop-carried: drop them from the carried/promoted sets so the
+    // eligibility check below doesn't demand a pre-loop value.
+    info.scalar_assigned
+        .retain(|name| !info.body_defined.contains(name));
+    info.agg_assigned
+        .retain(|name| !info.body_defined.contains(name));
     Ok(())
 }
 
@@ -5306,7 +5742,9 @@ fn scan_native_stmt<T: LirTarget<P>, P: Clone>(
     info: &mut NativeLoopBodyInfo,
 ) -> Result<(), String> {
     match &stmt.kind {
-        IrStmtKind::Let { init, .. } => {
+        IrStmtKind::Let { pattern, init, .. } => {
+            // A `let` binding in the body is a per-iteration temporary.
+            collect_pattern_binding_names(pattern, &mut info.body_defined);
             if let Some(init) = init {
                 scan_native_expr(init, ctx, info)?;
             }
@@ -5451,7 +5889,18 @@ fn scan_native_expr<T: LirTarget<P>, P: Clone>(
                     loop {
                         match &cursor.kind {
                             IrExprKind::Var(name) => {
-                                info.agg_assigned.insert(name.clone());
+                                // A reference-typed name (a `&mut` param lowered to
+                                // a pointer) is already memory-backed: an indexed
+                                // write goes through the pointer to memory that
+                                // persists across the back-edge, so it needs no
+                                // promotion or carrying. Skip it.
+                                let is_ref = matches!(
+                                    ctx.env_types.get(name),
+                                    Some(IrType::Reference { .. })
+                                );
+                                if !is_ref {
+                                    info.agg_assigned.insert(name.clone());
+                                }
                                 return Ok(());
                             }
                             IrExprKind::Index { base: inner, .. }
@@ -6255,6 +6704,15 @@ fn lower_index<T: LirTarget<P>, P: Clone>(
     let expected_scalars = n
         .checked_mul(elem_width)
         .expect("LIR index: array scalar count overflow");
+    // Empty (length-0) array: the index is statically out of bounds, so the
+    // value is dead (dead guard bodies lower both arms). Yield `elem_width`
+    // zero scalars of the element type so enclosing if/else branch widths
+    // stay consistent (a dead arm must not be narrower than the live one).
+    if expected_scalars == 0 {
+        return (0..elem_width)
+            .map(|_| ctx.target.iconst(elem_lir_ty.clone(), 0))
+            .collect();
+    }
     let base_desc = match &base.kind {
         IrExprKind::Var(name) => format!("variable '{name}'"),
         IrExprKind::Field { field, .. } => format!("field .{field}"),
@@ -6607,9 +7065,37 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
                     std::mem::discriminant(&base.kind)
                 )
             });
+            // A `&mut Struct` base is a pointer into memory (the struct is not
+            // flattened): the field write is a load-modify-store through it.
+            // The `TypeParam` arm covers a `&mut S` param whose nominal the
+            // parser left unresolved.
+            let is_mut_struct_ref = matches!(
+                &base_ir_ty,
+                IrType::Reference { mutable: true, elem }
+                    if matches!(elem.as_ref(), IrType::Struct { .. })
+                        || matches!(elem.as_ref(), IrType::TypeParam(name)
+                            if ctx.module_structs.iter().any(|s| s.kind.to_string() == *name))
+            );
             let base_ir_ty = match base_ir_ty {
                 IrType::Reference { elem, .. } => *elem,
                 other => other,
+            };
+            // A bare `TypeParam` naming a module struct (a nominal the
+            // parser left unresolved) resolves to the struct — same rule as
+            // the expression-side field access.
+            let base_ir_ty = match &base_ir_ty {
+                IrType::TypeParam(name)
+                    if ctx
+                        .module_structs
+                        .iter()
+                        .any(|s| s.kind.to_string() == *name) =>
+                {
+                    IrType::Struct {
+                        kind: StructKind::Custom(name.clone()),
+                        type_args: Vec::new(),
+                    }
+                }
+                other => other.clone(),
             };
             let IrType::Struct { kind, .. } = &base_ir_ty else {
                 unimplemented!("lower_assign: field assign on non-struct {base_ir_ty:?}");
@@ -6644,6 +7130,33 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
             let IrExprKind::Var(name) = &base.kind else {
                 unimplemented!("lower_assign: field assign on non-variable base");
             };
+            if std::env::var("WARP_DEBUG_FASSIGN").is_ok() {
+                eprintln!(
+                    "[fassign] base={:?} is_mut_struct_ref={} base_ir_ty={:?}",
+                    std::mem::discriminant(&base.kind),
+                    is_mut_struct_ref,
+                    ctx.infer_type(base)
+                );
+            }
+            // `&mut Struct` base is a pointer into memory: load the whole
+            // struct, splice the field's scalars, store back.
+            if is_mut_struct_ref {
+                let ptr_vals = lower_expr(base, ctx);
+                let ptr = ptr_vals
+                    .into_iter()
+                    .next()
+                    .expect("mutable struct ref is a single pointer");
+                let struct_lir = ctx.registry.ir_type_to_lir(&base_ir_ty, ctx.mono);
+                let zero = ctx.target.iconst(LirType::U64, 0);
+                let mut whole = ctx
+                    .target
+                    .ptr_index_load(ptr.clone(), zero.clone(), &struct_lir);
+                for j in 0..field_width {
+                    whole[offset + j] = rhs_vals[j].clone();
+                }
+                ctx.target.ptr_index_store(ptr, zero, &whole, &struct_lir);
+                return;
+            }
             // Promoted struct base: load whole, splice the field's scalars,
             // store back (memory-backed, survives the back-edge).
             if let Some(slot) = ctx.promoted.get(name.as_str()).cloned() {
@@ -6684,7 +7197,17 @@ fn concrete_usize_expr<T: LirTarget<P>, P: Clone>(
             .const_params
             .get(name)
             .or_else(|| ctx.mono.consts.get(name.as_str()))
-            .copied(),
+            .copied()
+            // Env-bound constant values (e.g. an unrolled loop's counter,
+            // bound to a per-iteration literal): a bound computed from them
+            // is concrete exactly when the value is a known constant.
+            .or_else(|| {
+                ctx.env
+                    .get(name)
+                    .and_then(|vals| vals.first())
+                    .and_then(|v| ctx.target.value_as_u128(v))
+                    .map(|v| v as usize)
+            }),
         IrExprKind::Path { segments, .. } if segments.len() == 2 && segments[1] == "USIZE" => ctx
             .mono
             .const_params
@@ -7233,6 +7756,20 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
         MethodKind::Known(StdMethod::ToLeBytes) => lower_int_to_bytes(receiver, true, ctx),
         MethodKind::Known(StdMethod::ToBeBytes) => lower_int_to_bytes(receiver, false, ctx),
 
+        // `n.is_power_of_two()` = `n != 0 && (n & (n - 1)) == 0` — a std
+        // integer method any spec code may use (the WARP shape checks).
+        MethodKind::Known(StdMethod::IsPowerOfTwo) => {
+            let n = into_scalar(lower_expr(receiver, ctx), "is_power_of_two receiver");
+            let zero = ctx.target.iconst(LirType::U64, 0);
+            let nonzero = ctx.target.icmp(IcmpPred::Ne, n.clone(), zero);
+            let one = ctx.target.iconst(LirType::U64, 1);
+            let minus_one = ctx.target.sub(n.clone(), one);
+            let anded = ctx.target.and(n, minus_one);
+            let zero2 = ctx.target.iconst(LirType::U64, 0);
+            let and_is_zero = ctx.target.icmp(IcmpPred::Eq, anded, zero2);
+            vec![ctx.target.and(nonzero, and_is_zero)]
+        }
+
         MethodKind::Known(StdMethod::TrailingZeros) => {
             // Unrolled select chain over the 64 bit positions:
             // result = lowest set bit index, or 64 when the value is zero.
@@ -7321,9 +7858,12 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
                 arg_tys.push(a_ty);
                 flat_args.extend(values);
             }
-            return ctx
-                .target
-                .call_extern(emitted_name, &arg_tys, &flat_args, ret_ty);
+            // `call` (not `call_extern`): sibling calls are
+            // forward-reference-safe — a not-yet-lowered callee gets a
+            // pending slot the callee's own `end_function` patches in place,
+            // while `call_extern`'s import stub would stay orphaned (and
+            // unevaluable) when the callee lowers after this caller.
+            return ctx.target.call(emitted_name, &arg_tys, &flat_args, ret_ty);
         }
     }
 
@@ -7416,6 +7956,53 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
 // ============================================================================
 // Phase 2: free function calls
 // ============================================================================
+
+/// The LIR field type a constructor name builds, if any: the legacy field
+/// primitives (`Galois128`, ...) and the registered field markers
+/// (`Gf2_128`, `Fp3`, ...) both resolve through the marker registry — one
+/// field spec, two spellings (the M1 alias).
+fn field_ctor_lir_type(name: &str) -> Option<LirType> {
+    if let Some(p) = volar_compiler::ir::PrimitiveType::from_str(name) {
+        return if p.is_field_element() {
+            Some(crate::structs::primitive_to_lir(p))
+        } else {
+            None
+        };
+    }
+    if let Some(spec) = volar_ir_common::field_markers::resolve_ext_field_marker(name) {
+        return Some(LirType::ExtField {
+            wrapped: Box::new(LirType::Native(volar_ir_common::Type::Bit)),
+            degree: spec.degree,
+            irreducible: spec.irreducible.to_vec(),
+        });
+    }
+    if let Some(spec) = volar_ir_common::field_markers::resolve_prime_field_marker(name) {
+        return Some(LirType::PrimeField {
+            k: spec.k,
+            n: spec.n.to_vec(),
+        });
+    }
+    None
+}
+
+/// Lower `FieldName(payload)`: one typed field cell. Constant payloads
+/// become typed constants; runtime integer payloads reinterpret their bits
+/// as the field element (LSB-first) via the target's `int_to_field`.
+fn lower_field_construct<T: LirTarget<P>, P: Clone>(
+    payload: &IrExpr<P>,
+    field_lir: LirType,
+    ctx: &mut LowerCtx<T, P>,
+) -> T::Value {
+    let val = into_scalar(lower_expr(payload, ctx), "field constructor payload");
+    if let Some(v) = ctx.target.value_as_u128(&val) {
+        if let Ok(v) = i64::try_from(v) {
+            return ctx.target.iconst(field_lir, v);
+        }
+        // Wider-than-i64 constants fall through to the bit-reinterpretation
+        // path rather than truncating (fail-closed).
+    }
+    ctx.target.int_to_field(val, &field_lir)
+}
 
 fn lower_call<T: LirTarget<P>, P: Clone>(
     func: &IrExpr<P>,
@@ -7742,6 +8329,25 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
         return values;
     }
 
+    // ---- Field-element construction ------------------------------------------
+    // A bare `FieldName(payload)` call constructs one typed field cell:
+    // `Galois128(x)`/`Galois64(x)`/... (the legacy primitives) or
+    // `Gf2_128(x)`/`Fp3(x)`/... (field markers). Constant payloads become
+    // typed constants; runtime integer payloads reinterpret their bits as
+    // the field element via the target's `int_to_field`.
+    if args.len() == 1 {
+        let ctor_name = match &func.kind {
+            IrExprKind::Path { segments, .. } if segments.len() == 1 => Some(segments[0].as_str()),
+            IrExprKind::Var(name) => Some(name.as_str()),
+            _ => None,
+        };
+        if let Some(name) = ctor_name {
+            if let Some(field_lir) = field_ctor_lir_type(name) {
+                return vec![lower_field_construct(&args[0], field_lir, ctx)];
+            }
+        }
+    }
+
     // ---- Tuple-struct construction -----------------------------------------
     // A bare `StructName(payload)` call constructs a single-field tuple
     // struct (e.g. `FaestPublicKey(pk)`). The wrapper is transparent in the
@@ -7892,9 +8498,12 @@ fn lower_call<T: LirTarget<P>, P: Clone>(
                 arg_tys.push(arg_ty);
                 flat_args.extend(values);
             }
-            return ctx
-                .target
-                .call_extern(emitted_name, &arg_tys, &flat_args, ret_ty);
+            // `call` (not `call_extern`): sibling calls are
+            // forward-reference-safe — a not-yet-lowered callee gets a
+            // pending slot the callee's own `end_function` patches in place,
+            // while `call_extern`'s import stub would stay orphaned (and
+            // unevaluable) when the callee lowers after this caller.
+            return ctx.target.call(emitted_name, &arg_tys, &flat_args, ret_ty);
         }
     }
 

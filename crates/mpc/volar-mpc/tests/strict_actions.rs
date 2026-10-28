@@ -7,12 +7,17 @@
 
 #![cfg(feature = "std")]
 
+use volar_ir_common::{
+    CommunicationGroup, EpochId, EpochManifest, IterationId, IterationManifest, ScheduleManifest,
+    WorkerLane,
+};
 use volar_mpc::ot::{LoopbackOt, SeedRng};
 use volar_mpc::strict::{
     StrictActionHost, StrictGarbledFull, decode_external_batch_action_reveal, eliminate_nots,
     garble_schedule_strict_dyn_full, offer_external_batch_action_result_labels,
-    run_evaluator_strict_actions, run_garbler_strict_actions,
-    run_garbler_strict_actions_garbler_host, validate_legacy_action_policy,
+    run_evaluator_strict_actions, run_evaluator_strict_actions_scheduled,
+    run_garbler_strict_actions, run_garbler_strict_actions_garbler_host,
+    run_garbler_strict_actions_scheduled, validate_legacy_action_policy,
     validate_legacy_action_spec,
 };
 use volar_mpc::strict_cursor::StrictGateCursor;
@@ -20,7 +25,7 @@ use volar_mpc::tcp::{NetOtChannel, OtRole, TcpTransport};
 use volar_mpc::{
     ActionSpec, EvaluatorBatchExecutor, ExternalBatchAction, ExternalBatchActionHost,
     ExternalBatchFrame, ExternalBoundaryId, ExternalExecutor, ExternalRevealPolicy, Gate,
-    GateSchedule, InputOwner, MpcError,
+    GateSchedule, GramDrive, GramStorageSpec, InputOwner, MpcError,
 };
 use volar_spec::garble::{Eval, Garble, GlobalSecret};
 
@@ -44,6 +49,24 @@ fn det_label(seed: u8) -> Garble<N> {
 ///   action 1 "pair": guard = One, args = [in0], 2 output bits
 ///     (host returns [a, !a]).
 ///   out0 = reverse[0] ^ pair[0]; out1 = reverse[3] ^ pair[1].
+fn storage_schedule() -> GateSchedule {
+    GateSchedule {
+        num_inputs: 0,
+        gates: vec![Gate::StorageRead {
+            storage: 0,
+            cell: 0,
+            access: 1,
+        }],
+        output: 0,
+        outputs: Some(vec![0]),
+        storages: vec![GramStorageSpec {
+            num_cells: 1,
+            levels: 1,
+        }],
+        actions: Vec::new(),
+    }
+}
+
 fn action_schedule() -> GateSchedule {
     GateSchedule {
         num_inputs: 4,
@@ -137,6 +160,34 @@ impl ExternalBatchActionHost for Host {
     }
 }
 
+struct TestGram {
+    reads: usize,
+}
+
+impl GramDrive<N> for TestGram {
+    fn read(&mut self, _cell: u64, access: u64, base: &Garble<N>) -> Eval<N> {
+        self.reads += 1;
+        assert_eq!(base.base, volar_mpc::gram_data_base::<D, N>(access, 0).base);
+        Eval {
+            target: base.base.clone(),
+        }
+    }
+
+    fn write(&mut self, _cell: u64, _access: u64, _value: &Eval<N>) -> Result<(), MpcError> {
+        Ok(())
+    }
+}
+
+fn one_iteration_manifest() -> ScheduleManifest {
+    let mut manifest = ScheduleManifest::new([1; 32], [2; 32], 7, 1, 1);
+    let mut epoch = EpochManifest::new(EpochId(0), CommunicationGroup(0));
+    epoch
+        .iterations
+        .push(IterationManifest::new(IterationId(0), 0, WorkerLane(0)));
+    manifest.epochs.push(epoch);
+    manifest
+}
+
 fn run_case(inputs: [bool; 4]) -> ([bool; 2], Vec<String>) {
     let schedule = action_schedule();
     let elim = eliminate_nots(&schedule).expect("eliminate");
@@ -186,6 +237,124 @@ fn run_case(inputs: [bool; 4]) -> ([bool; 2], Vec<String>) {
     let garb_out = garbler.join().expect("garbler join").expect("garbler run");
     assert_eq!(eval_out, garb_out, "parties agree on the verdict");
     ([eval_out[0], eval_out[1]], host.calls)
+}
+
+#[test]
+fn scheduled_strict_actions_exchange_epoch_and_iteration_frames() {
+    let schedule = action_schedule();
+    let elim = eliminate_nots(&schedule).expect("eliminate");
+    let partition = [InputOwner::Evaluator; 4];
+    let manifest = one_iteration_manifest();
+    let secret = GlobalSecret::<N>::new(det_bytes(0x77).into());
+    let input_labels: Vec<Garble<N>> = (0..4).map(|i| det_label(i as u8 + 11)).collect();
+    let full: StrictGarbledFull<N> =
+        garble_schedule_strict_dyn_full::<N, D>(&elim, secret, input_labels).expect("garble");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = format!("{}", listener.local_addr().unwrap());
+    let g_elim = elim.schedule.clone();
+    let g_manifest = manifest.clone();
+    let garbler = std::thread::spawn(move || {
+        let transport = TcpTransport::accept(&listener).expect("accept");
+        let mut session = transport.try_clone().expect("clone");
+        let mut rng = SeedRng::new(0xA11CE);
+        let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
+        run_garbler_strict_actions_scheduled::<N, D, _>(
+            &full,
+            &elim,
+            &partition,
+            &[],
+            &[],
+            &g_manifest,
+            44,
+            [0; 32],
+            &mut session,
+            &mut ot,
+        )
+    });
+
+    let transport = TcpTransport::connect(&addr).expect("connect");
+    let mut session = transport.try_clone().expect("clone");
+    let mut rng = SeedRng::new(0xB0B);
+    let mut ot = NetOtChannel::new(transport, OtRole::Receiver, &mut rng);
+    let mut host = Host { calls: Vec::new() };
+    let eval_out = run_evaluator_strict_actions_scheduled::<N, D, _>(
+        &g_elim,
+        &partition,
+        &[true, false, true, true],
+        &manifest,
+        44,
+        [0; 32],
+        &mut session,
+        &mut ot,
+        &mut host,
+        &mut [],
+    )
+    .expect("scheduled evaluator run");
+    let garb_out = garbler
+        .join()
+        .expect("garbler join")
+        .expect("scheduled garbler run");
+    assert_eq!(eval_out, garb_out);
+    assert_eq!(host.calls, vec!["reverse", "pair"]);
+}
+
+#[test]
+fn scheduled_strict_actions_drive_gram_storage_cursor() {
+    let schedule = storage_schedule();
+    let elim = eliminate_nots(&schedule).expect("eliminate");
+    let manifest = one_iteration_manifest();
+    let secret = GlobalSecret::<N>::new(det_bytes(0x37).into());
+    let full = garble_schedule_strict_dyn_full::<N, D>(&elim, secret, Vec::new()).expect("garble");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = format!("{}", listener.local_addr().unwrap());
+    let g_elim = elim.schedule.clone();
+    let g_manifest = manifest.clone();
+    let garbler = std::thread::spawn(move || {
+        let transport = TcpTransport::accept(&listener).expect("accept");
+        let mut session = transport.try_clone().expect("clone");
+        let mut rng = SeedRng::new(0xA11CE);
+        let mut ot = NetOtChannel::new(transport, OtRole::Sender, &mut rng);
+        run_garbler_strict_actions_scheduled::<N, D, _>(
+            &full,
+            &elim,
+            &[],
+            &[],
+            &[],
+            &g_manifest,
+            45,
+            [0; 32],
+            &mut session,
+            &mut ot,
+        )
+    });
+
+    let transport = TcpTransport::connect(&addr).expect("connect");
+    let mut session = transport.try_clone().expect("clone");
+    let mut rng = SeedRng::new(0xB0B);
+    let mut ot = NetOtChannel::new(transport, OtRole::Receiver, &mut rng);
+    let mut host = Host { calls: Vec::new() };
+    let mut gram = TestGram { reads: 0 };
+    let eval_out = run_evaluator_strict_actions_scheduled::<N, D, _>(
+        &g_elim,
+        &[],
+        &[],
+        &manifest,
+        45,
+        [0; 32],
+        &mut session,
+        &mut ot,
+        &mut host,
+        &mut [&mut gram],
+    )
+    .expect("scheduled GRAM evaluator run");
+    let garb_out = garbler
+        .join()
+        .expect("garbler join")
+        .expect("scheduled garbler run");
+    assert_eq!(eval_out, garb_out);
+    assert_eq!(eval_out, vec![false]);
+    assert_eq!(gram.reads, 1);
 }
 
 #[test]
