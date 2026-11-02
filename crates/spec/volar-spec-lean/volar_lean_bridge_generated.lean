@@ -198,86 +198,75 @@ theorem Eval_open_commutes {N : Type} (d : vole.VoleArray N Std.U8)
     rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]
     simp [u8ToUInt8_xor]
 
+/-- (generated) closure spec: the extracted `volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` is the
+    pointwise xor of the two operands. -/
+theorem GlobalSecret_not_garble_closure_spec {N : Type} (d : vole.VoleArray N Std.U8)
+    (self : volar_spec.garble.GlobalSecret N) (a : volar_spec.garble.Garble N) (i : Std.Usize)
+    (hs : i.val < (vecL a.base.data).length) (ha : i.val < (vecL self.secret.data).length) :
+    volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut d (self, a) i =
+      ok (xorBytes (vecL a.base.data) (vecL self.secret.data) i.val, (self, a)) := by
+  have hs' : i.val < (a.base.data.val).length := hs
+  have ha' : i.val < (self.secret.data.val).length := ha
+  simp only [volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut,
+    array.Array.Insts.CoreOpsIndexIndexUsizeT.index,
+    alloc.vec.Vec.Insts.CoreOpsIndexIndex.index,
+    core.Slice.Insts.CoreOpsIndexIndex.index,
+    alloc.vec.Vec.Insts.CoreOpsDerefDerefSlice.deref, alloc.vec.Vec.as_slice,
+    rust_primitives.sequence.seq_to_slice,
+    core.Usize.Insts.CoreSliceIndexSliceIndexSliceT.get,
+    rust_primitives.slice.slice_length,
+    rust_primitives.slice.slice_index, Slice.index_usize,
+    UScalar.lt_equiv, Slice.len_val, Slice.length, Slice.getElem?_Usize_eq,
+    eq_true hs', eq_true ha',
+    decide_true, ↓reduceIte, getElem?_pos, spec_ok, bind_tc_ok, lift]
+  simp [xorBytes, vecL, hs, ha, hs', ha']
+  rfl
+
+/-- (generated) `volar_spec.garble.GlobalSecret.not_garble` commutes with the transport. -/
+theorem GlobalSecret_not_garble_commutes {N : Type} (d : vole.VoleArray N Std.U8)
+    (m : Std.Usize)
+    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)
+    (self : volar_spec.garble.GlobalSecret N) (a : volar_spec.garble.Garble N) 
+    (hsl : (vecL a.base.data).length = m.val) (hal : (vecL self.secret.data).length = m.val) :
+    (do let r ← volar_spec.garble.GlobalSecret.not_garble d self a; ok (GarbleToNative m.val r)) =
+    ok (GlobalSecret.not_garble (GlobalSecretToNative m.val self) (GarbleToNative m.val a) : Garble m.val) := by
+  have hspec : volar_spec.garble.GlobalSecret.not_garble d self a
+      ⦃ r => vecL r.base.data = List.ofFn (fun j : Fin m.val =>
+          xorBytes (vecL a.base.data) (vecL self.secret.data) j.val) ⦄ := by
+    simp only [volar_spec.garble.GlobalSecret.not_garble]
+    apply spec_bind (from_fn_spec d.arrayArraySizeInst
+      (volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8 d) m hsize (self, a)
+      (fun j => xorBytes (vecL a.base.data) (vecL self.secret.data) j)
+      (by
+        intro i hi
+        exact GlobalSecret_not_garble_closure_spec d self a i (by rw [hsl]; exact hi) (by rw [hal]; exact hi)))
+    intro a ha
+    rw [spec_ok]
+    exact ha
+  obtain ⟨r0, hr, hpost⟩ := spec_ok_elim hspec
+  simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hr]
+  simp only []
+  congr 1
+  simp only [GarbleToNative, GlobalSecretToNative, GlobalSecret.not_garble, arrToNative]
+  congr 1
+  rw [hpost, List.map_ofFn]
+  apply List.ext_getElem
+  · simp
+  · intro i h1 h2
+    rw [List.getElem_ofFn, List.getElem_ofFn]
+    have hi : i < m.val := by simpa using h1
+    have hb : i < (vecL a.base.data).length := by rw [hsl]; exact hi
+    have ht : i < (vecL self.secret.data).length := by rw [hal]; exact hi
+    simp only [Function.comp_apply, xorBytes]
+    rw [dif_pos ⟨hb, ht⟩]
+    rw [List.getElem!_eq_getElem?_getD, List.getElem!_eq_getElem?_getD]
+    rw [List.getElem?_map, List.getElem?_map]
+    rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]
+    simp [u8ToUInt8_xor]
+
 -- NOT-BRIDGED (v1):
 --   - struct GarbleTable (fields not all shim u8-arrays)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl Q (struct not bridged)
---   - impl Delta (struct not bridged)
---   - impl Q (struct not bridged)
---   - impl (non-struct self type)
---   - impl RoLeafCommit (struct not bridged)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl Bavc (struct not bridged)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl Poly (struct not bridged)
---   - impl (non-struct self type)
---   - impl ChallengeKey (struct not bridged)
---   - impl MemoryCheckState (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Q (struct not bridged)
---   - impl Delta (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Q (struct not bridged)
---   - impl Delta (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Q (struct not bridged)
---   - impl Delta (struct not bridged)
---   - impl Q (struct not bridged)
---   - impl Q (struct not bridged)
---   - impl Delta (struct not bridged)
---   - impl Delta (struct not bridged)
---   - impl IdealCot (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl Vope (struct not bridged)
---   - impl BinfheKeySwitchingKey (struct not bridged)
---   - impl BinfheKeySwitchingKeyRef (struct not bridged)
---   - impl BinfheBootstrappingKey (struct not bridged)
---   - impl BinfheBootstrappingKeyRef (struct not bridged)
---   - impl BinfheBootstrappingKey (struct not bridged)
---   - impl (non-struct self type)
---   - impl PlanWorkspace (struct not bridged)
---   - impl (non-struct self type)
---   - impl CiphertextInputBuffer (struct not bridged)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl Lut (struct not bridged)
---   - impl Lut (struct not bridged)
---   - impl Lut (struct not bridged)
---   - impl LweSample (struct not bridged)
---   - impl ABOOpening (struct not bridged)
---   - impl ABOOpening (struct not bridged)
---   - impl ABOOpening (struct not bridged)
---   - impl ABO (struct not bridged)
---   - impl ABO (struct not bridged)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl LabelBatch (struct not bridged)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
 --   - method Garble.and_result (body pattern)
 --   - method Garble.action_result_base (body pattern)
 --   - method Garble.to_share (body pattern)
@@ -287,78 +276,7 @@ theorem Eval_open_commutes {N : Type} (d : vole.VoleArray N Std.U8)
 --   - method GlobalSecret.secret (body pattern)
 --   - method GlobalSecret.encode (body pattern)
 --   - method GlobalSecret.one_wire_eval (body pattern)
---   - method GlobalSecret.not_garble (left operand not a self field)
 --   - method GlobalSecret.gen_and_table (body pattern)
 --   - method GlobalSecret.gen_and_table_pol (body pattern)
 --   - impl Eval (trait impl)
---   - impl GarbledCircuit (struct not bridged)
---   - impl EvalSetup (struct not bridged)
---   - impl TfheBootstrapTable (struct not bridged)
---   - impl TfheBootstrapTable (struct not bridged)
---   - impl SoftSpokenOut (struct not bridged)
---   - impl SoftSpokenOutDyn (struct not bridged)
---   - impl ChouOrlandi (struct not bridged)
---   - impl ChouOrlandiRecv (struct not bridged)
---   - impl LweOtCrs (struct not bridged)
---   - impl LweBaseOt (struct not bridged)
---   - impl LweBaseOtSecure (struct not bridged)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl IdealCot (struct not bridged)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
---   - impl (non-struct self type)
 --   - function absorb_args_bases (free functions not bridged in v1)

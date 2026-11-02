@@ -334,10 +334,11 @@ fn emit_pointwise_ctor(
     let Some((param, param_ty)) = sole_param(f) else {
         return skip("params");
     };
-    // right operand must involve the parameter; left must be a self field
-    let sfield = match &pw.left {
-        Operand::SelfField(f) => f.clone(),
-        _ => return skip("left operand not a self field"),
+    // one side must be a self field, the other the parameter
+    let sfield = match (&pw.left, &pw.right) {
+        (Operand::SelfField(_), Operand::BareArray(_) | Operand::StructField(_, _)) => (),
+        (Operand::BareArray(_) | Operand::StructField(_, _), Operand::SelfField(_)) => (),
+        _ => return skip("operands not self/parameter"),
     };
     let a_method = aeneas_method(amod, module, &self_ty, &f.name, fields);
     let a_closure = format!("{a_method}.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8");
@@ -355,7 +356,8 @@ fn emit_pointwise_ctor(
     let rhs = pw.right.list();
     // native transports
     let self_t = format!("({self_ty}ToNative m.val self)");
-    let arg_t = match &pw.right {
+    let arg_op = if matches!(pw.left, Operand::SelfField(_)) { &pw.right } else { &pw.left };
+    let arg_t = match arg_op {
         Operand::BareArray(p) => format!("(arrToNative {p})"),
         Operand::StructField(p, _) => {
             let pt = param_ty.as_deref().unwrap();
@@ -440,11 +442,11 @@ fn emit_pointwise_array(
     let Some((param, param_ty)) = sole_param(f) else {
         return skip("params");
     };
-    let sfield = match &pw.left {
-        Operand::SelfField(f) => f.clone(),
-        _ => return skip("left operand not a self field"),
-    };
-    let _ = sfield;
+    match (&pw.left, &pw.right) {
+        (Operand::SelfField(_), Operand::BareArray(_) | Operand::StructField(_, _)) => (),
+        (Operand::BareArray(_) | Operand::StructField(_, _), Operand::SelfField(_)) => (),
+        _ => return skip("operands not self/parameter"),
+    }
     let a_method = aeneas_method(amod, module, &self_ty, &f.name, fields);
     let a_closure = format!("{a_method}.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8");
     let a_self = amod.path(module, &self_ty);
@@ -460,7 +462,8 @@ fn emit_pointwise_array(
     let lhs = pw.left.list();
     let rhs = pw.right.list();
     let self_t = format!("({self_ty}ToNative m.val self)");
-    let arg_t = match &pw.right {
+    let arg_op = if matches!(pw.left, Operand::SelfField(_)) { &pw.right } else { &pw.left };
+    let arg_t = match arg_op {
         Operand::BareArray(p) => format!("(arrToNative {p})"),
         Operand::StructField(p, _) => {
             let pt = param_ty.as_deref().unwrap();
@@ -621,9 +624,11 @@ pub fn print_module_lean_bridge(
     w!(out, "\n-- Commutation theorems\n");
     for imp in &module.impls {
         let Ok(self_name) = struct_name_of_impl(imp) else {
-            skipped.push("impl (non-struct self type)".to_string());
-            continue;
+            continue; // not a spec struct impl at all; outside our scope
         };
+        if !only.contains(&self_name) {
+            continue; // a different spec module; not this bridge
+        }
         if !bridged.contains(&self_name) {
             skipped.push(format!("impl {self_name} (struct not bridged)"));
             continue;
