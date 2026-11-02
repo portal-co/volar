@@ -86,6 +86,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "294252f426d5a6c175bcacfabf794c7e16790ccc7e0721eaddee0cc946323492"
 
 [[package]]
+name = "ascon-aead"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17453125d1e5c866b1f38bcccf7b9dd4a561f55930c68685ec8f188d01f71c8c"
+dependencies = [
+ "aead",
+ "ascon-core 0.4.1",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "ascon-core"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c4c9bc969387b7d7e7e931b978833ab18251a39e0f94addad7b823d08b8db74"
+
+[[package]]
+name = "ascon-core"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c90c8493a0b3bf8678a82f096821a2c527dd6344bbcef6265bfcc09745f44e24"
+
+[[package]]
+name = "ascon-hash"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c2430ca8a6b1b7c5665b3a367bd1083d229ccd340131f89cdaeb3cfc247b68b"
+dependencies = [
+ "ascon-core 0.5.1",
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -140,6 +174,15 @@ name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
+
+[[package]]
+name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest 0.10.7",
+]
 
 [[package]]
 name = "block-buffer"
@@ -2751,6 +2794,7 @@ version = "0.1.0"
 name = "volar-compiler-passes"
 version = "0.1.0"
 dependencies = [
+ "blake2",
  "quote",
  "syn 2.0.119",
  "thiserror 1.0.69",
@@ -2771,6 +2815,15 @@ dependencies = [
  "rand 0.9.5",
  "volar-common",
  "volar-primitives",
+]
+
+[[package]]
+name = "volar-evm-backend"
+version = "0.1.0"
+dependencies = [
+ "volar-circuit-source",
+ "volar-ir",
+ "volar-ir-simd",
 ]
 
 [[package]]
@@ -2897,6 +2950,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "volar-ir-simd"
+version = "0.1.0"
+dependencies = [
+ "volar-ir",
+]
+
+[[package]]
 name = "volar-ir-tester"
 version = "0.1.0"
 dependencies = [
@@ -2940,9 +3000,14 @@ dependencies = [
  "cipher 0.5.2",
  "vaffle",
  "volar-compiler",
+ "volar-evm-backend",
  "volar-fuzz",
+ "volar-ir",
  "volar-ir-common",
+ "volar-ir-passes",
+ "volar-ir-simd",
  "volar-lir",
+ "volar-pesat-emit",
  "volar-primitives",
  "volar-spec",
  "volar-vaffle-target",
@@ -3064,6 +3129,22 @@ name = "volar-oram-core"
 version = "0.1.0"
 
 [[package]]
+name = "volar-pesat-emit"
+version = "0.1.0"
+dependencies = [
+ "inkwell",
+ "volar-fuzz",
+ "volar-iop",
+ "volar-ir",
+ "volar-ir-common",
+ "volar-ir-opt",
+ "volar-ir-passes",
+ "volar-llvm-vaffle-import",
+ "volar-primitives",
+ "volar-vaffle-target",
+]
+
+[[package]]
 name = "volar-primitives"
 version = "0.1.0"
 
@@ -3137,6 +3218,9 @@ dependencies = [
 name = "volar-spec"
 version = "0.1.0"
 dependencies = [
+ "ascon-aead",
+ "ascon-hash",
+ "blake2",
  "cipher 0.5.2",
  "digest 0.11.3",
  "elliptic-curve",
@@ -4023,7 +4107,23 @@ name = "portal-solutions-sdk"
 version = "0.0.2"
 
 [[patch.unused]]
+name = "pit-gen"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pit-js-teavm"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "pit-lang-generic"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pit-packaging"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pit-packaging-contrib"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -4043,11 +4143,19 @@ name = "portal-solutions-asm-riscv32"
 version = "0.1.0"
 
 [[patch.unused]]
+name = "portal-solutions-asm-riscv64"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "portal-solutions-asm-writer"
 version = "0.1.0"
 
 [[patch.unused]]
 name = "portal-solutions-asm-x86"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -4091,6 +4199,14 @@ name = "portal-jit-host-names"
 version = "0.1.0"
 
 [[patch.unused]]
+name = "dreamcompiler-ffi-sig"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "thin-mcp"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "lazy-repo-crypto"
 version = "0.1.0"
 
@@ -4099,7 +4215,7 @@ name = "lazy-repo-std"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "thin-mcp"
+name = "vane"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -4107,7 +4223,47 @@ name = "vane-aarch64"
 version = "0.1.0"
 
 [[patch.unused]]
+name = "vane-arch"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-cli"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-host"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-meta-gen"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "vane-riscv"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-swap"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-target-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-target-js"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-target-wasm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-web"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-wsdom"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -4183,19 +4339,23 @@ name = "pit-core"
 version = "0.5.0-alpha.1"
 
 [[patch.unused]]
-name = "volar-evm-backend"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "volar-ir-simd"
-version = "0.1.0"
-
-[[patch.unused]]
 name = "volar-wasm-circuit-import"
 version = "0.1.0"
 
 [[patch.unused]]
 name = "volar-lir-text"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-log"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-minibc"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-minibc-c-interp"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -4260,6 +4420,10 @@ version = "0.1.0"
 
 [[patch.unused]]
 name = "os-linux-wasi"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-net"
 version = "0.1.0"
 
 [[patch.unused]]

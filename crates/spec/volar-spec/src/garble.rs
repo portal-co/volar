@@ -62,7 +62,8 @@ impl<N: VoleArray<u8>> Garble<N> {
     /// `bit` is the result-bit index within the call's `num_bits` outputs.
     pub fn action_result_base<D: Digest>(&self, args: &[&Garble<N>], bit: usize) -> Self {
         let mut d = D::new();
-        d.update(&[0xACu8]);
+        let domain_separator = [0xACu8];
+        d.update(&domain_separator);
         d.update(&self.base);
         for arg in args {
             d.update(&arg.base);
