@@ -65,7 +65,11 @@ impl<N: VoleArray<u8>> Garble<N> {
         let domain_separator = [0xACu8];
         d.update(&domain_separator);
         d.update(&self.base);
-        for &arg in args {
+        // Index loop rather than `for &arg in args`: iterating `&[&Garble]`
+        // puts a nested borrow (&&T) in the iterator state, which Aeneas
+        // does not support; `args[i]` copies the reference out.
+        for i in 0..args.len() {
+            let arg = args[i];
             d.update(&arg.base);
         }
         let bit_bytes = (bit as u64).to_le_bytes();
