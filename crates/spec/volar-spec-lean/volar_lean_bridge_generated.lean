@@ -203,8 +203,8 @@ theorem Eval_open_commutes {N : Type} (d : vole.VoleArray N Std.U8)
 theorem GlobalSecret_not_garble_closure_spec {N : Type} (d : vole.VoleArray N Std.U8)
     (self : volar_spec.garble.GlobalSecret N) (a : volar_spec.garble.Garble N) (i : Std.Usize)
     (hs : i.val < (vecL a.base.data).length) (ha : i.val < (vecL self.secret.data).length) :
-    volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut d (self, a) i =
-      ok (xorBytes (vecL a.base.data) (vecL self.secret.data) i.val, (self, a)) := by
+    volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut d (a, self) i =
+      ok (xorBytes (vecL a.base.data) (vecL self.secret.data) i.val, (a, self)) := by
   have hs' : i.val < (a.base.data.val).length := hs
   have ha' : i.val < (self.secret.data.val).length := ha
   simp only [volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut,
@@ -235,7 +235,7 @@ theorem GlobalSecret_not_garble_commutes {N : Type} (d : vole.VoleArray N Std.U8
           xorBytes (vecL a.base.data) (vecL self.secret.data) j.val) ⦄ := by
     simp only [volar_spec.garble.GlobalSecret.not_garble]
     apply spec_bind (from_fn_spec d.arrayArraySizeInst
-      (volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8 d) m hsize (self, a)
+      (volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8 d) m hsize (a, self)
       (fun j => xorBytes (vecL a.base.data) (vecL self.secret.data) j)
       (by
         intro i hi

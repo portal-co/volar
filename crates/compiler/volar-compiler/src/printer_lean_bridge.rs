@@ -151,6 +151,15 @@ impl Operand {
         }
     }
 
+    /// The root variable (the captured closure value component).
+    fn root(&self) -> String {
+        match self {
+            Operand::SelfField(_) => "self".to_string(),
+            Operand::BareArray(p) => p.clone(),
+            Operand::StructField(p, _) => p.clone(),
+        }
+    }
+
     /// The coercion form the index-chain simp reduces to.
     fn val_list(&self) -> String {
         match self {
@@ -289,12 +298,18 @@ fn emit_closure_spec(
         Some(_) => format!("({param} : {} N)", param_path.unwrap()),
         None => format!("({param} : volar_spec.array.Array Std.U8 N)"),
     };
+    // Aeneas captures closure values in first-use order in the body.
+    let (cap0, cap1) = {
+        let (r0, r1) = (pw.left.root(), pw.right.root());
+        if r0 == "self" { ("self".to_string(), param.to_string()) } else { (param.to_string(), "self".to_string()) }
+    };
+    let capture = format!("({cap0}, {cap1})");
     w!(out, "\n/-- (generated) closure spec: the extracted `{a_closure}.call_mut` is the\n    pointwise xor of the two operands. -/\n");
     w!(out, "theorem {thm} {{N : Type}} (d : vole.VoleArray N Std.U8)\n");
     w!(out, "    (self : {self_path} N) {param_decl} (i : Std.Usize)\n");
     w!(out, "    (hs : i.val < {lhs}.length) (ha : i.val < {rhs}.length) :\n");
-    w!(out, "    {a_closure}.call_mut d (self, {param}) i =\n");
-    w!(out, "      ok (xorBytes {lhs} {rhs} i.val, (self, {param})) := by\n");
+    w!(out, "    {a_closure}.call_mut d {capture} i =\n");
+    w!(out, "      ok (xorBytes {lhs} {rhs} i.val, {capture}) := by\n");
     // primed hypotheses at the coercion form the index chain reduces to
     w!(out, "  have hs' : i.val < {}.length := hs\n", pw.left.val_list());
     w!(out, "  have ha' : i.val < {}.length := ha\n", pw.right.val_list());
@@ -379,12 +394,17 @@ fn emit_pointwise_ctor(
     w!(out, "\n    (hsl : {lhs}.length = m.val) (hal : {rhs}.length = m.val) :\n");
     w!(out, "    (do let r ← {a_method} d self {param}; ok ({ret}ToNative m.val r)) =\n");
     w!(out, "    ok ({self_ty}.{n_method} {self_t} {arg_t} : {ret} m.val) := by\n");
+    let capture = if pw.left.root() == "self" {
+        format!("(self, {param})")
+    } else {
+        format!("({param}, self)")
+    };
     w!(out, "  have hspec : {a_method} d self {param}\n");
     w!(out, "      ⦃ r => vecL r.{rfield}.data = List.ofFn (fun j : Fin m.val =>\n");
     w!(out, "          xorBytes {lhs} {rhs} j.val) ⦄ := by\n");
     w!(out, "    simp only [{a_method}]\n");
     w!(out, "    apply spec_bind (from_fn_spec d.arrayArraySizeInst\n");
-    w!(out, "      ({a_closure} d) m hsize (self, {param})\n");
+    w!(out, "      ({a_closure} d) m hsize {capture}\n");
     w!(out, "      (fun j => xorBytes {lhs} {rhs} j)\n");
     w!(out, "      (by\n");
     w!(out, "        intro i hi\n");
@@ -485,12 +505,17 @@ fn emit_pointwise_array(
     w!(out, "\n    (hsl : {lhs}.length = m.val) (hal : {rhs}.length = m.val) :\n");
     w!(out, "    (do let a ← {a_method} d self {param}; ok (arrToNative a)) =\n");
     w!(out, "    ok ({self_ty}.{n_method} {self_t} {arg_t}) := by\n");
+    let capture = if pw.left.root() == "self" {
+        format!("(self, {param})")
+    } else {
+        format!("({param}, self)")
+    };
     w!(out, "  have hspec : {a_method} d self {param}\n");
     w!(out, "      ⦃ a => vecL a.data = List.ofFn (fun j : Fin m.val =>\n");
     w!(out, "          xorBytes {lhs} {rhs} j.val) ⦄ := by\n");
     w!(out, "    simp only [{a_method}]\n");
     w!(out, "    exact from_fn_spec d.arrayArraySizeInst\n");
-    w!(out, "      ({a_closure} d) m hsize (self, {param})\n");
+    w!(out, "      ({a_closure} d) m hsize {capture}\n");
     w!(out, "      (fun j => xorBytes {lhs} {rhs} j)\n");
     w!(out, "      (by\n");
     w!(out, "        intro i hi\n");
