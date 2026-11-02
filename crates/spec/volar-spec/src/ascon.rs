@@ -277,6 +277,104 @@ pub fn ascon128a_encrypt(
     (ciphertext, tag)
 }
 
+/// Ascon-128a AEAD decrypt (native slice form): verifies the tag and returns
+/// the plaintext, or `None` on tag mismatch. Mirrors [`ascon128a_encrypt`];
+/// matches `ascon_aead::Ascon128a` decryption.
+pub fn ascon128a_decrypt(
+    key: &[u8; 16],
+    nonce: &[u8; 16],
+    ad: &[u8],
+    ciphertext: &[u8],
+    tag: &[u8; 16],
+) -> Option<alloc::vec::Vec<u8>> {
+    let k1 = be_u64(&key[..8]);
+    let k2 = be_u64(&key[8..16]);
+    let mut state = [
+        ASCON_128A_IV,
+        k1,
+        k2,
+        be_u64(&nonce[..8]),
+        be_u64(&nonce[8..16]),
+    ];
+    ascon_p12(&mut state);
+    state[3] ^= k1;
+    state[4] ^= k2;
+    if !ad.is_empty() {
+        let mut i = 0;
+        while ad.len() - i >= 16 {
+            state[0] ^= be_u64(&ad[i..i + 8]);
+            state[1] ^= be_u64(&ad[i + 8..i + 16]);
+            ascon_p8(&mut state);
+            i += 16;
+        }
+        let rem = ad.len() - i;
+        let (sidx, lastlen) = if rem >= 8 {
+            state[0] ^= be_u64(&ad[i..i + 8]);
+            (1, rem - 8)
+        } else {
+            (0, rem)
+        };
+        state[sidx] ^= aead_pad(lastlen);
+        if lastlen > 0 {
+            let off = i + if sidx == 1 { 8 } else { 0 };
+            state[sidx] ^= be_u64_partial(&ad[off..off + lastlen]);
+        }
+        ascon_p8(&mut state);
+    }
+    state[4] ^= 1;
+    // Decrypt: pt = ct ^ keystream; covered state bytes are replaced by ct;
+    // the pad is then XORed (its position never overlaps covered bytes).
+    let mut plaintext = alloc::vec::Vec::with_capacity(ciphertext.len());
+    let mut i = 0;
+    while ciphertext.len() - i >= 16 {
+        plaintext.extend_from_slice(&(state[0] ^ be_u64(&ciphertext[i..i + 8])).to_be_bytes());
+        state[0] = be_u64(&ciphertext[i..i + 8]);
+        plaintext.extend_from_slice(&(state[1] ^ be_u64(&ciphertext[i + 8..i + 16])).to_be_bytes());
+        state[1] = be_u64(&ciphertext[i + 8..i + 16]);
+        ascon_p8(&mut state);
+        i += 16;
+    }
+    let rem = ciphertext.len() - i;
+    if rem >= 8 {
+        plaintext.extend_from_slice(&(state[0] ^ be_u64(&ciphertext[i..i + 8])).to_be_bytes());
+        state[0] = be_u64(&ciphertext[i..i + 8]);
+        let rest = rem - 8;
+        state[1] ^= aead_pad(rest);
+        if rest > 0 {
+            let pt1 = state[1] ^ be_u64_partial(&ciphertext[i + 8..i + 8 + rest]);
+            plaintext.extend_from_slice(&pt1.to_be_bytes()[..rest]);
+            // Covered bytes of state[1] become the ciphertext bytes.
+            let mut s1 = state[1].to_be_bytes();
+            s1[..rest].copy_from_slice(&ciphertext[i + 8..i + 8 + rest]);
+            state[1] = be_u64(&s1);
+        }
+    } else {
+        state[0] ^= aead_pad(rem);
+        if rem > 0 {
+            let pt0 = state[0] ^ be_u64_partial(&ciphertext[i..i + rem]);
+            plaintext.extend_from_slice(&pt0.to_be_bytes()[..rem]);
+            let mut s0 = state[0].to_be_bytes();
+            s0[..rem].copy_from_slice(&ciphertext[i..i + rem]);
+            state[0] = be_u64(&s0);
+        }
+    }
+    state[2] ^= k1;
+    state[3] ^= k2;
+    ascon_p12(&mut state);
+    state[3] ^= k1;
+    state[4] ^= k2;
+    let mut expected = [0u8; 16];
+    expected[..8].copy_from_slice(&state[3].to_be_bytes());
+    expected[8..].copy_from_slice(&state[4].to_be_bytes());
+    // Constant-time-ish comparison is unnecessary here (spec/test code), but
+    // branch on equality only once.
+    if expected == *tag {
+        Some(plaintext)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +403,70 @@ mod tests {
         let arr: Array<u8, hybrid_array::typenum::U50> =
             Array::try_from(&data[..]).expect("50 bytes");
         assert_eq!(ascon_hash256_array(&arr), ascon_hash256(&data));
+    }
+
+    #[test]
+    fn ascon128a_decrypt_round_trips_and_rejects_tampering() {
+        use ascon_aead::aead::{Aead, KeyInit, Payload};
+        let key = [0x42u8; 16];
+        let nonce = [0x24u8; 16];
+        for (ad_len, pt_len) in [
+            (0usize, 0usize),
+            (0, 1),
+            (1, 0),
+            (0, 16),
+            (16, 16),
+            (0, 17),
+            (17, 0),
+            (8, 8),
+            (7, 9),
+            (16, 32),
+            (31, 33),
+            (100, 200),
+        ] {
+            let ad: alloc::vec::Vec<u8> = (0..ad_len).map(|i| (i % 251) as u8).collect();
+            let pt: alloc::vec::Vec<u8> = (0..pt_len).map(|i| (i % 239) as u8).collect();
+            let (ct, tag) = ascon128a_encrypt(&key, &nonce, &ad, &pt);
+            assert_eq!(
+                ascon128a_decrypt(&key, &nonce, &ad, &ct, &tag).as_deref(),
+                Some(pt.as_slice()),
+                "round trip at ad={ad_len} pt={pt_len}"
+            );
+            // Tamper: flip a ciphertext bit (or a tag bit when empty).
+            if ct.is_empty() {
+                let mut bad_tag = tag;
+                bad_tag[0] ^= 1;
+                assert_eq!(ascon128a_decrypt(&key, &nonce, &ad, &ct, &bad_tag), None);
+            } else {
+                let mut bad_ct = ct.clone();
+                bad_ct[0] ^= 1;
+                assert_eq!(ascon128a_decrypt(&key, &nonce, &ad, &bad_ct, &tag), None);
+            }
+            // And against the reference implementation's ciphertext.
+            let cipher = ascon_aead::Ascon128a::new((&key).into());
+            let reference_ct = cipher
+                .encrypt(
+                    (&nonce).into(),
+                    Payload {
+                        msg: &pt,
+                        aad: &ad,
+                    },
+                )
+                .expect("reference encrypt");
+            let (ref_ct, ref_tag) = reference_ct.split_at(reference_ct.len() - 16);
+            assert_eq!(
+                ascon128a_decrypt(
+                    &key,
+                    &nonce,
+                    &ad,
+                    ref_ct,
+                    ref_tag.try_into().expect("16-byte tag")
+                )
+                .as_deref(),
+                Some(pt.as_slice()),
+                "reference ciphertext at ad={ad_len} pt={pt_len}"
+            );
+        }
     }
 
     #[test]
