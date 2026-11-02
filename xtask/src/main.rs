@@ -234,7 +234,12 @@ fn is_codegen_excluded(source: &str) -> bool {
 
 fn collect_rs_files_inner(dir: &Path, out: &mut Vec<(String, String)>) {
     if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
+        // Sort: read_dir order is filesystem-dependent (differs between
+        // macOS APFS and Linux ext4), which would make generated output
+        // platform-dependent.
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
             let path = entry.path();
             if path.is_file() && path.extension().map_or(false, |e| e == "rs") {
                 if let Ok(content) = fs::read_to_string(&path) {
