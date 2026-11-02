@@ -54,6 +54,27 @@ fn print_garble_lean(spec_module: &volar_compiler::IrModule<volar_compiler::IrFu
     print_module_lean(spec_module, &only).expect("Lean generation for garble subset")
 }
 
+/// Render the garbled-circuit spec subset's Aeneas↔native bridge file
+/// (transports + commutation theorems; consumed by voof's
+/// `VolarSpecBridge.Generated` via `prepare-native.sh`).
+fn print_garble_lean_bridge(
+    spec_module: &volar_compiler::IrModule<volar_compiler::IrFunction>,
+) -> String {
+    use volar_compiler::printer_lean_bridge::print_module_lean_bridge;
+    let only: std::collections::BTreeSet<String> = [
+        "Eval",
+        "Garble",
+        "GarbleTable",
+        "GlobalSecret",
+        "absorb_args_bases",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    print_module_lean_bridge(spec_module, &only, "garble")
+        .expect("Lean bridge generation for garble subset")
+}
+
 fn gen_specs(check_only: bool) {
     let workspace = workspace_root();
 
@@ -100,6 +121,7 @@ fn gen_specs(check_only: bool) {
         parse_sources(&spec_inputs, "volar_spec", &spec_path).expect("parse volar-spec");
 
     let garble_lean = print_garble_lean(&spec_module);
+    let garble_lean_bridge = print_garble_lean_bridge(&spec_module);
     let combined_module = merge_modules(vec![prim_module, common_module, spec_module]);
 
     // ── Generate outputs ────────────────────────────────────────────────────
@@ -119,6 +141,10 @@ fn gen_specs(check_only: bool) {
         (
             workspace.join("crates/spec/volar-spec-lean/volar_lean_generated.lean"),
             garble_lean,
+        ),
+        (
+            workspace.join("crates/spec/volar-spec-lean/volar_lean_bridge_generated.lean"),
+            garble_lean_bridge,
         ),
         (
             workspace.join("crates/spec/volar-spec-dyn/src/generated.rs"),

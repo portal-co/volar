@@ -48,7 +48,7 @@ const LEAN_RESERVED: &[&str] = &[
     "private", "protected", "public", "noncomputable", "meta", "except",
 ];
 
-fn ident(name: &str) -> String {
+pub(crate) fn ident(name: &str) -> String {
     let mut s = name.replace('.', "_").replace('#', "_");
     if LEAN_RESERVED.contains(&s.as_str()) {
         s.push('_');

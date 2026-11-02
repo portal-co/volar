@@ -9238,6 +9238,89 @@ export function and_test_poly(big_n: bigint): bigint[]
   return v;
 }
 
+export function ascon128a_decrypt(key: bigint[], nonce: bigint[], ad: bigint[], ciphertext: bigint[], tag: bigint[]): (Vec<bigint> | undefined)
+{
+  const k1 = be_u64(key.slice(0, Number(8n)));
+  const k2 = be_u64(key.slice(Number(8n), Number(16n)));
+  let state = [ASCON_128A_IV, k1, k2, be_u64(nonce.slice(0, Number(8n))), be_u64(nonce.slice(Number(8n), Number(16n)))];
+  ascon_p12(state);
+  state[Number(3n)] = fieldBitxor(state[Number(3n)], k1);
+  state[Number(4n)] = fieldBitxor(state[Number(4n)], k2);
+  if (!(ad.length === 0))   {
+    let i = 0n;
+    while ((fieldSub(BigInt(ad.length), i) >= 16n))     {
+      state[Number(0n)] = fieldBitxor(state[Number(0n)], be_u64(ad.slice(Number(i), Number(fieldAdd(i, 8n)))));
+      state[Number(1n)] = fieldBitxor(state[Number(1n)], be_u64(ad.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(i, 16n)))));
+      ascon_p8(state);
+      i = fieldAdd(i, 16n);
+    }
+    const rem = fieldSub(BigInt(ad.length), i);
+    const [sidx, lastlen] = (() => { if ((rem >= 8n)) {
+  state[Number(0n)] = fieldBitxor(state[Number(0n)], be_u64(ad.slice(Number(i), Number(fieldAdd(i, 8n)))));
+  return [1n, fieldSub(rem, 8n)];
+} else {
+  return [0n, rem];
+} })();
+    state[Number(sidx)] = fieldBitxor(state[Number(sidx)], aead_pad(lastlen));
+    if ((lastlen > 0n))     {
+      const off = fieldAdd(i, (() => { if (__equals(sidx, 1n)) {
+  return 8n;
+} else {
+  return 0n;
+} })());
+      state[Number(sidx)] = fieldBitxor(state[Number(sidx)], be_u64_partial(ad.slice(Number(off), Number(fieldAdd(off, lastlen)))));
+    }
+    ascon_p8(state);
+  }
+  state[Number(4n)] = fieldBitxor(state[Number(4n)], 1n);
+  let plaintext = ([] as any[]);
+  let i = 0n;
+  while ((fieldSub(BigInt(ciphertext.length), i) >= 16n))   {
+    plaintext.push(...([((fieldBitxor(state[Number(0n)], be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n)))))) >> 24n) & 0xFFn, ((fieldBitxor(state[Number(0n)], be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n)))))) >> 16n) & 0xFFn, ((fieldBitxor(state[Number(0n)], be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n)))))) >> 8n) & 0xFFn, (fieldBitxor(state[Number(0n)], be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n)))))) & 0xFFn]));
+    state[Number(0n)] = be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n))));
+    plaintext.push(...([((fieldBitxor(state[Number(1n)], be_u64(ciphertext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(i, 16n)))))) >> 24n) & 0xFFn, ((fieldBitxor(state[Number(1n)], be_u64(ciphertext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(i, 16n)))))) >> 16n) & 0xFFn, ((fieldBitxor(state[Number(1n)], be_u64(ciphertext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(i, 16n)))))) >> 8n) & 0xFFn, (fieldBitxor(state[Number(1n)], be_u64(ciphertext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(i, 16n)))))) & 0xFFn]));
+    state[Number(1n)] = be_u64(ciphertext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(i, 16n))));
+    ascon_p8(state);
+    i = fieldAdd(i, 16n);
+  }
+  const rem = fieldSub(BigInt(ciphertext.length), i);
+  if ((rem >= 8n))   {
+    plaintext.push(...([((fieldBitxor(state[Number(0n)], be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n)))))) >> 24n) & 0xFFn, ((fieldBitxor(state[Number(0n)], be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n)))))) >> 16n) & 0xFFn, ((fieldBitxor(state[Number(0n)], be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n)))))) >> 8n) & 0xFFn, (fieldBitxor(state[Number(0n)], be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n)))))) & 0xFFn]));
+    state[Number(0n)] = be_u64(ciphertext.slice(Number(i), Number(fieldAdd(i, 8n))));
+    const rest = fieldSub(rem, 8n);
+    state[Number(1n)] = fieldBitxor(state[Number(1n)], aead_pad(rest));
+    if ((rest > 0n))     {
+      const pt1 = fieldBitxor(state[Number(1n)], be_u64_partial(ciphertext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(fieldAdd(i, 8n), rest)))));
+      plaintext.push(...([((pt1) >> 24n) & 0xFFn, ((pt1) >> 16n) & 0xFFn, ((pt1) >> 8n) & 0xFFn, (pt1) & 0xFFn].slice(0, Number(rest))));
+      let s1 = [((state[Number(1n)]) >> 24n) & 0xFFn, ((state[Number(1n)]) >> 16n) & 0xFFn, ((state[Number(1n)]) >> 8n) & 0xFFn, (state[Number(1n)]) & 0xFFn];
+      (s1.slice(0, Number(rest))).splice(0, (ciphertext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(fieldAdd(i, 8n), rest)))).length, ...(ciphertext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(fieldAdd(i, 8n), rest)))));
+      state[Number(1n)] = be_u64(s1);
+    }
+  } else   {
+    state[Number(0n)] = fieldBitxor(state[Number(0n)], aead_pad(rem));
+    if ((rem > 0n))     {
+      const pt0 = fieldBitxor(state[Number(0n)], be_u64_partial(ciphertext.slice(Number(i), Number(fieldAdd(i, rem)))));
+      plaintext.push(...([((pt0) >> 24n) & 0xFFn, ((pt0) >> 16n) & 0xFFn, ((pt0) >> 8n) & 0xFFn, (pt0) & 0xFFn].slice(0, Number(rem))));
+      let s0 = [((state[Number(0n)]) >> 24n) & 0xFFn, ((state[Number(0n)]) >> 16n) & 0xFFn, ((state[Number(0n)]) >> 8n) & 0xFFn, (state[Number(0n)]) & 0xFFn];
+      (s0.slice(0, Number(rem))).splice(0, (ciphertext.slice(Number(i), Number(fieldAdd(i, rem)))).length, ...(ciphertext.slice(Number(i), Number(fieldAdd(i, rem)))));
+      state[Number(0n)] = be_u64(s0);
+    }
+  }
+  state[Number(2n)] = fieldBitxor(state[Number(2n)], k1);
+  state[Number(3n)] = fieldBitxor(state[Number(3n)], k2);
+  ascon_p12(state);
+  state[Number(3n)] = fieldBitxor(state[Number(3n)], k1);
+  state[Number(4n)] = fieldBitxor(state[Number(4n)], k2);
+  let expected = Array.from({length: Number(16n)}, () => ((0n) & 0xFFn));
+  (expected.slice(0, Number(8n))).splice(0, ([((state[Number(3n)]) >> 24n) & 0xFFn, ((state[Number(3n)]) >> 16n) & 0xFFn, ((state[Number(3n)]) >> 8n) & 0xFFn, (state[Number(3n)]) & 0xFFn]).length, ...([((state[Number(3n)]) >> 24n) & 0xFFn, ((state[Number(3n)]) >> 16n) & 0xFFn, ((state[Number(3n)]) >> 8n) & 0xFFn, (state[Number(3n)]) & 0xFFn]));
+  (expected.slice(Number(8n))).splice(0, ([((state[Number(4n)]) >> 24n) & 0xFFn, ((state[Number(4n)]) >> 16n) & 0xFFn, ((state[Number(4n)]) >> 8n) & 0xFFn, (state[Number(4n)]) & 0xFFn]).length, ...([((state[Number(4n)]) >> 24n) & 0xFFn, ((state[Number(4n)]) >> 16n) & 0xFFn, ((state[Number(4n)]) >> 8n) & 0xFFn, (state[Number(4n)]) & 0xFFn]));
+  return (() => { if (__equals(expected, tag)) {
+  return plaintext;
+} else {
+  return undefined;
+} })();
+}
+
 export function ascon128a_encrypt(key: bigint[], nonce: bigint[], ad: bigint[], plaintext: bigint[]): [Vec<bigint>, bigint[]]
 {
   const k1 = be_u64(key.slice(0, Number(8n)));

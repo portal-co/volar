@@ -15323,3 +15323,86 @@ pub fn ascon128a_encrypt(mut key: &[u8; 16], mut nonce: &[u8; 16], mut ad: &[u8]
     (ciphertext, tag)
 }
 
+pub fn ascon128a_decrypt(mut key: &[u8; 16], mut nonce: &[u8; 16], mut ad: &[u8], mut ciphertext: &[u8], mut tag: &[u8; 16]) -> Option<Vec<u8>>
+{
+    let k1 = be_u64(&key[..8]);
+    let k2 = be_u64(&key[8..16]);
+    let mut state = [ASCON_128A_IV, k1, k2, be_u64(&nonce[..8]), be_u64(&nonce[8..16])];
+    ascon_p12(&mut state);
+    state[3] ^= k1;
+    state[4] ^= k2;
+    if !ad.is_empty(){
+    let mut i = 0;
+    while ((ad.len() - i) >= 16){
+    state[0] ^= be_u64(&ad[i..(i + 8)]);
+    state[1] ^= be_u64(&ad[(i + 8)..(i + 16)]);
+    ascon_p8(&mut state);
+    i += 16;
+};
+    let rem = ad.len() - i;
+    let (sidx, lastlen) = if rem >= 8{
+    state[0] ^= be_u64(&ad[i..(i + 8)]);
+    (1, (rem - 8))
+} else {
+    (0, rem)
+};
+    state[sidx] ^= aead_pad(lastlen);
+    if lastlen > 0{
+    let off = i + if sidx == 1{
+    8
+} else {
+    0
+};
+    state[sidx] ^= be_u64_partial(&ad[off..(off + lastlen)]);
+};
+    ascon_p8(&mut state);
+};
+    state[4] ^= 1;
+    let mut plaintext = alloc::vec::Vec::with_capacity(ciphertext.len());
+    let mut i = 0;
+    while ((ciphertext.len() - i) >= 16){
+    plaintext.extend_from_slice(&(state[0] ^ be_u64(&ciphertext[i..(i + 8)])).to_be_bytes());
+    state[0] = be_u64(&ciphertext[i..(i + 8)]);
+    plaintext.extend_from_slice(&(state[1] ^ be_u64(&ciphertext[(i + 8)..(i + 16)])).to_be_bytes());
+    state[1] = be_u64(&ciphertext[(i + 8)..(i + 16)]);
+    ascon_p8(&mut state);
+    i += 16;
+};
+    let rem = ciphertext.len() - i;
+    if rem >= 8{
+    plaintext.extend_from_slice(&(state[0] ^ be_u64(&ciphertext[i..(i + 8)])).to_be_bytes());
+    state[0] = be_u64(&ciphertext[i..(i + 8)]);
+    let rest = rem - 8;
+    state[1] ^= aead_pad(rest);
+    if rest > 0{
+    let pt1 = state[1] ^ be_u64_partial(&ciphertext[(i + 8)..((i + 8) + rest)]);
+    plaintext.extend_from_slice(&pt1.to_be_bytes()[..rest]);
+    let mut s1 = state[1].to_be_bytes();
+    s1[..rest].copy_from_slice(&ciphertext[(i + 8)..((i + 8) + rest)]);
+    state[1] = be_u64(&s1);
+}
+} else {
+    state[0] ^= aead_pad(rem);
+    if rem > 0{
+    let pt0 = state[0] ^ be_u64_partial(&ciphertext[i..(i + rem)]);
+    plaintext.extend_from_slice(&pt0.to_be_bytes()[..rem]);
+    let mut s0 = state[0].to_be_bytes();
+    s0[..rem].copy_from_slice(&ciphertext[i..(i + rem)]);
+    state[0] = be_u64(&s0);
+}
+};
+    state[2] ^= k1;
+    state[3] ^= k2;
+    ascon_p12(&mut state);
+    state[3] ^= k1;
+    state[4] ^= k2;
+    let mut expected = [(0 as u8); 16];
+    expected[..8].copy_from_slice(&state[3].to_be_bytes());
+    expected[8..].copy_from_slice(&state[4].to_be_bytes());
+    if expected == *tag{
+    Some(plaintext)
+} else {
+    None
+}
+}
+

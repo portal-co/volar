@@ -44,6 +44,7 @@ pub mod parser;
 pub mod printer;
 pub mod printer_ts;
 pub mod printer_lean;
+pub mod printer_lean_bridge;
 pub mod printer_sol;
 pub mod reachability;
 
