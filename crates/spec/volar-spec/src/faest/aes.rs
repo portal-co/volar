@@ -200,6 +200,18 @@ pub fn key_expansion(key: &[u8; BLOCK]) -> [[u8; BLOCK]; NK_ROUND_KEYS] {
 /// invoke AES decryption anywhere.
 pub fn encrypt_block(key: &[u8; BLOCK], plain: &[u8; BLOCK]) -> [u8; BLOCK] {
     let round_keys = key_expansion(key);
+    encrypt_block_with_keys(&round_keys, plain)
+}
+
+/// AES-128 single-block encryption with precomputed round keys.
+///
+/// Same function as [`encrypt_block`], for callers amortizing the key
+/// schedule over many blocks (e.g. the AEAD mode in
+/// [`crate::aes128aead`]).
+pub fn encrypt_block_with_keys(
+    round_keys: &[[u8; BLOCK]; NK_ROUND_KEYS],
+    plain: &[u8; BLOCK],
+) -> [u8; BLOCK] {
     let mut state = *plain;
     add_round_key(&mut state, &round_keys[0]);
     for r in 1..NR {

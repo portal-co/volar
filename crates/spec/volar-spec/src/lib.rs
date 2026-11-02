@@ -8,6 +8,7 @@ pub use volar_common::hash_commitment as simple;
 pub mod binfhe;
 pub mod bitgc;
 pub mod blake2s;
+pub mod aes128aead;
 pub mod ascon;
 pub mod byte_gen;
 pub mod cirrus;
