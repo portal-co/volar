@@ -26,11 +26,12 @@ pub struct Garble<N: VoleArray<u8>> {
 /// nested fn definitions; slice-tail recursion because Aeneas rejects loops
 /// over `&[&T]` (nested borrows in the loop abstraction).
 fn absorb_args_bases<N: VoleArray<u8>, D: Digest>(mut d: D, args: &[&Garble<N>]) -> D {
-    if args.is_empty() {
-        d
-    } else {
-        d.update(&args[0].base);
-        absorb_args_bases(d, &args[1..])
+    match args.split_first() {
+        None => d,
+        Some((first, rest)) => {
+            d.update(&first.base);
+            absorb_args_bases(d, rest)
+        }
     }
 }
 
