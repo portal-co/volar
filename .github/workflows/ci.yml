@@ -16,6 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # volar's in-repo [patch] tables reference sibling checkouts
+      # (../volar-ir); CI must materialize them.
+      - name: Check out volar-ir (sibling, path-patched)
+        uses: actions/checkout@v4
+        with:
+          repository: portal-co/volar-ir
+          path: volar-ir
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --exclude xtask
@@ -26,6 +33,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # volar's in-repo [patch] tables reference sibling checkouts
+      # (../volar-ir); CI must materialize them.
+      - name: Check out volar-ir (sibling, path-patched)
+        uses: actions/checkout@v4
+        with:
+          repository: portal-co/volar-ir
+          path: volar-ir
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
@@ -49,6 +63,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # volar's in-repo [patch] tables reference sibling checkouts
+      # (../volar-ir); CI must materialize them.
+      - name: Check out volar-ir (sibling, path-patched)
+        uses: actions/checkout@v4
+        with:
+          repository: portal-co/volar-ir
+          path: volar-ir
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Regenerate derived specs
