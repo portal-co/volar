@@ -219,12 +219,10 @@ fn volar_native_type_from_str(s: &str) -> Option<volar_ir_common::Type> {
     use volar_ir_common::Type;
     match s {
         "Bit" => Some(Type::Bit),
-        "_8" | "U8" => Some(Type::_8),
-        "_16" | "U16" => Some(Type::_16),
-        "_32" | "U32" => Some(Type::_32),
-        "_64" | "U64" => Some(Type::_64),
-        "_128" | "U128" => Some(Type::_128),
-        "_256" => Some(Type::_256),
+        // The wider bit-vectors stopped being `Type` variants in volar-ir's
+        // Type cutover (part 1, d258f89): they are now `IRType::Vec(n, Bit)`.
+        // `@volar-native:` width annotations need the cutover's part-2 design
+        // (an IRType-typed native_volar_type); until then they map to None.
         _ => None,
     }
 }
@@ -240,7 +238,7 @@ mod native_type_tests {
         assert_eq!(volar_native_type_from_str("Galois8"), None);
         assert_eq!(volar_native_type_from_str("Galois64"), None);
         assert_eq!(volar_native_type_from_str("Z3"), None);
-        assert_eq!(volar_native_type_from_str("U8"), Some(Type::_8));
+        assert_eq!(volar_native_type_from_str("U8"), None); // see cutover note above
     }
 }
 
