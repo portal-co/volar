@@ -76,7 +76,7 @@ impl<N: VoleArray<u8>> Garble<N> {
                 absorb_args(d, &args[1..])
             }
         }
-        let d = absorb_args(d, args);
+        let mut d = absorb_args(d, args);
         let bit_bytes = (bit as u64).to_le_bytes();
         d.update(&bit_bytes);
         let hash = d.finalize();
