@@ -21,6 +21,19 @@ pub struct Eval<N: VoleArray<u8>> {
 pub struct Garble<N: VoleArray<u8>> {
     pub base: Array<u8, N>,
 }
+/// Recursively absorb each argument's base label into the digest. Free
+/// function (not nested) because the spec compiler's parser does not retain
+/// nested fn definitions; slice-tail recursion because Aeneas rejects loops
+/// over `&[&T]` (nested borrows in the loop abstraction).
+fn absorb_args_bases<N: VoleArray<u8>, D: Digest>(mut d: D, args: &[&Garble<N>]) -> D {
+    if args.is_empty() {
+        d
+    } else {
+        d.update(&args[0].base);
+        absorb_args_bases(d, &args[1..])
+    }
+}
+
 impl<N: VoleArray<u8>> Garble<N> {
     /// False-label for a constant-zero wire (all-zero bytes).
     pub fn zero() -> Self {
@@ -65,18 +78,7 @@ impl<N: VoleArray<u8>> Garble<N> {
         let domain_separator = [0xACu8];
         d.update(&domain_separator);
         d.update(&self.base);
-        // Slice-tail recursion rather than a loop: any loop reading through
-        // `&[&Garble]` puts a nested borrow (&&T) in the loop abstraction,
-        // which Aeneas does not support. Verified to extract cleanly.
-        fn absorb_args<N: VoleArray<u8>, D: Digest>(mut d: D, args: &[&Garble<N>]) -> D {
-            if args.is_empty() {
-                d
-            } else {
-                d.update(&args[0].base);
-                absorb_args(d, &args[1..])
-            }
-        }
-        let mut d = absorb_args(d, args);
+        let mut d = absorb_args_bases(d, args);
         let bit_bytes = (bit as u64).to_le_bytes();
         d.update(&bit_bytes);
         let hash = d.finalize();
