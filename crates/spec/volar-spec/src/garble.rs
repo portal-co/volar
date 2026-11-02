@@ -65,7 +65,7 @@ impl<N: VoleArray<u8>> Garble<N> {
         let domain_separator = [0xACu8];
         d.update(&domain_separator);
         d.update(&self.base);
-        for arg in args {
+        for &arg in args {
             d.update(&arg.base);
         }
         let bit_bytes = (bit as u64).to_le_bytes();
