@@ -73,6 +73,15 @@ def and_via_table {n : Nat} (self : Eval n) (other : (Eval n)) (table : (GarbleT
 
 end Eval
 
+namespace Eval
+
+def bitxor {n : Nat} (self : Eval n) (rhs : (Eval n)) : Eval n := 
+  { target := (List.ofFn (fun (i : Fin n) => (self.target[i.val]! ^^^ rhs.target[i.val]!))) }
+
+end Eval
+
+instance {n : Nat} : HXor (Eval n) (Eval n) (Eval n) := ⟨Eval.bitxor⟩
+
 namespace Garble
 
 def zero {n : Nat} : Garble n := 

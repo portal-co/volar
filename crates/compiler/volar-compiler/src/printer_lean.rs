@@ -68,6 +68,8 @@ fn is_len_bound(k: &TraitKind) -> bool {
 /// `N: Div<Uk, Output = O>` projections → `o := n / k`.
 #[derive(Default, Clone)]
 struct LeanCx {
+    /// the struct name for `Self`/`Self::Output` (set for methods)
+    self_ty: Option<String>,
     /// Type-param name → Nat variable name (e.g. "N" → "n").
     len_params: Vec<(String, String)>,
     /// Type param O → (base len var, divisor), from `N: Div<Uk, Output=O>`.
@@ -231,6 +233,12 @@ fn ty_lean(ty: &IrType, cx: &LeanCx) -> Result<String> {
                         // Div<Uk> — divisor from trait_args
                         return Ok(format!("({e} / 8)"));
                     }
+                }
+            }
+            // `<Self as BitXor>::Output` — the self type; cx.self_ty holds it
+            if trait_path.is_none() && *assoc == AssociatedType::Output {
+                if let Some(st) = &cx.self_ty {
+                    return Ok(st.clone());
                 }
             }
             Err(CompilerError::Unsupported(format!(
@@ -855,6 +863,19 @@ fn block_lean_mode(b: &IrBlock, cx: &LeanCx, out: &mut String, in_id: bool) -> R
                 wln!(out, "");
             }
             IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
+                // `return e` as the final statement of a non-Id body is just e
+                if !in_id && b.expr.is_none() && i + 1 == stmts.len() {
+                    if let IrExprKind::Return(inner) = &e.kind {
+                        w!(out, "{pad}");
+                        match inner {
+                            Some(inner) => expr_lean(inner, cx, out)?,
+                            None => w!(out, "()"),
+                        }
+                        wln!(out, "");
+                        i += 1;
+                        continue;
+                    }
+                }
                 w!(out, "{pad}");
                 stmt_expr_lean(e, cx, out)?;
                 wln!(out, "");
@@ -1062,6 +1083,9 @@ fn fn_lean_inner(
     self_ty: Option<String>,
     self_fields: &[String],
 ) -> Result<()> {
+    let mut cx = cx.clone();
+    cx.self_ty = self_ty.clone();
+    let cx = &cx;
     let name = if self_fields.contains(&f.name) {
         format!("{}_m", f.name)
     } else {
@@ -1221,8 +1245,12 @@ pub fn print_module_lean(module: &IrModule<IrFunction>, only: &BTreeSet<String>)
         for imp in &module.impls {
             let self_is =
                 matches!(&imp.self_ty, IrType::Struct { kind, .. } if kind.to_string() == name);
-            // v1: inherent impls only; trait impls become Lean instances later
-            if !self_is || imp.trait_.is_some() {
+            // trait impls: v1 emits BitXor on the struct as an HXor instance
+            // (method goes in the struct namespace like any other)
+            let is_bitxor_self = imp.trait_.as_ref().is_some_and(|t| {
+                matches!(&t.kind, TraitKind::Math(MathTrait::BitXor))
+            }) && self_is;
+            if !self_is || (imp.trait_.is_some() && !is_bitxor_self) {
                 continue;
             }
             // Lean requires callees before callers: methods referenced by
@@ -1272,6 +1300,28 @@ pub fn print_module_lean(module: &IrModule<IrFunction>, only: &BTreeSet<String>)
             }
             if printed {
                 wln!(out, "end {}\n", ident(&name));
+            }
+            if is_bitxor_self {
+                let scx = cx_for(&s.generics, &[]);
+                let mut st = ident(&name);
+                for (p, v) in &scx.len_params {
+                    if scx.div_projections.iter().any(|(q, _, _)| q == p) {
+                        continue;
+                    }
+                    w!(st, " {v}");
+                }
+                let binders: String = scx
+                    .len_params
+                    .iter()
+                    .filter(|(p, _)| !scx.div_projections.iter().any(|(q, _, _)| q == p))
+                    .map(|(_, v)| format!(" {{{v} : Nat}}"))
+                    .collect();
+                wln!(
+                    out,
+                    "instance{binders} : HXor ({st}) ({st}) ({st}) := ⟨{}.bitxor⟩\n",
+                    ident(&name),
+                    binders = binders
+                );
             }
         }
     }

@@ -198,6 +198,83 @@ theorem Eval_open_commutes {N : Type} (d : vole.VoleArray N Std.U8)
     rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]
     simp [u8ToUInt8_xor]
 
+/-- (generated) closure spec: the extracted `volar_spec.garble.GlobalSecret.encode.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` is the
+    conditional pointwise xor. -/
+theorem GlobalSecret_encode_closure_spec {N : Type} (d : vole.VoleArray N Std.U8)
+    (value : Bool) (self : volar_spec.garble.GlobalSecret N) (garble : volar_spec.garble.Garble N) (i : Std.Usize)
+    (hs : i.val < (vecL self.secret.data).length) (ha : i.val < (vecL garble.base.data).length) :
+    volar_spec.garble.GlobalSecret.encode.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut d (value, self, garble) i =
+      ok ((if value = true then xorBytes (vecL self.secret.data) (vecL garble.base.data) i.val
+           else (vecL garble.base.data).getD i.val default), (value, self, garble)) := by
+  have hs' : i.val < (self.secret.data.val).length := hs
+  have ha' : i.val < (garble.base.data.val).length := ha
+  simp only [volar_spec.garble.GlobalSecret.encode.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut,
+    array.Array.Insts.CoreOpsIndexIndexUsizeT.index,
+    alloc.vec.Vec.Insts.CoreOpsIndexIndex.index,
+    core.Slice.Insts.CoreOpsIndexIndex.index,
+    alloc.vec.Vec.Insts.CoreOpsDerefDerefSlice.deref, alloc.vec.Vec.as_slice,
+    rust_primitives.sequence.seq_to_slice,
+    core.Usize.Insts.CoreSliceIndexSliceIndexSliceT.get,
+    rust_primitives.slice.slice_length,
+    rust_primitives.slice.slice_index, Slice.index_usize,
+    UScalar.lt_equiv, Slice.len_val, Slice.length, Slice.getElem?_Usize_eq,
+    eq_true hs', eq_true ha',
+    decide_true, ↓reduceIte, getElem?_pos, spec_ok, bind_tc_ok, lift]
+  cases value <;> simp [xorBytes, vecL, hs, ha, hs', ha',
+    List.getD_eq_getElem?_getD, getElem?_pos]
+  · rfl
+  · rfl
+
+/-- (generated) `volar_spec.garble.GlobalSecret.encode` commutes with the transport. -/
+theorem GlobalSecret_encode_commutes {N : Type} (d : vole.VoleArray N Std.U8)
+    (m : Std.Usize)
+    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)
+    (self : volar_spec.garble.GlobalSecret N) (garble : volar_spec.garble.Garble N) (value : Bool)
+    (hsl : (vecL self.secret.data).length = m.val) (hal : (vecL garble.base.data).length = m.val) :
+    (do let r ← volar_spec.garble.GlobalSecret.encode d self garble value; ok (EvalToNative m.val r)) =
+    ok (GlobalSecret.encode (GlobalSecretToNative m.val self) (GarbleToNative m.val garble) value : Eval m.val) := by
+  have hspec : volar_spec.garble.GlobalSecret.encode d self garble value
+      ⦃ r => vecL r.target.data = List.ofFn (fun j : Fin m.val =>
+          if value = true then xorBytes (vecL self.secret.data) (vecL garble.base.data) j.val
+          else (vecL garble.base.data).getD (↑j) default) ⦄ := by
+    simp only [volar_spec.garble.GlobalSecret.encode]
+    apply spec_bind (from_fn_spec d.arrayArraySizeInst
+      (volar_spec.garble.GlobalSecret.encode.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8 d) m hsize (value, self, garble)
+      (fun j => if value = true then xorBytes (vecL self.secret.data) (vecL garble.base.data) j
+                else (vecL garble.base.data).getD j default)
+      (by
+        intro i hi
+        exact GlobalSecret_encode_closure_spec d value self garble i (by rw [hsl]; exact hi) (by rw [hal]; exact hi)))
+    intro a ha
+    rw [spec_ok]
+    exact ha
+  obtain ⟨r0, hr, hpost⟩ := spec_ok_elim hspec
+  simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hr]
+  simp only []
+  congr 1
+  simp only [EvalToNative, GlobalSecretToNative, GarbleToNative, GlobalSecret.encode, arrToNative]
+  congr 1
+  rw [hpost, List.map_ofFn]
+  apply List.ext_getElem
+  · simp
+  · intro i h1 h2
+    rw [List.getElem_ofFn, List.getElem_ofFn]
+    have hi : i < m.val := by simpa using h1
+    have hb : i < (vecL self.secret.data).length := by rw [hsl]; exact hi
+    have ht : i < (vecL garble.base.data).length := by rw [hal]; exact hi
+    cases value
+    · simp only [Function.comp_apply, Bool.false_eq_true, ↓reduceIte]
+      rw [List.getD_eq_getElem?_getD, List.getElem!_eq_getElem?_getD, List.getElem?_map,
+        List.getElem?_eq_getElem ht]
+      simp [Option.getD_some, Option.map_some]
+    · simp only [Function.comp_apply, eq_self_iff_true, ↓reduceIte, xorBytes]
+      rw [dif_pos ⟨hb, ht⟩]
+      rw [List.getElem!_eq_getElem?_getD, List.getElem!_eq_getElem?_getD]
+      rw [List.getElem?_map, List.getElem?_map]
+      rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]
+      simp [u8ToUInt8_xor]
+
 /-- (generated) closure spec: the extracted `volar_spec.garble.GlobalSecret.not_garble.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` is the
     pointwise xor of the two operands. -/
 theorem GlobalSecret_not_garble_closure_spec {N : Type} (d : vole.VoleArray N Std.U8)
@@ -265,6 +342,73 @@ theorem GlobalSecret_not_garble_commutes {N : Type} (d : vole.VoleArray N Std.U8
     rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]
     simp [u8ToUInt8_xor]
 
+/-- (generated) closure spec: the extracted `volar_spec.garble.BitXorEvalEvalEval.bitxor.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` is the
+    pointwise xor of the two operands. -/
+theorem Eval_bitxor_closure_spec {N : Type} (d : vole.VoleArray N Std.U8)
+    (self : volar_spec.garble.Eval N) (rhs : volar_spec.garble.Eval N) (i : Std.Usize)
+    (hs : i.val < (vecL self.target.data).length) (ha : i.val < (vecL rhs.target.data).length) :
+    volar_spec.garble.BitXorEvalEvalEval.bitxor.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut d (self.target, rhs.target) i =
+      ok (xorBytes (vecL self.target.data) (vecL rhs.target.data) i.val, (self.target, rhs.target)) := by
+  have hs' : i.val < (self.target.data.val).length := hs
+  have ha' : i.val < (rhs.target.data.val).length := ha
+  simp only [volar_spec.garble.BitXorEvalEvalEval.bitxor.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut,
+    array.Array.Insts.CoreOpsIndexIndexUsizeT.index,
+    alloc.vec.Vec.Insts.CoreOpsIndexIndex.index,
+    core.Slice.Insts.CoreOpsIndexIndex.index,
+    alloc.vec.Vec.Insts.CoreOpsDerefDerefSlice.deref, alloc.vec.Vec.as_slice,
+    rust_primitives.sequence.seq_to_slice,
+    core.Usize.Insts.CoreSliceIndexSliceIndexSliceT.get,
+    rust_primitives.slice.slice_length,
+    rust_primitives.slice.slice_index, Slice.index_usize,
+    UScalar.lt_equiv, Slice.len_val, Slice.length, Slice.getElem?_Usize_eq,
+    eq_true hs', eq_true ha',
+    decide_true, ↓reduceIte, getElem?_pos, spec_ok, bind_tc_ok, lift]
+  simp [xorBytes, vecL, hs, ha, hs', ha']
+  rfl
+
+/-- (generated) `volar_spec.garble.Eval.Insts.CoreOpsBitBitXorEvalEval.bitxor` commutes with the transport. -/
+theorem Eval_bitxor_commutes {N : Type} (d : vole.VoleArray N Std.U8)
+    (m : Std.Usize)
+    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)
+    (self : volar_spec.garble.Eval N) (rhs : volar_spec.garble.Eval N)
+    (hsl : (vecL self.target.data).length = m.val) (hal : (vecL rhs.target.data).length = m.val) :
+    (do let r ← volar_spec.garble.Eval.Insts.CoreOpsBitBitXorEvalEval.bitxor d self rhs; ok (EvalToNative m.val r)) =
+    ok (Eval.bitxor (EvalToNative m.val self) (EvalToNative m.val rhs) : Eval m.val) := by
+  have hspec : volar_spec.garble.Eval.Insts.CoreOpsBitBitXorEvalEval.bitxor d self rhs
+      ⦃ r => vecL r.target.data = List.ofFn (fun j : Fin m.val =>
+          xorBytes (vecL self.target.data) (vecL rhs.target.data) j.val) ⦄ := by
+    simp only [volar_spec.garble.Eval.Insts.CoreOpsBitBitXorEvalEval.bitxor]
+    apply spec_bind (from_fn_spec d.arrayArraySizeInst
+      (volar_spec.garble.BitXorEvalEvalEval.bitxor.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8 d) m hsize (self.target, rhs.target)
+      (fun j => xorBytes (vecL self.target.data) (vecL rhs.target.data) j)
+      (by
+        intro i hi
+        exact Eval_bitxor_closure_spec d self rhs i (by rw [hsl]; exact hi) (by rw [hal]; exact hi)))
+    intro a ha
+    rw [spec_ok]
+    exact ha
+  obtain ⟨r0, hr, hpost⟩ := spec_ok_elim hspec
+  simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hr]
+  simp only []
+  congr 1
+  simp only [EvalToNative, EvalToNative, Eval.bitxor, arrToNative]
+  congr 1
+  rw [hpost, List.map_ofFn]
+  apply List.ext_getElem
+  · simp
+  · intro i h1 h2
+    rw [List.getElem_ofFn, List.getElem_ofFn]
+    have hi : i < m.val := by simpa using h1
+    have hb : i < (vecL self.target.data).length := by rw [hsl]; exact hi
+    have ht : i < (vecL rhs.target.data).length := by rw [hal]; exact hi
+    simp only [Function.comp_apply, xorBytes]
+    rw [dif_pos ⟨hb, ht⟩]
+    rw [List.getElem!_eq_getElem?_getD, List.getElem!_eq_getElem?_getD]
+    rw [List.getElem?_map, List.getElem?_map]
+    rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]
+    simp [u8ToUInt8_xor]
+
 -- NOT-BRIDGED (v1):
 --   - struct GarbleTable (fields not all shim u8-arrays)
 --   - method Garble.and_result (body pattern)
@@ -274,9 +418,7 @@ theorem GlobalSecret_not_garble_commutes {N : Type} (d : vole.VoleArray N Std.U8
 --   - method Eval.and_via_table (body pattern)
 --   - method GlobalSecret.new (body pattern)
 --   - method GlobalSecret.secret (body pattern)
---   - method GlobalSecret.encode (body pattern)
 --   - method GlobalSecret.one_wire_eval (body pattern)
 --   - method GlobalSecret.gen_and_table (body pattern)
 --   - method GlobalSecret.gen_and_table_pol (body pattern)
---   - impl Eval (trait impl)
 --   - function absorb_args_bases (free functions not bridged in v1)

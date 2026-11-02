@@ -53,7 +53,7 @@ use alloc::{
     vec::Vec,
 };
 #[cfg(feature = "std")]
-use std::{format, string::String, string::ToString, vec::Vec};
+use std::{format, string::String, string::ToString, vec, vec::Vec};
 
 type Result<T> = std::result::Result<T, CompilerError>;
 
@@ -184,6 +184,9 @@ enum MethodPattern {
     PointwiseCtor { ret: String, rfield: String, pw: Pointwise },
     /// `Array::from_fn(|i| lhs[i] ^ rhs[i])` returned bare — e.g. `Eval.open`.
     PointwiseArray { pw: Pointwise },
+    /// `Ret { rf: Array::from_fn(|i| if c { lhs[i] ^ rhs[i] } else { rhs[i] }) }`
+    /// — e.g. `GlobalSecret.encode`.
+    PointwiseCondCtor { ret: String, rfield: String, cond: String, pw: Pointwise },
     /// `S { f: Default::default(), .. }` — e.g. `Garble.zero`.
     DefaultCtor,
 }
@@ -223,6 +226,46 @@ fn as_pointwise(e: &IrExpr) -> Option<Pointwise> {
     None
 }
 
+/// `if c { lhs[i] ^ rhs[i] } else { rhs[i] }` — the encode shape.
+fn as_pointwise_cond(e: &IrExpr) -> Option<(String, Pointwise)> {
+    if let IrExprKind::ArrayGenerate { elem_ty, index_var, body, .. } = &e.kind {
+        if !matches!(elem_ty.as_deref(), Some(IrType::Primitive(PrimitiveType::U8))) {
+            return None;
+        }
+        let body = match &body.kind {
+            IrExprKind::Block(b) if b.stmts.is_empty() => b.expr.as_ref()?,
+            _ => body,
+        };
+        if let IrExprKind::If { cond, then_branch, else_branch } = &body.kind {
+            let cvar = match &cond.kind {
+                IrExprKind::Var(v) => v.clone(),
+                _ => return None,
+            };
+            let (then_e, else_e) = (then_branch.expr.as_ref()?, else_branch.as_ref()?);
+            let else_e = match &else_e.kind {
+                IrExprKind::Block(b) if b.stmts.is_empty() => b.expr.as_ref()?,
+                _ => else_e,
+            };
+            if let IrExprKind::Binary { op: SpecBinOp::BitXor, left, right } = &then_e.kind {
+                let left = as_operand(left, index_var)?;
+                let right = as_operand(right, index_var)?;
+                // else branch must be exactly the right operand
+                let else_op = as_operand(else_e, index_var)?;
+                if format!("{:?}", else_op.list()) != format!("{:?}", right.list()) {
+                    return None;
+                }
+                return Some((cvar, Pointwise {
+                    op: SpecBinOp::BitXor,
+                    index_var: index_var.clone(),
+                    left,
+                    right,
+                }));
+            }
+        }
+    }
+    None
+}
+
 /// A shim-array-of-u8 field type (extracted side): `array.Array u8 N`.
 fn is_shim_u8_array(ty: &IrType) -> bool {
     matches!(
@@ -231,12 +274,22 @@ fn is_shim_u8_array(ty: &IrType) -> bool {
     )
 }
 
-/// Classify a method body (must be a single tail expression).
+/// Classify a method body (a single tail expression, or a single
+/// `Semi(Return(expr))` statement).
 fn classify(f: &IrFunction) -> Option<MethodPattern> {
-    if !f.body.stmts.is_empty() {
+    let e = if f.body.stmts.is_empty() {
+        f.body.expr.as_ref()?
+    } else if f.body.stmts.len() == 1 && f.body.expr.is_none() {
+        match &f.body.stmts[0].kind {
+            crate::ir::IrStmtKind::Semi(inner) => match &inner.kind {
+                IrExprKind::Return(Some(e)) => e,
+                _ => return None,
+            },
+            _ => return None,
+        }
+    } else {
         return None;
-    }
-    let e = f.body.expr.as_ref()?;
+    };
     match &e.kind {
         IrExprKind::StructExpr { kind, fields, rest, .. } => {
             let _ret = kind_name_of(kind)?;
@@ -248,6 +301,14 @@ fn classify(f: &IrFunction) -> Option<MethodPattern> {
                     return Some(MethodPattern::PointwiseCtor {
                         ret: _ret.to_string(),
                         rfield: fields[0].0.clone(),
+                        pw,
+                    });
+                }
+                if let Some((cond, pw)) = as_pointwise_cond(&fields[0].1) {
+                    return Some(MethodPattern::PointwiseCondCtor {
+                        ret: _ret.to_string(),
+                        rfield: fields[0].0.clone(),
+                        cond,
                         pw,
                     });
                 }
@@ -291,6 +352,7 @@ fn emit_closure_spec(
     param_ty: Option<&str>, // struct type of the param, if any
     param_path: Option<&str>,
     pw: &Pointwise,
+    capture_override: Option<String>,
 ) {
     let lhs = pw.left.list();
     let rhs = pw.right.list();
@@ -298,12 +360,13 @@ fn emit_closure_spec(
         Some(_) => format!("({param} : {} N)", param_path.unwrap()),
         None => format!("({param} : volar_spec.array.Array Std.U8 N)"),
     };
-    // Aeneas captures closure values in first-use order in the body.
+    // Aeneas captures closure values in first-use order in the body
+    // (or by field path for value-receiver trait-impl closures).
     let (cap0, cap1) = {
         let (r0, r1) = (pw.left.root(), pw.right.root());
         if r0 == "self" { ("self".to_string(), param.to_string()) } else { (param.to_string(), "self".to_string()) }
     };
-    let capture = format!("({cap0}, {cap1})");
+    let capture = capture_override.unwrap_or_else(|| format!("({cap0}, {cap1})"));
     w!(out, "\n/-- (generated) closure spec: the extracted `{a_closure}.call_mut` is the\n    pointwise xor of the two operands. -/\n");
     w!(out, "theorem {thm} {{N : Type}} (d : vole.VoleArray N Std.U8)\n");
     w!(out, "    (self : {self_path} N) {param_decl} (i : Std.Usize)\n");
@@ -364,7 +427,7 @@ fn emit_pointwise_ctor(
     let param_path = param_ty.as_deref().map(|pt| amod.path(module, pt));
     emit_closure_spec(
         out, &closure_thm, &a_closure, &self_ty, &a_self, &param, param_ty.as_deref(),
-        param_path.as_deref(), pw,
+        param_path.as_deref(), pw, None,
     );
 
     let lhs = pw.left.list();
@@ -394,11 +457,7 @@ fn emit_pointwise_ctor(
     w!(out, "\n    (hsl : {lhs}.length = m.val) (hal : {rhs}.length = m.val) :\n");
     w!(out, "    (do let r ← {a_method} d self {param}; ok ({ret}ToNative m.val r)) =\n");
     w!(out, "    ok ({self_ty}.{n_method} {self_t} {arg_t} : {ret} m.val) := by\n");
-    let capture = if pw.left.root() == "self" {
-        format!("(self, {param})")
-    } else {
-        format!("({param}, self)")
-    };
+    let capture = default_capture(pw, &param);
     w!(out, "  have hspec : {a_method} d self {param}\n");
     w!(out, "      ⦃ r => vecL r.{rfield}.data = List.ofFn (fun j : Fin m.val =>\n");
     w!(out, "          xorBytes {lhs} {rhs} j.val) ⦄ := by\n");
@@ -476,7 +535,7 @@ fn emit_pointwise_array(
     let param_path = param_ty.as_deref().map(|pt| amod.path(module, pt));
     emit_closure_spec(
         out, &closure_thm, &a_closure, &self_ty, &a_self, &param, param_ty.as_deref(),
-        param_path.as_deref(), pw,
+        param_path.as_deref(), pw, None,
     );
 
     let lhs = pw.left.list();
@@ -505,11 +564,7 @@ fn emit_pointwise_array(
     w!(out, "\n    (hsl : {lhs}.length = m.val) (hal : {rhs}.length = m.val) :\n");
     w!(out, "    (do let a ← {a_method} d self {param}; ok (arrToNative a)) =\n");
     w!(out, "    ok ({self_ty}.{n_method} {self_t} {arg_t}) := by\n");
-    let capture = if pw.left.root() == "self" {
-        format!("(self, {param})")
-    } else {
-        format!("({param}, self)")
-    };
+    let capture = default_capture(pw, &param);
     w!(out, "  have hspec : {a_method} d self {param}\n");
     w!(out, "      ⦃ a => vecL a.data = List.ofFn (fun j : Fin m.val =>\n");
     w!(out, "          xorBytes {lhs} {rhs} j.val) ⦄ := by\n");
@@ -532,6 +587,270 @@ fn emit_pointwise_array(
     w!(out, "  simp only [{self_ty}ToNative{pt_unfold}, {self_ty}.{n_method}, arrToNative]\n");
     // native side: the result list is `List.ofFn fun i => lhs[i]! ^^^ rhs[i]!`
     emit_pointwise_tail(out, &lhs, &rhs);
+    Ok(None)
+}
+
+/// Closure capture pair in first-use order (Aeneas's convention for the
+/// inherent-method closures).
+fn default_capture(pw: &Pointwise, param: &str) -> String {
+    if pw.left.root() == "self" {
+        format!("(self, {param})")
+    } else {
+        format!("({param}, self)")
+    }
+}
+
+/// Emit the closure spec + commutation for a `BitXor` trait impl method
+/// (`Eval.bitxor`): the Aeneas method lives at
+/// `<S>.Insts.CoreOpsBitBitXor{S}{S}.bitxor`, and its value-receiver closure
+/// captures the *fields* (precise capture), not the structs.
+fn emit_bitxor(
+    out: &mut String,
+    amod: &AeneasModule,
+    module: &IrModule<IrFunction>,
+    imp: &IrImpl,
+    fields: &[String],
+    f: &IrFunction,
+    ret: &str,
+    rfield: &str,
+    pw: &Pointwise,
+    bridged: &BTreeSet<String>,
+) -> Result<Option<String>> {
+    let self_ty = struct_name_of_impl(imp)?;
+    let (param, param_ty) = match sole_param(f) {
+        Some(x) => x,
+        None => return skip("bitxor: params"),
+    };
+    let Some(pt) = param_ty.as_deref() else {
+        return skip("bitxor: rhs not a struct");
+    };
+    if pt != self_ty || !bridged.contains(&self_ty) {
+        return skip("bitxor: rhs not the self struct");
+    }
+    let sf = match &pw.left {
+        Operand::SelfField(f) => f.clone(),
+        _ => return skip("bitxor: left not a self field"),
+    };
+    let of = match &pw.right {
+        Operand::StructField(p, f) if *p == param => f.clone(),
+        _ => return skip("bitxor: right not a param field"),
+    };
+    let a_self = amod.path(module, &self_ty);
+    let a_method = format!("{a_self}.Insts.CoreOpsBitBitXor{self_ty}{self_ty}.bitxor");
+    let a_closure = format!(
+        "{}.bitxor.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8",
+        amod.path(module, &format!("BitXor{self_ty}{self_ty}{self_ty}"))
+    );
+
+    let closure_thm = format!("{self_ty}_{}_closure_spec", f.name);
+    let lhs = pw.left.list();
+    let rhs = pw.right.list();
+    let capture = format!("(self.{sf}, {param}.{of})");
+    emit_closure_spec(
+        out, &closure_thm, &a_closure, &self_ty, &a_self, &param, Some(&self_ty),
+        Some(&a_self), pw, Some(capture.clone()),
+    );
+
+    w!(out, "\n/-- (generated) `{a_method}` commutes with the transport. -/\n");
+    w!(out, "theorem {self_ty}_{}_commutes {{N : Type}} (d : vole.VoleArray N Std.U8)\n", f.name);
+    w!(out, "    (m : Std.Usize)\n");
+    w!(out, "    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)\n");
+    w!(out, "    (self : {a_self} N) ({param} : {a_self} N)\n");
+    w!(out, "    (hsl : {lhs}.length = m.val) (hal : {rhs}.length = m.val) :\n");
+    w!(out, "    (do let r ← {a_method} d self {param}; ok ({ret}ToNative m.val r)) =\n");
+    w!(out, "    ok ({self_ty}.bitxor ({self_ty}ToNative m.val self) ({self_ty}ToNative m.val {param}) : {ret} m.val) := by\n");
+    w!(out, "  have hspec : {a_method} d self {param}\n");
+    w!(out, "      ⦃ r => vecL r.{rfield}.data = List.ofFn (fun j : Fin m.val =>\n");
+    w!(out, "          xorBytes {lhs} {rhs} j.val) ⦄ := by\n");
+    w!(out, "    simp only [{a_method}]\n");
+    w!(out, "    apply spec_bind (from_fn_spec d.arrayArraySizeInst\n");
+    w!(out, "      ({a_closure} d) m hsize {capture}\n");
+    w!(out, "      (fun j => xorBytes {lhs} {rhs} j)\n");
+    w!(out, "      (by\n");
+    w!(out, "        intro i hi\n");
+    w!(out, "        exact {closure_thm} d self {param} i (by rw [hsl]; exact hi) (by rw [hal]; exact hi)))\n");
+    w!(out, "    intro a ha\n");
+    w!(out, "    rw [spec_ok]\n");
+    w!(out, "    exact ha\n");
+    w!(out, "  obtain ⟨r0, hr, hpost⟩ := spec_ok_elim hspec\n");
+    w!(out, "  simp only [Bind.bind, Aeneas.Std.bind]\n");
+    w!(out, "  rw [hr]\n");
+    w!(out, "  simp only []\n");
+    w!(out, "  congr 1\n");
+    w!(out, "  simp only [{ret}ToNative, {self_ty}ToNative, {self_ty}.bitxor, arrToNative]\n");
+    w!(out, "  congr 1\n");
+    emit_pointwise_tail(out, &lhs, &rhs);
+    Ok(None)
+}
+
+/// Emit the closure spec + commutation for a conditional pointwise
+/// constructor (`Ret { rf: from_fn(|i| if c { lhs[i] ^ rhs[i] } else rhs[i]) }`).
+#[allow(clippy::too_many_arguments)]
+fn emit_pointwise_cond_ctor(
+    out: &mut String,
+    amod: &AeneasModule,
+    module: &IrModule<IrFunction>,
+    imp: &IrImpl,
+    fields: &[String],
+    f: &IrFunction,
+    ret: &str,
+    rfield: &str,
+    cond: &str,
+    pw: &Pointwise,
+    bridged: &BTreeSet<String>,
+) -> Result<Option<String>> {
+    let self_ty = struct_name_of_impl(imp)?;
+    // two non-self params: the cond (Bool) and the array/struct
+    let arr_param = pw
+        .right
+        .root();
+    if arr_param == "self" {
+        return skip("cond-ctor: right operand is self");
+    }
+    let cond_param = if cond == arr_param { None } else { Some(cond.to_string()) };
+    let Some(cond_param) = cond_param else {
+        return skip("cond-ctor: cond is the array param");
+    };
+    // locate param types
+    let mut arr_ty: Option<Option<String>> = None;
+    let mut cond_ty_ok = false;
+    for p in &f.params {
+        let inner = match &p.ty {
+            IrType::Reference { elem, .. } => elem.as_ref(),
+            t => t,
+        };
+        if p.name == arr_param {
+            arr_ty = Some(match inner {
+                IrType::Struct { kind, .. } => kind_name_of(kind).map(|s| s.to_string()),
+                IrType::Array { elem, .. }
+                    if matches!(elem.as_ref(), IrType::Primitive(PrimitiveType::U8)) =>
+                {
+                    None
+                }
+                _ => return skip("cond-ctor: bad array param type"),
+            });
+        } else if p.name == cond_param {
+            cond_ty_ok = matches!(inner, IrType::Primitive(PrimitiveType::Bool));
+        }
+    }
+    if !cond_ty_ok {
+        return skip("cond-ctor: cond param not Bool");
+    }
+    let Some(arr_ty) = arr_ty else {
+        return skip("cond-ctor: array param not found");
+    };
+    let a_method = aeneas_method(amod, module, &self_ty, &f.name, fields);
+    let a_closure = format!("{a_method}.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8");
+    let a_self = amod.path(module, &self_ty);
+    let n_method = native_method(&f.name, fields);
+
+    let lhs = pw.left.list(); // self field (xor operand 1)
+    let rhs = pw.right.list(); // param (xor operand 2 and else-branch)
+    // capture order: first-use order — the cond var, then the operands' roots
+    let mut caps: Vec<String> = vec![cond_param.clone()];
+    for r in [pw.left.root(), pw.right.root()] {
+        if !caps.contains(&r) {
+            caps.push(r);
+        }
+    }
+    let capture = format!("({})", caps.join(", "));
+    let closure_thm = format!("{self_ty}_{}_closure_spec", f.name);
+    let arr_decl = match &arr_ty {
+        Some(pt) => format!("({arr_param} : {} N)", amod.path(module, pt)),
+        None => format!("({arr_param} : volar_spec.array.Array Std.U8 N)"),
+    };
+    // closure spec
+    w!(out, "\n/-- (generated) closure spec: the extracted `{a_closure}.call_mut` is the\n    conditional pointwise xor. -/\n");
+    w!(out, "theorem {closure_thm} {{N : Type}} (d : vole.VoleArray N Std.U8)\n");
+    w!(out, "    ({cond_param} : Bool) (self : {a_self} N) {arr_decl} (i : Std.Usize)\n");
+    w!(out, "    (hs : i.val < {lhs}.length) (ha : i.val < {rhs}.length) :\n");
+    w!(out, "    {a_closure}.call_mut d {capture} i =\n");
+    w!(out, "      ok ((if {cond_param} = true then xorBytes {lhs} {rhs} i.val\n");
+    w!(out, "           else {rhs}.getD i.val default), {capture}) := by\n");
+    w!(out, "  have hs' : i.val < {}.length := hs\n", pw.left.val_list());
+    w!(out, "  have ha' : i.val < {}.length := ha\n", pw.right.val_list());
+    w!(out, "  simp only [{a_closure}.call_mut,\n");
+    w!(out, "    array.Array.Insts.CoreOpsIndexIndexUsizeT.index,\n");
+    w!(out, "    alloc.vec.Vec.Insts.CoreOpsIndexIndex.index,\n");
+    w!(out, "    core.Slice.Insts.CoreOpsIndexIndex.index,\n");
+    w!(out, "    alloc.vec.Vec.Insts.CoreOpsDerefDerefSlice.deref, alloc.vec.Vec.as_slice,\n");
+    w!(out, "    rust_primitives.sequence.seq_to_slice,\n");
+    w!(out, "    core.Usize.Insts.CoreSliceIndexSliceIndexSliceT.get,\n");
+    w!(out, "    rust_primitives.slice.slice_length,\n");
+    w!(out, "    rust_primitives.slice.slice_index, Slice.index_usize,\n");
+    w!(out, "    UScalar.lt_equiv, Slice.len_val, Slice.length, Slice.getElem?_Usize_eq,\n");
+    w!(out, "    eq_true hs', eq_true ha',\n");
+    w!(out, "    decide_true, ↓reduceIte, getElem?_pos, spec_ok, bind_tc_ok, lift]\n");
+    w!(out, "  cases {cond_param} <;> simp [xorBytes, vecL, hs, ha, hs', ha',\n");
+    w!(out, "    List.getD_eq_getElem?_getD, getElem?_pos]\n");
+    w!(out, "  · rfl\n  · rfl\n");
+
+    // commutation
+    let self_t = format!("({self_ty}ToNative m.val self)");
+    let arg_t = match &pw.right {
+        Operand::StructField(p, _) => {
+            let pt = arr_ty.as_deref().unwrap();
+            if !bridged.contains(pt) {
+                return skip("cond-ctor: param struct not bridged");
+            }
+            format!("({pt}ToNative m.val {p})")
+        }
+        Operand::BareArray(p) => format!("(arrToNative {p})"),
+        _ => return skip("cond-ctor: bad right operand"),
+    };
+    w!(out, "\n/-- (generated) `{a_method}` commutes with the transport. -/\n");
+    w!(out, "theorem {self_ty}_{}_commutes {{N : Type}} (d : vole.VoleArray N Std.U8)\n", f.name);
+    w!(out, "    (m : Std.Usize)\n");
+    w!(out, "    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)\n");
+    w!(out, "    (self : {a_self} N) {arr_decl} ({cond_param} : Bool)\n");
+    w!(out, "    (hsl : {lhs}.length = m.val) (hal : {rhs}.length = m.val) :\n");
+    w!(out, "    (do let r ← {a_method} d self {arr_param} {cond_param}; ok ({ret}ToNative m.val r)) =\n");
+    w!(out, "    ok ({self_ty}.{n_method} {self_t} {arg_t} {cond_param} : {ret} m.val) := by\n");
+    w!(out, "  have hspec : {a_method} d self {arr_param} {cond_param}\n");
+    w!(out, "      ⦃ r => vecL r.{rfield}.data = List.ofFn (fun j : Fin m.val =>\n");
+    w!(out, "          if {cond_param} = true then xorBytes {lhs} {rhs} j.val\n");
+    w!(out, "          else {rhs}.getD (↑j) default) ⦄ := by\n");
+    w!(out, "    simp only [{a_method}]\n");
+    w!(out, "    apply spec_bind (from_fn_spec d.arrayArraySizeInst\n");
+    w!(out, "      ({a_closure} d) m hsize {capture}\n");
+    w!(out, "      (fun j => if {cond_param} = true then xorBytes {lhs} {rhs} j\n");
+    w!(out, "                else {rhs}.getD j default)\n");
+    w!(out, "      (by\n");
+    w!(out, "        intro i hi\n");
+    w!(out, "        exact {closure_thm} d {cond_param} self {arr_param} i (by rw [hsl]; exact hi) (by rw [hal]; exact hi)))\n");
+    w!(out, "    intro a ha\n");
+    w!(out, "    rw [spec_ok]\n");
+    w!(out, "    exact ha\n");
+    w!(out, "  obtain ⟨r0, hr, hpost⟩ := spec_ok_elim hspec\n");
+    w!(out, "  simp only [Bind.bind, Aeneas.Std.bind]\n");
+    w!(out, "  rw [hr]\n");
+    w!(out, "  simp only []\n");
+    w!(out, "  congr 1\n");
+    let pt_unfold = match &arr_ty {
+        Some(pt) => format!(", {pt}ToNative"),
+        None => String::new(),
+    };
+    w!(out, "  simp only [{ret}ToNative, {self_ty}ToNative{pt_unfold}, {self_ty}.{n_method}, arrToNative]\n");
+    w!(out, "  congr 1\n");
+    w!(out, "  rw [hpost, List.map_ofFn]\n");
+    w!(out, "  apply List.ext_getElem\n");
+    w!(out, "  · simp\n");
+    w!(out, "  · intro i h1 h2\n");
+    w!(out, "    rw [List.getElem_ofFn, List.getElem_ofFn]\n");
+    w!(out, "    have hi : i < m.val := by simpa using h1\n");
+    w!(out, "    have hb : i < {lhs}.length := by rw [hsl]; exact hi\n");
+    w!(out, "    have ht : i < {rhs}.length := by rw [hal]; exact hi\n");
+    w!(out, "    cases {cond_param}\n");
+    w!(out, "    · simp only [Function.comp_apply, Bool.false_eq_true, ↓reduceIte]\n");
+    w!(out, "      rw [List.getD_eq_getElem?_getD, List.getElem!_eq_getElem?_getD, List.getElem?_map,\n");
+    w!(out, "        List.getElem?_eq_getElem ht]\n");
+    w!(out, "      simp [Option.getD_some, Option.map_some]\n");
+    w!(out, "    · simp only [Function.comp_apply, eq_self_iff_true, ↓reduceIte, xorBytes]\n");
+    w!(out, "      rw [dif_pos ⟨hb, ht⟩]\n");
+    w!(out, "      rw [List.getElem!_eq_getElem?_getD, List.getElem!_eq_getElem?_getD]\n");
+    w!(out, "      rw [List.getElem?_map, List.getElem?_map]\n");
+    w!(out, "      rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]\n");
+    w!(out, "      simp [u8ToUInt8_xor]\n");
     Ok(None)
 }
 
@@ -658,7 +977,10 @@ pub fn print_module_lean_bridge(
             skipped.push(format!("impl {self_name} (struct not bridged)"));
             continue;
         }
-        if imp.trait_.is_some() {
+        let is_bitxor = imp.trait_.as_ref().is_some_and(|t| {
+            matches!(&t.kind, crate::ir::TraitKind::Math(crate::ir::MathTrait::BitXor))
+        });
+        if imp.trait_.is_some() && !is_bitxor {
             skipped.push(format!("impl {self_name} (trait impl)"));
             continue;
         }
@@ -671,12 +993,22 @@ pub fn print_module_lean_bridge(
             let crate::ir::IrImplItem::Method(f) = item else { continue };
             let r = match classify(f) {
                 Some(MethodPattern::PointwiseCtor { ret, rfield, pw }) => {
-                    emit_pointwise_ctor(
-                        &mut out, &amod, module, imp, fields, f, &ret, &rfield, &pw, &bridged,
-                    )?
+                    if is_bitxor {
+                        emit_bitxor(&mut out, &amod, module, imp, fields, f, &ret, &rfield, &pw, &bridged)?
+                    } else {
+                        emit_pointwise_ctor(
+                            &mut out, &amod, module, imp, fields, f, &ret, &rfield, &pw, &bridged,
+                        )?
+                    }
                 }
                 Some(MethodPattern::PointwiseArray { pw }) => {
                     emit_pointwise_array(&mut out, &amod, module, imp, fields, f, &pw, &bridged)?
+                }
+                Some(MethodPattern::PointwiseCondCtor { ret, rfield, cond, pw }) => {
+                    emit_pointwise_cond_ctor(
+                        &mut out, &amod, module, imp, fields, f, &ret, &rfield, &cond, &pw,
+                        &bridged,
+                    )?
                 }
                 Some(MethodPattern::DefaultCtor) => {
                     emit_default_ctor(&mut out, &amod, module, imp, fields, f)?
