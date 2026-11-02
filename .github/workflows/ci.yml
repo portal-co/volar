@@ -70,7 +70,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Regenerate derived specs
-        run: cargo xtask gen-specs && git diff --exit-code
+        # Cargo.lock is expected to drift here: CI re-locks the volar.git
+        # self-deps to the pushed HEAD. Only the generated artifacts matter.
+        run: |
+          cargo xtask gen-specs
+          git diff --exit-code --             packages/volar-spec-ts/generated.ts             crates/compiler/volar-compiler/volar_ts_generated.ts             crates/compiler/volar-compiler/volar_dyn_generated.rs             crates/spec/volar-spec-lean/             crates/spec/volar-spec-dyn/src/generated.rs
       - name: Fail if any generated file is stale
         run: |
           git diff --exit-code \
