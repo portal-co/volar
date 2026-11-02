@@ -67,7 +67,8 @@ impl<N: VoleArray<u8>> Garble<N> {
         for arg in args {
             d.update(&arg.base);
         }
-        d.update(&(bit as u64).to_le_bytes());
+        let bit_bytes = (bit as u64).to_le_bytes();
+        d.update(&bit_bytes);
         let hash = d.finalize();
         Garble {
             base: Array::<u8, N>::from_fn(|i| hash[i]),
