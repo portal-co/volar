@@ -26,10 +26,3 @@ generate-ts = [
 # `cargo xtask ...` fails with "no such command" and CI's check-generated job
 # (which runs `cargo xtask check-specs`) cannot run at all.
 xtask = ["run", "--package", "xtask", "--"]
-
-# LOCAL dev-worktree patch (untracked intent): build the workspace's
-# git-self-deps from this worktree. Do not commit this section.
-[patch."https://github.com/portal-co/volar.git"]
-volar-compiler = { path = "/private/tmp/volar-dev/volar/crates/compiler/volar-compiler" }
-volar-compiler-passes = { path = "/private/tmp/volar-dev/volar/crates/compiler/volar-compiler-passes" }
-volar-compiler-common = { path = "/private/tmp/volar-dev/volar/crates/compiler/volar-compiler-common" }
