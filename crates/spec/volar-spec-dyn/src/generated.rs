@@ -479,6 +479,12 @@ pub struct GateCertificate {
     pub interval_true: (u64, u64),
 }
 
+#[derive(Debug, Default)]
+pub struct RoleKeys {
+    pub enc: [[u8; BLOCK_LEN]; NK_ROUND_KEYS],
+    pub mac: [[u8; BLOCK_LEN]; NK_ROUND_KEYS],
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PaperProfile {
     pub security_bits: usize,
@@ -7735,6 +7741,11 @@ pub fn key_expansion(mut key: &[u8; BLOCK]) -> [[u8; BLOCK]; NK_ROUND_KEYS]
 pub fn encrypt_block(mut key: &[u8; BLOCK], mut plain: &[u8; BLOCK]) -> [u8; BLOCK]
 {
     let round_keys = key_expansion(key);
+    encrypt_block_with_keys(&round_keys, plain)
+}
+
+pub fn encrypt_block_with_keys(mut round_keys: &[[u8; BLOCK]; NK_ROUND_KEYS], mut plain: &[u8; BLOCK]) -> [u8; BLOCK]
+{
     let mut state = *plain;
     add_round_key(&mut state, &round_keys[0]);
     for r in 1.. NR{
@@ -9725,6 +9736,112 @@ pub fn from_bool(mut b: bool, mut q: u64) -> u64
 } else {
     FALSE
 }
+}
+
+pub fn derive_roles(mut key: &[u8; BLOCK_LEN]) -> RoleKeys
+{
+    let zero = [(0 as u8); BLOCK_LEN];
+    let mut one = [(0 as u8); BLOCK_LEN];
+    one[BLOCK_LEN - 1] = 1;
+    let enc_key = encrypt_block_with_keys(&key_expansion(key), &zero);
+    let mac_key = encrypt_block_with_keys(&key_expansion(key), &one);
+    RoleKeys { enc: key_expansion(&enc_key), mac: key_expansion(&mac_key) }
+}
+
+pub fn dbl(mut block: &[u8; BLOCK_LEN]) -> [u8; BLOCK_LEN]
+{
+    let mut out = [(0 as u8); BLOCK_LEN];
+    let mut carry = 0 as u8;
+    for i in 0..BLOCK_LEN.rev(){
+    let next_carry = block[i] >> 7;
+    out[i] = ((block[i] << 1) | carry);
+    carry = next_carry;
+};
+    if carry == 1{
+    out[BLOCK_LEN - 1] ^= 135;
+};
+    out
+}
+
+pub fn cmac(mut mac_keys: &[[u8; BLOCK_LEN]; NK_ROUND_KEYS], mut msg: &[u8]) -> [u8; BLOCK_LEN]
+{
+    let l = encrypt_block_with_keys(mac_keys, &[(0 as u8); BLOCK_LEN]);
+    let k1 = dbl(&l);
+    let k2 = dbl(&k1);
+    let complete = !msg.is_empty() && ((msg.len() % BLOCK_LEN) == 0);
+    let n_blocks = if complete{
+    msg.len() / BLOCK_LEN
+} else {
+    (msg.len() / BLOCK_LEN) + 1
+};
+    let mut state = [(0 as u8); BLOCK_LEN];
+    for block_idx in 0.. n_blocks{
+    let is_last = (block_idx + 1) == n_blocks;
+    let mut block = [(0 as u8); BLOCK_LEN];
+    if is_last{
+    if complete{
+    block.copy_from_slice(&msg[(block_idx * BLOCK_LEN)..((block_idx + 1) * BLOCK_LEN)]);
+    for i in 0.. BLOCK_LEN{
+    block[i] ^= k1[i];
+}
+} else {
+    let rest = msg.len() - (block_idx * BLOCK_LEN);
+    block[..rest].copy_from_slice(&msg[(block_idx * BLOCK_LEN)..]);
+    block[rest] = 128;
+    for i in 0.. BLOCK_LEN{
+    block[i] ^= k2[i];
+}
+}
+} else {
+    block.copy_from_slice(&msg[(block_idx * BLOCK_LEN)..((block_idx + 1) * BLOCK_LEN)]);
+};
+    for i in 0.. BLOCK_LEN{
+    state[i] ^= block[i];
+};
+    state = encrypt_block_with_keys(mac_keys, &state);
+};
+    state
+}
+
+pub fn ctr_block(mut enc_keys: &[[u8; BLOCK_LEN]; NK_ROUND_KEYS], mut nonce: &[u8; BLOCK_LEN], mut i: u64) -> [u8; BLOCK_LEN]
+{
+    let counter = u128::from_be_bytes(*nonce).wrapping_add((i as u128));
+    encrypt_block_with_keys(enc_keys, &counter.to_be_bytes())
+}
+
+pub fn aes128_etm_seal(mut key: &[u8; BLOCK_LEN], mut nonce: &[u8; BLOCK_LEN], mut pt: &[u8]) -> (Vec<u8>, [u8; BLOCK_LEN])
+{
+    let roles = derive_roles(key);
+    let mut ct = Vec::with_capacity(pt.len());
+    for (i, chunk) in pt.chunks(BLOCK_LEN).enumerate(){
+    let ks = ctr_block(&roles.enc, nonce, (i as u64));
+    ct.extend(chunk.iter().zip(ks.iter()).map(|(p, k)| (p ^ k)));
+};
+    let mut msg = Vec::with_capacity(((BLOCK_LEN + ct.len()) + 8));
+    msg.extend_from_slice(nonce);
+    msg.extend_from_slice(&ct);
+    msg.extend_from_slice(&((pt.len() as u64) * 8).to_be_bytes());
+    let tag = cmac(&roles.mac, &msg);
+    (ct, tag)
+}
+
+pub fn aes128_etm_open(mut key: &[u8; BLOCK_LEN], mut nonce: &[u8; BLOCK_LEN], mut ct: &[u8], mut tag: &[u8; BLOCK_LEN]) -> Option<Vec<u8>>
+{
+    let roles = derive_roles(key);
+    let mut msg = Vec::with_capacity(((BLOCK_LEN + ct.len()) + 8));
+    msg.extend_from_slice(nonce);
+    msg.extend_from_slice(ct);
+    msg.extend_from_slice(&((ct.len() as u64) * 8).to_be_bytes());
+    let computed = cmac(&roles.mac, &msg);
+    if computed != *tag{
+    return None;
+};
+    let mut pt = Vec::with_capacity(ct.len());
+    for (i, chunk) in ct.chunks(BLOCK_LEN).enumerate(){
+    let ks = ctr_block(&roles.enc, nonce, (i as u64));
+    pt.extend(chunk.iter().zip(ks.iter()).map(|(c, k)| (c ^ k)));
+};
+    Some(pt)
 }
 
 pub fn encode_label_16(mut label: [u8; 16]) -> [u64; 3]

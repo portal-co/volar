@@ -3155,6 +3155,21 @@ export class GateCertificate {
   }
 }
 
+export class RoleKeys {
+  $fenc!: bigint[][];
+  $fmac!: bigint[][];
+
+  constructor(init: {
+    $fenc: bigint[][],
+    $fmac: bigint[][]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fenc: __zeroValue(this.$fenc), $fmac: __zeroValue(this.$fmac) }) as this;
+  }
+}
+
 export class PaperProfile {
   $fsecurity_bits!: bigint;
   $fring_degree!: bigint;
@@ -9012,6 +9027,7 @@ export const KECCAK_RNDC = [1n, 32898n, 9223372036854808714n, 922337203900229222
 export const KECCAK_ROTC = [1n, 3n, 6n, 10n, 15n, 21n, 28n, 36n, 45n, 55n, 2n, 14n, 27n, 41n, 56n, 8n, 25n, 43n, 62n, 18n, 39n, 61n, 20n, 44n];
 export const KECCAK_PILN = [10n, 7n, 11n, 17n, 18n, 3n, 5n, 16n, 8n, 21n, 24n, 4n, 15n, 23n, 19n, 13n, 12n, 2n, 20n, 14n, 22n, 9n, 6n, 1n];
 export const FALSE = 0n;
+export const BLOCK_LEN = BLOCK;
 export const SECURITY_BITS = 128n;
 export const PAPER_PROFILE = new PaperProfile({ $fsecurity_bits: SECURITY_BITS, $fring_degree: 4096n, $fmodulus_bits: 109n, $fbatch_messages: 699050n });
 export const REFERENCE_PLAINTEXT_MODULUS = 1125899906826241n;
@@ -9192,6 +9208,41 @@ export function add_to_upper_word(iv: bigint[], tweak: bigint)
 export function aead_pad(n: bigint): bigint
 {
   return fieldShl(128n, fieldSub(56n, fieldMul(8n, n)));
+}
+
+export function aes128_etm_open(key: bigint[], nonce: bigint[], ct: bigint[], tag: bigint[]): (Vec<bigint> | undefined)
+{
+  const roles = derive_roles(key);
+  let msg = ([] as any[]);
+  msg.push(...(nonce));
+  msg.push(...(ct));
+  msg.push(...([((fieldMul(BigInt(BigInt(ct.length)), 8n)) >> 24n) & 0xFFn, ((fieldMul(BigInt(BigInt(ct.length)), 8n)) >> 16n) & 0xFFn, ((fieldMul(BigInt(BigInt(ct.length)), 8n)) >> 8n) & 0xFFn, (fieldMul(BigInt(BigInt(ct.length)), 8n)) & 0xFFn]));
+  const computed = cmac(roles.$fmac, msg);
+  if (!__equals(computed, tag))   {
+    return undefined;
+  }
+  let pt = ([] as any[]);
+  for (const [i, chunk] of __chunks(ct, Number(BLOCK_LEN)).map((__enum_a: any, __enum_i: number) => [BigInt(__enum_i), __enum_a] as [bigint, typeof __enum_a]))   {
+    const ks = ctr_block(roles.$fenc, nonce, BigInt(i));
+    pt.push(...(chunk.map((__a: any, __i: number) => [__a, ks[__i]] as [typeof __a, any]).map(([c, k]: any) => fieldBitxor(c, k))));
+  }
+  return pt;
+}
+
+export function aes128_etm_seal(key: bigint[], nonce: bigint[], pt: bigint[]): [Vec<bigint>, bigint[]]
+{
+  const roles = derive_roles(key);
+  let ct = ([] as any[]);
+  for (const [i, chunk] of __chunks(pt, Number(BLOCK_LEN)).map((__enum_a: any, __enum_i: number) => [BigInt(__enum_i), __enum_a] as [bigint, typeof __enum_a]))   {
+    const ks = ctr_block(roles.$fenc, nonce, BigInt(i));
+    ct.push(...(chunk.map((__a: any, __i: number) => [__a, ks[__i]] as [typeof __a, any]).map(([p, k]: any) => fieldBitxor(p, k))));
+  }
+  let msg = ([] as any[]);
+  msg.push(...(nonce));
+  msg.push(...(ct));
+  msg.push(...([((fieldMul(BigInt(BigInt(pt.length)), 8n)) >> 24n) & 0xFFn, ((fieldMul(BigInt(BigInt(pt.length)), 8n)) >> 16n) & 0xFFn, ((fieldMul(BigInt(BigInt(pt.length)), 8n)) >> 8n) & 0xFFn, (fieldMul(BigInt(BigInt(pt.length)), 8n)) & 0xFFn]));
+  const tag = cmac(roles.$fmac, msg);
+  return [ct, tag];
 }
 
 export function aes_ctr_prg(seed: bigint[], iv: bigint[], tweak: bigint, out_bytes: bigint): Vec<bigint>
@@ -10374,6 +10425,46 @@ export function circuit_bootstrap(n_lwe: bigint, big_n: bigint, log_q: bigint, l
   return new BinfheRgswCiphertextDyn({ $frows: rows, $fn: 0n, $fell: 0n });
 }
 
+export function cmac(mac_keys: bigint[][], msg: bigint[]): bigint[]
+{
+  const l = encrypt_block_with_keys(mac_keys, Array.from({length: Number(BLOCK_LEN)}, () => ((0n) & 0xFFn)));
+  const k1 = dbl(l);
+  const k2 = dbl(k1);
+  const complete = (!(msg.length === 0) && __equals((BigInt(msg.length) % BLOCK_LEN), 0n));
+  const n_blocks = (() => { if (complete) {
+  return (BigInt(msg.length) / BLOCK_LEN);
+} else {
+  return fieldAdd((BigInt(msg.length) / BLOCK_LEN), 1n);
+} })();
+  let state = Array.from({length: Number(BLOCK_LEN)}, () => ((0n) & 0xFFn));
+  for (let block_idx = 0n; block_idx < n_blocks; block_idx += 1n)   {
+    const is_last = __equals(fieldAdd(block_idx, 1n), n_blocks);
+    let block = Array.from({length: Number(BLOCK_LEN)}, () => ((0n) & 0xFFn));
+    if (is_last)     {
+      if (complete)       {
+        (block).splice(0, (msg.slice(Number(fieldMul(block_idx, BLOCK_LEN)), Number(fieldMul(fieldAdd(block_idx, 1n), BLOCK_LEN)))).length, ...(msg.slice(Number(fieldMul(block_idx, BLOCK_LEN)), Number(fieldMul(fieldAdd(block_idx, 1n), BLOCK_LEN)))));
+        for (let i = 0n; i < BLOCK_LEN; i += 1n)         {
+          block[Number(i)] = fieldBitxor(block[Number(i)], k1[Number(i)]);
+        }
+      } else       {
+        const rest = fieldSub(BigInt(msg.length), fieldMul(block_idx, BLOCK_LEN));
+        (block.slice(0, Number(rest))).splice(0, (msg.slice(Number(fieldMul(block_idx, BLOCK_LEN)))).length, ...(msg.slice(Number(fieldMul(block_idx, BLOCK_LEN)))));
+        block[Number(rest)] = 128n;
+        for (let i = 0n; i < BLOCK_LEN; i += 1n)         {
+          block[Number(i)] = fieldBitxor(block[Number(i)], k2[Number(i)]);
+        }
+      }
+    } else     {
+      (block).splice(0, (msg.slice(Number(fieldMul(block_idx, BLOCK_LEN)), Number(fieldMul(fieldAdd(block_idx, 1n), BLOCK_LEN)))).length, ...(msg.slice(Number(fieldMul(block_idx, BLOCK_LEN)), Number(fieldMul(fieldAdd(block_idx, 1n), BLOCK_LEN)))));
+    }
+    for (let i = 0n; i < BLOCK_LEN; i += 1n)     {
+      state[Number(i)] = fieldBitxor(state[Number(i)], block[Number(i)]);
+    }
+    state = encrypt_block_with_keys(mac_keys, state);
+  }
+  return state;
+}
+
 export function cmp4(a: bigint[], b: bigint[]): Ordering
 {
   for (const i of (Array.from({length: Number(4n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
@@ -10572,6 +10663,12 @@ export function cross_term<S>(ctx: { defaultS: () => any, UClass: { new(...args:
   return t;
 }
 
+export function ctr_block(enc_keys: bigint[][], nonce: bigint[], i: bigint): bigint[]
+{
+  const counter = wrappingAdd(u128.from_be_bytes(nonce), (i as unknown as bigint), 128);
+  return encrypt_block_with_keys(enc_keys, [((counter) >> 24n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 8n) & 0xFFn, (counter) & 0xFFn]);
+}
+
 export function cuckoo_insert(seed: bigint[], n: bigint, t: bigint, points: bigint[]): Vec<(bigint | undefined)>
 {
   const m = cuckoo_table_size(t);
@@ -10603,6 +10700,21 @@ export function cuckoo_insert(seed: bigint[], n: bigint, t: bigint, points: bigi
 export function cuckoo_table_size(t: bigint): bigint
 {
   return BigInt(Math.max(Number((((() => { const __a = t; const __b = 3n; const __result = __a * __b; return __result < 0n ? 0n : (__result > 18446744073709551615n ? 18446744073709551615n : __result); })()) + (2n) - 1n) / (2n)), Number(fieldAdd(t, 1n))));
+}
+
+export function dbl(block: bigint[]): bigint[]
+{
+  let out = Array.from({length: Number(BLOCK_LEN)}, () => ((0n) & 0xFFn));
+  let carry = ((0n) & 0xFFn);
+  for (const i of (Array.from({length: Number(BLOCK_LEN - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
+    const next_carry = fieldShr(block[Number(i)], 7n);
+    out[Number(i)] = fieldBitor(fieldShl(block[Number(i)], 1n), carry);
+    carry = next_carry;
+  }
+  if (__equals(carry, 1n))   {
+    out[Number(fieldSub(BLOCK_LEN, 1n))] = fieldBitxor(out[Number(fieldSub(BLOCK_LEN, 1n))], 135n);
+  }
+  return out;
 }
 
 export function debug_check_pool_written(written: boolean, slot: bigint)
@@ -10864,6 +10976,16 @@ export function derive_and_q<N, T>(n: bigint, delta: Delta<N, any>, q_a: QDyn<an
   const lhs = fieldAdd(fieldMul(__clone(q_a.$fq[Number(i)]), __clone(q_b.$fq[Number(i)])), __clone(hat[Number(i)]));
   return fieldMul(lhs, delta.$fdelta[Number(i)].invert());
 })()), $fn: 0n });
+}
+
+export function derive_roles(key: bigint[]): RoleKeys
+{
+  const zero = Array.from({length: Number(BLOCK_LEN)}, () => ((0n) & 0xFFn));
+  let one = Array.from({length: Number(BLOCK_LEN)}, () => ((0n) & 0xFFn));
+  one[Number(fieldSub(BLOCK_LEN, 1n))] = 1n;
+  const enc_key = encrypt_block_with_keys(key_expansion(key), zero);
+  const mac_key = encrypt_block_with_keys(key_expansion(key), one);
+  return new RoleKeys({ $fenc: key_expansion(enc_key), $fmac: key_expansion(mac_key) });
 }
 
 export function determination_bit(w0_lsb: boolean, pi: boolean): boolean
@@ -11221,6 +11343,11 @@ export function encode_zq_vec(v: Zq[]): Vec<bigint>
 export function encrypt_block(key: bigint[], plain: bigint[]): bigint[]
 {
   const round_keys = key_expansion(key);
+  return encrypt_block_with_keys(round_keys, plain);
+}
+
+export function encrypt_block_with_keys(round_keys: bigint[][], plain: bigint[]): bigint[]
+{
   let state = plain;
   add_round_key(state, round_keys[Number(0n)]);
   for (let r = 1n; r < NR; r += 1n)   {
