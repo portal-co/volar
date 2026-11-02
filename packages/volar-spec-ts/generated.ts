@@ -70,6 +70,13 @@ export type DigestImpl = Sha3_256;
 export type Base = LweBaseOtDyn;
 export type Zq = bigint;
 export type Block = bigint[];
+export type Log2<N> = number /* N::Output */;
+export type WarpDigest = bigint[];
+export type LabelPoly = Vec<bigint>;
+export type Limb = Vec<bigint>;
+export type RqPoly = Vec<bigint>;
+export type RpPoly = Vec<bigint>;
+export type WireStates = Vec<WireState>;
 
 export class U256 {
   [0]!: bigint[];
@@ -475,30 +482,60 @@ export class CommitmentCoreDyn<D> {
   }
 }
 
-export class DeltaDyn<T> {
-  $fn!: bigint;
+export class NttParams {
+  $fdegree!: bigint;
+  $fmodulus!: bigint;
+
+  constructor(init: {
+    $fdegree: bigint,
+    $fmodulus: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fdegree: __zeroValue(this.$fdegree), $fmodulus: __zeroValue(this.$fmodulus) }) as this;
+  }
+
+  modulus_bits(): bigint
+  {
+    return fieldSub(64n, ((__value) => { let __bits = 0n; while (__value !== 0n) { __value >>= 1n; __bits += 1n; } return BigInt(64) - __bits; })(BigInt.asUintN(64, this.$fmodulus)));
+  }
+
+  static new(degree: bigint, modulus: bigint): (NttParams | undefined)
+  {
+    if ((__equals(degree, 0n) || !__equals(fieldBitand(degree, fieldSub(degree, 1n)), 0n)))     {
+      return undefined;
+    }
+    if (__equals((modulus % 2n), 0n))     {
+      return undefined;
+    }
+    if (!__equals((fieldSub(modulus, 1n) % fieldMul(2n, BigInt(degree))), 0n))     {
+      return undefined;
+    }
+    return new NttParams({ $fdegree: degree, $fmodulus: modulus });
+  }
+}
+
+export class Delta<N, T> {
   $fdelta!: any[];
 
   constructor(init: {
-    $fn: bigint,
     $fdelta: any[]
   }) {
     Object.assign(this, init);
   }
   __zero(): this {
-    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fdelta: __zeroValue(this.$fdelta) }) as this;
+    return new (this.constructor as any)({ $fdelta: __zeroValue(this.$fdelta) }) as this;
   }
 
   clone()
   {
-    const n: bigint = this.$fn;
     const { $fdelta: delta } = this;
-    return new DeltaDyn({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(delta[Number(i)])), $fn: 0n });
+    return new Delta({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(delta[Number(i)])) });
   }
 
   eq(other: any): boolean
   {
-    const n: bigint = this.$fn;
     const { $fdelta: d1 } = this;
     const { $fdelta: d2 } = other;
     for (let i = 0n; i < n; i += 1n)     {
@@ -509,89 +546,102 @@ export class DeltaDyn<T> {
     return true;
   }
 
+  static from_ternary(coeffs: bigint[], p: bigint): Delta<N, T>
+  {
+    let c: Vec<bigint> = coeffs.map((v: any) => (() => { if ((v < 0n)) {
+  return fieldSub(p, 1n);
+} else {
+  return (BigInt(v) % p);
+} })());
+    if ((c.length === 0))     {
+      (c).push(1n);
+    }
+    c[Number(0n)] = 1n;
+    return new Delta<N, T>({ $fcoeffs: c, $fp: p });
+  }
+
+  neg(): LabelPoly
+  {
+    return this.$fcoeffs.map((c: any) => (() => { if (__equals(c, 0n)) {
+  return 0n;
+} else {
+  return fieldSub(this.$fp, c);
+} })());
+  }
+
   remap(m: bigint, f: (arg: number) => bigint)
   {
-    const n: bigint = this.$fn;
     const { $fdelta: delta } = this;
-    return new DeltaDyn({ $fdelta: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(delta[Number((f(i) % n))])), $fn: 0n });
+    return new Delta({ $fdelta: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(delta[Number((f(i) % n))])) });
   }
 
-  rotate_left(n_param: bigint)
+  rotate_left(n: bigint)
   {
-    const n: bigint = this.$fn;
-    return this.remap(this.$fn, (a: bigint) => wrappingSub(a, n_param, 64));
+    return this.remap(this.$fn, (a: bigint) => wrappingSub(a, n, 64));
   }
 
-  rotate_right(n_param: bigint)
+  rotate_right(n: bigint)
   {
-    const n: bigint = this.$fn;
-    return this.remap(this.$fn, (a: bigint) => wrappingAdd(a, n_param, 64));
+    return this.remap(this.$fn, (a: bigint) => wrappingAdd(a, n, 64));
   }
 
   static_<U, O>(val: any[]): QDyn<any>
   {
-    const n: bigint = this.$fn;
     return new QDyn({ $fq: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldMul(__clone(val[Number(i)]), __clone(this.$fdelta[Number(i)]))), $fn: 0n });
   }
 
-  bit(n_param: bigint): DeltaDyn<Bit>
+  bit(n: bigint)
   {
-    if (this.$fdelta[0] instanceof BitsInBytes) {
-      const n: bigint = this.$fn;
+    if (true) {
       const { $fdelta: delta } = this;
-      return new DeltaDyn({ $fdelta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+      return new Delta({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const b = __clone(delta[Number(i)]);
-  return new Bit(!__equals(fieldBitand(fieldShr(b, n_param), 1n), 0n));
-})()), $fn: 0n });
+  return new Bit(!__equals(fieldBitand(fieldShr(b, n), 1n), 0n));
+})()) });
     } else {
-      const n: bigint = this.$fn;
       const { $fdelta: delta } = this;
-      return new DeltaDyn({ $fdelta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+      return new Delta({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const b = __clone(delta[Number(i)]);
-  return new Bit(!__equals(fieldBitand(fieldShr(b, n_param), 1n), 0n));
-})()), $fn: 0n });
+  return new Bit(!__equals(fieldBitand(fieldShr(b, n), 1n), 0n));
+})()) });
     }
   }
 
-  rotate_left_bits(n_param: bigint)
+  rotate_left_bits(n: bigint)
   {
-    if (this.$fdelta[0] instanceof BitsInBytes) {
-      const n: bigint = this.$fn;
+    if (true) {
       const { $fdelta: delta } = this;
-      return new DeltaDyn({ $fdelta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+      return new Delta({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const b = __clone(delta[Number(i)]);
-  const next = __clone(delta[Number((fieldAdd(i, 1n) % n_param))]);
-  return new BitsInBytes(fieldBitor(fieldShl(b, BigInt(n_param)), fieldShr(next, fieldSub(8n, BigInt(n_param)))));
-})()), $fn: 0n });
+  const next = __clone(delta[Number((fieldAdd(i, 1n) % n))]);
+  return new BitsInBytes(fieldBitor(fieldShl(b, BigInt(n)), fieldShr(next, fieldSub(8n, BigInt(n)))));
+})()) });
     } else {
-      const n: bigint = this.$fn;
       const { $fdelta: delta } = this;
-      return new DeltaDyn({ $fdelta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+      return new Delta({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const b = __clone(delta[Number(i)]);
-  const next = __clone(delta[Number((fieldAdd(i, 1n) % n_param))]);
-  return new BitsInBytes64(fieldBitor(fieldShl(b, BigInt(n_param)), fieldShr(next, fieldSub(64n, BigInt(n_param)))));
-})()), $fn: 0n });
+  const next = __clone(delta[Number((fieldAdd(i, 1n) % n))]);
+  return new BitsInBytes64(fieldBitor(fieldShl(b, BigInt(n)), fieldShr(next, fieldSub(64n, BigInt(n)))));
+})()) });
     }
   }
 
-  rotate_right_bits(n_param: bigint)
+  rotate_right_bits(n: bigint)
   {
-    if (this.$fdelta[0] instanceof BitsInBytes) {
-      const n: bigint = this.$fn;
+    if (true) {
       const { $fdelta: delta } = this;
-      return new DeltaDyn({ $fdelta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
-  const prev = __clone(delta[Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+      return new Delta({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(delta[Number((fieldSub(fieldAdd(i, n), 1n) % n))]);
   const b = __clone(delta[Number(i)]);
-  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8n, BigInt(n_param))), fieldShr(b, BigInt(n_param))));
-})()), $fn: 0n });
+  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8n, BigInt(n))), fieldShr(b, BigInt(n))));
+})()) });
     } else {
-      const n: bigint = this.$fn;
       const { $fdelta: delta } = this;
-      return new DeltaDyn({ $fdelta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
-  const prev = __clone(delta[Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+      return new Delta({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(delta[Number((fieldSub(fieldAdd(i, n), 1n) % n))]);
   const b = __clone(delta[Number(i)]);
-  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64n, BigInt(n_param))), fieldShr(b, BigInt(n_param))));
-})()), $fn: 0n });
+  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64n, BigInt(n))), fieldShr(b, BigInt(n))));
+})()) });
     }
   }
 }
@@ -951,7 +1001,7 @@ export class BavcDyn<L> {
   {
     const leaf_count = fieldMul(tau, n);
     const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
-    let hidden = [] as any[];
+    let hidden = Array.from({length: Number(total_nodes)}, () => false);
     for (let i = 0n; i < tau; i += 1n)     {
       const leaf_k = fieldAdd(fieldMul(i, n), deltas[Number(i)]);
       const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
@@ -971,7 +1021,7 @@ export class BavcDyn<L> {
   {
     const leaf_count = fieldMul(tau, n);
     const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
-    let tree: Vec<bigint[]> = [] as any[];
+    let tree: Vec<bigint[]> = Array.from({length: Number(total_nodes)}, () => Array.from({length: Number(LAMBDA_BYTES)}, () => ((0n) & 0xFFn)));
     tree[Number(0n)] = r;
     for (let node = 0n; node < fieldSub(leaf_count, 1n); node += 1n)     {
       const parent = tree[Number(node)];
@@ -979,8 +1029,8 @@ export class BavcDyn<L> {
       tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left;
       tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right;
     }
-    let seeds = ([] as any[]);
-    let commitments = ([] as any[]);
+    let seeds: Vec<bigint[]> = ([] as any[]);
+    let commitments: Vec<bigint[]> = ([] as any[]);
     for (let i = 0n; i < tau; i += 1n)     {
       for (let j = 0n; j < n; j += 1n)       {
         const leaf_k = fieldAdd(fieldMul(i, n), j);
@@ -1015,7 +1065,7 @@ export class BavcDyn<L> {
     }
     const leaf_count = fieldMul(tau, n);
     const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
-    let hidden = [] as any[];
+    let hidden = Array.from({length: Number(total_nodes)}, () => false);
     for (let i = 0n; i < tau; i += 1n)     {
       const leaf_k = fieldAdd(fieldMul(i, n), deltas[Number(i)]);
       const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
@@ -1028,16 +1078,21 @@ export class BavcDyn<L> {
       const right = fieldAdd(fieldMul(2n, node), 2n);
       hidden[Number(node)] = (hidden[Number(left)] || hidden[Number(right)]);
     }
-    let tree: Vec<bigint[]> = [] as any[];
+    let tree: Vec<bigint[]> = Array.from({length: Number(total_nodes)}, () => Array.from({length: Number(LAMBDA_BYTES)}, () => ((0n) & 0xFFn)));
     const _ = tree;
-    return new BavcOpeningDyn({ $fhidden_commits: deltas.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]).map(([i, d]: any) => commitment.$fcommitments[Number(fieldAdd(fieldMul(i, n), d))]), $fnodes: [] as any[], $fcom_bytes: 0n });
+    let hidden_commits: Vec<bigint[]> = ([] as any[]);
+    for (let i = 0n; i < BigInt(deltas.length); i += 1n)     {
+      const d = deltas[Number(i)];
+      (hidden_commits).push(commitment.$fcommitments[Number(fieldAdd(fieldMul(i, n), d))]);
+    }
+    return new BavcOpeningDyn({ $fhidden_commits: hidden_commits, $fnodes: [] as any[], $fcom_bytes: 0n });
   }
 
-  static reconstruct(ctx: { newD: () => any, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, com_bytes: bigint, nodes: [bigint, bigint[]][], hidden_commits: bigint[][], deltas: bigint[], iv: bigint[], expected_root: bigint[], tau: bigint, n: bigint): (Vec<bigint[]> | undefined)
+  static reconstruct(ctx: { newD: () => any, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, com_bytes: bigint, nodes: Vec<[bigint, bigint[]]>, hidden_commits: bigint[][], deltas: bigint[], iv: bigint[], expected_root: bigint[], tau: bigint, n: bigint): (Vec<bigint[]> | undefined)
   {
     const leaf_count = fieldMul(tau, n);
     const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
-    let hidden = [] as any[];
+    let hidden = Array.from({length: Number(total_nodes)}, () => false);
     for (let i = 0n; i < tau; i += 1n)     {
       const leaf_k = fieldAdd(fieldMul(i, n), deltas[Number(i)]);
       const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
@@ -1048,7 +1103,7 @@ export class BavcDyn<L> {
       node = fieldSub(node, 1n);
       hidden[Number(node)] = (hidden[Number(fieldAdd(fieldMul(2n, node), 1n))] || hidden[Number(fieldAdd(fieldMul(2n, node), 2n))]);
     }
-    let tree: Vec<(bigint[] | undefined)> = [] as any[];
+    let tree: Vec<(bigint[] | undefined)> = Array.from({length: Number(total_nodes)}, () => undefined);
     for (const [idx, seed] of nodes)     {
       tree[Number(idx)] = seed;
     }
@@ -1099,7 +1154,15 @@ return (() => {
       h.update(hi);
     }
     const root = [...[...Array.from(h.finalize(), BigInt)]];
-    return (() => { if (__equals(root, expected_root)) {
+    let matches = __equals(BigInt(root.length), BigInt(expected_root.length));
+    let k = 0n;
+    while ((k < BigInt(root.length)))     {
+      if (!__equals(root[Number(k)], expected_root[Number(k)]))       {
+        matches = false;
+      }
+      k = fieldAdd(k, 1n);
+    }
+    return (() => { if (matches) {
   return leaf_seeds;
 } else {
   return undefined;
@@ -1190,9 +1253,17 @@ export class StubFaestAesProver {
   prove_aes_witness(big_vole: any, hash_key: any): QuickSilverProof
   {
     const a_hat_out: UniversalHashOutput = vole_hash(hash_key, big_vole.$fu);
-    const a_hat: Vec<bigint> = [(a_hat_out.$fh0[0]) & 0xFFn, ((a_hat_out.$fh0[0]) >> 8n) & 0xFFn, ((a_hat_out.$fh0[0]) >> 16n) & 0xFFn, ((a_hat_out.$fh0[0]) >> 24n) & 0xFFn].concat([(a_hat_out.$fh1[0]) & 0xFFn, ((a_hat_out.$fh1[0]) >> 8n) & 0xFFn, ((a_hat_out.$fh1[0]) >> 16n) & 0xFFn, ((a_hat_out.$fh1[0]) >> 24n) & 0xFFn]);
+    const h0_bytes = [(a_hat_out.$fh0[0]) & 0xFFn, ((a_hat_out.$fh0[0]) >> 8n) & 0xFFn, ((a_hat_out.$fh0[0]) >> 16n) & 0xFFn, ((a_hat_out.$fh0[0]) >> 24n) & 0xFFn];
+    const h1_bytes = [(a_hat_out.$fh1[0]) & 0xFFn, ((a_hat_out.$fh1[0]) >> 8n) & 0xFFn, ((a_hat_out.$fh1[0]) >> 16n) & 0xFFn, ((a_hat_out.$fh1[0]) >> 24n) & 0xFFn];
+    let a_hat: Vec<bigint> = ([] as any[]);
+    for (let i = 0n; i < BigInt(h0_bytes.length); i += 1n)     {
+      (a_hat).push(h0_bytes[Number(i)]);
+    }
+    for (let i = 0n; i < BigInt(h1_bytes.length); i += 1n)     {
+      (a_hat).push(h1_bytes[Number(i)]);
+    }
     const len = BigInt(a_hat.length);
-    return new QuickSilverProof({ $fa_hat: a_hat, $fb_hat: [] as any[], $fc_hat_base: [] as any[] });
+    return new QuickSilverProof({ $fa_hat: a_hat, $fb_hat: Array.from({length: Number(len)}, () => ((0n) & 0xFFn)), $fc_hat_base: Array.from({length: Number(len)}, () => ((0n) & 0xFFn)) });
   }
 }
 
@@ -1422,25 +1493,22 @@ export class BSplitDyn<B, D> {
   }
 }
 
-export class PolyDyn<T> {
-  $fn!: bigint;
+export class Poly<N, T> {
   $fc0!: any;
   $fc1!: any[];
 
   constructor(init: {
-    $fn: bigint,
     $fc0: any,
     $fc1: any[]
   }) {
     Object.assign(this, init);
   }
   __zero(): this {
-    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fc0: __zeroValue(this.$fc0), $fc1: __zeroValue(this.$fc1) }) as this;
+    return new (this.constructor as any)({ $fc0: __zeroValue(this.$fc0), $fc1: __zeroValue(this.$fc1) }) as this;
   }
 
   apply<O>(ctx: { defaultO: () => any }, m: bigint, x: bigint, x2: bigint, xs: bigint, s: bigint, voles: VopeDyn<any>[][]): VopeDyn<any>
   {
-    const n: bigint = this.$fn;
     const v = Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum = ctx.defaultO();
   for (let k = 0n; k < n; k += 1n)   {
@@ -1480,7 +1548,6 @@ export class PolyDyn<T> {
 
   apply_pool<O>(ctx: { defaultO: () => any }, m: bigint, x: bigint, x2: bigint, xs: bigint, s: bigint, voles: PolyInputPoolDyn<VopeDyn<any>>): VopeDyn<any>
   {
-    const n: bigint = this.$fn;
     const v = Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum = ctx.defaultO();
   for (let k = 0n; k < n; k += 1n)   {
@@ -1518,9 +1585,8 @@ export class PolyDyn<T> {
     return new VopeDyn({ $fu: u, $fv: v, $fn: 0n, $fk: 1n });
   }
 
-  get_qs<Q, A>(m: bigint, x: bigint, root: DeltaDyn<any>, inputs: QDyn<any>[][], reduction: bigint): QDyn<any>
+  get_qs<Q, A>(m: bigint, x: bigint, root: Delta<any, any>, inputs: QDyn<any>[][], reduction: bigint): QDyn<any>
   {
-    const n: bigint = this.$fn;
     return new Q({ $fq: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum: any = __clone(this.$fc0);
   for (let _ = 0n; _ < n; _ += 1n)   {
@@ -1539,9 +1605,8 @@ export class PolyDyn<T> {
 })()) });
   }
 
-  get_qs_pool<Q, A>(m: bigint, x: bigint, root: DeltaDyn<any>, inputs: PolyInputPoolDyn<QDyn<any>>, reduction: bigint): QDyn<any>
+  get_qs_pool<Q, A>(m: bigint, x: bigint, root: Delta<any, any>, inputs: PolyInputPoolDyn<QDyn<any>>, reduction: bigint): QDyn<any>
   {
-    const n: bigint = this.$fn;
     return new Q({ $fq: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum: any = __clone(this.$fc0);
   for (let _ = 0n; _ < n; _ += 1n)   {
@@ -1558,6 +1623,11 @@ export class PolyDyn<T> {
   }
   return sum;
 })()) });
+  }
+
+  slots(): bigint[]
+  {
+    return this.$fslots;
   }
 }
 
@@ -1833,7 +1903,7 @@ export class VopeDyn<T> {
 })()), $fv: __clone(v), $fn: 0n, $fk: 1n });
   }
 
-  mul(rhs: DeltaDyn<any>)
+  mul(rhs: Delta<N, any>)
   {
     const n: bigint = this.$fn;
     const k: bigint = this.$fk;
@@ -2977,6 +3047,95 @@ export class LweSampleDyn<T, U> {
   }
 }
 
+export class SpecSponge {
+  $fstate!: bigint[];
+  $frate!: bigint;
+  $fpos!: bigint;
+
+  constructor(init: {
+    $fstate: bigint[],
+    $frate: bigint,
+    $fpos: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fstate: __zeroValue(this.$fstate), $frate: __zeroValue(this.$frate), $fpos: __zeroValue(this.$fpos) }) as this;
+  }
+}
+
+export class SpecXofReader {
+  $fstate!: bigint[];
+  $frate!: bigint;
+  $fpos!: bigint;
+
+  constructor(init: {
+    $fstate: bigint[],
+    $frate: bigint,
+    $fpos: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fstate: __zeroValue(this.$fstate), $frate: __zeroValue(this.$frate), $fpos: __zeroValue(this.$fpos) }) as this;
+  }
+}
+
+export class Gf2_8 {
+
+  constructor(init: {
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({  }) as this;
+  }
+}
+
+export class Gf2_64 {
+
+  constructor(init: {
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({  }) as this;
+  }
+}
+
+export class Gf2_128 {
+
+  constructor(init: {
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({  }) as this;
+  }
+}
+
+export class Gf2_256 {
+
+  constructor(init: {
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({  }) as this;
+  }
+}
+
+export class Fp3 {
+
+  constructor(init: {
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({  }) as this;
+  }
+}
+
 export class GateCertificate {
   $fname!: string;
   $farity!: bigint;
@@ -3636,7 +3795,7 @@ export class BatchSelect {
     if (!__equals(BigInt(choice.length), p.$fwidth))     {
       return new Error_LengthMismatch();
     }
-    let tree = [] as any[];
+    let tree = Array.from({length: Number(fieldMul(fieldSub(fieldMul(2n, p.$fwidth), 1n), p.$fgadget_digits))}, () => this.$fring.zero());
     for (const [index, value] of choice.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
       const __volar_try_0 = this.$fring.decompose(value);
       if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
@@ -3835,9 +3994,26 @@ export class Ring {
     return new (this.constructor as any)({ $fparameters: __zeroValue(this.$fparameters), $ffirst_ntt: __zeroValue(this.$ffirst_ntt), $fsecond_ntt: __zeroValue(this.$fsecond_ntt), $finverse_plaintext_mod_delta: __zeroValue(this.$finverse_plaintext_mod_delta), $finverse_delta_mod_plaintext: __zeroValue(this.$finverse_delta_mod_plaintext) }) as this;
   }
 
+  add(left: any, right: any): Poly
+  {
+    let out = __clone(left);
+    this.add_assign(out, right);
+    return out;
+  }
+
+  add_assign(left: any, right: any)
+  {
+    const q = this.$fparameters.$fmodulus;
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(left.$fslots.length); __zip_mut_2 += 1n) {
+      const r = right.$fslots[Number(__zip_mut_2)];
+      {
+        left.$fslots[Number(__zip_mut_2)] = add_mod(left.$fslots[Number(__zip_mut_2)], r, q);
+      }}
+  }
+
   add_noise(ctx: { defaultA: () => any }, value: any, noise: any, standard_deviation: bigint, bound: bigint): Result<void, Error>
   {
-    let coefficients = [] as any[];
+    let coefficients = Array.from({length: Number(this.$fparameters.$fdegree)}, () => 0n);
     const __volar_try_1 = noise.sample(ctx, coefficients.$fn, standard_deviation, bound, coefficients);
     if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
     if (coefficients.some((sample) => (((sample) < 0n ? -(sample) : (sample)) > bound)))     {
@@ -3869,6 +4045,11 @@ export class Ring {
     const first_mod_delta = (first % this.$fparameters.$fdelta);
     const offset = mul_mod(sub_mod(second, first_mod_delta, this.$fparameters.$fdelta), this.$finverse_plaintext_mod_delta, this.$fparameters.$fdelta);
     return fieldAdd((first as unknown as bigint), fieldMul((this.$fparameters.$fplaintext_modulus as unknown as bigint), (offset as unknown as bigint)));
+  }
+
+  constant(value: bigint): Poly
+  {
+    return new Poly({ $fslots: Array.from({length: Number(this.$fparameters.$fdegree)}, () => (value % this.$fparameters.$fmodulus)) });
   }
 
   decode_messages(values: Polynomial[]): Result<Vec<bigint>, Error>
@@ -3983,11 +4164,98 @@ export class Ring {
     return output;
   }
 
+  from_coeffs(coeffs: bigint[]): Result<Poly, Error>
+  {
+    if (!__equals(BigInt(coeffs.length), this.$fparameters.$fdegree))     {
+      return new Error_LengthMismatch();
+    }
+    let slots = [...coeffs];
+    this.$fntt.forward(slots);
+    return new Poly({ $fslots: slots });
+  }
+
+  from_slots(slots: bigint[]): Result<Poly, Error>
+  {
+    if (!__equals(BigInt(slots.length), this.$fparameters.$fdegree))     {
+      return new Error_LengthMismatch();
+    }
+    const q = this.$fparameters.$fmodulus;
+    return new Poly({ $fslots: slots.map((v: any) => (v % q)) });
+  }
+
+  gadget_decompose_coeffs(coeffs: bigint[], base: bigint, digits: bigint): Result<Vec<Vec<bigint>>, Error>
+  {
+    if ((!__equals(BigInt(coeffs.length), this.$fparameters.$fdegree) || !((base) > 0n && ((base) & ((base) - 1n)) === 0n)))     {
+      return new Error_LengthMismatch();
+    }
+    let out = Array.from({length: Number(digits)}, () => Array.from({length: Number(this.$fparameters.$fdegree)}, () => 0n));
+    const bits = BigInt(((__value) => { let __bits = 0n; if (__value === 0n) return BigInt(64); while ((__value & 1n) === 0n) { __value >>= 1n; __bits += 1n; } return __bits; })(BigInt.asUintN(64, base)));
+    for (const [i, c] of coeffs.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
+      for (let d = 0n; d < digits; d += 1n)       {
+        out[Number(d)][Number(i)] = fieldBitand(fieldShr(c, fieldMul(bits, d)), fieldSub(base, 1n));
+      }
+    }
+    return out;
+  }
+
+  mul(left: any, right: any): Poly
+  {
+    const q = this.$fparameters.$fmodulus;
+    return new Poly({ $fslots: left.$fslots.map((__a: any, __i: number) => [__a, right.$fslots[__i]] as [typeof __a, any]).map(([l, r]: any) => mul_mod(l, r, q)) });
+  }
+
+  negate_assign(value: any)
+  {
+    const q = this.$fparameters.$fmodulus;
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(value.$fslots.length); __zip_mut_2 += 1n) {
+      {
+        if (!__equals(value.$fslots[Number(__zip_mut_2)], 0n))         {
+          value.$fslots[Number(__zip_mut_2)] = fieldSub(q, value.$fslots[Number(__zip_mut_2)]);
+        }
+      }}
+  }
+
   static new(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, parameters: any): Result<Ring, Error>
   {
     const __volar_try_0 = parameters.validate();
     if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
     return new Ring({ $ffirst_ntt: Ntt.new(parameters.$fdegree, parameters.$fplaintext_modulus), $fsecond_ntt: Ntt.new(parameters.$fdegree, parameters.$fdelta), $finverse_plaintext_mod_delta: ((inverse_mod((parameters.$fplaintext_modulus % parameters.$fdelta), parameters.$fdelta)) ?? (new Error_Arithmetic())), $finverse_delta_mod_plaintext: ((inverse_mod((parameters.$fdelta % parameters.$fplaintext_modulus), parameters.$fplaintext_modulus)) ?? (new Error_Arithmetic())), $fparameters: parameters });
+  }
+
+  parameters(): Parameters
+  {
+    return this.$fparameters;
+  }
+
+  scalar_mul(value: any, scalar: bigint): Poly
+  {
+    const q = this.$fparameters.$fmodulus;
+    const scalar_1 = (scalar % q);
+    return new Poly({ $fslots: value.$fslots.map((v: any) => mul_mod(v, scalar_1, q)) });
+  }
+
+  sub(left: any, right: any): Poly
+  {
+    let out = __clone(left);
+    this.sub_assign(out, right);
+    return out;
+  }
+
+  sub_assign(left: any, right: any)
+  {
+    const q = this.$fparameters.$fmodulus;
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(left.$fslots.length); __zip_mut_2 += 1n) {
+      const r = right.$fslots[Number(__zip_mut_2)];
+      {
+        left.$fslots[Number(__zip_mut_2)] = sub_mod(left.$fslots[Number(__zip_mut_2)], r, q);
+      }}
+  }
+
+  to_coeffs(value: any): Vec<bigint>
+  {
+    let coeffs = __clone(value.$fslots);
+    this.$fntt.inverse(coeffs);
+    return coeffs;
   }
 
   uniform(random: any): Result<Polynomial, Error>
@@ -4002,7 +4270,7 @@ export class Ring {
 
   zero(): Polynomial
   {
-    return new Polynomial({ $ffirst: [] as any[], $fsecond: [] as any[] });
+    return new Polynomial({ $ffirst: Array.from({length: Number(this.$fparameters.$fdegree)}, () => 0n), $fsecond: Array.from({length: Number(this.$fparameters.$fdegree)}, () => 0n) });
   }
 }
 
@@ -4050,6 +4318,11 @@ export class Ntt {
     }
   }
 
+  degree(): bigint
+  {
+    return this.$fdegree;
+  }
+
   forward(values: bigint[])
   {
     for (let __mut_2 = 0n; __mut_2 < BigInt(values.length); __mut_2 += 1n) {
@@ -4069,6 +4342,11 @@ export class Ntt {
         values[Number(__mut_2)] = mul_mod(values[Number(__mut_2)], this.$finverse_degree, this.$fmodulus);
         values[Number(__mut_2)] = mul_mod(values[Number(__mut_2)], pow_mod(this.$finverse_psi, index, this.$fmodulus), this.$fmodulus);
       }}
+  }
+
+  modulus(): bigint
+  {
+    return this.$fmodulus;
   }
 
   static new(degree: bigint, modulus: bigint): Result<Ntt, Error>
@@ -4250,13 +4528,13 @@ export class GarbleDyn {
   {
     const n: bigint = this.$fn;
     let d = ctx.newD();
-    d.update([((172n) & 0xFFn)]);
+    const domain_separator = [((172n) & 0xFFn)];
+    d.update(domain_separator);
     d.update(this.$fbase);
-    for (const arg of args)     {
-      d.update(arg.$fbase);
-    }
-    d.update([(BigInt(bit)) & 0xFFn, ((BigInt(bit)) >> 8n) & 0xFFn, ((BigInt(bit)) >> 16n) & 0xFFn, ((BigInt(bit)) >> 24n) & 0xFFn]);
-    const hash = [...Array.from(d.finalize(), BigInt)];
+    let d_1 = absorb_args_bases(n, d, args);
+    const bit_bytes = [(BigInt(bit)) & 0xFFn, ((BigInt(bit)) >> 8n) & 0xFFn, ((BigInt(bit)) >> 16n) & 0xFFn, ((BigInt(bit)) >> 24n) & 0xFFn];
+    d_1.update(bit_bytes);
+    const hash = [...Array.from(d_1.finalize(), BigInt)];
     return new GarbleDyn({ $fbase: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => hash[Number(i)]), $fn: 0n });
   }
 
@@ -5527,11 +5805,11 @@ export class OtConsistencyProofDyn<S> {
 
 export class IdealCotDyn<T> {
   $fn!: bigint;
-  $fdelta!: DeltaDyn<any>;
+  $fdelta!: Delta<N, any>;
 
   constructor(init: {
     $fn: bigint,
-    $fdelta: DeltaDyn<any>
+    $fdelta: Delta<N, any>
   }) {
     Object.assign(this, init);
   }
@@ -5545,7 +5823,7 @@ export class IdealCotDyn<T> {
     return IdealCotDyn.cot(this, rng, sample_t, bit);
   }
 
-  static new<T>(n: bigint, delta: DeltaDyn<any>): IdealCotDyn<T>
+  static new<T>(n: bigint, delta: Delta<N, any>): IdealCotDyn<T>
   {
     return new IdealCotDyn<T>({ $fdelta: delta });
   }
@@ -5602,7 +5880,7 @@ export class OtStack {
   static setup_impl<R>(ctx: { newD: () => any, BClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, rng_s: any, rng_r: any, params: any, malicious: boolean): OtStack
   {
     const m = params.seed_cot_count(malicious);
-    let bits = [] as any[];
+    let bits = Array.from({length: Number(m)}, () => false);
     for (let __mut_2 = 0n; __mut_2 < BigInt(bits.length); __mut_2 += 1n) {
     {
       bits[Number(__mut_2)] = __equals(fieldBitand(rng_r.next_u32(), 1n), 1n);
@@ -5727,6 +6005,2270 @@ export class ToyGroup {
   static write_element<D>(elt: any, h: any)
   {
     h.update([(elt[0]) & 0xFFn, ((elt[0]) >> 8n) & 0xFFn, ((elt[0]) >> 16n) & 0xFFn, ((elt[0]) >> 24n) & 0xFFn]);
+  }
+}
+
+export class WarpTranscript {
+  $fsponge!: SpecSponge;
+
+  constructor(init: {
+    $fsponge: SpecSponge
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fsponge: __zeroValue(this.$fsponge) }) as this;
+  }
+
+  absorb_array(n: bigint, data: bigint[])
+  {
+    let sponge = __clone(this.$fsponge);
+    spec_sponge_absorb_array(n, sponge, data);
+    this.$fsponge = sponge;
+  }
+
+  absorb_field(value: Galois128)
+  {
+    this.absorb_len_prefixed(le16(value).$fn, le16(value));
+  }
+
+  absorb_fields(n: bigint, values: Galois128[])
+  {
+    this.absorb_usize(n);
+    for (let i = 0n; i < n; i += 1n)     {
+      this.absorb_field(values[Number(i)]);
+    }
+  }
+
+  absorb_len_prefixed(n: bigint, data: bigint[])
+  {
+    const len_bytes = [(BigInt(n)) & 0xFFn, ((BigInt(n)) >> 8n) & 0xFFn, ((BigInt(n)) >> 16n) & 0xFFn, ((BigInt(n)) >> 24n) & 0xFFn];
+    this.absorb_array(n, Array.from({length: Number(8n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => len_bytes[Number(i)]));
+    this.absorb_array(n, data);
+  }
+
+  absorb_poly(sc: bigint, cnt: bigint, poly: WarpUniDyn)
+  {
+    this.absorb_usize(cnt);
+    for (let i = 0n; i < cnt; i += 1n)     {
+      this.absorb_field(poly.$fevaluations[Number(i)]);
+    }
+  }
+
+  absorb_usize(value: bigint)
+  {
+    const bytes = [(BigInt(value)) & 0xFFn, ((BigInt(value)) >> 8n) & 0xFFn, ((BigInt(value)) >> 16n) & 0xFFn, ((BigInt(value)) >> 24n) & 0xFFn];
+    this.absorb_array(Array.from({length: Number(8n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => bytes[Number(i)]).$fn, Array.from({length: Number(8n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => bytes[Number(i)]));
+  }
+
+  static default(): WarpTranscript
+  {
+    return warp_transcript_new();
+  }
+
+  domain_sep(n: bigint, label: bigint[]): WarpTranscript
+  {
+    let sponge = __clone(this.$fsponge);
+    spec_sponge_absorb_array(n, sponge, label);
+    this.$fsponge = sponge;
+    return this;
+  }
+
+  squeeze_field_grid(r: bigint, c: bigint): Galois128[][]
+  {
+    let reader = spec_sponge_finalize_xof(this.$fsponge, 31n);
+    return Array.from({length: Number(r - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
+  return Array.from({length: Number(c - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
+  let bytes: bigint[] = Array.from({length: Number(16n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n);
+  spec_xof_read_array(reader, bytes);
+  let b16 = Array.from({length: Number(16n)}, () => ((0n) & 0xFFn));
+  for (let i = 0n; i < 16n; i += 1n)   {
+    b16[Number(i)] = bytes[Number(i)];
+  }
+  return new Galois128(u128_from_le_bytes(b16));
+})());
+})());
+  }
+
+  squeeze_fields(n: bigint): Galois128[]
+  {
+    let reader = spec_sponge_finalize_xof(this.$fsponge, 31n);
+    return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
+  let bytes: bigint[] = Array.from({length: Number(16n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n);
+  spec_xof_read_array(n, reader, bytes);
+  let b16 = Array.from({length: Number(16n)}, () => ((0n) & 0xFFn));
+  for (let i = 0n; i < 16n; i += 1n)   {
+    b16[Number(i)] = bytes[Number(i)];
+  }
+  return new Galois128(u128_from_le_bytes(b16));
+})());
+  }
+
+  squeeze_shift_and_xi(shifts: bigint, logr: bigint, logdom: bigint): [bigint[], Galois128[]]
+  {
+    let reader = spec_sponge_finalize_xof(this.$fsponge, 31n);
+    const shifts_1 = Array.from({length: Number(shifts - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
+  let value = 0n;
+  for (let position = 0n; position < (fieldAdd(logdom, 7n) / 8n); position += 1n)   {
+    let byte: bigint[] = Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n);
+    spec_xof_read_array(reader, byte);
+    value = fieldBitor(value, fieldShl(BigInt(byte[Number(0n)]), fieldMul(8n, position)));
+  }
+  return BigInt(fieldBitand(value, fieldSub(fieldShl(1n, logdom), 1n)));
+})());
+    const xi = Array.from({length: Number(logr - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
+  let bytes: bigint[] = Array.from({length: Number(16n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n);
+  spec_xof_read_array(reader, bytes);
+  let b16 = Array.from({length: Number(16n)}, () => ((0n) & 0xFFn));
+  for (let i = 0n; i < 16n; i += 1n)   {
+    b16[Number(i)] = bytes[Number(i)];
+  }
+  return new Galois128(u128_from_le_bytes(b16));
+})());
+    return [shifts_1, xi];
+  }
+}
+
+export class WarpMerkleTreeDyn {
+  $fnodes!: bigint;
+  $fleaves!: bigint;
+  $fnodes!: WarpDigest[];
+
+  constructor(init: {
+    $fnodes: bigint,
+    $fleaves: bigint,
+    $fnodes: WarpDigest[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fnodes: __zeroValue(this.$fnodes), $fleaves: __zeroValue(this.$fleaves), $fnodes: __zeroValue(this.$fnodes) }) as this;
+  }
+}
+
+export class WarpAuthPathDyn {
+  $flog2_leaves!: bigint;
+  $fsiblings!: WarpDigest[];
+
+  constructor(init: {
+    $flog2_leaves: bigint,
+    $fsiblings: WarpDigest[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $flog2_leaves: __zeroValue(this.$flog2_leaves), $fsiblings: __zeroValue(this.$fsiblings) }) as this;
+  }
+}
+
+export class WarpTermDyn {
+  $fdeg!: bigint;
+  $fcoeff!: Galois128;
+  $fvars!: bigint[];
+  $fn_vars!: bigint;
+
+  constructor(init: {
+    $fdeg: bigint,
+    $fcoeff: Galois128,
+    $fvars: bigint[],
+    $fn_vars: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fdeg: __zeroValue(this.$fdeg), $fcoeff: __zeroValue(this.$fcoeff), $fvars: __zeroValue(this.$fvars), $fn_vars: __zeroValue(this.$fn_vars) }) as this;
+  }
+}
+
+export class WarpConstraintDyn {
+  $fterms!: bigint;
+  $fdeg!: bigint;
+  $fterms!: WarpTermDyn[];
+  $fn_terms!: bigint;
+
+  constructor(init: {
+    $fterms: bigint,
+    $fdeg: bigint,
+    $fterms: WarpTermDyn[],
+    $fn_terms: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fterms: __zeroValue(this.$fterms), $fdeg: __zeroValue(this.$fdeg), $fterms: __zeroValue(this.$fterms), $fn_terms: __zeroValue(this.$fn_terms) }) as this;
+  }
+}
+
+export class WarpIndexDyn {
+  $fm!: bigint;
+  $fterms!: bigint;
+  $fdeg!: bigint;
+  $fconstraints!: WarpConstraintDyn[];
+  $fpublic_len!: bigint;
+  $fwitness_len!: bigint;
+  $fdegree_bound!: bigint;
+
+  constructor(init: {
+    $fm: bigint,
+    $fterms: bigint,
+    $fdeg: bigint,
+    $fconstraints: WarpConstraintDyn[],
+    $fpublic_len: bigint,
+    $fwitness_len: bigint,
+    $fdegree_bound: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fm: __zeroValue(this.$fm), $fterms: __zeroValue(this.$fterms), $fdeg: __zeroValue(this.$fdeg), $fconstraints: __zeroValue(this.$fconstraints), $fpublic_len: __zeroValue(this.$fpublic_len), $fwitness_len: __zeroValue(this.$fwitness_len), $fdegree_bound: __zeroValue(this.$fdegree_bound) }) as this;
+  }
+}
+
+export class WarpWitnessDyn {
+  $fk!: bigint;
+  $fx!: bigint;
+  $fpublic!: Galois128[];
+  $fwitness!: Galois128[];
+
+  constructor(init: {
+    $fk: bigint,
+    $fx: bigint,
+    $fpublic: Galois128[],
+    $fwitness: Galois128[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fk: __zeroValue(this.$fk), $fx: __zeroValue(this.$fx), $fpublic: __zeroValue(this.$fpublic), $fwitness: __zeroValue(this.$fwitness) }) as this;
+  }
+}
+
+export class WarpIdentityCode {
+
+  constructor(init: {
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({  }) as this;
+  }
+
+  encode(message: Galois128[]): Galois128[]
+  {
+    return __clone(message);
+  }
+}
+
+export class WarpRepetitionCode {
+
+  constructor(init: {
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({  }) as this;
+  }
+
+  encode(message: Galois128[]): Galois128[]
+  {
+    return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => message[Number((i % k))]);
+  }
+}
+
+export class WarpUniDyn {
+  $fcap!: bigint;
+  $fevaluations!: Galois128[];
+  $fcount!: bigint;
+
+  constructor(init: {
+    $fcap: bigint,
+    $fevaluations: Galois128[],
+    $fcount: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fcap: __zeroValue(this.$fcap), $fevaluations: __zeroValue(this.$fevaluations), $fcount: __zeroValue(this.$fcount) }) as this;
+  }
+}
+
+export class WarpAccInstanceDyn {
+  $flogn!: bigint;
+  $fbeta!: bigint;
+  $froot!: WarpDigest;
+  $falpha!: Galois128[];
+  $fmu!: Galois128;
+  $fbeta!: Galois128[];
+  $feta!: Galois128;
+
+  constructor(init: {
+    $flogn: bigint,
+    $fbeta: bigint,
+    $froot: WarpDigest,
+    $falpha: Galois128[],
+    $fmu: Galois128,
+    $fbeta: Galois128[],
+    $feta: Galois128
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $flogn: __zeroValue(this.$flogn), $fbeta: __zeroValue(this.$fbeta), $froot: __zeroValue(this.$froot), $falpha: __zeroValue(this.$falpha), $fmu: __zeroValue(this.$fmu), $fbeta: __zeroValue(this.$fbeta), $feta: __zeroValue(this.$feta) }) as this;
+  }
+}
+
+export class WarpAccWitnessDyn {
+  $fn!: bigint;
+  $fk!: bigint;
+  $fnodes!: bigint;
+  $ftree!: WarpMerkleTreeDyn;
+  $fcodeword!: Galois128[];
+  $fwitness!: Galois128[];
+
+  constructor(init: {
+    $fn: bigint,
+    $fk: bigint,
+    $fnodes: bigint,
+    $ftree: WarpMerkleTreeDyn,
+    $fcodeword: Galois128[],
+    $fwitness: Galois128[]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fk: __zeroValue(this.$fk), $fnodes: __zeroValue(this.$fnodes), $ftree: __zeroValue(this.$ftree), $fcodeword: __zeroValue(this.$fcodeword), $fwitness: __zeroValue(this.$fwitness) }) as this;
+  }
+}
+
+export class WarpAccDyn {
+  $fn!: bigint;
+  $fk!: bigint;
+  $flogn!: bigint;
+  $fbeta!: bigint;
+  $fnodes!: bigint;
+  $finstance!: WarpAccInstanceDyn;
+  $fwitness!: WarpAccWitnessDyn;
+
+  constructor(init: {
+    $fn: bigint,
+    $fk: bigint,
+    $flogn: bigint,
+    $fbeta: bigint,
+    $fnodes: bigint,
+    $finstance: WarpAccInstanceDyn,
+    $fwitness: WarpAccWitnessDyn
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fk: __zeroValue(this.$fk), $flogn: __zeroValue(this.$flogn), $fbeta: __zeroValue(this.$fbeta), $fnodes: __zeroValue(this.$fnodes), $finstance: __zeroValue(this.$finstance), $fwitness: __zeroValue(this.$fwitness) }) as this;
+  }
+}
+
+export class WarpProofDyn {
+  $ffresh!: bigint;
+  $fell!: bigint;
+  $fa!: bigint;
+  $fs!: bigint;
+  $fshifts!: bigint;
+  $fsc!: bigint;
+  $flogn!: bigint;
+  $finitial_root!: WarpDigest;
+  $ffresh_mus!: Galois128[];
+  $ffirst_sumcheck!: WarpUniDyn[];
+  $fnu0!: Galois128;
+  $food_answers!: Galois128[];
+  $fsecond_sumcheck!: WarpUniDyn[];
+  $finitial_paths!: WarpAuthPathDyn[];
+  $faccumulator_paths!: WarpAuthPathDyn[][];
+  $fopenings!: Galois128[][];
+
+  constructor(init: {
+    $ffresh: bigint,
+    $fell: bigint,
+    $fa: bigint,
+    $fs: bigint,
+    $fshifts: bigint,
+    $fsc: bigint,
+    $flogn: bigint,
+    $finitial_root: WarpDigest,
+    $ffresh_mus: Galois128[],
+    $ffirst_sumcheck: WarpUniDyn[],
+    $fnu0: Galois128,
+    $food_answers: Galois128[],
+    $fsecond_sumcheck: WarpUniDyn[],
+    $finitial_paths: WarpAuthPathDyn[],
+    $faccumulator_paths: WarpAuthPathDyn[][],
+    $fopenings: Galois128[][]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $ffresh: __zeroValue(this.$ffresh), $fell: __zeroValue(this.$fell), $fa: __zeroValue(this.$fa), $fs: __zeroValue(this.$fs), $fshifts: __zeroValue(this.$fshifts), $fsc: __zeroValue(this.$fsc), $flogn: __zeroValue(this.$flogn), $finitial_root: __zeroValue(this.$finitial_root), $ffresh_mus: __zeroValue(this.$ffresh_mus), $ffirst_sumcheck: __zeroValue(this.$ffirst_sumcheck), $fnu0: __zeroValue(this.$fnu0), $food_answers: __zeroValue(this.$food_answers), $fsecond_sumcheck: __zeroValue(this.$fsecond_sumcheck), $finitial_paths: __zeroValue(this.$finitial_paths), $faccumulator_paths: __zeroValue(this.$faccumulator_paths), $fopenings: __zeroValue(this.$fopenings) }) as this;
+  }
+}
+
+export class Delta {
+  $fcoeffs!: LabelPoly;
+  $fp!: bigint;
+
+  constructor(init: {
+    $fcoeffs: LabelPoly,
+    $fp: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fcoeffs: __zeroValue(this.$fcoeffs), $fp: __zeroValue(this.$fp) }) as this;
+  }
+}
+
+export class WireLabel {
+  $fw0!: LabelPoly;
+  $fpi!: boolean;
+
+  constructor(init: {
+    $fw0: LabelPoly,
+    $fpi: boolean
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fw0: __zeroValue(this.$fw0), $fpi: __zeroValue(this.$fpi) }) as this;
+  }
+
+  active(masked: boolean, delta: any): LabelPoly
+  {
+    const base = this.base(delta);
+    return (() => { if (masked) {
+  return add_coeffs(base, delta.$fcoeffs, delta.$fp);
+} else {
+  return base;
+} })();
+  }
+
+  base(delta: any): LabelPoly
+  {
+    return (() => { if (this.$fpi) {
+  return add_coeffs(this.$fw0, delta.$fcoeffs, delta.$fp);
+} else {
+  return __clone(this.$fw0);
+} })();
+  }
+
+  w0_lsb(): boolean
+  {
+    return __equals((this.$fw0[Number(0n)] % 2n), 1n);
+  }
+}
+
+export class RowCt {
+  $fc0!: LabelPoly;
+  $fc1!: LabelPoly;
+
+  constructor(init: {
+    $fc0: LabelPoly,
+    $fc1: LabelPoly
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fc0: __zeroValue(this.$fc0), $fc1: __zeroValue(this.$fc1) }) as this;
+  }
+}
+
+export class ReferenceDd {
+  $fp!: bigint;
+  $fdelta!: Delta;
+  $ftriple!: [LabelPoly, LabelPoly, LabelPoly];
+
+  constructor(init: {
+    $fp: bigint,
+    $fdelta: Delta,
+    $ftriple: [LabelPoly, LabelPoly, LabelPoly]
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fp: __zeroValue(this.$fp), $fdelta: __zeroValue(this.$fdelta), $ftriple: __zeroValue(this.$ftriple) }) as this;
+  }
+
+  dd0(a: any, tau: any): LabelPoly
+  {
+    return negacyclic_mul_coeffs(tau.$fc1, a, this.$fp);
+  }
+
+  dd_i(a: any, i: boolean, tau: any): LabelPoly
+  {
+    const base = this.dd0(a, tau);
+    return (() => { if (i) {
+  return add_coeffs(base, tau.$fc0, this.$fp);
+} else {
+  return base;
+} })();
+  }
+
+  dd_ij(a: any, i: boolean, b: any, j: boolean, tau: any): LabelPoly
+  {
+    const share = this.hss_mul(a, i, b, j);
+    const base = negacyclic_mul_coeffs(tau.$fc1, share, this.$fp);
+    return (() => { if ((i && j)) {
+  return add_coeffs(base, tau.$fc0, this.$fp);
+} else {
+  return base;
+} })();
+  }
+
+  dec_row(tau: any): LabelPoly
+  {
+    const c1d = negacyclic_mul_coeffs(tau.$fc1, this.$fdelta.$fcoeffs, this.$fp);
+    return add_coeffs(tau.$fc0, c1d, this.$fp);
+  }
+
+  delta(): Delta
+  {
+    return this.$fdelta;
+  }
+
+  eval(a: any, i: boolean, b: any, j: boolean, taus: RowCt[]): LabelPoly
+  {
+    let out = this.dd_i(a, i, taus[Number(0n)]);
+    out = add_coeffs(out, this.dd_i(b, j, taus[Number(1n)]), this.$fp);
+    return add_coeffs(out, this.dd_ij(a, i, b, j, taus[Number(2n)]), this.$fp);
+  }
+
+  hss_mul(a: any, i: boolean, b: any, j: boolean): LabelPoly
+  {
+    const p = this.$fp;
+    const [u, v, w] = this.$ftriple;
+    const ab = negacyclic_mul_coeffs(a, b, p);
+    let out = negacyclic_mul_coeffs(ab, u, p);
+    if (i)     {
+      const bv = negacyclic_mul_coeffs(b, v, p);
+      out = add_coeffs(out, bv, p);
+    }
+    if (j)     {
+      const av = negacyclic_mul_coeffs(a, v, p);
+      out = add_coeffs(out, av, p);
+    }
+    if ((i && j))     {
+      out = sub_coeffs(out, w, p);
+    }
+    return out;
+  }
+
+  static new(delta: any, degree: bigint, random: any): ReferenceDd
+  {
+    const p = delta.$fp;
+    let uniform = () => (() => {
+  let v = Array.from({length: Number(degree)}, () => 0n);
+  random(v);
+  v.for_each((x) => x %= p);
+  return v;
+})();
+    const u = uniform();
+    const du = negacyclic_mul_coeffs(delta.$fcoeffs, u, p);
+    const v = du.map((x: any) => (() => { if (__equals(x, 0n)) {
+  return 0n;
+} else {
+  return fieldSub(p, x);
+} })());
+    const d2 = negacyclic_mul_coeffs(delta.$fcoeffs, delta.$fcoeffs, p);
+    const d2u = negacyclic_mul_coeffs(d2, u, p);
+    const w = sub_coeffs(delta.neg(), d2u, p);
+    return new ReferenceDd({ $fp: p, $fdelta: delta, $ftriple: [u, v, w] });
+  }
+
+  p(): bigint
+  {
+    return this.$fp;
+  }
+
+  row(t: bigint, random: any): RowCt
+  {
+    const p = this.$fp;
+    const degree = BigInt(this.$fdelta.$fcoeffs.length);
+    let c1 = Array.from({length: Number(degree)}, () => 0n);
+    random(c1);
+    c1.for_each((x) => x %= p);
+    const td = (() => { if ((t >= 0n)) {
+  return delta_scaled(this.$fdelta, BigInt(t), p);
+} else {
+  return delta_scaled(this.$fdelta, BigInt(-t), p).map((x: any) => (() => { if (__equals(x, 0n)) {
+  return 0n;
+} else {
+  return fieldSub(p, x);
+} })());
+} })();
+    const c1d = negacyclic_mul_coeffs(c1, this.$fdelta.$fcoeffs, p);
+    const c0 = sub_coeffs(td, c1d, p);
+    return new RowCt({ $fc0: c0, $fc1: c1 });
+  }
+}
+
+export class PrfKey {
+  [0]!: bigint[];
+
+  constructor(_0: bigint[]) {
+    this[0] = _0;
+  }
+  __zero(): this {
+    return new (this.constructor as any)(__zeroValue(this[0])) as this;
+  }
+
+  offset(wire: bigint, degree: bigint, p: bigint): LabelPoly
+  {
+    let out = Array.from({length: Number(degree)}, () => 0n);
+    let s0 = fieldBitxor(this[0][Number(0n)], BigInt(Math.imul(Number(BigInt(wire)), Number(11400714819323198485n))));
+    let s1 = wrappingAdd(this[0][Number(1n)], BigInt(wire), 64);
+    let s2 = fieldBitxor(this[0][Number(2n)], this[0][Number(0n)]);
+    let s3 = wrappingAdd(this[0][Number(3n)], this[0][Number(1n)], 64);
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(out.length); __zip_mut_2 += 1n) {
+      {
+        const t = fieldShl(s1, 17n);
+        s2 = fieldBitxor(s2, s0);
+        s3 = fieldBitxor(s3, s1);
+        s1 = fieldBitxor(s1, s2);
+        s0 = fieldBitxor(s0, s3);
+        s2 = fieldBitxor(s2, t);
+        s3 = s3.rotateleft(45n);
+        out[Number(__zip_mut_2)] = (wrappingAdd(s3, s0, 64) % p);
+      }}
+    return out;
+  }
+}
+
+export class PinnedGarbling {
+  $flabels!: Vec<WireLabel>;
+  $fdelta_ct!: RowCt;
+  $fand_rows!: Vec<AndRows>;
+  $frecords!: Vec<GateRecord>;
+
+  constructor(init: {
+    $flabels: Vec<WireLabel>,
+    $fdelta_ct: RowCt,
+    $fand_rows: Vec<AndRows>,
+    $frecords: Vec<GateRecord>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $flabels: __zeroValue(this.$flabels), $fdelta_ct: __zeroValue(this.$fdelta_ct), $fand_rows: __zeroValue(this.$fand_rows), $frecords: __zeroValue(this.$frecords) }) as this;
+  }
+}
+
+export class ReferencePrg {
+  $fslots!: bigint;
+
+  constructor(init: {
+    $fslots: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fslots: __zeroValue(this.$fslots) }) as this;
+  }
+
+  depth(): bigint
+  {
+    return 1n;
+  }
+
+  expand(ctx: any, seed: any, ksk: any): Result<Vec<Ciphertext>, Error>
+  {
+    const degree = ctx.parameters().$fdegree;
+    if ((this.$fslots > degree))     {
+      return new Error_InvalidParameters();
+    }
+    const __volar_try_2 = ctx.mul(seed, seed, ksk);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const s2 = __volar_try_2;
+    let out = ([] as any[]);
+    for (let i = 0n; i < this.$fslots; i += 1n)     {
+      let mask = Array.from({length: Number(degree)}, () => 0n);
+      mask[Number(i)] = 1n;
+      (out).push(ctx.mul_plain(s2, mask));
+    }
+    return out;
+  }
+
+  static new(slots: bigint): ReferencePrg
+  {
+    return new ReferencePrg({ $fslots: slots });
+  }
+
+  slots(): bigint
+  {
+    return this.$fslots;
+  }
+}
+
+export class ExpansionPlan {
+  $fseed_ciphertexts!: bigint;
+  $fslots_per_seed!: bigint;
+  $fdepth!: bigint;
+  $frequired_bits!: bigint;
+
+  constructor(init: {
+    $fseed_ciphertexts: bigint,
+    $fslots_per_seed: bigint,
+    $fdepth: bigint,
+    $frequired_bits: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fseed_ciphertexts: __zeroValue(this.$fseed_ciphertexts), $fslots_per_seed: __zeroValue(this.$fslots_per_seed), $fdepth: __zeroValue(this.$fdepth), $frequired_bits: __zeroValue(this.$frequired_bits) }) as this;
+  }
+
+  static plan(required_bits: bigint, prg_depth: bigint, slots_per_seed: bigint, depth_budget: bigint): Result<ExpansionPlan, Error>
+  {
+    if ((__equals(slots_per_seed, 0n) || (prg_depth > depth_budget)))     {
+      return new Error_InvalidParameters();
+    }
+    const seed_ciphertexts = ((required_bits) + (slots_per_seed) - 1n) / (slots_per_seed);
+    return new ExpansionPlan({ $fseed_ciphertexts: seed_ciphertexts, $fslots_per_seed: slots_per_seed, $fdepth: prg_depth, $frequired_bits: required_bits });
+  }
+
+  total_slots(): bigint
+  {
+    return fieldMul(this.$fseed_ciphertexts, this.$fslots_per_seed);
+  }
+}
+
+export class ZeroNoise {
+
+  constructor(init: {
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({  }) as this;
+  }
+}
+
+export class Parameters {
+  $fdegree!: bigint;
+  $fplaintext_modulus!: bigint;
+  $fchain!: Vec<bigint>;
+  $fnoise_bound!: bigint;
+
+  constructor(init: {
+    $fdegree: bigint,
+    $fplaintext_modulus: bigint,
+    $fchain: Vec<bigint>,
+    $fnoise_bound: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fdegree: __zeroValue(this.$fdegree), $fplaintext_modulus: __zeroValue(this.$fplaintext_modulus), $fchain: __zeroValue(this.$fchain), $fnoise_bound: __zeroValue(this.$fnoise_bound) }) as this;
+  }
+}
+
+export class RnsPoly {
+  $flimbs!: Vec<Poly>;
+
+  constructor(init: {
+    $flimbs: Vec<Poly>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $flimbs: __zeroValue(this.$flimbs) }) as this;
+  }
+
+  limbs(): Poly[]
+  {
+    return this.$flimbs;
+  }
+}
+
+export class SecretKey {
+  $fcoeffs!: Vec<bigint>;
+
+  constructor(init: {
+    $fcoeffs: Vec<bigint>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fcoeffs: __zeroValue(this.$fcoeffs) }) as this;
+  }
+}
+
+export class KeySwitchKey {
+  $flevel!: bigint;
+  $fbase!: bigint;
+  $fparts!: Vec<[RnsPoly, RnsPoly]>;
+
+  constructor(init: {
+    $flevel: bigint,
+    $fbase: bigint,
+    $fparts: Vec<[RnsPoly, RnsPoly]>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $flevel: __zeroValue(this.$flevel), $fbase: __zeroValue(this.$fbase), $fparts: __zeroValue(this.$fparts) }) as this;
+  }
+}
+
+export class KeySwitchKeySet {
+  $fkeys!: Vec<KeySwitchKey>;
+  $fbase!: bigint;
+
+  constructor(init: {
+    $fkeys: Vec<KeySwitchKey>,
+    $fbase: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fkeys: __zeroValue(this.$fkeys), $fbase: __zeroValue(this.$fbase) }) as this;
+  }
+
+  at(level: bigint): (KeySwitchKey | undefined)
+  {
+    return this.$fkeys?.[level];
+  }
+
+  base(): bigint
+  {
+    return this.$fbase;
+  }
+
+  max_level(): bigint
+  {
+    return fieldSub(BigInt(this.$fkeys.length), 1n);
+  }
+}
+
+export class Ciphertext {
+  $flevel!: bigint;
+  $fparts!: Vec<RnsPoly>;
+
+  constructor(init: {
+    $flevel: bigint,
+    $fparts: Vec<RnsPoly>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $flevel: __zeroValue(this.$flevel), $fparts: __zeroValue(this.$fparts) }) as this;
+  }
+
+  level(): bigint
+  {
+    return this.$flevel;
+  }
+
+  parts(): RnsPoly[]
+  {
+    return this.$fparts;
+  }
+}
+
+export class Context {
+  $fparameters!: Parameters;
+  $flevel_rings!: Vec<Ring>;
+  $fplaintext_ring!: Ring;
+
+  constructor(init: {
+    $fparameters: Parameters,
+    $flevel_rings: Vec<Ring>,
+    $fplaintext_ring: Ring
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fparameters: __zeroValue(this.$fparameters), $flevel_rings: __zeroValue(this.$flevel_rings), $fplaintext_ring: __zeroValue(this.$fplaintext_ring) }) as this;
+  }
+
+  add(left: any, right: any): Result<Ciphertext, Error>
+  {
+    const [left_owned, right_owned];
+    let l = left;
+    let r = right;
+    if ((l.$flevel > r.$flevel))     {
+      left_owned = this.switch_to(l, r.$flevel);
+      l = left_owned;
+    } else if ((r.$flevel > l.$flevel))     {
+      right_owned = this.switch_to(r, l.$flevel);
+      r = right_owned;
+    }
+    const parts = l.$fparts.map((__a: any, __i: number) => [__a, r.$fparts[__i]] as [typeof __a, any]).map(([a, b]: any) => this.add_rns(a, b));
+    return new Ciphertext({ $flevel: l.$flevel, $fparts: parts });
+  }
+
+  add_assign_rns(left: any, right: any)
+  {
+    for (const [i, [l, r]] of left.$flimbs.map((__zip_a: any, __zip_i: number) => [__zip_a, (right.$flimbs)[__zip_i]]).map((__enum_a: any, __enum_i: number) => [BigInt(__enum_i), __enum_a] as [bigint, typeof __enum_a]))     {
+      this.$flevel_rings[Number(i)].add_assign(l, r);
+    }
+  }
+
+  add_assign_rns_mut(left: any, right: any)
+  {
+    this.add_assign_rns(left, right);
+  }
+
+  add_plain(ct: any, slots: bigint[]): Result<Ciphertext, Error>
+  {
+    const __volar_try_0 = this.embed(ct.$flevel, slots);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const m = __volar_try_0;
+    let parts = __clone(ct.$fparts);
+    this.add_assign_rns(parts[Number(0n)], m);
+    return new Ciphertext({ $flevel: ct.$flevel, $fparts: parts });
+  }
+
+  add_rns(left: any, right: any): RnsPoly
+  {
+    return new RnsPoly({ $flimbs: left.$flimbs.map((__a: any, __i: number) => [__a, right.$flimbs[__i]] as [typeof __a, any]).map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]).map(([i, [l, r]]: any) => this.$flevel_rings[Number(i)].add(l, r)) });
+  }
+
+  check_level(level: bigint): Result<void, Error>
+  {
+    if ((level > this.max_level()))     {
+      return new Error_InvalidParameters();
+    }
+    return undefined;
+  }
+
+  constant_slots(value: bigint): Vec<bigint>
+  {
+    return Array.from({length: Number(this.$fparameters.$fdegree)}, () => (value % this.$fparameters.$fplaintext_modulus));
+  }
+
+  decrypt(sk: any, ct: any): Result<Vec<bigint>, Error>
+  {
+    if (!__equals(BigInt(sk.$fcoeffs.length), this.$fparameters.$fdegree))     {
+      return new Error_LengthMismatch();
+    }
+    const p = this.$fparameters.$fplaintext_modulus;
+    const s = this.secret_rns(ct.$flevel, sk);
+    const coeffs = this.$flevel_rings[Number(0n)].to_coeffs((() => {
+  const ring0 = this.$flevel_rings[Number(0n)];
+  let limb = ring0.mul(ct.$fparts[Number(1n)].$flimbs[Number(0n)], s.$flimbs[Number(0n)]);
+  ring0.add_assign(limb, ct.$fparts[Number(0n)].$flimbs[Number(0n)]);
+  return limb;
+})());
+    const q0 = this.$fparameters.$fchain[Number(0n)];
+    const m_coeffs: Vec<bigint> = coeffs.map((c: any) => BigInt((((center(c, q0)) % ((p as unknown as bigint)) + ((p as unknown as bigint))) % ((p as unknown as bigint)))));
+    const __volar_try_6 = this.$fplaintext_ring.from_coeffs(m_coeffs);
+    if (__volar_try_6 instanceof __VolarError) return __volar_try_6;
+    const packed = __volar_try_6;
+    return [...packed.slots()];
+  }
+
+  embed(level: bigint, slots: bigint[]): Result<RnsPoly, Error>
+  {
+    if (!__equals(BigInt(slots.length), this.$fparameters.$fdegree))     {
+      return new Error_LengthMismatch();
+    }
+    if ((__equals(level, 0n) && slots.every((v) => __equals(v, 0n))))     {
+      return new Error_InvalidParameters();
+    }
+    const p = this.$fparameters.$fplaintext_modulus;
+    if (slots.some((v) => (v >= p)))     {
+      return new Error_InvalidParameters();
+    }
+    const __volar_try_4 = this.$fplaintext_ring.from_slots(slots);
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const packed = __volar_try_4;
+    const m_coeffs = this.$fplaintext_ring.to_coeffs(packed);
+    let limbs = ([] as any[]);
+    for (const ring of this.$flevel_rings.slice(0, Number(level + 1n)))     {
+      const q = ring.parameters().$fmodulus;
+      const coeffs: Vec<bigint> = m_coeffs.map((c: any) => (c % q));
+      (limbs).push(ring.from_coeffs(coeffs));
+    }
+    return new RnsPoly({ $flimbs: limbs });
+  }
+
+  encrypt(ctx: { defaultA: () => any }, sk: any, level: bigint, slots: bigint[], random: any, noise: any): Result<Ciphertext, Error>
+  {
+    const __volar_try_0 = this.check_level(level);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    if (!__equals(BigInt(sk.$fcoeffs.length), this.$fparameters.$fdegree))     {
+      return new Error_LengthMismatch();
+    }
+    const p = this.$fparameters.$fplaintext_modulus;
+    const __volar_try_3 = this.embed(level, slots);
+    if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+    const m = __volar_try_3;
+    const __volar_try_4 = this.uniform_rns(level, random);
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const a = __volar_try_4;
+    const __volar_try_5 = this.noise_rns(ctx, level, noise);
+    if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+    const e = __volar_try_5;
+    const s = this.secret_rns(level, sk);
+    let c0 = this.mul_rns(a, s);
+    const pe = this.scalar_mul_rns(e, p);
+    this.add_assign_rns(c0, m);
+    this.add_assign_rns(c0, pe);
+    let c1 = a;
+    for (let __mut_2 = 0n; __mut_2 < BigInt(c1.$flimbs.length); __mut_2 += 1n) {
+      const i = __mut_2;
+      {
+        this.$flevel_rings[Number(i)].negate_assign(c1.$flimbs[Number(__mut_2)]);
+      }}
+    return new Ciphertext({ $flevel: level, $fparts: [c0, c1] });
+  }
+
+  encrypt_one_like(like: any): Result<Ciphertext, Error>
+  {
+    let one = this.zero(like.$flevel.$fn, like.$flevel);
+    for (let __mut_2 = 0n; __mut_2 < BigInt(one.$flimbs.length); __mut_2 += 1n) {
+      const i = __mut_2;
+      {
+        one.$flimbs[Number(__mut_2)] = this.$flevel_rings[Number(i)].constant(1n.$fn, 1n);
+      }}
+    return new Ciphertext({ $flevel: like.$flevel, $fparts: [one, this.zero(like.$flevel.$fn, like.$flevel)] });
+  }
+
+  key_switch_keygen(ctx: { defaultA: () => any }, sk: any, level: bigint, base: bigint, digits: bigint, random: any, noise: any): Result<KeySwitchKey, Error>
+  {
+    const __volar_try_0 = this.check_level(level);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    if (((!((base) > 0n && ((base) & ((base) - 1n)) === 0n) || (base < 2n)) || __equals(digits, 0n)))     {
+      return new Error_InvalidParameters();
+    }
+    if ((fieldMul(BigInt(((__value) => { let __bits = 0n; if (__value === 0n) return BigInt(64); while ((__value & 1n) === 0n) { __value >>= 1n; __bits += 1n; } return __bits; })(BigInt.asUintN(64, base))), digits) < 64n))     {
+      return new Error_InvalidParameters();
+    }
+    const p = this.$fparameters.$fplaintext_modulus;
+    const s = this.secret_rns(level, sk);
+    const s2 = this.mul_rns(s, s);
+    let parts = ([] as any[]);
+    for (let i = 0n; i < digits; i += 1n)     {
+      const __volar_try_0 = this.uniform_rns(level, random);
+      if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+      const a = __volar_try_0;
+      const __volar_try_1 = this.noise_rns(ctx, level, noise);
+      if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+      const e = __volar_try_1;
+      let b = this.mul_rns(a, s);
+      const pe = this.scalar_mul_rns(e, p);
+      this.add_assign_rns(b, pe);
+      let scaled = __clone(s2);
+      for (let __mut_3 = 0n; __mut_3 < BigInt(scaled.$flimbs.length); __mut_3 += 1n) {
+        const j = __mut_3;
+        {
+          const q = this.$flevel_rings[Number(j)].parameters().$fmodulus;
+          const factor = pow_mod((base % q), i, q);
+          scaled.$flimbs[Number(__mut_3)] = this.$flevel_rings[Number(j)].scalar_mul(scaled.$flimbs[Number(__mut_3)], factor);
+        }}
+      this.add_assign_rns(b, scaled);
+      let neg_a = a;
+      for (let __mut_3 = 0n; __mut_3 < BigInt(neg_a.$flimbs.length); __mut_3 += 1n) {
+        const j = __mut_3;
+        {
+          this.$flevel_rings[Number(j)].negate_assign(neg_a.$flimbs[Number(__mut_3)]);
+        }}
+      (parts).push([neg_a, b]);
+    }
+    return new KeySwitchKey({ $flevel: level, $fbase: base, $fparts: parts });
+  }
+
+  key_switch_keyset(ctx: { defaultA: () => any }, sk: any, base: bigint, digits: bigint, random: any, noise: any): Result<KeySwitchKeySet, Error>
+  {
+    let keys = ([] as any[]);
+    for (let level = 0n; level <= this.max_level(); level += 1n)     {
+      (keys).push(this.key_switch_keygen(ctx, sk, level, base, digits, random, noise));
+    }
+    return new KeySwitchKeySet({ $fkeys: keys, $fbase: base });
+  }
+
+  keygen(random: any): Result<SecretKey, Error>
+  {
+    let coeffs = Array.from({length: Number(this.$fparameters.$fdegree)}, () => 0n);
+    let byte = Array.from({length: Number(1n)}, () => ((0n) & 0xFFn));
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(coeffs.length); __zip_mut_2 += 1n) {
+      {
+        const __volar_try_0 = random.fill_bytes(byte.slice(0));
+        if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+        coeffs[Number(__zip_mut_2)] = fieldSub(((byte[Number(0n)] % 3n) as unknown as bigint), 1n);
+      }}
+    return new SecretKey({ $fcoeffs: coeffs });
+  }
+
+  limbs(level: bigint): bigint
+  {
+    return fieldAdd(level, 1n);
+  }
+
+  max_level(): bigint
+  {
+    return fieldSub(BigInt(this.$fparameters.$fchain.length), 1n);
+  }
+
+  mod_switch_down(ct: any): Result<Ciphertext, Error>
+  {
+    if ((__equals(ct.$flevel, 0n) || (ct.$flevel > this.max_level())))     {
+      return new Error_LevelMismatch();
+    }
+    const p = this.$fparameters.$fplaintext_modulus;
+    const from_ = ct.$flevel;
+    const q_top = this.$fparameters.$fchain[Number(from_)];
+    const __volar_try_4 = ((inverse_mod((p % q_top), q_top)) ?? (new Error_Arithmetic()));
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const inv_p_top = __volar_try_4;
+    const __volar_try_5 = ct.$fparts.map((part: any) => (() => {
+  const top_coeffs = this.$flevel_rings[Number(from_)].to_coeffs(part.$flimbs[Number(from_)]);
+  const deltas: Vec<bigint> = top_coeffs.map((c: any) => mul_mod(mul_mod(c, inv_p_top, q_top), 1n, q_top));
+  let limbs = ([] as any[]);
+  for (const [i, ring_i] of this.$flevel_rings.slice(0, Number(from_)).map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
+    const q_i = ring_i.parameters().$fmodulus;
+    const __volar_try_1 = ((inverse_mod((q_top % q_i), q_i)) ?? (new Error_Arithmetic()));
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const inv_q_top = __volar_try_1;
+    const ci = ring_i.to_coeffs(part.$flimbs[Number(i)]);
+    const p_mod_qi = (p % q_i);
+    const out: Vec<bigint> = ci.map((__a: any, __i: number) => [__a, deltas[__i]] as [typeof __a, any]).map(([c, d]: any) => (() => {
+  const pd = mul_mod(p_mod_qi, d, q_i);
+  const diff = sub_mod(c, pd, q_i);
+  return mul_mod(diff, inv_q_top, q_i);
+})());
+    (limbs).push(ring_i.from_coeffs(out));
+  }
+  return new RnsPoly({ $flimbs: limbs });
+})());
+    if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+    const parts = __volar_try_5;
+    return new Ciphertext({ $flevel: fieldSub(from_, 1n), $fparts: parts });
+  }
+
+  mul(left: any, right: any, ksk: any): Result<Ciphertext, Error>
+  {
+    const [left_owned, right_owned];
+    let l = left;
+    let r = right;
+    if ((l.$flevel > r.$flevel))     {
+      left_owned = this.switch_to(l, r.$flevel);
+      l = left_owned;
+    } else if ((r.$flevel > l.$flevel))     {
+      right_owned = this.switch_to(r, l.$flevel);
+      r = right_owned;
+    }
+    const [left_1, right_1] = [l, r];
+    const level = left_1.$flevel;
+    const __volar_try_6 = ((ksk[(level)]) ?? (new Error_LevelMismatch()));
+    if (__volar_try_6 instanceof __VolarError) return __volar_try_6;
+    const ksk_1 = __volar_try_6;
+    if (!__equals(ksk_1.$flevel, level))     {
+      return new Error_LevelMismatch();
+    }
+    const t0 = this.mul_rns(left_1.$fparts[Number(0n)], right_1.$fparts[Number(0n)]);
+    let t1 = this.mul_rns(left_1.$fparts[Number(0n)], right_1.$fparts[Number(1n)]);
+    const t1b = this.mul_rns(left_1.$fparts[Number(1n)], right_1.$fparts[Number(0n)]);
+    this.add_assign_rns_mut(t1, t1b);
+    const t2 = this.mul_rns(left_1.$fparts[Number(1n)], right_1.$fparts[Number(1n)]);
+    let c0 = t0;
+    let c1 = t1;
+    const t2_coeffs: Vec<Vec<bigint>> = t2.$flimbs.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]).map(([i, limb]: any) => this.$flevel_rings[Number(i)].to_coeffs(limb));
+    const base_bits = BigInt(((__value) => { let __bits = 0n; if (__value === 0n) return BigInt(32); while ((__value & 1n) === 0n) { __value >>= 1n; __bits += 1n; } return __bits; })(BigInt.asUintN(32, ksk_1.$fbase)));
+    if ((!((ksk_1.$fbase) > 0n && ((ksk_1.$fbase) & ((ksk_1.$fbase) - 1n)) === 0n) || (ksk_1.$fbase < 2n)))     {
+      return new Error_InvalidParameters();
+    }
+    const _ = base_bits;
+    for (const [digit_index, [neg_a, b]] of ksk_1.$fparts.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
+      const shift = fieldMul(base_bits, digit_index);
+      let digit = this.zero(level.$fn, level);
+      if ((shift < 64n))       {
+        for (const [i, ring_i] of this.$flevel_rings.slice(0, Number(level + 1n)).map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))         {
+          const coeffs: Vec<bigint> = t2_coeffs[Number(i)].map((c: any) => fieldBitand(fieldShr(c, shift), fieldSub(ksk_1.$fbase, 1n)));
+          digit.$flimbs[Number(i)] = ring_i.from_coeffs(coeffs);
+        }
+      }
+      this.add_assign_rns_mut(c0, this.mul_rns(digit, b));
+      this.add_assign_rns_mut(c1, this.mul_rns(digit, neg_a));
+    }
+    const product = new Ciphertext({ $flevel: level, $fparts: [c0, c1] });
+    return (() => { if (__equals(level, 0n)) {
+  return product;
+} else {
+  return this.mod_switch_down(product);
+} })();
+  }
+
+  mul_plain(ct: any, slots: bigint[]): Result<Ciphertext, Error>
+  {
+    const __volar_try_0 = this.embed(ct.$flevel, slots);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const m = __volar_try_0;
+    const parts = ct.$fparts.map((c: any) => this.mul_rns(c, m));
+    return new Ciphertext({ $flevel: ct.$flevel, $fparts: parts });
+  }
+
+  mul_rns(left: any, right: any): RnsPoly
+  {
+    return new RnsPoly({ $flimbs: left.$flimbs.map((__a: any, __i: number) => [__a, right.$flimbs[__i]] as [typeof __a, any]).map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]).map(([i, [l, r]]: any) => this.$flevel_rings[Number(i)].mul(l, r)) });
+  }
+
+  static new(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, parameters: any): Result<Context, Error>
+  {
+    const __volar_try_0 = parameters.validate();
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const __volar_try_1 = parameters.$fchain.map((q: any) => (() => {
+  return Ring.new(ctx, new Parameters({ $fdegree: parameters.$fdegree, $fmodulus: q }));
+})());
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const level_rings = __volar_try_1;
+    const __volar_try_2 = Ring.new(ctx, new Parameters({ $fdegree: parameters.$fdegree, $fmodulus: parameters.$fplaintext_modulus }));
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const plaintext_ring = __volar_try_2;
+    return new Context({ $fparameters: parameters, $flevel_rings: level_rings, $fplaintext_ring: plaintext_ring });
+  }
+
+  noise_rns(ctx: { defaultA: () => any }, level: bigint, noise: any): Result<RnsPoly, Error>
+  {
+    let coeffs_i = Array.from({length: Number(this.$fparameters.$fdegree)}, () => 0n);
+    const __volar_try_1 = noise.sample(ctx, coeffs_i.$fn, this.$fparameters.$fnoise_bound, coeffs_i);
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    if (coeffs_i.some((v) => (((v) < 0n ? -(v) : (v)) > this.$fparameters.$fnoise_bound)))     {
+      return new Error_NoiseSource();
+    }
+    let limbs = ([] as any[]);
+    for (const ring of this.$flevel_rings.slice(0, Number(level + 1n)))     {
+      const q = ring.parameters().$fmodulus;
+      const coeffs: Vec<bigint> = coeffs_i.map((v: any) => (() => {
+  return (() => { if ((v < 0n)) {
+  return fieldSub(q, (((v) < 0n ? -(v) : (v)) % q));
+} else {
+  return (BigInt(v) % q);
+} })();
+})());
+      (limbs).push(ring.from_coeffs(coeffs));
+    }
+    return new RnsPoly({ $flimbs: limbs });
+  }
+
+  parameters(): Parameters
+  {
+    return this.$fparameters;
+  }
+
+  scalar_mul_rns(value: any, scalar: bigint): RnsPoly
+  {
+    return new RnsPoly({ $flimbs: value.$flimbs.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]).map(([i, l]: any) => this.$flevel_rings[Number(i)].scalar_mul(l, scalar)) });
+  }
+
+  secret_rns(level: bigint, sk: any): RnsPoly
+  {
+    const limbs = this.$flevel_rings.slice(0, Number(level + 1n)).map((ring: any) => (() => {
+  const q = ring.parameters().$fmodulus;
+  const coeffs: Vec<bigint> = sk.$fcoeffs.map((v: any) => (() => {
+  return (() => { if ((v < 0n)) {
+  return fieldSub(q, (((v) < 0n ? -(v) : (v)) % q));
+} else {
+  return (BigInt(v) % q);
+} })();
+})());
+  return (ring.from_coeffs(coeffs))!;
+})());
+    return new RnsPoly({ $flimbs: limbs });
+  }
+
+  sub(left: any, right: any): Result<Ciphertext, Error>
+  {
+    const [left_owned, right_owned];
+    let l = left;
+    let r = right;
+    if ((l.$flevel > r.$flevel))     {
+      left_owned = this.switch_to(l, r.$flevel);
+      l = left_owned;
+    } else if ((r.$flevel > l.$flevel))     {
+      right_owned = this.switch_to(r, l.$flevel);
+      r = right_owned;
+    }
+    let neg = __clone(r);
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(neg.$fparts.length); __zip_mut_2 += 1n) {
+      {
+        for (let __mut_4 = 0n; __mut_4 < BigInt(neg.$fparts[Number(__zip_mut_2)].$flimbs.length); __mut_4 += 1n) {
+          const i = __mut_4;
+          {
+            this.$flevel_rings[Number(i)].negate_assign(neg.$fparts[Number(__zip_mut_2)].$flimbs[Number(__mut_4)]);
+          }}
+      }}
+    return this.add(l, neg);
+  }
+
+  switch_to(ct: any, target: bigint): Result<Ciphertext, Error>
+  {
+    let out = __clone(ct);
+    while ((out.$flevel > target))     {
+      out = this.mod_switch_down(out);
+    }
+    return out;
+  }
+
+  uniform_rns(level: bigint, random: any): Result<RnsPoly, Error>
+  {
+    let limbs = ([] as any[]);
+    for (const ring of this.$flevel_rings.slice(0, Number(level + 1n)))     {
+      let slots = Array.from({length: Number(this.$fparameters.$fdegree)}, () => 0n);
+      const modulus = ring.parameters().$fmodulus;
+      let rng = (out: bigint[]) => (() => {
+  return random.fill_bytes(out);
+})();
+      const __volar_try_3 = sample_uniform(rng, modulus, slots);
+      if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+      (limbs).push(ring.from_slots(slots));
+    }
+    return new RnsPoly({ $flimbs: limbs });
+  }
+
+  zero(level: bigint): RnsPoly
+  {
+    return new RnsPoly({ $flimbs: this.$flevel_rings.slice(0, Number(level + 1n)).map(Ring.zero) });
+  }
+}
+
+export class Rns2 {
+  $fl0!: Limb;
+  $fl1!: Limb;
+
+  constructor(init: {
+    $fl0: Limb,
+    $fl1: Limb
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fl0: __zeroValue(this.$fl0), $fl1: __zeroValue(this.$fl1) }) as this;
+  }
+}
+
+export class RnsRowCt {
+  $fu1!: Rns2;
+  $fu2!: Rns2;
+
+  constructor(init: {
+    $fu1: Rns2,
+    $fu2: Rns2
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fu1: __zeroValue(this.$fu1), $fu2: __zeroValue(this.$fu2) }) as this;
+  }
+}
+
+export class LatticeRnsDd {
+  $fn!: bigint;
+  $fp!: bigint;
+  $fq0!: bigint;
+  $fq1!: bigint;
+  $fdelta!: LabelPoly;
+  $fdelta_pinned!: Delta;
+  $ftriple!: [Rns2, Rns2, Rns2];
+  $ftriple_rp!: [LabelPoly, LabelPoly, LabelPoly];
+  $fntt0!: (Ntt | undefined);
+  $fntt1!: (Ntt | undefined);
+  $fntt_p!: (Ntt | undefined);
+
+  constructor(init: {
+    $fn: bigint,
+    $fp: bigint,
+    $fq0: bigint,
+    $fq1: bigint,
+    $fdelta: LabelPoly,
+    $fdelta_pinned: Delta,
+    $ftriple: [Rns2, Rns2, Rns2],
+    $ftriple_rp: [LabelPoly, LabelPoly, LabelPoly],
+    $fntt0: (Ntt | undefined),
+    $fntt1: (Ntt | undefined),
+    $fntt_p: (Ntt | undefined)
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fp: __zeroValue(this.$fp), $fq0: __zeroValue(this.$fq0), $fq1: __zeroValue(this.$fq1), $fdelta: __zeroValue(this.$fdelta), $fdelta_pinned: __zeroValue(this.$fdelta_pinned), $ftriple: __zeroValue(this.$ftriple), $ftriple_rp: __zeroValue(this.$ftriple_rp), $fntt0: __zeroValue(this.$fntt0), $fntt1: __zeroValue(this.$fntt1), $fntt_p: __zeroValue(this.$fntt_p) }) as this;
+  }
+
+  dd0(a: any, tau: any): LabelPoly
+  {
+    const [p, q0] = [this.$fp, this.$fq0];
+    const a_q0: Limb = a.map((c: any) => (c % q0));
+    const prod0 = mul_limb(tau.$fu2.$fl0, a_q0, q0, this.$fntt0);
+    return round_limb0_to_rp(prod0, q0, p);
+  }
+
+  dd_i(a: any, i: boolean, tau: any): LabelPoly
+  {
+    const [p, q0] = [this.$fp, this.$fq0];
+    const a_q0: Limb = a.map((c: any) => (c % q0));
+    let acc0 = mul_limb(tau.$fu2.$fl0, a_q0, q0, this.$fntt0);
+    if (i)     {
+      acc0 = add_limb(acc0, tau.$fu1.$fl0, q0);
+    }
+    return round_limb0_to_rp(acc0, q0, p);
+  }
+
+  dd_ij(a: any, i: boolean, b: any, j: boolean, tau: any): LabelPoly
+  {
+    const [p, q0] = [this.$fp, this.$fq0];
+    const share = this.hss_mul_rp(a, i, b, j);
+    const share_q0: Limb = share.map((c: any) => (c % q0));
+    let acc0 = mul_limb(tau.$fu2.$fl0, share_q0, q0, this.$fntt0);
+    if ((i && j))     {
+      acc0 = add_limb(acc0, tau.$fu1.$fl0, q0);
+    }
+    return round_limb0_to_rp(acc0, q0, p);
+  }
+
+  dec_row(tau: any): LabelPoly
+  {
+    const q0 = this.$fq0;
+    const dq0 = to_limb(this.$fdelta, this.$fp, q0);
+    const u2d0 = mul_limb(tau.$fu2.$fl0, dq0, q0, this.$fntt0);
+    const phase0 = add_limb(tau.$fu1.$fl0, u2d0, q0);
+    return round_limb0_to_rp(phase0, q0, this.$fp);
+  }
+
+  degree(): bigint
+  {
+    return this.$fn;
+  }
+
+  delta(): LabelPoly
+  {
+    return this.$fdelta;
+  }
+
+  delta_pinned_ref(): Delta
+  {
+    return this.$fdelta_pinned;
+  }
+
+  eval(a: any, i: boolean, b: any, j: boolean, taus: RnsRowCt[]): LabelPoly
+  {
+    const p = this.$fp;
+    let out = this.dd_i(a, i, taus[Number(0n)]);
+    out = add_coeffs(out, this.dd_i(b, j, taus[Number(1n)]), p);
+    return add_coeffs(out, this.dd_ij(a, i, b, j, taus[Number(2n)]), p);
+  }
+
+  hss_mul_rp(a: any, i: boolean, b: any, j: boolean): LabelPoly
+  {
+    const p = this.$fp;
+    const [u, v, w] = this.$ftriple_rp;
+    const ab = this.mul_p(a, b);
+    let out = this.mul_p(ab, u);
+    if (i)     {
+      const bv = this.mul_p(b, v);
+      out = add_coeffs(out, bv, p);
+    }
+    if (j)     {
+      const av = this.mul_p(a, v);
+      out = add_coeffs(out, av, p);
+    }
+    if ((i && j))     {
+      out = sub_coeffs(out, w, p);
+    }
+    return out;
+  }
+
+  modulus_bits(): bigint
+  {
+    return fieldSub(fieldAdd(fieldSub(64n, ((__value) => { let __bits = 0n; while (__value !== 0n) { __value >>= 1n; __bits += 1n; } return BigInt(64) - __bits; })(BigInt.asUintN(64, this.$fq0))), fieldSub(64n, ((__value) => { let __bits = 0n; while (__value !== 0n) { __value >>= 1n; __bits += 1n; } return BigInt(64) - __bits; })(BigInt.asUintN(64, this.$fq1)))), 2n);
+  }
+
+  mul_p(a: bigint[], b: bigint[]): LabelPoly
+  {
+    return (() => { const __match = this.$fntt_p; if (__match !== null && __match !== undefined) { const ntt = __match;
+return negacyclic_mul_ntt(a, b, ntt); } else { return negacyclic_mul_coeffs(a, b, this.$fp); } })();
+  }
+
+  static new(n: bigint, p: bigint, q0: bigint, q1: bigint, random: any): Result<LatticeRnsDd, RnsError>
+  {
+    if (((((__equals(n, 0n) || (p < 3n)) || __equals((p % 2n), 0n)) || !__equals((q0 % p), 0n)) || __equals(q1, q0)))     {
+      return new RnsError_InvalidParameters();
+    }
+    let delta = Array.from({length: Number(n)}, () => 0n);
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(delta.length); __zip_mut_2 += 1n) {
+      {
+        const r = (random.next_u32() % 3n);
+        delta[Number(__zip_mut_2)] = (() => { const __match = r; if (__match === 0n) { return 0n; } else if (__match === 1n) { return 1n; } else { return fieldSub(p, 1n); } })();
+      }}
+    delta[Number(0n)] = 1n;
+    const dq0 = to_limb(delta, p, q0);
+    const dq1 = to_limb(delta, p, q1);
+    const u0 = uniform_limb(n, q0, random);
+    const u1 = uniform_limb(n, q1, random);
+    const ud0 = mul_limb(u0, dq0, q0, ntt_ctx(n, q0));
+    const ud1 = mul_limb(u1, dq1, q1, ntt_ctx(n, q1));
+    const v0 = add_limb(negate_limb(ud0, q0), noise_limb(n, p, q0, random), q0);
+    const v1 = add_limb(negate_limb(ud1, q1), noise_limb(n, p, q1, random), q1);
+    const d2q0 = mul_limb(dq0, dq0, q0, ntt_ctx(n, q0));
+    const d2q1 = mul_limb(dq1, dq1, q1, ntt_ctx(n, q1));
+    const ud20 = mul_limb(u0, d2q0, q0, ntt_ctx(n, q0));
+    const ud21 = mul_limb(u1, d2q1, q1, ntt_ctx(n, q1));
+    const w0 = add_limb(sub_limb(negate_limb(dq0, q0), ud20, q0), noise_limb(n, p, q0, random), q0);
+    const w1 = add_limb(sub_limb(negate_limb(dq1, q1), ud21, q1), noise_limb(n, p, q1, random), q1);
+    const red = (limb: Limb) => (() => {
+  return limb.map((c: any) => (c % p));
+})();
+    const triple_rp = [red(u0), red(v0), red(w0)];
+    const delta_pinned = new Delta({ $fcoeffs: __clone(delta), $fp: p });
+    return new LatticeRnsDd({ $fn: n, $fp: p, $fq0: q0, $fq1: q1, $fdelta: delta, $fdelta_pinned: delta_pinned, $ftriple: [new Rns2({ $fl0: u0, $fl1: u1 }), new Rns2({ $fl0: v0, $fl1: v1 }), new Rns2({ $fl0: w0, $fl1: w1 })], $ftriple_rp: triple_rp, $fntt0: Ntt.new(n, q0).ok(), $fntt1: Ntt.new(n, q1).ok(), $fntt_p: Ntt.new(n, p).ok() });
+  }
+
+  p(): bigint
+  {
+    return this.$fp;
+  }
+
+  row(t: bigint, random: any): RnsRowCt
+  {
+    const [p, q0, q1] = [this.$fp, this.$fq0, this.$fq1];
+    const u2 = new Rns2({ $fl0: uniform_limb(this.$fn, q0, random), $fl1: uniform_limb(this.$fn, q1, random) });
+    const dq0 = to_limb(this.$fdelta, p, q0);
+    const dq1 = to_limb(this.$fdelta, p, q1);
+    const u2d0 = mul_limb(u2.$fl0, dq0, q0, this.$fntt0);
+    const u2d1 = mul_limb(u2.$fl1, dq1, q1, this.$fntt1);
+    const td0 = scale_limb(dq0, t, q0);
+    const td1 = scale_limb(dq1, t, q1);
+    const e0 = noise_limb(this.$fn, p, q0, random);
+    const e1 = noise_limb(this.$fn, p, q1, random);
+    return new RnsRowCt({ $fu1: new Rns2({ $fl0: add_limb(sub_limb(td0, u2d0, q0), e0, q0), $fl1: add_limb(sub_limb(td1, u2d1, q1), e1, q1) }), $fu2: u2 });
+  }
+}
+
+export class LatticeRowCt {
+  $fu1!: RqPoly;
+  $fu2!: RqPoly;
+
+  constructor(init: {
+    $fu1: RqPoly,
+    $fu2: RqPoly
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fu1: __zeroValue(this.$fu1), $fu2: __zeroValue(this.$fu2) }) as this;
+  }
+}
+
+export class LatticeDd {
+  $fn!: bigint;
+  $fp!: bigint;
+  $fq!: bigint;
+  $fdelta!: RpPoly;
+  $fdelta_pinned!: Delta;
+  $ftriple!: [RqPoly, RqPoly, RqPoly];
+  $ftriple_rp!: [RpPoly, RpPoly, RpPoly];
+  $fntt_q!: (Ntt | undefined);
+  $fntt_p!: (Ntt | undefined);
+
+  constructor(init: {
+    $fn: bigint,
+    $fp: bigint,
+    $fq: bigint,
+    $fdelta: RpPoly,
+    $fdelta_pinned: Delta,
+    $ftriple: [RqPoly, RqPoly, RqPoly],
+    $ftriple_rp: [RpPoly, RpPoly, RpPoly],
+    $fntt_q: (Ntt | undefined),
+    $fntt_p: (Ntt | undefined)
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fn: __zeroValue(this.$fn), $fp: __zeroValue(this.$fp), $fq: __zeroValue(this.$fq), $fdelta: __zeroValue(this.$fdelta), $fdelta_pinned: __zeroValue(this.$fdelta_pinned), $ftriple: __zeroValue(this.$ftriple), $ftriple_rp: __zeroValue(this.$ftriple_rp), $fntt_q: __zeroValue(this.$fntt_q), $fntt_p: __zeroValue(this.$fntt_p) }) as this;
+  }
+
+  dd0(a: any, tau: any): LabelPoly
+  {
+    return this.mul_p(tau.$fc1, a);
+  }
+
+  dd0_raw(a: any, tau: any): RqPoly
+  {
+    const a_q: RqPoly = a.map((c: any) => (c % this.$fq));
+    return this.mul_q(tau.$fu2, a_q);
+  }
+
+  dd_i(a: any, i: boolean, tau: any): LabelPoly
+  {
+    const base = dd0(this, a, tau);
+    return (() => { if (i) {
+  return add_coeffs(base, tau.$fc0, this.$fp);
+} else {
+  return base;
+} })();
+  }
+
+  dd_ij(a: any, i: boolean, b: any, j: boolean, tau: any): LabelPoly
+  {
+    const share = this.hss_mul_rp(a, i, b, j);
+    const base = this.mul_p(tau.$fc1, share);
+    return (() => { if ((i && j)) {
+  return add_coeffs(base, tau.$fc0, this.$fp);
+} else {
+  return base;
+} })();
+  }
+
+  dec_row(tau: any): RpPoly
+  {
+    const q = this.$fq;
+    const delta_q: RqPoly = this.$fdelta.map((c: any) => (() => {
+  return (() => { if (__equals(c, 0n)) {
+  return 0n;
+} else if (__equals(c, 1n)) {
+  return 1n;
+} else {
+  return fieldSub(q, 1n);
+} })();
+})());
+    const u2d = this.mul_q(tau.$fu2, delta_q);
+    const phase = add_rq(tau.$fu1, u2d, q);
+    return round_to_rp(phase, q, this.$fp);
+  }
+
+  degree(): bigint
+  {
+    return this.$fn;
+  }
+
+  delta(): Delta
+  {
+    return this.$fdelta_pinned;
+  }
+
+  eval(a: any, i: boolean, b: any, j: boolean, taus: RowCt[]): LabelPoly
+  {
+    let out = dd_i(this, a, i, taus[Number(0n)]);
+    out = add_coeffs(out, dd_i(this, b, j, taus[Number(1n)]), this.$fp);
+    return add_coeffs(out, dd_ij(this, a, i, b, j, taus[Number(2n)]), this.$fp);
+  }
+
+  hss_mul(a: any, i: boolean, b: any, j: boolean): RpPoly
+  {
+    const q = this.$fq;
+    const [u, v, w] = this.$ftriple;
+    const a_q: RqPoly = a.map((c: any) => (c % q));
+    const b_q: RqPoly = b.map((c: any) => (c % q));
+    const ab = this.mul_q(a_q, b_q);
+    let acc = this.mul_q(ab, u);
+    if (i)     {
+      const bv = this.mul_q(b_q, v);
+      acc = add_rq(acc, bv, q);
+    }
+    if (j)     {
+      const av = this.mul_q(a_q, v);
+      acc = add_rq(acc, av, q);
+    }
+    if ((i && j))     {
+      acc = sub_rq(acc, w, q);
+    }
+    return round_to_rp(acc, q, this.$fp);
+  }
+
+  hss_mul_raw(a: any, i: boolean, b: any, j: boolean): RqPoly
+  {
+    const q = this.$fq;
+    const [u, v, w] = this.$ftriple;
+    const a_q: RqPoly = a.map((c: any) => (c % q));
+    const b_q: RqPoly = b.map((c: any) => (c % q));
+    const ab = this.mul_q(a_q, b_q);
+    let acc = this.mul_q(ab, u);
+    if (i)     {
+      const bv = this.mul_q(b_q, v);
+      acc = add_rq(acc, bv, q);
+    }
+    if (j)     {
+      const av = this.mul_q(a_q, v);
+      acc = add_rq(acc, av, q);
+    }
+    if ((i && j))     {
+      acc = sub_rq(acc, w, q);
+    }
+    return acc;
+  }
+
+  hss_mul_rp(a: any, i: boolean, b: any, j: boolean): RpPoly
+  {
+    const p = this.$fp;
+    const [u, v, w] = this.$ftriple_rp;
+    const ab = this.mul_p(a, b);
+    let out = this.mul_p(ab, u);
+    if (i)     {
+      const bv = this.mul_p(b, v);
+      out = add_coeffs(out, bv, p);
+    }
+    if (j)     {
+      const av = this.mul_p(a, v);
+      out = add_coeffs(out, av, p);
+    }
+    if ((i && j))     {
+      out = sub_coeffs(out, w, p);
+    }
+    return out;
+  }
+
+  mul_p(a: bigint[], b: bigint[]): RpPoly
+  {
+    return (() => { const __match = this.$fntt_p; if (__match !== null && __match !== undefined) { const ntt = __match;
+return negacyclic_mul_ntt(a, b, ntt); } else { return negacyclic_mul_coeffs(a, b, this.$fp); } })();
+  }
+
+  mul_q(a: bigint[], b: bigint[]): RqPoly
+  {
+    return (() => { const __match = this.$fntt_q; if (__match !== null && __match !== undefined) { const ntt = __match;
+return negacyclic_mul_ntt(a, b, ntt); } else { return negacyclic_mul_rq(a, b, this.$fq); } })();
+  }
+
+  static new(n: bigint, p: bigint, q: bigint, random: any): Result<LatticeDd, LatticeError>
+  {
+    if (((((__equals(n, 0n) || (p < 3n)) || __equals((p % 2n), 0n)) || !__equals((q % p), 0n)) || __equals((q % 2n), 0n)))     {
+      return new LatticeError_InvalidParameters();
+    }
+    let delta = Array.from({length: Number(n)}, () => 0n);
+    for (let __zip_mut_2 = 0n; __zip_mut_2 < BigInt(delta.length); __zip_mut_2 += 1n) {
+      {
+        const r = (random.next_u32() % 3n);
+        delta[Number(__zip_mut_2)] = (() => { const __match = r; if (__match === 0n) { return 0n; } else if (__match === 1n) { return 1n; } else { return fieldSub(p, 1n); } })();
+      }}
+    delta[Number(0n)] = 1n;
+    const delta_q: RqPoly = delta.map((c: any) => (() => {
+  return (() => { if (__equals(c, 0n)) {
+  return 0n;
+} else if (__equals(c, 1n)) {
+  return 1n;
+} else {
+  return fieldSub(q, 1n);
+} })();
+})());
+    const u = sample_uniform_rq(n, q, random);
+    const ud = negacyclic_mul_rq(u, delta_q, q);
+    const e1 = sample_noise_rq(n, p, q, random);
+    const v = add_rq(negate_rq(ud, q), e1, q);
+    const d2_q = negacyclic_mul_rq(delta_q, delta_q, q);
+    const ud2 = negacyclic_mul_rq(u, d2_q, q);
+    const e2 = sample_noise_rq(n, p, q, random);
+    const neg_delta_q = negate_rq(delta_q, q);
+    const w = add_rq(sub_rq(neg_delta_q, ud2, q), e2, q);
+    const red = (poly: RqPoly) => (() => {
+  return poly.map((c: any) => (c % p));
+})();
+    const triple_rp = [red(u), red(v), red(w)];
+    const delta_pinned = new Delta({ $fcoeffs: __clone(delta), $fp: p });
+    const ntt_q = Ntt.new(n, q).ok();
+    const ntt_p = Ntt.new(n, p).ok();
+    return new LatticeDd({ $fn: n, $fp: p, $fq: q, $fdelta: delta, $fdelta_pinned: delta_pinned, $ftriple: [u, v, w], $ftriple_rp: triple_rp, $fntt_q: ntt_q, $fntt_p: ntt_p });
+  }
+
+  p(): bigint
+  {
+    return this.$fp;
+  }
+
+  q(): bigint
+  {
+    return this.$fq;
+  }
+
+  row(t: bigint, random: any): RowCt
+  {
+    const tau = LatticeDd.row(this, t, random);
+    return rowct_from_lattice(tau, this.$fp);
+  }
+}
+
+export class Parameters {
+  $fdegree!: bigint;
+  $fmodulus!: bigint;
+
+  constructor(init: {
+    $fdegree: bigint,
+    $fmodulus: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fdegree: __zeroValue(this.$fdegree), $fmodulus: __zeroValue(this.$fmodulus) }) as this;
+  }
+}
+
+export class Poly {
+  $fslots!: Vec<bigint>;
+
+  constructor(init: {
+    $fslots: Vec<bigint>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fslots: __zeroValue(this.$fslots) }) as this;
+  }
+}
+
+export class Ring {
+  $fparameters!: Parameters;
+  $fntt!: Ntt;
+
+  constructor(init: {
+    $fparameters: Parameters,
+    $fntt: Ntt
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fparameters: __zeroValue(this.$fparameters), $fntt: __zeroValue(this.$fntt) }) as this;
+  }
+}
+
+export class Ntt {
+  $fmodulus!: bigint;
+  $fdegree!: bigint;
+  $fpsi_powers!: Vec<bigint>;
+  $finv_psi_powers_scaled!: Vec<bigint>;
+  $ffwd_twiddles!: Vec<bigint>;
+  $finv_twiddles!: Vec<bigint>;
+
+  constructor(init: {
+    $fmodulus: bigint,
+    $fdegree: bigint,
+    $fpsi_powers: Vec<bigint>,
+    $finv_psi_powers_scaled: Vec<bigint>,
+    $ffwd_twiddles: Vec<bigint>,
+    $finv_twiddles: Vec<bigint>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fmodulus: __zeroValue(this.$fmodulus), $fdegree: __zeroValue(this.$fdegree), $fpsi_powers: __zeroValue(this.$fpsi_powers), $finv_psi_powers_scaled: __zeroValue(this.$finv_psi_powers_scaled), $ffwd_twiddles: __zeroValue(this.$ffwd_twiddles), $finv_twiddles: __zeroValue(this.$finv_twiddles) }) as this;
+  }
+}
+
+export class WireState {
+  $fa0!: bigint;
+  $fpi!: boolean;
+
+  constructor(init: {
+    $fa0: bigint,
+    $fpi: boolean
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fa0: __zeroValue(this.$fa0), $fpi: __zeroValue(this.$fpi) }) as this;
+  }
+
+  active_label(masked_bit: boolean, delta: any, p: bigint): bigint
+  {
+    return (() => { if (masked_bit) {
+  return (fieldAdd(this.$fa0, delta.value()) % p);
+} else {
+  return this.$fa0;
+} })();
+  }
+}
+
+export class GlobalDelta {
+  $fdelta!: bigint;
+
+  constructor(init: {
+    $fdelta: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fdelta: __zeroValue(this.$fdelta) }) as this;
+  }
+
+  inverse(plaintext_modulus: bigint): (bigint | undefined)
+  {
+    return inverse_mod(this.$fdelta, plaintext_modulus);
+  }
+
+  static new(delta: bigint, plaintext_modulus: bigint): (GlobalDelta | undefined)
+  {
+    if (((__equals(delta, 0n) || (delta >= plaintext_modulus)) || __equals(fieldBitand(delta, 1n), 0n)))     {
+      return undefined;
+    }
+    return new GlobalDelta({ $fdelta: delta });
+  }
+
+  value(): bigint
+  {
+    return this.$fdelta;
+  }
+}
+
+export class ExpandedWire {
+  $fct_a0!: Ciphertext;
+  $fct_pi!: Ciphertext;
+  $fslot_a0!: bigint;
+  $fslot_pi!: bigint;
+
+  constructor(init: {
+    $fct_a0: Ciphertext,
+    $fct_pi: Ciphertext,
+    $fslot_a0: bigint,
+    $fslot_pi: bigint
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fct_a0: __zeroValue(this.$fct_a0), $fct_pi: __zeroValue(this.$fct_pi), $fslot_a0: __zeroValue(this.$fslot_a0), $fslot_pi: __zeroValue(this.$fslot_pi) }) as this;
+  }
+}
+
+export class ExpandedGate {
+  $fa!: ExpandedWire;
+  $fb!: ExpandedWire;
+  $fout!: ExpandedWire;
+
+  constructor(init: {
+    $fa: ExpandedWire,
+    $fb: ExpandedWire,
+    $fout: ExpandedWire
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fa: __zeroValue(this.$fa), $fb: __zeroValue(this.$fb), $fout: __zeroValue(this.$fout) }) as this;
+  }
+}
+
+export class Circuit {
+  $finputs!: bigint;
+  $fgates!: Vec<Gate>;
+  $foutputs!: Vec<bigint>;
+
+  constructor(init: {
+    $finputs: bigint,
+    $fgates: Vec<Gate>,
+    $foutputs: Vec<bigint>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $finputs: __zeroValue(this.$finputs), $fgates: __zeroValue(this.$fgates), $foutputs: __zeroValue(this.$foutputs) }) as this;
+  }
+
+  eval_plain(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, inputs: boolean[]): Result<Vec<boolean>, StitchError>
+  {
+    if (!__equals(BigInt(inputs.length), this.$finputs))     {
+      return new StitchError_WrongVariant();
+    }
+    const __volar_try_1 = this.validate();
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    let values = Array.from({length: Number(this.wires())}, () => false);
+    (values.slice(0, Number(this.$finputs))).splice(0, (inputs).length, ...(inputs));
+    for (const [i, gate] of this.$fgates.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
+      const [a, b] = gate.operands();
+      values[Number(fieldAdd(this.$finputs, i))] = (() => { const __match = gate; if (__match instanceof Gate_And) { return fieldBitand(values[Number(a)], values[Number(b)]); } else if (__match instanceof Gate_Xor) { return fieldBitxor(values[Number(a)], values[Number(b)]); } else { return !values[Number(a)]; } })();
+    }
+    return this.$foutputs.map((o: any) => values[Number(o)]);
+  }
+
+  validate(): Result<void, StitchError>
+  {
+    const wires = this.wires();
+    for (const [i, gate] of this.$fgates.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
+      const out = fieldAdd(this.$finputs, i);
+      const [a, b] = gate.operands();
+      if ((((a >= out) || (b >= out)) || (out >= wires)))       {
+        return new StitchError_WrongVariant();
+      }
+    }
+    if (this.$foutputs.some((o) => (o >= wires)))     {
+      return new StitchError_WrongVariant();
+    }
+    return undefined;
+  }
+
+  wires(): bigint
+  {
+    return fieldAdd(this.$finputs, BigInt(this.$fgates.length));
+  }
+}
+
+export class ReferenceEquation {
+  $fxor_charged!: boolean;
+
+  constructor(init: {
+    $fxor_charged: boolean
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fxor_charged: __zeroValue(this.$fxor_charged) }) as this;
+  }
+
+  complement(ctx: any, x: any): Result<Ciphertext, StitchError>
+  {
+    const p = ctx.parameters().$fplaintext_modulus;
+    const __volar_try_1 = ctx.mul_plain(x, ctx.constant_slots(fieldSub(p, 1n)));
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const neg = __volar_try_1;
+    return ctx.add_plain(neg, ctx.constant_slots(1n));
+  }
+
+  eval_and(ctx: any, la: any, lb: any, expanded: any, delta: any, ksk: any, stitch: any): Result<Ciphertext, StitchError>
+  {
+    let __volar_match_result_0 ;
+    const __volar_match_0 = [this.$fxor_charged, stitch];
+    if (true /* pattern Tuple([Lit(Bool(true)), TupleStruct { kind: Custom("Stitch::OneBit"), elems: [Ident { mutable: false, name: "b", subpat: None }] }]) */) {
+      const b = __volar_match_0[1]._0;
+      __volar_match_result_0 = b;
+    }
+    if (true /* pattern Tuple([Lit(Bool(false)), Ident { mutable: false, name: "s", subpat: Some(TupleStruct { kind: Custom("Stitch::FiveBits"), elems: [Wild] }) }]) */) {
+      const s = __volar_match_0[1];
+      __volar_match_result_0 = s.check_five();
+    }
+    {
+      return new StitchError_WrongVariant();
+    }
+    const correction = __volar_match_result_0;
+    const k_max = (() => { if (this.$fxor_charged) {
+  return 1n;
+} else {
+  return MAX_PAYLOAD;
+} })();
+    const __volar_try_2 = this.unwrap(ctx, la, expanded.$fa, delta);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const m_a = __volar_try_2;
+    const __volar_try_3 = this.unwrap(ctx, lb, expanded.$fb, delta);
+    if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+    const m_b = __volar_try_3;
+    const __volar_try_4 = this.parity(ctx, m_a, k_max, ksk);
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const b_a = __volar_try_4;
+    const __volar_try_5 = this.parity(ctx, m_b, k_max, ksk);
+    if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+    const b_b = __volar_try_5;
+    const __volar_try_6 = this.xor_bits(ctx, b_a, expanded.$fa.$fct_pi, ksk);
+    if (__volar_try_6 instanceof __VolarError) return __volar_try_6;
+    const x_a = __volar_try_6;
+    const __volar_try_7 = this.xor_bits(ctx, b_b, expanded.$fb.$fct_pi, ksk);
+    if (__volar_try_7 instanceof __VolarError) return __volar_try_7;
+    const x_b = __volar_try_7;
+    const top = ctx.max_level();
+    const __volar_try_9 = ctx.switch_to(x_a, top);
+    if (__volar_try_9 instanceof __VolarError) return __volar_try_9;
+    const x_a_1 = __volar_try_9;
+    const __volar_try_10 = ctx.switch_to(x_b, top);
+    if (__volar_try_10 instanceof __VolarError) return __volar_try_10;
+    const x_b_1 = __volar_try_10;
+    const __volar_try_11 = ctx.switch_to(ctx.mul(x_a_1, x_b_1, ksk), top);
+    if (__volar_try_11 instanceof __VolarError) return __volar_try_11;
+    const v_ab = __volar_try_11;
+    const __volar_try_12 = this.xor_bits(ctx, v_ab, expanded.$fout.$fct_pi, ksk);
+    if (__volar_try_12 instanceof __VolarError) return __volar_try_12;
+    let b_c = __volar_try_12;
+    if (correction)     {
+      b_c = this.complement(ctx, b_c);
+    }
+    return this.wrap(ctx, b_c, expanded.$fout, delta, ctx.max_level());
+  }
+
+  eval_xor(ctx: any, la: any, lb: any, expanded: any, delta: any, ksk: any, stitch: (Stitch | undefined)): Result<Ciphertext, StitchError>
+  {
+    return (() => { if (this.$fxor_charged) {
+  let __volar_match_result_0 ;
+  const __volar_match_0 = stitch;
+  if (__volar_match_0 !== null && __volar_match_0 !== undefined) {
+    const b = __volar_match_0._0;
+    __volar_match_result_0 = b;
+  }
+  {
+    return new StitchError_WrongVariant();
+  }
+  const bit = __volar_match_result_0;
+  const __volar_try_1 = this.unwrap(ctx, la, expanded.$fa, delta);
+  if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+  const b_a = __volar_try_1;
+  const __volar_try_2 = this.unwrap(ctx, lb, expanded.$fb, delta);
+  if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+  const b_b = __volar_try_2;
+  const __volar_try_3 = this.xor_bits(ctx, b_a, b_b, ksk);
+  if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+  let b_c = __volar_try_3;
+  if (bit)   {
+    b_c = this.complement(ctx, b_c);
+  }
+  return this.wrap(ctx, b_c, expanded.$fout, delta, ctx.max_level());
+} else {
+  if ((stitch) != null)   {
+    return new StitchError_WrongVariant();
+  }
+  return ctx.add(la, lb);
+} })();
+  }
+
+  garble_and(gate_index: bigint, a: any, b: any, out: any): Stitch
+  {
+    const bit = __equals(fieldBitand(fieldShr(wrappingAdd(wrappingAdd(wrappingAdd(BigInt(Math.imul(Number(BigInt(gate_index)), Number(2654435769n))), a.$fa0, 32), b.$fa0, 32), BigInt(out.$fpi), 32), 63n), 1n), 1n);
+    return (() => { if (this.$fxor_charged) {
+  return new Stitch_OneBit(bit);
+} else {
+  return five(bit);
+} })();
+  }
+
+  garble_xor(p: bigint, a: any, b: any, out: any): (Stitch | undefined)
+  {
+    return (() => { if (this.$fxor_charged) {
+  return new Stitch_OneBit(fieldBitxor(fieldBitxor(a.$fpi, b.$fpi), out.$fpi));
+} else {
+  return undefined;
+} })();
+  }
+
+  parity(ctx: any, m: any, k_max: bigint, ksk: any): Result<Ciphertext, StitchError>
+  {
+    if (__equals(k_max, 1n))     {
+      return __clone(m);
+    }
+    const p = ctx.parameters().$fplaintext_modulus;
+    const __volar_try_2 = parity_coeffs(p, k_max);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const coeffs = __volar_try_2;
+    const level = m.level();
+    const __volar_try_4 = ctx.mul_plain(ctx.encrypt_one_like(m), ctx.constant_slots(coeffs[Number(k_max)]));
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    let acc = __volar_try_4;
+    for (const i of (Array.from({length: Number(k_max - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
+      acc = ctx.switch_to(ctx.mul(acc, m, ksk), level);
+      if (!__equals(coeffs[Number(i)], 0n))       {
+        acc = ctx.add_plain(acc, ctx.constant_slots(coeffs[Number(i)]));
+      }
+    }
+    return acc;
+  }
+
+  unwrap(ctx: any, label: any, expanded: any, delta: any): Result<Ciphertext, StitchError>
+  {
+    const p = ctx.parameters().$fplaintext_modulus;
+    const __volar_try_1 = ((delta.inverse(p)) ?? (new StitchError_NonCanonicalBit()));
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const inv = __volar_try_1;
+    const __volar_try_2 = ctx.switch_to(expanded.$fct_a0, label.level());
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const ct_a0 = __volar_try_2;
+    const __volar_try_3 = ctx.sub(label, ct_a0);
+    if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+    const diff = __volar_try_3;
+    return ctx.mul_plain(diff, ctx.constant_slots(inv));
+  }
+
+  wrap(ctx: any, masked: any, expanded: any, delta: any, online_base: bigint): Result<Ciphertext, StitchError>
+  {
+    const __volar_try_0 = ctx.mul_plain(masked, ctx.constant_slots(delta.value()));
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const scaled = __volar_try_0;
+    const __volar_try_1 = ctx.switch_to(scaled, online_base);
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const scaled_1 = __volar_try_1;
+    const __volar_try_2 = ctx.switch_to(expanded.$fct_a0, online_base);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const ct_a0 = __volar_try_2;
+    return ctx.add(scaled_1, ct_a0);
+  }
+
+  xor_bits(ctx: any, a: any, b: any, ksk: any): Result<Ciphertext, StitchError>
+  {
+    const top = ctx.max_level();
+    const __volar_try_1 = ctx.switch_to(a, top);
+    if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+    const a_1 = __volar_try_1;
+    const __volar_try_2 = ctx.switch_to(b, top);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const b_1 = __volar_try_2;
+    const level = top;
+    const __volar_try_4 = ctx.add(a_1, b_1);
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const sum = __volar_try_4;
+    const __volar_try_5 = ctx.mul(a_1, b_1, ksk);
+    if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+    const product = __volar_try_5;
+    const __volar_try_6 = ctx.mul_plain(product, ctx.constant_slots(2n));
+    if (__volar_try_6 instanceof __VolarError) return __volar_try_6;
+    const doubled = __volar_try_6;
+    const __volar_try_7 = ctx.sub(sum, doubled);
+    if (__volar_try_7 instanceof __VolarError) return __volar_try_7;
+    const out = __volar_try_7;
+    return ctx.switch_to(out, level);
+  }
+
+  xor_is_charged(): boolean
+  {
+    return this.$fxor_charged;
+  }
+}
+
+export class OfflineGarbler {
+  $fsecret!: SecretKey;
+  $fksks!: KeySwitchKeySet;
+  $fplan!: ExpansionPlan;
+
+  constructor(init: {
+    $fsecret: SecretKey,
+    $fksks: KeySwitchKeySet,
+    $fplan: ExpansionPlan
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fsecret: __zeroValue(this.$fsecret), $fksks: __zeroValue(this.$fksks), $fplan: __zeroValue(this.$fplan) }) as this;
+  }
+
+  wire_state(ctx: any, plan: any, ct_a0: any, ct_pi: any, index: bigint): Result<WireState, Error>
+  {
+    const degree = ctx.parameters().$fdegree;
+    const slot = (i: bigint) => ((i % plan.$fslots_per_seed) % degree);
+    const a0 = (ctx.decrypt(this.$fsecret, ct_a0)[Number(slot(fieldMul(2n, index)))] % 2n);
+    const pi = __equals((ctx.decrypt(this.$fsecret, ct_pi)[Number(slot(fieldAdd(fieldMul(2n, index), 1n)))] % 2n), 1n);
+    const p = ctx.parameters().$fplaintext_modulus;
+    return new WireState({ $fa0: (a0 % p), $fpi: pi });
+  }
+}
+
+export class OfflineEvaluator {
+  $fplan!: ExpansionPlan;
+  $fwires!: Vec<ExpandedWire>;
+
+  constructor(init: {
+    $fplan: ExpansionPlan,
+    $fwires: Vec<ExpandedWire>
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fplan: __zeroValue(this.$fplan), $fwires: __zeroValue(this.$fwires) }) as this;
+  }
+
+  wire(wire: bigint): (ExpandedWire | undefined)
+  {
+    return this.$fwires?.[wire];
+  }
+
+  wires(): bigint
+  {
+    return BigInt(this.$fwires.length);
+  }
+}
+
+export class ExpansionStep {
+  $fwire_state!: WireState;
+  $feval!: ExpandedWire;
+
+  constructor(init: {
+    $fwire_state: WireState,
+    $feval: ExpandedWire
+  }) {
+    Object.assign(this, init);
+  }
+  __zero(): this {
+    return new (this.constructor as any)({ $fwire_state: __zeroValue(this.$fwire_state), $feval: __zeroValue(this.$feval) }) as this;
   }
 }
 
@@ -5923,6 +8465,17 @@ export class Ed25519 {
   }
 }
 
+export class CirrusHashBackend_Blake2s {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class CirrusHashBackend_Ascon {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class CirrusHashBackend_Keccak {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type CirrusHashBackend = CirrusHashBackend_Blake2s | CirrusHashBackend_Ascon | CirrusHashBackend_Keccak;
+
 class __VolarEnum_Sponge {
 
   absorb(this: Sponge, data: bigint[])
@@ -5934,7 +8487,7 @@ return h.update(data); } })();
 
   squeeze(this: Sponge, ctx: { defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, n: bigint): Vec<bigint>
   {
-    let out = [] as any[];
+    let out = Array.from({length: Number(n)}, () => ((0n) & 0xFFn));
     (() => { const __match = this; if (__match instanceof Sponge_Shake128) { const h = __match._0;
 return (() => {
   let r = __clone(h).finalize_xof();
@@ -6222,10 +8775,221 @@ export class PoolSeedError_ReceiverOutputCountMismatch extends __VolarError { co
 }
 export type PoolSeedError = PoolSeedError_InvalidParameters | PoolSeedError_SenderSeedCount | PoolSeedError_ReceiverChoiceCount | PoolSeedError_ReceiverSeedCount | PoolSeedError_InsufficientCotMaterial | PoolSeedError_ReceiverOutputCountMismatch;
 
+class __VolarEnum_GateRecord {
+
+  bits(this: GateRecord): bigint
+  {
+    return (() => { const __match = this; if (true /* pattern Or([TupleStruct { kind: Custom("Self::SmallAnd"), elems: [Wild] }, TupleStruct { kind: Custom("Self::SmallXor"), elems: [Wild] }]) */) { return 1n; } else if (__match instanceof Self_FastAnd) { return 5n; } else { return 0n; } })();
+  }
+}
+export class GateRecord_SmallAnd extends __VolarEnum_GateRecord { constructor(public _0: boolean) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export class GateRecord_SmallXor extends __VolarEnum_GateRecord { constructor(public _0: boolean) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export class GateRecord_FastAnd extends __VolarEnum_GateRecord { constructor(public $fmasks: boolean[], public $fdet: boolean) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fmasks), __zeroValue(this.$fdet)) as this; }
+}
+export class GateRecord_FastXor extends __VolarEnum_GateRecord { constructor() { super(); }
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type GateRecord = GateRecord_SmallAnd | GateRecord_SmallXor | GateRecord_FastAnd | GateRecord_FastXor;
+
+export class AndRows_Small { constructor(public _0: RowCt[]) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export class AndRows_Fast { constructor(public _0: RowCt[]) {}
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export type AndRows = AndRows_Small | AndRows_Fast;
+
+export class DriverError_BadCircuit extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class DriverError_BadInputCount extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class DriverError_MissingRecord extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class DriverError_WrongRecord extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type DriverError = DriverError_BadCircuit | DriverError_BadInputCount | DriverError_MissingRecord | DriverError_WrongRecord;
+
+export class Error_InvalidParameters extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_LengthMismatch extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_LevelMismatch extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_Noise extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_NoiseSource extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_Randomness extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_Arithmetic extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type Error = Error_InvalidParameters | Error_LengthMismatch | Error_LevelMismatch | Error_Noise | Error_NoiseSource | Error_Randomness | Error_Arithmetic;
+
+export class RnsError_LengthMismatch extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class RnsError_InvalidParameters extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type RnsError = RnsError_LengthMismatch | RnsError_InvalidParameters;
+
+export class LatticeError_LengthMismatch extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class LatticeError_InvalidParameters extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type LatticeError = LatticeError_LengthMismatch | LatticeError_InvalidParameters;
+
+export class Error_InvalidParameters extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_LengthMismatch extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_Arithmetic extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Error_Randomness extends __VolarError {
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type Error = Error_InvalidParameters | Error_LengthMismatch | Error_Arithmetic | Error_Randomness;
+
+class __VolarEnum_Variant {
+
+  bits_per_and(this: Variant): bigint
+  {
+    return (() => { const __match = this; if (true /* pattern Or([Wild, Wild]) */) { return 1n; } else { return 5n; } })();
+  }
+
+  bits_per_xor(this: Variant): bigint
+  {
+    return (() => { const __match = this; if (true) { return 1n; } else { return 0n; } })();
+  }
+}
+export class Variant_Small extends __VolarEnum_Variant { constructor() { super(); }
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Variant_Fast extends __VolarEnum_Variant { constructor() { super(); }
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class Variant_Tiny extends __VolarEnum_Variant { constructor() { super(); }
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export type Variant = Variant_Small | Variant_Fast | Variant_Tiny;
+
+class __VolarEnum_Stitch {
+
+  bits(this: Stitch): bigint
+  {
+    return (() => { const __match = this; if (__match instanceof Self_OneBit) { return 1n; } else { return 5n; } })();
+  }
+
+  check_five(this: Stitch): Result<boolean, StitchError>
+  {
+    return (() => { const __match = this; if (__match instanceof Self_OneBit) { return new StitchError_WrongVariant(); } else { const b = __match._0;
+return (() => {
+  if (!__equals(fieldBitand(b, !31n), 0n))   {
+    return new StitchError_NonCanonicalBit();
+  }
+  const s = fieldBitand(b, 1n);
+  const expected = Stitch.five(__equals(s, 1n));
+  if (!__equals(this, expected))   {
+    return new StitchError_NonCanonicalBit();
+  }
+  return __equals(s, 1n);
+})(); } })();
+  }
+
+  correction(this: Stitch): boolean
+  {
+    return (() => { const __match = this; if (__match instanceof Self_OneBit) { const b = __match._0;
+return b; } else { const b = __match._0;
+return __equals(fieldBitand(b, 1n), 1n); } })();
+  }
+}
+export class Stitch_OneBit extends __VolarEnum_Stitch { constructor(public _0: boolean) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export class Stitch_FiveBits extends __VolarEnum_Stitch { constructor(public _0: bigint) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export type Stitch = Stitch_OneBit | Stitch_FiveBits;
+
+class __VolarEnum_StitchError extends __VolarError {
+
+  fmt(this: StitchError, f: Formatter): Result
+  {
+    return (() => { const __match = this; if (true) { return f.write_str("stitching record stream is exhausted"); } else if (true) { return f.write_str("stitching record variant mismatch"); } else if (true) { return f.write_str("stitching record is not canonical"); } else if (true) { return f.write_str("free-XOR payload exceeds reduction bound"); } else { return f.write_str("underlying SWHE error"); } })();
+  }
+}
+export class StitchError_Exhausted extends __VolarEnum_StitchError { constructor() { super(); }
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class StitchError_WrongVariant extends __VolarEnum_StitchError { constructor() { super(); }
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class StitchError_NonCanonicalBit extends __VolarEnum_StitchError { constructor() { super(); }
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class StitchError_PayloadOverflow extends __VolarEnum_StitchError { constructor() { super(); }
+  __zero(): this { return new (this.constructor as any)() as this; }
+}
+export class StitchError_Crypto extends __VolarEnum_StitchError { constructor(public _0: SwheError) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this._0)) as this; }
+}
+export type StitchError = StitchError_Exhausted | StitchError_WrongVariant | StitchError_NonCanonicalBit | StitchError_PayloadOverflow | StitchError_Crypto;
+
+class __VolarEnum_Gate {
+
+  operands(this: Gate): [bigint, bigint]
+  {
+    return (() => { const __match = this; if (true /* pattern Or([Struct { kind: Custom("Self::And"), fields: [("a", Ident { mutable: false, name: "a", subpat: None }), ("b", Ident { mutable: false, name: "b", subpat: None })], rest: false }, Struct { kind: Custom("Self::Xor"), fields: [("a", Ident { mutable: false, name: "a", subpat: None }), ("b", Ident { mutable: false, name: "b", subpat: None })], rest: false }]) */) { return [a, b]; } else { const a = __match.$fa;
+return [a, a]; } })();
+  }
+
+  out_at(this: Gate, inputs: bigint, index: bigint): bigint
+  {
+    return fieldAdd(inputs, index);
+  }
+}
+export class Gate_And extends __VolarEnum_Gate { constructor(public $fa: bigint, public $fb: bigint) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fa), __zeroValue(this.$fb)) as this; }
+}
+export class Gate_Xor extends __VolarEnum_Gate { constructor(public $fa: bigint, public $fb: bigint) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fa), __zeroValue(this.$fb)) as this; }
+}
+export class Gate_Not extends __VolarEnum_Gate { constructor(public $fa: bigint) { super(); }
+  __zero(): this { return new (this.constructor as any)(__zeroValue(this.$fa)) as this; }
+}
+export type Gate = Gate_And | Gate_Xor | Gate_Not;
+
 export const GF8_POLY = 27n;
 export const GF64_POLY = 27n;
 export const GF128_POLY = 135n;
 export const GF256_POLY = new U256([1061n, 0n, 0n, 0n]);
+export const CIRrus_DEFAULT_HASH = new CirrusHashBackend_Blake2s();
+export const SPEC_HASH_SOURCES_DIGEST = [189n, 135n, 23n, 134n, 108n, 248n, 95n, 76n, 53n, 231n, 139n, 133n, 61n, 87n, 41n, 93n, 33n, 0n, 157n, 124n, 23n, 253n, 232n, 133n, 4n, 231n, 73n, 217n, 42n, 180n, 173n, 194n];
+export const BLAKE2S_BLOCK = 64n;
+export const BLAKE2S_OUT = 32n;
+export const BLAKE2S_IV = [1779033703n, 3144134277n, 1013904242n, 2773480762n, 1359893119n, 2600822924n, 528734635n, 1541459225n];
+export const BLAKE2S_SIGMA = [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n, 15n, 14n, 10n, 4n, 8n, 9n, 15n, 13n, 6n, 1n, 12n, 0n, 2n, 11n, 7n, 5n, 3n, 11n, 8n, 12n, 0n, 5n, 2n, 15n, 13n, 10n, 14n, 3n, 6n, 7n, 1n, 9n, 4n, 7n, 9n, 3n, 1n, 13n, 12n, 11n, 14n, 2n, 6n, 5n, 10n, 4n, 0n, 15n, 8n, 9n, 0n, 5n, 7n, 2n, 4n, 10n, 15n, 14n, 1n, 11n, 12n, 6n, 8n, 3n, 13n, 2n, 12n, 6n, 10n, 0n, 11n, 8n, 3n, 4n, 13n, 7n, 5n, 15n, 14n, 1n, 9n, 12n, 5n, 1n, 15n, 14n, 13n, 4n, 10n, 0n, 7n, 6n, 3n, 9n, 2n, 8n, 11n, 13n, 11n, 7n, 14n, 12n, 1n, 3n, 9n, 5n, 0n, 15n, 4n, 8n, 6n, 2n, 10n, 6n, 15n, 14n, 9n, 11n, 3n, 0n, 8n, 12n, 2n, 13n, 7n, 1n, 4n, 10n, 5n, 10n, 2n, 8n, 4n, 7n, 6n, 1n, 5n, 15n, 11n, 9n, 14n, 3n, 12n, 13n, 0n];
 export const SBOX = [99n, 124n, 119n, 123n, 242n, 107n, 111n, 197n, 48n, 1n, 103n, 43n, 254n, 215n, 171n, 118n, 202n, 130n, 201n, 125n, 250n, 89n, 71n, 240n, 173n, 212n, 162n, 175n, 156n, 164n, 114n, 192n, 183n, 253n, 147n, 38n, 54n, 63n, 247n, 204n, 52n, 165n, 229n, 241n, 113n, 216n, 49n, 21n, 4n, 199n, 35n, 195n, 24n, 150n, 5n, 154n, 7n, 18n, 128n, 226n, 235n, 39n, 178n, 117n, 9n, 131n, 44n, 26n, 27n, 110n, 90n, 160n, 82n, 59n, 214n, 179n, 41n, 227n, 47n, 132n, 83n, 209n, 0n, 237n, 32n, 252n, 177n, 91n, 106n, 203n, 190n, 57n, 74n, 76n, 88n, 207n, 208n, 239n, 170n, 251n, 67n, 77n, 51n, 133n, 69n, 249n, 2n, 127n, 80n, 60n, 159n, 168n, 81n, 163n, 64n, 143n, 146n, 157n, 56n, 245n, 188n, 182n, 218n, 33n, 16n, 255n, 243n, 210n, 205n, 12n, 19n, 236n, 95n, 151n, 68n, 23n, 196n, 167n, 126n, 61n, 100n, 93n, 25n, 115n, 96n, 129n, 79n, 220n, 34n, 42n, 144n, 136n, 70n, 238n, 184n, 20n, 222n, 94n, 11n, 219n, 224n, 50n, 58n, 10n, 73n, 6n, 36n, 92n, 194n, 211n, 172n, 98n, 145n, 149n, 228n, 121n, 231n, 200n, 55n, 109n, 141n, 213n, 78n, 169n, 108n, 86n, 244n, 234n, 101n, 122n, 174n, 8n, 186n, 120n, 37n, 46n, 28n, 166n, 180n, 198n, 232n, 221n, 116n, 31n, 75n, 189n, 139n, 138n, 112n, 62n, 181n, 102n, 72n, 3n, 246n, 14n, 97n, 53n, 87n, 185n, 134n, 193n, 29n, 158n, 225n, 248n, 152n, 17n, 105n, 217n, 142n, 148n, 155n, 30n, 135n, 233n, 206n, 85n, 40n, 223n, 140n, 161n, 137n, 13n, 191n, 230n, 66n, 104n, 65n, 153n, 45n, 15n, 176n, 84n, 187n, 22n];
 export const RCON = [0n, 1n, 2n, 4n, 8n, 16n, 32n, 64n, 128n, 27n, 54n];
 export const NR = 10n;
@@ -6242,6 +9006,11 @@ export const COM_BYTES = 32n;
 export const MAGIC = [86n, 66n, 80n, 49n];
 export const VERSION = 1n;
 export const MAX_ITEMS = fieldShl(1n, 20n);
+export const SHAKE128_RATE = 168n;
+export const SHA3_256_RATE = 136n;
+export const KECCAK_RNDC = [1n, 32898n, 9223372036854808714n, 9223372039002292224n, 32907n, 2147483649n, 9223372039002292353n, 9223372036854808585n, 138n, 136n, 2147516425n, 2147483658n, 2147516555n, 9223372036854775947n, 9223372036854808713n, 9223372036854808579n, 9223372036854808578n, 9223372036854775936n, 32778n, 9223372039002259466n, 9223372039002292353n, 9223372036854808704n, 2147483649n, 9223372039002292232n];
+export const KECCAK_ROTC = [1n, 3n, 6n, 10n, 15n, 21n, 28n, 36n, 45n, 55n, 2n, 14n, 27n, 41n, 56n, 8n, 25n, 43n, 62n, 18n, 39n, 61n, 20n, 44n];
+export const KECCAK_PILN = [10n, 7n, 11n, 17n, 18n, 3n, 5n, 16n, 8n, 21n, 24n, 4n, 15n, 23n, 19n, 13n, 12n, 2n, 20n, 14n, 22n, 9n, 6n, 1n];
 export const FALSE = 0n;
 export const SECURITY_BITS = 128n;
 export const PAPER_PROFILE = new PaperProfile({ $fsecurity_bits: SECURITY_BITS, $fring_degree: 4096n, $fmodulus_bits: 109n, $fbatch_messages: 699050n });
@@ -6298,6 +9067,8 @@ export const TAG_BEA95 = 11n;
 export const TAG_HAT = 12n;
 export const TAG_FERRET_CHECK_MASK = 13n;
 export const TAG_FERRET_CHECK_HV = 14n;
+export const WARP_TRANSCRIPT_DOMAIN = [118n, 111n, 108n, 97n, 114n, 45n, 105n, 111n, 112n, 47n, 119n, 97n, 114n, 112n, 47n, 101n, 112n, 114n, 105n, 110n, 116n, 45n, 50n, 48n, 50n, 53n, 45n, 55n, 53n, 51n, 47n, 99n, 111n, 110n, 115n, 116n, 114n, 117n, 99n, 116n, 105n, 111n, 110n, 45n, 49n, 48n, 46n, 52n, 47n, 118n, 49n];
+export const MAX_PAYLOAD = 4n;
 export const P_LIMBS = [18446744073709551597n, 18446744073709551615n, 18446744073709551615n, 9223372036854775807n];
 export const D_LIMBS = [8496970652267935907n, 31536524315187371n, 10144147576115030168n, 5909686906226998899n];
 export const D2_LIMBS = [16993941304535871833n, 63073048630374742n, 1841551078520508720n, 2596001775599221991n];
@@ -6306,6 +9077,20 @@ export const D2 = fe_const(D2_LIMBS);
 export const BASE_X_LIMBS = [14507833142362363162n, 7578651490590762930n, 13881468655802702940n, 2407515759118799870n];
 export const BASE_Y_LIMBS = [7378697629483820632n, 7378697629483820646n, 7378697629483820646n, 7378697629483820646n];
 export const L_LIMBS = [6346243789798364141n, 1503914060200516822n, 0n, 1152921504606846976n];
+export const ASCON_HASH256_IV = [11177464323724596865n, 5459383224871899602n, 12566513473065105434n, 4359436768738168243n, 1899470422303676269n];
+export const ASCON_XOF128_IV = [15745374255817443307n, 14734905824818166121n, 16667980376626976305n, 1072114354614917324n, 16164673763700313054n];
+export const ASCON_RC = [240n, 225n, 210n, 195n, 180n, 165n, 150n, 135n, 120n, 105n, 90n, 75n];
+export const ASCON_128A_IV = 9259414062373011456n;
+
+export function absorb_args_bases<D>(n: bigint, d: any, args: GarbleDyn[]): D
+{
+  return (() => { const __match = args.split_first(); if (true) { return d; } else { const first = __match[0];
+const rest = __match[1];
+return (() => {
+  d.update(first.$fbase);
+  return absorb_args_bases(n, d, rest);
+})(); } })();
+}
 
 export function add4(a: bigint[], b: bigint[]): bigint[]
 {
@@ -6319,14 +9104,39 @@ export function add4(a: bigint[], b: bigint[]): bigint[]
   return out;
 }
 
-export function add_mod(left: bigint, right: bigint, modulus: bigint): bigint
+export function add_coeffs(a: bigint[], b: bigint[], modulus: bigint): Vec<bigint>
 {
+  return a.map((__a: any, __i: number) => [__a, b[__i]] as [typeof __a, any]).map(([x, y]: any) => add_mod(x, y, modulus));
+}
+
+export function add_limb(a: any, b: any, q: bigint): Limb
+{
+  return a.map((__a: any, __i: number) => [__a, b[__i]] as [typeof __a, any]).map(([x, y]: any) => add_mod(x, y, q));
+}
+
+export function add_mod(...__args: any[]): any {
+  if (__args.length === 3) {
+    const left = __args[0];
+    const right = __args[1];
+    const modulus = __args[2];
+    return (() => {
   const sum = fieldAdd(left, right);
   return (() => { if ((sum >= modulus)) {
   return fieldSub(sum, modulus);
 } else {
   return sum;
 } })();
+})();
+  } else
+  if (__args.length === 3) {
+    const left = __args[0];
+    const right = __args[1];
+    const modulus = __args[2];
+    return (() => {
+  return BigInt((fieldAdd((left as unknown as bigint), (right as unknown as bigint)) % (modulus as unknown as bigint)));
+})();
+  }
+  throw new Error("add_mod(): no matching variant for " + __args.length + " args");
 }
 
 export function add_mod_l(a: bigint[], b: bigint[]): bigint[]
@@ -6343,6 +9153,16 @@ export function add_round_key(state: bigint[], round_key: bigint[])
   for (let i = 0n; i < BLOCK; i += 1n)   {
     state[Number(i)] = fieldBitxor(state[Number(i)], round_key[Number(i)]);
   }
+}
+
+export function add_rp(a: bigint[], b: bigint[], p: bigint): RpPoly
+{
+  return a.map((__a: any, __i: number) => [__a, b[__i]] as [typeof __a, any]).map(([x, y]: any) => add_mod(x, y, p));
+}
+
+export function add_rq(a: bigint[], b: bigint[], q: bigint): RqPoly
+{
+  return a.map((__a: any, __i: number) => [__a, b[__i]] as [typeof __a, any]).map(([x, y]: any) => add_mod(x, y, q));
 }
 
 export function add_to_lower_word(iv: bigint[], counter: bigint): bigint[]
@@ -6369,24 +9189,40 @@ export function add_to_upper_word(iv: bigint[], tweak: bigint)
   iv[Number(15n)] = bytes[Number(3n)];
 }
 
+export function aead_pad(n: bigint): bigint
+{
+  return fieldShl(128n, fieldSub(56n, fieldMul(8n, n)));
+}
+
 export function aes_ctr_prg(seed: bigint[], iv: bigint[], tweak: bigint, out_bytes: bigint): Vec<bigint>
 {
   let iv_tweaked = iv;
   add_to_upper_word(iv_tweaked, tweak);
   const n_full = (out_bytes / BLOCK);
   const rem = (out_bytes % BLOCK);
-  let out = ([] as any[]);
+  let out: Vec<bigint> = ([] as any[]);
   for (let i = 0n; i < n_full; i += 1n)   {
     const block_in = add_to_lower_word(iv_tweaked, BigInt(i));
     const ct = encrypt_block(seed, block_in);
-    out.push(...(ct));
+    for (let b = 0n; b < BLOCK; b += 1n)     {
+      (out).push(ct[Number(b)]);
+    }
   }
   if ((rem > 0n))   {
     const block_in = add_to_lower_word(iv_tweaked, BigInt(n_full));
     const ct = encrypt_block(seed, block_in);
-    out.push(...(ct.slice(0, Number(rem))));
+    let b = 0n;
+    while ((b < rem))     {
+      (out).push(ct[Number(b)]);
+      b = fieldAdd(b, 1n);
+    }
   }
   return out;
+}
+
+export function align_wire(ctx: any, wire: ExpandedWire, level: bigint): Result<ExpandedWire, StitchError>
+{
+  return new ExpandedWire({ $fct_a0: ctx.switch_to(wire.$fct_a0, level), $fct_pi: ctx.switch_to(wire.$fct_pi, level), $fslot_a0: wire.$fslot_a0, $fslot_pi: wire.$fslot_pi });
 }
 
 export function and_test_poly(big_n: bigint): bigint[]
@@ -6402,13 +9238,205 @@ export function and_test_poly(big_n: bigint): bigint[]
   return v;
 }
 
-export function assert_one_check<T>(n: bigint, q: QDyn<any>, opening: any[], delta: DeltaDyn<any>): boolean
+export function ascon128a_encrypt(key: bigint[], nonce: bigint[], ad: bigint[], plaintext: bigint[]): [Vec<bigint>, bigint[]]
+{
+  const k1 = be_u64(key.slice(0, Number(8n)));
+  const k2 = be_u64(key.slice(Number(8n), Number(16n)));
+  let state = [ASCON_128A_IV, k1, k2, be_u64(nonce.slice(0, Number(8n))), be_u64(nonce.slice(Number(8n), Number(16n)))];
+  ascon_p12(state);
+  state[Number(3n)] = fieldBitxor(state[Number(3n)], k1);
+  state[Number(4n)] = fieldBitxor(state[Number(4n)], k2);
+  if (!(ad.length === 0))   {
+    let i = 0n;
+    while ((fieldSub(BigInt(ad.length), i) >= 16n))     {
+      state[Number(0n)] = fieldBitxor(state[Number(0n)], be_u64(ad.slice(Number(i), Number(fieldAdd(i, 8n)))));
+      state[Number(1n)] = fieldBitxor(state[Number(1n)], be_u64(ad.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(i, 16n)))));
+      ascon_p8(state);
+      i = fieldAdd(i, 16n);
+    }
+    const rem = fieldSub(BigInt(ad.length), i);
+    const [sidx, lastlen] = (() => { if ((rem >= 8n)) {
+  state[Number(0n)] = fieldBitxor(state[Number(0n)], be_u64(ad.slice(Number(i), Number(fieldAdd(i, 8n)))));
+  return [1n, fieldSub(rem, 8n)];
+} else {
+  return [0n, rem];
+} })();
+    state[Number(sidx)] = fieldBitxor(state[Number(sidx)], aead_pad(lastlen));
+    if ((lastlen > 0n))     {
+      const off = fieldAdd(i, (() => { if (__equals(sidx, 1n)) {
+  return 8n;
+} else {
+  return 0n;
+} })());
+      state[Number(sidx)] = fieldBitxor(state[Number(sidx)], be_u64_partial(ad.slice(Number(off), Number(fieldAdd(off, lastlen)))));
+    }
+    ascon_p8(state);
+  }
+  state[Number(4n)] = fieldBitxor(state[Number(4n)], 1n);
+  let ciphertext = ([] as any[]);
+  let i = 0n;
+  while ((fieldSub(BigInt(plaintext.length), i) >= 16n))   {
+    state[Number(0n)] = fieldBitxor(state[Number(0n)], be_u64(plaintext.slice(Number(i), Number(fieldAdd(i, 8n)))));
+    ciphertext.push(...([((state[Number(0n)]) >> 24n) & 0xFFn, ((state[Number(0n)]) >> 16n) & 0xFFn, ((state[Number(0n)]) >> 8n) & 0xFFn, (state[Number(0n)]) & 0xFFn]));
+    state[Number(1n)] = fieldBitxor(state[Number(1n)], be_u64(plaintext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(i, 16n)))));
+    ciphertext.push(...([((state[Number(1n)]) >> 24n) & 0xFFn, ((state[Number(1n)]) >> 16n) & 0xFFn, ((state[Number(1n)]) >> 8n) & 0xFFn, (state[Number(1n)]) & 0xFFn]));
+    ascon_p8(state);
+    i = fieldAdd(i, 16n);
+  }
+  const rem = fieldSub(BigInt(plaintext.length), i);
+  if ((rem >= 8n))   {
+    state[Number(0n)] = fieldBitxor(state[Number(0n)], be_u64(plaintext.slice(Number(i), Number(fieldAdd(i, 8n)))));
+    ciphertext.push(...([((state[Number(0n)]) >> 24n) & 0xFFn, ((state[Number(0n)]) >> 16n) & 0xFFn, ((state[Number(0n)]) >> 8n) & 0xFFn, (state[Number(0n)]) & 0xFFn]));
+    const rest = fieldSub(rem, 8n);
+    state[Number(1n)] = fieldBitxor(state[Number(1n)], aead_pad(rest));
+    if ((rest > 0n))     {
+      state[Number(1n)] = fieldBitxor(state[Number(1n)], be_u64_partial(plaintext.slice(Number(fieldAdd(i, 8n)), Number(fieldAdd(fieldAdd(i, 8n), rest)))));
+      const keystream = [((state[Number(1n)]) >> 24n) & 0xFFn, ((state[Number(1n)]) >> 16n) & 0xFFn, ((state[Number(1n)]) >> 8n) & 0xFFn, (state[Number(1n)]) & 0xFFn];
+      ciphertext.push(...(keystream.slice(0, Number(rest))));
+    }
+  } else   {
+    state[Number(0n)] = fieldBitxor(state[Number(0n)], aead_pad(rem));
+    if ((rem > 0n))     {
+      state[Number(0n)] = fieldBitxor(state[Number(0n)], be_u64_partial(plaintext.slice(Number(i), Number(fieldAdd(i, rem)))));
+      const keystream = [((state[Number(0n)]) >> 24n) & 0xFFn, ((state[Number(0n)]) >> 16n) & 0xFFn, ((state[Number(0n)]) >> 8n) & 0xFFn, (state[Number(0n)]) & 0xFFn];
+      ciphertext.push(...(keystream.slice(0, Number(rem))));
+    }
+  }
+  state[Number(2n)] = fieldBitxor(state[Number(2n)], k1);
+  state[Number(3n)] = fieldBitxor(state[Number(3n)], k2);
+  ascon_p12(state);
+  state[Number(3n)] = fieldBitxor(state[Number(3n)], k1);
+  state[Number(4n)] = fieldBitxor(state[Number(4n)], k2);
+  let tag = Array.from({length: Number(16n)}, () => ((0n) & 0xFFn));
+  (tag.slice(0, Number(8n))).splice(0, ([((state[Number(3n)]) >> 24n) & 0xFFn, ((state[Number(3n)]) >> 16n) & 0xFFn, ((state[Number(3n)]) >> 8n) & 0xFFn, (state[Number(3n)]) & 0xFFn]).length, ...([((state[Number(3n)]) >> 24n) & 0xFFn, ((state[Number(3n)]) >> 16n) & 0xFFn, ((state[Number(3n)]) >> 8n) & 0xFFn, (state[Number(3n)]) & 0xFFn]));
+  (tag.slice(Number(8n))).splice(0, ([((state[Number(4n)]) >> 24n) & 0xFFn, ((state[Number(4n)]) >> 16n) & 0xFFn, ((state[Number(4n)]) >> 8n) & 0xFFn, (state[Number(4n)]) & 0xFFn]).length, ...([((state[Number(4n)]) >> 24n) & 0xFFn, ((state[Number(4n)]) >> 16n) & 0xFFn, ((state[Number(4n)]) >> 8n) & 0xFFn, (state[Number(4n)]) & 0xFFn]));
+  return [ciphertext, tag];
+}
+
+export function ascon_hash256(input: bigint[]): bigint[]
+{
+  let state = ASCON_HASH256_IV;
+  const n = BigInt(input.length);
+  let i = 0n;
+  while ((fieldSub(n, i) >= 8n))   {
+    let w = Array.from({length: Number(8n)}, () => ((0n) & 0xFFn));
+    (w).splice(0, (input.slice(Number(i), Number(fieldAdd(i, 8n)))).length, ...(input.slice(Number(i), Number(fieldAdd(i, 8n)))));
+    state[Number(0n)] = fieldBitxor(state[Number(0n)], u64_from_le_bytes(w));
+    ascon_p12(state);
+    i = fieldAdd(i, 8n);
+  }
+  const rem = fieldSub(n, i);
+  let last = Array.from({length: Number(8n)}, () => ((0n) & 0xFFn));
+  (last.slice(0, Number(rem))).splice(0, (input.slice(Number(i))).length, ...(input.slice(Number(i))));
+  state[Number(0n)] = fieldBitxor(state[Number(0n)], u64_from_le_bytes(last));
+  state[Number(0n)] = fieldBitxor(state[Number(0n)], fieldShl(1n, fieldMul(8n, rem)));
+  ascon_p12(state);
+  let out = Array.from({length: Number(32n)}, () => ((0n) & 0xFFn));
+  for (let j = 0n; j < 4n; j += 1n)   {
+    (out.slice(Number(fieldMul(j, 8n)), Number(fieldAdd(fieldMul(j, 8n), 8n)))).splice(0, ([(state[Number(0n)]) & 0xFFn, ((state[Number(0n)]) >> 8n) & 0xFFn, ((state[Number(0n)]) >> 16n) & 0xFFn, ((state[Number(0n)]) >> 24n) & 0xFFn]).length, ...([(state[Number(0n)]) & 0xFFn, ((state[Number(0n)]) >> 8n) & 0xFFn, ((state[Number(0n)]) >> 16n) & 0xFFn, ((state[Number(0n)]) >> 24n) & 0xFFn]));
+    if ((j < 3n))     {
+      ascon_p12(state);
+    }
+  }
+  return out;
+}
+
+export function ascon_hash256_array(n: bigint, input: bigint[]): bigint[]
+{
+  let state = ASCON_HASH256_IV;
+  const n_1 = n;
+  const num_full = (n_1 / 8n);
+  for (let i = 0n; i < num_full; i += 1n)   {
+    let w = Array.from({length: Number(8n)}, () => ((0n) & 0xFFn));
+    for (let j = 0n; j < 8n; j += 1n)     {
+      w[Number(j)] = input[Number(fieldAdd(fieldMul(i, 8n), j))];
+    }
+    state[Number(0n)] = fieldBitxor(state[Number(0n)], u64_from_le_bytes(w));
+    ascon_p12(state);
+  }
+  const rem = fieldSub(n_1, fieldMul(num_full, 8n));
+  let last = Array.from({length: Number(8n)}, () => ((0n) & 0xFFn));
+  for (let j = 0n; j < 8n; j += 1n)   {
+    const idx = fieldAdd(fieldMul(num_full, 8n), j);
+    if ((idx < n_1))     {
+      last[Number(j)] = input[Number(idx)];
+    }
+  }
+  state[Number(0n)] = fieldBitxor(state[Number(0n)], u64_from_le_bytes(last));
+  state[Number(0n)] = fieldBitxor(state[Number(0n)], fieldShl(1n, fieldMul(8n, rem)));
+  ascon_p12(state);
+  let out = Array.from({length: Number(32n)}, () => ((0n) & 0xFFn));
+  for (let j = 0n; j < 4n; j += 1n)   {
+    (out.slice(Number(fieldMul(j, 8n)), Number(fieldAdd(fieldMul(j, 8n), 8n)))).splice(0, ([(state[Number(0n)]) & 0xFFn, ((state[Number(0n)]) >> 8n) & 0xFFn, ((state[Number(0n)]) >> 16n) & 0xFFn, ((state[Number(0n)]) >> 24n) & 0xFFn]).length, ...([(state[Number(0n)]) & 0xFFn, ((state[Number(0n)]) >> 8n) & 0xFFn, ((state[Number(0n)]) >> 16n) & 0xFFn, ((state[Number(0n)]) >> 24n) & 0xFFn]));
+    if ((j < 3n))     {
+      ascon_p12(state);
+    }
+  }
+  return out;
+}
+
+export function ascon_p12(state: bigint[])
+{
+  for (let round = 0n; round < 12n; round += 1n)   {
+    const new_ = ascon_round(state, ASCON_RC[Number(round)]);
+    for (let i = 0n; i < 5n; i += 1n)     {
+      state[Number(i)] = new_[Number(i)];
+    }
+  }
+}
+
+export function ascon_p8(state: bigint[])
+{
+  for (let round = 4n; round < 12n; round += 1n)   {
+    const new_ = ascon_round(state, ASCON_RC[Number(round)]);
+    for (let i = 0n; i < 5n; i += 1n)     {
+      state[Number(i)] = new_[Number(i)];
+    }
+  }
+}
+
+export function ascon_round(x: bigint[], c: bigint): bigint[]
+{
+  const x0 = fieldBitxor(x[Number(0n)], x[Number(4n)]);
+  const x2 = fieldBitxor(fieldBitxor(x[Number(2n)], x[Number(1n)]), c);
+  const x4 = fieldBitxor(x[Number(4n)], x[Number(3n)]);
+  const tx0 = fieldBitxor(x0, fieldBitand(!x[Number(1n)], x2));
+  const tx1 = fieldBitxor(x[Number(1n)], fieldBitand(!x2, x[Number(3n)]));
+  const tx2 = fieldBitxor(x2, fieldBitand(!x[Number(3n)], x4));
+  const tx3 = fieldBitxor(x[Number(3n)], fieldBitand(!x4, x0));
+  const tx4 = fieldBitxor(x4, fieldBitand(!x0, x[Number(1n)]));
+  const tx1_1 = fieldBitxor(tx1, tx0);
+  const tx3_1 = fieldBitxor(tx3, tx2);
+  const tx0_1 = fieldBitxor(tx0, tx4);
+  const y0 = fieldBitxor(tx0_1, fieldBitor(fieldShr(tx0_1, 9n), fieldShl(tx0_1, 55n)));
+  const y1 = fieldBitxor(tx1_1, fieldBitor(fieldShr(tx1_1, 22n), fieldShl(tx1_1, 42n)));
+  const y2 = fieldBitxor(tx2, fieldBitor(fieldShr(tx2, 5n), fieldShl(tx2, 59n)));
+  const y3 = fieldBitxor(tx3_1, fieldBitor(fieldShr(tx3_1, 7n), fieldShl(tx3_1, 57n)));
+  const y4 = fieldBitxor(tx4, fieldBitor(fieldShr(tx4, 34n), fieldShl(tx4, 30n)));
+  return [fieldBitxor(tx0_1, fieldBitor(fieldShr(y0, 19n), fieldShl(y0, 45n))), fieldBitxor(tx1_1, fieldBitor(fieldShr(y1, 39n), fieldShl(y1, 25n))), !fieldBitxor(tx2, fieldBitor(fieldShr(y2, 1n), fieldShl(y2, 63n))), fieldBitxor(tx3_1, fieldBitor(fieldShr(y3, 10n), fieldShl(y3, 54n))), fieldBitxor(tx4, fieldBitor(fieldShr(y4, 7n), fieldShl(y4, 57n)))];
+}
+
+export function assert_one_check<N, T>(n: bigint, q: QDyn<any>, opening: any[], delta: Delta<N, any>): boolean
 {
   let ok = true;
   for (let i = 0n; i < n; i += 1n)   {
     ok = (ok && __equals(fieldAdd(__clone(q.$fq[Number(i)]), __clone(opening[Number(i)])), __clone(delta.$fdelta[Number(i)])));
   }
   return ok;
+}
+
+export function be_u64(input: bigint[]): bigint
+{
+  let b = Array.from({length: Number(8n)}, () => ((0n) & 0xFFn));
+  (b).splice(0, (input).length, ...(input));
+  return u64.from_be_bytes(b);
+}
+
+export function be_u64_partial(input: bigint[]): bigint
+{
+  let b = Array.from({length: Number(8n)}, () => ((0n) & 0xFFn));
+  (b.slice(0, Number(BigInt(input.length)))).splice(0, (input).length, ...(input));
+  return u64.from_be_bytes(b);
 }
 
 export function bea95_chosen_bit(delta: any, r0: any, x: boolean, z: any, b: boolean): [Block, Block, boolean]
@@ -6842,8 +9870,10 @@ export function bit_msb(alpha: bigint, h: bigint, i: bigint): boolean
   return __equals(fieldBitand(fieldShr(alpha, fieldSub(fieldSub(h, 1n), i)), 1n), 1n);
 }
 
-export function bit_reverse(values: bigint[])
-{
+export function bit_reverse(...__args: any[]): any {
+  if (__args.length === 1) {
+    const values = __args[0];
+    return (() => {
   const bits = ilog2(BigInt(values.length));
   for (let index = 0n; index < BigInt(values.length); index += 1n)   {
     const reversed = fieldShr((() => { let __r = index; let __o = 0n; for (let __i = 0n; __i < 64n; __i += 1n) { __o = (__o << 1n) | (__r & 1n); __r >>= 1n; } return __o; })(), fieldSub(64n, bits));
@@ -6851,6 +9881,21 @@ export function bit_reverse(values: bigint[])
       (() => { const __a = values; const __i = Number(index); const __j = Number(reversed); const __tmp = __a[__i]; __a[__i] = __a[__j]; __a[__j] = __tmp; return __a; })();
     }
   }
+})();
+  } else
+  if (__args.length === 1) {
+    const values = __args[0];
+    return (() => {
+  const bits = ilog2(BigInt(values.length));
+  for (let index = 0n; index < BigInt(values.length); index += 1n)   {
+    const reversed = fieldShr((() => { let __r = index; let __o = 0n; for (let __i = 0n; __i < 64n; __i += 1n) { __o = (__o << 1n) | (__r & 1n); __r >>= 1n; } return __o; })(), fieldSub(64n, bits));
+    if ((index < reversed))     {
+      (() => { const __a = values; const __i = Number(index); const __j = Number(reversed); const __tmp = __a[__i]; __a[__i] = __a[__j]; __a[__j] = __tmp; return __a; })();
+    }
+  }
+})();
+  }
+  throw new Error("bit_reverse(): no matching variant for " + __args.length + " args");
 }
 
 export function bit_to_g128(b: boolean): Galois128
@@ -6860,7 +9905,7 @@ export function bit_to_g128(b: boolean): Galois128
 
 export function bits_to_bytes(bits: bigint[], nbytes: bigint): Vec<bigint>
 {
-  let out = [] as any[];
+  let out = Array.from({length: Number(nbytes)}, () => ((0n) & 0xFFn));
   for (let i = 0n; i < nbytes; i += 1n)   {
     let acc = ((0n) & 0xFFn);
     for (let bit = 0n; bit < 8n; bit += 1n)     {
@@ -6870,6 +9915,125 @@ export function bits_to_bytes(bits: bigint[], nbytes: bigint): Vec<bigint>
       }
     }
     out[Number(i)] = acc;
+  }
+  return out;
+}
+
+export function blake2s_256(input: bigint[]): bigint[]
+{
+  let h = blake2s_init();
+  const n = BigInt(input.length);
+  const num_blocks = (() => { if (__equals(n, 0n)) {
+  return 1n;
+} else {
+  return ((n) + (BLAKE2S_BLOCK) - 1n) / (BLAKE2S_BLOCK);
+} })();
+  let t = 0n;
+  for (let i = 0n; i < num_blocks; i += 1n)   {
+    let block = Array.from({length: Number(BLAKE2S_BLOCK)}, () => ((0n) & 0xFFn));
+    const start = fieldMul(i, BLAKE2S_BLOCK);
+    const take = BigInt(Math.min(Number(fieldSub(n, start)), Number(BLAKE2S_BLOCK)));
+    (block.slice(0, Number(take))).splice(0, (input.slice(Number(start), Number(fieldAdd(start, take)))).length, ...(input.slice(Number(start), Number(fieldAdd(start, take)))));
+    t = fieldAdd(t, BigInt(take));
+    blake2s_compress(h, block, t, __equals(i, fieldSub(num_blocks, 1n)));
+  }
+  return blake2s_output(h);
+}
+
+export function blake2s_256_array(n: bigint, input: bigint[]): bigint[]
+{
+  let h = blake2s_init();
+  const n_1 = n;
+  const num_blocks = (() => { if (__equals(n_1, 0n)) {
+  return 1n;
+} else {
+  return (fieldSub(fieldAdd(n_1, BLAKE2S_BLOCK), 1n) / BLAKE2S_BLOCK);
+} })();
+  let t = 0n;
+  for (let i = 0n; i < num_blocks; i += 1n)   {
+    let block = Array.from({length: Number(BLAKE2S_BLOCK)}, () => ((0n) & 0xFFn));
+    const start = fieldMul(i, BLAKE2S_BLOCK);
+    for (let j = 0n; j < BLAKE2S_BLOCK; j += 1n)     {
+      const idx = fieldAdd(start, j);
+      if ((idx < n_1))       {
+        block[Number(j)] = input[Number(idx)];
+      }
+    }
+    const take = (() => { if ((fieldAdd(start, BLAKE2S_BLOCK) <= n_1)) {
+  return BLAKE2S_BLOCK;
+} else {
+  return fieldSub(n_1, start);
+} })();
+    t = fieldAdd(t, BigInt(take));
+    blake2s_compress(h, block, t, __equals(i, fieldSub(num_blocks, 1n)));
+  }
+  return blake2s_output(h);
+}
+
+export function blake2s_compress(h: bigint[], block: bigint[], t: bigint, last: boolean)
+{
+  let m = Array.from({length: Number(16n)}, () => 0n);
+  for (let i = 0n; i < 16n; i += 1n)   {
+    let chunk = Array.from({length: Number(4n)}, () => ((0n) & 0xFFn));
+    (chunk).splice(0, (block.slice(Number(fieldMul(i, 4n)), Number(fieldAdd(fieldMul(i, 4n), 4n)))).length, ...(block.slice(Number(fieldMul(i, 4n)), Number(fieldAdd(fieldMul(i, 4n), 4n)))));
+    m[Number(i)] = u32_from_le_bytes(chunk);
+  }
+  let v = Array.from({length: Number(16n)}, () => 0n);
+  for (let i = 0n; i < 8n; i += 1n)   {
+    v[Number(i)] = h[Number(i)];
+  }
+  for (let i = 0n; i < 8n; i += 1n)   {
+    v[Number(fieldAdd(i, 8n))] = BLAKE2S_IV[Number(i)];
+  }
+  v[Number(12n)] = fieldBitxor(v[Number(12n)], BigInt(t));
+  v[Number(13n)] = fieldBitxor(v[Number(13n)], BigInt(fieldShr(t, 32n)));
+  if (last)   {
+    v[Number(14n)] = fieldBitxor(v[Number(14n)], 4294967295n);
+  }
+  for (let round = 0n; round < 10n; round += 1n)   {
+    const base = fieldMul(round, 16n);
+    blake2s_g(v, 0n, 4n, 8n, 12n, m[Number(BLAKE2S_SIGMA[Number(base)])], m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 1n))])]);
+    blake2s_g(v, 1n, 5n, 9n, 13n, m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 2n))])], m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 3n))])]);
+    blake2s_g(v, 2n, 6n, 10n, 14n, m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 4n))])], m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 5n))])]);
+    blake2s_g(v, 3n, 7n, 11n, 15n, m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 6n))])], m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 7n))])]);
+    blake2s_g(v, 0n, 5n, 10n, 15n, m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 8n))])], m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 9n))])]);
+    blake2s_g(v, 1n, 6n, 11n, 12n, m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 10n))])], m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 11n))])]);
+    blake2s_g(v, 2n, 7n, 8n, 13n, m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 12n))])], m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 13n))])]);
+    blake2s_g(v, 3n, 4n, 9n, 14n, m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 14n))])], m[Number(BLAKE2S_SIGMA[Number(fieldAdd(base, 15n))])]);
+  }
+  for (let i = 0n; i < 8n; i += 1n)   {
+    h[Number(i)] = fieldBitxor(h[Number(i)], fieldBitxor(v[Number(i)], v[Number(fieldAdd(i, 8n))]));
+  }
+}
+
+export function blake2s_g(v: bigint[], a: bigint, b: bigint, c: bigint, d: bigint, mx: bigint, my: bigint)
+{
+  v[Number(a)] = wrappingAdd(wrappingAdd(v[Number(a)], v[Number(b)], 32), mx, 32);
+  const t0 = fieldBitxor(v[Number(d)], v[Number(a)]);
+  v[Number(d)] = fieldBitor(fieldShr(t0, 16n), fieldShl(t0, 16n));
+  v[Number(c)] = wrappingAdd(v[Number(c)], v[Number(d)], 32);
+  const t1 = fieldBitxor(v[Number(b)], v[Number(c)]);
+  v[Number(b)] = fieldBitor(fieldShr(t1, 12n), fieldShl(t1, 20n));
+  v[Number(a)] = wrappingAdd(wrappingAdd(v[Number(a)], v[Number(b)], 32), my, 32);
+  const t2 = fieldBitxor(v[Number(d)], v[Number(a)]);
+  v[Number(d)] = fieldBitor(fieldShr(t2, 8n), fieldShl(t2, 24n));
+  v[Number(c)] = wrappingAdd(v[Number(c)], v[Number(d)], 32);
+  const t3 = fieldBitxor(v[Number(b)], v[Number(c)]);
+  v[Number(b)] = fieldBitor(fieldShr(t3, 7n), fieldShl(t3, 25n));
+}
+
+export function blake2s_init(): bigint[]
+{
+  let h = BLAKE2S_IV;
+  h[Number(0n)] = fieldBitxor(h[Number(0n)], 16842784n);
+  return h;
+}
+
+export function blake2s_output(h: bigint[]): bigint[]
+{
+  let out = Array.from({length: Number(BLAKE2S_OUT)}, () => ((0n) & 0xFFn));
+  for (let i = 0n; i < 8n; i += 1n)   {
+    (out.slice(Number(fieldMul(i, 4n)), Number(fieldAdd(fieldMul(i, 4n), 4n)))).splice(0, ([(h[Number(i)]) & 0xFFn, ((h[Number(i)]) >> 8n) & 0xFFn, ((h[Number(i)]) >> 16n) & 0xFFn, ((h[Number(i)]) >> 24n) & 0xFFn]).length, ...([(h[Number(i)]) & 0xFFn, ((h[Number(i)]) >> 8n) & 0xFFn, ((h[Number(i)]) >> 16n) & 0xFFn, ((h[Number(i)]) >> 24n) & 0xFFn]));
   }
   return out;
 }
@@ -6906,7 +10070,7 @@ export function block_from_field(g: Galois128): Block
 
 export function build_buckets(seed: bigint[], n: bigint, m: bigint): Vec<Vec<bigint>>
 {
-  let buckets = [] as any[];
+  let buckets = Array.from({length: Number(m)}, () => [] as any[]);
   for (let x = 0n; x < n; x += 1n)   {
     for (let i = 0n; i < TAU; i += 1n)     {
       const j = hash_i(seed, i, x, m);
@@ -6930,6 +10094,15 @@ export function bytes_to_bits(bytes: bigint[]): Vec<bigint>
     }
   }
   return bits;
+}
+
+export function bytes_to_lanes(b: bigint[], st: bigint[])
+{
+  for (let i = 0n; i < 25n; i += 1n)   {
+    let chunk = Array.from({length: Number(8n)}, () => ((0n) & 0xFFn));
+    (chunk).splice(0, (b.slice(Number(fieldMul(i, 8n)), Number(fieldAdd(fieldMul(i, 8n), 8n)))).length, ...(b.slice(Number(fieldMul(i, 8n)), Number(fieldAdd(fieldMul(i, 8n), 8n)))));
+    st[Number(i)] = u64_from_le_bytes(chunk);
+  }
 }
 
 export function bytes_to_limbs(b: bigint[]): bigint[]
@@ -6956,6 +10129,16 @@ export function cbd<R>(eta: bigint, rng: any): bigint
   const a = (/* count_ones */ ((() => { let _n = fieldBitand(rng.next_u32(), mask), _c = 0; while (_n) { _c += _n & 1; _n >>>= 1; } return _c; })()) as unknown as bigint);
   const b = (/* count_ones */ ((() => { let _n = fieldBitand(rng.next_u32(), mask), _c = 0; while (_n) { _c += _n & 1; _n >>>= 1; } return _c; })()) as unknown as bigint);
   return fieldSub(a, b);
+}
+
+export function center(value: bigint, modulus: bigint): bigint
+{
+  const value_1 = (value % modulus);
+  return (() => { if ((value_1 > (modulus / 2n))) {
+  return fieldSub((value_1 as unknown as bigint), (modulus as unknown as bigint));
+} else {
+  return (value_1 as unknown as bigint);
+} })();
 }
 
 export function cert_and(): GateCertificate
@@ -7007,7 +10190,7 @@ export function chall1(ctx: { defaultT: () => any, HClass: { new(...args: any[])
   return FaestTranscript.new_shake128();
 } })();
   t.absorb(mu);
-  t.absorb(asRefU8(iv));
+  t.absorb(iv);
   t.absorb(com_bytes);
   return t.squeeze(ctx, lambda_plus_b);
 }
@@ -7182,21 +10365,22 @@ export function commit<D>(ctx: { newD: () => any }, message: bigint[], rand: big
 export function concat_small_voles(outs: Vec<ConvertOutput>): BigVoleProver
 {
   const l_hat = BigInt(outs[Number(0n)].$fu.length);
-  for (const o of outs)   {
-    for (const vj of o.$fv)     {
+  for (let oi = 0n; oi < BigInt(outs.length); oi += 1n)   {
+    const o = outs[Number(oi)];
+    for (let vi = 0n; vi < BigInt(o.$fv.length); vi += 1n)     {
     }
   }
   const u = __clone(outs[Number(0n)].$fu);
   let c: Vec<Vec<bigint>> = ([] as any[]);
-  for (const o of outs.slice(Number(1n)))   {
-    let ci = __clone(o.$fu);
+  for (let oi = 1n; oi < BigInt(outs.length); oi += 1n)   {
+    let ci = __clone(outs[Number(oi)].$fu);
     xor_in_place(ci, u);
     (c).push(ci);
   }
   let v_columns: Vec<Vec<bigint>> = [] as any[];
-  for (const o of outs)   {
-    for (const vj of o.$fv)     {
-      (v_columns).push(vj);
+  for (let oi = 0n; oi < BigInt(outs.length); oi += 1n)   {
+    for (let vi = 0n; vi < BigInt(outs[Number(oi)].$fv.length); vi += 1n)     {
+      (v_columns).push(__clone(outs[Number(oi)].$fv[Number(vi)]));
     }
   }
   return new BigVoleProver({ $fu: u, $fc: c, $fv_columns: v_columns });
@@ -7205,11 +10389,10 @@ export function concat_small_voles(outs: Vec<ConvertOutput>): BigVoleProver
 export function concat_small_voles_verifier(outs: Vec<ConvertOutput>, deltas: bigint[], corrections: Vec<bigint>[]): BigVoleVerifier
 {
   let q_columns: Vec<Vec<bigint>> = [] as any[];
-  for (const [i, o] of outs.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
-    const k = BigInt(o.$fv.length);
+  for (let i = 0n; i < BigInt(outs.length); i += 1n)   {
     const delta_i = deltas[Number(i)];
-    for (const [bit, vj_raw] of o.$fv.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
-      let q = vj_raw;
+    for (let bit = 0n; bit < BigInt(outs[Number(i)].$fv.length); bit += 1n)     {
+      let q = __clone(outs[Number(i)].$fv[Number(bit)]);
       if ((i >= 1n))       {
         const delta_bit = __equals(fieldBitand(fieldShr(delta_i, bit), 1n), 1n);
         if (delta_bit)         {
@@ -7218,22 +10401,29 @@ export function concat_small_voles_verifier(outs: Vec<ConvertOutput>, deltas: bi
       }
       (q_columns).push(q);
     }
-    const _ = k;
   }
   return new BigVoleVerifier({ $fq_columns: q_columns });
+}
+
+export function context(params: any): (Context | undefined)
+{
+  return Context.new(params.$fdegree, params.$fmodulus);
 }
 
 export function convert_to_vole(seeds: (bigint[] | undefined)[], iv: bigint[], tweak: bigint, l_hat_bytes: bigint): ConvertOutput
 {
   const n = BigInt(seeds.length);
   const d = BigInt(((__value) => { let __bits = 0n; if (__value === 0n) return BigInt(64); while ((__value & 1n) === 0n) { __value >>= 1n; __bits += 1n; } return __bits; })(BigInt.asUintN(64, n)));
-  const zero_block = [] as any[];
+  const zero_block = Array.from({length: Number(l_hat_bytes)}, () => ((0n) & 0xFFn));
   let r: Vec<Vec<bigint>> = ([] as any[]);
-  for (const s of seeds)   {
-    (() => { const __match = s; if (__match !== null && __match !== undefined) { const seed = __match;
+  for (let i = 0n; i < BigInt(seeds.length); i += 1n)   {
+    (() => { const __match = seeds[Number(i)]; if (__match !== null && __match !== undefined) { const seed = __match;
 return (r).push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)); } else { return (r).push(__clone(zero_block)); } })();
   }
-  let v: Vec<Vec<bigint>> = Array.from({length: Number(d - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => [] as any[]);
+  let v: Vec<Vec<bigint>> = ([] as any[]);
+  for (let _j = 0n; _j < d; _j += 1n)   {
+    (v).push(Array.from({length: Number(l_hat_bytes)}, () => ((0n) & 0xFFn)));
+  }
   let level: Vec<Vec<bigint>> = r;
   for (let j = 0n; j < d; j += 1n)   {
     const half = (BigInt(level.length) / 2n);
@@ -7246,7 +10436,7 @@ return (r).push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)); } else { return (r).
     }
     level = next;
   }
-  const u = (level.shift())!;
+  const u = __clone(level[Number(0n)]);
   return new ConvertOutput({ $fu: u, $fv: v });
 }
 
@@ -7302,7 +10492,7 @@ export function cross_term<S>(ctx: { defaultS: () => any, UClass: { new(...args:
 export function cuckoo_insert(seed: bigint[], n: bigint, t: bigint, points: bigint[]): Vec<(bigint | undefined)>
 {
   const m = cuckoo_table_size(t);
-  let table = [] as any[];
+  let table = Array.from({length: Number(m)}, () => undefined);
   const max_kicks = fieldMul(8n, BigInt(Math.max(Number(m), Number(16n))));
   for (const item of points)   {
     let x = item;
@@ -7580,12 +10770,22 @@ export function delta_out_full_width(delta_shift: bigint, upscale: bigint): bigi
   return fieldShl(1n, fieldAdd(delta_shift, upscale));
 }
 
-export function derive_and_q<T>(n: bigint, delta: DeltaDyn<any>, q_a: QDyn<any>, q_b: QDyn<any>, hat: any[]): QDyn<any>
+export function delta_scaled(delta: any, k: bigint, p: bigint): LabelPoly
+{
+  return delta.$fcoeffs.map((c: any) => mul_mod(c, k, p));
+}
+
+export function derive_and_q<N, T>(n: bigint, delta: Delta<N, any>, q_a: QDyn<any>, q_b: QDyn<any>, hat: any[]): QDyn<any>
 {
   return new QDyn({ $fq: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const lhs = fieldAdd(fieldMul(__clone(q_a.$fq[Number(i)]), __clone(q_b.$fq[Number(i)])), __clone(hat[Number(i)]));
   return fieldMul(lhs, delta.$fdelta[Number(i)].invert());
 })()), $fn: 0n });
+}
+
+export function determination_bit(w0_lsb: boolean, pi: boolean): boolean
+{
+  return fieldBitxor(w0_lsb, pi);
 }
 
 export function ed_add(p1: any, p2: any): EdPoint
@@ -7647,7 +10847,7 @@ export function embed_up(from_: bigint, to: bigint, x: bigint): bigint
 
 export function encode_bits(seed: bigint[], k: bigint, n: bigint, u: boolean[]): Vec<boolean>
 {
-  let x = [] as any[];
+  let x = Array.from({length: Number(n)}, () => false);
   for (let j = 0n; j < n; j += 1n)   {
     const rows = column_rows_for_valid_k(seed, k, j);
     let acc = false;
@@ -7661,7 +10861,7 @@ export function encode_bits(seed: bigint[], k: bigint, n: bigint, u: boolean[]):
 
 export function encode_blocks(seed: bigint[], k: bigint, n: bigint, v: Block[]): Vec<Block>
 {
-  let y = [] as any[];
+  let y = Array.from({length: Number(n)}, () => Array.from({length: Number(16n)}, () => ((0n) & 0xFFn)));
   for (let j = 0n; j < n; j += 1n)   {
     const rows = column_rows_for_valid_k(seed, k, j);
     let acc = Array.from({length: Number(16n)}, () => ((0n) & 0xFFn));
@@ -7737,6 +10937,19 @@ export function encode_iknp_u(msg: any): Vec<bigint>
     buf.push(...(encode_bools(col)));
   }
   return buf;
+}
+
+export function encode_inputs(garbling: any, delta: any, inputs: boolean[], input_count: bigint): Result<Vec<[LabelPoly, boolean]>, DriverError>
+{
+  if (!__equals(BigInt(inputs.length), input_count))   {
+    return new DriverError_BadInputCount();
+  }
+  let out = ([] as any[]);
+  for (const [i, x] of inputs.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
+    const masked = fieldBitxor(x, garbling.$flabels[Number(i)].$fpi);
+    (out).push([garbling.$flabels[Number(i)].active(masked, delta), masked]);
+  }
+  return out;
 }
 
 export function encode_label_16(label: bigint[]): bigint[]
@@ -7977,7 +11190,7 @@ export function encrypt_branch_dyn<R>(n: bigint, rng: any, crs: LweOtCrsDyn, pk:
   for (let i = 0n; i < n; i += 1n)   {
     r[Number(i)] = sample_noise(rng);
   }
-  let u = [] as any[];
+  let u = Array.from({length: Number(n)}, () => 0n);
   for (let j = 0n; j < n; j += 1n)   {
     let acc: Zq = 0n;
     for (let i = 0n; i < n; i += 1n)     {
@@ -7991,7 +11204,7 @@ export function encrypt_branch_dyn<R>(n: bigint, rng: any, crs: LweOtCrsDyn, pk:
     base = zq_add(base, zq_mul(pk[Number(i)], r[Number(i)]));
   }
   const half_q = (LWE_Q / 2n);
-  let v = [] as any[];
+  let v = Array.from({length: Number(BigInt(msg_bits.length))}, () => 0n);
   for (const [k, bit] of msg_bits.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
     const plain = (() => { if (__equals(fieldBitand(bit, 1n), 1n)) {
   return half_q;
@@ -8088,10 +11301,87 @@ export function eval_abc<S>(ctx: { defaultS: () => any, UClass: { new(...args: a
   return [az, bz, cz];
 }
 
+export function eval_gate<D>(dd: any, a: any, i: boolean, b: any, j: boolean, taus: RowCt[], prf: any, wire: bigint, degree: bigint, p: bigint): LabelPoly
+{
+  const out = dd.eval(a, i, b, j, taus);
+  return add_coeffs(out, prf.offset(wire, degree, p), p);
+}
+
 export function eval_not(c: bigint, q: bigint): bigint
 {
   const true_v = (q / 4n);
   return BigInt((((fieldSub((true_v as unknown as bigint), (c as unknown as bigint))) % ((q as unknown as bigint)) + ((q as unknown as bigint))) % ((q as unknown as bigint))));
+}
+
+export function evaluate(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, ctx: any, equation: any, circuit: any, offline: any, delta: any, ksk: any, input_labels: Ciphertext[], records: Stitch[], output_key: SecretKey): Result<Vec<boolean>, StitchError>
+{
+  const __volar_try_0 = circuit.validate();
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  if (!__equals(BigInt(input_labels.length), circuit.$finputs))   {
+    return new StitchError_Exhausted();
+  }
+  const top = ((offline.$fwires[0]) ?? (new StitchError_Exhausted())).$fct_a0.level();
+  let wires: Vec<Ciphertext> = ([] as any[]);
+  for (const label of input_labels)   {
+    (wires).push(ctx.switch_to(label, top));
+  }
+  let record_iter = records;
+  for (const [index, gate] of circuit.$fgates.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
+    const out_wire = fieldAdd(circuit.$finputs, index);
+    const [ai, bi] = gate.operands();
+    const expanded = new ExpandedGate({ $fa: align_wire(ctx, ((offline.wire(ai)) ?? (new StitchError_Exhausted())), top), $fb: align_wire(ctx, ((offline.wire(bi)) ?? (new StitchError_Exhausted())), top), $fout: align_wire(ctx, ((offline.wire(out_wire)) ?? (new StitchError_Exhausted())), top) });
+    const la = wires[Number(ai)];
+    const lb = wires[Number(bi)];
+    const out = (() => { const __match = gate; if (__match instanceof Gate_And) { return (() => {
+  const __volar_try_0 = ((record_iter.shift()) ?? (new StitchError_Exhausted()));
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  const stitch = __volar_try_0;
+  return equation.eval_and(ctx, la, lb, expanded, delta, ksk, stitch);
+})(); } else if (__match instanceof Gate_Xor) { return (() => {
+  const stitch = (() => { if (equation.xor_is_charged()) {
+  return ((record_iter.shift()) ?? (new StitchError_Exhausted()));
+} else {
+  return undefined;
+} })();
+  return equation.eval_xor(ctx, la, lb, expanded, delta, ksk, stitch);
+})(); } else { return (() => {
+  return __clone(la);
+})(); } })();
+    (wires).push(out);
+  }
+  if ((record_iter.shift()) != null)   {
+    return new StitchError_NonCanonicalBit();
+  }
+  const p = ctx.parameters().$fplaintext_modulus;
+  const __volar_try_9 = ((delta.inverse(p)) ?? (new StitchError_NonCanonicalBit()));
+  if (__volar_try_9 instanceof __VolarError) return __volar_try_9;
+  const inv_delta = __volar_try_9;
+  let outputs = ([] as any[]);
+  for (const wire of circuit.$foutputs)   {
+    const __volar_try_0 = ((offline.wire(wire)) ?? (new StitchError_Exhausted()));
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const expanded = __volar_try_0;
+    const label = wires[Number(wire)];
+    const __volar_try_2 = ctx.sub(label, expanded.$fct_a0);
+    if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+    const diff = __volar_try_2;
+    const __volar_try_3 = ctx.mul_plain(diff, ctx.constant_slots(inv_delta));
+    if (__volar_try_3 instanceof __VolarError) return __volar_try_3;
+    const payload = __volar_try_3;
+    const __volar_try_4 = ctx.decrypt(output_key, payload);
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const payload_bits = __volar_try_4;
+    const __volar_try_5 = ctx.switch_to(expanded.$fct_pi, payload.level());
+    if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+    const ct_pi = __volar_try_5;
+    const __volar_try_6 = ctx.decrypt(output_key, ct_pi);
+    if (__volar_try_6 instanceof __VolarError) return __volar_try_6;
+    const pi_bits = __volar_try_6;
+    const masked = (payload_bits[Number(expanded.$fslot_a0)] % 2n);
+    const pi = (pi_bits[Number(expanded.$fslot_pi)] % 2n);
+    (outputs).push(__equals(fieldBitxor(masked, pi), 1n));
+  }
+  return outputs;
 }
 
 export function evaluate_certificate(cert: any, inputs: bigint[], q: bigint): bigint
@@ -8105,6 +11395,124 @@ export function evaluate_certificate(cert: any, inputs: bigint[], q: bigint): bi
 } })();
   const restored = fieldAdd(signed_eighth, ((q / 8n) as unknown as bigint));
   return BigInt((((restored) % ((q as unknown as bigint)) + ((q as unknown as bigint))) % ((q as unknown as bigint))));
+}
+
+export function evaluate_circuit<D>(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, variant: any, circuit: any, dd: any, delta_ct: any, and_rows: AndRows[], records: GateRecord[], prf: any, inputs: [LabelPoly, boolean][]): Result<Vec<boolean>, DriverError>
+{
+  const __volar_try_0 = circuit.validate();
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  if (!__equals(BigInt(inputs.length), circuit.$finputs))   {
+    return new DriverError_BadInputCount();
+  }
+  const delta = dd.delta();
+  const p = dd.p();
+  const degree = BigInt(delta.$fcoeffs.length);
+  let labels: Vec<LabelPoly> = ([] as any[]);
+  let masked: Vec<boolean> = ([] as any[]);
+  for (const [w, m] of inputs)   {
+    (labels).push(__clone(w));
+    (masked).push(m);
+  }
+  let rec = records;
+  let and_iter = and_rows;
+  for (const [gi, gate] of circuit.$fgates.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
+    const w = fieldAdd(circuit.$finputs, gi);
+    const [a, b] = gate.operands();
+    (() => { const __match = [variant, gate]; if (true /* pattern Or([Tuple([Wild, Struct { kind: Custom("Gate::And"), fields: [], rest: true }]), Tuple([Wild, Struct { kind: Custom("Gate::And"), fields: [], rest: true }])]) */) { return (() => {
+  let __volar_match_result_0 ;
+  const __volar_match_0 = rec.shift();
+  if (__volar_match_0 !== null && __volar_match_0 !== undefined) {
+    const d = __volar_match_0._0;
+    __volar_match_result_0 = d;
+  }
+  if (__volar_match_0 !== null && __volar_match_0 !== undefined) {
+    return new DriverError_WrongRecord();
+  }
+  {
+    return new DriverError_MissingRecord();
+  }
+  const d = __volar_match_result_0;
+  let __volar_match_result_1 ;
+  const __volar_match_1 = and_iter.shift();
+  if (__volar_match_1 !== null && __volar_match_1 !== undefined) {
+    const rows = __volar_match_1._0;
+    __volar_match_result_1 = rows;
+  }
+  if (__volar_match_1 !== null && __volar_match_1 !== undefined) {
+    return new DriverError_WrongRecord();
+  }
+  {
+    return new DriverError_MissingRecord();
+  }
+  const taus = __volar_match_result_1;
+  const out = eval_gate(dd, labels[Number(a)], masked[Number(a)], labels[Number(b)], masked[Number(b)], taus, prf, w, degree, p);
+  const m = fieldBitxor(label_lsb(out), d);
+  (labels).push(out);
+  (masked).push(m);
+})(); } else if (true /* pattern Or([Tuple([Wild, Struct { kind: Custom("Gate::Xor"), fields: [], rest: true }]), Tuple([Wild, Struct { kind: Custom("Gate::Xor"), fields: [], rest: true }])]) */) { return (() => {
+  let __volar_match_result_0 ;
+  const __volar_match_0 = rec.shift();
+  if (__volar_match_0 !== null && __volar_match_0 !== undefined) {
+    const d = __volar_match_0._0;
+    __volar_match_result_0 = d;
+  }
+  if (__volar_match_0 !== null && __volar_match_0 !== undefined) {
+    return new DriverError_WrongRecord();
+  }
+  {
+    return new DriverError_MissingRecord();
+  }
+  const d = __volar_match_result_0;
+  const taus = xor_rows(delta_ct, d, p);
+  const out = eval_gate(dd, labels[Number(a)], masked[Number(a)], labels[Number(b)], masked[Number(b)], taus, prf, w, degree, p);
+  (labels).push(out);
+  (masked).push(fieldBitxor(fieldBitxor(masked[Number(a)], masked[Number(b)]), d));
+})(); } else if (true /* pattern Tuple([Wild, Struct { kind: Custom("Gate::And"), fields: [], rest: true }]) */) { return (() => {
+  let __volar_match_result_0 ;
+  const __volar_match_0 = rec.shift();
+  if (__volar_match_0 !== null && __volar_match_0 !== undefined) {
+    const masks = __volar_match_0.$fmasks;
+    const det = __volar_match_0.$fdet;
+    __volar_match_result_0 = [masks, det];
+  }
+  if (__volar_match_0 !== null && __volar_match_0 !== undefined) {
+    return new DriverError_WrongRecord();
+  }
+  {
+    return new DriverError_MissingRecord();
+  }
+  const [masks, det] = __volar_match_result_0;
+  let __volar_match_result_1 ;
+  const __volar_match_1 = and_iter.shift();
+  if (__volar_match_1 !== null && __volar_match_1 !== undefined) {
+    const rows = __volar_match_1._0;
+    __volar_match_result_1 = rows;
+  }
+  if (__volar_match_1 !== null && __volar_match_1 !== undefined) {
+    return new DriverError_WrongRecord();
+  }
+  {
+    return new DriverError_MissingRecord();
+  }
+  const r_rows = __volar_match_result_1;
+  const taus = fast_and_rows(delta_ct, r_rows, masks, p);
+  const out = eval_gate(dd, labels[Number(a)], masked[Number(a)], labels[Number(b)], masked[Number(b)], taus, prf, w, degree, p);
+  const m = fieldBitxor(label_lsb(out), det);
+  (labels).push(out);
+  (masked).push(m);
+})(); } else if (true /* pattern Tuple([Wild, Struct { kind: Custom("Gate::Xor"), fields: [], rest: true }]) */) { return (() => {
+  (() => { const __match = rec.shift(); if (__match !== null && __match !== undefined) { return (() => {
+})(); } else if (__match !== null && __match !== undefined) { return new DriverError_WrongRecord(); } else { return new DriverError_MissingRecord(); } })();
+  const taus = xor_rows(delta_ct, false, p);
+  const out = eval_gate(dd, labels[Number(a)], masked[Number(a)], labels[Number(b)], masked[Number(b)], taus, prf, w, degree, p);
+  (labels).push(out);
+  (masked).push(fieldBitxor(masked[Number(a)], masked[Number(b)]));
+})(); } else { return (() => {
+  (labels).push(__clone(labels[Number(a)]));
+  (masked).push(masked[Number(a)]);
+})(); } })();
+  }
+  return circuit.$foutputs.map((o: any) => masked[Number(o)]);
 }
 
 export function evaluate_gate(cert_eighths: any, inputs: bigint[], q: bigint): bigint
@@ -8180,10 +11588,12 @@ return (() => {
 
 export function expand_challenge_to_deltas(chall_1: bigint[], tau: bigint, n: bigint): Vec<bigint>
 {
-  return Array.from({length: Number(tau - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
-  const byte = BigInt(chall_1[Number((i % BigInt(chall_1.length)))]);
-  return (byte % n);
-})());
+  let out: Vec<bigint> = ([] as any[]);
+  for (let i = 0n; i < tau; i += 1n)   {
+    const byte = BigInt(chall_1[Number((i % BigInt(chall_1.length)))]);
+    (out).push((byte % n));
+  }
+  return out;
 }
 
 export function expand_full(depth: bigint, seed: any): [Vec<Block>, Vec<Block[]>]
@@ -8212,7 +11622,7 @@ export function expand_full(depth: bigint, seed: any): [Vec<Block>, Vec<Block[]>
 export function expand_partial(depth: bigint, sums: Block[], alpha: bigint): Vec<Block>
 {
   const n = fieldShl(1n, depth);
-  let level: Vec<Block> = [] as any[];
+  let level: Vec<Block> = Array.from({length: Number(2n)}, () => Array.from({length: Number(KAPPA_BYTES)}, () => ((0n) & 0xFFn)));
   let offset = 0n;
   for (let d = 0n; d < depth; d += 1n)   {
     const select = bit_msb(alpha, depth, d);
@@ -8220,7 +11630,7 @@ export function expand_partial(depth: bigint, sums: Block[], alpha: bigint): Vec
     if (__equals(fieldAdd(d, 1n), depth))     {
       break;
     }
-    let next = [] as any[];
+    let next = Array.from({length: Number(fieldMul(BigInt(level.length), 2n))}, () => Array.from({length: Number(KAPPA_BYTES)}, () => ((0n) & 0xFFn)));
     for (const [j, node] of level.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
       const [l, r] = g_double(node);
       next[Number(fieldMul(2n, j))] = l;
@@ -8255,6 +11665,41 @@ export function external_product(big_n: bigint, bs_ell: bigint, bs_bg_log: bigin
     }
   }
   return new RlweCiphertextDyn({ $fa: out_a, $fb: out_b, $fbig_n: 0n });
+}
+
+export function fast_and_rows(delta_ct: any, r: RowCt[], d: boolean[], p: bigint): RowCt[]
+{
+  let z: Vec<RowCt> = ([] as any[]);
+  for (let k = 0n; k < 4n; k += 1n)   {
+    (z).push((() => { if (d[Number(k)]) {
+  return sub_rows(delta_ct, r[Number(k)], p);
+} else {
+  return __clone(r[Number(k)]);
+} })());
+  }
+  const t1 = sub_rows(z[Number(1n)], z[Number(0n)], p);
+  const t2 = sub_rows(z[Number(2n)], z[Number(0n)], p);
+  const t3_pre = sub_rows(z[Number(3n)], z[Number(0n)], p);
+  const t3 = sub_rows(sub_rows(t3_pre, t1, p), t2, p);
+  return [t1, t2, t3];
+}
+
+export function fast_mask_bits(z: boolean[], r: boolean[]): boolean[]
+{
+  let out = Array.from({length: Number(4n)}, () => false);
+  for (let k = 0n; k < 4n; k += 1n)   {
+    out[Number(k)] = fieldBitxor(z[Number(k)], r[Number(k)]);
+  }
+  return out;
+}
+
+export function fast_unmask_coeffs(d: boolean): [bigint, bigint]
+{
+  return (() => { if (d) {
+  return [1n, -1n];
+} else {
+  return [0n, 1n];
+} })();
 }
 
 export function fe_add(a: any, b: any): Fe25519
@@ -8415,7 +11860,7 @@ export function ferret_extend_malicious<R>(rng: any, params: any, sender_seed: a
   const spcot_cots = fieldMul(t, params.log_splen());
   const extra_off = fieldAdd(k, spcot_cots);
   const alphas = sample_regular_noise(rng, n, t);
-  let e = [] as any[];
+  let e = Array.from({length: Number(n)}, () => false);
   for (const [i, a] of alphas.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
     const [start, end] = (params.interval_bounds(i))!;
     e[Number(fieldAdd(start, a))] = true;
@@ -8442,7 +11887,7 @@ export function ferret_extend_uni<R>(rng: any, params: any, hash_seed: bigint[],
   const heights = uni_spcot_heights(hash_seed, params.$fn, params.$ft);
   const points = sample_uniform_points(rng, params.$fn, params.$ft);
   const table = cuckoo_insert(hash_seed, params.$fn, params.$ft, points);
-  let e = [] as any[];
+  let e = Array.from({length: Number(params.$fn)}, () => false);
   for (const slot of table)   {
     (() => { const __match = slot; if (__match !== null && __match !== undefined) { const x = __match;
 return (() => {
@@ -8484,7 +11929,7 @@ export function ferret_extend_uni_malicious<R>(rng: any, params: any, hash_seed:
   const extra_off = fieldAdd(k, spcot_cots);
   const points = sample_uniform_points(rng, params.$fn, params.$ft);
   const table = cuckoo_insert(hash_seed, params.$fn, params.$ft, points);
-  let e = [] as any[];
+  let e = Array.from({length: Number(params.$fn)}, () => false);
   for (const slot of table)   {
     (() => { const __match = slot; if (__match !== null && __match !== undefined) { const x = __match;
 return (() => {
@@ -8550,7 +11995,7 @@ export function ferret_prepare_receiver<R>(rng: any, params: any, receiver_seed:
   const t = params.$ft;
   const k = params.$fk;
   const alphas = sample_regular_noise(rng, n, t);
-  let e = [] as any[];
+  let e = Array.from({length: Number(n)}, () => false);
   for (const [i, a] of alphas.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
     const [start, end] = (params.interval_bounds(i))!;
     e[Number(fieldAdd(start, a))] = true;
@@ -8617,8 +12062,11 @@ export function fill_test_poly(big_n: bigint, logical: boolean[], addr_bits: big
   return test_poly;
 }
 
-export function find_negacyclic_root(degree: bigint, modulus: bigint): (bigint | undefined)
-{
+export function find_negacyclic_root(...__args: any[]): any {
+  if (__args.length === 2) {
+    const degree = __args[0];
+    const modulus = __args[1];
+    return (() => {
   const exponent = (fieldSub(modulus, 1n) / fieldMul(2n, BigInt(degree)));
   for (let candidate = 2n; candidate < modulus; candidate += 1n)   {
     const root = pow_mod(candidate, BigInt(exponent), modulus);
@@ -8627,6 +12075,23 @@ export function find_negacyclic_root(degree: bigint, modulus: bigint): (bigint |
     }
   }
   return undefined;
+})();
+  } else
+  if (__args.length === 2) {
+    const degree = __args[0];
+    const modulus = __args[1];
+    return (() => {
+  const exponent = (fieldSub(modulus, 1n) / fieldMul(2n, BigInt(degree)));
+  for (let candidate = 2n; candidate < modulus; candidate += 1n)   {
+    const root = pow_mod(candidate, BigInt(exponent), modulus);
+    if (__equals(pow_mod(root, degree, modulus), fieldSub(modulus, 1n)))     {
+      return root;
+    }
+  }
+  return undefined;
+})();
+  }
+  throw new Error("find_negacyclic_root(): no matching variant for " + __args.length + " args");
 }
 
 export function fold_blinder<S>(rho1: any, rho2: any, r: any): S
@@ -8717,6 +12182,140 @@ export function gadget_poly_decompose(n: bigint, log: bigint, ell: bigint, base_
     }
   }
   return out;
+}
+
+export function garble(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, ctx: any, equation: any, circuit: any, states: WireState[], delta: any): Result<Vec<Stitch>, StitchError>
+{
+  const __volar_try_0 = circuit.validate();
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  const p = ctx.parameters().$fplaintext_modulus;
+  if ((delta.value() >= p))   {
+    return new StitchError_NonCanonicalBit();
+  }
+  if (!__equals(BigInt(states.length), circuit.wires()))   {
+    return new StitchError_Exhausted();
+  }
+  let wires: Vec<WireState> = [...states];
+  let records = [] as any[];
+  for (const [index, gate] of circuit.$fgates.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
+    const out_wire = fieldAdd(circuit.$finputs, index);
+    const [ai, bi] = gate.operands();
+    const [a, b] = [wires[Number(ai)], wires[Number(bi)]];
+    (() => { const __match = gate; if (__match instanceof Gate_And) { return (() => {
+  const out = wires[Number(out_wire)];
+  (records).push(equation.garble_and(index, a, b, out));
+})(); } else if (__match instanceof Gate_Xor) { return (() => {
+  let out = wires[Number(out_wire)];
+  if (!equation.xor_is_charged())   {
+    out = new WireState({ $fa0: (fieldAdd(a.$fa0, b.$fa0) % p), $fpi: fieldBitxor(a.$fpi, b.$fpi) });
+    wires[Number(out_wire)] = out;
+  }
+  return (() => { const __match = equation.garble_xor(p, a, b, out); if (__match !== null && __match !== undefined) { const stitch = __match;
+return (() => {
+  (records).push(stitch);
+})(); } else { return (() => {
+})(); } })();
+})(); } else { return (() => {
+  wires[Number(out_wire)] = new WireState({ $fa0: a.$fa0, $fpi: !a.$fpi });
+})(); } })();
+  }
+  return records;
+}
+
+export function garble_circuit<D>(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, variant: any, circuit: any, dd: any, pis: boolean[], prf: any, prg_bits: boolean[], random: any): Result<PinnedGarbling, DriverError>
+{
+  const __volar_try_0 = circuit.validate();
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  const delta = dd.delta();
+  const p = dd.p();
+  const degree = BigInt(delta.$fcoeffs.length);
+  if (!__equals(BigInt(pis.length), circuit.wires()))   {
+    return new DriverError_BadInputCount();
+  }
+  const delta_ct = dd.row(1n, random);
+  let pi: Vec<boolean> = [...pis];
+  let labels: Vec<WireLabel> = ([] as any[]);
+  let and_rows: Vec<AndRows> = [] as any[];
+  let records = [] as any[];
+  let fast_and = 0n;
+  for (let w = 0n; w < circuit.wires(); w += 1n)   {
+    if ((BigInt(labels.length) <= w))     {
+      (labels).push(new WireLabel({ $fw0: sample_poly(degree, p, random), $fpi: pi[Number(w)] }));
+    }
+    if ((w < circuit.$finputs))     {
+      continue;
+    }
+    const gate = circuit.$fgates[Number(fieldSub(w, circuit.$finputs))];
+    const [a, b] = gate.operands();
+    const wa = labels[Number(a)].base(delta);
+    const wb = labels[Number(b)].base(delta);
+    (() => { const __match = [variant, gate]; if (true /* pattern Or([Tuple([Wild, Struct { kind: Custom("Gate::And"), fields: [], rest: true }]), Tuple([Wild, Struct { kind: Custom("Gate::And"), fields: [], rest: true }])]) */) { return (() => {
+  const z = masked_table(true, pi[Number(a)], pi[Number(b)], pi[Number(w)]);
+  const t = row_multipliers(z);
+  const taus = [dd.row(t[Number(0n)], random), dd.row(t[Number(1n)], random), dd.row(t[Number(2n)], random)];
+  const out = gate_output_label(dd, wa, wb, taus, z[Number(0n)], prf, w, pi[Number(w)]);
+  const det = determination_bit(out.w0_lsb(), pi[Number(w)]);
+  labels[Number(w)] = out;
+  (and_rows).push(new AndRows_Small(taus));
+  (records).push(new GateRecord_SmallAnd(det));
+})(); } else if (true /* pattern Or([Tuple([Wild, Struct { kind: Custom("Gate::Xor"), fields: [], rest: true }]), Tuple([Wild, Struct { kind: Custom("Gate::Xor"), fields: [], rest: true }])]) */) { return (() => {
+  const d = fieldBitxor(fieldBitxor(pi[Number(a)], pi[Number(b)]), pi[Number(w)]);
+  const taus = xor_rows(delta_ct, d, p);
+  const out = gate_output_label(dd, wa, wb, taus, d, prf, w, pi[Number(w)]);
+  labels[Number(w)] = out;
+  (records).push(new GateRecord_SmallXor(d));
+})(); } else if (true /* pattern Tuple([Wild, Struct { kind: Custom("Gate::And"), fields: [], rest: true }]) */) { return (() => {
+  const out_pi = __equals(fieldBitand(random.next_u32(), 1n), 1n);
+  pi[Number(w)] = out_pi;
+  const z = masked_table(true, pi[Number(a)], pi[Number(b)], out_pi);
+  const r: boolean[] = [(prg_bits?.[fieldMul(4n, fast_and)] ?? (false)), (prg_bits?.[fieldAdd(fieldMul(4n, fast_and), 1n)] ?? (false)), (prg_bits?.[fieldAdd(fieldMul(4n, fast_and), 2n)] ?? (false)), (prg_bits?.[fieldAdd(fieldMul(4n, fast_and), 3n)] ?? (false))];
+  fast_and = fieldAdd(fast_and, 1n);
+  const masks = fast_mask_bits(z, r);
+  const r_rows = [dd.row(BigInt(r[Number(0n)]), random), dd.row(BigInt(r[Number(1n)]), random), dd.row(BigInt(r[Number(2n)]), random), dd.row(BigInt(r[Number(3n)]), random)];
+  const taus = fast_and_rows(delta_ct, r_rows, masks, p);
+  const out = gate_output_label(dd, wa, wb, taus, z[Number(0n)], prf, w, out_pi);
+  const det = determination_bit(out.w0_lsb(), out_pi);
+  labels[Number(w)] = out;
+  (and_rows).push(new AndRows_Fast(r_rows));
+  (records).push(new GateRecord_FastAnd(masks, det));
+})(); } else if (true /* pattern Tuple([Wild, Struct { kind: Custom("Gate::Xor"), fields: [], rest: true }]) */) { return (() => {
+  const out_pi = fieldBitxor(pi[Number(a)], pi[Number(b)]);
+  pi[Number(w)] = out_pi;
+  const taus = xor_rows(delta_ct, false, p);
+  const out = gate_output_label(dd, wa, wb, taus, false, prf, w, out_pi);
+  labels[Number(w)] = out;
+  (records).push(new GateRecord_FastXor());
+})(); } else { return (() => {
+  const out_pi = !pi[Number(a)];
+  pi[Number(w)] = out_pi;
+  const base = labels[Number(a)].base(delta);
+  const w0 = (() => { if (out_pi) {
+  return sub_coeffs(base, delta.$fcoeffs, p);
+} else {
+  return base;
+} })();
+  labels[Number(w)] = new WireLabel({ $fw0: w0, $fpi: out_pi });
+})(); } })();
+  }
+  return new PinnedGarbling({ $flabels: labels, $fdelta_ct: delta_ct, $fand_rows: and_rows, $frecords: records });
+}
+
+export function gate_output_label<D>(dd: any, wa_base: any, wb_base: any, taus: RowCt[], z00: boolean, prf: any, wire: bigint, out_pi: boolean): WireLabel
+{
+  const delta = dd.delta();
+  const p = dd.p();
+  const degree = BigInt(delta.$fcoeffs.length);
+  let out = dd.eval(wa_base, false, wb_base, false, taus);
+  if (z00)   {
+    out = sub_coeffs(out, delta.$fcoeffs, p);
+  }
+  out = add_coeffs(out, prf.offset(wire, degree, p), p);
+  const w0 = (() => { if (out_pi) {
+  return sub_coeffs(out, delta.$fcoeffs, p);
+} else {
+  return out;
+} })();
+  return new WireLabel({ $fw0: w0, $fpi: out_pi });
 }
 
 export function gate_witness<S>(k_a: any, k_b: any, k_c: any, delta: any, v_hat: any): S[]
@@ -9031,8 +12630,13 @@ export function grind_chall3(ctx: { defaultT: () => any, HClass: { new(...args: 
 {
   for (let counter = 0n; counter < max_iters; counter += 1n)   {
     const counter_bytes = [(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn];
-    let c_hat_grind = Array.from(c_hat_base);
-    c_hat_grind.push(...(counter_bytes));
+    let c_hat_grind: Vec<bigint> = ([] as any[]);
+    for (let i = 0n; i < BigInt(c_hat_base.length); i += 1n)     {
+      (c_hat_grind).push(c_hat_base[Number(i)]);
+    }
+    for (let i = 0n; i < BigInt(counter_bytes.length); i += 1n)     {
+      (c_hat_grind).push(counter_bytes[Number(i)]);
+    }
     const candidate = chall3(ctx, chall_2, a_hat, b_hat, c_hat_grind, lambda, use_shake256);
     if (has_trailing_zero_bits(candidate, w_grind))     {
       return [candidate, counter];
@@ -9255,11 +12859,11 @@ export function iknp_receiver_u_cols(ctx: { newD: () => any }, m: bigint, receiv
   let t_cols = ([] as any[]);
   let u_cols = ([] as any[]);
   for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
-    let t_col = [] as any[];
+    let t_col = Array.from({length: Number(m)}, () => false);
     prg_to_bools(ctx, seeds_0[Number(i)], t_col);
-    let prg1 = [] as any[];
+    let prg1 = Array.from({length: Number(m)}, () => false);
     prg_to_bools(ctx, seeds_1[Number(i)], prg1);
-    let u_col = [] as any[];
+    let u_col = Array.from({length: Number(m)}, () => false);
     for (let j = 0n; j < m; j += 1n)     {
       u_col[Number(j)] = fieldBitxor(fieldBitxor(t_col[Number(j)], prg1[Number(j)]), receiver_bits[Number(j)]);
     }
@@ -9273,9 +12877,9 @@ export function iknp_sender_from_u(ctx: { newD: () => any }, l: bigint, m: bigin
 {
   let q_cols = ([] as any[]);
   for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
-    let prg_chosen = [] as any[];
+    let prg_chosen = Array.from({length: Number(m)}, () => false);
     prg_to_bools(ctx, chosen_seeds[Number(i)], prg_chosen);
-    let q_col = [] as any[];
+    let q_col = Array.from({length: Number(m)}, () => false);
     for (let j = 0n; j < m; j += 1n)     {
       if (delta_ot[Number(i)])       {
         q_col[Number(j)] = fieldBitxor(prg_chosen[Number(j)], u_msg.$fu_cols[Number(i)][Number(j)]);
@@ -9343,8 +12947,11 @@ export function interval_bounds(n: bigint, t: bigint, index: bigint): [bigint, b
   return [BigInt((fieldMul(index_1, n_1) / t_1)), BigInt((fieldMul(fieldAdd(index_1, 1n), n_1) / t_1))];
 }
 
-export function inverse_mod(value: bigint, modulus: bigint): (bigint | undefined)
-{
+export function inverse_mod(...__args: any[]): any {
+  if (__args.length === 2) {
+    const value = __args[0];
+    const modulus = __args[1];
+    return (() => {
   if ((__equals(value, 0n) || (modulus < 2n)))   {
     return undefined;
   }
@@ -9361,6 +12968,35 @@ export function inverse_mod(value: bigint, modulus: bigint): (bigint | undefined
     return undefined;
   }
   return BigInt((((old_s) % ((modulus as unknown as bigint)) + ((modulus as unknown as bigint))) % ((modulus as unknown as bigint))));
+})();
+  } else
+  if (__args.length === 2) {
+    const value = __args[0];
+    const modulus = __args[1];
+    return (() => {
+  let [t, new_t] = [0n, 1n];
+  let [r, new_r] = [(modulus as unknown as bigint), ((value % modulus) as unknown as bigint)];
+  while (!__equals(new_r, 0n))   {
+    const quotient = (r / new_r);
+    [t, new_t] = [new_t, fieldSub(t, fieldMul(quotient, new_t))];
+    [r, new_r] = [new_r, fieldSub(r, fieldMul(quotient, new_r))];
+  }
+  if (!__equals(r, 1n))   {
+    return undefined;
+  }
+  let t_1 = (t % (modulus as unknown as bigint));
+  if ((t_1 < 0n))   {
+    t_1 = fieldAdd(t_1, (modulus as unknown as bigint));
+  }
+  return BigInt(t_1);
+})();
+  }
+  throw new Error("inverse_mod(): no matching variant for " + __args.length + " args");
+}
+
+export function is_pow2(n: bigint): boolean
+{
+  return (!__equals(n, 0n) && ((n) > 0n && ((n) & ((n) - 1n)) === 0n));
 }
 
 export function is_satisfied_relaxed<S>(ctx: { defaultS: () => any, UClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, w: S[], e: S[], u: any): boolean
@@ -9379,6 +13015,41 @@ export function is_satisfied_relaxed<S>(ctx: { defaultS: () => any, UClass: { ne
 export function is_square(w: any): boolean
 {
   return (fe_sqrt(w)) != null;
+}
+
+export function keccak_f1600(st: bigint[])
+{
+  for (let round = 0n; round < 24n; round += 1n)   {
+    let bc = Array.from({length: Number(5n)}, () => 0n);
+    for (let i = 0n; i < 5n; i += 1n)     {
+      bc[Number(i)] = fieldBitxor(fieldBitxor(fieldBitxor(fieldBitxor(st[Number(i)], st[Number(fieldAdd(i, 5n))]), st[Number(fieldAdd(i, 10n))]), st[Number(fieldAdd(i, 15n))]), st[Number(fieldAdd(i, 20n))]);
+    }
+    for (let i = 0n; i < 5n; i += 1n)     {
+      const t = fieldBitxor(bc[Number((fieldAdd(i, 4n) % 5n))], fieldBitor(fieldShl(bc[Number((fieldAdd(i, 1n) % 5n))], 1n), fieldShr(bc[Number((fieldAdd(i, 1n) % 5n))], 63n)));
+      for (let jj = 0n; jj < 5n; jj += 1n)       {
+        st[Number(fieldAdd(fieldMul(jj, 5n), i))] = fieldBitxor(st[Number(fieldAdd(fieldMul(jj, 5n), i))], t);
+      }
+    }
+    let t = st[Number(1n)];
+    for (let i = 0n; i < 24n; i += 1n)     {
+      const j = KECCAK_PILN[Number(i)];
+      const k = KECCAK_ROTC[Number(i)];
+      const tmp = st[Number(j)];
+      st[Number(j)] = fieldBitor(fieldShl(t, k), fieldShr(t, fieldSub(64n, k)));
+      t = tmp;
+    }
+    for (let jj = 0n; jj < 5n; jj += 1n)     {
+      const j = fieldMul(jj, 5n);
+      let row = Array.from({length: Number(5n)}, () => 0n);
+      for (let i = 0n; i < 5n; i += 1n)       {
+        row[Number(i)] = st[Number(fieldAdd(j, i))];
+      }
+      for (let i = 0n; i < 5n; i += 1n)       {
+        st[Number(fieldAdd(j, i))] = fieldBitxor(st[Number(fieldAdd(j, i))], fieldBitand(!row[Number((fieldAdd(i, 1n) % 5n))], row[Number((fieldAdd(i, 2n) % 5n))]));
+      }
+    }
+    st[Number(0n)] = fieldBitxor(st[Number(0n)], KECCAK_RNDC[Number(round)]);
+  }
 }
 
 export function key_expansion(key: bigint[]): bigint[][]
@@ -9441,11 +13112,10 @@ export function key_switch(n_lwe: bigint, big_n: bigint, ks_ell: bigint, ks_bg_l
 export function keygen(rng: any): [FaestSecretKey, FaestPublicKey]
 {
   let sk = Array.from({length: Number(LAMBDA_BYTES)}, () => ((0n) & 0xFFn));
-  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(sk.length); __zip_mut_1 += 1n) {
-    {
-      sk[Number(__zip_mut_1)] = rng.next_u8();
-    }}
-  const pk = aes128_encrypt(sk, Array.from({length: Number(LAMBDA_BYTES)}, () => ((0n) & 0xFFn)));
+  for (let i = 0n; i < LAMBDA_BYTES; i += 1n)   {
+    sk[Number(i)] = rng.next_u8();
+  }
+  const pk = encrypt_block(sk, Array.from({length: Number(LAMBDA_BYTES)}, () => ((0n) & 0xFFn)));
   return [new FaestSecretKey(sk), new FaestPublicKey(pk)];
 }
 
@@ -9467,6 +13137,24 @@ export function ks_decompose(ks_ell: bigint, ks_bg_log: bigint, x: bigint): bigi
     }
   }
   return digits;
+}
+
+export function label_lsb(w: any): boolean
+{
+  return (!(w.length === 0) && __equals((w[Number(0n)] % 2n), 1n));
+}
+
+export function lanes_to_bytes(st: bigint[], b: bigint[])
+{
+  for (let i = 0n; i < 25n; i += 1n)   {
+    (b.slice(Number(fieldMul(i, 8n)), Number(fieldAdd(fieldMul(i, 8n), 8n)))).splice(0, ([(st[Number(i)]) & 0xFFn, ((st[Number(i)]) >> 8n) & 0xFFn, ((st[Number(i)]) >> 16n) & 0xFFn, ((st[Number(i)]) >> 24n) & 0xFFn]).length, ...([(st[Number(i)]) & 0xFFn, ((st[Number(i)]) >> 8n) & 0xFFn, ((st[Number(i)]) >> 16n) & 0xFFn, ((st[Number(i)]) >> 24n) & 0xFFn]));
+  }
+}
+
+export function le16(v: Galois128): bigint[]
+{
+  const b = [(v[0]) & 0xFFn, ((v[0]) >> 8n) & 0xFFn, ((v[0]) >> 16n) & 0xFFn, ((v[0]) >> 24n) & 0xFFn];
+  return Array.from({length: Number(16n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => b[Number(i)]);
 }
 
 export function level_bits(log: bigint, base_log: bigint, j: bigint): bigint
@@ -9512,6 +13200,11 @@ export function limbs_to_bytes(l: bigint[]): bigint[]
     (out.slice(Number(fieldMul(i, 8n)), Number(fieldAdd(fieldMul(i, 8n), 8n)))).splice(0, ([(l[Number(i)]) & 0xFFn, ((l[Number(i)]) >> 8n) & 0xFFn, ((l[Number(i)]) >> 16n) & 0xFFn, ((l[Number(i)]) >> 24n) & 0xFFn]).length, ...([(l[Number(i)]) & 0xFFn, ((l[Number(i)]) >> 8n) & 0xFFn, ((l[Number(i)]) >> 16n) & 0xFFn, ((l[Number(i)]) >> 24n) & 0xFFn]));
   }
   return out;
+}
+
+export function log2_pow2(n: bigint): bigint
+{
+  return BigInt(((__value) => { let __bits = 0n; if (__value === 0n) return BigInt(64); while ((__value & 1n) === 0n) { __value >>= 1n; __bits += 1n; } return __bits; })(BigInt.asUintN(64, n)));
 }
 
 export function lwe_add(n_lwe: bigint, a: LweCiphertextDyn, b: LweCiphertextDyn): LweCiphertextDyn
@@ -9627,7 +13320,7 @@ export function lwe_ot_recv_decrypt_bytes(n: bigint, receiver: LweOtReceiverDyn,
   }
   const quarter = (LWE_Q / 4n);
   const three_quarter = fieldMul(3n, quarter);
-  let bits = [] as any[];
+  let bits = Array.from({length: Number(BigInt(v.length))}, () => ((0n) & 0xFFn));
   for (let k = 0n; k < BigInt(v.length); k += 1n)   {
     const raw = zq_sub(v[Number(k)], s_dot_u);
     bits[Number(k)] = (() => { if (((raw > quarter) && (raw <= three_quarter))) {
@@ -9648,7 +13341,7 @@ export function lwe_ot_recv_decrypt_bytes_secure(n: bigint, receiver: LweOtRecei
 } })();
   const quarter = (LWE_Q / 4n);
   const three_quarter = fieldMul(3n, quarter);
-  let bits = [] as any[];
+  let bits = Array.from({length: Number(BigInt(vs.length))}, () => ((0n) & 0xFFn));
   for (let k = 0n; k < BigInt(vs.length); k += 1n)   {
     let s_dot_u: Zq = 0n;
     for (let i = 0n; i < n; i += 1n)     {
@@ -9733,7 +13426,7 @@ export function lwe_ot_send_bytes_secure<R>(n: bigint, rng: any, crs: LweOtCrsDy
     for (let i = 0n; i < n; i += 1n)     {
       r[Number(i)] = sample_noise(rng);
     }
-    let uk = [] as any[];
+    let uk = Array.from({length: Number(n)}, () => 0n);
     for (let j = 0n; j < n; j += 1n)     {
       let acc: Zq = 0n;
       for (let i = 0n; i < n; i += 1n)       {
@@ -9789,6 +13482,22 @@ export function mask(log: bigint): bigint
 } else {
   return fieldSub(fieldShl(1n, log), 1n);
 } })();
+}
+
+export function masked_table(and: boolean, pi_a: boolean, pi_b: boolean, pi_c: boolean): boolean[]
+{
+  let out = Array.from({length: Number(4n)}, () => false);
+  for (let j = 0n; j < 2n; j += 1n)   {
+    for (let i = 0n; i < 2n; i += 1n)     {
+      const [ii, jj] = [__equals(i, 1n), __equals(j, 1n)];
+      out[Number(fieldAdd(i, fieldMul(2n, j)))] = (() => { if (and) {
+  return fieldBitxor(fieldBitand(fieldBitxor(pi_a, ii), fieldBitxor(pi_b, jj)), pi_c);
+} else {
+  return fieldBitxor(fieldBitxor(fieldBitxor(pi_a, ii), fieldBitxor(pi_b, jj)), pi_c);
+} })();
+    }
+  }
+  return out;
 }
 
 export function max_lut_arity(log_q_lwe: bigint): bigint
@@ -10074,7 +13783,7 @@ return (buckets[Number(j)].findIndex((y) => __equals(y, val)))!; } })();
     const w = spcot_receiver_extend(p, splen, cot_t_chunks[Number(j)], msg.$fblocks[Number(j)]);
     (r_bins).push(w);
   }
-  let r = [] as any[];
+  let r = Array.from({length: Number(n)}, () => Array.from({length: Number(16n)}, () => ((0n) & 0xFFn)));
   for (let x = 0n; x < n; x += 1n)   {
     let acc = Array.from({length: Number(16n)}, () => ((0n) & 0xFFn));
     for (const j of unique_bins(msg.$fhash_seed, x, m))     {
@@ -10102,7 +13811,7 @@ export function mpcot_uni_sender<R>(rng: any, delta: any, params: any, hash_seed
     (s_bins).push(v);
     (blocks).push(msg);
   }
-  let s = [] as any[];
+  let s = Array.from({length: Number(n)}, () => Array.from({length: Number(16n)}, () => ((0n) & 0xFFn)));
   for (let x = 0n; x < n; x += 1n)   {
     let acc = Array.from({length: Number(16n)}, () => ((0n) & 0xFFn));
     for (const j of unique_bins(hash_seed, x, m))     {
@@ -10158,9 +13867,111 @@ export function mul_exact(log: bigint, a: bigint, c: bigint): bigint
   return reduce(log, BigInt(Math.imul(Number(a), Number(c))));
 }
 
-export function mul_mod(left: bigint, right: bigint, modulus: bigint): bigint
+export function mul_limb(a: any, b: any, q: bigint, ntt: (Ntt | undefined)): Limb
 {
+  return (() => { const __match = ntt; if (__match !== null && __match !== undefined) { const nt = __match;
+return negacyclic_mul_ntt(a, b, nt); } else { return negacyclic_mul_coeffs(a, b, q); } })();
+}
+
+export function mul_mod(...__args: any[]): any {
+  if (__args.length === 3) {
+    const left = __args[0];
+    const right = __args[1];
+    const modulus = __args[2];
+    return (() => {
   return BigInt((fieldMul((left as unknown as bigint), (right as unknown as bigint)) % (modulus as unknown as bigint)));
+})();
+  } else
+  if (__args.length === 3) {
+    const left = __args[0];
+    const right = __args[1];
+    const modulus = __args[2];
+    return (() => {
+  return BigInt((fieldMul((left as unknown as bigint), (right as unknown as bigint)) % (modulus as unknown as bigint)));
+})();
+  }
+  throw new Error("mul_mod(): no matching variant for " + __args.length + " args");
+}
+
+export function negacyclic_mul(params: any, a: bigint[], b: bigint[]): Vec<bigint>
+{
+  return negacyclic_mul(params.$fdegree, params.$fmodulus, a, b);
+}
+
+export function negacyclic_mul_coeffs(a: bigint[], b: bigint[], modulus: bigint): Vec<bigint>
+{
+  const n = BigInt(a.length);
+  let out = Array.from({length: Number(n)}, () => 0n);
+  for (const [i, ai] of a.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
+    for (const [j, bj] of b.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
+      const k = fieldAdd(i, j);
+      if ((k < n))       {
+        out[Number(k)] = add_mod(out[Number(k)], mul_mod(ai, bj, modulus), modulus);
+      } else       {
+        out[Number(fieldSub(k, n))] = sub_mod(out[Number(fieldSub(k, n))], mul_mod(ai, bj, modulus), modulus);
+      }
+    }
+  }
+  return out;
+}
+
+export function negacyclic_mul_ntt(a: bigint[], b: bigint[], ntt: any): Vec<bigint>
+{
+  let fa = [...a];
+  let fb = [...b];
+  ntt.forward(fa);
+  ntt.forward(fb);
+  const q = ntt.$fmodulus;
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(fa.length); __zip_mut_1 += 1n) {
+    const y = fb[Number(__zip_mut_1)];
+    {
+      fa[Number(__zip_mut_1)] = mul_mod(fa[Number(__zip_mut_1)], y, q);
+    }}
+  ntt.inverse(fa);
+  return fa;
+}
+
+export function negacyclic_mul_rq(a: bigint[], b: bigint[], q: bigint): RqPoly
+{
+  const n = BigInt(a.length);
+  let out = Array.from({length: Number(n)}, () => 0n);
+  for (const [i, ai] of a.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
+    if (__equals(ai, 0n))     {
+      continue;
+    }
+    const ai_1 = center(ai, q);
+    for (const [j, bj] of b.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
+      if (__equals(bj, 0n))       {
+        continue;
+      }
+      const bj_1 = center(bj, q);
+      const prod = fieldMul(ai_1, bj_1);
+      if ((fieldAdd(i, j) < n))       {
+        out[Number(fieldAdd(i, j))] = fieldAdd(out[Number(fieldAdd(i, j))], prod);
+      } else       {
+        out[Number(fieldSub(fieldAdd(i, j), n))] = fieldSub(out[Number(fieldSub(fieldAdd(i, j), n))], prod);
+      }
+    }
+  }
+  return out.map((c: any) => BigInt((((c) % ((q as unknown as bigint)) + ((q as unknown as bigint))) % ((q as unknown as bigint)))));
+}
+
+export function negate_limb(a: any, q: bigint): Limb
+{
+  return a.map((x: any) => (() => { if (__equals(x, 0n)) {
+  return 0n;
+} else {
+  return fieldSub(q, x);
+} })());
+}
+
+export function negate_rq(a: bigint[], q: bigint): RqPoly
+{
+  return a.map((x: any) => (() => { if (__equals(x, 0n)) {
+  return 0n;
+} else {
+  return fieldSub(q, x);
+} })());
 }
 
 export function new_pool<R>(rng: any, params: any): [CotPoolSender, CotPoolReceiver]
@@ -10183,6 +13994,70 @@ export function new_pool_mode<R>(rng: any, params: any, malicious: boolean): [Co
 export function next_pow2(x: bigint): bigint
 {
   return BigInt(Math.max(Number(((__value: bigint) => { let __power = 1n; while (__power < __value) __power <<= 1n; return __power; }) (x)), Number(2n)));
+}
+
+export function noise_limb(n: bigint, p: bigint, q: bigint, random: any): Limb
+{
+  let out = Array.from({length: Number(n)}, () => 0n);
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(out.length); __zip_mut_1 += 1n) {
+    {
+      const r = fieldSub(((random.next_u32() % 3n) as unknown as bigint), 1n);
+      out[Number(__zip_mut_1)] = (() => { if ((r < 0n)) {
+  return fieldSub(q, (p % q));
+} else {
+  return (fieldMul(BigInt(r), p) % q);
+} })();
+    }}
+  return out;
+}
+
+export function ntt_ctx(n: bigint, q: bigint): (Ntt | undefined)
+{
+  return Ntt.new(n, q).ok();
+}
+
+export function offline_phase(ctx: { defaultA: () => any, defaultT: () => any }, ctx: any, wire_count: bigint, prg: any, ksk_base: bigint, ksk_digits: bigint, online_depth_budget: bigint, random: any, noise: any): Result<[OfflineGarbler, OfflineEvaluator, WireStates], Error>
+{
+  const __volar_try_0 = offline_setup(ctx, ctx, wire_count, prg, ksk_base, ksk_digits, online_depth_budget, random, noise);
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  const garbler = __volar_try_0;
+  const plan = garbler.$fplan;
+  const __volar_try_2 = stream_expansion(ctx, ctx, wire_count, prg, garbler, random, noise);
+  if (__volar_try_2 instanceof __VolarError) return __volar_try_2;
+  const steps = __volar_try_2;
+  let states = ([] as any[]);
+  let wires = ([] as any[]);
+  for (const step of steps)   {
+    (states).push(step.$fwire_state);
+    (wires).push(step.$feval);
+  }
+  return [garbler, new OfflineEvaluator({ $fplan: plan, $fwires: wires }), states];
+}
+
+export function offline_setup(ctx: { defaultA: () => any }, ctx: any, wire_count: bigint, prg: any, ksk_base: bigint, ksk_digits: bigint, online_depth_budget: bigint, random: any, noise: any): Result<OfflineGarbler, Error>
+{
+  const __volar_try_0 = (((() => { const __a = 2n; const __b = wire_count; const __result = __a * __b; return __result >= 0n && __result <= 18446744073709551615n ? __result : undefined; })()) ?? (new Error_InvalidParameters()));
+  if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+  const required_bits = __volar_try_0;
+  const __volar_try_1 = ExpansionPlan.plan(required_bits, prg.depth(), prg.slots(), fieldAdd(ctx.max_level(), 1n));
+  if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+  const plan = __volar_try_1;
+  const top = ctx.max_level();
+  if ((top < fieldAdd(prg.depth(), online_depth_budget)))   {
+    return new Error_InvalidParameters();
+  }
+  const __volar_try_4 = ctx.keygen(random);
+  if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+  const secret = __volar_try_4;
+  const __volar_try_5 = ctx.key_switch_keyset(ctx, secret, ksk_base, ksk_digits, random, noise);
+  if (__volar_try_5 instanceof __VolarError) return __volar_try_5;
+  const ksks = __volar_try_5;
+  return new OfflineGarbler({ $fsecret: secret, $fksks: ksks, $fplan: plan });
+}
+
+export function open_output(masked: boolean, pi: boolean): boolean
+{
+  return fieldBitxor(masked, pi);
 }
 
 export function or_proof_challenge<G>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, s: number /* G::Element */, r: number /* G::Element */, a0: number /* G::Element */, a1: number /* G::Element */): number /* G::Scalar */
@@ -10334,6 +14209,46 @@ export function padded_interval_len(n: bigint, t: bigint): bigint
   return (((__value: bigint) => { let __power = 1n; while (__power < __value) __power <<= 1n; return __power <= 18446744073709551615n ? __power : undefined; }) (((n) + (t) - 1n) / (t)))!;
 }
 
+export function parity_coeffs(p: bigint, k_max: bigint): Result<Vec<bigint>, StitchError>
+{
+  if ((__equals(k_max, 0n) || (k_max > BigInt(fieldSub(p, 1n)))))   {
+    return new StitchError_PayloadOverflow();
+  }
+  let coeffs = Array.from({length: Number(fieldAdd(k_max, 1n))}, () => 0n);
+  const points: Vec<bigint> = Array.from({length: Number(BigInt(k_max) + 1n - 0n)}, (_, __i) => BigInt(__i) + 0n);
+  for (const [j, x_j] of points.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
+    if (__equals((x_j % 2n), 0n))     {
+      continue;
+    }
+    let numerator = [1n];
+    let denominator = 1n;
+    for (const [k, x_k] of points.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
+      if (__equals(k, j))       {
+        continue;
+      }
+      let next = Array.from({length: Number(fieldAdd(BigInt(numerator.length), 1n))}, () => 0n);
+      for (const [i, c] of numerator.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))       {
+        next[Number(fieldAdd(i, 1n))] = add_mod(next[Number(fieldAdd(i, 1n))], c, p);
+        next[Number(i)] = sub_mod(next[Number(i)], mul_mod(c, x_k, p), p);
+      }
+      numerator = next;
+      const diff = (() => { if ((x_j > x_k)) {
+  return fieldSub(x_j, x_k);
+} else {
+  return fieldSub(p, fieldSub(x_k, x_j));
+} })();
+      denominator = mul_mod(denominator, (diff % p), p);
+    }
+    const __volar_try_4 = ((inverse_mod(denominator, p)) ?? (new StitchError_PayloadOverflow()));
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const inv = __volar_try_4;
+    for (const [i, c] of numerator.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))     {
+      coeffs[Number(i)] = add_mod(coeffs[Number(i)], mul_mod(c, inv, p), p);
+    }
+  }
+  return coeffs;
+}
+
 export function parse_profile(tag: bigint): Result<ProfileId, DecodeError>
 {
   return (() => { const __match = tag; if (__match === 0n) { return new ProfileId_Toy(); } else if (__match === 1n) { return new ProfileId_ToyNoisy(); } else if (__match === 2n) { return new ProfileId_Std128(); } else if (__match === 3n) { return new ProfileId_Custom(); } else { return new DecodeError_UnknownTag(); } })();
@@ -10348,6 +14263,14 @@ export function pedersen_commit(gens: EdPoint[], h: any, x: bigint[][], blind: b
     i = fieldAdd(i, 1n);
   }
   return acc;
+}
+
+export function permute_bytes(state_bytes: bigint[])
+{
+  let st = Array.from({length: Number(25n)}, () => 0n);
+  bytes_to_lanes(state_bytes, st);
+  keccak_f1600(st);
+  lanes_to_bytes(st, state_bytes);
 }
 
 export function poly_add_neg(n: bigint, a: bigint[], b: bigint[]): bigint[]
@@ -10441,8 +14364,12 @@ export function poly_sub_neg(n: bigint, a: bigint[], b: bigint[]): bigint[]
   return result;
 }
 
-export function pow_mod(value: bigint, exponent: bigint, modulus: bigint): bigint
-{
+export function pow_mod(...__args: any[]): any {
+  if (__args.length === 3) {
+    const value = __args[0];
+    const exponent = __args[1];
+    const modulus = __args[2];
+    return (() => {
   let result = 1n;
   while (!__equals(exponent, 0n))   {
     if (!__equals(fieldBitand(exponent, 1n), 0n))     {
@@ -10452,6 +14379,26 @@ export function pow_mod(value: bigint, exponent: bigint, modulus: bigint): bigin
     exponent = fieldShr(exponent, 1n);
   }
   return result;
+})();
+  } else
+  if (__args.length === 3) {
+    const base = __args[0];
+    const exponent = __args[1];
+    const modulus = __args[2];
+    return (() => {
+  let result = 1n;
+  let base_1 = (base % modulus);
+  while ((exponent > 0n))   {
+    if (__equals(fieldBitand(exponent, 1n), 1n))     {
+      result = mul_mod(result, base_1, modulus);
+    }
+    base_1 = mul_mod(base_1, base_1, modulus);
+    exponent = fieldShr(exponent, 1n);
+  }
+  return result;
+})();
+  }
+  throw new Error("pow_mod(): no matching variant for " + __args.length + " args");
 }
 
 export function prg_to_bools(ctx: { newD: () => any }, seed: bigint[], out: boolean[])
@@ -10572,9 +14519,9 @@ export function q_scale_const<T>(n: bigint, q: QDyn<any>, c: any): QDyn<any>
   return new QDyn({ $fq: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldMul(__clone(q.$fq[Number(i)]), __clone(c))), $fn: 0n });
 }
 
-export function random_nonzero_delta<T, R>(n: bigint, rng: any, sample_t: any, is_zero: any): DeltaDyn<any>
+export function random_nonzero_delta<N, T, R>(n: bigint, rng: any, sample_t: any, is_zero: any): Delta<N, any>
 {
-  return new DeltaDyn({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
+  return new Delta({ $fdelta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
   let x = sample_t(rng);
   let tries = 0n;
   while ((is_zero(x) && (tries < 64n)))   {
@@ -10582,7 +14529,7 @@ export function random_nonzero_delta<T, R>(n: bigint, rng: any, sample_t: any, i
     tries = fieldAdd(tries, 1n);
   }
   return x;
-})()), $fn: 0n });
+})()) });
 }
 
 export function read_op(reader: any): Result<PlanOp, DecodeError>
@@ -10612,7 +14559,7 @@ export function read_op(reader: any): Result<PlanOp, DecodeError>
   for (let _ = 0n; _ < count; _ += 1n)   {
     (ids).push(reader.u32());
   }
-  let inputs = [] as any[];
+  let inputs = Array.from({length: Number(BigInt(ids.length))}, () => 0n);
   for (const [i, id] of ids.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
     inputs[Number(i)] = id;
   }
@@ -10643,7 +14590,7 @@ export function read_op(reader: any): Result<PlanOp, DecodeError>
 export function recompute_tree(r: bigint[], total_leaves: bigint): Vec<bigint[]>
 {
   const total_nodes = fieldSub(fieldMul(2n, total_leaves), 1n);
-  let tree = [] as any[];
+  let tree = Array.from({length: Number(total_nodes)}, () => Array.from({length: Number(LAMBDA_BYTES)}, () => ((0n) & 0xFFn)));
   tree[Number(0n)] = r;
   for (let node = 0n; node < fieldSub(total_leaves, 1n); node += 1n)   {
     const parent = tree[Number(node)];
@@ -10851,6 +14798,39 @@ export function rlwe_sub(big_n: bigint, a: RlweCiphertextDyn, b: RlweCiphertextD
   return new RlweCiphertextDyn({ $fa: poly_sub_neg(big_n, a.$fa, b.$fa), $fb: poly_sub_neg(big_n, a.$fb, b.$fb), $fbig_n: 0n });
 }
 
+export function round_limb0_to_rp(x: any, q0: bigint, p: bigint): LabelPoly
+{
+  return x.map((c: any) => (() => {
+  const centered = center(c, q0);
+  return BigInt((((centered) % ((p as unknown as bigint)) + ((p as unknown as bigint))) % ((p as unknown as bigint))));
+})());
+}
+
+export function round_to_rp(x: any, q: bigint, p: bigint): RpPoly
+{
+  return x.map((c: any) => (() => {
+  const centered = center(c, q);
+  return BigInt((((centered) % ((p as unknown as bigint)) + ((p as unknown as bigint))) % ((p as unknown as bigint))));
+})());
+}
+
+export function row_multipliers(z: boolean[]): bigint[]
+{
+  const b = (x: boolean) => BigInt(x);
+  const t1 = fieldSub(b(z[Number(1n)]), b(z[Number(0n)]));
+  const t2 = fieldSub(b(z[Number(2n)]), b(z[Number(0n)]));
+  const t3 = fieldSub(fieldSub(fieldSub(b(z[Number(3n)]), b(z[Number(0n)])), t1), t2);
+  return [t1, t2, t3];
+}
+
+export function rowct_from_lattice(tau: any, p: bigint): RowCt
+{
+  const red = (poly: RqPoly) => (() => {
+  return poly.map((c: any) => (c % p));
+})();
+  return new RowCt({ $fc0: red(tau.$fu1), $fc1: red(tau.$fu2) });
+}
+
 export function sample_below<R>(rng: any, upper: bigint): bigint
 {
   const upper_1 = (__u32_try_from(upper))!;
@@ -10908,6 +14888,32 @@ export function sample_noise<R>(rng: any): Zq
 } })();
 }
 
+export function sample_noise_rq(n: bigint, p: bigint, q: bigint, random: any): RqPoly
+{
+  let out = Array.from({length: Number(n)}, () => 0n);
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(out.length); __zip_mut_1 += 1n) {
+    {
+      const r = fieldSub(((random.next_u32() % 3n) as unknown as bigint), 1n);
+      const pe = (() => { if ((r < 0n)) {
+  return fieldSub(q, (p % q));
+} else {
+  return (fieldMul(BigInt(r), p) % q);
+} })();
+      out[Number(__zip_mut_1)] = pe;
+    }}
+  return out;
+}
+
+export function sample_poly(degree: bigint, p: bigint, random: any): LabelPoly
+{
+  let out = Array.from({length: Number(degree)}, () => 0n);
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(out.length); __zip_mut_1 += 1n) {
+    {
+      out[Number(__zip_mut_1)] = (BigInt(random.next_u32()) % p);
+    }}
+  return out;
+}
+
 export function sample_regular_noise<R>(rng: any, n: bigint, t: bigint): Vec<bigint>
 {
   return Array.from({length: Number(t - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
@@ -10952,8 +14958,12 @@ export function sample_seed_cots<R>(rng: any, m: bigint): [FerretSenderSeed, Fer
   return [new FerretSenderSeed({ $fdelta: delta, $fq: q }), new FerretReceiverSeed({ $fu: u, $fw: w })];
 }
 
-export function sample_uniform(random: any, modulus: bigint, output: bigint[]): Result<void, Error>
-{
+export function sample_uniform(...__args: any[]): any {
+  if (__args.length === 3) {
+    const random = __args[0];
+    const modulus = __args[1];
+    const output = __args[2];
+    return (() => {
   const threshold = fieldSub(18446744073709551615n, (18446744073709551615n % modulus));
   for (let __mut_1 = 0n; __mut_1 < BigInt(output.length); __mut_1 += 1n) {
     {
@@ -10969,6 +14979,31 @@ export function sample_uniform(random: any, modulus: bigint, output: bigint[]): 
       }
     }}
   return undefined;
+})();
+  } else
+  if (__args.length === 3) {
+    const random = __args[0];
+    const modulus = __args[1];
+    const output = __args[2];
+    return (() => {
+  const threshold = fieldSub(18446744073709551615n, (18446744073709551615n % modulus));
+  for (let __mut_1 = 0n; __mut_1 < BigInt(output.length); __mut_1 += 1n) {
+    {
+      while (true)       {
+        let bytes = Array.from({length: Number(8n)}, () => ((0n) & 0xFFn));
+        const __volar_try_1 = random(bytes);
+        if (__volar_try_1 instanceof __VolarError) return __volar_try_1;
+        const candidate = u64_from_le_bytes(bytes);
+        if ((candidate < threshold))         {
+          output[Number(__mut_1)] = (candidate % modulus);
+          break;
+        }
+      }
+    }}
+  return undefined;
+})();
+  }
+  throw new Error("sample_uniform(): no matching variant for " + __args.length + " args");
 }
 
 export function sample_uniform_points<R>(rng: any, n: bigint, t: bigint): Vec<bigint>
@@ -10984,9 +15019,46 @@ export function sample_uniform_points<R>(rng: any, n: bigint, t: bigint): Vec<bi
   return pts;
 }
 
+export function sample_uniform_rq(n: bigint, q: bigint, random: any): RqPoly
+{
+  let out = Array.from({length: Number(n)}, () => 0n);
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(out.length); __zip_mut_1 += 1n) {
+    {
+      out[Number(__zip_mut_1)] = (BigInt(random.next_u32()) % q);
+    }}
+  return out;
+}
+
 export function sample_zq<R>(rng: any): Zq
 {
   return fieldBitand(rng.next_u32(), LWE_Q_MASK);
+}
+
+export function scale_limb(delta_limb: any, t: bigint, q: bigint): Limb
+{
+  return delta_limb.map((c: any) => (() => {
+  const c_1 = (c as unknown as bigint);
+  return BigInt((((fieldMul(c_1, (t as unknown as bigint))) % ((q as unknown as bigint)) + ((q as unknown as bigint))) % ((q as unknown as bigint))));
+})());
+}
+
+export function scale_row(row: any, k: bigint, p: bigint): RowCt
+{
+  const scale = (poly: LabelPoly, k: bigint) => (() => {
+  return poly.map((c: any) => mul_mod(c, k, p));
+})();
+  const neg = (poly: LabelPoly) => (() => {
+  return poly.map((c: any) => (() => { if (__equals(c, 0n)) {
+  return 0n;
+} else {
+  return fieldSub(p, c);
+} })());
+})();
+  return (() => { if ((k >= 0n)) {
+  return new RowCt({ $fc0: scale(row.$fc0, BigInt(k)), $fc1: scale(row.$fc1, BigInt(k)) });
+} else {
+  return new RowCt({ $fc0: neg(scale(row.$fc0, BigInt(-k))), $fc1: neg(scale(row.$fc1, BigInt(-k))) });
+} })();
 }
 
 export function selector_margin(log_q_lwe: bigint, k: bigint, input_noise_bound: bigint): boolean
@@ -11021,8 +15093,8 @@ export function shift_rows(state: bigint[])
 
 export function sign(ctx: { newD: () => any, defaultT: () => any, HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any>, LClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, sk: any, pk: any, message: bigint[], iv_seed: bigint[], prover: any): FaestSignature
 {
-  const iv: bigint[] = aes128_encrypt(iv_seed, Array.from({length: Number(LAMBDA_BYTES)}, () => ((0n) & 0xFFn)));
-  const r: bigint[] = aes128_encrypt(sk[0], iv);
+  const iv: bigint[] = encrypt_block(iv_seed, Array.from({length: Number(LAMBDA_BYTES)}, () => ((0n) & 0xFFn)));
+  const r: bigint[] = encrypt_block(sk[0], iv);
   const commitment: BavcCommitmentDyn = BavcDyn.commit(ctx, 32n, r, iv, TAU, SUB_VOLE_N);
   const mu: Vec<bigint> = (() => {
   let h = new Sha3_256();
@@ -11033,22 +15105,37 @@ export function sign(ctx: { newD: () => any, defaultT: () => any, HClass: { new(
   const chall_1 = chall1(ctx, mu, iv, commitment.$froot, fieldAdd(LAMBDA_BYTES, 8n), false);
   const deltas = expand_challenge_to_deltas(chall_1, TAU, SUB_VOLE_N);
   const nodes = BavcDyn.collect_open_nodes(32n, deltas, recompute_tree(r, fieldMul(TAU, SUB_VOLE_N)), TAU, SUB_VOLE_N);
-  const hidden_commits: Vec<bigint[]> = deltas.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]).map(([i, d]: any) => commitment.$fcommitments[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), d))]);
+  let hidden_commits: Vec<bigint[]> = ([] as any[]);
+  for (let i = 0n; i < BigInt(deltas.length); i += 1n)   {
+    const d = deltas[Number(i)];
+    (hidden_commits).push(commitment.$fcommitments[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), d))]);
+  }
   const opening = new BavcOpeningDyn({ $fhidden_commits: __clone(hidden_commits), $fnodes: __clone(nodes), $fcom_bytes: 0n });
   const _ = opening;
-  let sub_voles = ([] as any[]);
+  let sub_voles: Vec<ConvertOutput> = ([] as any[]);
   for (let i = 0n; i < TAU; i += 1n)   {
-    const seeds_i: Vec<(bigint[] | undefined)> = Array.from({length: Number(SUB_VOLE_N - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => commitment.$fseeds[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), j))]);
+    let seeds_i: Vec<(bigint[] | undefined)> = ([] as any[]);
+    for (let j = 0n; j < SUB_VOLE_N; j += 1n)     {
+      (seeds_i).push(commitment.$fseeds[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), j))]);
+    }
     (sub_voles).push(convert_to_vole(seeds_i, iv, BigInt(i), L_HAT_BYTES));
   }
   const big_vole: BigVoleProver = concat_small_voles(sub_voles);
-  const corrections_flat: Vec<bigint> = big_vole.$fc.flat();
+  let corrections_flat: Vec<bigint> = [] as any[];
+  for (let i = 0n; i < BigInt(big_vole.$fc.length); i += 1n)   {
+    for (let j = 0n; j < BigInt(big_vole.$fc[Number(i)].length); j += 1n)     {
+      (corrections_flat).push(big_vole.$fc[Number(i)][Number(j)]);
+    }
+  }
   const chall_2 = chall2(ctx, chall_1, big_vole.$fu, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
   const hash_key = hash_key_from_chall(chall_2);
   const qs_proof = prover.prove_aes_witness(big_vole, hash_key);
   const [chall_3, counter] = (grind_chall3(ctx, chall_2, qs_proof.$fa_hat, qs_proof.$fb_hat, qs_proof.$fc_hat_base, LAMBDA_BYTES, W_GRIND, false, 1000000n))!;
   let c_hat_with_counter = __clone(qs_proof.$fc_hat_base);
-  c_hat_with_counter.push(...([(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn]));
+  const counter_bytes = [(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn];
+  for (let i = 0n; i < BigInt(counter_bytes.length); i += 1n)   {
+    (c_hat_with_counter).push(counter_bytes[Number(i)]);
+  }
   return new FaestSignature({ $fiv: iv, $fbavc_root: __clone(commitment.$froot), $fhidden_commits: hidden_commits, $fnodes: nodes, $fcorrections: __clone(big_vole.$fc), $fvole_u: __clone(big_vole.$fu), $fqs_proof: qs_proof, $fc_hat_with_counter: c_hat_with_counter, $fchall_3: chall_3, $fcounter: counter });
 }
 
@@ -11350,6 +15437,108 @@ export function spcot_sender_hash_v(delta: any, v: Block[], extra_q: Block[], x_
   return hash_prime(block_from_field(fieldAdd(ip, y)));
 }
 
+export function spec_sha3_256(input: bigint[]): bigint[]
+{
+  let sponge = spec_sponge_new(SHA3_256_RATE);
+  spec_sponge_absorb(sponge, input);
+  let reader = spec_sponge_finalize_xof(sponge, 6n);
+  let out = Array.from({length: Number(32n)}, () => ((0n) & 0xFFn));
+  spec_xof_read(reader, out);
+  return out;
+}
+
+export function spec_shake128(n: bigint, input: bigint[]): bigint[]
+{
+  let sponge = spec_sponge_new(SHAKE128_RATE);
+  spec_sponge_absorb(sponge, input);
+  let reader = spec_sponge_finalize_xof(sponge, 31n);
+  let out = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n);
+  spec_xof_read(reader, out);
+  return out;
+}
+
+export function spec_sponge_absorb(sponge: any, data: bigint[])
+{
+  let state = sponge.$fstate;
+  let pos = sponge.$fpos;
+  const rate = sponge.$frate;
+  for (let i = 0n; i < BigInt(data.length); i += 1n)   {
+    state[Number(pos)] = fieldBitxor(state[Number(pos)], data[Number(i)]);
+    pos = fieldAdd(pos, 1n);
+    if (__equals(pos, rate))     {
+      permute_bytes(state);
+      pos = 0n;
+    }
+  }
+  sponge.$fstate = state;
+  sponge.$fpos = pos;
+}
+
+export function spec_sponge_absorb_array(n: bigint, sponge: any, data: bigint[])
+{
+  let state = sponge.$fstate;
+  let pos = sponge.$fpos;
+  const rate = sponge.$frate;
+  for (let i = 0n; i < n; i += 1n)   {
+    state[Number(pos)] = fieldBitxor(state[Number(pos)], data[Number(i)]);
+    pos = fieldAdd(pos, 1n);
+    if (__equals(pos, rate))     {
+      permute_bytes(state);
+      pos = 0n;
+    }
+  }
+  sponge.$fstate = state;
+  sponge.$fpos = pos;
+}
+
+export function spec_sponge_finalize_xof(sponge: any, suffix: bigint): SpecXofReader
+{
+  let state = sponge.$fstate;
+  state[Number(sponge.$fpos)] = fieldBitxor(state[Number(sponge.$fpos)], suffix);
+  state[Number(fieldSub(sponge.$frate, 1n))] = fieldBitxor(state[Number(fieldSub(sponge.$frate, 1n))], 128n);
+  permute_bytes(state);
+  return new SpecXofReader({ $fstate: state, $frate: sponge.$frate, $fpos: 0n });
+}
+
+export function spec_sponge_new(rate: bigint): SpecSponge
+{
+  return new SpecSponge({ $fstate: Array.from({length: Number(200n)}, () => ((0n) & 0xFFn)), $frate: rate, $fpos: 0n });
+}
+
+export function spec_xof_read(reader: any, out: bigint[])
+{
+  let state = reader.$fstate;
+  let pos = reader.$fpos;
+  const rate = reader.$frate;
+  for (let i = 0n; i < BigInt(out.length); i += 1n)   {
+    if (__equals(pos, rate))     {
+      permute_bytes(state);
+      pos = 0n;
+    }
+    out[Number(i)] = state[Number(pos)];
+    pos = fieldAdd(pos, 1n);
+  }
+  reader.$fstate = state;
+  reader.$fpos = pos;
+}
+
+export function spec_xof_read_array(n: bigint, reader: any, out: bigint[])
+{
+  let state = reader.$fstate;
+  let pos = reader.$fpos;
+  const rate = reader.$frate;
+  for (let i = 0n; i < n; i += 1n)   {
+    if (__equals(pos, rate))     {
+      permute_bytes(state);
+      pos = 0n;
+    }
+    out[Number(i)] = state[Number(pos)];
+    pos = fieldAdd(pos, 1n);
+  }
+  reader.$fstate = state;
+  reader.$fpos = pos;
+}
+
 export function split_cot_chunks<T>(flat: any[], heights: bigint[]): Vec<Vec<any>>
 {
   let out = ([] as any[]);
@@ -11440,7 +15629,7 @@ export function stack_refill_receiver_malicious<R, Io>(rng: any, receiver: any, 
   const t = params.$ft;
   const extra_off = fieldAdd(k, fieldMul(t, params.log_splen()));
   const alphas = sample_regular_noise(rng, n, t);
-  let e = [] as any[];
+  let e = Array.from({length: Number(n)}, () => false);
   for (const [i, a] of alphas.map((val: any, i: number) => [BigInt(i), val] as [bigint, typeof val]))   {
     const [start, end] = (params.interval_bounds(i))!;
     e[Number(fieldAdd(start, a))] = true;
@@ -11454,7 +15643,7 @@ export function stack_refill_receiver_malicious<R, Io>(rng: any, receiver: any, 
   const r_padded = mpcot_reg_receiver_padded(n, t, alphas, receiver.$fseed.$fw.slice(Number(k), Number(extra_off)), mpcot);
   let transcript = __clone(open_bytes);
   transcript.push(...(mpcot_bytes));
-  const lens = [] as any[];
+  const lens = Array.from({length: Number(t)}, () => params.splen());
   const chis = spcot_batched_fs_chis(lens, transcript);
   const extra_r = receiver.$fseed.$fu.slice(Number(extra_off), Number(fieldAdd(extra_off, KAPPA_BITS)));
   const extra_t = receiver.$fseed.$fw.slice(Number(extra_off), Number(fieldAdd(extra_off, KAPPA_BITS)));
@@ -11504,7 +15693,7 @@ export function stack_refill_sender_malicious<R, Io>(rng: any, sender: any, io: 
   const x_star_prime = decode_bools(io.recv(TAG_FERRET_CHECK_MASK))[0];
   let transcript = __clone(raw);
   transcript.push(...(mpcot_bytes));
-  const lens = [] as any[];
+  const lens = Array.from({length: Number(t)}, () => params.splen());
   const chis = spcot_batched_fs_chis(lens, transcript);
   const vs: Vec<Block[]> = s_padded.map((value: any) => value);
   const extra_q = sender.$fseed.$fq.slice(Number(extra_off), Number(fieldAdd(extra_off, KAPPA_BITS)));
@@ -11529,7 +15718,7 @@ export function stack_setup_receiver_m<R, Io>(ctx: { newD: () => any }, rng: any
   const delta_raw = io.recv(TAG_DELTA);
   let delta_msg = Array.from({length: Number(16n)}, () => ((0n) & 0xFFn));
   (delta_msg).splice(0, (delta_raw).length, ...(delta_raw));
-  let bits = [] as any[];
+  let bits = Array.from({length: Number(m)}, () => false);
   for (let __mut_1 = 0n; __mut_1 < BigInt(bits.length); __mut_1 += 1n) {
   {
     bits[Number(__mut_1)] = __equals(fieldBitand(rng.next_u32(), 1n), 1n);
@@ -11623,6 +15812,42 @@ export function stack_uses_lwe_base(n: bigint, l: bigint): boolean
   return (ctx.sizeOf_unknown > 0n);
 }
 
+export function stream_expansion(ctx: { defaultA: () => any, defaultT: () => any }, ctx: any, wire_count: bigint, prg: any, garbler: any, random: any, noise: any): Result<Vec<ExpansionStep>, Error>
+{
+  const plan = garbler.$fplan;
+  const top = ctx.max_level();
+  const degree = ctx.parameters().$fdegree;
+  const online_base = fieldSub(top, prg.depth());
+  const required_bits = fieldMul(2n, wire_count);
+  let top_expanded: Vec<Ciphertext> = ([] as any[]);
+  const prg_slots = prg.slots();
+  for (let _ = 0n; _ < plan.$fseed_ciphertexts; _ += 1n)   {
+    if ((BigInt(top_expanded.length) >= required_bits))     {
+      break;
+    }
+    let seed_slots = Array.from({length: Number(degree)}, () => 0n);
+    let byte = Array.from({length: Number(1n)}, () => ((0n) & 0xFFn));
+    for (const slot of seed_slots.take(prg_slots))     {
+      const __volar_try_0 = random.fill_bytes(byte.slice(0));
+      if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+      slot = BigInt(fieldBitand(byte[Number(0n)], 1n));
+    }
+    const __volar_try_4 = ctx.encrypt(ctx, garbler.$fsecret, top, seed_slots, random, noise);
+    if (__volar_try_4 instanceof __VolarError) return __volar_try_4;
+    const ct = __volar_try_4;
+    top_expanded.push(...(prg.expand(ctx, garbler.$fksks.$fl, ctx, ct, garbler.$fksks)));
+  }
+  (top_expanded).splice(Number(required_bits));
+  let steps = ([] as any[]);
+  for (const [w, pair] of __chunks(top_expanded, Number(2n)).filter((__chunk: any) => __chunk.length === Number(2n)).map((__enum_a: any, __enum_i: number) => [BigInt(__enum_i), __enum_a] as [bigint, typeof __enum_a]))   {
+    const __volar_try_0 = garbler.wire_state(ctx, plan, pair[Number(0n)], pair[Number(1n)], w);
+    if (__volar_try_0 instanceof __VolarError) return __volar_try_0;
+    const wire_state = __volar_try_0;
+    (steps).push(new ExpansionStep({ $fwire_state: wire_state, $feval: new ExpandedWire({ $fct_a0: ctx.switch_to(pair[Number(0n)], online_base), $fct_pi: ctx.switch_to(pair[Number(1n)], online_base), $fslot_a0: ((fieldMul(2n, w) % plan.$fslots_per_seed) % degree), $fslot_pi: ((fieldAdd(fieldMul(2n, w), 1n) % plan.$fslots_per_seed) % degree) }) }));
+  }
+  return steps;
+}
+
 export function sub4(a: bigint[], b: bigint[]): bigint[]
 {
   let out = Array.from({length: Number(4n)}, () => 0n);
@@ -11642,13 +15867,42 @@ export function sub_bytes(state: bigint[])
   }
 }
 
-export function sub_mod(left: bigint, right: bigint, modulus: bigint): bigint
+export function sub_coeffs(a: bigint[], b: bigint[], modulus: bigint): Vec<bigint>
 {
+  return a.map((__a: any, __i: number) => [__a, b[__i]] as [typeof __a, any]).map(([x, y]: any) => sub_mod(x, y, modulus));
+}
+
+export function sub_limb(a: any, b: any, q: bigint): Limb
+{
+  return a.map((__a: any, __i: number) => [__a, b[__i]] as [typeof __a, any]).map(([x, y]: any) => sub_mod(x, y, q));
+}
+
+export function sub_mod(...__args: any[]): any {
+  if (__args.length === 3) {
+    const left = __args[0];
+    const right = __args[1];
+    const modulus = __args[2];
+    return (() => {
   return (() => { if ((left >= right)) {
   return fieldSub(left, right);
 } else {
   return fieldSub(modulus, fieldSub(right, left));
 } })();
+})();
+  } else
+  if (__args.length === 3) {
+    const left = __args[0];
+    const right = __args[1];
+    const modulus = __args[2];
+    return (() => {
+  return (() => { if ((left >= right)) {
+  return fieldSub(left, right);
+} else {
+  return fieldSub(modulus, fieldSub(right, left));
+} })();
+})();
+  }
+  throw new Error("sub_mod(): no matching variant for " + __args.length + " args");
 }
 
 export function sub_mod_l(a: bigint[], b: bigint[]): bigint[]
@@ -11658,6 +15912,16 @@ export function sub_mod_l(a: bigint[], b: bigint[]): bigint[]
 } else {
   return sub4(add4(a, L_LIMBS), b);
 } })();
+}
+
+export function sub_rows(a: any, b: any, p: bigint): RowCt
+{
+  return new RowCt({ $fc0: sub_coeffs(a.$fc0, b.$fc0, p), $fc1: sub_coeffs(a.$fc1, b.$fc1, p) });
+}
+
+export function sub_rq(a: bigint[], b: bigint[], q: bigint): RqPoly
+{
+  return a.map((__a: any, __i: number) => [__a, b[__i]] as [typeof __a, any]).map(([x, y]: any) => sub_mod(x, y, q));
 }
 
 export function table_is_constant(logical: boolean[]): boolean
@@ -11796,6 +16060,19 @@ export function to_bool(phase: bigint, q: bigint): boolean
   return __equals(phase, (q / 4n));
 }
 
+export function to_limb(delta: any, p: bigint, q: bigint): Limb
+{
+  return delta.map((c: any) => (() => {
+  return (() => { if (__equals(c, 0n)) {
+  return 0n;
+} else if (__equals(c, 1n)) {
+  return 1n;
+} else {
+  return fieldSub(q, 1n);
+} })();
+})());
+}
+
 export function torus_add(log: bigint, a: bigint, b: bigint): bigint
 {
   return reduce(log, wrappingAdd(a, b, 32));
@@ -11863,6 +16140,16 @@ export function uni_spcot_heights(hash_seed: bigint[], n: bigint, t: bigint): Ve
   return buckets.map((b: any) => BigInt(((__value) => { let __bits = 0n; if (__value === 0n) return BigInt(64); while ((__value & 1n) === 0n) { __value >>= 1n; __bits += 1n; } return __bits; })(BigInt.asUintN(64, next_pow2(fieldAdd(BigInt(b.length), 1n))))));
 }
 
+export function uniform_limb(n: bigint, q: bigint, random: any): Limb
+{
+  let out = Array.from({length: Number(n)}, () => 0n);
+  for (let __zip_mut_1 = 0n; __zip_mut_1 < BigInt(out.length); __zip_mut_1 += 1n) {
+    {
+      out[Number(__zip_mut_1)] = (BigInt(random.next_u32()) % q);
+    }}
+  return out;
+}
+
 export function unique_bins(seed: bigint[], x: bigint, m: bigint): Vec<bigint>
 {
   let js = ([] as any[]);
@@ -11897,16 +16184,17 @@ export function verify(ctx: { newD: () => any, defaultT: () => any, HClass: { ne
     return false;
   }
   const reconstructed_seeds = __volar_match_result_5;
-  let sub_voles_v = ([] as any[]);
+  let sub_voles_v: Vec<ConvertOutput> = ([] as any[]);
   for (let i = 0n; i < TAU; i += 1n)   {
     const d = deltas[Number(i)];
-    const verifier_seeds: Vec<(bigint[] | undefined)> = Array.from({length: Number(SUB_VOLE_N - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
-  return (() => { if (__equals(j, 0n)) {
-  return undefined;
-} else {
-  return reconstructed_seeds[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), fieldBitxor(j, d)))];
-} })();
-})());
+    let verifier_seeds: Vec<(bigint[] | undefined)> = ([] as any[]);
+    for (let j = 0n; j < SUB_VOLE_N; j += 1n)     {
+      if (__equals(j, 0n))       {
+        (verifier_seeds).push(undefined);
+      } else       {
+        (verifier_seeds).push(reconstructed_seeds[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), fieldBitxor(j, d)))]);
+      }
+    }
     (sub_voles_v).push(convert_to_vole(verifier_seeds, iv, BigInt(i), L_HAT_BYTES));
   }
   const corrections = sig.$fcorrections;
@@ -11915,9 +16203,20 @@ export function verify(ctx: { newD: () => any, defaultT: () => any, HClass: { ne
   }
   const big_q: Vec<bigint> = (() => {
   const q_out = concat_small_voles_verifier(sub_voles_v, deltas, corrections);
-  return q_out.$fq_columns.flat();
+  let big_q: Vec<bigint> = [] as any[];
+  for (let i = 0n; i < BigInt(q_out.$fq_columns.length); i += 1n)   {
+    for (let j = 0n; j < BigInt(q_out.$fq_columns[Number(i)].length); j += 1n)     {
+      (big_q).push(q_out.$fq_columns[Number(i)][Number(j)]);
+    }
+  }
+  return big_q;
 })();
-  const corrections_flat: Vec<bigint> = sig.$fcorrections.flat();
+  let corrections_flat: Vec<bigint> = [] as any[];
+  for (let i = 0n; i < BigInt(sig.$fcorrections.length); i += 1n)   {
+    for (let j = 0n; j < BigInt(sig.$fcorrections[Number(i)].length); j += 1n)     {
+      (corrections_flat).push(sig.$fcorrections[Number(i)][Number(j)]);
+    }
+  }
   const chall_2 = chall2(ctx, chall_1, sig.$fvole_u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
   const hash_key = hash_key_from_chall(chall_2);
   const derived_chall_3 = chall3(ctx, chall_2, sig.$fqs_proof.$fa_hat, sig.$fqs_proof.$fb_hat, sig.$fc_hat_with_counter, LAMBDA_BYTES, false);
@@ -11942,7 +16241,7 @@ export function vole_and_prover_step<T>(n: bigint, vope_a: VopeDyn<any>, vope_b:
   return [new VopeDyn({ $fu: u_c, $fv: v_c, $fn: 0n, $fk: 1n }), hat];
 }
 
-export function vole_and_verifier_check<T>(n: bigint, delta: DeltaDyn<any>, q_a: QDyn<any>, q_b: QDyn<any>, q_and: QDyn<any>, hat: any[]): [QDyn<any>, boolean]
+export function vole_and_verifier_check<N, T>(n: bigint, delta: Delta<N, any>, q_a: QDyn<any>, q_b: QDyn<any>, q_and: QDyn<any>, hat: any[]): [QDyn<any>, boolean]
 {
   let ok = true;
   for (let i = 0n; i < n; i += 1n)   {
@@ -12028,7 +16327,7 @@ export function vole_mul3_prover_step<T>(ctx: { defaultT: () => any }, n: bigint
   return ab.mul_generalized(ctx, vope_d.$fk, vope_d);
 }
 
-export function vole_mul3_verifier_check<T>(n: bigint, delta: DeltaDyn<any>, q_a: QDyn<any>, q_b: QDyn<any>, q_d: QDyn<any>, vope_abd: VopeDyn<any>): [QDyn<any>, boolean]
+export function vole_mul3_verifier_check<N, T>(n: bigint, delta: Delta<N, any>, q_a: QDyn<any>, q_b: QDyn<any>, q_d: QDyn<any>, vope_abd: VopeDyn<any>): [QDyn<any>, boolean]
 {
   const q_abd = fieldMul(vope_abd, __clone(delta));
   let ok = true;
@@ -12061,7 +16360,7 @@ export function vole_sbox_prover_step<T>(ctx: { defaultT: () => any }, n: bigint
   return [k1, k2];
 }
 
-export function vole_sbox_verifier_check<T>(n: bigint, delta: DeltaDyn<any>, q_a: QDyn<any>, q_b: QDyn<any>, vope_k2: VopeDyn<any>): [QDyn<any>, boolean]
+export function vole_sbox_verifier_check<N, T>(n: bigint, delta: Delta<N, any>, q_a: QDyn<any>, q_b: QDyn<any>, vope_k2: VopeDyn<any>): [QDyn<any>, boolean]
 {
   const q_c = fieldMul(vope_k2, __clone(delta));
   let ok = true;
@@ -12090,6 +16389,855 @@ export function vope_scale_const<T>(n: bigint, w: VopeDyn<any>, c: any): VopeDyn
   return new VopeDyn({ $fu: Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
   return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldMul(__clone(w.$fu[Number(0n)][Number(i)]), __clone(c)));
 })()), $fv: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldMul(__clone(w.$fv[Number(i)]), __clone(c))), $fn: 0n, $fk: 1n });
+}
+
+export function warp_absorb_index(m: bigint, terms: bigint, deg: bigint, pesat: WarpIndexDyn, transcript: any)
+{
+  transcript.absorb_array(Array.from({length: Number(u5 - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => [105n, 110n, 100n, 101n, 120n][Number(i)]).$fn, Array.from({length: Number(u5 - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => [105n, 110n, 100n, 101n, 120n][Number(i)]));
+  transcript.absorb_usize(m);
+  transcript.absorb_usize(pesat.$fpublic_len);
+  transcript.absorb_usize(pesat.$fwitness_len);
+  transcript.absorb_usize(pesat.$fdegree_bound);
+  for (let c = 0n; c < m; c += 1n)   {
+    const constraint = pesat.$fconstraints[Number(c)];
+    transcript.absorb_usize(BigInt(constraint.$fn_terms));
+    for (let i = 0n; i < terms; i += 1n)     {
+      if ((i < BigInt(constraint.$fn_terms)))       {
+        const term = constraint.$fterms[Number(i)];
+        transcript.absorb_field(term.$fcoeff);
+        transcript.absorb_usize(BigInt(term.$fn_vars));
+        for (let j = 0n; j < deg; j += 1n)         {
+          if ((j < BigInt(term.$fn_vars)))           {
+            transcript.absorb_usize(term.$fvars[Number(j)]);
+          }
+        }
+      }
+    }
+  }
+}
+
+export function warp_absorb_instance(logn: bigint, beta: bigint, transcript: any, instance: WarpAccInstanceDyn)
+{
+  transcript.absorb_array(Array.from({length: Number(u12 - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => [97n, 99n, 99n, 45n, 105n, 110n, 115n, 116n, 97n, 110n, 99n, 101n][Number(i)]).$fn, Array.from({length: Number(u12 - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => [97n, 99n, 99n, 45n, 105n, 110n, 115n, 116n, 97n, 110n, 99n, 101n][Number(i)]));
+  transcript.absorb_len_prefixed(instance.$froot.$fn, instance.$froot);
+  transcript.absorb_fields(instance.$falpha.$fn, instance.$falpha);
+  transcript.absorb_field(instance.$fmu);
+  transcript.absorb_fields(instance.$fbeta.$fn, instance.$fbeta);
+  transcript.absorb_field(instance.$feta);
+}
+
+export function warp_binary_point(log: bigint, index: bigint): Galois128[]
+{
+  return Array.from({length: Number(log - 0n)}, (_, __i) => BigInt(__i) + 0n).map((bit: any) => (() => {
+  return (() => { if (__equals(fieldBitand(fieldShr(index, bit), 1n), 1n)) {
+  return new Galois128(1n);
+} else {
+  return new Galois128(0n);
+} })();
+})());
+}
+
+export function warp_check_sumcheck(sc: bigint, rounds: bigint, polys: WarpUniDyn[], initial_claim: Galois128, challenges: Galois128[], final_claim: Galois128): boolean
+{
+  if (__equals(rounds, 0n))   {
+    return __equals(initial_claim, final_claim);
+  }
+  if (!__equals(fieldAdd(warp_uni_at_zero(sc, polys[Number(0n)]), warp_uni_at_one(sc, polys[Number(0n)])), initial_claim))   {
+    return false;
+  }
+  for (let round = 1n; round < rounds; round += 1n)   {
+    const expected = warp_uni_evaluate(sc, polys[Number(fieldSub(round, 1n))], challenges[Number(fieldSub(round, 1n))]);
+    if (!__equals(fieldAdd(warp_uni_at_zero(sc, polys[Number(round)]), warp_uni_at_one(sc, polys[Number(round)])), expected))     {
+      return false;
+    }
+  }
+  return __equals(warp_uni_evaluate(sc, polys[Number(fieldSub(rounds, 1n))], challenges[Number(fieldSub(rounds, 1n))]), final_claim);
+}
+
+export function warp_combine_vectors(ell: bigint, logl: bigint, len: bigint, items: Galois128[][], point: Galois128[]): Galois128[]
+{
+  const weights = warp_eq_evals(logl, ell, point);
+  let out = Array.from({length: Number(len - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  for (let i = 0n; i < ell; i += 1n)   {
+    const weight = weights[Number(i)];
+    for (let j = 0n; j < len; j += 1n)     {
+      out[Number(j)] = fieldAdd(out[Number(j)], fieldMul(items[Number(i)][Number(j)], weight));
+    }
+  }
+  return out;
+}
+
+export function warp_commit_codeword(n: bigint, nodes: bigint, codeword: Galois128[]): WarpMerkleTreeDyn
+{
+  const leaves = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => warp_hash_leaf_field(codeword[Number(i)]));
+  return warp_merkle_commit_leaves(nodes, n, leaves);
+}
+
+export function warp_commit_stacked(n: bigint, fresh: bigint, nodes: bigint, codewords: Galois128[][]): WarpMerkleTreeDyn
+{
+  const leaves = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  let h = spec_sponge_new(SHA3_256_RATE);
+  spec_sponge_absorb_array(n, h, Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
+  for (let j = 0n; j < fresh; j += 1n)   {
+    const elem_bytes: bigint[] = le16(codewords[Number(j)][Number(i)]);
+    spec_sponge_absorb_array(n, h, elem_bytes);
+  }
+  let reader = spec_sponge_finalize_xof(h, 6n);
+  let out: bigint[] = Array.from({length: Number(32n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n);
+  spec_xof_read_array(n, reader, out);
+  return out;
+})());
+  return warp_merkle_commit_leaves(nodes, n, leaves);
+}
+
+export function warp_constraint_max_degree(terms: bigint, deg: bigint, constraint: WarpConstraintDyn): bigint
+{
+  let out = 0n;
+  for (let i = 0n; i < terms; i += 1n)   {
+    if ((i < BigInt(constraint.$fn_terms)))     {
+      const d = warp_term_degree(deg, constraint.$fterms[Number(i)]);
+      if ((d > out))       {
+        out = d;
+      }
+    }
+  }
+  return out;
+}
+
+export function warp_decide_spec<C>(ctx: { defaultT: () => any }, m: bigint, terms: bigint, deg: bigint, n: bigint, k: bigint, logn: bigint, beta: bigint, nodes: bigint, index: WarpIndexDyn, code: any, accumulator: WarpAccDyn): boolean
+{
+  if (!warp_index_is_valid(m, terms, deg, index))   {
+    return false;
+  }
+  if ((((!__equals(logn, log2_pow2(n)) || !__equals(beta, fieldAdd(index.$fpublic_len, warp_log_constraints(m, terms, deg, index)))) || !__equals(k, index.$fwitness_len)) || !__equals(warp_merkle_root(nodes, accumulator.$fwitness.$ftree), accumulator.$finstance.$froot)))   {
+    return false;
+  }
+  const recomputed = warp_commit_codeword(n, nodes, accumulator.$fwitness.$fcodeword);
+  if (!__equals(warp_merkle_root(nodes, recomputed), accumulator.$finstance.$froot))   {
+    return false;
+  }
+  if (!__equals(code.encode(ctx, accumulator.$fwitness.$fwitness), accumulator.$fwitness.$fcodeword))   {
+    return false;
+  }
+  if (!__equals(warp_mle_eval(n, logn, accumulator.$fwitness.$fcodeword, accumulator.$finstance.$falpha), accumulator.$finstance.$fmu))   {
+    return false;
+  }
+  return __equals(warp_evaluate_bundled(m, terms, deg, k, beta, index, accumulator.$finstance.$fbeta, accumulator.$fwitness.$fwitness), accumulator.$finstance.$feta);
+}
+
+export function warp_eq_evals(points: bigint, out: bigint, point: Galois128[]): Galois128[]
+{
+  let out_1 = Array.from({length: Number(out - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  out_1[Number(0n)] = new Galois128(1n);
+  for (let c = 0n; c < points; c += 1n)   {
+    const coordinate = point[Number(c)];
+    for (let index = 0n; index < fieldShl(1n, c); index += 1n)     {
+      const product = fieldMul(out_1[Number(index)], coordinate);
+      out_1[Number(index)] = fieldSub(out_1[Number(index)], product);
+      out_1[Number(fieldAdd(index, fieldShl(1n, c)))] = product;
+    }
+  }
+  return out_1;
+}
+
+export function warp_eq_scalar(l: bigint, a: Galois128[], b: Galois128[]): Galois128
+{
+  let out = new Galois128(1n);
+  for (let i = 0n; i < l; i += 1n)   {
+    const left = a[Number(i)];
+    const right = b[Number(i)];
+    const same = fieldMul(left, right);
+    const different = fieldMul(fieldSub(new Galois128(1n), left), fieldSub(new Galois128(1n), right));
+    out = fieldMul(out, fieldAdd(same, different));
+  }
+  return out;
+}
+
+export function warp_eq_star_at(r: bigint, logr: bigint, logn: bigint, claim_points: Galois128[][], xi: Galois128[], point: Galois128[]): Galois128
+{
+  let out = new Galois128(0n);
+  for (let index = 0n; index < r; index += 1n)   {
+    const claim_index = warp_binary_point(logr, index);
+    const weight = fieldMul(warp_eq_scalar(logr, xi, claim_index), warp_eq_scalar(logn, claim_points[Number(index)], point));
+    out = fieldAdd(out, weight);
+  }
+  return out;
+}
+
+export function warp_eval_constraint(terms: bigint, deg: bigint, x: bigint, k: bigint, constraint: WarpConstraintDyn, public_: Galois128[], witness: Galois128[]): Galois128
+{
+  let out = new Galois128(0n);
+  for (let i = 0n; i < terms; i += 1n)   {
+    if ((i < BigInt(constraint.$fn_terms)))     {
+      out = fieldAdd(out, warp_eval_term(deg, x, k, constraint.$fterms[Number(i)], public_, witness));
+    }
+  }
+  return out;
+}
+
+export function warp_eval_term(deg: bigint, x: bigint, k: bigint, term: WarpTermDyn, public_: Galois128[], witness: Galois128[]): Galois128
+{
+  let out = term.$fcoeff;
+  for (let i = 0n; i < deg; i += 1n)   {
+    if ((i < BigInt(term.$fn_vars)))     {
+      const var_ = term.$fvars[Number(i)];
+      const value = (() => { if ((var_ < x)) {
+  return public_[Number(var_)];
+} else {
+  return witness[Number(fieldSub(var_, x))];
+} })();
+      out = fieldMul(out, value);
+    }
+  }
+  return out;
+}
+
+export function warp_evaluate_bundled(m: bigint, terms: bigint, deg: bigint, k: bigint, beta: bigint, pesat: WarpIndexDyn, beta: Galois128[], witness: Galois128[]): Galois128
+{
+  const log_m = warp_log_constraints(m, terms, deg, pesat);
+  let eq = Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  eq[Number(0n)] = new Galois128(1n);
+  for (let j = 0n; j < m; j += 1n)   {
+    if ((fieldShl(1n, j) < m))     {
+      const coordinate = beta[Number(fieldAdd(pesat.$fpublic_len, j))];
+      for (let index = 0n; index < fieldShl(1n, j); index += 1n)       {
+        const product = fieldMul(eq[Number(index)], coordinate);
+        eq[Number(index)] = fieldSub(eq[Number(index)], product);
+        eq[Number(fieldAdd(index, fieldShl(1n, j)))] = product;
+      }
+    }
+  }
+  let out = new Galois128(0n);
+  for (let index = 0n; index < m; index += 1n)   {
+    const constraint = pesat.$fconstraints[Number(index)];
+    let value = new Galois128(0n);
+    for (let i = 0n; i < BigInt(constraint.$fn_terms); i += 1n)     {
+      const term = constraint.$fterms[Number(i)];
+      let product = term.$fcoeff;
+      for (let v = 0n; v < BigInt(term.$fn_vars); v += 1n)       {
+        const var_ = term.$fvars[Number(v)];
+        const x = (() => { if ((var_ < pesat.$fpublic_len)) {
+  return beta[Number(var_)];
+} else {
+  return witness[Number(fieldSub(var_, pesat.$fpublic_len))];
+} })();
+        product = fieldMul(product, x);
+      }
+      value = fieldAdd(value, product);
+    }
+    out = fieldAdd(out, fieldMul(eq[Number(index)], value));
+  }
+  return out;
+}
+
+export function warp_evaluate_g(m: bigint, terms: bigint, deg: bigint, n: bigint, k: bigint, logn: bigint, beta: bigint, index: WarpIndexDyn, codeword: Galois128[], witness: Galois128[], alpha: Galois128[], beta: Galois128[], omega: Galois128): Galois128
+{
+  const evaluation = warp_mle_eval(n, logn, codeword, alpha);
+  const bundled = warp_evaluate_bundled(m, terms, deg, k, beta, index, beta, witness);
+  return fieldAdd(evaluation, fieldMul(omega, bundled));
+}
+
+export function warp_first_sumcheck_eval(m: bigint, terms: bigint, deg: bigint, k: bigint, n: bigint, ell: bigint, logl: bigint, logn: bigint, beta: bigint, index: WarpIndexDyn, codewords: Galois128[][], witnesses: Galois128[][], alphas: Galois128[][], betas: Galois128[][], tau: Galois128[], omega: Galois128, prefix: Galois128[], round: bigint, x: Galois128): Galois128
+{
+  const log_ell = log2_pow2(ell);
+  const suffix_len = fieldSub(fieldSub(log_ell, round), 1n);
+  let out = new Galois128(0n);
+  for (let suffix = 0n; suffix < fieldShr(ell, fieldAdd(round, 1n)); suffix += 1n)   {
+    const point = warp_point_with_suffix(logl, prefix, round, x, suffix, suffix_len);
+    const codeword = warp_combine_vectors(ell, logl, n, codewords, point);
+    const witness = warp_combine_vectors(ell, logl, k, witnesses, point);
+    const alpha = warp_combine_vectors(ell, logl, logn, alphas, point);
+    const beta_1 = warp_combine_vectors(ell, logl, beta, betas, point);
+    const g = warp_evaluate_g(m, terms, deg, n, k, logn, beta_1, index, codeword, witness, alpha, beta_1, omega);
+    out = fieldAdd(out, fieldMul(warp_eq_scalar(logl, tau, point), g));
+  }
+  return out;
+}
+
+export function warp_genesis_spec<C>(ctx: { defaultT: () => any }, m: bigint, terms: bigint, deg: bigint, k: bigint, x: bigint, n: bigint, nodes: bigint, beta: bigint, index: WarpIndexDyn, code: any, instance: WarpWitnessDyn): (WarpAccDyn | undefined)
+{
+  if ((!warp_index_is_valid(m, terms, deg, index) || !is_pow2(n)))   {
+    return undefined;
+  }
+  if (((!__equals(x, index.$fpublic_len) || !__equals(k, index.$fwitness_len)) || !__equals(beta, fieldAdd(index.$fpublic_len, warp_log_constraints(m, terms, deg, index)))))   {
+    return undefined;
+  }
+  if (!warp_is_instance_satisfied(m, terms, deg, k, x, index, instance))   {
+    return undefined;
+  }
+  const codeword = code.encode(ctx, instance.$fwitness);
+  const tree = warp_commit_codeword(n, nodes, codeword);
+  const alpha: Galois128[] = Array.from({length: Number(ilog2(n) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  let beta_1 = Array.from({length: Number(beta - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  for (let i = 0n; i < x; i += 1n)   {
+    beta_1[Number(i)] = instance.$fpublic[Number(i)];
+  }
+  const mu = warp_mle_eval(codeword, alpha);
+  const eta = warp_evaluate_bundled(m, terms, deg, k, beta_1, index, beta_1, instance.$fwitness);
+  return new WarpAccDyn({ $finstance: new WarpAccInstanceDyn({ $froot: warp_merkle_root(nodes, tree), $falpha: alpha, $fmu: mu, $fbeta: beta_1, $feta: eta, $flogn: 0n }), $fwitness: new WarpAccWitnessDyn({ $ftree: tree, $fcodeword: codeword, $fwitness: __clone(instance.$fwitness), $fn: 0n, $fk: 0n, $fnodes: 0n }), $fn: 0n, $fk: 0n, $flogn: 0n, $fbeta: 0n, $fnodes: 0n });
+}
+
+export function warp_hash_fresh_row(ell: bigint, fresh: bigint, row: Galois128[]): WarpDigest
+{
+  let h = spec_sponge_new(SHA3_256_RATE);
+  spec_sponge_absorb_array(h, Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
+  for (let i = 0n; i < fresh; i += 1n)   {
+    const row_bytes: bigint[] = le16(row[Number(i)]);
+    spec_sponge_absorb_array(h, row_bytes);
+  }
+  let reader = spec_sponge_finalize_xof(h, 6n);
+  let out: bigint[] = Array.from({length: Number(32n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n);
+  spec_xof_read_array(reader, out);
+  return out;
+}
+
+export function warp_hash_leaf_field(v: Galois128): WarpDigest
+{
+  let h = spec_sponge_new(SHA3_256_RATE);
+  spec_sponge_absorb_array(h, Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
+  const v_bytes: bigint[] = le16(v);
+  spec_sponge_absorb_array(h, v_bytes);
+  let reader = spec_sponge_finalize_xof(h, 6n);
+  let out: bigint[] = Array.from({length: Number(32n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n);
+  spec_xof_read_array(reader, out);
+  return out;
+}
+
+export function warp_hash_node(left: any, right: any): WarpDigest
+{
+  let h = spec_sponge_new(SHA3_256_RATE);
+  spec_sponge_absorb_array(h, Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 1n));
+  spec_sponge_absorb_array(h, left);
+  spec_sponge_absorb_array(h, right);
+  let reader = spec_sponge_finalize_xof(h, 6n);
+  let out: bigint[] = Array.from({length: Number(32n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n);
+  spec_xof_read_array(reader, out);
+  return out;
+}
+
+export function warp_index_is_valid(m: bigint, terms: bigint, deg: bigint, pesat: WarpIndexDyn): boolean
+{
+  if (!is_pow2(m))   {
+    return false;
+  }
+  for (let c = 0n; c < m; c += 1n)   {
+    const constraint = pesat.$fconstraints[Number(c)];
+    if ((BigInt(constraint.$fn_terms) > terms))     {
+      return false;
+    }
+    if ((warp_constraint_max_degree(terms, deg, constraint) > pesat.$fdegree_bound))     {
+      return false;
+    }
+    for (let i = 0n; i < terms; i += 1n)     {
+      if ((i < BigInt(constraint.$fn_terms)))       {
+        const term = constraint.$fterms[Number(i)];
+        if ((BigInt(term.$fn_vars) > deg))         {
+          return false;
+        }
+        for (let j = 0n; j < deg; j += 1n)         {
+          if (((j < BigInt(term.$fn_vars)) && (term.$fvars[Number(j)] >= warp_variable_count(m, terms, deg, pesat))))           {
+            return false;
+          }
+        }
+      }
+    }
+  }
+  return true;
+}
+
+export function warp_inv(a: Galois128): Galois128
+{
+  let result = new Galois128(1n);
+  for (let _ = 0n; _ < 127n; _ += 1n)   {
+    result = fieldMul(fieldMul(result, result), a);
+  }
+  return fieldMul(result, result);
+}
+
+export function warp_is_instance_satisfied(m: bigint, terms: bigint, deg: bigint, k: bigint, x: bigint, pesat: WarpIndexDyn, instance: WarpWitnessDyn): boolean
+{
+  for (let index = 0n; index < m; index += 1n)   {
+    const constraint = pesat.$fconstraints[Number(index)];
+    if (!__equals(warp_eval_constraint(terms, deg, x, k, constraint, instance.$fpublic, instance.$fwitness), new Galois128(0n)))     {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function warp_log_constraints(m: bigint, terms: bigint, deg: bigint, pesat: WarpIndexDyn): bigint
+{
+  return log2_pow2(m);
+}
+
+export function warp_merkle_commit_leaves(nodes: bigint, leaves: bigint, leaves: WarpDigest[]): WarpMerkleTreeDyn
+{
+  let nodes_1 = Array.from({length: Number(nodes - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => ctx.defaultWarpDigest());
+  for (let i = 0n; i < leaves; i += 1n)   {
+    nodes_1[Number(i)] = __clone(leaves[Number(i)]);
+  }
+  let level_start = 0n;
+  let level_len = leaves;
+  for (let _level = 0n; _level < leaves; _level += 1n)   {
+    if ((level_len > 1n))     {
+      const next_start = fieldAdd(level_start, level_len);
+      for (let j = 0n; j < (level_len / 2n); j += 1n)       {
+        nodes_1[Number(fieldAdd(next_start, j))] = warp_hash_node(nodes_1[Number(fieldAdd(level_start, fieldMul(2n, j)))], nodes_1[Number(fieldAdd(fieldAdd(level_start, fieldMul(2n, j)), 1n))]);
+      }
+      level_start = next_start;
+      level_len /= 2n;
+    }
+  }
+  return new WarpMerkleTreeDyn({ $fleaves: leaves, $fnodes: nodes_1 });
+}
+
+export function warp_merkle_open(nodes: bigint, log2: bigint, tree: WarpMerkleTreeDyn, index: bigint): WarpAuthPathDyn
+{
+  let siblings = Array.from({length: Number(log2 - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => ctx.defaultWarpDigest());
+  let idx = index;
+  let level_start = 0n;
+  let level_len = tree.$fleaves;
+  for (let depth = 0n; depth < log2; depth += 1n)   {
+    siblings[Number(depth)] = __clone(tree.$fnodes[Number(fieldAdd(level_start, fieldBitxor(idx, 1n)))]);
+    idx /= 2n;
+    level_start = fieldAdd(level_start, level_len);
+    level_len /= 2n;
+  }
+  return new WarpAuthPathDyn({ $fsiblings: siblings, $flog2_leaves: 0n });
+}
+
+export function warp_merkle_root(nodes: bigint, tree: WarpMerkleTreeDyn): WarpDigest
+{
+  return __clone(tree.$fnodes[Number(fieldSub(nodes, 1n))]);
+}
+
+export function warp_merkle_verify_hashed(log2_leaves: bigint, root: any, leaf_hash: any, index: bigint, path: WarpAuthPathDyn): boolean
+{
+  let cur = __clone(leaf_hash);
+  let idx = index;
+  for (let i = 0n; i < log2_leaves; i += 1n)   {
+    const sibling = path.$fsiblings[Number(i)];
+    cur = (() => { if (__equals((idx % 2n), 0n)) {
+  return warp_hash_node(cur, sibling);
+} else {
+  return warp_hash_node(sibling, cur);
+} })();
+    idx /= 2n;
+  }
+  return __equals(cur, root);
+}
+
+export function warp_mle_eval(n: bigint, logn: bigint, values: Galois128[], point: Galois128[]): Galois128
+{
+  const eq = warp_eq_evals(logn, n, point);
+  let out = new Galois128(0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    out = fieldAdd(out, fieldMul(values[Number(i)], eq[Number(i)]));
+  }
+  return out;
+}
+
+export function warp_point_with_suffix(log: bigint, prefix: Galois128[], prefix_len: bigint, current: Galois128, suffix: bigint, suffix_len: bigint): Galois128[]
+{
+  return Array.from({length: Number(log - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return (() => { if ((i < prefix_len)) {
+  return prefix[Number(i)];
+} else if (__equals(i, prefix_len)) {
+  return current;
+} else {
+  const bit = fieldSub(fieldSub(i, prefix_len), 1n);
+  return (() => { if (((bit < suffix_len) && __equals(fieldBitand(fieldShr(suffix, bit), 1n), 1n))) {
+  return new Galois128(1n);
+} else {
+  return new Galois128(0n);
+} })();
+} })();
+})());
+}
+
+export function warp_prove_spec<C>(ctx: { defaultT: () => any }, m: bigint, terms: bigint, deg: bigint, k: bigint, x: bigint, n: bigint, fresh: bigint, a: bigint, ell: bigint, s: bigint, shifts: bigint, r: bigint, sc: bigint, tw: bigint, fsd1: bigint, nodes: bigint, beta: bigint, index: WarpIndexDyn, code: any, fresh: WarpWitnessDyn[], accumulators: WarpAccDyn[]): ([WarpAccDyn, WarpProofDyn] | undefined)
+{
+  if (!warp_index_is_valid(m, terms, deg, index))   {
+    return undefined;
+  }
+  const log_n = log2_pow2(n);
+  const log_m = warp_log_constraints(m, terms, deg, index);
+  const log_ell = log2_pow2(ell);
+  if (((((((((((!is_pow2(n) || !is_pow2(ell)) || !__equals(ell, fieldAdd(fresh, a))) || __equals(fresh, 0n)) || !is_pow2(r)) || !__equals(r, fieldAdd(fieldAdd(1n, s), shifts))) || !__equals(tw, fieldAdd(log_ell, 1n))) || !__equals(beta, fieldAdd(index.$fpublic_len, log_m))) || !__equals(k, index.$fwitness_len)) || !__equals(x, index.$fpublic_len)) || !__equals(nodes, fieldSub(fieldMul(2n, n), 1n))))   {
+    return undefined;
+  }
+  const first_degree = fieldAdd(1n, BigInt(Math.max(Number(fieldAdd(log_n, 1n)), Number(fieldAdd(log_m, index.$fdegree_bound)))));
+  if (((!__equals(fsd1, fieldAdd(first_degree, 1n)) || (fsd1 > sc)) || (3n > sc)))   {
+    return undefined;
+  }
+  for (let i = 0n; i < fresh; i += 1n)   {
+    if (!warp_is_instance_satisfied(m, terms, deg, k, x, index, fresh[Number(i)]))     {
+      return undefined;
+    }
+  }
+  for (let i = 0n; i < a; i += 1n)   {
+    if (!__equals(warp_merkle_root(nodes, accumulators[Number(i)].$fwitness.$ftree), accumulators[Number(i)].$finstance.$froot))     {
+      return undefined;
+    }
+  }
+  const fresh_publics = Array.from({length: Number(fresh - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(fresh[Number(i)].$fpublic));
+  const acc_instances = Array.from({length: Number(a - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(accumulators[Number(i)].$finstance));
+  let transcript = warp_transcript_for(index, fresh_publics, acc_instances);
+  const fresh_codewords = Array.from({length: Number(fresh - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => code.encode(ctx, fresh[Number(i)].$fwitness));
+  const initial_tree = warp_commit_stacked(n, fresh, nodes, fresh_codewords);
+  const initial_root = warp_merkle_root(nodes, initial_tree);
+  transcript.absorb_len_prefixed(n, initial_root);
+  const taus: Galois128[][] = transcript.squeeze_field_grid(r);
+  const zero_point_n = Array.from({length: Number(ilog2(n) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  const fresh_mus = Array.from({length: Number(fresh - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return warp_mle_eval(fresh_codewords[Number(i)], zero_point_n);
+})());
+  let alphas = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => [] as any[]);
+  let mus = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  let betas = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => [] as any[]);
+  let etas = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  let codewords = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => [] as any[]);
+  let witnesses = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => [] as any[]);
+  for (let i = 0n; i < fresh; i += 1n)   {
+    alphas[Number(i)] = Array.from({length: Number(ilog2(n) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+    mus[Number(i)] = fresh_mus[Number(i)];
+    let beta_1 = Array.from({length: Number(beta - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+    for (let j = 0n; j < x; j += 1n)     {
+      beta_1[Number(j)] = fresh[Number(i)].$fpublic[Number(j)];
+    }
+    for (let j = 0n; j < m; j += 1n)     {
+      if ((fieldShl(1n, j) < m))       {
+        beta_1[Number(fieldAdd(x, j))] = taus[Number(i)][Number(j)];
+      }
+    }
+    betas[Number(i)] = beta_1;
+    etas[Number(i)] = new Galois128(0n);
+    codewords[Number(i)] = __clone(fresh_codewords[Number(i)]);
+    witnesses[Number(i)] = __clone(fresh[Number(i)].$fwitness);
+  }
+  transcript.absorb_fields(n, fresh_mus);
+  for (let i = 0n; i < a; i += 1n)   {
+    const acc = accumulators[Number(i)];
+    alphas[Number(fieldAdd(fresh, i))] = __clone(acc.$finstance.$falpha);
+    mus[Number(fieldAdd(fresh, i))] = acc.$finstance.$fmu;
+    betas[Number(fieldAdd(fresh, i))] = __clone(acc.$finstance.$fbeta);
+    etas[Number(fieldAdd(fresh, i))] = acc.$finstance.$feta;
+    codewords[Number(fieldAdd(fresh, i))] = __clone(acc.$fwitness.$fcodeword);
+    witnesses[Number(fieldAdd(fresh, i))] = __clone(acc.$fwitness.$fwitness);
+  }
+  const tau_omega: Galois128[] = transcript.squeeze_fields(n);
+  const tau = Array.from({length: Number(ilog2(ell) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => tau_omega[Number(i)]);
+  const omega = tau_omega[Number(fieldSub(tw, 1n))];
+  const sigma1 = (() => {
+  const eq_tau = warp_eq_evals(tau);
+  let out = new Galois128(0n);
+  for (let i = 0n; i < ell; i += 1n)   {
+    out = fieldAdd(out, fieldMul(eq_tau[Number(i)], fieldAdd(mus[Number(i)], fieldMul(omega, etas[Number(i)]))));
+  }
+  return out;
+})();
+  let first_sumcheck = Array.from({length: Number(ilog2(ell) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => new WarpUniDyn({ $fevaluations: Array.from({length: Number(sc - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default()), $fcount: 0n, $fcap: 0n }));
+  let gamma = Array.from({length: Number(ilog2(ell) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  for (let round = 0n; round < ell; round += 1n)   {
+    if ((fieldShl(1n, round) < ell))     {
+      let evals = Array.from({length: Number(sc - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+      for (let x = 0n; x < fsd1; x += 1n)       {
+        evals[Number(x)] = warp_first_sumcheck_eval(index, codewords, witnesses, alphas, betas, tau, omega, gamma, round, new Galois128((x as unknown as bigint)));
+      }
+      const poly = new WarpUniDyn({ $fevaluations: evals, $fcount: BigInt(fsd1), $fcap: 0n });
+      transcript.absorb_poly(sc, poly.$fcnt, poly);
+      gamma[Number(round)] = transcript.squeeze_fields(n)[Number(0n)];
+      first_sumcheck[Number(round)] = poly;
+    }
+  }
+  const zeta0 = warp_combine_vectors(alphas, gamma);
+  const beta_1 = warp_combine_vectors(betas, gamma);
+  const folded_codeword = warp_combine_vectors(codewords, gamma);
+  const folded_witness = warp_combine_vectors(witnesses, gamma);
+  const nu0 = warp_mle_eval(folded_codeword, zeta0);
+  const eta = warp_evaluate_bundled(m, terms, deg, k, beta_1, index, beta_1, folded_witness);
+  if (!warp_check_sumcheck(first_sumcheck, sigma1, gamma, (() => {
+  return fieldMul(warp_eq_scalar(tau, gamma), fieldAdd(nu0, fieldMul(omega, eta)));
+})()))   {
+    return undefined;
+  }
+  const output_tree = warp_commit_codeword(n, nodes, folded_codeword);
+  const output_root = warp_merkle_root(nodes, output_tree);
+  transcript.absorb_len_prefixed(n, output_root);
+  transcript.absorb_field(nu0);
+  transcript.absorb_field(eta);
+  const ood_points: Galois128[][] = transcript.squeeze_field_grid(r);
+  const ood_answers = Array.from({length: Number(s - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return warp_mle_eval(folded_codeword, ood_points[Number(i)]);
+})());
+  transcript.absorb_fields(n, ood_answers);
+  const [shift_indices, xi]: [bigint[], Galois128[]] = transcript.squeeze_shift_and_xi(shifts);
+  let claim_points = Array.from({length: Number(r - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => [] as any[]);
+  let claim_values = Array.from({length: Number(r - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  claim_points[Number(0n)] = zeta0;
+  claim_values[Number(0n)] = nu0;
+  for (let i = 0n; i < s; i += 1n)   {
+    claim_points[Number(fieldAdd(1n, i))] = __clone(ood_points[Number(i)]);
+    claim_values[Number(fieldAdd(1n, i))] = ood_answers[Number(i)];
+  }
+  for (let i = 0n; i < shifts; i += 1n)   {
+    claim_points[Number(fieldAdd(fieldAdd(1n, s), i))] = warp_binary_point(BigInt(shift_indices[Number(i)]));
+    claim_values[Number(fieldAdd(fieldAdd(1n, s), i))] = folded_codeword[Number(BigInt(shift_indices[Number(i)]))];
+  }
+  const sigma2 = (() => {
+  const eq_xi = warp_eq_evals(xi);
+  let out = new Galois128(0n);
+  for (let i = 0n; i < r; i += 1n)   {
+    out = fieldAdd(out, fieldMul(claim_values[Number(i)], eq_xi[Number(i)]));
+  }
+  return out;
+})();
+  let second_sumcheck = Array.from({length: Number(ilog2(n) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => new WarpUniDyn({ $fevaluations: Array.from({length: Number(sc - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default()), $fcount: 0n, $fcap: 0n }));
+  let alpha = Array.from({length: Number(ilog2(n) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  for (let round = 0n; round < n; round += 1n)   {
+    if ((fieldShl(1n, round) < n))     {
+      let evals = Array.from({length: Number(sc - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+      for (let x = 0n; x < 3n; x += 1n)       {
+        evals[Number(x)] = warp_second_sumcheck_eval(folded_codeword, claim_points, xi, alpha, round, new Galois128((x as unknown as bigint)));
+      }
+      const poly = new WarpUniDyn({ $fevaluations: evals, $fcount: 3n, $fcap: 0n });
+      transcript.absorb_poly(sc, poly.$fcnt, poly);
+      alpha[Number(round)] = transcript.squeeze_fields(n)[Number(0n)];
+      second_sumcheck[Number(round)] = poly;
+    }
+  }
+  const mu = warp_mle_eval(folded_codeword, alpha);
+  if (!warp_check_sumcheck(second_sumcheck, sigma2, alpha, (() => {
+  const eq = warp_eq_star_at(claim_points, xi, alpha);
+  return fieldMul(mu, eq);
+})()))   {
+    return undefined;
+  }
+  const initial_paths = Array.from({length: Number(shifts - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return warp_merkle_open(initial_tree, BigInt(shift_indices[Number(i)]));
+})());
+  const accumulator_paths = Array.from({length: Number(a - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return Array.from({length: Number(shifts - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  return warp_merkle_open(accumulators[Number(i)].$fwitness.$ftree, BigInt(shift_indices[Number(j)]));
+})());
+})());
+  const openings = Array.from({length: Number(shifts - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  return Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => codewords[Number(i)][Number(BigInt(shift_indices[Number(j)]))]);
+})());
+  const accumulator = new WarpAccDyn({ $finstance: new WarpAccInstanceDyn({ $froot: output_root, $falpha: alpha, $fmu: mu, $fbeta: beta_1, $feta: eta, $flogn: 0n }), $fwitness: new WarpAccWitnessDyn({ $ftree: output_tree, $fcodeword: folded_codeword, $fwitness: folded_witness, $fn: 0n, $fk: 0n, $fnodes: 0n }), $fn: 0n, $fk: 0n, $flogn: 0n, $fbeta: 0n, $fnodes: 0n });
+  const proof = new WarpProofDyn({ $finitial_root: initial_root, $ffresh_mus: fresh_mus, $ffirst_sumcheck: first_sumcheck, $fnu0: nu0, $food_answers: ood_answers, $fsecond_sumcheck: second_sumcheck, $finitial_paths: initial_paths, $faccumulator_paths: accumulator_paths, $fopenings: openings, $ffresh: 0n, $fell: 0n, $fa: 0n, $fs: 0n, $fshifts: 0n, $fsc: 0n, $flogn: 0n });
+  return [accumulator, proof];
+}
+
+export function warp_second_sumcheck_eval(n: bigint, r: bigint, logr: bigint, logn: bigint, codeword: Galois128[], claim_points: Galois128[][], xi: Galois128[], prefix: Galois128[], round: bigint, x: Galois128): Galois128
+{
+  const log_n = log2_pow2(n);
+  const suffix_len = fieldSub(fieldSub(log_n, round), 1n);
+  let out = new Galois128(0n);
+  for (let suffix = 0n; suffix < fieldShr(n, fieldAdd(round, 1n)); suffix += 1n)   {
+    const point = warp_point_with_suffix(logn, prefix, round, x, suffix, suffix_len);
+    const eq = warp_eq_star_at(r, logr, logn, claim_points, xi, point);
+    out = fieldAdd(out, fieldMul(eq, warp_mle_eval(n, logn, codeword, point)));
+  }
+  return out;
+}
+
+export function warp_term_degree(deg: bigint, term: WarpTermDyn): bigint
+{
+  return BigInt(term.$fn_vars);
+}
+
+export function warp_transcript_for(m: bigint, terms: bigint, deg: bigint, x: bigint, fresh: bigint, a: bigint, logn: bigint, beta: bigint, index: WarpIndexDyn, fresh_publics: Galois128[][], accumulators: WarpAccInstanceDyn[]): WarpTranscript
+{
+  const domain = Array.from({length: Number(u51 - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => WARP_TRANSCRIPT_DOMAIN[Number(i)]);
+  let transcript = warp_transcript_new().domain_sep(domain.$fn, domain);
+  warp_absorb_index(m, terms, deg, index, transcript);
+  transcript.absorb_usize(fresh);
+  for (let i = 0n; i < fresh; i += 1n)   {
+    transcript.absorb_array(Array.from({length: Number(u12 - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => [102n, 114n, 101n, 115n, 104n, 45n, 112n, 117n, 98n, 108n, 105n, 99n][Number(i)]).$fn, Array.from({length: Number(u12 - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => [102n, 114n, 101n, 115n, 104n, 45n, 112n, 117n, 98n, 108n, 105n, 99n][Number(i)]));
+    transcript.absorb_fields(fresh_publics[Number(i)].$fn, fresh_publics[Number(i)]);
+  }
+  transcript.absorb_usize(a);
+  for (let i = 0n; i < a; i += 1n)   {
+    warp_absorb_instance(logn, beta, transcript, accumulators[Number(i)]);
+  }
+  return transcript;
+}
+
+export function warp_transcript_new(): WarpTranscript
+{
+  return new WarpTranscript({ $fsponge: spec_sponge_new(SHAKE128_RATE) });
+}
+
+export function warp_uni_at_one(cap: bigint, poly: WarpUniDyn): Galois128
+{
+  return poly.$fevaluations[Number(1n)];
+}
+
+export function warp_uni_at_zero(cap: bigint, poly: WarpUniDyn): Galois128
+{
+  return poly.$fevaluations[Number(0n)];
+}
+
+export function warp_uni_evaluate(cap: bigint, poly: WarpUniDyn, x: Galois128): Galois128
+{
+  const n = BigInt(poly.$fcount);
+  let out = new Galois128(0n);
+  for (let i = 0n; i < cap; i += 1n)   {
+    if ((i < n))     {
+      let numerator = new Galois128(1n);
+      let denominator = new Galois128(1n);
+      for (let j = 0n; j < cap; j += 1n)       {
+        if (((j < n) && !__equals(i, j)))         {
+          numerator = fieldMul(numerator, fieldSub(x, new Galois128((j as unknown as bigint))));
+          denominator = fieldMul(denominator, fieldSub(new Galois128((i as unknown as bigint)), new Galois128((j as unknown as bigint))));
+        }
+      }
+      out = fieldAdd(out, fieldMul(fieldMul(poly.$fevaluations[Number(i)], numerator), warp_inv(denominator)));
+    }
+  }
+  return out;
+}
+
+export function warp_variable_count(m: bigint, terms: bigint, deg: bigint, pesat: WarpIndexDyn): bigint
+{
+  return fieldAdd(pesat.$fpublic_len, pesat.$fwitness_len);
+}
+
+export function warp_verify_spec(m: bigint, terms: bigint, deg: bigint, x: bigint, fresh: bigint, a: bigint, ell: bigint, s: bigint, shifts: bigint, r: bigint, sc: bigint, tw: bigint, fsd1: bigint, n: bigint, beta: bigint, index: WarpIndexDyn, fresh_publics: Galois128[][], input_accumulators: WarpAccInstanceDyn[], output: WarpAccInstanceDyn, proof: WarpProofDyn): boolean
+{
+  if (!warp_index_is_valid(m, terms, deg, index))   {
+    return false;
+  }
+  const log_m = warp_log_constraints(m, terms, deg, index);
+  const log_ell = log2_pow2(ell);
+  const log_n = log2_pow2(n);
+  if ((((((((((__equals(fresh, 0n) || !is_pow2(ell)) || !__equals(ell, fieldAdd(fresh, a))) || !is_pow2(r)) || !__equals(r, fieldAdd(fieldAdd(1n, s), shifts))) || !__equals(tw, fieldAdd(log_ell, 1n))) || !__equals(beta, fieldAdd(index.$fpublic_len, log_m))) || !__equals(x, index.$fpublic_len)) || !__equals(n, fieldShl(1n, log2_pow2(n)))) || !__equals(fsd1, fieldAdd(2n, BigInt(Math.max(Number(fieldAdd(log_n, 1n)), Number(fieldAdd(log_m, index.$fdegree_bound))))))))   {
+    return false;
+  }
+  let transcript = warp_transcript_for(index, fresh_publics, input_accumulators);
+  transcript.absorb_len_prefixed(n, proof.$finitial_root);
+  const taus: Galois128[][] = transcript.squeeze_field_grid(r);
+  transcript.absorb_fields(n, proof.$ffresh_mus);
+  let alphas = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => [] as any[]);
+  let mus = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  let betas = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => [] as any[]);
+  let etas = Array.from({length: Number(ell - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  for (let i = 0n; i < fresh; i += 1n)   {
+    mus[Number(i)] = proof.$ffresh_mus[Number(i)];
+    let beta_i = Array.from({length: Number(beta - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+    for (let j = 0n; j < x; j += 1n)     {
+      beta_i[Number(j)] = fresh_publics[Number(i)][Number(j)];
+    }
+    for (let j = 0n; j < m; j += 1n)     {
+      if ((fieldShl(1n, j) < m))       {
+        beta_i[Number(fieldAdd(x, j))] = taus[Number(i)][Number(j)];
+      }
+    }
+    betas[Number(i)] = beta_i;
+    etas[Number(i)] = new Galois128(0n);
+  }
+  for (let i = 0n; i < a; i += 1n)   {
+    const acc = input_accumulators[Number(i)];
+    alphas[Number(fieldAdd(fresh, i))] = __clone(acc.$falpha);
+    mus[Number(fieldAdd(fresh, i))] = acc.$fmu;
+    betas[Number(fieldAdd(fresh, i))] = __clone(acc.$fbeta);
+    etas[Number(fieldAdd(fresh, i))] = acc.$feta;
+  }
+  const tau_omega: Galois128[] = transcript.squeeze_fields(n);
+  const tau = Array.from({length: Number(ilog2(ell) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => tau_omega[Number(i)]);
+  const omega = tau_omega[Number(fieldSub(tw, 1n))];
+  let gamma = Array.from({length: Number(ilog2(ell) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  for (let round = 0n; round < ell; round += 1n)   {
+    if ((fieldShl(1n, round) < ell))     {
+      const poly = proof.$ffirst_sumcheck[Number(round)];
+      transcript.absorb_poly(sc, poly.$fcnt, poly);
+      gamma[Number(round)] = transcript.squeeze_fields(n)[Number(0n)];
+    }
+  }
+  const sigma1 = (() => {
+  const eq_tau = warp_eq_evals(tau);
+  let out = new Galois128(0n);
+  for (let i = 0n; i < ell; i += 1n)   {
+    out = fieldAdd(out, fieldMul(eq_tau[Number(i)], fieldAdd(mus[Number(i)], fieldMul(omega, etas[Number(i)]))));
+  }
+  return out;
+})();
+  const zeta0 = warp_combine_vectors(alphas, gamma);
+  const beta_1 = warp_combine_vectors(betas, gamma);
+  if (!__equals(beta_1, output.$fbeta))   {
+    return false;
+  }
+  if (!warp_check_sumcheck(proof.$ffirst_sumcheck, sigma1, gamma, (() => {
+  return fieldMul(warp_eq_scalar(tau, gamma), fieldAdd(proof.$fnu0, fieldMul(omega, output.$feta)));
+})()))   {
+    return false;
+  }
+  transcript.absorb_len_prefixed(n, output.$froot);
+  transcript.absorb_field(proof.$fnu0);
+  transcript.absorb_field(output.$feta);
+  const ood_points: Galois128[][] = transcript.squeeze_field_grid(r);
+  transcript.absorb_fields(n, proof.$food_answers);
+  const [shift_indices, xi]: [bigint[], Galois128[]] = transcript.squeeze_shift_and_xi(shifts);
+  for (let query = 0n; query < shifts; query += 1n)   {
+    const path = proof.$finitial_paths[Number(query)];
+    const row = proof.$fopenings[Number(query)];
+    const leaf = warp_hash_fresh_row(ell, fresh, row);
+    if (!warp_merkle_verify_hashed(proof.$finitial_root, leaf, BigInt(shift_indices[Number(query)]), path))     {
+      return false;
+    }
+  }
+  for (let accumulator_index = 0n; accumulator_index < a; accumulator_index += 1n)   {
+    for (let query = 0n; query < shifts; query += 1n)     {
+      const path = proof.$faccumulator_paths[Number(accumulator_index)][Number(query)];
+      const value = proof.$fopenings[Number(query)][Number(fieldAdd(fresh, accumulator_index))];
+      const leaf = warp_hash_leaf_field(value);
+      if (!warp_merkle_verify_hashed(input_accumulators[Number(accumulator_index)].$froot, leaf, BigInt(shift_indices[Number(query)]), path))       {
+        return false;
+      }
+    }
+  }
+  let claim_points = Array.from({length: Number(r - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => [] as any[]);
+  let claim_values = Array.from({length: Number(r - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  claim_points[Number(0n)] = zeta0;
+  claim_values[Number(0n)] = proof.$fnu0;
+  for (let i = 0n; i < s; i += 1n)   {
+    claim_points[Number(fieldAdd(1n, i))] = __clone(ood_points[Number(i)]);
+    claim_values[Number(fieldAdd(1n, i))] = proof.$food_answers[Number(i)];
+  }
+  const eq_gamma = warp_eq_evals(gamma);
+  for (let i = 0n; i < shifts; i += 1n)   {
+    claim_points[Number(fieldAdd(fieldAdd(1n, s), i))] = warp_binary_point(BigInt(shift_indices[Number(i)]));
+    const row = proof.$fopenings[Number(i)];
+    let value = new Galois128(0n);
+    for (let j = 0n; j < ell; j += 1n)     {
+      value = fieldAdd(value, fieldMul(row[Number(j)], eq_gamma[Number(j)]));
+    }
+    claim_values[Number(fieldAdd(fieldAdd(1n, s), i))] = value;
+  }
+  const sigma2 = (() => {
+  const eq_xi = warp_eq_evals(xi);
+  let out = new Galois128(0n);
+  for (let i = 0n; i < r; i += 1n)   {
+    out = fieldAdd(out, fieldMul(claim_values[Number(i)], eq_xi[Number(i)]));
+  }
+  return out;
+})();
+  let alpha = Array.from({length: Number(ilog2(n) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Galois128.default());
+  for (let round = 0n; round < n; round += 1n)   {
+    if ((fieldShl(1n, round) < n))     {
+      const poly = proof.$fsecond_sumcheck[Number(round)];
+      transcript.absorb_poly(sc, poly.$fcnt, poly);
+      alpha[Number(round)] = transcript.squeeze_fields(n)[Number(0n)];
+    }
+  }
+  if (!__equals(alpha, output.$falpha))   {
+    return false;
+  }
+  return warp_check_sumcheck(proof.$fsecond_sumcheck, sigma2, alpha, (() => {
+  const eq = warp_eq_star_at(claim_points, xi, output.$falpha);
+  return fieldMul(output.$fmu, eq);
+})());
 }
 
 export function wire_delta(log_q_lwe: bigint, k_max: bigint): bigint
@@ -12152,6 +17300,16 @@ export function xor_in_place(a: bigint[], b: bigint[])
   }
 }
 
+export function xor_rows(delta_ct: any, d: boolean, p: bigint): RowCt[]
+{
+  const m: bigint = (() => { if (d) {
+  return -1n;
+} else {
+  return 1n;
+} })();
+  return [scale_row(delta_ct, m, p), scale_row(delta_ct, m, p), scale_row(delta_ct, fieldMul(-2n, m), p)];
+}
+
 export function zk_hash(key: any, elements: Galois128[]): UniversalHashOutput
 {
   let h0 = new Galois128(0n);
@@ -12186,6 +17344,29 @@ export function zq_neg(a: any): Zq
 export function zq_sub(a: any, b: any): Zq
 {
   return fieldBitand(wrappingSub(a, b, 32), LWE_Q_MASK);
+}
+
+export function five(correction: boolean): any
+{
+  const s = BigInt(correction);
+  const pattern = fieldBitor(fieldBitor(fieldBitor(fieldShl(s, 1n), fieldShl(BigInt(fieldBitand(!correction, true)), 2n)), fieldShl(s, 3n)), fieldShl(BigInt(fieldBitand(!correction, true)), 4n));
+  return FiveBits(fieldBitor(s, pattern));
+}
+
+export function from(...__args: any[]): any {
+  if (__args.length === 1) {
+    const e = __args[0];
+    return (() => {
+  return (() => { const __match = e; if (true) { return InvalidParameters; } else if (true) { return LengthMismatch; } else if (true) { return new Error_Arithmetic(); } else { return new Error_Randomness(); } })();
+})();
+  } else
+  if (__args.length === 1) {
+    const e = __args[0];
+    return (() => {
+  return Crypto(e);
+})();
+  }
+  throw new Error("from(): no matching variant for " + __args.length + " args");
 }
 
 export function party_index(...__args: any[]): any {

@@ -67,10 +67,15 @@ pub struct ViaDigestPuncturableRandomizerDyn<D: Digest> {
 #[derive(Debug, Default)]
 pub struct CommitmentCoreDyn<D: Digest>(pub Vec<u8>, pub PhantomData<D>);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NttParams {
+    pub degree: usize,
+    pub modulus: u64,
+}
+
 #[derive(Debug, Default)]
-pub struct DeltaDyn<T> {
-    pub n: usize,
-    pub delta: Vec<T>,
+pub struct Delta<N: ArraySize, T> {
+    pub delta: Array<T, N>,
 }
 
 #[derive(Debug, Default)]
@@ -206,10 +211,9 @@ pub struct BSplitDyn<B: LengthDoubler, D: Digest> {
 }
 
 #[derive(Debug, Default)]
-pub struct PolyDyn<T> {
-    pub n: usize,
+pub struct Poly<N: ArraySize, T> {
     pub c0: T,
-    pub c1: Vec<T>,
+    pub c1: Array<T, N>,
 }
 
 #[derive(Debug, Default)]
@@ -431,6 +435,40 @@ pub struct LweSampleDyn<T, U> {
     pub m: usize,
     pub matrix: Vec<Vec<T>>,
     pub b: Vec<U>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SpecSponge {
+    pub state: [u8; 200],
+    pub rate: usize,
+    pub pos: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct SpecXofReader {
+    pub state: [u8; 200],
+    pub rate: usize,
+    pub pos: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Gf2_8 {
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Gf2_64 {
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Gf2_128 {
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Gf2_256 {
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Fp3 {
 }
 
 #[derive(Debug, Default)]
@@ -920,7 +958,7 @@ pub struct OtConsistencyProofDyn<S> {
 #[derive(Debug, Default)]
 pub struct IdealCotDyn<T> {
     pub n: usize,
-    pub delta: DeltaDyn<T>,
+    pub delta: Delta<N, T>,
 }
 
 #[derive(Debug, Default)]
@@ -936,6 +974,353 @@ pub struct ToyElement(pub u64);
 pub struct ToyGroup {
 }
 
+#[derive(Clone)]
+pub struct WarpTranscript {
+    pub sponge: SpecSponge,
+}
+
+#[derive(Clone, Debug)]
+pub struct WarpMerkleTreeDyn {
+    pub nodes: usize,
+    pub leaves: usize,
+    pub nodes: Vec<WarpDigest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WarpAuthPathDyn {
+    pub log2_leaves: usize,
+    pub siblings: Vec<WarpDigest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WarpTermDyn {
+    pub deg: usize,
+    pub coeff: Galois128,
+    pub vars: Vec<usize>,
+    pub n_vars: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WarpConstraintDyn {
+    pub terms: usize,
+    pub deg: usize,
+    pub terms: Vec<WarpTermDyn>,
+    pub n_terms: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct WarpIndexDyn {
+    pub m: usize,
+    pub terms: usize,
+    pub deg: usize,
+    pub constraints: Vec<WarpConstraintDyn>,
+    pub public_len: usize,
+    pub witness_len: usize,
+    pub degree_bound: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WarpWitnessDyn {
+    pub k: usize,
+    pub x: usize,
+    pub public: Vec<Galois128>,
+    pub witness: Vec<Galois128>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WarpIdentityCode {
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WarpRepetitionCode {
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WarpUniDyn {
+    pub cap: usize,
+    pub evaluations: Vec<Galois128>,
+    pub count: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WarpAccInstanceDyn {
+    pub logn: usize,
+    pub beta: usize,
+    pub root: WarpDigest,
+    pub alpha: Vec<Galois128>,
+    pub mu: Galois128,
+    pub beta: Vec<Galois128>,
+    pub eta: Galois128,
+}
+
+#[derive(Clone, Debug)]
+pub struct WarpAccWitnessDyn {
+    pub n: usize,
+    pub k: usize,
+    pub nodes: usize,
+    pub tree: WarpMerkleTreeDyn,
+    pub codeword: Vec<Galois128>,
+    pub witness: Vec<Galois128>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WarpAccDyn {
+    pub n: usize,
+    pub k: usize,
+    pub logn: usize,
+    pub beta: usize,
+    pub nodes: usize,
+    pub instance: WarpAccInstanceDyn,
+    pub witness: WarpAccWitnessDyn,
+}
+
+#[derive(Clone, Debug)]
+pub struct WarpProofDyn {
+    pub fresh: usize,
+    pub ell: usize,
+    pub a: usize,
+    pub s: usize,
+    pub shifts: usize,
+    pub sc: usize,
+    pub logn: usize,
+    pub initial_root: WarpDigest,
+    pub fresh_mus: Vec<Galois128>,
+    pub first_sumcheck: Vec<WarpUniDyn>,
+    pub nu0: Galois128,
+    pub ood_answers: Vec<Galois128>,
+    pub second_sumcheck: Vec<WarpUniDyn>,
+    pub initial_paths: Vec<WarpAuthPathDyn>,
+    pub accumulator_paths: Vec<Vec<WarpAuthPathDyn>>,
+    pub openings: Vec<Vec<Galois128>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Delta {
+    pub coeffs: LabelPoly,
+    pub p: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct WireLabel {
+    pub w0: LabelPoly,
+    pub pi: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowCt {
+    pub c0: LabelPoly,
+    pub c1: LabelPoly,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReferenceDd {
+    pub p: u64,
+    pub delta: Delta,
+    pub triple: (LabelPoly, LabelPoly, LabelPoly),
+}
+
+#[derive(Clone, Debug)]
+pub struct PrfKey(pub [u64; 4]);
+
+#[derive(Clone, Debug)]
+pub struct PinnedGarbling {
+    pub labels: Vec<WireLabel>,
+    pub delta_ct: RowCt,
+    pub and_rows: Vec<AndRows>,
+    pub records: Vec<GateRecord>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ReferencePrg {
+    pub slots: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExpansionPlan {
+    pub seed_ciphertexts: usize,
+    pub slots_per_seed: usize,
+    pub depth: usize,
+    pub required_bits: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ZeroNoise {
+}
+
+#[derive(Clone, Debug)]
+pub struct Parameters {
+    pub degree: usize,
+    pub plaintext_modulus: u64,
+    pub chain: Vec<u64>,
+    pub noise_bound: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RnsPoly {
+    pub limbs: Vec<Poly>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SecretKey {
+    pub coeffs: Vec<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct KeySwitchKey {
+    pub level: usize,
+    pub base: u64,
+    pub parts: Vec<(RnsPoly, RnsPoly)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct KeySwitchKeySet {
+    pub keys: Vec<KeySwitchKey>,
+    pub base: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Ciphertext {
+    pub level: usize,
+    pub parts: Vec<RnsPoly>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Context {
+    pub parameters: Parameters,
+    pub level_rings: Vec<Ring>,
+    pub plaintext_ring: Ring,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rns2 {
+    pub l0: Limb,
+    pub l1: Limb,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RnsRowCt {
+    pub u1: Rns2,
+    pub u2: Rns2,
+}
+
+#[derive(Clone, Debug)]
+pub struct LatticeRnsDd {
+    pub n: usize,
+    pub p: u64,
+    pub q0: u64,
+    pub q1: u64,
+    pub delta: LabelPoly,
+    pub delta_pinned: Delta,
+    pub triple: (Rns2, Rns2, Rns2),
+    pub triple_rp: (LabelPoly, LabelPoly, LabelPoly),
+    pub ntt0: Option<Ntt>,
+    pub ntt1: Option<Ntt>,
+    pub ntt_p: Option<Ntt>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LatticeRowCt {
+    pub u1: RqPoly,
+    pub u2: RqPoly,
+}
+
+#[derive(Clone, Debug)]
+pub struct LatticeDd {
+    pub n: usize,
+    pub p: u64,
+    pub q: u64,
+    pub delta: RpPoly,
+    pub delta_pinned: Delta,
+    pub triple: (RqPoly, RqPoly, RqPoly),
+    pub triple_rp: (RpPoly, RpPoly, RpPoly),
+    pub ntt_q: Option<Ntt>,
+    pub ntt_p: Option<Ntt>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Parameters {
+    pub degree: usize,
+    pub modulus: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Poly {
+    pub slots: Vec<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Ring {
+    pub parameters: Parameters,
+    pub ntt: Ntt,
+}
+
+#[derive(Clone, Debug)]
+pub struct Ntt {
+    pub modulus: u64,
+    pub degree: usize,
+    pub psi_powers: Vec<u64>,
+    pub inv_psi_powers_scaled: Vec<u64>,
+    pub fwd_twiddles: Vec<u64>,
+    pub inv_twiddles: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WireState {
+    pub a0: u64,
+    pub pi: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GlobalDelta {
+    pub delta: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExpandedWire {
+    pub ct_a0: Ciphertext,
+    pub ct_pi: Ciphertext,
+    pub slot_a0: usize,
+    pub slot_pi: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExpandedGate {
+    pub a: ExpandedWire,
+    pub b: ExpandedWire,
+    pub out: ExpandedWire,
+}
+
+#[derive(Clone, Debug)]
+pub struct Circuit {
+    pub inputs: usize,
+    pub gates: Vec<Gate>,
+    pub outputs: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReferenceEquation {
+    pub xor_charged: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct OfflineGarbler {
+    pub secret: SecretKey,
+    pub ksks: KeySwitchKeySet,
+    pub plan: ExpansionPlan,
+}
+
+#[derive(Clone, Debug)]
+pub struct OfflineEvaluator {
+    pub plan: ExpansionPlan,
+    pub wires: Vec<ExpandedWire>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExpansionStep {
+    pub wire_state: WireState,
+    pub eval: ExpandedWire,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Fe25519(pub [u64; 4]);
 
@@ -949,6 +1334,13 @@ pub struct EdPoint {
 
 #[derive(Debug, Default)]
 pub struct Ed25519 {
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CirrusHashBackend {
+    Blake2s,
+    Ascon,
+    Keccak,
 }
 
 #[derive(Debug)]
@@ -1179,6 +1571,99 @@ pub enum PoolSeedError {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GateRecord {
+    SmallAnd(bool),
+    SmallXor(bool),
+    FastAnd {
+        masks: [bool; 4],
+        det: bool,
+    },
+    FastXor,
+}
+
+#[derive(Clone, Debug)]
+pub enum AndRows {
+    Small([RowCt; 3]),
+    Fast([RowCt; 4]),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriverError {
+    BadCircuit,
+    BadInputCount,
+    MissingRecord,
+    WrongRecord,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    InvalidParameters,
+    LengthMismatch,
+    LevelMismatch,
+    Noise,
+    NoiseSource,
+    Randomness,
+    Arithmetic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RnsError {
+    LengthMismatch,
+    InvalidParameters,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LatticeError {
+    LengthMismatch,
+    InvalidParameters,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    InvalidParameters,
+    LengthMismatch,
+    Arithmetic,
+    Randomness,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Variant {
+    Small,
+    Fast,
+    Tiny,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Stitch {
+    OneBit(bool),
+    FiveBits(u8),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StitchError {
+    Exhausted,
+    WrongVariant,
+    NonCanonicalBit,
+    PayloadOverflow,
+    Crypto(SwheError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Gate {
+    And {
+        a: usize,
+        b: usize,
+    },
+    Xor {
+        a: usize,
+        b: usize,
+    },
+    Not {
+        a: usize,
+    },
+}
+
 pub trait Invert {
     fn invert(&self) -> Self;
 }
@@ -1222,6 +1707,12 @@ pub trait AsBinfheBootstrappingKey {
 pub trait SpecRng {
     fn next_u32(&mut self) -> u32;
     fn next_u8(&mut self) -> u8;
+}
+
+pub trait ExtFieldMarker: Copy + core::fmt::Debug {
+}
+
+pub trait PrimeFieldMarker: Copy + core::fmt::Debug {
 }
 
 pub trait RandomSource {
@@ -1270,6 +1761,42 @@ pub trait ScalarOps: Group {
     fn random_mod_order<R: SpecRng>(rng: &mut R) -> Self::Scalar;
 }
 
+pub trait WarpCode {
+    fn encode(&self, message: &Vec<Galois128>) -> Vec<Galois128>;
+}
+
+pub trait DdGadget {
+    fn p(&self) -> u64;
+    fn delta(&self) -> &Delta;
+    fn row(&self, t: i64, random: &mut impl SpecRng) -> RowCt;
+    fn dd0(&self, a: &LabelPoly, tau: &RowCt) -> LabelPoly;
+    fn dd_i(&self, a: &LabelPoly, i: bool, tau: &RowCt) -> LabelPoly;
+    fn dd_ij(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, tau: &RowCt) -> LabelPoly;
+    fn eval(&self, a: &LabelPoly, i: bool, b: &LabelPoly, j: bool, taus: &[RowCt; 3]) -> LabelPoly;
+}
+
+pub trait ExpansionPrg {
+    fn depth(&self) -> usize;
+    fn slots(&self) -> usize;
+    fn expand(&self, ctx: &Context, seed: &Ciphertext, ksk: &KeySwitchKeySet) -> Result<Vec<Ciphertext>, Error>;
+}
+
+pub trait RandomSource {
+    fn fill_bytes(&mut self, output: &mut [u8]) -> Result<(), Error>;
+}
+
+pub trait NoiseSource {
+    fn sample(&mut self, bound: u64, output: &mut [i64]) -> Result<(), Error>;
+}
+
+pub trait GateEquation {
+    fn garble_and(&self, gate_index: usize, a: &WireState, b: &WireState, out: &WireState) -> Stitch;
+    fn eval_and(&self, ctx: &Context, la: &Ciphertext, lb: &Ciphertext, expanded: &ExpandedGate, delta: &GlobalDelta, ksk: &KeySwitchKeySet, stitch: &Stitch) -> Result<Ciphertext, StitchError>;
+    fn garble_xor(&self, p: u64, a: &WireState, b: &WireState, out: &WireState) -> Option<Stitch>;
+    fn eval_xor(&self, ctx: &Context, la: &Ciphertext, lb: &Ciphertext, expanded: &ExpandedGate, delta: &GlobalDelta, ksk: &KeySwitchKeySet, stitch: Option<&Stitch>) -> Result<Ciphertext, StitchError>;
+    fn xor_is_charged(&self) -> bool;
+}
+
 impl  U256 {
     pub fn bit(&self, mut n: u32) -> bool
     {
@@ -1305,7 +1832,7 @@ impl  U256 {
     }
     pub fn xor(&self, mut other: &Self) -> Self
     {
-        U256(vec![(self.0[0] ^ other.0[0]), (self.0[1] ^ other.0[1]), (self.0[2] ^ other.0[2]), (self.0[3] ^ other.0[3])])
+        U256([(self.0[0] ^ other.0[0]), (self.0[1] ^ other.0[1]), (self.0[2] ^ other.0[2]), (self.0[3] ^ other.0[3])])
     }
     pub fn is_zero(&self) -> bool
     {
@@ -1607,7 +2134,7 @@ impl <D: Digest> LengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
     fn double(mut a: Vec<u8>) -> [Vec<u8>; 2]
     {
         let v = D::digest(&a);
-        vec![v.clone(), (0..<<D>::OutputSize as Unsigned>::to_usize()).map(|i| (v[i] ^ a[i])).collect::<Vec<_>>()]
+        [v.clone(), (0..<<D>::OutputSize as Unsigned>::to_usize()).map(|i| (v[i] ^ a[i])).collect::<Vec<_>>()]
     }
 }
 
@@ -1653,6 +2180,26 @@ impl <D: Digest> CommitmentCoreDyn<D> {
     }
 }
 
+impl  NttParams {
+    pub fn new(mut degree: usize, mut modulus: u64) -> Option<Self>
+    {
+        if (degree == 0) || ((degree & (degree - 1)) != 0){
+    return None;
+};
+        if (modulus % 2) == 0{
+    return None;
+};
+        if ((modulus - 1) % (2 * (degree as u64))) != 0{
+    return None;
+};
+        Some(Self { degree: degree, modulus: modulus })
+    }
+    pub fn modulus_bits(&self) -> u32
+    {
+        64 - self.modulus.leading_zeros()
+    }
+}
+
 impl <T: Default> Default for QDyn<T> {
     fn default(mut n: usize) -> Self
     {
@@ -1660,26 +2207,22 @@ impl <T: Default> Default for QDyn<T> {
     }
 }
 
-impl <T> DeltaDyn<T> {
-    pub fn remap<F: FnMut(usize) -> usize>(&self, mut m: usize, mut f: F) -> DeltaDyn<T> where T: Clone
+impl <T> Delta<N, T> {
+    pub fn remap<F: FnMut(usize) -> usize>(&self, mut m: usize, mut f: F) -> Delta<M, T> where T: Clone
     {
-        let n: usize = self.n;
         let Self { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..m).map(|i| delta[f(i) % n].clone()).collect::<Vec<T>>(), n: 0 }
+        Delta { delta: (0..m).map(|i| delta[f(i) % n].clone()).collect::<Vec<T>>() }
     }
-    pub fn rotate_left(&self, mut n_param: usize) -> Self where T: Clone
+    pub fn rotate_left(&self, mut n: usize) -> Self where T: Clone
     {
-        let n: usize = self.n;
-        self.remap(self.n, |a| a.wrapping_sub(n_param))
+        self.remap(self.n, |a| a.wrapping_sub(n))
     }
-    pub fn rotate_right(&self, mut n_param: usize) -> Self where T: Clone
+    pub fn rotate_right(&self, mut n: usize) -> Self where T: Clone
     {
-        let n: usize = self.n;
-        self.remap(self.n, |a| a.wrapping_add(n_param))
+        self.remap(self.n, |a| a.wrapping_add(n))
     }
     pub fn r#static<U: Mul<T, Output = O> + Clone, O>(&self, mut val: Vec<U>) -> QDyn<O> where T: Clone
     {
-        let n: usize = self.n;
         QDyn { q: (0..n).map(|i| (val[i].clone() * self.delta[i].clone())).collect::<Vec<O>>(), n: 0 }
     }
 }
@@ -1715,7 +2258,7 @@ impl  LengthDoubler for AesCtrLengthDoubler {
         let c1 = encrypt_block(&key, &block1);
         block0.fill(0);
         block1.fill(0);
-        vec![Vec(c0), Vec(c1)]
+        [Vec(c0), Vec(c1)]
     }
 }
 
@@ -1760,7 +2303,7 @@ impl  Sponge {
     }
     pub fn squeeze(&self, mut n: usize) -> Vec<u8>
     {
-        let mut out = vec![];
+        let mut out = vec![(0 as u8); n];
         match self {
     Sponge::Shake128(h) => {
     let mut r = h.clone().finalize_xof();
@@ -1799,7 +2342,7 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     {
         let leaf_count = tau * n;
         let total_nodes = (2 * leaf_count) - 1;
-        let mut tree: Vec<[u8; LAMBDA_BYTES]> = vec![];
+        let mut tree: Vec<[u8; LAMBDA_BYTES]> = vec![[(0 as u8); LAMBDA_BYTES]; total_nodes];
         tree[0] = r;
         for node in 0.. leaf_count - 1{
     let parent = Vec::<u8, U16>(tree[node]);
@@ -1807,8 +2350,8 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     tree[(2 * node) + 1] = left.0;
     tree[(2 * node) + 2] = right.0;
 };
-        let mut seeds = Vec::with_capacity(leaf_count);
-        let mut commitments = Vec::with_capacity(leaf_count);
+        let mut seeds: Vec<[u8; LAMBDA_BYTES]> = Vec::with_capacity(leaf_count);
+        let mut commitments: Vec<[u8; COM_BYTES]> = Vec::with_capacity(leaf_count);
         for i in 0.. tau{
     for j in 0.. n{
     let leaf_k = (i * n) + j;
@@ -1842,7 +2385,7 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
 };
         let leaf_count = tau * n;
         let total_nodes = (2 * leaf_count) - 1;
-        let mut hidden = vec![];
+        let mut hidden = vec![false; total_nodes];
         for i in 0.. tau{
     let leaf_k = (i * n) + deltas[i];
     let tree_pos = (leaf_count - 1) + leaf_k;
@@ -1855,15 +2398,20 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     let right = (2 * node) + 2;
     hidden[node] = (hidden[left] || hidden[right]);
 };
-        let mut tree: Vec<[u8; LAMBDA_BYTES]> = vec![];
+        let mut tree: Vec<[u8; LAMBDA_BYTES]> = vec![[(0 as u8); LAMBDA_BYTES]; total_nodes];
         let _ = tree;
-        BavcOpeningDyn { hidden_commits: deltas.iter().enumerate().map(|(i, d)| commitment.commitments[(i * n) + d]).collect::<Vec<_>>(), nodes: Vec::new(), com_bytes: 0 }
+        let mut hidden_commits: Vec<[u8; COM_BYTES]> = Vec::with_capacity(deltas.len());
+        for i in 0.. deltas.len(){
+    let d = deltas[i];
+    hidden_commits.push(commitment.commitments[(i * n) + d]);
+};
+        BavcOpeningDyn { hidden_commits: hidden_commits, nodes: Vec::new(), com_bytes: 0 }
     }
     pub fn collect_open_nodes(mut com_bytes: usize, mut deltas: &[usize], mut tree: &[[u8; LAMBDA_BYTES]], mut tau: usize, mut n: usize) -> Vec<(usize, [u8; LAMBDA_BYTES])>
     {
         let leaf_count = tau * n;
         let total_nodes = (2 * leaf_count) - 1;
-        let mut hidden = vec![];
+        let mut hidden = vec![false; total_nodes];
         for i in 0.. tau{
     let leaf_k = (i * n) + deltas[i];
     let tree_pos = (leaf_count - 1) + leaf_k;
@@ -1878,11 +2426,11 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
         collect_open_nodes_walk(0, &hidden, tree, leaf_count, &mut out);
         out
     }
-    pub fn reconstruct<D: Digest>(mut com_bytes: usize, mut nodes: &[(usize, [u8; LAMBDA_BYTES])], mut hidden_commits: &[[u8; COM_BYTES]], mut deltas: &[usize], mut iv: &[u8; 16], mut expected_root: &[u8], mut tau: usize, mut n: usize) -> Option<Vec<[u8; LAMBDA_BYTES]>>
+    pub fn reconstruct<D: Digest>(mut com_bytes: usize, mut nodes: &Vec<(usize, [u8; LAMBDA_BYTES])>, mut hidden_commits: &[[u8; COM_BYTES]], mut deltas: &[usize], mut iv: &[u8; 16], mut expected_root: &[u8], mut tau: usize, mut n: usize) -> Option<Vec<[u8; LAMBDA_BYTES]>>
     {
         let leaf_count = tau * n;
         let total_nodes = (2 * leaf_count) - 1;
-        let mut hidden = vec![];
+        let mut hidden = vec![false; total_nodes];
         for i in 0.. tau{
     let leaf_k = (i * n) + deltas[i];
     let tree_pos = (leaf_count - 1) + leaf_k;
@@ -1893,7 +2441,7 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     node -= 1;
     hidden[node] = (hidden[(2 * node) + 1] || hidden[(2 * node) + 2]);
 };
-        let mut tree: Vec<Option<[u8; LAMBDA_BYTES]>> = vec![];
+        let mut tree: Vec<Option<[u8; LAMBDA_BYTES]>> = vec![None; total_nodes];
         for (idx, seed) in nodes{
     tree[*idx] = Some(*seed);
 };
@@ -1944,7 +2492,15 @@ impl <L: LeafCommit<LAMBDA_BYTES, COM_BYTES>> BavcDyn<L> {
     h.update(hi);
 };
         let root = h.finalize().to_vec().to_vec();
-        if root.as_slice() == expected_root{
+        let mut matches = root.len() == expected_root.len();
+        let mut k = 0;
+        while (k < root.len()){
+    if root[k] != expected_root[k]{
+    matches = false;
+};
+    k += 1;
+};
+        if matches{
     Some(leaf_seeds)
 } else {
     None
@@ -1956,9 +2512,17 @@ impl  FaestAesProver for StubFaestAesProver {
     fn prove_aes_witness(&self, mut big_vole: &BigVoleProver, mut hash_key: &UniversalHashKey) -> QuickSilverProof
     {
         let a_hat_out: UniversalHashOutput = vole_hash(hash_key, &big_vole.u);
-        let a_hat: Vec<u8> = a_hat_out.h0.0.to_le_bytes().iter().chain(a_hat_out.h1.0.to_le_bytes().iter()).cloned().collect();
+        let h0_bytes = a_hat_out.h0.0.to_le_bytes();
+        let h1_bytes = a_hat_out.h1.0.to_le_bytes();
+        let mut a_hat: Vec<u8> = Vec::with_capacity((h0_bytes.len() + h1_bytes.len()));
+        for i in 0.. h0_bytes.len(){
+    a_hat.push(h0_bytes[i]);
+};
+        for i in 0.. h1_bytes.len(){
+    a_hat.push(h1_bytes[i]);
+};
         let len = a_hat.len();
-        QuickSilverProof { a_hat: a_hat, b_hat: vec![], c_hat_base: vec![] }
+        QuickSilverProof { a_hat: a_hat, b_hat: vec![(0 as u8); len], c_hat_base: vec![(0 as u8); len] }
     }
 }
 
@@ -1976,10 +2540,9 @@ impl  PartyIndex for N {
     }
 }
 
-impl <T> PolyDyn<T> {
-    pub fn get_qs_pool<Q: Clone + Mul<A, Output = A>, A: Add<A, Output = A>>(&self, mut m: usize, mut x: usize, mut root: DeltaDyn<Q>, mut inputs: PolyInputPoolDyn<QDyn<Q>>, mut reduction: usize) -> QDyn<A> where T: Clone + Into<A>
+impl <T> Poly<N, T> {
+    pub fn get_qs_pool<Q: Clone + Mul<A, Output = A>, A: Add<A, Output = A>>(&self, mut m: usize, mut x: usize, mut root: Delta<M, Q>, mut inputs: PolyInputPoolDyn<QDyn<Q>>, mut reduction: usize) -> QDyn<A> where T: Clone + Into<A>
     {
-        let n: usize = self.n;
         super::Q { q: (0..m).map(|i| {
     let mut sum: A = self.c0.clone().into();
     for _ in 0.. n{
@@ -1997,9 +2560,8 @@ impl <T> PolyDyn<T> {
     sum
 }).collect::<Vec<A>>() }
     }
-    pub fn get_qs<Q: Clone + Mul<A, Output = A>, A: Add<A, Output = A>>(&self, mut m: usize, mut x: usize, mut root: DeltaDyn<Q>, mut inputs: Vec<Vec<QDyn<Q>>>, mut reduction: usize) -> QDyn<A> where T: Clone + Into<A>
+    pub fn get_qs<Q: Clone + Mul<A, Output = A>, A: Add<A, Output = A>>(&self, mut m: usize, mut x: usize, mut root: Delta<M, Q>, mut inputs: Vec<Vec<QDyn<Q>>>, mut reduction: usize) -> QDyn<A> where T: Clone + Into<A>
     {
-        let n: usize = self.n;
         super::Q { q: (0..m).map(|i| {
     let mut sum: A = self.c0.clone().into();
     for _ in 0.. n{
@@ -2019,7 +2581,6 @@ impl <T> PolyDyn<T> {
     }
     pub fn apply_pool<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, mut m: usize, mut x: usize, mut x2: usize, mut xs: usize, mut s: usize, mut voles: &PolyInputPoolDyn<VopeDyn<T>>) -> VopeDyn<O> where T: Into<O> + Clone
     {
-        let n: usize = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::default();
     for k in 0.. n{
@@ -2058,7 +2619,6 @@ impl <T> PolyDyn<T> {
     }
     pub fn apply<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, mut m: usize, mut x: usize, mut x2: usize, mut xs: usize, mut s: usize, mut voles: Vec<Vec<VopeDyn<T>>>) -> VopeDyn<O> where T: Into<O> + Clone
     {
-        let n: usize = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::default();
     for k in 0.. n{
@@ -2353,12 +2913,11 @@ impl <T: Clone> Clone for QDyn<T> {
     }
 }
 
-impl <T: Clone> Clone for DeltaDyn<T> {
+impl <T: Clone> Clone for Delta<N, T> {
     fn clone(&self) -> Self
     {
-        let n: usize = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n).map(|i| delta[i].clone()).collect::<Vec<T>>(), n: 0 }
+        let Delta { delta: delta } = self;
+        Delta { delta: (0..n).map(|i| delta[i].clone()).collect::<Vec<T>>() }
     }
 }
 
@@ -2400,12 +2959,11 @@ impl <T: PartialEq> PartialEq for QDyn<T> {
     }
 }
 
-impl <T: PartialEq> PartialEq for DeltaDyn<T> {
+impl <T: PartialEq> PartialEq for Delta<N, T> {
     fn eq(&self, mut other: &Self) -> bool
     {
-        let n: usize = self.n;
-        let DeltaDyn { delta: d1, .. } = self;
-        let DeltaDyn { delta: d2, .. } = other;
+        let Delta { delta: d1 } = self;
+        let Delta { delta: d2 } = other;
         for i in 0.. n{
     if d1[i] != d2[i]{
     return false;
@@ -2421,7 +2979,7 @@ impl <T: Eq> Eq for VopeDyn<T> {
 impl <T: Eq> Eq for QDyn<T> {
 }
 
-impl <T: Eq> Eq for DeltaDyn<T> {
+impl <T: Eq> Eq for Delta<N, T> {
 }
 
 impl  QDyn<BitsInBytes> {
@@ -2488,67 +3046,61 @@ impl  QDyn<BitsInBytes64> {
     }
 }
 
-impl  DeltaDyn<BitsInBytes> {
-    pub fn rotate_left_bits(&self, mut n_param: usize) -> Self
+impl  Delta<N, BitsInBytes> {
+    pub fn rotate_left_bits(&self, mut n: usize) -> Self
     {
-        let n: usize = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n_param).map(|i| {
+        let Delta { delta: delta } = self;
+        Delta { delta: (0..n).map(|i| {
     let BitsInBytes(b) = delta[i].clone();
-    let BitsInBytes(next) = delta[(i + 1) % n_param].clone();
-    BitsInBytes((b.shl((n_param as u32)) | next.shr((8 - (n_param as u32)))))
-}).collect::<Vec<BitsInBytes>>(), n: 0 }
+    let BitsInBytes(next) = delta[(i + 1) % n].clone();
+    BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
+}).collect::<Vec<BitsInBytes>>() }
     }
-    pub fn rotate_right_bits(&self, mut n_param: usize) -> Self
+    pub fn rotate_right_bits(&self, mut n: usize) -> Self
     {
-        let n: usize = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n_param).map(|i| {
-    let BitsInBytes(prev) = delta[((i + n_param) - 1) % n_param].clone();
+        let Delta { delta: delta } = self;
+        Delta { delta: (0..n).map(|i| {
+    let BitsInBytes(prev) = delta[((i + n) - 1) % n].clone();
     let BitsInBytes(b) = delta[i].clone();
-    BitsInBytes((prev.shl((8 - (n_param as u32))) | b.shr((n_param as u32))))
-}).collect::<Vec<BitsInBytes>>(), n: 0 }
+    BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
+}).collect::<Vec<BitsInBytes>>() }
     }
-    pub fn bit(&self, mut n_param: u8) -> DeltaDyn<Bit>
+    pub fn bit(&self, mut n: u8) -> Delta<N, Bit>
     {
-        let n: usize = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n_param).map(|i| {
+        let Delta { delta: delta } = self;
+        Delta { delta: (0..n).map(|i| {
     let BitsInBytes(b) = delta[i].clone();
-    Bit((((b >> n_param) & 1) != 0))
-}).collect::<Vec<Bit>>(), n: 0 }
+    Bit((((b >> n) & 1) != 0))
+}).collect::<Vec<Bit>>() }
     }
 }
 
-impl  DeltaDyn<BitsInBytes64> {
-    pub fn rotate_left_bits(&self, mut n_param: usize) -> Self
+impl  Delta<N, BitsInBytes64> {
+    pub fn rotate_left_bits(&self, mut n: usize) -> Self
     {
-        let n: usize = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n_param).map(|i| {
+        let Delta { delta: delta } = self;
+        Delta { delta: (0..n).map(|i| {
     let BitsInBytes64(b) = delta[i].clone();
-    let BitsInBytes64(next) = delta[(i + 1) % n_param].clone();
-    BitsInBytes64((b.shl((n_param as u32)) | next.shr((64 - (n_param as u32)))))
-}).collect::<Vec<BitsInBytes64>>(), n: 0 }
+    let BitsInBytes64(next) = delta[(i + 1) % n].clone();
+    BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
+}).collect::<Vec<BitsInBytes64>>() }
     }
-    pub fn rotate_right_bits(&self, mut n_param: usize) -> Self
+    pub fn rotate_right_bits(&self, mut n: usize) -> Self
     {
-        let n: usize = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n_param).map(|i| {
-    let BitsInBytes64(prev) = delta[((i + n_param) - 1) % n_param].clone();
+        let Delta { delta: delta } = self;
+        Delta { delta: (0..n).map(|i| {
+    let BitsInBytes64(prev) = delta[((i + n) - 1) % n].clone();
     let BitsInBytes64(b) = delta[i].clone();
-    BitsInBytes64((prev.shl((64 - (n_param as u32))) | b.shr((n_param as u32))))
-}).collect::<Vec<BitsInBytes64>>(), n: 0 }
+    BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
+}).collect::<Vec<BitsInBytes64>>() }
     }
-    pub fn bit(&self, mut n_param: u8) -> DeltaDyn<Bit>
+    pub fn bit(&self, mut n: u8) -> Delta<N, Bit>
     {
-        let n: usize = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n_param).map(|i| {
+        let Delta { delta: delta } = self;
+        Delta { delta: (0..n).map(|i| {
     let BitsInBytes64(b) = delta[i].clone();
-    Bit((((b >> n_param) & 1) != 0))
-}).collect::<Vec<Bit>>(), n: 0 }
+    Bit((((b >> n) & 1) != 0))
+}).collect::<Vec<Bit>>() }
     }
 }
 
@@ -2602,9 +3154,9 @@ impl <T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> BitXor<Vec<U>> fo
     }
 }
 
-impl <T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O> + Clone> Mul<DeltaDyn<U>> for VopeDyn<T> {
+impl <T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O> + Clone> Mul<Delta<N, U>> for VopeDyn<T> {
     type Output = QDyn<O>;
-    fn mul(self, mut rhs: DeltaDyn<U>) -> Self::Output
+    fn mul(self, mut rhs: Delta<N, U>) -> Self::Output
     {
         let n: usize = self.n;
         let k: usize = self.k;
@@ -3442,7 +3994,7 @@ impl  EncodedLabelBatch {
     return Err(LabelBatchDecodeError::LengthMismatch);
 };
         selected.chunks_exact(3).into_iter().map(|chunk| {
-    decode_label_16(vec![chunk[0], chunk[1], chunk[2]]).map_err(LabelBatchDecodeError::NonCanonicalLabel)
+    decode_label_16([chunk[0], chunk[1], chunk[2]]).map_err(LabelBatchDecodeError::NonCanonicalLabel)
 }).collect::<Vec<_>>().collect()
     }
 }
@@ -3783,7 +4335,7 @@ impl  BatchSelect {
         if choice.len() != p.width{
     return Err(Error::LengthMismatch);
 };
-        let mut tree = vec![];
+        let mut tree = vec![self.ring.zero(); (((2 * p.width) - 1) * p.gadget_digits)];
         for (index, value) in choice.iter().enumerate(){
     let digits = self.ring.decompose(value)?;
     let base = ((p.width - 1) + index) * p.gadget_digits;
@@ -3835,7 +4387,7 @@ impl  Ring {
     }
     pub fn zero(&self) -> Polynomial
     {
-        Polynomial { first: vec![], second: vec![] }
+        Polynomial { first: vec![0; self.parameters.degree], second: vec![0; self.parameters.degree] }
     }
     pub fn uniform(&self, mut random: &mut impl RandomSource) -> Result<Polynomial, Error>
     {
@@ -3883,7 +4435,7 @@ impl  Ring {
     }
     pub fn add_noise(&self, mut value: &mut Polynomial, mut noise: &mut impl NoiseSource, mut standard_deviation: u64, mut bound: u64) -> Result<(), Error>
     {
-        let mut coefficients = vec![];
+        let mut coefficients = vec![(0 as i64); self.parameters.degree];
         noise.sample(&mut coefficients.n, standard_deviation, bound, &mut coefficients)?;
         if coefficients.iter().any(|sample| (sample.unsigned_abs() > bound)){
     return Err(Error::Noise);
@@ -4114,7 +4666,7 @@ impl  Frame {
         if input.len() < HEADER_BYTES{
     return Err(FrameError::Truncated);
 };
-        if (&input[..8] != MAGIC) || (u16::from_le_bytes(vec![input[8], input[9]]) != VERSION){
+        if (&input[..8] != MAGIC) || (u16::from_le_bytes([input[8], input[9]]) != VERSION){
     return Err(FrameError::UnsupportedFormat);
 };
         let stage = Stage::try_from(input[10])?;
@@ -4160,12 +4712,12 @@ impl  GarbleDyn {
     {
         let n: usize = self.n;
         let mut d = D::new();
-        d.update(&vec![(172 as u8)]);
+        let domain_separator = [(172 as u8)];
+        d.update(&domain_separator);
         d.update(&self.base);
-        for arg in args{
-    d.update(&arg.base);
-};
-        d.update(&(bit as u64).to_le_bytes());
+        let mut d = absorb_args_bases(n, d, args);
+        let bit_bytes = (bit as u64).to_le_bytes();
+        d.update(&bit_bytes);
         let hash = d.finalize().to_vec();
         GarbleDyn { base: (0..n).map(|i| hash[i]).collect::<Vec<u8>>(), n: 0 }
     }
@@ -4663,7 +5215,7 @@ impl  CotPoolReceiver {
 }
 
 impl <T: Clone + Add<Output = T> + Mul<Output = T> + Default> IdealCotDyn<T> where T: Clone + Add<Output = T> + Mul<Output = T> + Default {
-    pub fn new(mut n: usize, mut delta: DeltaDyn<T>) -> Self
+    pub fn new(mut n: usize, mut delta: Delta<N, T>) -> Self
     {
         Self { delta: delta }
     }
@@ -4696,7 +5248,7 @@ impl  OtStack {
     pub fn setup_impl<D, R, B>(mut rng_s: &mut R, mut rng_r: &mut R, mut params: FerretParams, mut malicious: bool) -> Self where D: Digest, B: BaseOt
     {
         let m = params.seed_cot_count(malicious);
-        let mut bits = vec![];
+        let mut bits = vec![false; m];
         for b in &mut bits{
     *b = ((rng_r.next_u32() & 1) == 1);
 };
@@ -4815,10 +5367,1800 @@ impl  Group for ToyGroup {
     }
 }
 
+impl  Default for WarpTranscript {
+    fn default() -> Self
+    {
+        warp_transcript_new()
+    }
+}
+
+impl  WarpTranscript {
+    pub fn domain_sep(self, mut n: usize, mut label: &Vec<u8>) -> Self
+    {
+        let mut sponge = self.sponge.clone();
+        spec_sponge_absorb_array(n, &mut sponge, label);
+        self.sponge = sponge;
+        self
+    }
+    pub fn absorb_array(&mut self, mut n: usize, mut data: &Vec<u8>)
+    {
+        let mut sponge = self.sponge.clone();
+        spec_sponge_absorb_array(n, &mut sponge, data);
+        self.sponge = sponge;
+    }
+    pub fn absorb_len_prefixed(&mut self, mut n: usize, mut data: &Vec<u8>)
+    {
+        let len_bytes = (n as u64).to_le_bytes();
+        self.absorb_array(n, &(0..8).map(|i| len_bytes[i]).collect::<Vec<u8>>());
+        self.absorb_array(n, data);
+    }
+    pub fn absorb_usize(&mut self, mut value: usize)
+    {
+        let bytes = (value as u64).to_le_bytes();
+        self.absorb_array(&(0..8).map(|i| bytes[i]).collect::<Vec<u8>>().n, &(0..8).map(|i| bytes[i]).collect::<Vec<u8>>());
+    }
+    pub fn absorb_field(&mut self, mut value: Galois128)
+    {
+        self.absorb_len_prefixed(&le16(value).n, &le16(value));
+    }
+    pub fn absorb_fields(&mut self, mut n: usize, mut values: &Vec<Galois128>)
+    {
+        self.absorb_usize(n);
+        for i in 0.. n{
+    self.absorb_field(values[i]);
+}
+    }
+    pub fn absorb_poly(&mut self, mut sc: usize, mut cnt: usize, mut poly: &WarpUniDyn)
+    {
+        self.absorb_usize(cnt);
+        for i in 0.. cnt{
+    self.absorb_field(poly.evaluations[i]);
+}
+    }
+    pub fn squeeze_fields(&self, mut n: usize) -> Vec<Galois128>
+    {
+        let mut reader = spec_sponge_finalize_xof(&self.sponge, 31);
+        (0..n).map(|_| {
+    let mut bytes: Vec<u8> = (0..16).map(|_| 0).collect::<Vec<u8>>();
+    spec_xof_read_array(n, &mut reader, &mut bytes);
+    let mut b16 = [(0 as u8); 16];
+    for i in 0.. 16{
+    b16[i] = bytes[i];
+};
+    Galois128(u128::from_le_bytes(b16))
+}).collect::<Vec<_>>()
+    }
+    pub fn squeeze_field_grid(&self, mut r: usize, mut c: usize) -> Vec<Vec<Galois128>>
+    {
+        let mut reader = spec_sponge_finalize_xof(&self.sponge, 31);
+        (0..r).map(|_| {
+    (0..c).map(|_| {
+    let mut bytes: Vec<u8> = (0..16).map(|_| 0).collect::<Vec<u8>>();
+    spec_xof_read_array(&mut reader, &mut bytes);
+    let mut b16 = [(0 as u8); 16];
+    for i in 0.. 16{
+    b16[i] = bytes[i];
+};
+    Galois128(u128::from_le_bytes(b16))
+}).collect::<Vec<_>>()
+}).collect::<Vec<_>>()
+    }
+    pub fn squeeze_shift_and_xi(&self, mut shifts: usize, mut logr: usize, mut logdom: usize) -> (Vec<u32>, Vec<Galois128>)
+    {
+        let mut reader = spec_sponge_finalize_xof(&self.sponge, 31);
+        let shifts = (0..shifts).map(|_| {
+    let mut value = 0 as usize;
+    for position in 0.. (logdom + 7) / 8{
+    let mut byte: Vec<u8> = (0..1).map(|_| 0).collect::<Vec<u8>>();
+    spec_xof_read_array(&mut reader, &mut byte);
+    value |= ((byte[0] as usize) << (8 * position));
+};
+    (value & (((1 as usize) << logdom) - 1)) as u32
+}).collect::<Vec<u32>>();
+        let xi = (0..logr).map(|_| {
+    let mut bytes: Vec<u8> = (0..16).map(|_| 0).collect::<Vec<u8>>();
+    spec_xof_read_array(&mut reader, &mut bytes);
+    let mut b16 = [(0 as u8); 16];
+    for i in 0.. 16{
+    b16[i] = bytes[i];
+};
+    Galois128(u128::from_le_bytes(b16))
+}).collect::<Vec<Galois128>>();
+        (shifts, xi)
+    }
+}
+
+impl  WarpCode<N, N> for WarpIdentityCode {
+    fn encode(&self, mut message: &Vec<Galois128>) -> Vec<Galois128>
+    {
+        message.clone()
+    }
+}
+
+impl  WarpCode<K, N> for WarpRepetitionCode {
+    fn encode(&self, mut message: &Vec<Galois128>) -> Vec<Galois128>
+    {
+        (0..n).map(|i| message[i % k]).collect::<Vec<_>>()
+    }
+}
+
+impl  Delta {
+    pub fn from_ternary(mut coeffs: &[i64], mut p: u64) -> Self
+    {
+        let mut c: Vec<u64> = coeffs.iter().map(|v| if v < 0{
+    p - 1
+} else {
+    (v as u64) % p
+}).collect::<Vec<_>>();
+        if c.is_empty(){
+    c.push(1);
+};
+        c[0] = 1;
+        Self { coeffs: c, p: p }
+    }
+    pub fn neg(&self) -> LabelPoly
+    {
+        self.coeffs.iter().map(|c| if c == 0{
+    0
+} else {
+    self.p - c
+}).collect::<Vec<_>>()
+    }
+}
+
+impl  WireLabel {
+    pub fn base(&self, mut delta: &Delta) -> LabelPoly
+    {
+        if self.pi{
+    ring::add_coeffs(&self.w0, &delta.coeffs, delta.p)
+} else {
+    self.w0.clone()
+}
+    }
+    pub fn active(&self, mut masked: bool, mut delta: &Delta) -> LabelPoly
+    {
+        let base = self.base(delta);
+        if masked{
+    ring::add_coeffs(&base, &delta.coeffs, delta.p)
+} else {
+    base
+}
+    }
+    pub fn w0_lsb(&self) -> bool
+    {
+        (self.w0[0] % 2) == 1
+    }
+}
+
+impl  ReferenceDd {
+    pub fn new(mut delta: Delta, mut degree: usize, mut random: &mut impl FnMut) -> Self
+    {
+        let p = delta.p;
+        let mut uniform = || {
+    let mut v = vec![(0 as u64); degree];
+    random(&mut v);
+    v.iter_mut().for_each(|x| *x %= p);
+    v
+};
+        let u = uniform();
+        let du = ring::negacyclic_mul_coeffs(&delta.coeffs, &u, p);
+        let v = du.iter().map(|x| if x == 0{
+    0
+} else {
+    p - x
+}).collect::<Vec<_>>();
+        let d2 = ring::negacyclic_mul_coeffs(&delta.coeffs, &delta.coeffs, p);
+        let d2u = ring::negacyclic_mul_coeffs(&d2, &u, p);
+        let w = ring::sub_coeffs(&delta.neg(), &d2u, p);
+        Self { p: p, delta: delta, triple: (u, v, w) }
+    }
+    pub fn p(&self) -> u64
+    {
+        self.p
+    }
+    pub fn delta(&self) -> &Delta
+    {
+        &self.delta
+    }
+    pub fn row(&self, mut t: i64, mut random: &mut impl FnMut) -> RowCt
+    {
+        let p = self.p;
+        let degree = self.delta.coeffs.len();
+        let mut c1 = vec![(0 as u64); degree];
+        random(&mut c1);
+        c1.iter_mut().for_each(|x| *x %= p);
+        let td = if t >= 0{
+    delta_scaled(&self.delta, (t as u64), p)
+} else {
+    delta_scaled(&self.delta, (-t as u64), p).iter().map(|x| if x == 0{
+    0
+} else {
+    p - x
+}).collect::<Vec<_>>()
+};
+        let c1d = ring::negacyclic_mul_coeffs(&c1, &self.delta.coeffs, p);
+        let c0 = ring::sub_coeffs(&td, &c1d, p);
+        RowCt { c0: c0, c1: c1 }
+    }
+    pub fn dec_row(&self, mut tau: &RowCt) -> LabelPoly
+    {
+        let c1d = ring::negacyclic_mul_coeffs(&tau.c1, &self.delta.coeffs, self.p);
+        ring::add_coeffs(&tau.c0, &c1d, self.p)
+    }
+    pub fn dd0(&self, mut a: &LabelPoly, mut tau: &RowCt) -> LabelPoly
+    {
+        ring::negacyclic_mul_coeffs(&tau.c1, a, self.p)
+    }
+    pub fn dd_i(&self, mut a: &LabelPoly, mut i: bool, mut tau: &RowCt) -> LabelPoly
+    {
+        let base = self.dd0(a, tau);
+        if i{
+    ring::add_coeffs(&base, &tau.c0, self.p)
+} else {
+    base
+}
+    }
+    pub fn hss_mul(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool) -> LabelPoly
+    {
+        let p = self.p;
+        let (u, v, w) = &self.triple;
+        let ab = ring::negacyclic_mul_coeffs(a, b, p);
+        let mut out = ring::negacyclic_mul_coeffs(&ab, u, p);
+        if i{
+    let bv = ring::negacyclic_mul_coeffs(b, v, p);
+    out = ring::add_coeffs(&out, &bv, p);
+};
+        if j{
+    let av = ring::negacyclic_mul_coeffs(a, v, p);
+    out = ring::add_coeffs(&out, &av, p);
+};
+        if i && j{
+    out = ring::sub_coeffs(&out, w, p);
+};
+        out
+    }
+    pub fn dd_ij(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut tau: &RowCt) -> LabelPoly
+    {
+        let share = self.hss_mul(a, i, b, j);
+        let base = ring::negacyclic_mul_coeffs(&tau.c1, &share, self.p);
+        if i && j{
+    ring::add_coeffs(&base, &tau.c0, self.p)
+} else {
+    base
+}
+    }
+    pub fn eval(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut taus: &[RowCt; 3]) -> LabelPoly
+    {
+        let mut out = self.dd_i(a, i, &taus[0]);
+        out = ring::add_coeffs(&out, &self.dd_i(b, j, &taus[1]), self.p);
+        ring::add_coeffs(&out, &self.dd_ij(a, i, b, j, &taus[2]), self.p)
+    }
+}
+
+impl  DdGadget for ReferenceDd {
+    fn p(&self) -> u64
+    {
+        self.p
+    }
+    fn delta(&self) -> &Delta
+    {
+        &self.delta
+    }
+    fn row(&self, mut t: i64, mut random: &mut impl SpecRng) -> RowCt
+    {
+        self.row(t, &mut |buf| {
+    for v in buf.iter_mut(){
+    *v = ((random.next_u32() as u64) % self.p);
+}
+})
+    }
+    fn dd0(&self, mut a: &LabelPoly, mut tau: &RowCt) -> LabelPoly
+    {
+        self.dd0(a, tau)
+    }
+    fn dd_i(&self, mut a: &LabelPoly, mut i: bool, mut tau: &RowCt) -> LabelPoly
+    {
+        self.dd_i(a, i, tau)
+    }
+    fn dd_ij(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut tau: &RowCt) -> LabelPoly
+    {
+        self.dd_ij(a, i, b, j, tau)
+    }
+    fn eval(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut taus: &[RowCt; 3]) -> LabelPoly
+    {
+        self.eval(a, i, b, j, taus)
+    }
+}
+
+impl  GateRecord {
+    pub fn bits(&self) -> usize
+    {
+        match self {
+    .. => 1,
+    Self::FastAnd { .. } => 5,
+    _ => 0,
+}
+    }
+}
+
+impl  PrfKey {
+    pub fn offset(&self, mut wire: usize, mut degree: usize, mut p: u64) -> LabelPoly
+    {
+        let mut out = vec![(0 as u64); degree];
+        let mut s0 = self.0[0] ^ (wire as u64).wrapping_mul(11400714819323198485);
+        let mut s1 = self.0[1].wrapping_add((wire as u64));
+        let mut s2 = self.0[2] ^ self.0[0];
+        let mut s3 = self.0[3].wrapping_add(self.0[1]);
+        for c in out.iter_mut(){
+    let t = s1 << 17;
+    s2 ^= s0;
+    s3 ^= s1;
+    s1 ^= s2;
+    s0 ^= s3;
+    s2 ^= t;
+    s3 = s3.rotateleft(45);
+    *c = (s3.wrapping_add(s0) % p);
+};
+        out
+    }
+}
+
+impl  ReferencePrg {
+    pub fn new(mut slots: usize) -> Self
+    {
+        Self { slots: slots }
+    }
+}
+
+impl  ExpansionPrg for ReferencePrg {
+    fn depth(&self) -> usize
+    {
+        1
+    }
+    fn slots(&self) -> usize
+    {
+        self.slots
+    }
+    fn expand(&self, mut ctx: &Context, mut seed: &Ciphertext, mut ksk: &KeySwitchKeySet) -> Result<Vec<Ciphertext>, Error>
+    {
+        let degree = ctx.parameters().degree;
+        if self.slots > degree{
+    return Err(Error::InvalidParameters);
+};
+        let s2 = ctx.mul(seed, seed, ksk)?;
+        let mut out = Vec::with_capacity(self.slots);
+        for i in 0.. self.slots{
+    let mut mask = vec![(0 as u64); degree];
+    mask[i] = 1;
+    out.push(ctx.mul_plain(&s2, &mask)?);
+};
+        Ok(out)
+    }
+}
+
+impl  ExpansionPlan {
+    pub fn plan(mut required_bits: usize, mut prg_depth: usize, mut slots_per_seed: usize, mut depth_budget: usize) -> Result<Self, Error>
+    {
+        if (slots_per_seed == 0) || (prg_depth > depth_budget){
+    return Err(Error::InvalidParameters);
+};
+        let seed_ciphertexts = required_bits.div_ceil(slots_per_seed);
+        Ok(Self { seed_ciphertexts: seed_ciphertexts, slots_per_seed: slots_per_seed, depth: prg_depth, required_bits: required_bits })
+    }
+    pub fn total_slots(&self) -> usize
+    {
+        self.seed_ciphertexts * self.slots_per_seed
+    }
+}
+
+impl  NoiseSource for ZeroNoise {
+    fn sample(&mut self, mut _bound: u64, mut output: &mut [i64]) -> Result<(), Error>
+    {
+        output.fill(0);
+        Ok(())
+    }
+}
+
+impl  From<Error> for Error {
+    fn from(mut e: Error) -> Self
+    {
+        match e {
+    _ => Self::InvalidParameters,
+    _ => Self::LengthMismatch,
+    _ => Self::Arithmetic,
+    _ => Self::Randomness,
+}
+    }
+}
+
+impl  Parameters {
+    pub fn validate(&self) -> Result<(), Error>
+    {
+        if (self.degree < 2) || !self.degree.is_power_of_two() || self.chain.is_empty() || (self.noise_bound == 0){
+    return Err(Error::InvalidParameters);
+};
+        let n2 = 2 * (self.degree as u64);
+        let p = self.plaintext_modulus;
+        if (p < 3) || (((p - 1) % n2) != 0){
+    return Err(Error::InvalidParameters);
+};
+        let mut seen = alloc::vec::Vec::new();
+        for .. in &self.chain{
+    if (q < 3) || (((q - 1) % n2) != 0) || (((q - 1) % p) != 0) || (q == p) || seen.contains(&q){
+    return Err(Error::InvalidParameters);
+};
+    seen.push(q);
+};
+        Ok(())
+    }
+}
+
+impl  RnsPoly {
+    pub fn limbs(&self) -> &[Poly]
+    {
+        &self.limbs
+    }
+}
+
+impl  KeySwitchKeySet {
+    pub fn max_level(&self) -> usize
+    {
+        self.keys.len() - 1
+    }
+    pub fn at(&self, mut level: usize) -> Option<&KeySwitchKey>
+    {
+        self.keys.get(level)
+    }
+    pub fn base(&self) -> u64
+    {
+        self.base
+    }
+}
+
+impl  Ciphertext {
+    pub fn level(&self) -> usize
+    {
+        self.level
+    }
+    pub fn parts(&self) -> &[RnsPoly]
+    {
+        &self.parts
+    }
+}
+
+impl  Context {
+    pub fn new(mut parameters: Parameters) -> Result<Self, Error>
+    {
+        parameters.validate()?;
+        let level_rings = parameters.chain.iter().map(|q| {
+    Ring::new(ring::Parameters { degree: parameters.degree, modulus: q })
+}).collect::<Vec<_>>()?;
+        let plaintext_ring = Ring::new(ring::Parameters { degree: parameters.degree, modulus: parameters.plaintext_modulus })?;
+        Ok(Self { parameters: parameters, level_rings: level_rings, plaintext_ring: plaintext_ring })
+    }
+    pub fn parameters(&self) -> &Parameters
+    {
+        &self.parameters
+    }
+    pub fn constant_slots(&self, mut value: u64) -> Vec<u64>
+    {
+        vec![(value % self.parameters.plaintext_modulus); self.parameters.degree]
+    }
+    pub fn max_level(&self) -> usize
+    {
+        self.parameters.chain.len() - 1
+    }
+    pub fn limbs(&self, mut level: usize) -> usize
+    {
+        level + 1
+    }
+    pub fn check_level(&self, mut level: usize) -> Result<(), Error>
+    {
+        if level > self.max_level(){
+    return Err(Error::InvalidParameters);
+};
+        Ok(())
+    }
+    pub fn zero(&self, mut level: usize) -> RnsPoly
+    {
+        RnsPoly { limbs: self.level_rings[..=level].iter().map(Ring::zero).collect() }
+    }
+    pub fn add_rns(&self, mut left: &RnsPoly, mut right: &RnsPoly) -> RnsPoly
+    {
+        RnsPoly { limbs: left.limbs.iter().zip(right.limbs.iter()).enumerate().map(|(i, (l, r))| self.level_rings[i].add(l, r)).collect::<Vec<_>>() }
+    }
+    pub fn mul_rns(&self, mut left: &RnsPoly, mut right: &RnsPoly) -> RnsPoly
+    {
+        RnsPoly { limbs: left.limbs.iter().zip(right.limbs.iter()).enumerate().map(|(i, (l, r))| self.level_rings[i].mul(l, r)).collect::<Vec<_>>() }
+    }
+    pub fn scalar_mul_rns(&self, mut value: &RnsPoly, mut scalar: u64) -> RnsPoly
+    {
+        RnsPoly { limbs: value.limbs.iter().enumerate().map(|(i, l)| self.level_rings[i].scalar_mul(l, scalar)).collect::<Vec<_>>() }
+    }
+    pub fn uniform_rns(&self, mut level: usize, mut random: &mut impl RandomSource) -> Result<RnsPoly, Error>
+    {
+        let mut limbs = Vec::with_capacity(self.limbs(level));
+        for ring in &self.level_rings[..=level]{
+    let mut slots = vec![(0 as u64); self.parameters.degree];
+    let modulus = ring.parameters().modulus;
+    let mut rng = |out| {
+    random.fill_bytes(out).map_err(|_| ring::Error::Randomness)
+};
+    ring::sample_uniform(&mut rng, modulus, &mut slots)?;
+    limbs.push(ring.from_slots(&slots)?);
+};
+        Ok(RnsPoly { limbs: limbs })
+    }
+    pub fn noise_rns(&self, mut level: usize, mut noise: &mut impl NoiseSource) -> Result<RnsPoly, Error>
+    {
+        let mut coeffs_i = vec![(0 as i64); self.parameters.degree];
+        noise.sample(&mut coeffs_i.n, self.parameters.noise_bound, &mut coeffs_i)?;
+        if coeffs_i.iter().any(|v| (v.unsigned_abs() > self.parameters.noise_bound)){
+    return Err(Error::NoiseSource);
+};
+        let mut limbs = Vec::with_capacity(self.limbs(level));
+        for ring in &self.level_rings[..=level]{
+    let q = ring.parameters().modulus;
+    let coeffs: Vec<u64> = coeffs_i.iter().map(|v| {
+    if v < 0{
+    q - (v.unsigned_abs() % q)
+} else {
+    (v as u64) % q
+}
+}).collect::<Vec<_>>();
+    limbs.push(ring.from_coeffs(&coeffs)?);
+};
+        Ok(RnsPoly { limbs: limbs })
+    }
+    pub fn embed(&self, mut level: usize, mut slots: &[u64]) -> Result<RnsPoly, Error>
+    {
+        if slots.len() != self.parameters.degree{
+    return Err(Error::LengthMismatch);
+};
+        if (level == 0) && slots.iter().all(|..| (v == 0)){
+    return Err(Error::InvalidParameters);
+};
+        let p = self.parameters.plaintext_modulus;
+        if slots.iter().any(|..| (v >= p)){
+    return Err(Error::InvalidParameters);
+};
+        let packed = self.plaintext_ring.from_slots(slots)?;
+        let m_coeffs = self.plaintext_ring.to_coeffs(&packed);
+        let mut limbs = Vec::with_capacity(self.limbs(level));
+        for ring in &self.level_rings[..=level]{
+    let q = ring.parameters().modulus;
+    let coeffs: Vec<u64> = m_coeffs.iter().map(|c| (c % q)).collect::<Vec<_>>();
+    limbs.push(ring.from_coeffs(&coeffs)?);
+};
+        Ok(RnsPoly { limbs: limbs })
+    }
+    pub fn keygen(&self, mut random: &mut impl RandomSource) -> Result<SecretKey, Error>
+    {
+        let mut coeffs = vec![(0 as i64); self.parameters.degree];
+        let mut byte = [(0 as u8); 1];
+        for c in coeffs.iter_mut(){
+    random.fill_bytes(&mut byte[..])?;
+    *c = (((byte[0] % 3) as i64) - 1);
+};
+        Ok(SecretKey { coeffs: coeffs })
+    }
+    pub fn encrypt(&self, mut sk: &SecretKey, mut level: usize, mut slots: &[u64], mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<Ciphertext, Error>
+    {
+        self.check_level(level)?;
+        if sk.coeffs.len() != self.parameters.degree{
+    return Err(Error::LengthMismatch);
+};
+        let p = self.parameters.plaintext_modulus;
+        let m = self.embed(level, slots)?;
+        let a = self.uniform_rns(level, random)?;
+        let e = self.noise_rns(level, noise)?;
+        let s = self.secret_rns(level, sk);
+        let mut c0 = self.mul_rns(&a, &s);
+        let pe = self.scalar_mul_rns(&e, p);
+        self.add_assign_rns(&mut c0, &m);
+        self.add_assign_rns(&mut c0, &pe);
+        let mut c1 = a;
+        for (i, limb) in c1.limbs.iter_mut().enumerate(){
+    self.level_rings[i].negate_assign(limb);
+};
+        Ok(Ciphertext { level: level, parts: vec![c0, c1] })
+    }
+    pub fn add_assign_rns(&self, mut left: &mut RnsPoly, mut right: &RnsPoly)
+    {
+        for (i, (l, r)) in left.limbs.iter_mut().zip(right.limbs.iter()).enumerate(){
+    self.level_rings[i].add_assign(l, r);
+}
+    }
+    pub fn secret_rns(&self, mut level: usize, mut sk: &SecretKey) -> RnsPoly
+    {
+        let limbs = self.level_rings[..=level].iter().map(|ring| {
+    let q = ring.parameters().modulus;
+    let coeffs: Vec<u64> = sk.coeffs.iter().map(|v| {
+    if v < 0{
+    q - (v.unsigned_abs() % q)
+} else {
+    (v as u64) % q
+}
+}).collect::<Vec<_>>();
+    ring.from_coeffs(&coeffs).expect("degree checked at keygen use")
+}).collect::<Vec<_>>();
+        RnsPoly { limbs: limbs }
+    }
+    pub fn decrypt(&self, mut sk: &SecretKey, mut ct: &Ciphertext) -> Result<Vec<u64>, Error>
+    {
+        if sk.coeffs.len() != self.parameters.degree{
+    return Err(Error::LengthMismatch);
+};
+        let p = self.parameters.plaintext_modulus;
+        let s = self.secret_rns(ct.level, sk);
+        let coeffs = self.level_rings[0].to_coeffs(&{
+    let ring0 = &self.level_rings[0];
+    let mut limb = ring0.mul(&ct.parts[1].limbs[0], &s.limbs[0]);
+    ring0.add_assign(&mut limb, &ct.parts[0].limbs[0]);
+    limb
+});
+        let q0 = self.parameters.chain[0];
+        let m_coeffs: Vec<u64> = coeffs.iter().map(|c| (ring::center(c, q0).rem_euclid((p as i128)) as u64)).collect::<Vec<_>>();
+        let packed = self.plaintext_ring.from_coeffs(&m_coeffs)?;
+        Ok(packed.slots().to_vec())
+    }
+    pub fn add(&self, mut left: &Ciphertext, mut right: &Ciphertext) -> Result<Ciphertext, Error>
+    {
+        let (left_owned, right_owned);
+        let mut l = left;
+        let mut r = right;
+        if l.level > r.level{
+    left_owned = self.switch_to(l, r.level)?;
+    l = &left_owned;
+} else if r.level > l.level{
+    right_owned = self.switch_to(r, l.level)?;
+    r = &right_owned;
+};
+        let parts = l.parts.iter().zip(r.parts.iter()).map(|(a, b)| self.add_rns(a, b)).collect::<Vec<_>>();
+        Ok(Ciphertext { level: l.level, parts: parts })
+    }
+    pub fn sub(&self, mut left: &Ciphertext, mut right: &Ciphertext) -> Result<Ciphertext, Error>
+    {
+        let (left_owned, right_owned);
+        let mut l = left;
+        let mut r = right;
+        if l.level > r.level{
+    left_owned = self.switch_to(l, r.level)?;
+    l = &left_owned;
+} else if r.level > l.level{
+    right_owned = self.switch_to(r, l.level)?;
+    r = &right_owned;
+};
+        let mut neg = r.clone();
+        for part in neg.parts.iter_mut(){
+    for (i, limb) in part.limbs.iter_mut().enumerate(){
+    self.level_rings[i].negate_assign(limb);
+};
+};
+        self.add(l, &neg)
+    }
+    pub fn switch_to(&self, mut ct: &Ciphertext, mut target: usize) -> Result<Ciphertext, Error>
+    {
+        let mut out = ct.clone();
+        while (out.level > target){
+    out = self.mod_switch_down(&out)?;
+};
+        Ok(out)
+    }
+    pub fn add_plain(&self, mut ct: &Ciphertext, mut slots: &[u64]) -> Result<Ciphertext, Error>
+    {
+        let m = self.embed(ct.level, slots)?;
+        let mut parts = ct.parts.clone();
+        self.add_assign_rns(&mut parts[0], &m);
+        Ok(Ciphertext { level: ct.level, parts: parts })
+    }
+    pub fn encrypt_one_like(&self, mut like: &Ciphertext) -> Result<Ciphertext, Error>
+    {
+        let mut one = self.zero(like.level.n, like.level);
+        for (i, limb) in one.limbs.iter_mut().enumerate(){
+    *limb = self.level_rings[i].constant(1.n, 1);
+};
+        Ok(Ciphertext { level: like.level, parts: vec![one, self.zero(like.level.n, like.level)] })
+    }
+    pub fn mul_plain(&self, mut ct: &Ciphertext, mut slots: &[u64]) -> Result<Ciphertext, Error>
+    {
+        let m = self.embed(ct.level, slots)?;
+        let parts = ct.parts.iter().map(|c| self.mul_rns(c, &m)).collect::<Vec<_>>();
+        Ok(Ciphertext { level: ct.level, parts: parts })
+    }
+    pub fn mul(&self, mut left: &Ciphertext, mut right: &Ciphertext, mut ksk: &KeySwitchKeySet) -> Result<Ciphertext, Error>
+    {
+        let (left_owned, right_owned);
+        let mut l = left;
+        let mut r = right;
+        if l.level > r.level{
+    left_owned = self.switch_to(l, r.level)?;
+    l = &left_owned;
+} else if r.level > l.level{
+    right_owned = self.switch_to(r, l.level)?;
+    r = &right_owned;
+};
+        let (left, right) = (l, r);
+        let level = left.level;
+        let ksk = ksk.at(level).ok_or(Error::LevelMismatch)?;
+        if ksk.level != level{
+    return Err(Error::LevelMismatch);
+};
+        let t0 = self.mul_rns(&left.parts[0], &right.parts[0]);
+        let mut t1 = self.mul_rns(&left.parts[0], &right.parts[1]);
+        let t1b = self.mul_rns(&left.parts[1], &right.parts[0]);
+        self.add_assign_rns_mut(&mut t1, &t1b);
+        let t2 = self.mul_rns(&left.parts[1], &right.parts[1]);
+        let mut c0 = t0;
+        let mut c1 = t1;
+        let t2_coeffs: Vec<Vec<u64>> = t2.limbs.iter().enumerate().map(|(i, limb)| self.level_rings[i].to_coeffs(limb)).collect::<Vec<_>>();
+        let base_bits = ksk.base.trailing_zeros() as usize;
+        if !ksk.base.is_power_of_two() || (ksk.base < 2){
+    return Err(Error::InvalidParameters);
+};
+        let _ = base_bits;
+        for (digit_index, (neg_a, b)) in ksk.parts.iter().enumerate(){
+    let shift = base_bits * digit_index;
+    let mut digit = self.zero(level.n, level);
+    if shift < 64{
+    for (i, ring_i) in self.level_rings[..=level].iter().enumerate(){
+    let coeffs: Vec<u64> = t2_coeffs[i].iter().map(|c| ((c >> shift) & (ksk.base - 1))).collect::<Vec<_>>();
+    digit.limbs[i] = ring_i.from_coeffs(&coeffs)?;
+}
+};
+    self.add_assign_rns_mut(&mut c0, &self.mul_rns(&digit, b));
+    self.add_assign_rns_mut(&mut c1, &self.mul_rns(&digit, neg_a));
+};
+        let product = Ciphertext { level: level, parts: vec![c0, c1] };
+        if level == 0{
+    Ok(product)
+} else {
+    self.mod_switch_down(&product)
+}
+    }
+    pub fn add_assign_rns_mut(&self, mut left: &mut RnsPoly, mut right: &RnsPoly)
+    {
+        self.add_assign_rns(left, right);
+    }
+    pub fn key_switch_keyset(&self, mut sk: &SecretKey, mut base: u64, mut digits: usize, mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<KeySwitchKeySet, Error>
+    {
+        let mut keys = Vec::with_capacity((self.max_level() + 1));
+        for level in 0..= self.max_level(){
+    keys.push(self.key_switch_keygen(sk, level, base, digits, random, noise)?);
+};
+        Ok(KeySwitchKeySet { keys: keys, base: base })
+    }
+    pub fn key_switch_keygen(&self, mut sk: &SecretKey, mut level: usize, mut base: u64, mut digits: usize, mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<KeySwitchKey, Error>
+    {
+        self.check_level(level)?;
+        if !base.is_power_of_two() || (base < 2) || (digits == 0){
+    return Err(Error::InvalidParameters);
+};
+        if ((base.trailing_zeros() as usize) * digits) < 64{
+    return Err(Error::InvalidParameters);
+};
+        let p = self.parameters.plaintext_modulus;
+        let s = self.secret_rns(level, sk);
+        let s2 = self.mul_rns(&s, &s);
+        let mut parts = Vec::with_capacity(digits);
+        for i in 0.. digits{
+    let a = self.uniform_rns(level, random)?;
+    let e = self.noise_rns(level, noise)?;
+    let mut b = self.mul_rns(&a, &s);
+    let pe = self.scalar_mul_rns(&e, p);
+    self.add_assign_rns(&mut b, &pe);
+    let mut scaled = s2.clone();
+    for (j, limb) in scaled.limbs.iter_mut().enumerate(){
+    let q = self.level_rings[j].parameters().modulus;
+    let factor = ring::pow_mod((base % q), i, q);
+    *limb = self.level_rings[j].scalar_mul(limb, factor);
+};
+    self.add_assign_rns(&mut b, &scaled);
+    let mut neg_a = a;
+    for (j, limb) in neg_a.limbs.iter_mut().enumerate(){
+    self.level_rings[j].negate_assign(limb);
+};
+    parts.push((neg_a, b));
+};
+        Ok(KeySwitchKey { level: level, base: base, parts: parts })
+    }
+    pub fn mod_switch_down(&self, mut ct: &Ciphertext) -> Result<Ciphertext, Error>
+    {
+        if (ct.level == 0) || (ct.level > self.max_level()){
+    return Err(Error::LevelMismatch);
+};
+        let p = self.parameters.plaintext_modulus;
+        let from = ct.level;
+        let q_top = self.parameters.chain[from];
+        let inv_p_top = ring::inverse_mod((p % q_top), q_top).ok_or(Error::Arithmetic)?;
+        let parts = ct.parts.iter().map(|part| {
+    let top_coeffs = self.level_rings[from].to_coeffs(&part.limbs[from]);
+    let deltas: Vec<u64> = top_coeffs.iter().map(|c| ring::mul_mod(ring::mul_mod(c, inv_p_top, q_top), 1, q_top)).collect::<Vec<_>>();
+    let mut limbs = Vec::with_capacity(from);
+    for (i, ring_i) in self.level_rings[..from].iter().enumerate(){
+    let q_i = ring_i.parameters().modulus;
+    let inv_q_top = ring::inverse_mod((q_top % q_i), q_i).ok_or(Error::Arithmetic)?;
+    let ci = ring_i.to_coeffs(&part.limbs[i]);
+    let p_mod_qi = p % q_i;
+    let out: Vec<u64> = ci.iter().zip(deltas.iter()).map(|(c, d)| {
+    let pd = ring::mul_mod(p_mod_qi, d, q_i);
+    let diff = ring::sub_mod(c, pd, q_i);
+    ring::mul_mod(diff, inv_q_top, q_i)
+}).collect::<Vec<_>>();
+    limbs.push(ring_i.from_coeffs(&out)?);
+};
+    Ok(RnsPoly { limbs: limbs })
+}).collect::<Vec<_>>()?;
+        Ok(Ciphertext { level: (from - 1), parts: parts })
+    }
+}
+
+impl  LatticeRnsDd {
+    pub fn new(mut n: usize, mut p: u64, mut q0: u64, mut q1: u64, mut random: &mut impl SpecRng) -> Result<Self, RnsError>
+    {
+        if (n == 0) || (p < 3) || ((p % 2) == 0) || ((q0 % p) != 0) || (q1 == q0){
+    return Err(RnsError::InvalidParameters);
+};
+        let mut delta = vec![(0 as u64); n];
+        for c in delta.iter_mut(){
+    let r = random.next_u32() % 3;
+    *c = match r {
+    .. => 0,
+    .. => 1,
+    _ => (p - 1),
+};
+};
+        delta[0] = 1;
+        let dq0 = to_limb(&delta, p, q0);
+        let dq1 = to_limb(&delta, p, q1);
+        let u0 = uniform_limb(n, q0, random);
+        let u1 = uniform_limb(n, q1, random);
+        let ud0 = mul_limb(&u0, &dq0, q0, &ntt_ctx(n, q0));
+        let ud1 = mul_limb(&u1, &dq1, q1, &ntt_ctx(n, q1));
+        let v0 = add_limb(&negate_limb(&ud0, q0), &noise_limb(n, p, q0, random), q0);
+        let v1 = add_limb(&negate_limb(&ud1, q1), &noise_limb(n, p, q1, random), q1);
+        let d2q0 = mul_limb(&dq0, &dq0, q0, &ntt_ctx(n, q0));
+        let d2q1 = mul_limb(&dq1, &dq1, q1, &ntt_ctx(n, q1));
+        let ud20 = mul_limb(&u0, &d2q0, q0, &ntt_ctx(n, q0));
+        let ud21 = mul_limb(&u1, &d2q1, q1, &ntt_ctx(n, q1));
+        let w0 = add_limb(&sub_limb(&negate_limb(&dq0, q0), &ud20, q0), &noise_limb(n, p, q0, random), q0);
+        let w1 = add_limb(&sub_limb(&negate_limb(&dq1, q1), &ud21, q1), &noise_limb(n, p, q1, random), q1);
+        let red = |limb| {
+    limb.iter().map(|c| (c % p)).collect::<Vec<_>>()
+};
+        let triple_rp = (red(&u0), red(&v0), red(&w0));
+        let delta_pinned = Delta { coeffs: delta.clone(), p: p };
+        Ok(Self { n: n, p: p, q0: q0, q1: q1, delta: delta, delta_pinned: delta_pinned, triple: (Rns2 { l0: u0, l1: u1 }, Rns2 { l0: v0, l1: v1 }, Rns2 { l0: w0, l1: w1 }), triple_rp: triple_rp, ntt0: ring::Ntt::new(n, q0).ok(), ntt1: ring::Ntt::new(n, q1).ok(), ntt_p: ring::Ntt::new(n, p).ok() })
+    }
+    pub fn degree(&self) -> usize
+    {
+        self.n
+    }
+    pub fn p(&self) -> u64
+    {
+        self.p
+    }
+    pub fn modulus_bits(&self) -> u32
+    {
+        ((64 - self.q0.leading_zeros()) + (64 - self.q1.leading_zeros())) - 2
+    }
+    pub fn delta(&self) -> &LabelPoly
+    {
+        &self.delta
+    }
+    pub fn delta_pinned_ref(&self) -> &Delta
+    {
+        &self.delta_pinned
+    }
+    pub fn row(&self, mut t: i64, mut random: &mut impl SpecRng) -> RnsRowCt
+    {
+        let (p, q0, q1) = (self.p, self.q0, self.q1);
+        let u2 = Rns2 { l0: uniform_limb(self.n, q0, random), l1: uniform_limb(self.n, q1, random) };
+        let dq0 = to_limb(&self.delta, p, q0);
+        let dq1 = to_limb(&self.delta, p, q1);
+        let u2d0 = mul_limb(&u2.l0, &dq0, q0, &self.ntt0);
+        let u2d1 = mul_limb(&u2.l1, &dq1, q1, &self.ntt1);
+        let td0 = scale_limb(&dq0, t, q0);
+        let td1 = scale_limb(&dq1, t, q1);
+        let e0 = noise_limb(self.n, p, q0, random);
+        let e1 = noise_limb(self.n, p, q1, random);
+        RnsRowCt { u1: Rns2 { l0: add_limb(&sub_limb(&td0, &u2d0, q0), &e0, q0), l1: add_limb(&sub_limb(&td1, &u2d1, q1), &e1, q1) }, u2: u2 }
+    }
+    pub fn dec_row(&self, mut tau: &RnsRowCt) -> LabelPoly
+    {
+        let q0 = self.q0;
+        let dq0 = to_limb(&self.delta, self.p, q0);
+        let u2d0 = mul_limb(&tau.u2.l0, &dq0, q0, &self.ntt0);
+        let phase0 = add_limb(&tau.u1.l0, &u2d0, q0);
+        round_limb0_to_rp(&phase0, q0, self.p)
+    }
+    pub fn dd0(&self, mut a: &LabelPoly, mut tau: &RnsRowCt) -> LabelPoly
+    {
+        let (p, q0) = (self.p, self.q0);
+        let a_q0: Limb = a.iter().map(|c| (c % q0)).collect::<Vec<_>>();
+        let prod0 = mul_limb(&tau.u2.l0, &a_q0, q0, &self.ntt0);
+        round_limb0_to_rp(&prod0, q0, p)
+    }
+    pub fn dd_i(&self, mut a: &LabelPoly, mut i: bool, mut tau: &RnsRowCt) -> LabelPoly
+    {
+        let (p, q0) = (self.p, self.q0);
+        let a_q0: Limb = a.iter().map(|c| (c % q0)).collect::<Vec<_>>();
+        let mut acc0 = mul_limb(&tau.u2.l0, &a_q0, q0, &self.ntt0);
+        if i{
+    acc0 = add_limb(&acc0, &tau.u1.l0, q0);
+};
+        round_limb0_to_rp(&acc0, q0, p)
+    }
+    pub fn hss_mul_rp(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool) -> LabelPoly
+    {
+        let p = self.p;
+        let (u, v, w) = &self.triple_rp;
+        let ab = self.mul_p(a, b);
+        let mut out = self.mul_p(&ab, u);
+        if i{
+    let bv = self.mul_p(b, v);
+    out = ring::add_coeffs(&out, &bv, p);
+};
+        if j{
+    let av = self.mul_p(a, v);
+    out = ring::add_coeffs(&out, &av, p);
+};
+        if i && j{
+    out = ring::sub_coeffs(&out, w, p);
+};
+        out
+    }
+    pub fn mul_p(&self, mut a: &[u64], mut b: &[u64]) -> LabelPoly
+    {
+        match &self.ntt_p {
+    Some(ntt) => ring::negacyclic_mul_ntt(a, b, ntt),
+    None => ring::negacyclic_mul_coeffs(a, b, self.p),
+}
+    }
+    pub fn dd_ij(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut tau: &RnsRowCt) -> LabelPoly
+    {
+        let (p, q0) = (self.p, self.q0);
+        let share = self.hss_mul_rp(a, i, b, j);
+        let share_q0: Limb = share.iter().map(|c| (c % q0)).collect::<Vec<_>>();
+        let mut acc0 = mul_limb(&tau.u2.l0, &share_q0, q0, &self.ntt0);
+        if i && j{
+    acc0 = add_limb(&acc0, &tau.u1.l0, q0);
+};
+        round_limb0_to_rp(&acc0, q0, p)
+    }
+    pub fn eval(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut taus: &[RnsRowCt; 3]) -> LabelPoly
+    {
+        let p = self.p;
+        let mut out = self.dd_i(a, i, &taus[0]);
+        out = ring::add_coeffs(&out, &self.dd_i(b, j, &taus[1]), p);
+        ring::add_coeffs(&out, &self.dd_ij(a, i, b, j, &taus[2]), p)
+    }
+}
+
+impl  DdGadget for LatticeRnsDd {
+    fn p(&self) -> u64
+    {
+        self.p
+    }
+    fn delta(&self) -> &Delta
+    {
+        &self.delta_pinned
+    }
+    fn row(&self, mut t: i64, mut random: &mut impl SpecRng) -> RowCt
+    {
+        let tau = LatticeRnsDd::row(self, t, random);
+        RowCt { c0: tau.u1.l0.iter().map(|c| (c % self.p)).collect::<Vec<_>>(), c1: tau.u2.l0.iter().map(|c| (c % self.p)).collect::<Vec<_>>() }
+    }
+    fn dd0(&self, mut a: &LabelPoly, mut tau: &RowCt) -> LabelPoly
+    {
+        self.mul_p(&tau.c1, a)
+    }
+    fn dd_i(&self, mut a: &LabelPoly, mut i: bool, mut tau: &RowCt) -> LabelPoly
+    {
+        let base = DdGadget::dd0(self, a, tau);
+        if i{
+    ring::add_coeffs(&base, &tau.c0, self.p)
+} else {
+    base
+}
+    }
+    fn dd_ij(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut tau: &RowCt) -> LabelPoly
+    {
+        let share = self.hss_mul_rp(a, i, b, j);
+        let base = self.mul_p(&tau.c1, &share);
+        if i && j{
+    ring::add_coeffs(&base, &tau.c0, self.p)
+} else {
+    base
+}
+    }
+    fn eval(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut taus: &[RowCt; 3]) -> LabelPoly
+    {
+        let mut out = DdGadget::dd_i(self, a, i, &taus[0]);
+        out = ring::add_coeffs(&out, &DdGadget::dd_i(self, b, j, &taus[1]), self.p);
+        ring::add_coeffs(&out, &DdGadget::dd_ij(self, a, i, b, j, &taus[2]), self.p)
+    }
+}
+
+impl  DdGadget for LatticeDd {
+    fn p(&self) -> u64
+    {
+        self.p
+    }
+    fn delta(&self) -> &Delta
+    {
+        &self.delta_pinned
+    }
+    fn row(&self, mut t: i64, mut random: &mut impl SpecRng) -> RowCt
+    {
+        let tau = LatticeDd::row(self, t, random);
+        rowct_from_lattice(&tau, self.p)
+    }
+    fn dd0(&self, mut a: &LabelPoly, mut tau: &RowCt) -> LabelPoly
+    {
+        self.mul_p(&tau.c1, a)
+    }
+    fn dd_i(&self, mut a: &LabelPoly, mut i: bool, mut tau: &RowCt) -> LabelPoly
+    {
+        let base = DdGadget::dd0(self, a, tau);
+        if i{
+    ring::add_coeffs(&base, &tau.c0, self.p)
+} else {
+    base
+}
+    }
+    fn dd_ij(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut tau: &RowCt) -> LabelPoly
+    {
+        let share = self.hss_mul_rp(a, i, b, j);
+        let base = self.mul_p(&tau.c1, &share);
+        if i && j{
+    ring::add_coeffs(&base, &tau.c0, self.p)
+} else {
+    base
+}
+    }
+    fn eval(&self, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut taus: &[RowCt; 3]) -> LabelPoly
+    {
+        let mut out = DdGadget::dd_i(self, a, i, &taus[0]);
+        out = ring::add_coeffs(&out, &DdGadget::dd_i(self, b, j, &taus[1]), self.p);
+        ring::add_coeffs(&out, &DdGadget::dd_ij(self, a, i, b, j, &taus[2]), self.p)
+    }
+}
+
+impl  LatticeDd {
+    pub fn new(mut n: usize, mut p: u64, mut q: u64, mut random: &mut impl SpecRng) -> Result<Self, LatticeError>
+    {
+        if (n == 0) || (p < 3) || ((p % 2) == 0) || ((q % p) != 0) || ((q % 2) == 0){
+    return Err(LatticeError::InvalidParameters);
+};
+        let mut delta = vec![(0 as u64); n];
+        for c in delta.iter_mut(){
+    let r = random.next_u32() % 3;
+    *c = match r {
+    .. => 0,
+    .. => 1,
+    _ => (p - 1),
+};
+};
+        delta[0] = 1;
+        let delta_q: RqPoly = delta.iter().map(|c| {
+    if c == 0{
+    0
+} else if c == 1{
+    1
+} else {
+    q - 1
+}
+}).collect::<Vec<_>>();
+        let u = sample_uniform_rq(n, q, random);
+        let ud = negacyclic_mul_rq(&u, &delta_q, q);
+        let e1 = sample_noise_rq(n, p, q, random);
+        let v = add_rq(&negate_rq(&ud, q), &e1, q);
+        let d2_q = negacyclic_mul_rq(&delta_q, &delta_q, q);
+        let ud2 = negacyclic_mul_rq(&u, &d2_q, q);
+        let e2 = sample_noise_rq(n, p, q, random);
+        let neg_delta_q = negate_rq(&delta_q, q);
+        let w = add_rq(&sub_rq(&neg_delta_q, &ud2, q), &e2, q);
+        let red = |poly| {
+    poly.iter().map(|c| (c % p)).collect::<Vec<_>>()
+};
+        let triple_rp = (red(&u), red(&v), red(&w));
+        let delta_pinned = Delta { coeffs: delta.clone(), p: p };
+        let ntt_q = ring::Ntt::new(n, q).ok();
+        let ntt_p = ring::Ntt::new(n, p).ok();
+        Ok(Self { n: n, p: p, q: q, delta: delta, delta_pinned: delta_pinned, triple: (u, v, w), triple_rp: triple_rp, ntt_q: ntt_q, ntt_p: ntt_p })
+    }
+    pub fn mul_q(&self, mut a: &[u64], mut b: &[u64]) -> RqPoly
+    {
+        match &self.ntt_q {
+    Some(ntt) => ring::negacyclic_mul_ntt(a, b, ntt),
+    None => negacyclic_mul_rq(a, b, self.q),
+}
+    }
+    pub fn mul_p(&self, mut a: &[u64], mut b: &[u64]) -> RpPoly
+    {
+        match &self.ntt_p {
+    Some(ntt) => ring::negacyclic_mul_ntt(a, b, ntt),
+    None => ring::negacyclic_mul_coeffs(a, b, self.p),
+}
+    }
+    pub fn hss_mul_rp(&self, mut a: &RpPoly, mut i: bool, mut b: &RpPoly, mut j: bool) -> RpPoly
+    {
+        let p = self.p;
+        let (u, v, w) = &self.triple_rp;
+        let ab = self.mul_p(a, b);
+        let mut out = self.mul_p(&ab, u);
+        if i{
+    let bv = self.mul_p(b, v);
+    out = ring::add_coeffs(&out, &bv, p);
+};
+        if j{
+    let av = self.mul_p(a, v);
+    out = ring::add_coeffs(&out, &av, p);
+};
+        if i && j{
+    out = ring::sub_coeffs(&out, w, p);
+};
+        out
+    }
+    pub fn degree(&self) -> usize
+    {
+        self.n
+    }
+    pub fn p(&self) -> u64
+    {
+        self.p
+    }
+    pub fn q(&self) -> u64
+    {
+        self.q
+    }
+    pub fn delta(&self) -> &RpPoly
+    {
+        &self.delta
+    }
+    pub fn row(&self, mut t: i64, mut random: &mut impl SpecRng) -> LatticeRowCt
+    {
+        let (n, p, q) = (self.n, self.p, self.q);
+        let u2 = sample_uniform_rq(n, q, random);
+        let delta_q: RqPoly = self.delta.iter().map(|c| {
+    if c == 0{
+    0
+} else if c == 1{
+    1
+} else {
+    q - 1
+}
+}).collect::<Vec<_>>();
+        let u2d = self.mul_q(&u2, &delta_q);
+        let td: RqPoly = delta_q.iter().map(|c| {
+    let c = c as i128;
+    let v = c * (t as i128);
+    v.rem_euclid((q as i128)) as u64
+}).collect::<Vec<_>>();
+        let e = sample_noise_rq(n, p, q, random);
+        let u1 = add_rq(&sub_rq(&td, &u2d, q), &e, q);
+        LatticeRowCt { u1: u1, u2: u2 }
+    }
+    pub fn dec_row(&self, mut tau: &LatticeRowCt) -> RpPoly
+    {
+        let q = self.q;
+        let delta_q: RqPoly = self.delta.iter().map(|c| {
+    if c == 0{
+    0
+} else if c == 1{
+    1
+} else {
+    q - 1
+}
+}).collect::<Vec<_>>();
+        let u2d = self.mul_q(&tau.u2, &delta_q);
+        let phase = add_rq(&tau.u1, &u2d, q);
+        round_to_rp(&phase, q, self.p)
+    }
+    pub fn dd0(&self, mut a: &RpPoly, mut tau: &LatticeRowCt) -> RpPoly
+    {
+        let a_q: RqPoly = a.iter().map(|c| (c % self.q)).collect::<Vec<_>>();
+        let prod = self.mul_q(&tau.u2, &a_q);
+        round_to_rp(&prod, self.q, self.p)
+    }
+    pub fn dd_i(&self, mut a: &RpPoly, mut i: bool, mut tau: &LatticeRowCt) -> RpPoly
+    {
+        let mut acc = self.dd0_raw(a, tau);
+        if i{
+    acc = add_rq(&acc, &tau.u1, self.q);
+};
+        round_to_rp(&acc, self.q, self.p)
+    }
+    pub fn dd0_raw(&self, mut a: &RpPoly, mut tau: &LatticeRowCt) -> RqPoly
+    {
+        let a_q: RqPoly = a.iter().map(|c| (c % self.q)).collect::<Vec<_>>();
+        self.mul_q(&tau.u2, &a_q)
+    }
+    pub fn hss_mul(&self, mut a: &RpPoly, mut i: bool, mut b: &RpPoly, mut j: bool) -> RpPoly
+    {
+        let q = self.q;
+        let (u, v, w) = &self.triple;
+        let a_q: RqPoly = a.iter().map(|c| (c % q)).collect::<Vec<_>>();
+        let b_q: RqPoly = b.iter().map(|c| (c % q)).collect::<Vec<_>>();
+        let ab = self.mul_q(&a_q, &b_q);
+        let mut acc = self.mul_q(&ab, u);
+        if i{
+    let bv = self.mul_q(&b_q, v);
+    acc = add_rq(&acc, &bv, q);
+};
+        if j{
+    let av = self.mul_q(&a_q, v);
+    acc = add_rq(&acc, &av, q);
+};
+        if i && j{
+    acc = sub_rq(&acc, w, q);
+};
+        round_to_rp(&acc, q, self.p)
+    }
+    pub fn dd_ij(&self, mut a: &RpPoly, mut i: bool, mut b: &RpPoly, mut j: bool, mut tau: &LatticeRowCt) -> RpPoly
+    {
+        let q = self.q;
+        let share = self.hss_mul_raw(a, i, b, j);
+        let mut acc = self.mul_q(&tau.u2, &share);
+        if i && j{
+    acc = add_rq(&acc, &tau.u1, q);
+};
+        round_to_rp(&acc, q, self.p)
+    }
+    pub fn hss_mul_raw(&self, mut a: &RpPoly, mut i: bool, mut b: &RpPoly, mut j: bool) -> RqPoly
+    {
+        let q = self.q;
+        let (u, v, w) = &self.triple;
+        let a_q: RqPoly = a.iter().map(|c| (c % q)).collect::<Vec<_>>();
+        let b_q: RqPoly = b.iter().map(|c| (c % q)).collect::<Vec<_>>();
+        let ab = self.mul_q(&a_q, &b_q);
+        let mut acc = self.mul_q(&ab, u);
+        if i{
+    let bv = self.mul_q(&b_q, v);
+    acc = add_rq(&acc, &bv, q);
+};
+        if j{
+    let av = self.mul_q(&a_q, v);
+    acc = add_rq(&acc, &av, q);
+};
+        if i && j{
+    acc = sub_rq(&acc, w, q);
+};
+        acc
+    }
+    pub fn eval(&self, mut a: &RpPoly, mut i: bool, mut b: &RpPoly, mut j: bool, mut taus: &[LatticeRowCt; 3]) -> RpPoly
+    {
+        let p = self.p;
+        let mut out = self.dd_i(a, i, &taus[0]);
+        out = add_rp(&out, &self.dd_i(b, j, &taus[1]), p);
+        add_rp(&out, &self.dd_ij(a, i, b, j, &taus[2]), p)
+    }
+}
+
+impl  Parameters {
+    pub fn validate(self) -> Result<(), Error>
+    {
+        if (self.degree < 2) || !self.degree.is_power_of_two() || (self.modulus < 3){
+    return Err(Error::InvalidParameters);
+};
+        if ((self.modulus - 1) % (2 * (self.degree as u64))) != 0{
+    return Err(Error::InvalidParameters);
+};
+        Ok(())
+    }
+}
+
+impl  Poly {
+    pub fn slots(&self) -> &[u64]
+    {
+        &self.slots
+    }
+}
+
+impl  Ring {
+    pub fn new(mut parameters: Parameters) -> Result<Self, Error>
+    {
+        parameters.validate()?;
+        Ok(Self { ntt: Ntt::new(parameters.degree, parameters.modulus)?, parameters: parameters })
+    }
+    pub fn parameters(&self) -> Parameters
+    {
+        self.parameters
+    }
+    pub fn zero(&self) -> Poly
+    {
+        Poly { slots: vec![0; self.parameters.degree] }
+    }
+    pub fn constant(&self, mut value: u64) -> Poly
+    {
+        Poly { slots: vec![(value % self.parameters.modulus); self.parameters.degree] }
+    }
+    pub fn from_slots(&self, mut slots: &[u64]) -> Result<Poly, Error>
+    {
+        if slots.len() != self.parameters.degree{
+    return Err(Error::LengthMismatch);
+};
+        let q = self.parameters.modulus;
+        Ok(Poly { slots: slots.iter().map(|v| (v % q)).collect::<Vec<_>>() })
+    }
+    pub fn uniform(&self, mut random: &mut impl FnMut(&[u8]) -> Result<(), Error>) -> Result<Poly, Error>
+    {
+        let mut value = self.zero();
+        sample_uniform(random, self.parameters.modulus, &mut value.slots)?;
+        Ok(value)
+    }
+    pub fn to_coeffs(&self, mut value: &Poly) -> Vec<u64>
+    {
+        let mut coeffs = value.slots.clone();
+        self.ntt.inverse(&mut coeffs);
+        coeffs
+    }
+    pub fn from_coeffs(&self, mut coeffs: &[u64]) -> Result<Poly, Error>
+    {
+        if coeffs.len() != self.parameters.degree{
+    return Err(Error::LengthMismatch);
+};
+        let mut slots = coeffs.to_vec();
+        self.ntt.forward(&mut slots);
+        Ok(Poly { slots: slots })
+    }
+    pub fn add(&self, mut left: &Poly, mut right: &Poly) -> Poly
+    {
+        let mut out = left.clone();
+        self.add_assign(&mut out, right);
+        out
+    }
+    pub fn sub(&self, mut left: &Poly, mut right: &Poly) -> Poly
+    {
+        let mut out = left.clone();
+        self.sub_assign(&mut out, right);
+        out
+    }
+    pub fn mul(&self, mut left: &Poly, mut right: &Poly) -> Poly
+    {
+        let q = self.parameters.modulus;
+        Poly { slots: left.slots.iter().zip(right.slots.iter()).map(|(l, r)| mul_mod(l, r, q)).collect::<Vec<_>>() }
+    }
+    pub fn scalar_mul(&self, mut value: &Poly, mut scalar: u64) -> Poly
+    {
+        let q = self.parameters.modulus;
+        let scalar = scalar % q;
+        Poly { slots: value.slots.iter().map(|v| mul_mod(v, scalar, q)).collect::<Vec<_>>() }
+    }
+    pub fn add_assign(&self, mut left: &mut Poly, mut right: &Poly)
+    {
+        let q = self.parameters.modulus;
+        for (l, ..) in left.slots.iter_mut().zip(right.slots.iter()){
+    *l = add_mod(*l, r, q);
+}
+    }
+    pub fn sub_assign(&self, mut left: &mut Poly, mut right: &Poly)
+    {
+        let q = self.parameters.modulus;
+        for (l, ..) in left.slots.iter_mut().zip(right.slots.iter()){
+    *l = sub_mod(*l, r, q);
+}
+    }
+    pub fn gadget_decompose_coeffs(&self, mut coeffs: &[u64], mut base: u64, mut digits: usize) -> Result<Vec<Vec<u64>>, Error>
+    {
+        if (coeffs.len() != self.parameters.degree) || !base.is_power_of_two(){
+    return Err(Error::LengthMismatch);
+};
+        let mut out = vec![vec![(0 as u64); self.parameters.degree]; digits];
+        let bits = base.trailing_zeros() as usize;
+        for (i, ..) in coeffs.iter().enumerate(){
+    for d in 0.. digits{
+    out[d][i] = ((c >> (bits * d)) & (base - 1));
+};
+};
+        Ok(out)
+    }
+    pub fn negate_assign(&self, mut value: &mut Poly)
+    {
+        let q = self.parameters.modulus;
+        for v in value.slots.iter_mut(){
+    if *v != 0{
+    *v = (q - *v);
+};
+}
+    }
+}
+
+impl  Ntt {
+    pub fn new(mut degree: usize, mut modulus: u64) -> Result<Self, Error>
+    {
+        if (degree == 0) || !degree.is_power_of_two() || (((modulus - 1) % (2 * (degree as u64))) != 0){
+    return Err(Error::Arithmetic);
+};
+        let psi = find_negacyclic_root(degree, modulus).ok_or(Error::Arithmetic)?;
+        let omega = mul_mod(psi, psi, modulus);
+        let inverse_psi = inverse_mod(psi, modulus).ok_or(Error::Arithmetic)?;
+        let inverse_omega = inverse_mod(omega, modulus).ok_or(Error::Arithmetic)?;
+        let inverse_degree = inverse_mod((degree as u64), modulus).ok_or(Error::Arithmetic)?;
+        let mut psi_powers = Vec::with_capacity(degree);
+        let mut acc = 1 as u64;
+        for _ in 0.. degree{
+    psi_powers.push(acc);
+    acc = mul_mod(acc, psi, modulus);
+};
+        let mut inv_psi_powers_scaled = Vec::with_capacity(degree);
+        let mut acc = 1 as u64;
+        for _ in 0.. degree{
+    inv_psi_powers_scaled.push(mul_mod(acc, inverse_degree, modulus));
+    acc = mul_mod(acc, inverse_psi, modulus);
+};
+        let mut fwd_twiddles = Vec::new();
+        let mut inv_twiddles = Vec::new();
+        let mut length = 2;
+        while (length <= degree){
+    fwd_twiddles.push(pow_mod(omega, (degree / length), modulus));
+    inv_twiddles.push(pow_mod(inverse_omega, (degree / length), modulus));
+    length *= 2;
+};
+        Ok(Self { modulus: modulus, degree: degree, psi_powers: psi_powers, inv_psi_powers_scaled: inv_psi_powers_scaled, fwd_twiddles: fwd_twiddles, inv_twiddles: inv_twiddles })
+    }
+    pub fn modulus(&self) -> u64
+    {
+        self.modulus
+    }
+    pub fn degree(&self) -> usize
+    {
+        self.degree
+    }
+    pub fn forward(&self, mut values: &mut [u64])
+    {
+        for (value, ..) in values.iter_mut().zip(self.psi_powers.iter()){
+    *value = mul_mod(*value, s, self.modulus);
+};
+        self.cyclic(values, &self.fwd_twiddles);
+    }
+    pub fn inverse(&self, mut values: &mut [u64])
+    {
+        self.cyclic(values, &self.inv_twiddles);
+        for (value, ..) in values.iter_mut().zip(self.inv_psi_powers_scaled.iter()){
+    *value = mul_mod(*value, s, self.modulus);
+}
+    }
+    pub fn cyclic(&self, mut values: &mut [u64], mut twiddles: &[u64])
+    {
+        bit_reverse(values);
+        let mut length = 2;
+        let mut stage = 0;
+        while (length <= self.degree){
+    let step = twiddles[stage];
+    for start in 0..self.degree.step_by(length){
+    let mut twiddle = 1;
+    for offset in 0.. length / 2{
+    let left = values[start + offset];
+    let right = mul_mod(values[start + offset + (length / 2)], twiddle, self.modulus);
+    values[start + offset] = add_mod(left, right, self.modulus);
+    values[start + offset + (length / 2)] = sub_mod(left, right, self.modulus);
+    twiddle = mul_mod(twiddle, step, self.modulus);
+};
+};
+    length *= 2;
+    stage += 1;
+}
+    }
+}
+
+impl  Variant {
+    pub fn bits_per_and(self) -> usize
+    {
+        match self {
+    .. => 1,
+    _ => 5,
+}
+    }
+    pub fn bits_per_xor(self) -> usize
+    {
+        match self {
+    _ => 1,
+    .. => 0,
+}
+    }
+}
+
+impl  WireState {
+    pub fn active_label(&self, mut masked_bit: bool, mut delta: &GlobalDelta, mut p: u64) -> u64
+    {
+        if masked_bit{
+    (self.a0 + delta.value()) % p
+} else {
+    self.a0
+}
+    }
+}
+
+impl  GlobalDelta {
+    pub fn new(mut delta: u64, mut plaintext_modulus: u64) -> Option<Self>
+    {
+        if (delta == 0) || (delta >= plaintext_modulus) || ((delta & 1) == 0){
+    return None;
+};
+        Some(Self { delta: delta })
+    }
+    pub fn value(&self) -> u64
+    {
+        self.delta
+    }
+    pub fn inverse(&self, mut plaintext_modulus: u64) -> Option<u64>
+    {
+        ring::inverse_mod(self.delta, plaintext_modulus)
+    }
+}
+
+impl  Stitch {
+    pub fn bits(&self) -> usize
+    {
+        match self {
+    Self::OneBit(_) => 1,
+    Self::FiveBits(_) => 5,
+}
+    }
+    pub fn correction(&self) -> bool
+    {
+        match self {
+    Self::OneBit(b) => *b,
+    Self::FiveBits(b) => ((b & 1) == 1),
+}
+    }
+    pub fn five(mut correction: bool) -> Self
+    {
+        let s = u8::from(correction);
+        let pattern = (s << 1) | (u8::from((!correction & true)) << 2) | (s << 3) | (u8::from((!correction & true)) << 4);
+        Self::FiveBits((s | pattern))
+    }
+    pub fn check_five(&self) -> Result<bool, StitchError>
+    {
+        match *self {
+    Self::OneBit(_) => Err(StitchError::WrongVariant),
+    Self::FiveBits(b) => {
+    if (b & !31) != 0{
+    return Err(StitchError::NonCanonicalBit);
+};
+    let s = b & 1;
+    let expected = Self::five((s == 1));
+    if *self != expected{
+    return Err(StitchError::NonCanonicalBit);
+};
+    Ok((s == 1))
+},
+}
+    }
+}
+
+impl  core::fmt::Display for StitchError {
+    fn fmt(&self, mut f: &mut Formatter) -> Result
+    {
+        match self {
+    _ => f.write_str("stitching record stream is exhausted"),
+    _ => f.write_str("stitching record variant mismatch"),
+    _ => f.write_str("stitching record is not canonical"),
+    _ => f.write_str("free-XOR payload exceeds reduction bound"),
+    Self::Crypto(_) => f.write_str("underlying SWHE error"),
+}
+    }
+}
+
+impl  core::error::Error for StitchError {
+}
+
+impl  From<SwheError> for StitchError {
+    fn from(mut e: SwheError) -> Self
+    {
+        Self::Crypto(e)
+    }
+}
+
+impl  Circuit {
+    pub fn wires(&self) -> usize
+    {
+        self.inputs + self.gates.len()
+    }
+    pub fn validate(&self) -> Result<(), StitchError>
+    {
+        let wires = self.wires();
+        for (i, gate) in self.gates.iter().enumerate(){
+    let out = self.inputs + i;
+    let (a, b) = gate.operands();
+    if (a >= out) || (b >= out) || (out >= wires){
+    return Err(StitchError::WrongVariant);
+};
+};
+        if self.outputs.iter().any(|..| (o >= wires)){
+    return Err(StitchError::WrongVariant);
+};
+        Ok(())
+    }
+    pub fn eval_plain(&self, mut inputs: &[bool]) -> Result<Vec<bool>, StitchError>
+    {
+        if inputs.len() != self.inputs{
+    return Err(StitchError::WrongVariant);
+};
+        self.validate()?;
+        let mut values = vec![false; self.wires()];
+        values[..self.inputs].copy_from_slice(inputs);
+        for (i, gate) in self.gates.iter().enumerate(){
+    let (a, b) = gate.operands();
+    values[self.inputs + i] = match gate {
+    Gate::And { .. } => (values[a] & values[b]),
+    Gate::Xor { .. } => (values[a] ^ values[b]),
+    Gate::Not { .. } => !values[a],
+};
+};
+        Ok(self.outputs.iter().map(|o| values[o]).collect::<Vec<_>>())
+    }
+}
+
+impl  Gate {
+    pub fn operands(&self) -> (usize, usize)
+    {
+        match *self {
+    .. => (a, b),
+    Self::Not { a: a } => (a, a),
+}
+    }
+    pub fn out_at(&self, mut inputs: usize, mut index: usize) -> usize
+    {
+        inputs + index
+    }
+}
+
+impl  ReferenceEquation {
+    pub fn unwrap(&self, mut ctx: &Context, mut label: &Ciphertext, mut expanded: &ExpandedWire, mut delta: &GlobalDelta) -> Result<Ciphertext, StitchError>
+    {
+        let p = ctx.parameters().plaintext_modulus;
+        let inv = delta.inverse(p).ok_or(StitchError::NonCanonicalBit)?;
+        let ct_a0 = ctx.switch_to(&expanded.ct_a0, label.level())?;
+        let diff = ctx.sub(label, &ct_a0)?;
+        Ok(ctx.mul_plain(&diff, &ctx.constant_slots(inv))?)
+    }
+    pub fn wrap(&self, mut ctx: &Context, mut masked: &Ciphertext, mut expanded: &ExpandedWire, mut delta: &GlobalDelta, mut online_base: usize) -> Result<Ciphertext, StitchError>
+    {
+        let scaled = ctx.mul_plain(masked, &ctx.constant_slots(delta.value()))?;
+        let scaled = ctx.switch_to(&scaled, online_base)?;
+        let ct_a0 = ctx.switch_to(&expanded.ct_a0, online_base)?;
+        Ok(ctx.add(&scaled, &ct_a0)?)
+    }
+    pub fn xor_bits(&self, mut ctx: &Context, mut a: &Ciphertext, mut b: &Ciphertext, mut ksk: &KeySwitchKeySet) -> Result<Ciphertext, StitchError>
+    {
+        let top = ctx.max_level();
+        let a = ctx.switch_to(a, top)?;
+        let b = ctx.switch_to(b, top)?;
+        let level = top;
+        let sum = ctx.add(&a, &b)?;
+        let product = ctx.mul(&a, &b, ksk)?;
+        let doubled = ctx.mul_plain(&product, &ctx.constant_slots(2))?;
+        let out = ctx.sub(&sum, &doubled)?;
+        Ok(ctx.switch_to(&out, level)?)
+    }
+    pub fn complement(&self, mut ctx: &Context, mut x: &Ciphertext) -> Result<Ciphertext, StitchError>
+    {
+        let p = ctx.parameters().plaintext_modulus;
+        let neg = ctx.mul_plain(x, &ctx.constant_slots((p - 1)))?;
+        Ok(ctx.add_plain(&neg, &ctx.constant_slots(1))?)
+    }
+    pub fn parity(&self, mut ctx: &Context, mut m: &Ciphertext, mut k_max: usize, mut ksk: &KeySwitchKeySet) -> Result<Ciphertext, StitchError>
+    {
+        if k_max == 1{
+    return Ok(m.clone());
+};
+        let p = ctx.parameters().plaintext_modulus;
+        let coeffs = parity_coeffs(p, k_max)?;
+        let level = m.level();
+        let mut acc = ctx.mul_plain(&ctx.encrypt_one_like(m)?, &ctx.constant_slots(coeffs[k_max]))?;
+        for i in 0..k_max.rev(){
+    acc = ctx.switch_to(&ctx.mul(&acc, m, ksk)?, level)?;
+    if coeffs[i] != 0{
+    acc = ctx.add_plain(&acc, &ctx.constant_slots(coeffs[i]))?;
+};
+};
+        Ok(acc)
+    }
+}
+
+impl  GateEquation for ReferenceEquation {
+    fn garble_and(&self, mut gate_index: usize, mut a: &WireState, mut b: &WireState, mut out: &WireState) -> Stitch
+    {
+        let bit = (((gate_index as u64).wrapping_mul(2654435769).wrapping_add(a.a0).wrapping_add(b.a0).wrapping_add(u64::from(out.pi)) >> 63) & 1) == 1;
+        if self.xor_charged{
+    Stitch::OneBit(bit)
+} else {
+    Stitch::five(bit)
+}
+    }
+    fn eval_and(&self, mut ctx: &Context, mut la: &Ciphertext, mut lb: &Ciphertext, mut expanded: &ExpandedGate, mut delta: &GlobalDelta, mut ksk: &KeySwitchKeySet, mut stitch: &Stitch) -> Result<Ciphertext, StitchError>
+    {
+        let correction = match (self.xor_charged, stitch) {
+    (.., Stitch::OneBit(b)) => *b,
+    (.., s) => s.check_five()?,
+    _ => return Err(StitchError::WrongVariant),
+};
+        let k_max = if self.xor_charged{
+    1
+} else {
+    MAX_PAYLOAD
+};
+        let m_a = self.unwrap(ctx, la, &expanded.a, delta)?;
+        let m_b = self.unwrap(ctx, lb, &expanded.b, delta)?;
+        let b_a = self.parity(ctx, &m_a, k_max, ksk)?;
+        let b_b = self.parity(ctx, &m_b, k_max, ksk)?;
+        let x_a = self.xor_bits(ctx, &b_a, &expanded.a.ct_pi, ksk)?;
+        let x_b = self.xor_bits(ctx, &b_b, &expanded.b.ct_pi, ksk)?;
+        let top = ctx.max_level();
+        let x_a = ctx.switch_to(&x_a, top)?;
+        let x_b = ctx.switch_to(&x_b, top)?;
+        let v_ab = ctx.switch_to(&ctx.mul(&x_a, &x_b, ksk)?, top)?;
+        let mut b_c = self.xor_bits(ctx, &v_ab, &expanded.out.ct_pi, ksk)?;
+        if correction{
+    b_c = self.complement(ctx, &b_c)?;
+};
+        self.wrap(ctx, &b_c, &expanded.out, delta, ctx.max_level())
+    }
+    fn garble_xor(&self, mut p: u64, mut a: &WireState, mut b: &WireState, mut out: &WireState) -> Option<Stitch>
+    {
+        if self.xor_charged{
+    Some(Stitch::OneBit(((a.pi ^ b.pi) ^ out.pi)))
+} else {
+    None
+}
+    }
+    fn eval_xor(&self, mut ctx: &Context, mut la: &Ciphertext, mut lb: &Ciphertext, mut expanded: &ExpandedGate, mut delta: &GlobalDelta, mut ksk: &KeySwitchKeySet, mut stitch: Option<&Stitch>) -> Result<Ciphertext, StitchError>
+    {
+        if self.xor_charged{
+    let bit = match stitch {
+    Some(Stitch::OneBit(b)) => *b,
+    _ => return Err(StitchError::WrongVariant),
+};
+    let b_a = self.unwrap(ctx, la, &expanded.a, delta)?;
+    let b_b = self.unwrap(ctx, lb, &expanded.b, delta)?;
+    let mut b_c = self.xor_bits(ctx, &b_a, &b_b, ksk)?;
+    if bit{
+    b_c = self.complement(ctx, &b_c)?;
+};
+    self.wrap(ctx, &b_c, &expanded.out, delta, ctx.max_level())
+} else {
+    if stitch.is_some(){
+    return Err(StitchError::WrongVariant);
+};
+    Ok(ctx.add(la, lb)?)
+}
+    }
+    fn xor_is_charged(&self) -> bool
+    {
+        self.xor_charged
+    }
+}
+
+impl  OfflineGarbler {
+    pub fn wire_state(&self, mut ctx: &Context, mut plan: &ExpansionPlan, mut ct_a0: &Ciphertext, mut ct_pi: &Ciphertext, mut index: usize) -> Result<WireState, Error>
+    {
+        let degree = ctx.parameters().degree;
+        let slot = |i| ((i % plan.slots_per_seed) % degree);
+        let a0 = ctx.decrypt(&self.secret, ct_a0)?[slot((2 * index))] % 2;
+        let pi = (ctx.decrypt(&self.secret, ct_pi)?[slot(((2 * index) + 1))] % 2) == 1;
+        let p = ctx.parameters().plaintext_modulus;
+        Ok(super::common::WireState { a0: (a0 % p), pi: pi })
+    }
+}
+
+impl  OfflineEvaluator {
+    pub fn wire(&self, mut wire: usize) -> Option<&ExpandedWire>
+    {
+        self.wires.get(wire)
+    }
+    pub fn wires(&self) -> usize
+    {
+        self.wires.len()
+    }
+}
+
 impl  Fe25519 {
     pub fn is_zero(&self) -> bool
     {
-        self.0 == vec![0, 0, 0, 0]
+        self.0 == [0, 0, 0, 0]
     }
     pub fn to_bytes(self) -> [u8; 32]
     {
@@ -4946,11 +7288,11 @@ impl  ScalarOps for Ed25519 {
     }
     fn scalar_eq(mut a: &[u8; 32], mut b: &[u8; 32]) -> bool
     {
-        let ra = reduce512(&vec![{
+        let ra = reduce512(&[{
     let l = bytes_to_limbs(a);
     l[0]
 }, bytes_to_limbs(a)[1], bytes_to_limbs(a)[2], bytes_to_limbs(a)[3], 0, 0, 0, 0]);
-        let rb = reduce512(&vec![{
+        let rb = reduce512(&[{
     let l = bytes_to_limbs(b);
     l[0]
 }, bytes_to_limbs(b)[1], bytes_to_limbs(b)[2], bytes_to_limbs(b)[3], 0, 0, 0, 0]);
@@ -5165,6 +7507,135 @@ pub fn commit<D: Digest>(mut message: &impl AsRef<[u8]>, mut rand: &impl AsRef<[
     CommitmentCoreDyn(hasher.finalize().to_vec(), PhantomData)
 }
 
+pub fn context(mut params: NttParams) -> Option<Context>
+{
+    ntt_context::Context::new(params.degree, params.modulus)
+}
+
+pub fn negacyclic_mul(mut params: NttParams, mut a: &[u64], mut b: &[u64]) -> Vec<u64>
+{
+    ntt_context::negacyclic_mul(params.degree, params.modulus, a, b)
+}
+
+pub fn blake2s_g(mut v: &mut [u32; 16], mut a: usize, mut b: usize, mut c: usize, mut d: usize, mut mx: u32, mut my: u32)
+{
+    v[a] = v[a].wrapping_add(v[b]).wrapping_add(mx);
+    let t0 = v[d] ^ v[a];
+    v[d] = ((t0 >> 16) | (t0 << 16));
+    v[c] = v[c].wrapping_add(v[d]);
+    let t1 = v[b] ^ v[c];
+    v[b] = ((t1 >> 12) | (t1 << 20));
+    v[a] = v[a].wrapping_add(v[b]).wrapping_add(my);
+    let t2 = v[d] ^ v[a];
+    v[d] = ((t2 >> 8) | (t2 << 24));
+    v[c] = v[c].wrapping_add(v[d]);
+    let t3 = v[b] ^ v[c];
+    v[b] = ((t3 >> 7) | (t3 << 25));
+}
+
+pub fn blake2s_compress(mut h: &mut [u32; 8], mut block: &[u8; BLAKE2S_BLOCK], mut t: u64, mut last: bool)
+{
+    let mut m = [(0 as u32); 16];
+    for i in 0.. 16{
+    let mut chunk = [(0 as u8); 4];
+    chunk.copy_from_slice(&block[(i * 4)..((i * 4) + 4)]);
+    m[i] = u32::from_le_bytes(chunk);
+};
+    let mut v = [(0 as u32); 16];
+    for i in 0.. 8{
+    v[i] = h[i];
+};
+    for i in 0.. 8{
+    v[i + 8] = BLAKE2S_IV[i];
+};
+    v[12] ^= (t as u32);
+    v[13] ^= ((t >> 32) as u32);
+    if last{
+    v[14] ^= 4294967295;
+};
+    for round in 0.. 10{
+    let base = round * 16;
+    blake2s_g(&mut v, 0, 4, 8, 12, m[BLAKE2S_SIGMA[base]], m[BLAKE2S_SIGMA[base + 1]]);
+    blake2s_g(&mut v, 1, 5, 9, 13, m[BLAKE2S_SIGMA[base + 2]], m[BLAKE2S_SIGMA[base + 3]]);
+    blake2s_g(&mut v, 2, 6, 10, 14, m[BLAKE2S_SIGMA[base + 4]], m[BLAKE2S_SIGMA[base + 5]]);
+    blake2s_g(&mut v, 3, 7, 11, 15, m[BLAKE2S_SIGMA[base + 6]], m[BLAKE2S_SIGMA[base + 7]]);
+    blake2s_g(&mut v, 0, 5, 10, 15, m[BLAKE2S_SIGMA[base + 8]], m[BLAKE2S_SIGMA[base + 9]]);
+    blake2s_g(&mut v, 1, 6, 11, 12, m[BLAKE2S_SIGMA[base + 10]], m[BLAKE2S_SIGMA[base + 11]]);
+    blake2s_g(&mut v, 2, 7, 8, 13, m[BLAKE2S_SIGMA[base + 12]], m[BLAKE2S_SIGMA[base + 13]]);
+    blake2s_g(&mut v, 3, 4, 9, 14, m[BLAKE2S_SIGMA[base + 14]], m[BLAKE2S_SIGMA[base + 15]]);
+};
+    for i in 0.. 8{
+    h[i] ^= (v[i] ^ v[i + 8]);
+}
+}
+
+pub fn blake2s_init() -> [u32; 8]
+{
+    let mut h = BLAKE2S_IV;
+    h[0] ^= 16842784;
+    h
+}
+
+pub fn blake2s_output(mut h: &[u32; 8]) -> [u8; BLAKE2S_OUT]
+{
+    let mut out = [(0 as u8); BLAKE2S_OUT];
+    for i in 0.. 8{
+    out[(i * 4)..((i * 4) + 4)].copy_from_slice(&h[i].to_le_bytes());
+};
+    out
+}
+
+pub fn blake2s_256(mut input: &[u8]) -> [u8; BLAKE2S_OUT]
+{
+    let mut h = blake2s_init();
+    let n = input.len();
+    let num_blocks = if n == 0{
+    1
+} else {
+    n.div_ceil(BLAKE2S_BLOCK)
+};
+    let mut t = 0 as u64;
+    for i in 0.. num_blocks{
+    let mut block = [(0 as u8); BLAKE2S_BLOCK];
+    let start = i * BLAKE2S_BLOCK;
+    let take = (n - start).min(BLAKE2S_BLOCK);
+    block[..take].copy_from_slice(&input[start..(start + take)]);
+    t += (take as u64);
+    blake2s_compress(&mut h, &block, t, (i == (num_blocks - 1)));
+};
+    blake2s_output(&h)
+}
+
+pub fn blake2s_256_array(mut n: usize, mut input: &Vec<u8>) -> [u8; BLAKE2S_OUT]
+{
+    let mut h = blake2s_init();
+    let n = n;
+    let num_blocks = if n == 0{
+    1
+} else {
+    ((n + BLAKE2S_BLOCK) - 1) / BLAKE2S_BLOCK
+};
+    let mut t = 0 as u64;
+    for i in 0.. num_blocks{
+    let mut block = [(0 as u8); BLAKE2S_BLOCK];
+    let start = i * BLAKE2S_BLOCK;
+    for j in 0.. BLAKE2S_BLOCK{
+    let idx = start + j;
+    if idx < n{
+    block[j] = input[idx];
+};
+};
+    let take = if (start + BLAKE2S_BLOCK) <= n{
+    BLAKE2S_BLOCK
+} else {
+    n - start
+};
+    t += (take as u64);
+    blake2s_compress(&mut h, &block, t, (i == (num_blocks - 1)));
+};
+    blake2s_output(&h)
+}
+
 pub fn debug_check_pool_written(mut written: bool, mut slot: usize)
 {
     if !written{
@@ -5229,7 +7700,7 @@ pub fn key_expansion(mut key: &[u8; BLOCK]) -> [[u8; BLOCK]; NK_ROUND_KEYS]
 {
     let mut words = [[(0 as u8); 4]; (4 * NK_ROUND_KEYS)];
     for i in 0.. 4{
-    words[i] = vec![key[4 * i], key[(4 * i) + 1], key[(4 * i) + 2], key[(4 * i) + 3]];
+    words[i] = [key[4 * i], key[(4 * i) + 1], key[(4 * i) + 2], key[(4 * i) + 3]];
 };
     for i in 4.. 4 * NK_ROUND_KEYS{
     let mut temp = words[i - 1];
@@ -5335,7 +7806,7 @@ pub fn vole_hash_consistency_check(mut key: &UniversalHashKey, mut hu: Universal
 
 pub fn add_to_upper_word(mut iv: &mut [u8; BLOCK], mut tweak: u32)
 {
-    let upper = u32::from_le_bytes(vec![iv[12], iv[13], iv[14], iv[15]]);
+    let upper = u32::from_le_bytes([iv[12], iv[13], iv[14], iv[15]]);
     let new = upper.wrapping_add(tweak);
     let bytes = new.to_le_bytes();
     iv[12] = bytes[0];
@@ -5347,7 +7818,7 @@ pub fn add_to_upper_word(mut iv: &mut [u8; BLOCK], mut tweak: u32)
 pub fn add_to_lower_word(mut iv: &[u8; BLOCK], mut counter: u32) -> [u8; BLOCK]
 {
     let mut out = *iv;
-    let lower = u32::from_le_bytes(vec![out[0], out[1], out[2], out[3]]);
+    let lower = u32::from_le_bytes([out[0], out[1], out[2], out[3]]);
     let new = lower.wrapping_add(counter);
     let bytes = new.to_le_bytes();
     out[0] = bytes[0];
@@ -5363,16 +7834,22 @@ pub fn aes_ctr_prg(mut seed: &[u8; BLOCK], mut iv: &[u8; BLOCK], mut tweak: u32,
     add_to_upper_word(&mut iv_tweaked, tweak);
     let n_full = out_bytes / BLOCK;
     let rem = out_bytes % BLOCK;
-    let mut out = alloc::vec::Vec::with_capacity(out_bytes);
+    let mut out: Vec<u8> = alloc::vec::Vec::with_capacity(out_bytes);
     for i in 0.. n_full{
     let block_in = add_to_lower_word(&iv_tweaked, (i as u32));
     let ct = encrypt_block(seed, &block_in);
-    out.extend_from_slice(&ct);
+    for b in 0.. BLOCK{
+    out.push(ct[b]);
+};
 };
     if rem > 0{
     let block_in = add_to_lower_word(&iv_tweaked, (n_full as u32));
     let ct = encrypt_block(seed, &block_in);
-    out.extend_from_slice(&ct[..rem]);
+    let mut b = 0;
+    while (b < rem){
+    out.push(ct[b]);
+    b += 1;
+}
 };
     out
 }
@@ -5385,7 +7862,7 @@ pub fn chall1(mut mu: &[u8], mut iv: &[u8; 16], mut com_bytes: &[u8], mut lambda
     FaestTranscript::new_shake128()
 };
     t.absorb(mu);
-    t.absorb(AsRef::<[u8]>::as_ref(&iv));
+    t.absorb(iv);
     t.absorb(com_bytes);
     t.squeeze(lambda_plus_b)
 }
@@ -5421,8 +7898,13 @@ pub fn grind_chall3(mut chall_2: &[u8], mut a_hat: &[u8], mut b_hat: &[u8], mut 
 {
     for counter in 0.. max_iters{
     let counter_bytes = counter.to_le_bytes();
-    let mut c_hat_grind = alloc::vec::Vec::from(c_hat_base);
-    c_hat_grind.extend_from_slice(&counter_bytes);
+    let mut c_hat_grind: Vec<u8> = alloc::vec::Vec::with_capacity((c_hat_base.len() + 4));
+    for i in 0.. c_hat_base.len(){
+    c_hat_grind.push(c_hat_base[i]);
+};
+    for i in 0.. counter_bytes.len(){
+    c_hat_grind.push(counter_bytes[i]);
+};
     let candidate = chall3(chall_2, a_hat, b_hat, &c_hat_grind, lambda, use_shake256);
     if has_trailing_zero_bits(&candidate, w_grind){
     return Some((candidate, counter));
@@ -5465,15 +7947,18 @@ pub fn convert_to_vole(mut seeds: &[Option<[u8; LAMBDA_BYTES]>], mut iv: &[u8; 1
 {
     let n = seeds.len();
     let d = n.trailing_zeros() as usize;
-    let zero_block = vec![];
+    let zero_block = vec![(0 as u8); l_hat_bytes];
     let mut r: Vec<Vec<u8>> = Vec::with_capacity(n);
-    for s in seeds{
-    match s {
-    Some(seed) => r.push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)),
+    for i in 0.. seeds.len(){
+    match seeds[i] {
+    Some(seed) => r.push(aes_ctr_prg(&seed, iv, tweak, l_hat_bytes)),
     None => r.push(zero_block.clone()),
 };
 };
-    let mut v: Vec<Vec<u8>> = (0..d).map(|_| vec![]).collect::<Vec<_>>();
+    let mut v: Vec<Vec<u8>> = Vec::with_capacity(d);
+    for _j in 0.. d{
+    v.push(vec![(0 as u8); l_hat_bytes]);
+};
     let mut level: Vec<Vec<u8>> = r;
     for j in 0.. d{
     let half = level.len() / 2;
@@ -5486,28 +7971,29 @@ pub fn convert_to_vole(mut seeds: &[Option<[u8; LAMBDA_BYTES]>], mut iv: &[u8; 1
 };
     level = next;
 };
-    let u = level.into_iter().next().unwrap();
+    let u = level[0].clone();
     ConvertOutput { u: u, v: v }
 }
 
 pub fn concat_small_voles(mut outs: Vec<ConvertOutput>) -> BigVoleProver
 {
     let l_hat = outs[0].u.len();
-    for o in &outs{
-    for vj in &o.v{
+    for oi in 0.. outs.len(){
+    let o = &outs[oi];
+    for vi in 0.. o.v.len(){
 };
 };
     let u = outs[0].u.clone();
     let mut c: Vec<Vec<u8>> = Vec::with_capacity((outs.len() - 1));
-    for o in outs.iter().skip(1){
-    let mut ci = o.u.clone();
+    for oi in 1.. outs.len(){
+    let mut ci = outs[oi].u.clone();
     xor_in_place(&mut ci, &u);
     c.push(ci);
 };
     let mut v_columns: Vec<Vec<u8>> = Vec::new();
-    for o in outs{
-    for vj in o.v{
-    v_columns.push(vj);
+    for oi in 0.. outs.len(){
+    for vi in 0.. outs[oi].v.len(){
+    v_columns.push(outs[oi].v[vi].clone());
 };
 };
     BigVoleProver { u: u, c: c, v_columns: v_columns }
@@ -5516,11 +8002,10 @@ pub fn concat_small_voles(mut outs: Vec<ConvertOutput>) -> BigVoleProver
 pub fn concat_small_voles_verifier(mut outs: Vec<ConvertOutput>, mut deltas: &[usize], mut corrections: &[Vec<u8>]) -> BigVoleVerifier
 {
     let mut q_columns: Vec<Vec<u8>> = Vec::new();
-    for (i, o) in outs.into_iter().enumerate(){
-    let k = o.v.len();
+    for i in 0.. outs.len(){
     let delta_i = deltas[i];
-    for (bit, vj_raw) in o.v.into_iter().enumerate(){
-    let mut q = vj_raw;
+    for bit in 0.. outs[i].v.len(){
+    let mut q = outs[i].v[bit].clone();
     if i >= 1{
     let delta_bit = ((delta_i >> bit) & 1) == 1;
     if delta_bit{
@@ -5529,7 +8014,6 @@ pub fn concat_small_voles_verifier(mut outs: Vec<ConvertOutput>, mut deltas: &[u
 };
     q_columns.push(q);
 };
-    let _ = k;
 };
     BigVoleVerifier { q_columns: q_columns }
 }
@@ -5557,17 +8041,17 @@ pub fn collect_open_nodes_walk(mut node: usize, mut hidden: &[bool], mut tree: &
 pub fn keygen(mut rng: &mut impl SpecRng) -> (FaestSecretKey, FaestPublicKey)
 {
     let mut sk = [(0 as u8); LAMBDA_BYTES];
-    for b in sk.iter_mut(){
-    *b = rng.next_u8();
+    for i in 0.. LAMBDA_BYTES{
+    sk[i] = rng.next_u8();
 };
-    let pk = aes128_encrypt(&sk, &[(0 as u8); LAMBDA_BYTES]);
+    let pk = encrypt_block(&sk, &[(0 as u8); LAMBDA_BYTES]);
     (FaestSecretKey(sk), FaestPublicKey(pk))
 }
 
 pub fn sign(mut sk: &FaestSecretKey, mut pk: &FaestPublicKey, mut message: &[u8], mut iv_seed: [u8; LAMBDA_BYTES], mut prover: &impl FaestAesProver) -> FaestSignature
 {
-    let iv: [u8; LAMBDA_BYTES] = aes128_encrypt(&iv_seed, &[(0 as u8); LAMBDA_BYTES]);
-    let r: [u8; LAMBDA_BYTES] = aes128_encrypt(&sk.0, &iv);
+    let iv: [u8; LAMBDA_BYTES] = encrypt_block(&iv_seed, &[(0 as u8); LAMBDA_BYTES]);
+    let r: [u8; LAMBDA_BYTES] = encrypt_block(&sk.0, &iv);
     let commitment: BavcCommitmentDyn = BavcDyn::<EmLeafCommit, COM_BYTES, Sha3_256>::commit(32, r, &iv, TAU, SUB_VOLE_N);
     let mu: Vec<u8> = {
     let mut h = Sha3_256::new();
@@ -5578,22 +8062,37 @@ pub fn sign(mut sk: &FaestSecretKey, mut pk: &FaestPublicKey, mut message: &[u8]
     let chall_1 = chall1(&mu, &iv, &commitment.root, (LAMBDA_BYTES + 8), false);
     let deltas = expand_challenge_to_deltas(&chall_1, TAU, SUB_VOLE_N);
     let nodes = BavcDyn::<EmLeafCommit, COM_BYTES>::collect_open_nodes(32, &deltas, &recompute_tree(r, (TAU * SUB_VOLE_N)), TAU, SUB_VOLE_N);
-    let hidden_commits: Vec<[u8; COM_BYTES]> = deltas.iter().enumerate().map(|(i, d)| commitment.commitments[(i * SUB_VOLE_N) + d]).collect::<Vec<_>>();
+    let mut hidden_commits: Vec<[u8; COM_BYTES]> = Vec::with_capacity(deltas.len());
+    for i in 0.. deltas.len(){
+    let d = deltas[i];
+    hidden_commits.push(commitment.commitments[(i * SUB_VOLE_N) + d]);
+};
     let opening = BavcOpeningDyn { hidden_commits: hidden_commits.clone(), nodes: nodes.clone(), com_bytes: 0 };
     let _ = opening;
-    let mut sub_voles = Vec::with_capacity(TAU);
+    let mut sub_voles: Vec<ConvertOutput> = Vec::with_capacity(TAU);
     for i in 0.. TAU{
-    let seeds_i: Vec<Option<[u8; LAMBDA_BYTES]>> = (0..SUB_VOLE_N).map(|j| Some(commitment.seeds[(i * SUB_VOLE_N) + j])).collect::<Vec<_>>();
+    let mut seeds_i: Vec<Option<[u8; LAMBDA_BYTES]>> = Vec::with_capacity(SUB_VOLE_N);
+    for j in 0.. SUB_VOLE_N{
+    seeds_i.push(Some(commitment.seeds[(i * SUB_VOLE_N) + j]));
+};
     sub_voles.push(convert_to_vole(&seeds_i, &iv, (i as u32), L_HAT_BYTES));
 };
     let big_vole: BigVoleProver = concat_small_voles(sub_voles);
-    let corrections_flat: Vec<u8> = big_vole.c.iter().flatten().cloned().collect();
+    let mut corrections_flat: Vec<u8> = Vec::new();
+    for i in 0.. big_vole.c.len(){
+    for j in 0.. big_vole.c[i].len(){
+    corrections_flat.push(big_vole.c[i][j]);
+};
+};
     let chall_2 = chall2(&chall_1, &big_vole.u, &corrections_flat, (LAMBDA_BYTES + 8), false);
     let hash_key = hash_key_from_chall(&chall_2);
     let qs_proof = prover.prove_aes_witness(&big_vole, &hash_key);
     let (chall_3, counter) = grind_chall3(&chall_2, &qs_proof.a_hat, &qs_proof.b_hat, &qs_proof.c_hat_base, LAMBDA_BYTES, W_GRIND, false, 1000000).expect("grinding must terminate within 1M iterations");
     let mut c_hat_with_counter = qs_proof.c_hat_base.clone();
-    c_hat_with_counter.extend_from_slice(&counter.to_le_bytes());
+    let counter_bytes = counter.to_le_bytes();
+    for i in 0.. counter_bytes.len(){
+    c_hat_with_counter.push(counter_bytes[i]);
+};
     FaestSignature { iv: iv, bavc_root: commitment.root.clone(), hidden_commits: hidden_commits, nodes: nodes, corrections: big_vole.c.clone(), vole_u: big_vole.u.clone(), qs_proof: qs_proof, c_hat_with_counter: c_hat_with_counter, chall_3: chall_3, counter: counter }
 }
 
@@ -5613,16 +8112,17 @@ pub fn verify(mut pk: &FaestPublicKey, mut message: &[u8], mut sig: &FaestSignat
     Some(s) => s,
     None => return false,
 };
-    let mut sub_voles_v = Vec::with_capacity(TAU);
+    let mut sub_voles_v: Vec<ConvertOutput> = Vec::with_capacity(TAU);
     for i in 0.. TAU{
     let d = deltas[i];
-    let verifier_seeds: Vec<Option<[u8; LAMBDA_BYTES]>> = (0..SUB_VOLE_N).map(|j| {
+    let mut verifier_seeds: Vec<Option<[u8; LAMBDA_BYTES]>> = Vec::with_capacity(SUB_VOLE_N);
+    for j in 0.. SUB_VOLE_N{
     if j == 0{
-    None
+    verifier_seeds.push(None);
 } else {
-    Some(reconstructed_seeds[(i * SUB_VOLE_N) + (j ^ d)])
-}
-}).collect::<Vec<_>>();
+    verifier_seeds.push(Some(reconstructed_seeds[(i * SUB_VOLE_N) + (j ^ d)]));
+};
+};
     sub_voles_v.push(convert_to_vole(&verifier_seeds, iv, (i as u32), L_HAT_BYTES));
 };
     let corrections = &sig.corrections;
@@ -5631,9 +8131,20 @@ pub fn verify(mut pk: &FaestPublicKey, mut message: &[u8], mut sig: &FaestSignat
 };
     let big_q: Vec<u8> = {
     let q_out = concat_small_voles_verifier(sub_voles_v, &deltas, corrections);
-    q_out.q_columns.into_iter().flatten().collect::<Vec<_>>()
+    let mut big_q: Vec<u8> = Vec::new();
+    for i in 0.. q_out.q_columns.len(){
+    for j in 0.. q_out.q_columns[i].len(){
+    big_q.push(q_out.q_columns[i][j]);
 };
-    let corrections_flat: Vec<u8> = sig.corrections.iter().flatten().cloned().collect();
+};
+    big_q
+};
+    let mut corrections_flat: Vec<u8> = Vec::new();
+    for i in 0.. sig.corrections.len(){
+    for j in 0.. sig.corrections[i].len(){
+    corrections_flat.push(sig.corrections[i][j]);
+};
+};
     let chall_2 = chall2(&chall_1, &sig.vole_u, &corrections_flat, (LAMBDA_BYTES + 8), false);
     let hash_key = hash_key_from_chall(&chall_2);
     let derived_chall_3 = chall3(&chall_2, &sig.qs_proof.a_hat, &sig.qs_proof.b_hat, &sig.c_hat_with_counter, LAMBDA_BYTES, false);
@@ -5649,16 +8160,18 @@ pub fn verify(mut pk: &FaestPublicKey, mut message: &[u8], mut sig: &FaestSignat
 
 pub fn expand_challenge_to_deltas(mut chall_1: &[u8], mut tau: usize, mut n: usize) -> Vec<usize>
 {
-    (0..tau).map(|i| {
+    let mut out: Vec<usize> = Vec::with_capacity(tau);
+    for i in 0.. tau{
     let byte = chall_1[i % chall_1.len()] as usize;
-    byte % n
-}).collect::<Vec<_>>()
+    out.push((byte % n));
+};
+    out
 }
 
 pub fn recompute_tree(mut r: [u8; LAMBDA_BYTES], mut total_leaves: usize) -> Vec<[u8; LAMBDA_BYTES]>
 {
     let total_nodes = (2 * total_leaves) - 1;
-    let mut tree = vec![];
+    let mut tree = vec![[(0 as u8); LAMBDA_BYTES]; total_nodes];
     tree[0] = r;
     for node in 0.. total_leaves - 1{
     let parent = Vec::<u8, U16>(tree[node]);
@@ -5844,7 +8357,7 @@ pub fn vope_open_mask<N, T>(mut n: usize, mut w: &VopeDyn<T>) -> Vec<T> where T:
     w.v.clone()
 }
 
-pub fn assert_one_check<N, T>(mut n: usize, mut q: &QDyn<T>, mut opening: &Vec<T>, mut delta: &DeltaDyn<T>) -> bool where T: Clone + Add<Output = T> + PartialEq
+pub fn assert_one_check<N, T>(mut n: usize, mut q: &QDyn<T>, mut opening: &Vec<T>, mut delta: &Delta<N, T>) -> bool where T: Clone + Add<Output = T> + PartialEq
 {
     let mut ok = true;
     for i in 0.. n{
@@ -5872,7 +8385,7 @@ pub fn vole_and_prover_step<N, T>(mut n: usize, mut vope_a: VopeDyn<T>, mut vope
     (VopeDyn { u: u_c, v: v_c, n: 0, k: 1 }, hat)
 }
 
-pub fn vole_and_verifier_check<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut q_a: &QDyn<T>, mut q_b: &QDyn<T>, mut q_and: &QDyn<T>, mut hat: &Vec<T>) -> (QDyn<T>, bool) where T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default
+pub fn vole_and_verifier_check<N, T>(mut n: usize, mut delta: &Delta<N, T>, mut q_a: &QDyn<T>, mut q_b: &QDyn<T>, mut q_and: &QDyn<T>, mut hat: &Vec<T>) -> (QDyn<T>, bool) where T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default
 {
     let mut ok = true;
     for i in 0.. n{
@@ -5890,7 +8403,7 @@ pub fn vole_sbox_prover_step<N, T>(mut n: usize, mut vope_a: VopeDyn<T>, mut vop
     (k1, k2)
 }
 
-pub fn vole_sbox_verifier_check<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut q_a: &QDyn<T>, mut q_b: &QDyn<T>, mut vope_k2: VopeDyn<T>) -> (QDyn<T>, bool) where T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default + Into<T>
+pub fn vole_sbox_verifier_check<N, T>(mut n: usize, mut delta: &Delta<N, T>, mut q_a: &QDyn<T>, mut q_b: &QDyn<T>, mut vope_k2: VopeDyn<T>) -> (QDyn<T>, bool) where T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default + Into<T>
 {
     let q_c = vope_k2 * delta.clone();
     let mut ok = true;
@@ -5906,7 +8419,7 @@ pub fn vole_mul3_prover_step<N, T>(mut n: usize, mut vope_a: &VopeDyn<T>, mut vo
     ab.mul_generalized(vope_d.k, vope_d)
 }
 
-pub fn vole_mul3_verifier_check<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut q_a: &QDyn<T>, mut q_b: &QDyn<T>, mut q_d: &QDyn<T>, mut vope_abd: VopeDyn<T>) -> (QDyn<T>, bool) where T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default + Into<T>
+pub fn vole_mul3_verifier_check<N, T>(mut n: usize, mut delta: &Delta<N, T>, mut q_a: &QDyn<T>, mut q_b: &QDyn<T>, mut q_d: &QDyn<T>, mut vope_abd: VopeDyn<T>) -> (QDyn<T>, bool) where T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default + Into<T>
 {
     let q_abd = vope_abd * delta.clone();
     let mut ok = true;
@@ -5917,9 +8430,9 @@ pub fn vole_mul3_verifier_check<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut
     (q_abd, ok)
 }
 
-pub fn random_nonzero_delta<N, T, R>(mut n: usize, mut rng: &mut R, mut sample_t: impl Fn, mut is_zero: impl Fn) -> DeltaDyn<T>
+pub fn random_nonzero_delta<N, T, R>(mut n: usize, mut rng: &mut R, mut sample_t: impl Fn, mut is_zero: impl Fn) -> Delta<N, T>
 {
-    DeltaDyn { delta: (0..n).map(|_| {
+    Delta { delta: (0..n).map(|_| {
     let mut x = sample_t(rng);
     let mut tries = 0 as usize;
     while (is_zero(&x) && (tries < 64)){
@@ -5927,7 +8440,7 @@ pub fn random_nonzero_delta<N, T, R>(mut n: usize, mut rng: &mut R, mut sample_t
     tries += 1;
 };
     x
-}).collect::<Vec<T>>(), n: 0 }
+}).collect::<Vec<T>>() }
 }
 
 pub fn lift_bit<T: Clone>(mut n: usize, mut bit_t: T) -> Vec<T>
@@ -5965,7 +8478,7 @@ pub fn vole_commit_bit_from<N, T, R, C>(mut n: usize, mut cot: &mut C, mut rng: 
     vole_commit_bit_shares(n, r0, v, bit_to_t, bit)
 }
 
-pub fn derive_and_q<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut q_a: &QDyn<T>, mut q_b: &QDyn<T>, mut hat: &Vec<T>) -> QDyn<T> where T: Clone + Add<Output = T> + Mul<Output = T> + Invert + Default
+pub fn derive_and_q<N, T>(mut n: usize, mut delta: &Delta<N, T>, mut q_a: &QDyn<T>, mut q_b: &QDyn<T>, mut hat: &Vec<T>) -> QDyn<T> where T: Clone + Add<Output = T> + Mul<Output = T> + Invert + Default
 {
     QDyn { q: (0..n).map(|i| {
     let lhs = (q_a.q[i].clone() * q_b.q[i].clone()) + hat[i].clone();
@@ -6592,23 +9105,23 @@ pub fn binfhe_lut_read_dyn(mut n_lwe: usize, mut big_n: usize, mut log_q: usize,
 
 pub fn binfhe_gate_and(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
-    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![a, b], &vec![false, false, false, true], k_max, bk)
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &[a, b], &[false, false, false, true], k_max, bk)
 }
 
 pub fn binfhe_gate_or(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
-    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![a, b], &vec![false, true, true, true], k_max, bk)
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &[a, b], &[false, true, true, true], k_max, bk)
 }
 
 pub fn binfhe_gate_xor(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
-    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![a, b], &vec![false, true, true, false], k_max, bk)
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &[a, b], &[false, true, true, false], k_max, bk)
 }
 
 pub fn binfhe_rgsw_cmux(mut n_lwe: usize, mut big_n: usize, mut log_q: usize, mut log_q_lwe: usize, mut log_mod_ks: usize, mut bs_ell: usize, mut bs_base_log: usize, mut ks_ell: usize, mut ks_base_log: usize, mut k_max: usize, mut sel: BinfheLweCiphertextDyn, mut a: BinfheLweCiphertextDyn, mut b: BinfheLweCiphertextDyn, mut bk: &BinfheBootstrappingKeyDyn) -> BinfheLweCiphertextDyn
 {
-    let TABLE: [bool; 8] = vec![false, false, false, true, true, false, true, true];
-    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &vec![sel, a, b], &TABLE, k_max, bk)
+    let TABLE: [bool; 8] = [false, false, false, true, true, false, true, true];
+    binfhe_lut_read_dyn::<N_LWE, BIG_N, LOG_Q, LOG_Q_LWE, LOG_MOD_KS, BS_ELL, BS_BASE_LOG, KS_ELL, KS_BASE_LOG>(n_lwe, big_n, log_q, log_q_lwe, log_mod_ks, bs_ell, bs_base_log, ks_ell, ks_base_log, &[sel, a, b], &TABLE, k_max, bk)
 }
 
 pub fn mod_switch(mut from: usize, mut to: usize, mut x: u32) -> u32
@@ -6804,7 +9317,7 @@ pub fn read_op(mut reader: &mut Reader) -> Result<PlanOp, DecodeError>
     for _ in 0.. count{
     ids.push(reader.u32()?);
 };
-    let mut inputs = vec![];
+    let mut inputs = vec![(0 as u32); ids.len()];
     for (i, id) in ids.iter().enumerate(){
     inputs[i] = *id;
 };
@@ -6955,6 +9468,167 @@ pub fn delta_out_full_width(mut delta_shift: u32, mut upscale: u32) -> u32
     (1 as u32) << (delta_shift + upscale)
 }
 
+pub fn keccak_f1600(mut st: &mut [u64; 25])
+{
+    for round in 0.. 24{
+    let mut bc = [(0 as u64); 5];
+    for i in 0.. 5{
+    bc[i] = ((((st[i] ^ st[i + 5]) ^ st[i + 10]) ^ st[i + 15]) ^ st[i + 20]);
+};
+    for i in 0.. 5{
+    let t = bc[(i + 4) % 5] ^ ((bc[(i + 1) % 5] << 1) | (bc[(i + 1) % 5] >> 63));
+    for jj in 0.. 5{
+    st[(jj * 5) + i] ^= t;
+};
+};
+    let mut t = st[1];
+    for i in 0.. 24{
+    let j = KECCAK_PILN[i];
+    let k = KECCAK_ROTC[i];
+    let tmp = st[j];
+    st[j] = ((t << k) | (t >> ((64 as u32) - k)));
+    t = tmp;
+};
+    for jj in 0.. 5{
+    let j = jj * 5;
+    let mut row = [(0 as u64); 5];
+    for i in 0.. 5{
+    row[i] = st[j + i];
+};
+    for i in 0.. 5{
+    st[j + i] ^= (!row[(i + 1) % 5] & row[(i + 2) % 5]);
+};
+};
+    st[0] ^= KECCAK_RNDC[round];
+}
+}
+
+pub fn bytes_to_lanes(mut b: &[u8; 200], mut st: &mut [u64; 25])
+{
+    for i in 0.. 25{
+    let mut chunk = [(0 as u8); 8];
+    chunk.copy_from_slice(&b[(i * 8)..((i * 8) + 8)]);
+    st[i] = u64::from_le_bytes(chunk);
+}
+}
+
+pub fn lanes_to_bytes(mut st: &[u64; 25], mut b: &mut [u8; 200])
+{
+    for i in 0.. 25{
+    b[(i * 8)..((i * 8) + 8)].copy_from_slice(&st[i].to_le_bytes());
+}
+}
+
+pub fn permute_bytes(mut state_bytes: &mut [u8; 200])
+{
+    let mut st = [(0 as u64); 25];
+    bytes_to_lanes(state_bytes, &mut st);
+    keccak_f1600(&mut st);
+    lanes_to_bytes(&st, state_bytes);
+}
+
+pub fn spec_sponge_new(mut rate: usize) -> SpecSponge
+{
+    SpecSponge { state: [(0 as u8); 200], rate: rate, pos: 0 }
+}
+
+pub fn spec_sponge_absorb(mut sponge: &mut SpecSponge, mut data: &[u8])
+{
+    let mut state = sponge.state;
+    let mut pos = sponge.pos;
+    let rate = sponge.rate;
+    for i in 0.. data.len(){
+    state[pos] ^= data[i];
+    pos += 1;
+    if pos == rate{
+    permute_bytes(&mut state);
+    pos = 0;
+};
+};
+    sponge.state = state;
+    sponge.pos = pos;
+}
+
+pub fn spec_sponge_absorb_array(mut n: usize, mut sponge: &mut SpecSponge, mut data: &Vec<u8>)
+{
+    let mut state = sponge.state;
+    let mut pos = sponge.pos;
+    let rate = sponge.rate;
+    for i in 0.. n{
+    state[pos] ^= data[i];
+    pos += 1;
+    if pos == rate{
+    permute_bytes(&mut state);
+    pos = 0;
+};
+};
+    sponge.state = state;
+    sponge.pos = pos;
+}
+
+pub fn spec_sponge_finalize_xof(mut sponge: &SpecSponge, mut suffix: u8) -> SpecXofReader
+{
+    let mut state = sponge.state;
+    state[sponge.pos] ^= suffix;
+    state[sponge.rate - 1] ^= 128;
+    permute_bytes(&mut state);
+    SpecXofReader { state: state, rate: sponge.rate, pos: 0 }
+}
+
+pub fn spec_xof_read(mut reader: &mut SpecXofReader, mut out: &mut [u8])
+{
+    let mut state = reader.state;
+    let mut pos = reader.pos;
+    let rate = reader.rate;
+    for i in 0.. out.len(){
+    if pos == rate{
+    permute_bytes(&mut state);
+    pos = 0;
+};
+    out[i] = state[pos];
+    pos += 1;
+};
+    reader.state = state;
+    reader.pos = pos;
+}
+
+pub fn spec_xof_read_array(mut n: usize, mut reader: &mut SpecXofReader, mut out: &mut Vec<u8>)
+{
+    let mut state = reader.state;
+    let mut pos = reader.pos;
+    let rate = reader.rate;
+    for i in 0.. n{
+    if pos == rate{
+    permute_bytes(&mut state);
+    pos = 0;
+};
+    out[i] = state[pos];
+    pos += 1;
+};
+    reader.state = state;
+    reader.pos = pos;
+}
+
+pub fn spec_sha3_256(mut input: &[u8]) -> [u8; 32]
+{
+    let mut sponge = spec_sponge_new(SHA3_256_RATE);
+    spec_sponge_absorb(&mut sponge, input);
+    let mut reader = spec_sponge_finalize_xof(&sponge, 6);
+    let mut out = [(0 as u8); 32];
+    spec_xof_read(&mut reader, &mut out);
+    out
+}
+
+pub fn spec_shake128(mut n: usize, mut input: &[u8]) -> Vec<u8>
+{
+    let mut sponge = spec_sponge_new(SHAKE128_RATE);
+    spec_sponge_absorb(&mut sponge, input);
+    let mut reader = spec_sponge_finalize_xof(&sponge, 31);
+    let mut out = (0..n).map(|_| 0).collect::<Vec<u8>>();
+    spec_xof_read(&mut reader, &mut out);
+    out
+}
+
 pub fn in_interval_mod(mut x: u64, mut lo: u64, mut hi: u64, mut q: u64) -> bool
 {
     let x = x % q;
@@ -7055,15 +9729,15 @@ pub fn from_bool(mut b: bool, mut q: u64) -> u64
 
 pub fn encode_label_16(mut label: [u8; 16]) -> [u64; 3]
 {
-    let first = u64::from_le_bytes(vec![label[0], label[1], label[2], label[3], label[4], label[5], 0, 0]);
-    let second = u64::from_le_bytes(vec![label[6], label[7], label[8], label[9], label[10], label[11], 0, 0]);
-    let third = u32::from_le_bytes(vec![label[12], label[13], label[14], label[15]]) as u64;
-    vec![first, second, third]
+    let first = u64::from_le_bytes([label[0], label[1], label[2], label[3], label[4], label[5], 0, 0]);
+    let second = u64::from_le_bytes([label[6], label[7], label[8], label[9], label[10], label[11], 0, 0]);
+    let third = u32::from_le_bytes([label[12], label[13], label[14], label[15]]) as u64;
+    [first, second, third]
 }
 
 pub fn decode_label_16(mut elements: [u64; 3]) -> Result<[u8; 16], LabelEncodingError>
 {
-    let WIDTHS: [u32; 3] = vec![48, 48, 32];
+    let WIDTHS: [u32; 3] = [48, 48, 32];
     let modulus = ring_lwe::REFERENCE_PLAINTEXT_MODULUS;
     let mut label = [(0 as u8); 16];
     let mut offset = 0 as usize;
@@ -7203,6 +9877,17 @@ pub fn inverse_mod(mut value: u64, mut modulus: u64) -> Option<u64>
     return None;
 };
     Some((old_s.rem_euclid((modulus as i128)) as u64))
+}
+
+pub fn absorb_args_bases<D: Digest>(mut n: usize, mut d: D, mut args: &[&GarbleDyn]) -> D
+{
+    match args.split_first() {
+    None => d,
+    Some((first, rest)) => {
+    d.update(&first.base);
+    absorb_args_bases(n, d, rest)
+},
+}
 }
 
 pub fn gram_decode_label(mut n: usize, mut label: &EvalDyn, mut base: &GarbleDyn) -> bool
@@ -7670,14 +10355,14 @@ pub fn small_noise<R: SpecRng>(mut noise_bits: u32, mut rng: &mut R) -> u32
 
 pub fn full_z<S: Clone>(mut w: &[S; AND_VARS], mut u: &S) -> [S; 8]
 {
-    vec![w[0].clone(), w[1].clone(), w[2].clone(), w[3].clone(), w[4].clone(), w[5].clone(), w[6].clone(), u.clone()]
+    [w[0].clone(), w[1].clone(), w[2].clone(), w[3].clone(), w[4].clone(), w[5].clone(), w[6].clone(), u.clone()]
 }
 
 pub fn eval_abc<S>(mut z: &[S; 8]) -> ([S; AND_CONS], [S; AND_CONS], [S; AND_CONS])
 {
-    let az = vec![z[K_A].clone(), z[K_C].clone(), ((z[P1].clone() + z[V_HAT].clone()) - z[P2].clone())];
-    let bz = vec![z[K_B].clone(), z[DELTA].clone(), z[U].clone()];
-    let cz = vec![z[P1].clone(), z[P2].clone(), S::default()];
+    let az = [z[K_A].clone(), z[K_C].clone(), ((z[P1].clone() + z[V_HAT].clone()) - z[P2].clone())];
+    let bz = [z[K_B].clone(), z[DELTA].clone(), z[U].clone()];
+    let cz = [z[P1].clone(), z[P2].clone(), S::default()];
     (az, bz, cz)
 }
 
@@ -7698,7 +10383,7 @@ pub fn gate_witness<S>(mut k_a: S, mut k_b: S, mut k_c: S, mut delta: S, mut v_h
 {
     let p1 = k_a.clone() * k_b.clone();
     let p2 = k_c.clone() * delta.clone();
-    vec![k_a, k_b, k_c, delta, v_hat, p1, p2]
+    [k_a, k_b, k_c, delta, v_hat, p1, p2]
 }
 
 pub fn cross_term<S>(mut w1: &[S; AND_VARS], mut u1: &S, mut w2: &[S; AND_VARS], mut u2: &S) -> [S; AND_CONS]
@@ -7707,7 +10392,7 @@ pub fn cross_term<S>(mut w1: &[S; AND_VARS], mut u1: &S, mut w2: &[S; AND_VARS],
     let z2 = full_z(w2, u2);
     let (az1, bz1, cz1) = eval_abc(&z1);
     let (az2, bz2, cz2) = eval_abc(&z2);
-    let mut t = vec![S::default(), S::default(), S::default()];
+    let mut t = [S::default(), S::default(), S::default()];
     for i in 0.. AND_CONS{
     let cross = (az1[i].clone() * bz2[i].clone()) + (az2[i].clone() * bz1[i].clone());
     let sub = (u1.clone() * cz2[i].clone()) + (u2.clone() * cz1[i].clone());
@@ -7719,11 +10404,11 @@ pub fn cross_term<S>(mut w1: &[S; AND_VARS], mut u1: &S, mut w2: &[S; AND_VARS],
 pub fn fold_witness<S>(mut w1: &[S; AND_VARS], mut e1: &[S; AND_CONS], mut w2: &[S; AND_VARS], mut e2: &[S; AND_CONS], mut t: &[S; AND_CONS], mut r: &S) -> ([S; AND_VARS], [S; AND_CONS])
 {
     let r2 = r.clone() * r.clone();
-    let mut w = vec![S::default(), S::default(), S::default(), S::default(), S::default(), S::default(), S::default()];
+    let mut w = [S::default(), S::default(), S::default(), S::default(), S::default(), S::default(), S::default()];
     for i in 0.. AND_VARS{
     w[i] = (w1[i].clone() + (r.clone() * w2[i].clone()));
 };
-    let mut e = vec![S::default(), S::default(), S::default()];
+    let mut e = [S::default(), S::default(), S::default()];
     for i in 0.. AND_CONS{
     e[i] = ((e1[i].clone() + (r.clone() * t[i].clone())) + (r2.clone() * e2[i].clone()));
 };
@@ -7865,11 +10550,11 @@ pub fn iknp_receiver_u_cols<D: Digest>(mut m: usize, mut receiver_bits: &[bool],
     let mut t_cols = Vec::with_capacity(IKNP_KAPPA);
     let mut u_cols = Vec::with_capacity(IKNP_KAPPA);
     for i in 0.. IKNP_KAPPA{
-    let mut t_col = vec![];
+    let mut t_col = vec![false; m];
     prg_to_bools::<D>(&seeds_0[i], &mut t_col);
-    let mut prg1 = vec![];
+    let mut prg1 = vec![false; m];
     prg_to_bools::<D>(&seeds_1[i], &mut prg1);
-    let mut u_col = vec![];
+    let mut u_col = vec![false; m];
     for j in 0.. m{
     u_col[j] = ((t_col[j] ^ prg1[j]) ^ receiver_bits[j]);
 };
@@ -7883,9 +10568,9 @@ pub fn iknp_sender_from_u<D: Digest>(mut l: usize, mut m: usize, mut delta_msg: 
 {
     let mut q_cols = Vec::with_capacity(IKNP_KAPPA);
     for i in 0.. IKNP_KAPPA{
-    let mut prg_chosen = vec![];
+    let mut prg_chosen = vec![false; m];
     prg_to_bools::<D>(&chosen_seeds[i], &mut prg_chosen);
-    let mut q_col = vec![];
+    let mut q_col = vec![false; m];
     for j in 0.. m{
     if delta_ot[i]{
     q_col[j] = (prg_chosen[j] ^ u_msg.u_cols[i][j]);
@@ -8048,7 +10733,7 @@ pub fn stack_setup_receiver_m<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut para
     let delta_raw = io.recv(TAG_DELTA);
     let mut delta_msg = [(0 as u8); 16];
     delta_msg.copy_from_slice(&delta_raw);
-    let mut bits = vec![];
+    let mut bits = vec![false; m];
     for b in &mut bits{
     *b = ((rng.next_u32() & 1) == 1);
 };
@@ -8142,7 +10827,7 @@ pub fn stack_refill_sender_malicious<R: SpecRng, Io: StackIo>(mut rng: &mut R, m
     let x_star_prime = decode_bools(&io.recv(TAG_FERRET_CHECK_MASK)).0;
     let mut transcript = raw.clone();
     transcript.extend_from_slice(&mpcot_bytes);
-    let lens = vec![];
+    let lens = vec![params.splen(); t];
     let chis = spcot_batched_fs_chis(&lens, &transcript);
     let vs: Vec<&[Block]> = s_padded.iter().map(Vec::as_slice).collect();
     let extra_q = &sender.seed.q[extra_off..(extra_off + KAPPA_BITS)];
@@ -8164,7 +10849,7 @@ pub fn stack_refill_receiver_malicious<R: SpecRng, Io: StackIo>(mut rng: &mut R,
     let t = params.t;
     let extra_off = k + (t * params.log_splen());
     let alphas = sample_regular_noise(rng, n, t);
-    let mut e = vec![];
+    let mut e = vec![false; n];
     for (i, ..) in alphas.iter().enumerate(){
     let (start, end) = params.interval_bounds(i).expect("regular noise interval index must be valid");
     e[start + a] = true;
@@ -8178,7 +10863,7 @@ pub fn stack_refill_receiver_malicious<R: SpecRng, Io: StackIo>(mut rng: &mut R,
     let r_padded = mpcot_reg_receiver_padded(n, t, &alphas, &receiver.seed.w[k..extra_off], &mpcot);
     let mut transcript = open_bytes.clone();
     transcript.extend_from_slice(&mpcot_bytes);
-    let lens = vec![];
+    let lens = vec![params.splen(); t];
     let chis = spcot_batched_fs_chis(&lens, &transcript);
     let extra_r = &receiver.seed.u[extra_off..(extra_off + KAPPA_BITS)];
     let extra_t = &receiver.seed.w[extra_off..(extra_off + KAPPA_BITS)];
@@ -8260,7 +10945,7 @@ pub fn stack_bea95_receiver<R: SpecRng, Io: StackIo>(mut rng: &mut R, mut receiv
     let z = receiver.out_z.pop_front().unwrap();
     let (_r0, zc, d) = bea95_chosen_bit(&[(0 as u8); 16], [(0 as u8); 16], x, z, bit);
     let _ = _r0;
-    io.send(TAG_BEA95, &vec![(d as u8)]);
+    io.send(TAG_BEA95, &[(d as u8)]);
     zc
 }
 
@@ -8426,7 +11111,7 @@ pub fn encrypt_branch_dyn<R: SpecRng>(mut n: usize, mut rng: &mut R, mut crs: &L
     for i in 0.. n{
     r[i] = sample_noise(rng);
 };
-    let mut u = vec![];
+    let mut u = vec![(0 as u32); n];
     for j in 0.. n{
     let mut acc: Zq = 0;
     for i in 0.. n{
@@ -8440,7 +11125,7 @@ pub fn encrypt_branch_dyn<R: SpecRng>(mut n: usize, mut rng: &mut R, mut crs: &L
     base = zq_add(base, zq_mul(pk[i], r[i]));
 };
     let half_q = LWE_Q / 2;
-    let mut v = vec![];
+    let mut v = vec![(0 as u32); msg_bits.len()];
     for (k, bit) in msg_bits.iter().enumerate(){
     let plain = if (bit & 1) == 1{
     half_q
@@ -8560,7 +11245,7 @@ pub fn bytes_to_bits(mut bytes: &[u8]) -> Vec<u8>
 
 pub fn bits_to_bytes(mut bits: &[u8], mut nbytes: usize) -> Vec<u8>
 {
-    let mut out = vec![];
+    let mut out = vec![(0 as u8); nbytes];
     for i in 0.. nbytes{
     let mut acc = 0 as u8;
     for bit in 0.. 8{
@@ -8617,7 +11302,7 @@ pub fn lwe_ot_recv_decrypt_bytes(mut n: usize, mut receiver: &LweOtReceiverDyn, 
 };
     let quarter = LWE_Q / 4;
     let three_quarter = 3 * quarter;
-    let mut bits = vec![];
+    let mut bits = vec![(0 as u8); v.len()];
     for k in 0.. v.len(){
     let raw = zq_sub(v[k], s_dot_u);
     bits[k] = if (raw > quarter) && (raw <= three_quarter){
@@ -8647,7 +11332,7 @@ pub fn lwe_ot_send_bytes_secure<R: SpecRng>(mut n: usize, mut rng: &mut R, mut c
     for i in 0.. n{
     r[i] = sample_noise(rng);
 };
-    let mut uk = vec![];
+    let mut uk = vec![(0 as u32); n];
     for j in 0.. n{
     let mut acc: Zq = 0;
     for i in 0.. n{
@@ -8684,7 +11369,7 @@ pub fn lwe_ot_recv_decrypt_bytes_secure(mut n: usize, mut receiver: &LweOtReceiv
 };
     let quarter = LWE_Q / 4;
     let three_quarter = 3 * quarter;
-    let mut bits = vec![];
+    let mut bits = vec![(0 as u8); vs.len()];
     for k in 0.. vs.len(){
     let mut s_dot_u: Zq = 0;
     for i in 0.. n{
@@ -8775,7 +11460,7 @@ pub fn expand_full(mut depth: usize, mut seed: Block) -> (Vec<Block>, Vec<[Block
     next.push(l);
     next.push(r);
 };
-    sums.push(vec![k0, k1]);
+    sums.push([k0, k1]);
     level = next;
 };
     (level, sums)
@@ -8803,7 +11488,7 @@ pub fn recover_sibling(mut layer: &mut [Block], mut sum: Block, mut offset: usiz
 pub fn expand_partial(mut depth: usize, mut sums: &[Block], mut alpha: usize) -> Vec<Block>
 {
     let n = (1 as usize) << depth;
-    let mut level: Vec<Block> = vec![];
+    let mut level: Vec<Block> = vec![[(0 as u8); KAPPA_BYTES]; 2];
     let mut offset = 0 as usize;
     for d in 0.. depth{
     let select = bit_msb(alpha, depth, d);
@@ -8811,7 +11496,7 @@ pub fn expand_partial(mut depth: usize, mut sums: &[Block], mut alpha: usize) ->
     if (d + 1) == depth{
     break;
 };
-    let mut next = vec![];
+    let mut next = vec![[(0 as u8); KAPPA_BYTES]; (level.len() * 2)];
     for (j, node) in level.iter().enumerate(){
     let (l, r) = g_double(*node);
     next[2 * j] = l;
@@ -8839,7 +11524,7 @@ pub fn spcot_sender_extend<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut n
     (q, q_xor_delta)
 };
     let tweak = i as u64;
-    ms.push(vec![xor_block(&layer_sums[i][0], &crhf(&k0, tweak)), xor_block(&layer_sums[i][1], &crhf(&k1, tweak))]);
+    ms.push([xor_block(&layer_sums[i][0], &crhf(&k0, tweak)), xor_block(&layer_sums[i][1], &crhf(&k1, tweak))]);
 };
     let mut c = *delta;
     for leaf in &leaves{
@@ -9089,7 +11774,7 @@ pub fn column_rows_for_valid_k(mut seed: &[u8; 16], mut k: usize, mut j: usize) 
 
 pub fn encode_blocks(mut seed: &[u8; 16], mut k: usize, mut n: usize, mut v: &[Block]) -> Vec<Block>
 {
-    let mut y = vec![];
+    let mut y = vec![[(0 as u8); 16]; n];
     for j in 0.. n{
     let rows = column_rows_for_valid_k(seed, k, j);
     let mut acc = [(0 as u8); 16];
@@ -9105,7 +11790,7 @@ pub fn encode_blocks(mut seed: &[u8; 16], mut k: usize, mut n: usize, mut v: &[B
 
 pub fn encode_bits(mut seed: &[u8; 16], mut k: usize, mut n: usize, mut u: &[bool]) -> Vec<bool>
 {
-    let mut x = vec![];
+    let mut x = vec![false; n];
     for j in 0.. n{
     let rows = column_rows_for_valid_k(seed, k, j);
     let mut acc = false;
@@ -9177,7 +11862,7 @@ pub fn unique_bins(mut seed: &[u8; 16], mut x: usize, mut m: usize) -> Vec<usize
 pub fn cuckoo_insert(mut seed: &[u8; 16], mut n: usize, mut t: usize, mut points: &[usize]) -> Vec<Option<usize>>
 {
     let m = cuckoo_table_size(t);
-    let mut table = vec![];
+    let mut table = vec![None; m];
     let max_kicks = 8 * m.max(16);
     for .. in points{
     let mut x = item;
@@ -9204,7 +11889,7 @@ pub fn cuckoo_insert(mut seed: &[u8; 16], mut n: usize, mut t: usize, mut points
 
 pub fn build_buckets(mut seed: &[u8; 16], mut n: usize, mut m: usize) -> Vec<Vec<usize>>
 {
-    let mut buckets = vec![];
+    let mut buckets = vec![Vec::new(); m];
     for x in 0.. n{
     for i in 0.. TAU{
     let j = hash_i(seed, i, x, m);
@@ -9237,7 +11922,7 @@ pub fn mpcot_uni_sender<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut para
     s_bins.push(v);
     blocks.push(msg);
 };
-    let mut s = vec![];
+    let mut s = vec![[(0 as u8); 16]; n];
     for x in 0.. n{
     let mut acc = [(0 as u8); 16];
     for j in unique_bins(&hash_seed, x, m){
@@ -9267,7 +11952,7 @@ pub fn mpcot_uni_receiver(mut params: FerretParams, mut table: &[Option<usize>],
     let w = spcot_receiver_extend(p, splen, &cot_t_chunks[j], &msg.blocks[j]);
     r_bins.push(w);
 };
-    let mut r = vec![];
+    let mut r = vec![[(0 as u8); 16]; n];
     for x in 0.. n{
     let mut acc = [(0 as u8); 16];
     for j in unique_bins(&msg.hash_seed, x, m){
@@ -9706,7 +12391,7 @@ pub fn ferret_prepare_receiver<R: SpecRng>(mut rng: &mut R, mut params: FerretPa
     let t = params.t;
     let k = params.k;
     let alphas = sample_regular_noise(rng, n, t);
-    let mut e = vec![];
+    let mut e = vec![false; n];
     for (i, ..) in alphas.iter().enumerate(){
     let (start, end) = params.interval_bounds(i).expect("regular noise interval index must be valid");
     e[start + a] = true;
@@ -9768,7 +12453,7 @@ pub fn ferret_extend_malicious<R: SpecRng>(mut rng: &mut R, mut params: FerretPa
     let spcot_cots = t * params.log_splen();
     let extra_off = k + spcot_cots;
     let alphas = sample_regular_noise(rng, n, t);
-    let mut e = vec![];
+    let mut e = vec![false; n];
     for (i, ..) in alphas.iter().enumerate(){
     let (start, end) = params.interval_bounds(i).expect("regular noise interval index must be valid");
     e[start + a] = true;
@@ -9806,7 +12491,7 @@ pub fn ferret_extend_uni<R: SpecRng>(mut rng: &mut R, mut params: FerretParams, 
     let heights = uni_spcot_heights(&hash_seed, params.n, params.t);
     let points = sample_uniform_points(rng, params.n, params.t);
     let table = super::mpcot_uni::cuckoo_insert(&hash_seed, params.n, params.t, &points);
-    let mut e = vec![];
+    let mut e = vec![false; params.n];
     for slot in &table{
     match slot {
     Some(x) => {
@@ -9850,7 +12535,7 @@ pub fn ferret_extend_uni_malicious<R: SpecRng>(mut rng: &mut R, mut params: Ferr
     let extra_off = k + spcot_cots;
     let points = sample_uniform_points(rng, params.n, params.t);
     let table = super::mpcot_uni::cuckoo_insert(&hash_seed, params.n, params.t, &points);
-    let mut e = vec![];
+    let mut e = vec![false; params.n];
     for slot in &table{
     match slot {
     Some(x) => {
@@ -10144,7 +12829,7 @@ pub fn decode_spcot(mut bytes: &[u8]) -> (SpcotSenderMsg, usize)
     for _ in 0.. h{
     let a = take_block(bytes, &mut off);
     let b = take_block(bytes, &mut off);
-    ms.push(vec![a, b]);
+    ms.push([a, b]);
 };
     let c = take_block(bytes, &mut off);
     let hv_len = take_u32(bytes, &mut off) as usize;
@@ -10335,6 +13020,1718 @@ pub fn decode_iknp_corr(mut bytes: &[u8]) -> Vec<[u8; IKNP_KAPPA_BYTES]>
     rows
 }
 
+pub fn is_pow2(mut n: usize) -> bool
+{
+    (n != 0) && n.is_power_of_two()
+}
+
+pub fn log2_pow2(mut n: usize) -> usize
+{
+    n.trailing_zeros() as usize
+}
+
+pub fn le16(mut v: Galois128) -> Vec<u8>
+{
+    let b = v.0.to_le_bytes();
+    (0..16).map(|i| b[i]).collect::<Vec<u8>>()
+}
+
+pub fn warp_transcript_new() -> WarpTranscript
+{
+    WarpTranscript { sponge: spec_sponge_new(SHAKE128_RATE) }
+}
+
+pub fn warp_hash_leaf_field(mut v: Galois128) -> WarpDigest
+{
+    let mut h = spec_sponge_new(SHA3_256_RATE);
+    spec_sponge_absorb_array(&mut h, &(0..1).map(|_| 0).collect::<Vec<u8>>());
+    let v_bytes: Vec<u8> = le16(v);
+    spec_sponge_absorb_array(&mut h, &v_bytes);
+    let mut reader = spec_sponge_finalize_xof(&h, 6);
+    let mut out: Vec<u8> = (0..32).map(|_| 0).collect::<Vec<u8>>();
+    spec_xof_read_array(&mut reader, &mut out);
+    out
+}
+
+pub fn warp_hash_node(mut left: &WarpDigest, mut right: &WarpDigest) -> WarpDigest
+{
+    let mut h = spec_sponge_new(SHA3_256_RATE);
+    spec_sponge_absorb_array(&mut h, &(0..1).map(|_| 1).collect::<Vec<u8>>());
+    spec_sponge_absorb_array(&mut h, left);
+    spec_sponge_absorb_array(&mut h, right);
+    let mut reader = spec_sponge_finalize_xof(&h, 6);
+    let mut out: Vec<u8> = (0..32).map(|_| 0).collect::<Vec<u8>>();
+    spec_xof_read_array(&mut reader, &mut out);
+    out
+}
+
+pub fn warp_merkle_commit_leaves(mut nodes: usize, mut leaves: usize, mut leaves: &Vec<WarpDigest>) -> WarpMerkleTreeDyn
+{
+    let mut nodes = (0..nodes).map(|_| <WarpDigest>::default()).collect::<Vec<WarpDigest>>();
+    for i in 0.. leaves{
+    nodes[i] = leaves[i].clone();
+};
+    let mut level_start = 0 as usize;
+    let mut level_len = leaves;
+    for _level in 0.. leaves{
+    if level_len > 1{
+    let next_start = level_start + level_len;
+    for j in 0.. level_len / 2{
+    nodes[next_start + j] = warp_hash_node(&nodes[level_start + (2 * j)], &nodes[level_start + (2 * j) + 1]);
+};
+    level_start = next_start;
+    level_len /= 2;
+};
+};
+    WarpMerkleTreeDyn { leaves: leaves, nodes: nodes }
+}
+
+pub fn warp_merkle_root(mut nodes: usize, mut tree: &WarpMerkleTreeDyn) -> WarpDigest
+{
+    tree.nodes[nodes - 1].clone()
+}
+
+pub fn warp_merkle_open(mut nodes: usize, mut log2: usize, mut tree: &WarpMerkleTreeDyn, mut index: usize) -> WarpAuthPathDyn
+{
+    let mut siblings = (0..log2).map(|_| <WarpDigest>::default()).collect::<Vec<WarpDigest>>();
+    let mut idx = index;
+    let mut level_start = 0 as usize;
+    let mut level_len = tree.leaves;
+    for depth in 0.. log2{
+    siblings[depth] = tree.nodes[level_start + (idx ^ 1)].clone();
+    idx /= 2;
+    level_start += level_len;
+    level_len /= 2;
+};
+    WarpAuthPathDyn { siblings: siblings, log2_leaves: 0 }
+}
+
+pub fn warp_merkle_verify_hashed(mut log2_leaves: usize, mut root: &WarpDigest, mut leaf_hash: &WarpDigest, mut index: usize, mut path: &WarpAuthPathDyn) -> bool
+{
+    let mut cur = leaf_hash.clone();
+    let mut idx = index;
+    for i in 0.. log2_leaves{
+    let sibling = &path.siblings[i];
+    cur = if (idx % 2) == 0{
+    warp_hash_node(&cur, sibling)
+} else {
+    warp_hash_node(sibling, &cur)
+};
+    idx /= 2;
+};
+    cur == *root
+}
+
+pub fn warp_commit_codeword<N, NODES>(mut n: usize, mut nodes: usize, mut codeword: &Vec<Galois128>) -> WarpMerkleTreeDyn
+{
+    let leaves = (0..n).map(|i| warp_hash_leaf_field(codeword[i])).collect::<Vec<WarpDigest>>();
+    warp_merkle_commit_leaves::<NODES, N>(nodes, n, &leaves)
+}
+
+pub fn warp_commit_stacked<N, FRESH, NODES>(mut n: usize, mut fresh: usize, mut nodes: usize, mut codewords: &Vec<Vec<Galois128>>) -> WarpMerkleTreeDyn
+{
+    let leaves = (0..n).map(|i| {
+    let mut h = spec_sponge_new(SHA3_256_RATE);
+    spec_sponge_absorb_array(n, &mut h, &(0..1).map(|_| 0).collect::<Vec<u8>>());
+    for j in 0.. fresh{
+    let elem_bytes: Vec<u8> = le16(codewords[j][i]);
+    spec_sponge_absorb_array(n, &mut h, &elem_bytes);
+};
+    let mut reader = spec_sponge_finalize_xof(&h, 6);
+    let mut out: Vec<u8> = (0..32).map(|_| 0).collect::<Vec<u8>>();
+    spec_xof_read_array(n, &mut reader, &mut out);
+    out
+}).collect::<Vec<WarpDigest>>();
+    warp_merkle_commit_leaves::<NODES, N>(nodes, n, &leaves)
+}
+
+pub fn warp_eq_evals(mut points: usize, mut out: usize, mut point: &Vec<Galois128>) -> Vec<Galois128>
+{
+    let mut out = (0..out).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    out[0] = Galois128(1);
+    for c in 0.. points{
+    let coordinate = point[c];
+    for index in 0.. (1 as usize) << c{
+    let product = out[index] * coordinate;
+    out[index] = (out[index] - product);
+    out[index + ((1 as usize) << c)] = product;
+};
+};
+    out
+}
+
+pub fn warp_eq_scalar(mut l: usize, mut a: &Vec<Galois128>, mut b: &Vec<Galois128>) -> Galois128
+{
+    let mut out = Galois128(1);
+    for i in 0.. l{
+    let left = a[i];
+    let right = b[i];
+    let same = left * right;
+    let different = (Galois128(1) - left) * (Galois128(1) - right);
+    out = (out * (same + different));
+};
+    out
+}
+
+pub fn warp_binary_point(mut log: usize, mut index: usize) -> Vec<Galois128>
+{
+    (0..log).map(|bit| {
+    if ((index >> bit) & 1) == 1{
+    Galois128(1)
+} else {
+    Galois128(0)
+}
+}).collect::<Vec<_>>()
+}
+
+pub fn warp_mle_eval<N, LOGN>(mut n: usize, mut logn: usize, mut values: &Vec<Galois128>, mut point: &Vec<Galois128>) -> Galois128
+{
+    let eq = warp_eq_evals::<LOGN, N>(logn, n, point);
+    let mut out = Galois128(0);
+    for i in 0.. n{
+    out = (out + (values[i] * eq[i]));
+};
+    out
+}
+
+pub fn warp_term_degree(mut deg: usize, mut term: &WarpTermDyn) -> usize
+{
+    term.n_vars as usize
+}
+
+pub fn warp_eval_term(mut deg: usize, mut x: usize, mut k: usize, mut term: &WarpTermDyn, mut public: &Vec<Galois128>, mut witness: &Vec<Galois128>) -> Galois128
+{
+    let mut out = term.coeff;
+    for i in 0.. deg{
+    if i < (term.n_vars as usize){
+    let var = term.vars[i];
+    let value = if var < x{
+    public[var]
+} else {
+    witness[var - x]
+};
+    out = (out * value);
+};
+};
+    out
+}
+
+pub fn warp_constraint_max_degree(mut terms: usize, mut deg: usize, mut constraint: &WarpConstraintDyn) -> usize
+{
+    let mut out = 0 as usize;
+    for i in 0.. terms{
+    if i < (constraint.n_terms as usize){
+    let d = warp_term_degree(deg, &constraint.terms[i]);
+    if d > out{
+    out = d;
+}
+};
+};
+    out
+}
+
+pub fn warp_eval_constraint(mut terms: usize, mut deg: usize, mut x: usize, mut k: usize, mut constraint: &WarpConstraintDyn, mut public: &Vec<Galois128>, mut witness: &Vec<Galois128>) -> Galois128
+{
+    let mut out = Galois128(0);
+    for i in 0.. terms{
+    if i < (constraint.n_terms as usize){
+    out = (out + warp_eval_term::<DEG, X, K>(deg, x, k, &constraint.terms[i], public, witness));
+};
+};
+    out
+}
+
+pub fn warp_variable_count(mut m: usize, mut terms: usize, mut deg: usize, mut pesat: &WarpIndexDyn) -> usize
+{
+    pesat.public_len + pesat.witness_len
+}
+
+pub fn warp_log_constraints(mut m: usize, mut terms: usize, mut deg: usize, mut pesat: &WarpIndexDyn) -> usize
+{
+    log2_pow2(m)
+}
+
+pub fn warp_index_is_valid(mut m: usize, mut terms: usize, mut deg: usize, mut pesat: &WarpIndexDyn) -> bool
+{
+    if !is_pow2(m){
+    return false;
+};
+    for c in 0.. m{
+    let constraint = &pesat.constraints[c];
+    if (constraint.n_terms as usize) > terms{
+    return false;
+};
+    if warp_constraint_max_degree(terms, deg, constraint) > pesat.degree_bound{
+    return false;
+};
+    for i in 0.. terms{
+    if i < (constraint.n_terms as usize){
+    let term = &constraint.terms[i];
+    if (term.n_vars as usize) > deg{
+    return false;
+};
+    for j in 0.. deg{
+    if (j < (term.n_vars as usize)) && (term.vars[j] >= warp_variable_count(m, terms, deg, pesat)){
+    return false;
+};
+}
+};
+};
+};
+    true
+}
+
+pub fn warp_evaluate_bundled(mut m: usize, mut terms: usize, mut deg: usize, mut k: usize, mut beta: usize, mut pesat: &WarpIndexDyn, mut beta: &Vec<Galois128>, mut witness: &Vec<Galois128>) -> Galois128
+{
+    let log_m = warp_log_constraints(m, terms, deg, pesat);
+    let mut eq = (0..m).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    eq[0] = Galois128(1);
+    for j in 0.. m{
+    if ((1 as usize) << j) < m{
+    let coordinate = beta[pesat.public_len + j];
+    for index in 0.. (1 as usize) << j{
+    let product = eq[index] * coordinate;
+    eq[index] = (eq[index] - product);
+    eq[index + ((1 as usize) << j)] = product;
+}
+};
+};
+    let mut out = Galois128(0);
+    for index in 0.. m{
+    let constraint = &pesat.constraints[index];
+    let mut value = Galois128(0);
+    for i in 0.. constraint.n_terms as usize{
+    let term = &constraint.terms[i];
+    let mut product = term.coeff;
+    for v in 0.. term.n_vars as usize{
+    let var = term.vars[v];
+    let x = if var < pesat.public_len{
+    beta[var]
+} else {
+    witness[var - pesat.public_len]
+};
+    product = (product * x);
+};
+    value = (value + product);
+};
+    out = (out + (eq[index] * value));
+};
+    out
+}
+
+pub fn warp_is_instance_satisfied(mut m: usize, mut terms: usize, mut deg: usize, mut k: usize, mut x: usize, mut pesat: &WarpIndexDyn, mut instance: &WarpWitnessDyn) -> bool
+{
+    for index in 0.. m{
+    let constraint = &pesat.constraints[index];
+    if warp_eval_constraint(terms, deg, x, k, constraint, &instance.public, &instance.witness) != Galois128(0){
+    return false;
+};
+};
+    true
+}
+
+pub fn warp_absorb_index(mut m: usize, mut terms: usize, mut deg: usize, mut pesat: &WarpIndexDyn, mut transcript: &mut WarpTranscript)
+{
+    transcript.absorb_array(&(0..u5).map(|i| b"[105, 110, 100, 101, 120]"[i]).collect::<Vec<u8>>().n, &(0..u5).map(|i| b"[105, 110, 100, 101, 120]"[i]).collect::<Vec<u8>>());
+    transcript.absorb_usize(m);
+    transcript.absorb_usize(pesat.public_len);
+    transcript.absorb_usize(pesat.witness_len);
+    transcript.absorb_usize(pesat.degree_bound);
+    for c in 0.. m{
+    let constraint = &pesat.constraints[c];
+    transcript.absorb_usize((constraint.n_terms as usize));
+    for i in 0.. terms{
+    if i < (constraint.n_terms as usize){
+    let term = &constraint.terms[i];
+    transcript.absorb_field(term.coeff);
+    transcript.absorb_usize((term.n_vars as usize));
+    for j in 0.. deg{
+    if j < (term.n_vars as usize){
+    transcript.absorb_usize(term.vars[j]);
+};
+}
+};
+};
+}
+}
+
+pub fn warp_uni_at_zero(mut cap: usize, mut poly: &WarpUniDyn) -> Galois128
+{
+    poly.evaluations[0]
+}
+
+pub fn warp_uni_at_one(mut cap: usize, mut poly: &WarpUniDyn) -> Galois128
+{
+    poly.evaluations[1]
+}
+
+pub fn warp_uni_evaluate(mut cap: usize, mut poly: &WarpUniDyn, mut x: Galois128) -> Galois128
+{
+    let n = poly.count as usize;
+    let mut out = Galois128(0);
+    for i in 0.. cap{
+    if i < n{
+    let mut numerator = Galois128(1);
+    let mut denominator = Galois128(1);
+    for j in 0.. cap{
+    if (j < n) && (i != j){
+    numerator = (numerator * (x - Galois128((j as u128))));
+    denominator = (denominator * (Galois128((i as u128)) - Galois128((j as u128))));
+};
+};
+    out = (out + ((poly.evaluations[i] * numerator) * warp_inv(denominator)));
+};
+};
+    out
+}
+
+pub fn warp_inv(mut a: Galois128) -> Galois128
+{
+    let mut result = Galois128(1);
+    for _ in 0.. 127 as u32{
+    result = ((result * result) * a);
+};
+    result * result
+}
+
+pub fn warp_absorb_instance(mut logn: usize, mut beta: usize, mut transcript: &mut WarpTranscript, mut instance: &WarpAccInstanceDyn)
+{
+    transcript.absorb_array(&(0..u12).map(|i| b"[97, 99, 99, 45, 105, 110, 115, 116, 97, 110, 99, 101]"[i]).collect::<Vec<u8>>().n, &(0..u12).map(|i| b"[97, 99, 99, 45, 105, 110, 115, 116, 97, 110, 99, 101]"[i]).collect::<Vec<u8>>());
+    transcript.absorb_len_prefixed(&instance.root.n, &instance.root);
+    transcript.absorb_fields(&instance.alpha.n, &instance.alpha);
+    transcript.absorb_field(instance.mu);
+    transcript.absorb_fields(&instance.beta.n, &instance.beta);
+    transcript.absorb_field(instance.eta);
+}
+
+pub fn warp_transcript_for<M, TERMS, DEG, X, FRESH, A, LOGN, BETA>(mut m: usize, mut terms: usize, mut deg: usize, mut x: usize, mut fresh: usize, mut a: usize, mut logn: usize, mut beta: usize, mut index: &WarpIndexDyn, mut fresh_publics: &Vec<Vec<Galois128>>, mut accumulators: &Vec<WarpAccInstanceDyn>) -> WarpTranscript
+{
+    let domain = (0..u51).map(|i| WARP_TRANSCRIPT_DOMAIN[i]).collect::<Vec<u8>>();
+    let mut transcript = warp_transcript_new().domain_sep(&domain.n, &domain);
+    warp_absorb_index(m, terms, deg, index, &mut transcript);
+    transcript.absorb_usize(fresh);
+    for i in 0.. fresh{
+    transcript.absorb_array(&(0..u12).map(|i| b"[102, 114, 101, 115, 104, 45, 112, 117, 98, 108, 105, 99]"[i]).collect::<Vec<u8>>().n, &(0..u12).map(|i| b"[102, 114, 101, 115, 104, 45, 112, 117, 98, 108, 105, 99]"[i]).collect::<Vec<u8>>());
+    transcript.absorb_fields(&fresh_publics[i].n, &fresh_publics[i]);
+};
+    transcript.absorb_usize(a);
+    for i in 0.. a{
+    warp_absorb_instance(logn, beta, &mut transcript, &accumulators[i]);
+};
+    transcript
+}
+
+pub fn warp_genesis_spec<M, TERMS, DEG, K, X, N, C, NODES, BETA>(mut m: usize, mut terms: usize, mut deg: usize, mut k: usize, mut x: usize, mut n: usize, mut nodes: usize, mut beta: usize, mut index: &WarpIndexDyn, mut code: &C, mut instance: &WarpWitnessDyn) -> Option<WarpAccDyn>
+{
+    if !warp_index_is_valid(m, terms, deg, index) || !is_pow2(n){
+    return None;
+};
+    if (x != index.public_len) || (k != index.witness_len) || (beta != (index.public_len + warp_log_constraints(m, terms, deg, index))){
+    return None;
+};
+    if !warp_is_instance_satisfied(m, terms, deg, k, x, index, instance){
+    return None;
+};
+    let codeword = code.encode(&instance.witness);
+    let tree = warp_commit_codeword::<N, NODES>(n, nodes, &codeword);
+    let alpha: Vec<Galois128> = (0..ilog2(n)).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    let mut beta = (0..beta).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for i in 0.. x{
+    beta[i] = instance.public[i];
+};
+    let mu = warp_mle_eval(&codeword, &alpha);
+    let eta = warp_evaluate_bundled(m, terms, deg, k, beta, index, &beta, &instance.witness);
+    Some(WarpAccDyn { instance: WarpAccInstanceDyn { root: warp_merkle_root(nodes, &tree), alpha: alpha, mu: mu, beta: beta, eta: eta, logn: 0 }, witness: WarpAccWitnessDyn { tree: tree, codeword: codeword, witness: instance.witness.clone(), n: 0, k: 0, nodes: 0 }, n: 0, k: 0, logn: 0, beta: 0, nodes: 0 })
+}
+
+pub fn warp_decide_spec<M, TERMS, DEG, N, K, LOGN, BETA, NODES, C>(mut m: usize, mut terms: usize, mut deg: usize, mut n: usize, mut k: usize, mut logn: usize, mut beta: usize, mut nodes: usize, mut index: &WarpIndexDyn, mut code: &C, mut accumulator: &WarpAccDyn) -> bool
+{
+    if !warp_index_is_valid(m, terms, deg, index){
+    return false;
+};
+    if (logn != log2_pow2(n)) || (beta != (index.public_len + warp_log_constraints(m, terms, deg, index))) || (k != index.witness_len) || (warp_merkle_root(nodes, &accumulator.witness.tree) != accumulator.instance.root){
+    return false;
+};
+    let recomputed = warp_commit_codeword::<N, NODES>(n, nodes, &accumulator.witness.codeword);
+    if warp_merkle_root(nodes, &recomputed) != accumulator.instance.root{
+    return false;
+};
+    if code.encode(&accumulator.witness.witness) != accumulator.witness.codeword{
+    return false;
+};
+    if warp_mle_eval(n, logn, &accumulator.witness.codeword, &accumulator.instance.alpha) != accumulator.instance.mu{
+    return false;
+};
+    warp_evaluate_bundled(m, terms, deg, k, beta, index, &accumulator.instance.beta, &accumulator.witness.witness) == accumulator.instance.eta
+}
+
+pub fn warp_combine_vectors<ELL, LOGL, LEN>(mut ell: usize, mut logl: usize, mut len: usize, mut items: &Vec<Vec<Galois128>>, mut point: &Vec<Galois128>) -> Vec<Galois128>
+{
+    let weights = warp_eq_evals::<LOGL, ELL>(logl, ell, point);
+    let mut out = (0..len).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for i in 0.. ell{
+    let weight = weights[i];
+    for j in 0.. len{
+    out[j] = (out[j] + (items[i][j] * weight));
+};
+};
+    out
+}
+
+pub fn warp_point_with_suffix(mut log: usize, mut prefix: &Vec<Galois128>, mut prefix_len: usize, mut current: Galois128, mut suffix: usize, mut suffix_len: usize) -> Vec<Galois128>
+{
+    (0..log).map(|i| {
+    if i < prefix_len{
+    prefix[i]
+} else if i == prefix_len{
+    current
+} else {
+    let bit = (i - prefix_len) - 1;
+    if (bit < suffix_len) && (((suffix >> bit) & 1) == 1){
+    Galois128(1)
+} else {
+    Galois128(0)
+}
+}
+}).collect::<Vec<_>>()
+}
+
+pub fn warp_evaluate_g<M, TERMS, DEG, N, K, LOGN, BETA>(mut m: usize, mut terms: usize, mut deg: usize, mut n: usize, mut k: usize, mut logn: usize, mut beta: usize, mut index: &WarpIndexDyn, mut codeword: &Vec<Galois128>, mut witness: &Vec<Galois128>, mut alpha: &Vec<Galois128>, mut beta: &Vec<Galois128>, mut omega: Galois128) -> Galois128
+{
+    let evaluation = warp_mle_eval(n, logn, codeword, alpha);
+    let bundled = warp_evaluate_bundled(m, terms, deg, k, beta, index, beta, witness);
+    evaluation + (omega * bundled)
+}
+
+pub fn warp_eq_star_at<R, LOGR, LOGN>(mut r: usize, mut logr: usize, mut logn: usize, mut claim_points: &Vec<Vec<Galois128>>, mut xi: &Vec<Galois128>, mut point: &Vec<Galois128>) -> Galois128
+{
+    let mut out = Galois128(0);
+    for index in 0.. r{
+    let claim_index = warp_binary_point::<LOGR>(logr, index);
+    let weight = warp_eq_scalar(logr, xi, &claim_index) * warp_eq_scalar(logn, &claim_points[index], point);
+    out = (out + weight);
+};
+    out
+}
+
+pub fn warp_first_sumcheck_eval<M, TERMS, DEG, K, N, ELL, LOGL, LOGN, BETA>(mut m: usize, mut terms: usize, mut deg: usize, mut k: usize, mut n: usize, mut ell: usize, mut logl: usize, mut logn: usize, mut beta: usize, mut index: &WarpIndexDyn, mut codewords: &Vec<Vec<Galois128>>, mut witnesses: &Vec<Vec<Galois128>>, mut alphas: &Vec<Vec<Galois128>>, mut betas: &Vec<Vec<Galois128>>, mut tau: &Vec<Galois128>, mut omega: Galois128, mut prefix: &Vec<Galois128>, mut round: usize, mut x: Galois128) -> Galois128
+{
+    let log_ell = log2_pow2(ell);
+    let suffix_len = (log_ell - round) - 1;
+    let mut out = Galois128(0);
+    for suffix in 0.. ell >> (round + 1){
+    let point = warp_point_with_suffix::<LOGL>(logl, prefix, round, x, suffix, suffix_len);
+    let codeword = warp_combine_vectors(ell, logl, n, codewords, &point);
+    let witness = warp_combine_vectors(ell, logl, k, witnesses, &point);
+    let alpha = warp_combine_vectors(ell, logl, logn, alphas, &point);
+    let beta = warp_combine_vectors(ell, logl, beta, betas, &point);
+    let g = warp_evaluate_g(m, terms, deg, n, k, logn, beta, index, &codeword, &witness, &alpha, &beta, omega);
+    out = (out + (warp_eq_scalar(logl, tau, &point) * g));
+};
+    out
+}
+
+pub fn warp_second_sumcheck_eval<N, R, LOGR, LOGN>(mut n: usize, mut r: usize, mut logr: usize, mut logn: usize, mut codeword: &Vec<Galois128>, mut claim_points: &Vec<Vec<Galois128>>, mut xi: &Vec<Galois128>, mut prefix: &Vec<Galois128>, mut round: usize, mut x: Galois128) -> Galois128
+{
+    let log_n = log2_pow2(n);
+    let suffix_len = (log_n - round) - 1;
+    let mut out = Galois128(0);
+    for suffix in 0.. n >> (round + 1){
+    let point = warp_point_with_suffix::<LOGN>(logn, prefix, round, x, suffix, suffix_len);
+    let eq = warp_eq_star_at(r, logr, logn, claim_points, xi, &point);
+    out = (out + (eq * warp_mle_eval(n, logn, codeword, &point)));
+};
+    out
+}
+
+pub fn warp_check_sumcheck(mut sc: usize, mut rounds: usize, mut polys: &Vec<WarpUniDyn>, mut initial_claim: Galois128, mut challenges: &Vec<Galois128>, mut final_claim: Galois128) -> bool
+{
+    if rounds == 0{
+    return (initial_claim == final_claim);
+};
+    if (warp_uni_at_zero(sc, &polys[0]) + warp_uni_at_one(sc, &polys[0])) != initial_claim{
+    return false;
+};
+    for round in 1.. rounds{
+    let expected = warp_uni_evaluate(sc, &polys[round - 1], challenges[round - 1]);
+    if (warp_uni_at_zero(sc, &polys[round]) + warp_uni_at_one(sc, &polys[round])) != expected{
+    return false;
+};
+};
+    warp_uni_evaluate(sc, &polys[rounds - 1], challenges[rounds - 1]) == final_claim
+}
+
+pub fn warp_prove_spec<M, TERMS, DEG, K, X, N, FRESH, A, ELL, S, SHIFTS, R, SC, TW, FSD1, NODES, BETA, C>(mut m: usize, mut terms: usize, mut deg: usize, mut k: usize, mut x: usize, mut n: usize, mut fresh: usize, mut a: usize, mut ell: usize, mut s: usize, mut shifts: usize, mut r: usize, mut sc: usize, mut tw: usize, mut fsd1: usize, mut nodes: usize, mut beta: usize, mut index: &WarpIndexDyn, mut code: &C, mut fresh: &Vec<WarpWitnessDyn>, mut accumulators: &Vec<WarpAccDyn>) -> Option<(WarpAccDyn, WarpProofDyn)>
+{
+    if !warp_index_is_valid(m, terms, deg, index){
+    return None;
+};
+    let log_n = log2_pow2(n);
+    let log_m = warp_log_constraints(m, terms, deg, index);
+    let log_ell = log2_pow2(ell);
+    if !is_pow2(n) || !is_pow2(ell) || (ell != (fresh + a)) || (fresh == 0) || !is_pow2(r) || (r != ((1 + s) + shifts)) || (tw != (log_ell + 1)) || (beta != (index.public_len + log_m)) || (k != index.witness_len) || (x != index.public_len) || (nodes != ((2 * n) - 1)){
+    return None;
+};
+    let first_degree = 1 + (log_n + 1).max((log_m + index.degree_bound));
+    if (fsd1 != (first_degree + 1)) || (fsd1 > sc) || (3 > sc){
+    return None;
+};
+    for i in 0.. fresh{
+    if !warp_is_instance_satisfied(m, terms, deg, k, x, index, &fresh[i]){
+    return None;
+};
+};
+    for i in 0.. a{
+    if warp_merkle_root(nodes, &accumulators[i].witness.tree) != accumulators[i].instance.root{
+    return None;
+};
+};
+    let fresh_publics = (0..fresh).map(|i| fresh[i].public.clone()).collect::<Vec<Vec<Galois128>>>();
+    let acc_instances = (0..a).map(|i| accumulators[i].instance.clone()).collect::<Vec<WarpAccInstanceDyn>>();
+    let mut transcript = warp_transcript_for(index, &fresh_publics, &acc_instances);
+    let fresh_codewords = (0..fresh).map(|i| code.encode(&fresh[i].witness)).collect::<Vec<Vec<Galois128>>>();
+    let initial_tree = warp_commit_stacked::<N, FRESH, NODES>(n, fresh, nodes, &fresh_codewords);
+    let initial_root = warp_merkle_root(nodes, &initial_tree);
+    transcript.absorb_len_prefixed(n, &initial_root);
+    let taus: Vec<Vec<Galois128>> = transcript.squeeze_field_grid(r);
+    let zero_point_n = (0..ilog2(n)).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    let fresh_mus = (0..fresh).map(|i| {
+    warp_mle_eval(&fresh_codewords[i], &zero_point_n)
+}).collect::<Vec<Galois128>>();
+    let mut alphas = (0..ell).map(|_| <Vec<Galois128>>::default()).collect::<Vec<Vec<Galois128>>>();
+    let mut mus = (0..ell).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    let mut betas = (0..ell).map(|_| <Vec<Galois128>>::default()).collect::<Vec<Vec<Galois128>>>();
+    let mut etas = (0..ell).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    let mut codewords = (0..ell).map(|_| <Vec<Galois128>>::default()).collect::<Vec<Vec<Galois128>>>();
+    let mut witnesses = (0..ell).map(|_| <Vec<Galois128>>::default()).collect::<Vec<Vec<Galois128>>>();
+    for i in 0.. fresh{
+    alphas[i] = (0..ilog2(n)).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    mus[i] = fresh_mus[i];
+    let mut beta = (0..beta).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for j in 0.. x{
+    beta[j] = fresh[i].public[j];
+};
+    for j in 0.. m{
+    if ((1 as usize) << j) < m{
+    beta[x + j] = taus[i][j];
+};
+};
+    betas[i] = beta;
+    etas[i] = Galois128(0);
+    codewords[i] = fresh_codewords[i].clone();
+    witnesses[i] = fresh[i].witness.clone();
+};
+    transcript.absorb_fields(n, &fresh_mus);
+    for i in 0.. a{
+    let acc = &accumulators[i];
+    alphas[fresh + i] = acc.instance.alpha.clone();
+    mus[fresh + i] = acc.instance.mu;
+    betas[fresh + i] = acc.instance.beta.clone();
+    etas[fresh + i] = acc.instance.eta;
+    codewords[fresh + i] = acc.witness.codeword.clone();
+    witnesses[fresh + i] = acc.witness.witness.clone();
+};
+    let tau_omega: Vec<Galois128> = transcript.squeeze_fields(n);
+    let tau = (0..ilog2(ell)).map(|i| tau_omega[i]).collect::<Vec<Galois128>>();
+    let omega = tau_omega[tw - 1];
+    let sigma1 = {
+    let eq_tau = warp_eq_evals::<<ELL as Logarithm2>::Output, ELL>(&tau);
+    let mut out = Galois128(0);
+    for i in 0.. ell{
+    out = (out + (eq_tau[i] * (mus[i] + (omega * etas[i]))));
+};
+    out
+};
+    let mut first_sumcheck = (0..ilog2(ell)).map(|_| WarpUniDyn { evaluations: (0..sc).map(|_| Galois128.default()).collect::<Vec<Galois128>>(), count: 0, cap: 0 }).collect::<Vec<WarpUniDyn>>();
+    let mut gamma = (0..ilog2(ell)).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for round in 0.. ell{
+    if ((1 as usize) << round) < ell{
+    let mut evals = (0..sc).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for x in 0.. fsd1{
+    evals[x] = warp_first_sumcheck_eval(index, &codewords, &witnesses, &alphas, &betas, &tau, omega, &gamma, round, Galois128((x as u128)));
+};
+    let poly = WarpUniDyn { evaluations: evals, count: (fsd1 as u32), cap: 0 };
+    transcript.absorb_poly(sc, &poly.cnt, &poly);
+    gamma[round] = transcript.squeeze_fields(n)[0];
+    first_sumcheck[round] = poly;
+};
+};
+    let zeta0 = warp_combine_vectors(&alphas, &gamma);
+    let beta = warp_combine_vectors(&betas, &gamma);
+    let folded_codeword = warp_combine_vectors(&codewords, &gamma);
+    let folded_witness = warp_combine_vectors(&witnesses, &gamma);
+    let nu0 = warp_mle_eval(&folded_codeword, &zeta0);
+    let eta = warp_evaluate_bundled(m, terms, deg, k, beta, index, &beta, &folded_witness);
+    if !warp_check_sumcheck(&first_sumcheck, sigma1, &gamma, {
+    warp_eq_scalar(&tau, &gamma) * (nu0 + (omega * eta))
+}){
+    return None;
+};
+    let output_tree = warp_commit_codeword::<N, NODES>(n, nodes, &folded_codeword);
+    let output_root = warp_merkle_root(nodes, &output_tree);
+    transcript.absorb_len_prefixed(n, &output_root);
+    transcript.absorb_field(nu0);
+    transcript.absorb_field(eta);
+    let ood_points: Vec<Vec<Galois128>> = transcript.squeeze_field_grid(r);
+    let ood_answers = (0..s).map(|i| {
+    warp_mle_eval(&folded_codeword, &ood_points[i])
+}).collect::<Vec<Galois128>>();
+    transcript.absorb_fields(n, &ood_answers);
+    let (shift_indices, xi): (Vec<u32>, Vec<Galois128>) = transcript.squeeze_shift_and_xi(shifts);
+    let mut claim_points = (0..r).map(|_| <Vec<Galois128>>::default()).collect::<Vec<Vec<Galois128>>>();
+    let mut claim_values = (0..r).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    claim_points[0] = zeta0;
+    claim_values[0] = nu0;
+    for i in 0.. s{
+    claim_points[1 + i] = ood_points[i].clone();
+    claim_values[1 + i] = ood_answers[i];
+};
+    for i in 0.. shifts{
+    claim_points[1 + s + i] = warp_binary_point((shift_indices[i] as usize));
+    claim_values[1 + s + i] = folded_codeword[shift_indices[i] as usize];
+};
+    let sigma2 = {
+    let eq_xi = warp_eq_evals::<<R as Logarithm2>::Output, R>(&xi);
+    let mut out = Galois128(0);
+    for i in 0.. r{
+    out = (out + (claim_values[i] * eq_xi[i]));
+};
+    out
+};
+    let mut second_sumcheck = (0..ilog2(n)).map(|_| WarpUniDyn { evaluations: (0..sc).map(|_| Galois128.default()).collect::<Vec<Galois128>>(), count: 0, cap: 0 }).collect::<Vec<WarpUniDyn>>();
+    let mut alpha = (0..ilog2(n)).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for round in 0.. n{
+    if ((1 as usize) << round) < n{
+    let mut evals = (0..sc).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for x in 0.. 3 as usize{
+    evals[x] = warp_second_sumcheck_eval(&folded_codeword, &claim_points, &xi, &alpha, round, Galois128((x as u128)));
+};
+    let poly = WarpUniDyn { evaluations: evals, count: 3, cap: 0 };
+    transcript.absorb_poly(sc, &poly.cnt, &poly);
+    alpha[round] = transcript.squeeze_fields(n)[0];
+    second_sumcheck[round] = poly;
+};
+};
+    let mu = warp_mle_eval(&folded_codeword, &alpha);
+    if !warp_check_sumcheck(&second_sumcheck, sigma2, &alpha, {
+    let eq = warp_eq_star_at(&claim_points, &xi, &alpha);
+    mu * eq
+}){
+    return None;
+};
+    let initial_paths = (0..shifts).map(|i| {
+    warp_merkle_open(&initial_tree, (shift_indices[i] as usize))
+}).collect::<Vec<WarpAuthPathDyn>>();
+    let accumulator_paths = (0..a).map(|i| {
+    (0..shifts).map(|j| {
+    warp_merkle_open(&accumulators[i].witness.tree, (shift_indices[j] as usize))
+}).collect::<Vec<WarpAuthPathDyn>>()
+}).collect::<Vec<Vec<WarpAuthPathDyn>>>();
+    let openings = (0..shifts).map(|j| {
+    (0..ell).map(|i| codewords[i][shift_indices[j] as usize]).collect::<Vec<Galois128>>()
+}).collect::<Vec<Vec<Galois128>>>();
+    let accumulator = WarpAccDyn { instance: WarpAccInstanceDyn { root: output_root, alpha: alpha, mu: mu, beta: beta, eta: eta, logn: 0 }, witness: WarpAccWitnessDyn { tree: output_tree, codeword: folded_codeword, witness: folded_witness, n: 0, k: 0, nodes: 0 }, n: 0, k: 0, logn: 0, beta: 0, nodes: 0 };
+    let proof = WarpProofDyn { initial_root: initial_root, fresh_mus: fresh_mus, first_sumcheck: first_sumcheck, nu0: nu0, ood_answers: ood_answers, second_sumcheck: second_sumcheck, initial_paths: initial_paths, accumulator_paths: accumulator_paths, openings: openings, fresh: 0, ell: 0, a: 0, s: 0, shifts: 0, sc: 0, logn: 0 };
+    Some((accumulator, proof))
+}
+
+pub fn warp_hash_fresh_row(mut ell: usize, mut fresh: usize, mut row: &Vec<Galois128>) -> WarpDigest
+{
+    let mut h = spec_sponge_new(SHA3_256_RATE);
+    spec_sponge_absorb_array(&mut h, &(0..1).map(|_| 0).collect::<Vec<u8>>());
+    for i in 0.. fresh{
+    let row_bytes: Vec<u8> = le16(row[i]);
+    spec_sponge_absorb_array(&mut h, &row_bytes);
+};
+    let mut reader = spec_sponge_finalize_xof(&h, 6);
+    let mut out: Vec<u8> = (0..32).map(|_| 0).collect::<Vec<u8>>();
+    spec_xof_read_array(&mut reader, &mut out);
+    out
+}
+
+pub fn warp_verify_spec<M, TERMS, DEG, X, FRESH, A, ELL, S, SHIFTS, R, SC, TW, FSD1, N, BETA>(mut m: usize, mut terms: usize, mut deg: usize, mut x: usize, mut fresh: usize, mut a: usize, mut ell: usize, mut s: usize, mut shifts: usize, mut r: usize, mut sc: usize, mut tw: usize, mut fsd1: usize, mut n: usize, mut beta: usize, mut index: &WarpIndexDyn, mut fresh_publics: &Vec<Vec<Galois128>>, mut input_accumulators: &Vec<WarpAccInstanceDyn>, mut output: &WarpAccInstanceDyn, mut proof: &WarpProofDyn) -> bool
+{
+    if !warp_index_is_valid(m, terms, deg, index){
+    return false;
+};
+    let log_m = warp_log_constraints(m, terms, deg, index);
+    let log_ell = log2_pow2(ell);
+    let log_n = log2_pow2(n);
+    if (fresh == 0) || !is_pow2(ell) || (ell != (fresh + a)) || !is_pow2(r) || (r != ((1 + s) + shifts)) || (tw != (log_ell + 1)) || (beta != (index.public_len + log_m)) || (x != index.public_len) || (n != ((1 as usize) << log2_pow2(n))) || (fsd1 != (2 + (log_n + 1).max((log_m + index.degree_bound)))){
+    return false;
+};
+    let mut transcript = warp_transcript_for(index, fresh_publics, input_accumulators);
+    transcript.absorb_len_prefixed(n, &proof.initial_root);
+    let taus: Vec<Vec<Galois128>> = transcript.squeeze_field_grid(r);
+    transcript.absorb_fields(n, &proof.fresh_mus);
+    let mut alphas = (0..ell).map(|_| <Vec<Galois128>>::default()).collect::<Vec<Vec<Galois128>>>();
+    let mut mus = (0..ell).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    let mut betas = (0..ell).map(|_| <Vec<Galois128>>::default()).collect::<Vec<Vec<Galois128>>>();
+    let mut etas = (0..ell).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for i in 0.. fresh{
+    mus[i] = proof.fresh_mus[i];
+    let mut beta_i = (0..beta).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for j in 0.. x{
+    beta_i[j] = fresh_publics[i][j];
+};
+    for j in 0.. m{
+    if ((1 as usize) << j) < m{
+    beta_i[x + j] = taus[i][j];
+};
+};
+    betas[i] = beta_i;
+    etas[i] = Galois128(0);
+};
+    for i in 0.. a{
+    let acc = &input_accumulators[i];
+    alphas[fresh + i] = acc.alpha.clone();
+    mus[fresh + i] = acc.mu;
+    betas[fresh + i] = acc.beta.clone();
+    etas[fresh + i] = acc.eta;
+};
+    let tau_omega: Vec<Galois128> = transcript.squeeze_fields(n);
+    let tau = (0..ilog2(ell)).map(|i| tau_omega[i]).collect::<Vec<Galois128>>();
+    let omega = tau_omega[tw - 1];
+    let mut gamma = (0..ilog2(ell)).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for round in 0.. ell{
+    if ((1 as usize) << round) < ell{
+    let poly = &proof.first_sumcheck[round];
+    transcript.absorb_poly(sc, poly.cnt, poly);
+    gamma[round] = transcript.squeeze_fields(n)[0];
+};
+};
+    let sigma1 = {
+    let eq_tau = warp_eq_evals::<<ELL as Logarithm2>::Output, ELL>(&tau);
+    let mut out = Galois128(0);
+    for i in 0.. ell{
+    out = (out + (eq_tau[i] * (mus[i] + (omega * etas[i]))));
+};
+    out
+};
+    let zeta0 = warp_combine_vectors(&alphas, &gamma);
+    let beta = warp_combine_vectors(&betas, &gamma);
+    if beta != output.beta{
+    return false;
+};
+    if !warp_check_sumcheck(&proof.first_sumcheck, sigma1, &gamma, {
+    warp_eq_scalar(&tau, &gamma) * (proof.nu0 + (omega * output.eta))
+}){
+    return false;
+};
+    transcript.absorb_len_prefixed(n, &output.root);
+    transcript.absorb_field(proof.nu0);
+    transcript.absorb_field(output.eta);
+    let ood_points: Vec<Vec<Galois128>> = transcript.squeeze_field_grid(r);
+    transcript.absorb_fields(n, &proof.ood_answers);
+    let (shift_indices, xi): (Vec<u32>, Vec<Galois128>) = transcript.squeeze_shift_and_xi(shifts);
+    for query in 0.. shifts{
+    let path = &proof.initial_paths[query];
+    let row = &proof.openings[query];
+    let leaf = warp_hash_fresh_row::<ELL, FRESH>(ell, fresh, row);
+    if !warp_merkle_verify_hashed(&proof.initial_root, &leaf, (shift_indices[query] as usize), path){
+    return false;
+};
+};
+    for accumulator_index in 0.. a{
+    for query in 0.. shifts{
+    let path = &proof.accumulator_paths[accumulator_index][query];
+    let value = proof.openings[query][fresh + accumulator_index];
+    let leaf = warp_hash_leaf_field(value);
+    if !warp_merkle_verify_hashed(&input_accumulators[accumulator_index].root, &leaf, (shift_indices[query] as usize), path){
+    return false;
+};
+};
+};
+    let mut claim_points = (0..r).map(|_| <Vec<Galois128>>::default()).collect::<Vec<Vec<Galois128>>>();
+    let mut claim_values = (0..r).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    claim_points[0] = zeta0;
+    claim_values[0] = proof.nu0;
+    for i in 0.. s{
+    claim_points[1 + i] = ood_points[i].clone();
+    claim_values[1 + i] = proof.ood_answers[i];
+};
+    let eq_gamma = warp_eq_evals::<<ELL as Logarithm2>::Output, ELL>(&gamma);
+    for i in 0.. shifts{
+    claim_points[1 + s + i] = warp_binary_point((shift_indices[i] as usize));
+    let row = &proof.openings[i];
+    let mut value = Galois128(0);
+    for j in 0.. ell{
+    value = (value + (row[j] * eq_gamma[j]));
+};
+    claim_values[1 + s + i] = value;
+};
+    let sigma2 = {
+    let eq_xi = warp_eq_evals::<<R as Logarithm2>::Output, R>(&xi);
+    let mut out = Galois128(0);
+    for i in 0.. r{
+    out = (out + (claim_values[i] * eq_xi[i]));
+};
+    out
+};
+    let mut alpha = (0..ilog2(n)).map(|_| Galois128.default()).collect::<Vec<Galois128>>();
+    for round in 0.. n{
+    if ((1 as usize) << round) < n{
+    let poly = &proof.second_sumcheck[round];
+    transcript.absorb_poly(sc, poly.cnt, poly);
+    alpha[round] = transcript.squeeze_fields(n)[0];
+};
+};
+    if alpha != output.alpha{
+    return false;
+};
+    warp_check_sumcheck(&proof.second_sumcheck, sigma2, &alpha, {
+    let eq = warp_eq_star_at(&claim_points, &xi, &output.alpha);
+    output.mu * eq
+})
+}
+
+pub fn masked_table(mut and: bool, mut pi_a: bool, mut pi_b: bool, mut pi_c: bool) -> [bool; 4]
+{
+    let mut out = [false; 4];
+    for j in 0.. 2{
+    for i in 0.. 2{
+    let (ii, jj) = ((i == 1), (j == 1));
+    out[i + (2 * j)] = if and{
+    ((pi_a ^ ii) & (pi_b ^ jj)) ^ pi_c
+} else {
+    pi_a ^ ii ^ pi_b ^ jj ^ pi_c
+};
+};
+};
+    out
+}
+
+pub fn row_multipliers(mut z: &[bool; 4]) -> [i64; 3]
+{
+    let b = |x| i64::from(x);
+    let t1 = b(z[1]) - b(z[0]);
+    let t2 = b(z[2]) - b(z[0]);
+    let t3 = ((b(z[3]) - b(z[0])) - t1) - t2;
+    [t1, t2, t3]
+}
+
+pub fn fast_mask_bits(mut z: &[bool; 4], mut r: &[bool; 4]) -> [bool; 4]
+{
+    let mut out = [false; 4];
+    for k in 0.. 4{
+    out[k] = (z[k] ^ r[k]);
+};
+    out
+}
+
+pub fn fast_unmask_coeffs(mut d: bool) -> (i64, i64)
+{
+    if d{
+    (1, -1)
+} else {
+    (0, 1)
+}
+}
+
+pub fn determination_bit(mut w0_lsb: bool, mut pi: bool) -> bool
+{
+    w0_lsb ^ pi
+}
+
+pub fn label_lsb(mut w: &LabelPoly) -> bool
+{
+    !w.is_empty() && ((w[0] % 2) == 1)
+}
+
+pub fn delta_scaled(mut delta: &Delta, mut k: u64, mut p: u64) -> LabelPoly
+{
+    delta.coeffs.iter().map(|c| ring::mul_mod(c, k, p)).collect::<Vec<_>>()
+}
+
+pub fn scale_row(mut row: &RowCt, mut k: i64, mut p: u64) -> RowCt
+{
+    let scale = |poly, k| {
+    poly.iter().map(|c| ring::mul_mod(c, k, p)).collect::<Vec<_>>()
+};
+    let neg = |poly| {
+    poly.iter().map(|c| if c == 0{
+    0
+} else {
+    p - c
+}).collect::<Vec<_>>()
+};
+    if k >= 0{
+    RowCt { c0: scale(&row.c0, (k as u64)), c1: scale(&row.c1, (k as u64)) }
+} else {
+    RowCt { c0: neg(scale(&row.c0, (-k as u64))), c1: neg(scale(&row.c1, (-k as u64))) }
+}
+}
+
+pub fn sub_rows(mut a: &RowCt, mut b: &RowCt, mut p: u64) -> RowCt
+{
+    RowCt { c0: ring::sub_coeffs(&a.c0, &b.c0, p), c1: ring::sub_coeffs(&a.c1, &b.c1, p) }
+}
+
+pub fn xor_rows(mut delta_ct: &RowCt, mut d: bool, mut p: u64) -> [RowCt; 3]
+{
+    let m: i64 = if d{
+    -1
+} else {
+    1
+};
+    [scale_row(delta_ct, m, p), scale_row(delta_ct, m, p), scale_row(delta_ct, (-2 * m), p)]
+}
+
+pub fn fast_and_rows(mut delta_ct: &RowCt, mut r: &[RowCt; 4], mut d: &[bool; 4], mut p: u64) -> [RowCt; 3]
+{
+    let mut z: Vec<RowCt> = Vec::with_capacity(4);
+    for k in 0.. 4{
+    z.push(if d[k]{
+    sub_rows(delta_ct, &r[k], p)
+} else {
+    r[k].clone()
+});
+};
+    let t1 = sub_rows(&z[1], &z[0], p);
+    let t2 = sub_rows(&z[2], &z[0], p);
+    let t3_pre = sub_rows(&z[3], &z[0], p);
+    let t3 = sub_rows(&sub_rows(&t3_pre, &t1, p), &t2, p);
+    [t1, t2, t3]
+}
+
+pub fn sample_poly(mut degree: usize, mut p: u64, mut random: &mut impl SpecRng) -> LabelPoly
+{
+    let mut out = vec![(0 as u64); degree];
+    for c in out.iter_mut(){
+    *c = ((random.next_u32() as u64) % p);
+};
+    out
+}
+
+pub fn gate_output_label<D: DdGadget>(mut dd: &D, mut wa_base: &LabelPoly, mut wb_base: &LabelPoly, mut taus: &[RowCt; 3], mut z00: bool, mut prf: &PrfKey, mut wire: usize, mut out_pi: bool) -> WireLabel
+{
+    let delta = dd.delta();
+    let p = dd.p();
+    let degree = delta.coeffs.len();
+    let mut out = dd.eval(wa_base, false, wb_base, false, taus);
+    if z00{
+    out = ring::sub_coeffs(&out, &delta.coeffs, p);
+};
+    out = ring::add_coeffs(&out, &prf.offset(wire, degree, p), p);
+    let w0 = if out_pi{
+    ring::sub_coeffs(&out, &delta.coeffs, p)
+} else {
+    out
+};
+    WireLabel { w0: w0, pi: out_pi }
+}
+
+pub fn garble_circuit<D: DdGadget>(mut variant: Variant, mut circuit: &Circuit, mut dd: &D, mut pis: &[bool], mut prf: &PrfKey, mut prg_bits: &[bool], mut random: &mut impl SpecRng) -> Result<PinnedGarbling, DriverError>
+{
+    circuit.validate().map_err(|_| DriverError::BadCircuit)?;
+    let delta = dd.delta();
+    let p = dd.p();
+    let degree = delta.coeffs.len();
+    if pis.len() != circuit.wires(){
+    return Err(DriverError::BadInputCount);
+};
+    let delta_ct = dd.row(1, random);
+    let mut pi: Vec<bool> = pis.to_vec();
+    let mut labels: Vec<WireLabel> = Vec::with_capacity(circuit.wires());
+    let mut and_rows: Vec<AndRows> = Vec::new();
+    let mut records = Vec::new();
+    let mut fast_and = 0 as usize;
+    for w in 0.. circuit.wires(){
+    if labels.len() <= w{
+    labels.push(WireLabel { w0: sample_poly(degree, p, random), pi: pi[w] });
+};
+    if w < circuit.inputs{
+    continue;
+};
+    let gate = circuit.gates[w - circuit.inputs];
+    let (a, b) = gate.operands();
+    let wa = labels[a].base(delta);
+    let wb = labels[b].base(delta);
+    match (variant, gate) {
+    .. => {
+    let z = masked_table(true, pi[a], pi[b], pi[w]);
+    let t = row_multipliers(&z);
+    let taus = [dd.row(t[0], random), dd.row(t[1], random), dd.row(t[2], random)];
+    let out = gate_output_label(dd, &wa, &wb, &taus, z[0], prf, w, pi[w]);
+    let det = determination_bit(out.w0_lsb(), pi[w]);
+    labels[w] = out;
+    and_rows.push(AndRows::Small(taus));
+    records.push(GateRecord::SmallAnd(det));
+},
+    .. => {
+    let d = pi[a] ^ pi[b] ^ pi[w];
+    let taus = xor_rows(&delta_ct, d, p);
+    let out = gate_output_label(dd, &wa, &wb, &taus, d, prf, w, pi[w]);
+    labels[w] = out;
+    records.push(GateRecord::SmallXor(d));
+},
+    (_, Gate::And { .. }) => {
+    let out_pi = (random.next_u32() & 1) == 1;
+    pi[w] = out_pi;
+    let z = masked_table(true, pi[a], pi[b], out_pi);
+    let r: [bool; 4] = [prg_bits.get((4 * fast_and)).copied().unwrap_or(false), prg_bits.get(((4 * fast_and) + 1)).copied().unwrap_or(false), prg_bits.get(((4 * fast_and) + 2)).copied().unwrap_or(false), prg_bits.get(((4 * fast_and) + 3)).copied().unwrap_or(false)];
+    fast_and += 1;
+    let masks = fast_mask_bits(&z, &r);
+    let r_rows = [dd.row(i64::from(r[0]), random), dd.row(i64::from(r[1]), random), dd.row(i64::from(r[2]), random), dd.row(i64::from(r[3]), random)];
+    let taus = fast_and_rows(&delta_ct, &r_rows, &masks, p);
+    let out = gate_output_label(dd, &wa, &wb, &taus, z[0], prf, w, out_pi);
+    let det = determination_bit(out.w0_lsb(), out_pi);
+    labels[w] = out;
+    and_rows.push(AndRows::Fast(r_rows));
+    records.push(GateRecord::FastAnd { masks: masks, det: det });
+},
+    (_, Gate::Xor { .. }) => {
+    let out_pi = pi[a] ^ pi[b];
+    pi[w] = out_pi;
+    let taus = xor_rows(&delta_ct, false, p);
+    let out = gate_output_label(dd, &wa, &wb, &taus, false, prf, w, out_pi);
+    labels[w] = out;
+    records.push(GateRecord::FastXor);
+},
+    (_, Gate::Not { .. }) => {
+    let out_pi = !pi[a];
+    pi[w] = out_pi;
+    let base = labels[a].base(delta);
+    let w0 = if out_pi{
+    ring::sub_coeffs(&base, &delta.coeffs, p)
+} else {
+    base
+};
+    labels[w] = WireLabel { w0: w0, pi: out_pi };
+},
+};
+};
+    Ok(PinnedGarbling { labels: labels, delta_ct: delta_ct, and_rows: and_rows, records: records })
+}
+
+pub fn encode_inputs(mut garbling: &PinnedGarbling, mut delta: &Delta, mut inputs: &[bool], mut input_count: usize) -> Result<Vec<(LabelPoly, bool)>, DriverError>
+{
+    if inputs.len() != input_count{
+    return Err(DriverError::BadInputCount);
+};
+    let mut out = Vec::with_capacity(input_count);
+    for (i, ..) in inputs.iter().enumerate(){
+    let masked = x ^ garbling.labels[i].pi;
+    out.push((garbling.labels[i].active(masked, delta), masked));
+};
+    Ok(out)
+}
+
+pub fn eval_gate<D: DdGadget>(mut dd: &D, mut a: &LabelPoly, mut i: bool, mut b: &LabelPoly, mut j: bool, mut taus: &[RowCt; 3], mut prf: &PrfKey, mut wire: usize, mut degree: usize, mut p: u64) -> LabelPoly
+{
+    let out = dd.eval(a, i, b, j, taus);
+    ring::add_coeffs(&out, &prf.offset(wire, degree, p), p)
+}
+
+pub fn evaluate_circuit<D: DdGadget>(mut variant: Variant, mut circuit: &Circuit, mut dd: &D, mut delta_ct: &RowCt, mut and_rows: &[AndRows], mut records: &[GateRecord], mut prf: &PrfKey, mut inputs: &[(LabelPoly, bool)]) -> Result<Vec<bool>, DriverError>
+{
+    circuit.validate().map_err(|_| DriverError::BadCircuit)?;
+    if inputs.len() != circuit.inputs{
+    return Err(DriverError::BadInputCount);
+};
+    let delta = dd.delta();
+    let p = dd.p();
+    let degree = delta.coeffs.len();
+    let mut labels: Vec<LabelPoly> = Vec::with_capacity(circuit.wires());
+    let mut masked: Vec<bool> = Vec::with_capacity(circuit.wires());
+    for (w, m) in inputs{
+    labels.push(w.clone());
+    masked.push(*m);
+};
+    let mut rec = records.iter();
+    let mut and_iter = and_rows.iter();
+    for (gi, gate) in circuit.gates.iter().enumerate(){
+    let w = circuit.inputs + gi;
+    let (a, b) = gate.operands();
+    match (variant, gate) {
+    .. => {
+    let d = match rec.next() {
+    Some(GateRecord::SmallAnd(d)) => *d,
+    Some(_) => return Err(DriverError::WrongRecord),
+    None => return Err(DriverError::MissingRecord),
+};
+    let taus = match and_iter.next() {
+    Some(AndRows::Small(rows)) => rows,
+    Some(_) => return Err(DriverError::WrongRecord),
+    None => return Err(DriverError::MissingRecord),
+};
+    let out = eval_gate(dd, &labels[a], masked[a], &labels[b], masked[b], taus, prf, w, degree, p);
+    let m = label_lsb(&out) ^ d;
+    labels.push(out);
+    masked.push(m);
+},
+    .. => {
+    let d = match rec.next() {
+    Some(GateRecord::SmallXor(d)) => *d,
+    Some(_) => return Err(DriverError::WrongRecord),
+    None => return Err(DriverError::MissingRecord),
+};
+    let taus = xor_rows(delta_ct, d, p);
+    let out = eval_gate(dd, &labels[a], masked[a], &labels[b], masked[b], &taus, prf, w, degree, p);
+    labels.push(out);
+    masked.push(((masked[a] ^ masked[b]) ^ d));
+},
+    (_, Gate::And { .. }) => {
+    let (masks, det) = match rec.next() {
+    Some(GateRecord::FastAnd { masks: masks, det: det }) => (*masks, *det),
+    Some(_) => return Err(DriverError::WrongRecord),
+    None => return Err(DriverError::MissingRecord),
+};
+    let r_rows = match and_iter.next() {
+    Some(AndRows::Fast(rows)) => rows,
+    Some(_) => return Err(DriverError::WrongRecord),
+    None => return Err(DriverError::MissingRecord),
+};
+    let taus = fast_and_rows(delta_ct, r_rows, &masks, p);
+    let out = eval_gate(dd, &labels[a], masked[a], &labels[b], masked[b], &taus, prf, w, degree, p);
+    let m = label_lsb(&out) ^ det;
+    labels.push(out);
+    masked.push(m);
+},
+    (_, Gate::Xor { .. }) => {
+    match rec.next() {
+    Some(_) => {
+},
+    Some(_) => return Err(DriverError::WrongRecord),
+    None => return Err(DriverError::MissingRecord),
+};
+    let taus = xor_rows(delta_ct, false, p);
+    let out = eval_gate(dd, &labels[a], masked[a], &labels[b], masked[b], &taus, prf, w, degree, p);
+    labels.push(out);
+    masked.push((masked[a] ^ masked[b]));
+},
+    (_, Gate::Not { .. }) => {
+    labels.push(labels[a].clone());
+    masked.push(masked[a]);
+},
+};
+};
+    Ok(circuit.outputs.iter().map(|o| masked[o]).collect::<Vec<_>>())
+}
+
+pub fn open_output(mut masked: bool, mut pi: bool) -> bool
+{
+    masked ^ pi
+}
+
+pub fn ntt_ctx(mut n: usize, mut q: u64) -> Option<Ntt>
+{
+    ring::Ntt::new(n, q).ok()
+}
+
+pub fn mul_limb(mut a: &Limb, mut b: &Limb, mut q: u64, mut ntt: &Option<Ntt>) -> Limb
+{
+    match ntt {
+    Some(nt) => ring::negacyclic_mul_ntt(a, b, nt),
+    None => ring::negacyclic_mul_coeffs(a, b, q),
+}
+}
+
+pub fn add_limb(mut a: &Limb, mut b: &Limb, mut q: u64) -> Limb
+{
+    a.iter().zip(b.iter()).map(|(x, y)| ring::add_mod(x, y, q)).collect::<Vec<_>>()
+}
+
+pub fn sub_limb(mut a: &Limb, mut b: &Limb, mut q: u64) -> Limb
+{
+    a.iter().zip(b.iter()).map(|(x, y)| ring::sub_mod(x, y, q)).collect::<Vec<_>>()
+}
+
+pub fn negate_limb(mut a: &Limb, mut q: u64) -> Limb
+{
+    a.iter().map(|x| if x == 0{
+    0
+} else {
+    q - x
+}).collect::<Vec<_>>()
+}
+
+pub fn scale_limb(mut delta_limb: &Limb, mut t: i64, mut q: u64) -> Limb
+{
+    delta_limb.iter().map(|c| {
+    let c = c as i128;
+    (c * (t as i128)).rem_euclid((q as i128)) as u64
+}).collect::<Vec<_>>()
+}
+
+pub fn to_limb(mut delta: &LabelPoly, mut p: u64, mut q: u64) -> Limb
+{
+    delta.iter().map(|c| {
+    if c == 0{
+    0
+} else if c == 1{
+    1
+} else {
+    q - 1
+}
+}).collect::<Vec<_>>()
+}
+
+pub fn uniform_limb(mut n: usize, mut q: u64, mut random: &mut impl SpecRng) -> Limb
+{
+    let mut out = vec![(0 as u64); n];
+    for c in out.iter_mut(){
+    *c = ((random.next_u32() as u64) % q);
+};
+    out
+}
+
+pub fn noise_limb(mut n: usize, mut p: u64, mut q: u64, mut random: &mut impl SpecRng) -> Limb
+{
+    let mut out = vec![(0 as u64); n];
+    for c in out.iter_mut(){
+    let r = ((random.next_u32() % 3) as i64) - 1;
+    *c = if r < 0{
+    q - (p % q)
+} else {
+    ((r as u64) * p) % q
+};
+};
+    out
+}
+
+pub fn round_limb0_to_rp(mut x: &Limb, mut q0: u64, mut p: u64) -> LabelPoly
+{
+    x.iter().map(|c| {
+    let centered = ring::center(c, q0);
+    centered.rem_euclid((p as i128)) as u64
+}).collect::<Vec<_>>()
+}
+
+pub fn rowct_from_lattice(mut tau: &LatticeRowCt, mut p: u64) -> RowCt
+{
+    let red = |poly| {
+    poly.iter().map(|c| (c % p)).collect::<Vec<_>>()
+};
+    RowCt { c0: red(&tau.u1), c1: red(&tau.u2) }
+}
+
+pub fn negacyclic_mul_rq(mut a: &[u64], mut b: &[u64], mut q: u64) -> RqPoly
+{
+    let n = a.len();
+    let mut out = vec![(0 as i128); n];
+    for (i, ..) in a.iter().enumerate(){
+    if ai == 0{
+    continue;
+};
+    let ai = ring::center(ai, q);
+    for (j, ..) in b.iter().enumerate(){
+    if bj == 0{
+    continue;
+};
+    let bj = ring::center(bj, q);
+    let prod = ai * bj;
+    if (i + j) < n{
+    out[i + j] += prod;
+} else {
+    out[(i + j) - n] -= prod;
+};
+};
+};
+    out.iter().map(|c| (c.rem_euclid((q as i128)) as u64)).collect::<Vec<_>>()
+}
+
+pub fn add_rq(mut a: &[u64], mut b: &[u64], mut q: u64) -> RqPoly
+{
+    a.iter().zip(b.iter()).map(|(x, y)| ring::add_mod(x, y, q)).collect::<Vec<_>>()
+}
+
+pub fn sub_rq(mut a: &[u64], mut b: &[u64], mut q: u64) -> RqPoly
+{
+    a.iter().zip(b.iter()).map(|(x, y)| ring::sub_mod(x, y, q)).collect::<Vec<_>>()
+}
+
+pub fn negate_rq(mut a: &[u64], mut q: u64) -> RqPoly
+{
+    a.iter().map(|x| if x == 0{
+    0
+} else {
+    q - x
+}).collect::<Vec<_>>()
+}
+
+pub fn add_rp(mut a: &[u64], mut b: &[u64], mut p: u64) -> RpPoly
+{
+    a.iter().zip(b.iter()).map(|(x, y)| ring::add_mod(x, y, p)).collect::<Vec<_>>()
+}
+
+pub fn round_to_rp(mut x: &RqPoly, mut q: u64, mut p: u64) -> RpPoly
+{
+    x.iter().map(|c| {
+    let centered = ring::center(c, q);
+    centered.rem_euclid((p as i128)) as u64
+}).collect::<Vec<_>>()
+}
+
+pub fn sample_uniform_rq(mut n: usize, mut q: u64, mut random: &mut impl SpecRng) -> RqPoly
+{
+    let mut out = vec![(0 as u64); n];
+    for c in out.iter_mut(){
+    *c = ((random.next_u32() as u64) % q);
+};
+    out
+}
+
+pub fn sample_noise_rq(mut n: usize, mut p: u64, mut q: u64, mut random: &mut impl SpecRng) -> RqPoly
+{
+    let mut out = vec![(0 as u64); n];
+    for c in out.iter_mut(){
+    let r = ((random.next_u32() % 3) as i64) - 1;
+    let pe = if r < 0{
+    q - (p % q)
+} else {
+    ((r as u64) * p) % q
+};
+    *c = pe;
+};
+    out
+}
+
+pub fn add_mod(mut left: u64, mut right: u64, mut modulus: u64) -> u64
+{
+    (((left as u128) + (right as u128)) % (modulus as u128)) as u64
+}
+
+pub fn sub_mod(mut left: u64, mut right: u64, mut modulus: u64) -> u64
+{
+    if left >= right{
+    left - right
+} else {
+    modulus - (right - left)
+}
+}
+
+pub fn mul_mod(mut left: u64, mut right: u64, mut modulus: u64) -> u64
+{
+    (((left as u128) * (right as u128)) % (modulus as u128)) as u64
+}
+
+pub fn pow_mod(mut base: u64, mut exponent: usize, mut modulus: u64) -> u64
+{
+    let mut result = 1 as u64;
+    let mut base = base % modulus;
+    while (exponent > 0){
+    if (exponent & 1) == 1{
+    result = mul_mod(result, base, modulus);
+};
+    base = mul_mod(base, base, modulus);
+    exponent >>= 1;
+};
+    result
+}
+
+pub fn inverse_mod(mut value: u64, mut modulus: u64) -> Option<u64>
+{
+    let (mut t, mut new_t) = ((0 as i128), (1 as i128));
+    let (mut r, mut new_r) = ((modulus as i128), ((value % modulus) as i128));
+    while (new_r != 0){
+    let quotient = r / new_r;
+    (t, new_t) = (new_t, (t - (quotient * new_t)));
+    (r, new_r) = (new_r, (r - (quotient * new_r)));
+};
+    if r != 1{
+    return None;
+};
+    let mut t = t % (modulus as i128);
+    if t < 0{
+    t += (modulus as i128);
+};
+    Some((t as u64))
+}
+
+pub fn center(mut value: u64, mut modulus: u64) -> i128
+{
+    let value = value % modulus;
+    if value > (modulus / 2){
+    (value as i128) - (modulus as i128)
+} else {
+    value as i128
+}
+}
+
+pub fn sample_uniform(mut random: &mut impl FnMut(&[u8]) -> Result<(), Error>, mut modulus: u64, mut output: &mut [u64]) -> Result<(), Error>
+{
+    let threshold = u64::MAX - (u64::MAX % modulus);
+    for value in output{
+    while true{
+    let mut bytes = [(0 as u8); 8];
+    random(&mut bytes)?;
+    let candidate = u64::from_le_bytes(bytes);
+    if candidate < threshold{
+    *value = (candidate % modulus);
+    break;
+};
+};
+};
+    Ok(())
+}
+
+pub fn bit_reverse(mut values: &mut [u64])
+{
+    let bits = values.len().ilog2();
+    for index in 0.. values.len(){
+    let reversed = index.reverse_bits() >> (usize::BITS - bits);
+    if index < reversed{
+    values.swap(index, reversed);
+};
+}
+}
+
+pub fn find_negacyclic_root(mut degree: usize, mut modulus: u64) -> Option<u64>
+{
+    let exponent = (modulus - 1) / (2 * (degree as u64));
+    for candidate in 2.. modulus{
+    let root = pow_mod(candidate, (exponent as usize), modulus);
+    if pow_mod(root, degree, modulus) == (modulus - 1){
+    return Some(root);
+};
+};
+    None
+}
+
+pub fn negacyclic_mul_ntt(mut a: &[u64], mut b: &[u64], mut ntt: &Ntt) -> Vec<u64>
+{
+    let mut fa = a.to_vec();
+    let mut fb = b.to_vec();
+    ntt.forward(&mut fa);
+    ntt.forward(&mut fb);
+    let q = ntt.modulus;
+    for (x, ..) in fa.iter_mut().zip(fb.iter()){
+    *x = mul_mod(*x, y, q);
+};
+    ntt.inverse(&mut fa);
+    fa
+}
+
+pub fn negacyclic_mul_coeffs(mut a: &[u64], mut b: &[u64], mut modulus: u64) -> Vec<u64>
+{
+    let n = a.len();
+    let mut out = vec![(0 as u64); n];
+    for (i, ..) in a.iter().enumerate(){
+    for (j, ..) in b.iter().enumerate(){
+    let k = i + j;
+    if k < n{
+    out[k] = add_mod(out[k], mul_mod(ai, bj, modulus), modulus);
+} else {
+    out[k - n] = sub_mod(out[k - n], mul_mod(ai, bj, modulus), modulus);
+};
+};
+};
+    out
+}
+
+pub fn sub_coeffs(mut a: &[u64], mut b: &[u64], mut modulus: u64) -> Vec<u64>
+{
+    a.iter().zip(b.into_iter()).map(|(x, y)| sub_mod(x, y, modulus)).collect::<Vec<_>>()
+}
+
+pub fn add_coeffs(mut a: &[u64], mut b: &[u64], mut modulus: u64) -> Vec<u64>
+{
+    a.iter().zip(b.into_iter()).map(|(x, y)| add_mod(x, y, modulus)).collect::<Vec<_>>()
+}
+
+pub fn garble(mut ctx: &Context, mut equation: &impl GateEquation, mut circuit: &Circuit, mut states: &[WireState], mut delta: &GlobalDelta) -> Result<Vec<Stitch>, StitchError>
+{
+    circuit.validate()?;
+    let p = ctx.parameters().plaintext_modulus;
+    if delta.value() >= p{
+    return Err(StitchError::NonCanonicalBit);
+};
+    if states.len() != circuit.wires(){
+    return Err(StitchError::Exhausted);
+};
+    let mut wires: Vec<WireState> = states.to_vec();
+    let mut records = Vec::new();
+    for (index, gate) in circuit.gates.iter().enumerate(){
+    let out_wire = circuit.inputs + index;
+    let (ai, bi) = gate.operands();
+    let (a, b) = (wires[ai], wires[bi]);
+    match gate {
+    Gate::And { .. } => {
+    let out = wires[out_wire];
+    records.push(equation.garble_and(index, &a, &b, &out));
+},
+    Gate::Xor { .. } => {
+    let mut out = wires[out_wire];
+    if !equation.xor_is_charged(){
+    out = WireState { a0: ((a.a0 + b.a0) % p), pi: (a.pi ^ b.pi) };
+    wires[out_wire] = out;
+};
+    match equation.garble_xor(p, &a, &b, &out) {
+    Some(stitch) => {
+    records.push(stitch);
+},
+    _ => {
+},
+}
+},
+    Gate::Not { .. } => {
+    wires[out_wire] = WireState { a0: a.a0, pi: !a.pi };
+},
+};
+};
+    Ok(records)
+}
+
+pub fn evaluate(mut ctx: &Context, mut equation: &impl GateEquation, mut circuit: &Circuit, mut offline: &OfflineEvaluator, mut delta: &GlobalDelta, mut ksk: &KeySwitchKeySet, mut input_labels: &[Ciphertext], mut records: &[Stitch], mut output_key: &SecretKey) -> Result<Vec<bool>, StitchError>
+{
+    circuit.validate()?;
+    if input_labels.len() != circuit.inputs{
+    return Err(StitchError::Exhausted);
+};
+    let top = offline.wires.first().ok_or(StitchError::Exhausted)?.ct_a0.level();
+    let mut wires: Vec<Ciphertext> = Vec::with_capacity(circuit.wires());
+    for label in input_labels{
+    wires.push(ctx.switch_to(label, top)?);
+};
+    let mut record_iter = records.iter();
+    for (index, gate) in circuit.gates.iter().enumerate(){
+    let out_wire = circuit.inputs + index;
+    let (ai, bi) = gate.operands();
+    let expanded = ExpandedGate { a: align_wire(ctx, offline.wire(ai).ok_or(StitchError::Exhausted)?, top)?, b: align_wire(ctx, offline.wire(bi).ok_or(StitchError::Exhausted)?, top)?, out: align_wire(ctx, offline.wire(out_wire).ok_or(StitchError::Exhausted)?, top)? };
+    let la = &wires[ai];
+    let lb = &wires[bi];
+    let out = match gate {
+    Gate::And { .. } => {
+    let stitch = record_iter.next().ok_or(StitchError::Exhausted)?;
+    equation.eval_and(ctx, la, lb, &expanded, delta, ksk, stitch)?
+},
+    Gate::Xor { .. } => {
+    let stitch = if equation.xor_is_charged(){
+    Some(record_iter.next().ok_or(StitchError::Exhausted)?)
+} else {
+    None
+};
+    equation.eval_xor(ctx, la, lb, &expanded, delta, ksk, stitch)?
+},
+    Gate::Not { .. } => {
+    la.clone()
+},
+};
+    wires.push(out);
+};
+    if record_iter.next().is_some(){
+    return Err(StitchError::NonCanonicalBit);
+};
+    let p = ctx.parameters().plaintext_modulus;
+    let inv_delta = delta.inverse(p).ok_or(StitchError::NonCanonicalBit)?;
+    let mut outputs = Vec::with_capacity(circuit.outputs.len());
+    for .. in &circuit.outputs{
+    let expanded = offline.wire(wire).ok_or(StitchError::Exhausted)?;
+    let label = &wires[wire];
+    let diff = ctx.sub(label, &expanded.ct_a0)?;
+    let payload = ctx.mul_plain(&diff, &ctx.constant_slots(inv_delta))?;
+    let payload_bits = ctx.decrypt(output_key, &payload)?;
+    let ct_pi = ctx.switch_to(&expanded.ct_pi, payload.level())?;
+    let pi_bits = ctx.decrypt(output_key, &ct_pi)?;
+    let masked = payload_bits[expanded.slot_a0] % 2;
+    let pi = pi_bits[expanded.slot_pi] % 2;
+    outputs.push(((masked ^ pi) == 1));
+};
+    Ok(outputs)
+}
+
+pub fn align_wire(mut ctx: &Context, mut wire: &ExpandedWire, mut level: usize) -> Result<ExpandedWire, StitchError>
+{
+    Ok(super::common::ExpandedWire { ct_a0: ctx.switch_to(&wire.ct_a0, level)?, ct_pi: ctx.switch_to(&wire.ct_pi, level)?, slot_a0: wire.slot_a0, slot_pi: wire.slot_pi })
+}
+
+pub fn parity_coeffs(mut p: u64, mut k_max: usize) -> Result<Vec<u64>, StitchError>
+{
+    if (k_max == 0) || (k_max > ((p - 1) as usize)){
+    return Err(StitchError::PayloadOverflow);
+};
+    let mut coeffs = vec![(0 as u64); (k_max + 1)];
+    let points: Vec<u64> = (0..=(k_max as u64)).collect::<Vec<_>>();
+    for (j, ..) in points.iter().enumerate(){
+    if (x_j % 2) == 0{
+    continue;
+};
+    let mut numerator = vec![(1 as u64)];
+    let mut denominator = 1 as u64;
+    for (k, ..) in points.iter().enumerate(){
+    if k == j{
+    continue;
+};
+    let mut next = vec![(0 as u64); (numerator.len() + 1)];
+    for (i, ..) in numerator.iter().enumerate(){
+    next[i + 1] = ring::add_mod(next[i + 1], c, p);
+    next[i] = ring::sub_mod(next[i], ring::mul_mod(c, x_k, p), p);
+};
+    numerator = next;
+    let diff = if x_j > x_k{
+    x_j - x_k
+} else {
+    p - (x_k - x_j)
+};
+    denominator = ring::mul_mod(denominator, (diff % p), p);
+};
+    let inv = ring::inverse_mod(denominator, p).ok_or(StitchError::PayloadOverflow)?;
+    for (i, ..) in numerator.iter().enumerate(){
+    coeffs[i] = ring::add_mod(coeffs[i], ring::mul_mod(c, inv, p), p);
+};
+};
+    Ok(coeffs)
+}
+
+pub fn offline_setup(mut ctx: &Context, mut wire_count: usize, mut prg: &impl ExpansionPrg, mut ksk_base: u64, mut ksk_digits: usize, mut online_depth_budget: usize, mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<OfflineGarbler, Error>
+{
+    let required_bits = (2 as usize).checked_mul(wire_count).ok_or(Error::InvalidParameters)?;
+    let plan = ExpansionPlan::plan(required_bits, prg.depth(), prg.slots(), (ctx.max_level() + 1))?;
+    let top = ctx.max_level();
+    if top < (prg.depth() + online_depth_budget){
+    return Err(Error::InvalidParameters);
+};
+    let secret = ctx.keygen(random)?;
+    let ksks = ctx.key_switch_keyset(&secret, ksk_base, ksk_digits, random, noise)?;
+    Ok(OfflineGarbler { secret: secret, ksks: ksks, plan: plan })
+}
+
+pub fn stream_expansion(mut ctx: &Context, mut wire_count: usize, mut prg: &impl ExpansionPrg, mut garbler: &OfflineGarbler, mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<Vec<ExpansionStep>, Error>
+{
+    let plan = garbler.plan;
+    let top = ctx.max_level();
+    let degree = ctx.parameters().degree;
+    let online_base = top - prg.depth();
+    let required_bits = 2 * wire_count;
+    let mut top_expanded: Vec<Ciphertext> = Vec::with_capacity(required_bits);
+    let prg_slots = prg.slots();
+    for _ in 0.. plan.seed_ciphertexts{
+    if top_expanded.len() >= required_bits{
+    break;
+};
+    let mut seed_slots = vec![(0 as u64); degree];
+    let mut byte = [(0 as u8); 1];
+    for slot in seed_slots.iter_mut().take(prg_slots){
+    random.fill_bytes(&mut byte[..])?;
+    *slot = u64::from((byte[0] & 1));
+};
+    let ct = ctx.encrypt(&garbler.secret, top, &seed_slots, random, noise)?;
+    top_expanded.extend(prg.expand(&garbler.ksks.l, ctx, &ct, &garbler.ksks)?);
+};
+    top_expanded.truncate(required_bits);
+    let mut steps = Vec::with_capacity(wire_count);
+    for (w, pair) in top_expanded.chunks_exact(2).enumerate(){
+    let wire_state = garbler.wire_state(ctx, &plan, &pair[0], &pair[1], w)?;
+    steps.push(ExpansionStep { wire_state: wire_state, eval: ExpandedWire { ct_a0: ctx.switch_to(&pair[0], online_base)?, ct_pi: ctx.switch_to(&pair[1], online_base)?, slot_a0: (((2 * w) % plan.slots_per_seed) % degree), slot_pi: ((((2 * w) + 1) % plan.slots_per_seed) % degree) } });
+};
+    Ok(steps)
+}
+
+pub fn offline_phase(mut ctx: &Context, mut wire_count: usize, mut prg: &impl ExpansionPrg, mut ksk_base: u64, mut ksk_digits: usize, mut online_depth_budget: usize, mut random: &mut impl RandomSource, mut noise: &mut impl NoiseSource) -> Result<(OfflineGarbler, OfflineEvaluator, WireStates), Error>
+{
+    let garbler = offline_setup(ctx, wire_count, prg, ksk_base, ksk_digits, online_depth_budget, random, noise)?;
+    let plan = garbler.plan;
+    let steps = stream_expansion(ctx, wire_count, prg, &garbler, random, noise)?;
+    let mut states = Vec::with_capacity(wire_count);
+    let mut wires = Vec::with_capacity(wire_count);
+    for step in steps{
+    states.push(step.wire_state);
+    wires.push(step.eval);
+};
+    Ok((garbler, OfflineEvaluator { plan: plan, wires: wires }, states))
+}
+
 pub fn mul_4x4(mut a: &[u64; 4], mut b: &[u64; 4]) -> [u64; 8]
 {
     let mut r = [(0 as u64); 8];
@@ -10474,13 +14871,13 @@ pub fn fe_pow(mut base: &Fe25519, mut exp: &[u64; 4]) -> Fe25519
 
 pub fn sqrt_m1() -> Fe25519
 {
-    let E: [u64; 4] = vec![18446744073709551611, 18446744073709551615, 18446744073709551615, 2305843009213693951];
-    fe_pow(&Fe25519(vec![2, 0, 0, 0]), &E)
+    let E: [u64; 4] = [18446744073709551611, 18446744073709551615, 18446744073709551615, 2305843009213693951];
+    fe_pow(&Fe25519([2, 0, 0, 0]), &E)
 }
 
 pub fn fe_sqrt(mut w: &Fe25519) -> Option<Fe25519>
 {
-    let E: [u64; 4] = vec![18446744073709551614, 18446744073709551615, 18446744073709551615, 1152921504606846975];
+    let E: [u64; 4] = [18446744073709551614, 18446744073709551615, 18446744073709551615, 1152921504606846975];
     let c = fe_pow(w, &E);
     let c2 = fe_sq(&c);
     if c2 == *w{
@@ -10505,12 +14902,12 @@ pub fn fe_from_bytes_le(mut b: &[u8; 32]) -> Fe25519
     chunk.copy_from_slice(&b[(i * 8)..((i * 8) + 8)]);
     limbs[i] = u64::from_le_bytes(chunk);
 };
-    reduce_wide(&vec![limbs[0], limbs[1], limbs[2], limbs[3], 0, 0, 0, 0])
+    reduce_wide(&[limbs[0], limbs[1], limbs[2], limbs[3], 0, 0, 0, 0])
 }
 
 pub fn fe_invert(mut a: &Fe25519) -> Fe25519
 {
-    let exp_limbs: [u64; 4] = vec![18446744073709551595, 18446744073709551615, 18446744073709551615, 9223372036854775807];
+    let exp_limbs: [u64; 4] = [18446744073709551595, 18446744073709551615, 18446744073709551615, 9223372036854775807];
     let mut acc = Fe25519::ONE;
     for limb_idx in 0..4.rev(){
     for bit in 0..64.rev(){
@@ -10727,5 +15124,202 @@ pub fn reduce512(mut x: &[u64; 8]) -> [u64; 4]
 };
 };
     r
+}
+
+pub fn ascon_round(mut x: [u64; 5], mut c: u64) -> [u64; 5]
+{
+    let x0 = x[0] ^ x[4];
+    let x2 = x[2] ^ x[1] ^ c;
+    let x4 = x[4] ^ x[3];
+    let tx0 = x0 ^ (!x[1] & x2);
+    let tx1 = x[1] ^ (!x2 & x[3]);
+    let tx2 = x2 ^ (!x[3] & x4);
+    let tx3 = x[3] ^ (!x4 & x0);
+    let tx4 = x4 ^ (!x0 & x[1]);
+    let tx1 = tx1 ^ tx0;
+    let tx3 = tx3 ^ tx2;
+    let tx0 = tx0 ^ tx4;
+    let y0 = tx0 ^ ((tx0 >> 9) | (tx0 << 55));
+    let y1 = tx1 ^ ((tx1 >> 22) | (tx1 << 42));
+    let y2 = tx2 ^ ((tx2 >> 5) | (tx2 << 59));
+    let y3 = tx3 ^ ((tx3 >> 7) | (tx3 << 57));
+    let y4 = tx4 ^ ((tx4 >> 34) | (tx4 << 30));
+    [(tx0 ^ ((y0 >> 19) | (y0 << 45))), (tx1 ^ ((y1 >> 39) | (y1 << 25))), !(tx2 ^ ((y2 >> 1) | (y2 << 63))), (tx3 ^ ((y3 >> 10) | (y3 << 54))), (tx4 ^ ((y4 >> 7) | (y4 << 57)))]
+}
+
+pub fn ascon_p8(mut state: &mut [u64; 5])
+{
+    for round in 4.. 12{
+    let new = ascon_round(*state, ASCON_RC[round]);
+    for i in 0.. 5{
+    state[i] = new[i];
+};
+}
+}
+
+pub fn ascon_p12(mut state: &mut [u64; 5])
+{
+    for round in 0.. 12{
+    let new = ascon_round(*state, ASCON_RC[round]);
+    for i in 0.. 5{
+    state[i] = new[i];
+};
+}
+}
+
+pub fn ascon_hash256(mut input: &[u8]) -> [u8; 32]
+{
+    let mut state = ASCON_HASH256_IV;
+    let n = input.len();
+    let mut i = 0;
+    while ((n - i) >= 8){
+    let mut w = [(0 as u8); 8];
+    w.copy_from_slice(&input[i..(i + 8)]);
+    state[0] ^= u64::from_le_bytes(w);
+    ascon_p12(&mut state);
+    i += 8;
+};
+    let rem = n - i;
+    let mut last = [(0 as u8); 8];
+    last[..rem].copy_from_slice(&input[i..]);
+    state[0] ^= u64::from_le_bytes(last);
+    state[0] ^= ((1 as u64) << (8 * rem));
+    ascon_p12(&mut state);
+    let mut out = [(0 as u8); 32];
+    for j in 0.. 4{
+    out[(j * 8)..((j * 8) + 8)].copy_from_slice(&state[0].to_le_bytes());
+    if j < 3{
+    ascon_p12(&mut state);
+};
+};
+    out
+}
+
+pub fn ascon_hash256_array(mut n: usize, mut input: &Vec<u8>) -> [u8; 32]
+{
+    let mut state = ASCON_HASH256_IV;
+    let n = n;
+    let num_full = n / 8;
+    for i in 0.. num_full{
+    let mut w = [(0 as u8); 8];
+    for j in 0.. 8{
+    w[j] = input[(i * 8) + j];
+};
+    state[0] ^= u64::from_le_bytes(w);
+    ascon_p12(&mut state);
+};
+    let rem = n - (num_full * 8);
+    let mut last = [(0 as u8); 8];
+    for j in 0.. 8{
+    let idx = (num_full * 8) + j;
+    if idx < n{
+    last[j] = input[idx];
+};
+};
+    state[0] ^= u64::from_le_bytes(last);
+    state[0] ^= ((1 as u64) << (8 * rem));
+    ascon_p12(&mut state);
+    let mut out = [(0 as u8); 32];
+    for j in 0.. 4{
+    out[(j * 8)..((j * 8) + 8)].copy_from_slice(&state[0].to_le_bytes());
+    if j < 3{
+    ascon_p12(&mut state);
+};
+};
+    out
+}
+
+pub fn aead_pad(mut n: usize) -> u64
+{
+    (128 as u64) << (56 - (8 * n))
+}
+
+pub fn be_u64(mut input: &[u8]) -> u64
+{
+    let mut b = [(0 as u8); 8];
+    b.copy_from_slice(input);
+    u64::from_be_bytes(b)
+}
+
+pub fn be_u64_partial(mut input: &[u8]) -> u64
+{
+    let mut b = [(0 as u8); 8];
+    b[..input.len()].copy_from_slice(input);
+    u64::from_be_bytes(b)
+}
+
+pub fn ascon128a_encrypt(mut key: &[u8; 16], mut nonce: &[u8; 16], mut ad: &[u8], mut plaintext: &[u8]) -> (Vec<u8>, [u8; 16])
+{
+    let k1 = be_u64(&key[..8]);
+    let k2 = be_u64(&key[8..16]);
+    let mut state = [ASCON_128A_IV, k1, k2, be_u64(&nonce[..8]), be_u64(&nonce[8..16])];
+    ascon_p12(&mut state);
+    state[3] ^= k1;
+    state[4] ^= k2;
+    if !ad.is_empty(){
+    let mut i = 0;
+    while ((ad.len() - i) >= 16){
+    state[0] ^= be_u64(&ad[i..(i + 8)]);
+    state[1] ^= be_u64(&ad[(i + 8)..(i + 16)]);
+    ascon_p8(&mut state);
+    i += 16;
+};
+    let rem = ad.len() - i;
+    let (sidx, lastlen) = if rem >= 8{
+    state[0] ^= be_u64(&ad[i..(i + 8)]);
+    (1, (rem - 8))
+} else {
+    (0, rem)
+};
+    state[sidx] ^= aead_pad(lastlen);
+    if lastlen > 0{
+    let off = i + if sidx == 1{
+    8
+} else {
+    0
+};
+    state[sidx] ^= be_u64_partial(&ad[off..(off + lastlen)]);
+};
+    ascon_p8(&mut state);
+};
+    state[4] ^= 1;
+    let mut ciphertext = alloc::vec::Vec::with_capacity(plaintext.len());
+    let mut i = 0;
+    while ((plaintext.len() - i) >= 16){
+    state[0] ^= be_u64(&plaintext[i..(i + 8)]);
+    ciphertext.extend_from_slice(&state[0].to_be_bytes());
+    state[1] ^= be_u64(&plaintext[(i + 8)..(i + 16)]);
+    ciphertext.extend_from_slice(&state[1].to_be_bytes());
+    ascon_p8(&mut state);
+    i += 16;
+};
+    let rem = plaintext.len() - i;
+    if rem >= 8{
+    state[0] ^= be_u64(&plaintext[i..(i + 8)]);
+    ciphertext.extend_from_slice(&state[0].to_be_bytes());
+    let rest = rem - 8;
+    state[1] ^= aead_pad(rest);
+    if rest > 0{
+    state[1] ^= be_u64_partial(&plaintext[(i + 8)..((i + 8) + rest)]);
+    let keystream = state[1].to_be_bytes();
+    ciphertext.extend_from_slice(&keystream[..rest]);
+}
+} else {
+    state[0] ^= aead_pad(rem);
+    if rem > 0{
+    state[0] ^= be_u64_partial(&plaintext[i..(i + rem)]);
+    let keystream = state[0].to_be_bytes();
+    ciphertext.extend_from_slice(&keystream[..rem]);
+}
+};
+    state[2] ^= k1;
+    state[3] ^= k2;
+    ascon_p12(&mut state);
+    state[3] ^= k1;
+    state[4] ^= k2;
+    let mut tag = [(0 as u8); 16];
+    tag[..8].copy_from_slice(&state[3].to_be_bytes());
+    tag[8..].copy_from_slice(&state[4].to_be_bytes());
+    (ciphertext, tag)
 }
 

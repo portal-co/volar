@@ -1562,7 +1562,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
 }
 
 /// Apply deshadowing to every function and method body in the module.
-fn deshadow_module(module: &mut IrModule<IrFunction>) {
+pub(crate) fn deshadow_module(module: &mut IrModule<IrFunction>) {
     use std::collections::HashSet;
 
     // Top-level functions
