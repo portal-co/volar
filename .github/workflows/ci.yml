@@ -70,7 +70,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Regenerate derived specs
-        run: cargo xtask check-specs
+        run: cargo xtask gen-specs && git diff --exit-code
       - name: Fail if any generated file is stale
         run: |
           git diff --exit-code \
