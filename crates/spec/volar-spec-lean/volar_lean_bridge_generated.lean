@@ -46,6 +46,82 @@ theorem Garble_zero_commutes {N : Type} (d : vole.VoleArray N Std.U8)
   congr 1
   rw [hpost, List.map_replicate, u8ToUInt8_default]
 
+/-- (generated) closure spec: the extracted `volar_spec.garble.Garble.and_result.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` reads
+    the finalized array. -/
+theorem Garble_and_result_closure_spec {N : Type} {D : Type}
+    (d : vole.VoleArray N Std.U8) (dict : volar_spec.SpecDigest D N)
+    (h : volar_spec.array.Array Std.U8 N) (i : Std.Usize)
+    (hl : i.val < (vecL h.data).length) :
+    volar_spec.garble.Garble.and_result.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut d dict h i =
+      ok ((vecL h.data).getD i.val default, h) := by
+  have hl' : i.val < h.data.val.length := hl
+  simp only [volar_spec.garble.Garble.and_result.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut,
+    array.Array.Insts.CoreOpsIndexIndexUsizeT.index,
+    alloc.vec.Vec.Insts.CoreOpsIndexIndex.index,
+    core.Slice.Insts.CoreOpsIndexIndex.index,
+    alloc.vec.Vec.Insts.CoreOpsDerefDerefSlice.deref, alloc.vec.Vec.as_slice,
+    rust_primitives.sequence.seq_to_slice,
+    core.Usize.Insts.CoreSliceIndexSliceIndexSliceT.get,
+    rust_primitives.slice.slice_length,
+    rust_primitives.slice.slice_index, Slice.index_usize,
+    UScalar.lt_equiv, Slice.len_val, Slice.length, Slice.getElem?_Usize_eq,
+    eq_true hl',
+    decide_true, ↓reduceIte, getElem?_pos, spec_ok, bind_tc_ok, lift]
+  simp [vecL, List.getD_eq_getElem?_getD, getElem?_pos, hl']
+
+/-- (generated) `volar_spec.garble.Garble.and_result` commutes with the transport, given the dict
+    realizes `hash` on the concatenated update inputs (streaming-hash spec). -/
+theorem Garble_and_result_commutes {N : Type} {D : Type}
+    (d : vole.VoleArray N Std.U8) (dict : volar_spec.SpecDigest D N)
+    (m : Std.Usize)
+    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)
+    (self : volar_spec.garble.Garble N) (b : volar_spec.garble.Garble N)
+    (hselfl : (vecL self.base.data).length = m.val)
+    (hbl : (vecL b.base.data).length = m.val)
+    (hash : List UInt8 → List UInt8)
+    (d0 : D) (hnew : dict.new = ok d0)
+    (d1 : D) (hup1 : dict.update (core.Shared0T.Insts.CoreConvertAsRef (array.Array.Insts.CoreConvertAsRefSlice Std.U8 d.arrayArraySizeInst)) d0 self.base = ok d1)
+    (d2 : D) (hup2 : dict.update (core.Shared0T.Insts.CoreConvertAsRef (array.Array.Insts.CoreConvertAsRefSlice Std.U8 d.arrayArraySizeInst)) d1 b.base = ok d2)
+    (r : volar_spec.array.Array Std.U8 N) (hfin : dict.finalize d2 = ok r)
+    (hr : arrToNative r = hash ((vecL self.base.data).map u8ToUInt8 ++ (vecL b.base.data).map u8ToUInt8))
+    (hrlen : (vecL r.data).length = m.val) :
+    (do let r ← volar_spec.garble.Garble.and_result d dict self b
+        ok (GarbleToNative m.val r)) =
+    ok (Garble.and_result (GarbleToNative m.val self) (GarbleToNative m.val b) hash) := by
+  obtain ⟨v, hv, hpost⟩ := spec_ok_elim (from_fn_spec d.arrayArraySizeInst
+    (volar_spec.garble.Garble.and_result.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8 d dict) m hsize r
+    (fun j => (vecL r.data).getD j default)
+    (by intro i hi; exact Garble_and_result_closure_spec d dict r i (by rw [hrlen]; exact hi)))
+  simp only [volar_spec.garble.Garble.and_result]
+  rw [hnew]
+  simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hup1]
+  simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hup2]
+  simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hfin]
+  simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hv]
+  simp only [Bind.bind, Aeneas.Std.bind]
+  congr 1
+  simp only [GarbleToNative, GarbleToNative, arrToNative]
+  simp only [Garble.and_result, GarbleToNative, DigestSt.new, DigestSt.update, DigestSt.finalize]
+  simp [Id.run, pure]
+  congr 1
+  rw [hpost, List.map_ofFn]
+  rw [← hr]
+  simp only [arrToNative]
+  apply List.ext_getElem
+  · simp
+  · intro i h1 h2
+    rw [List.getElem_ofFn, List.getElem_ofFn]
+    simp only [Function.comp_apply]
+    have hi : i < m.val := by simpa using h1
+    have hb : i < (vecL r.data).length := by rw [hrlen]; exact hi
+    rw [List.getD_eq_getElem?_getD]
+    rw [List.getElem?_map, List.getElem?_eq_getElem hb]
+    simp
+
 /-- (generated) closure spec: the extracted `volar_spec.garble.Garble.share.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` is the
     pointwise xor of the two operands. -/
 theorem Garble_share_closure_spec {N : Type} (d : vole.VoleArray N Std.U8)
@@ -411,7 +487,6 @@ theorem Eval_bitxor_commutes {N : Type} (d : vole.VoleArray N Std.U8)
 
 -- NOT-BRIDGED (v1):
 --   - struct GarbleTable (fields not all shim u8-arrays)
---   - method Garble.and_result (body pattern)
 --   - method Garble.action_result_base (body pattern)
 --   - method Garble.to_share (body pattern)
 --   - method Eval.to_share (body pattern)
