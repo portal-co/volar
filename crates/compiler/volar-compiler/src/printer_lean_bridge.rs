@@ -189,6 +189,14 @@ enum MethodPattern {
     PointwiseCondCtor { ret: String, rfield: String, cond: String, pw: Pointwise },
     /// `S { f: Default::default(), .. }` — e.g. `Garble.zero`.
     DefaultCtor,
+    /// `let mut d = D::new(); d.update(&e1); …; let hash = d.finalize();`
+    /// `Ret { rf: from_fn(|i| hash[i]) }` — e.g. `Garble.and_result`.
+    DigestCtor {
+        ret: String,
+        rfield: String,
+        /// the update operands, in order: (root, field) for `&x.f` args
+        updates: Vec<(String, String)>,
+    },
 }
 
 fn as_operand(e: &IrExpr, iv: &str) -> Option<Operand> {
@@ -224,6 +232,105 @@ fn as_pointwise(e: &IrExpr) -> Option<Pointwise> {
         }
     }
     None
+}
+
+/// `let mut d = D::new(); d.update(&x.f); …; let hash = d.finalize();
+/// Ret { rf: from_fn(|i| hash[i]) }` — the digest-accumulator shape.
+fn as_digest_ctor(f: &IrFunction) -> Option<MethodPattern> {
+    let stmts = &f.body.stmts;
+    if stmts.len() < 3 {
+        return None;
+    }
+    // first: let mut d := D::new()
+    let crate::ir::IrStmtKind::Let { pattern, init: Some(init), .. } = &stmts[0].kind else {
+        return None;
+    };
+    let crate::ir::IrPattern::Ident { name: dvar, .. } = pattern else {
+        return None;
+    };
+    let IrExprKind::Call { func, args } = &init.kind else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    if !matches!(&func.kind, IrExprKind::Path { segments, .. }
+        if segments.len() == 2 && segments[1] == "new")
+    {
+        return None;
+    }
+    // middle: Semi(d.update(&x.f))*
+    let mut updates = Vec::new();
+    let mut i = 1;
+    while i + 1 < stmts.len() {
+        let crate::ir::IrStmtKind::Semi(inner) = &stmts[i].kind else {
+            return None;
+        };
+        let IrExprKind::MethodCall { receiver, method, args, .. } = &inner.kind else {
+            return None;
+        };
+        if !matches!(method, crate::ir::MethodKind::Known(crate::ir::StdMethod::Update)) {
+            return None;
+        }
+        if !matches!(&receiver.kind, IrExprKind::Var(v) if v == dvar) {
+            return None;
+        }
+        if args.len() != 1 {
+            return None;
+        }
+        let IrExprKind::Unary { op: crate::ir::SpecUnaryOp::Ref, expr } = &args[0].kind else {
+            return None;
+        };
+        let IrExprKind::Field { base, field } = &expr.kind else {
+            return None;
+        };
+        let IrExprKind::Var(root) = &base.kind else {
+            return None;
+        };
+        updates.push((root.clone(), field.clone()));
+        i += 1;
+    }
+    // last stmt: let hash := d.finalize()
+    let crate::ir::IrStmtKind::Let { pattern, init: Some(init), .. } = &stmts[stmts.len() - 1].kind
+    else {
+        return None;
+    };
+    let crate::ir::IrPattern::Ident { name: hvar, .. } = pattern else {
+        return None;
+    };
+    let IrExprKind::MethodCall { receiver, method, args, .. } = &init.kind else {
+        return None;
+    };
+    if !matches!(method, crate::ir::MethodKind::Known(crate::ir::StdMethod::Finalize)) {
+        return None;
+    }
+    if !matches!(&receiver.kind, IrExprKind::Var(v) if v == dvar) || !args.is_empty() {
+        return None;
+    }
+    // tail: Ret { rf := from_fn(|i| hash[i]) }
+    let tail = f.body.expr.as_ref()?;
+    let IrExprKind::StructExpr { kind, fields, rest: None, .. } = &tail.kind else {
+        return None;
+    };
+    if fields.len() != 1 {
+        return None;
+    }
+    let IrExprKind::ArrayGenerate { index_var, body, .. } = &fields[0].1.kind else {
+        return None;
+    };
+    let IrExprKind::Index { base, index } = &body.kind else {
+        return None;
+    };
+    if !matches!(&base.kind, IrExprKind::Var(v) if v == hvar)
+        || !matches!(&index.kind, IrExprKind::Var(v) if v == index_var)
+    {
+        return None;
+    }
+    Some(MethodPattern::DigestCtor {
+        ret: kind_name_of(kind)?.to_string(),
+        rfield: fields[0].0.clone(),
+        updates,
+    })
 }
 
 /// `if c { lhs[i] ^ rhs[i] } else { rhs[i] }` — the encode shape.
@@ -277,6 +384,9 @@ fn is_shim_u8_array(ty: &IrType) -> bool {
 /// Classify a method body (a single tail expression, or a single
 /// `Semi(Return(expr))` statement).
 fn classify(f: &IrFunction) -> Option<MethodPattern> {
+    if let Some(p) = as_digest_ctor(f) {
+        return Some(p);
+    }
     let e = if f.body.stmts.is_empty() {
         f.body.expr.as_ref()?
     } else if f.body.stmts.len() == 1 && f.body.expr.is_none() {
@@ -683,6 +793,182 @@ fn emit_bitxor(
     Ok(None)
 }
 
+/// Emit the closure spec + commutation for a digest-constructor method:
+/// `let mut d = D::new(); d.update(&x.f); …; let hash = d.finalize();
+/// Ret { rf: from_fn(|i| hash[i]) }`.
+///
+/// The commutation is parameterized by the *peeled* digest chain: the
+/// caller supplies each intermediate state, and the requirement that the
+/// dict realizes the native `hash` on the concatenation of the update
+/// inputs. (For a correct streaming hash, chunk boundaries do not matter,
+/// so this is the specification of "the dict is hash-of-concatenation".)
+#[allow(clippy::too_many_arguments)]
+fn emit_digest_ctor(
+    out: &mut String,
+    amod: &AeneasModule,
+    module: &IrModule<IrFunction>,
+    imp: &IrImpl,
+    fields: &[String],
+    f: &IrFunction,
+    ret: &str,
+    rfield: &str,
+    updates: &[(String, String)],
+) -> Result<Option<String>> {
+    let self_ty = struct_name_of_impl(imp)?;
+    let a_self = amod.path(module, &self_ty);
+    let a_method = aeneas_method(amod, module, &self_ty, &f.name, fields);
+    let a_closure = format!("{a_method}.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8");
+    let n_method = native_method(&f.name, fields);
+    let closure_thm = format!("{self_ty}_{}_closure_spec", f.name);
+
+    // binders + length hypotheses for the update operands (self, then params)
+    let mut binders: Vec<String> = Vec::new();
+    let mut len_hyps: Vec<String> = Vec::new();
+    for (root, field) in updates {
+        if root == "self" {
+            len_hyps.push(format!("(h{root}l : (vecL self.{field}.data).length = m.val)"));
+            continue;
+        }
+        let Some(p) = f.params.iter().find(|p| &p.name == root) else {
+            return skip("digest-ctor: update operand not a param");
+        };
+        let inner = match &p.ty {
+            IrType::Reference { elem, .. } => elem.as_ref(),
+            t => t,
+        };
+        match inner {
+            IrType::Struct { kind, .. } => {
+                let pt = kind_name_of(kind).ok_or_else(|| {
+                    CompilerError::Unsupported("digest-ctor: param kind".into())
+                })?;
+                binders.push(format!("({root} : {} N)", amod.path(module, pt)));
+            }
+            _ => return skip("digest-ctor: update operand not a struct"),
+        }
+        len_hyps.push(format!("(h{root}l : (vecL {root}.{field}.data).length = m.val)"));
+    }
+
+    // closure spec
+    w!(out, "\n/-- (generated) closure spec: the extracted `{a_closure}.call_mut` reads\n    the finalized array. -/\n");
+    w!(out, "theorem {closure_thm} {{N : Type}} {{D : Type}}\n");
+    w!(out, "    (d : vole.VoleArray N Std.U8) (dict : volar_spec.SpecDigest D N)\n");
+    w!(out, "    (h : volar_spec.array.Array Std.U8 N) (i : Std.Usize)\n");
+    w!(out, "    (hl : i.val < (vecL h.data).length) :\n");
+    w!(out, "    {a_closure}.call_mut d dict h i =\n");
+    w!(out, "      ok ((vecL h.data).getD i.val default, h) := by\n");
+    w!(out, "  have hl' : i.val < h.data.val.length := hl\n");
+    w!(out, "  simp only [{a_closure}.call_mut,\n");
+    w!(out, "    array.Array.Insts.CoreOpsIndexIndexUsizeT.index,\n");
+    w!(out, "    alloc.vec.Vec.Insts.CoreOpsIndexIndex.index,\n");
+    w!(out, "    core.Slice.Insts.CoreOpsIndexIndex.index,\n");
+    w!(out, "    alloc.vec.Vec.Insts.CoreOpsDerefDerefSlice.deref, alloc.vec.Vec.as_slice,\n");
+    w!(out, "    rust_primitives.sequence.seq_to_slice,\n");
+    w!(out, "    core.Usize.Insts.CoreSliceIndexSliceIndexSliceT.get,\n");
+    w!(out, "    rust_primitives.slice.slice_length,\n");
+    w!(out, "    rust_primitives.slice.slice_index, Slice.index_usize,\n");
+    w!(out, "    UScalar.lt_equiv, Slice.len_val, Slice.length, Slice.getElem?_Usize_eq,\n");
+    w!(out, "    eq_true hl',\n");
+    w!(out, "    decide_true, ↓reduceIte, getElem?_pos, spec_ok, bind_tc_ok, lift]\n");
+    w!(out, "  simp [vecL, List.getD_eq_getElem?_getD, getElem?_pos, hl']\n");
+
+    // the peeled digest chain hypotheses
+    let asref = "(core.Shared0T.Insts.CoreConvertAsRef (array.Array.Insts.CoreConvertAsRefSlice Std.U8 d.arrayArraySizeInst))";
+    let mut chain_hyps: Vec<String> = vec!["(d0 : D) (hnew : dict.new = ok d0)".to_string()];
+    let concat_parts: Vec<String> = updates
+        .iter()
+        .map(|(root, field)| format!("(vecL {root}.{field}.data).map u8ToUInt8"))
+        .collect();
+    for (idx, (root, field)) in updates.iter().enumerate() {
+        chain_hyps.push(format!(
+            "(d{} : D) (hup{} : dict.update {asref} d{} {root}.{field} = ok d{})",
+            idx + 1,
+            idx + 1,
+            idx,
+            idx + 1
+        ));
+    }
+    let n = updates.len();
+
+    w!(out, "\n/-- (generated) `{a_method}` commutes with the transport, given the dict\n    realizes `hash` on the concatenated update inputs (streaming-hash spec). -/\n");
+    w!(out, "theorem {self_ty}_{}_commutes {{N : Type}} {{D : Type}}\n", f.name);
+    w!(out, "    (d : vole.VoleArray N Std.U8) (dict : volar_spec.SpecDigest D N)\n");
+    w!(out, "    (m : Std.Usize)\n");
+    w!(out, "    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)\n");
+    w!(out, "    (self : {a_self} N) {}\n", binders.join(" "));
+    for h in &len_hyps {
+        w!(out, "    {h}\n");
+    }
+    w!(out, "    (hash : List UInt8 → List UInt8)\n");
+    w!(out, "    {}", chain_hyps.join("\n    ").replace("\\n", "\n"));
+    w!(out, "\n    (r : volar_spec.array.Array Std.U8 N) (hfin : dict.finalize d{n} = ok r)\n");
+    w!(out, "    (hr : arrToNative r = hash ({}))\n", concat_parts.join(" ++ "));
+    w!(out, "    (hrlen : (vecL r.data).length = m.val) :\n");
+    let mut native_args = format!("({self_ty}ToNative m.val self)");
+    for (root, field) in updates {
+        if root != "self" {
+            let p = f.params.iter().find(|p| &p.name == root).unwrap();
+            let inner = match &p.ty {
+                IrType::Reference { elem, .. } => elem.as_ref(),
+                t => t,
+            };
+            let pt = match inner {
+                IrType::Struct { kind, .. } => kind_name_of(kind).unwrap(),
+                _ => unreachable!(),
+            };
+            let _ = field;
+            native_args.push_str(&format!(" ({pt}ToNative m.val {root})"));
+        }
+    }
+    w!(out, "    (do let r ← {a_method} d dict self {}\n", f.params.iter().map(|p| p.name.clone()).collect::<Vec<_>>().join(" "));
+    w!(out, "        ok ({ret}ToNative m.val r)) =\n");
+    w!(out, "    ok ({self_ty}.{n_method} {native_args} hash) := by\n");
+    w!(out, "  obtain ⟨v, hv, hpost⟩ := spec_ok_elim (from_fn_spec d.arrayArraySizeInst\n");
+    w!(out, "    ({a_closure} d dict) m hsize r\n");
+    w!(out, "    (fun j => (vecL r.data).getD j default)\n");
+    w!(out, "    (by intro i hi; exact {closure_thm} d dict r i (by rw [hrlen]; exact hi)))\n");
+    w!(out, "  simp only [{a_method}]\n");
+    w!(out, "  rw [hnew]\n  simp only [Bind.bind, Aeneas.Std.bind]\n");
+    for idx in 0..n {
+        w!(out, "  rw [hup{}]\n  simp only [Bind.bind, Aeneas.Std.bind]\n", idx + 1);
+    }
+    w!(out, "  rw [hfin]\n  simp only [Bind.bind, Aeneas.Std.bind]\n");
+    w!(out, "  rw [hv]\n  simp only [Bind.bind, Aeneas.Std.bind]\n");
+    w!(out, "  congr 1\n");
+    w!(out, "  simp only [{ret}ToNative, {self_ty}ToNative, arrToNative]\n");
+    // native side: reduce the Id.run digest accumulation
+    let mut native_others: Vec<String> = Vec::new();
+    for (root, _) in updates {
+        if root != "self" {
+            let p = f.params.iter().find(|p| &p.name == root).unwrap();
+            let inner = match &p.ty {
+                IrType::Reference { elem, .. } => elem.as_ref(),
+                t => t,
+            };
+            if let IrType::Struct { kind, .. } = inner {
+                native_others.push(format!("{}ToNative", kind_name_of(kind).unwrap()));
+            }
+        }
+    }
+    w!(out, "  simp only [{self_ty}.{n_method}{}, DigestSt.new, DigestSt.update, DigestSt.finalize]\n",
+        if native_others.is_empty() { String::new() } else { format!(", {}", native_others.join(", ")) });
+    w!(out, "  simp [Id.run, pure]\n");
+    w!(out, "  congr 1\n");
+    w!(out, "  rw [hpost, List.map_ofFn]\n");
+    w!(out, "  rw [← hr]\n");
+    w!(out, "  simp only [arrToNative]\n");
+    w!(out, "  apply List.ext_getElem\n");
+    w!(out, "  · simp\n");
+    w!(out, "  · intro i h1 h2\n");
+    w!(out, "    rw [List.getElem_ofFn, List.getElem_ofFn]\n");
+    w!(out, "    simp only [Function.comp_apply]\n");
+    w!(out, "    have hi : i < m.val := by simpa using h1\n");
+    w!(out, "    have hb : i < (vecL r.data).length := by rw [hrlen]; exact hi\n");
+    w!(out, "    rw [List.getD_eq_getElem?_getD]\n");
+    w!(out, "    rw [List.getElem?_map, List.getElem?_eq_getElem hb]\n");
+    w!(out, "    simp\n");
+    Ok(None)
+}
+
 /// Emit the closure spec + commutation for a conditional pointwise
 /// constructor (`Ret { rf: from_fn(|i| if c { lhs[i] ^ rhs[i] } else rhs[i]) }`).
 #[allow(clippy::too_many_arguments)]
@@ -1012,6 +1298,9 @@ pub fn print_module_lean_bridge(
                 }
                 Some(MethodPattern::DefaultCtor) => {
                     emit_default_ctor(&mut out, &amod, module, imp, fields, f)?
+                }
+                Some(MethodPattern::DigestCtor { ret, rfield, updates }) => {
+                    emit_digest_ctor(&mut out, &amod, module, imp, fields, f, &ret, &rfield, &updates)?
                 }
                 None => Some("body pattern".to_string()),
             };
