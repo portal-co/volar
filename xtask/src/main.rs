@@ -124,8 +124,11 @@ fn gen_specs(check_only: bool) {
     let garble_lean_bridge = print_garble_lean_bridge(&spec_module);
     let combined_module = merge_modules(vec![prim_module, common_module, spec_module]);
 
-    // ── Generate outputs ────────────────────────────────────────────────────
-    let generated = [
+    // ── mxx-sourced spec elements (docs/mxx-cutover-plan.md Phase 1) ───────
+    // The mxx_rt helpers and every registered element program are lowered
+    // from validated frozen mxx graphs; both are freshness-gated here like
+    // every other generated artifact.
+    let mut generated: Vec<(PathBuf, String)> = vec![
         (
             workspace.join("packages/volar-spec-ts/generated.ts"),
             print_module_typescript(&combined_module),
@@ -151,6 +154,18 @@ fn gen_specs(check_only: bool) {
             print_module_rust_dyn(&combined_module),
         ),
     ];
+    generated.push((
+        workspace.join("crates/spec/volar-spec/src/mxx_rt.rs"),
+        volar_mxx_interop::generate::generate_rt_source(),
+    ));
+    for element in volar_mxx_interop::programs::elements() {
+        let src = volar_mxx_interop::generate::generate_element_rust(&element)
+            .unwrap_or_else(|e| panic!("mxx element `{}`: {e}", element.element));
+        generated.push((
+            workspace.join(format!("crates/spec/volar-spec/src/mxx_{}.rs", element.element)),
+            src,
+        ));
+    }
 
     let mut stale = false;
     for (path, new_content) in &generated {

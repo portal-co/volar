@@ -36,7 +36,9 @@
 //! semantics), `MatrixNegate`, `MatrixScale`, `Transpose`.
 
 pub mod error;
+pub mod generate;
 pub mod lower;
+pub mod programs;
 pub mod rt;
 
 pub use error::InteropError;

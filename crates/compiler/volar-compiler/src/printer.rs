@@ -1717,9 +1717,16 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     "Path segments contain non-ident strings: {:?}",
                     segments
                 );
-                // When path has 2+ segments and type_args, put turbofish on
-                // the type prefix (e.g. AsRef::<[u8]>::as_ref, Vec::<u8>::new).
-                if segments.len() >= 2 && !type_args.is_empty() {
+                // When path has 2+ segments and type_args, the IR does not
+                // record which segment carried the turbofish. Disambiguate by
+                // Rust naming shape: args belong to the *prefix* when the
+                // second-to-last segment is a type/trait-like name
+                // (AsRef::<[u8]>::as_ref, Vec::<u8>::new), and to the *last*
+                // segment when it is a module path (crate::mxx_rt::mat_mul::<...>).
+                let second_to_last_is_type = segments
+                    .get(segments.len().wrapping_sub(2))
+                    .is_some_and(|s| s.chars().next().is_some_and(|c| c.is_ascii_uppercase()));
+                if segments.len() >= 2 && !type_args.is_empty() && second_to_last_is_type {
                     let l = segments.last().unwrap();
                     let prefix = &segments[..segments.len() - 1];
                     write!(f, "{}", prefix.join("::"))?;

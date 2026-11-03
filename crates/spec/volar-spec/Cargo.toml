@@ -21,6 +21,7 @@ volar-ir-common.workspace = true
 
 [dev-dependencies]
 proptest = "1"
+hybrid-array.workspace = true
 sha2 = { version = "0.11.0-rc.0", default-features = false }
 blake2 = "0.10.6"
 ascon-hash = "0.4"

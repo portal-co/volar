@@ -7383,7 +7383,7 @@ pub const BLAKE2S_SIGMA: [usize; 160] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1
 
 pub const CIRrus_DEFAULT_HASH: CirrusHashBackend = CirrusHashBackend::Blake2s;
 
-pub const SPEC_HASH_SOURCES_DIGEST: [u8; 32] = [189, 135, 23, 134, 108, 248, 95, 76, 53, 231, 139, 133, 61, 87, 41, 93, 33, 0, 157, 124, 23, 253, 232, 133, 4, 231, 73, 217, 42, 180, 173, 194];
+pub const SPEC_HASH_SOURCES_DIGEST: [u8; 32] = [59, 250, 37, 4, 132, 107, 133, 254, 62, 74, 37, 150, 236, 234, 123, 65, 69, 103, 215, 190, 249, 112, 36, 187, 243, 172, 72, 254, 220, 135, 147, 41];
 
 pub const P_LIMBS: [u64; 4] = [18446744073709551597, 18446744073709551615, 18446744073709551615, 9223372036854775807];
 
@@ -8158,10 +8158,10 @@ pub fn binfhe_blind_rotate(mut n_lwe: usize, mut big_n: usize, mut log_q: usize,
 
 pub fn encrypt_scaled_poly<R: SpecRng>(mut big_n: usize, mut log_q: usize, mut eta: usize, mut msg: &[u32; BIG_N], mut level: usize, mut base_log: u32, mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRlweCiphertextDyn
 {
-    let g = gadget::<LOG_Q>::level_factor(log_q, base_log, level);
+    let g = gadget::level_factor::<LOG_Q>(log_q, base_log, level);
     let mut scaled = [(0 as u32); big_n];
     for i in 0.. big_n{
-    scaled[i] = torus::<LOG_Q>::mul_exact(log_q, msg[i], g);
+    scaled[i] = torus::mul_exact::<LOG_Q>(log_q, msg[i], g);
 };
     binfhe_rlwe_encrypt_poly::<BIG_N, LOG_Q, ETA, R>(big_n, log_q, eta, &scaled, sk, rng)
 }
@@ -8172,10 +8172,10 @@ pub fn gen_circuit_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: us
     let zero = [(0 as u32); big_n];
     let neg_one_const: [u32; BIG_N] = {
     let mut p = [(0 as u32); big_n];
-    p[0] = torus::<LOG_Q>::torus_neg(log_q, 1);
+    p[0] = torus::torus_neg::<LOG_Q>(log_q, 1);
     p
 };
-    let neg_sk: [u32; BIG_N] = (0..big_n).map(|i| torus::<LOG_Q>::torus_neg(log_q, rlwe_sk.key[i])).collect::<Vec<_>>();
+    let neg_sk: [u32; BIG_N] = (0..big_n).map(|i| torus::torus_neg::<LOG_Q>(log_q, rlwe_sk.key[i])).collect::<Vec<_>>();
     let one_const: [u32; BIG_N] = {
     let mut p = [(0 as u32); big_n];
     p[0] = 1;
@@ -8216,7 +8216,7 @@ pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv
 {
     let mut out = BinfheRlweCiphertextDyn { a: [(0 as u32); big_n], b: [(0 as u32); big_n], n: 0 };
     for i in 0.. big_n{
-    let digits = gadget::<LOG_Q, PRIV_ELL, PRIV_BASE_LOG>::gadget_decompose(log_q, priv_ell, priv_base_log, src.a[i]);
+    let digits = gadget::gadget_decompose::<LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(log_q, priv_ell, priv_base_log, src.a[i]);
     for (l, ..) in digits.iter().enumerate(){
     if d == 0{
     continue;
@@ -8228,7 +8228,7 @@ pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv
 };
 };
 };
-    let digits = gadget::<LOG_Q, PRIV_ELL, PRIV_BASE_LOG>::gadget_decompose(log_q, priv_ell, priv_base_log, src.b);
+    let digits = gadget::gadget_decompose::<LOG_Q, PRIV_ELL, PRIV_BASE_LOG>(log_q, priv_ell, priv_base_log, src.b);
     for (l, ..) in digits.iter().enumerate(){
     if d == 0{
     continue;
@@ -8240,8 +8240,8 @@ pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv
 };
 };
     for k in 0.. big_n{
-    out.a[k] = torus::<LOG_Q>::reduce(log_q, out.a[k]);
-    out.b[k] = torus::<LOG_Q>::reduce(log_q, out.b[k]);
+    out.a[k] = torus::reduce::<LOG_Q>(log_q, out.a[k]);
+    out.b[k] = torus::reduce::<LOG_Q>(log_q, out.b[k]);
 };
     out
 }
@@ -8249,7 +8249,7 @@ pub fn priv_ks(mut big_n: usize, mut log_q: usize, mut priv_ell: usize, mut priv
 pub fn level_test_poly(mut big_n: usize, mut log_q: usize, mut level: usize, mut bs_base_log: u32, mut k_max: usize) -> [u32; BIG_N]
 {
     let width = big_n >> k_max;
-    let g = gadget::<LOG_Q>::level_factor(log_q, bs_base_log, level);
+    let g = gadget::level_factor::<LOG_Q>(log_q, bs_base_log, level);
     let mut poly = [(0 as u32); big_n];
     for p in width.. 2 * width{
     poly[p] = g;
@@ -8289,7 +8289,7 @@ pub fn level_bits(mut log: u32, mut base_log: u32, mut j: usize) -> u32
 
 pub fn level_factor(mut log: usize, mut base_log: u32, mut j: usize) -> u32
 {
-    torus::<LOG>::reduce(log, ((1 as u32) << level_shift(log, base_log, j)))
+    torus::reduce::<LOG>(log, ((1 as u32) << level_shift(log, base_log, j)))
 }
 
 pub fn gadget_decompose(mut log: usize, mut ell: usize, mut base_log: usize, mut x: u32) -> [u32; ELL]
@@ -8327,8 +8327,8 @@ pub fn binfhe_gen_bootstrapping_key<R: SpecRng>(mut n_lwe: usize, mut big_n: usi
 }).collect::<Vec<_>>();
     let ksk = BinfheKeySwitchingKeyDyn { ksk: (0..big_n).map(|i| {
     (0..ks_ell).map(|j| {
-    let msg = rlwe_sk.key[i].wrapping_mul(gadget::<LOG_MOD_KS>::level_factor(log_mod_ks, ks_base_log, j));
-    binfhe_lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(n_lwe, log_mod_ks, eta, torus::<LOG_MOD_KS>::reduce(log_mod_ks, msg), lwe_sk, rng)
+    let msg = rlwe_sk.key[i].wrapping_mul(gadget::level_factor::<LOG_MOD_KS>(log_mod_ks, ks_base_log, j));
+    binfhe_lwe_encrypt_raw::<N_LWE, LOG_MOD_KS, ETA, R>(n_lwe, log_mod_ks, eta, torus::reduce::<LOG_MOD_KS>(log_mod_ks, msg), lwe_sk, rng)
 }).collect::<Vec<_>>()
 }).collect::<Vec<_>>(), n_lwe: 0, big_n: 0, ks_ell: 0 };
     BinfheBootstrappingKeyDyn { bsk: bsk, ksk: ksk, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0 }
@@ -8340,7 +8340,7 @@ pub fn binfhe_key_switch<K: AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> + Sized>(mut
     let mut out_a = [(0 as u32); n_lwe];
     let mut out_b = ct.b;
     for i in 0.. big_n{
-    let digits = gadget::<LOG_MOD_KS, KS_ELL, KS_BASE_LOG>::gadget_decompose(log_mod_ks, ks_ell, ks_base_log, ct.a[i]);
+    let digits = gadget::gadget_decompose::<LOG_MOD_KS, KS_ELL, KS_BASE_LOG>(log_mod_ks, ks_ell, ks_base_log, ct.a[i]);
     for j in 0.. ks_ell{
     let d = digits[j];
     if d == 0{
@@ -8354,9 +8354,9 @@ pub fn binfhe_key_switch<K: AsKeySwitchingKey<N_LWE, BIG_N, KS_ELL> + Sized>(mut
 };
 };
     for k in 0.. n_lwe{
-    out_a[k] = torus::<LOG_MOD_KS>::reduce(log_mod_ks, out_a[k]);
+    out_a[k] = torus::reduce::<LOG_MOD_KS>(log_mod_ks, out_a[k]);
 };
-    BinfheLweCiphertextDyn { a: out_a, b: torus::<LOG_MOD_KS>::reduce(log_mod_ks, out_b), n: 0 }
+    BinfheLweCiphertextDyn { a: out_a, b: torus::reduce::<LOG_MOD_KS>(log_mod_ks, out_b), n: 0 }
 }
 
 pub fn check_lut_shape(mut addr_bits: usize, mut table_len: usize, mut big_n: usize, mut log_q: u32, mut log_q_lwe: u32, mut k_max: usize) -> Result<usize, LutError>
@@ -8457,14 +8457,14 @@ pub fn binfhe_lwe_encrypt_raw<R: SpecRng>(mut n: usize, mut log_m: usize, mut et
 {
     let mut a = [(0 as u32); n];
     for ai in a.iter_mut(){
-    *ai = torus::<LOG_M>::reduce(log_m, rng.next_u32());
+    *ai = torus::reduce::<LOG_M>(log_m, rng.next_u32());
 };
     let mut dot = 0 as u32;
     for i in 0.. n{
     dot = dot.wrapping_add(a[i].wrapping_mul((sk.key[i] as u32)));
 };
-    let e = sampler::<LOG_M, ETA, R>::sample_error(log_m, eta, rng);
-    let b = torus::<LOG_M>::reduce(log_m, dot.wrapping_add(e).wrapping_add(msg));
+    let e = sampler::sample_error::<LOG_M, ETA, R>(log_m, eta, rng);
+    let b = torus::reduce::<LOG_M>(log_m, dot.wrapping_add(e).wrapping_add(msg));
     BinfheLweCiphertextDyn { a: a, b: b, n: 0 }
 }
 
@@ -8474,12 +8474,12 @@ pub fn lwe_phase(mut n: usize, mut log_m: usize, mut ct: &BinfheLweCiphertextDyn
     for i in 0.. n{
     dot = dot.wrapping_add(ct.a[i].wrapping_mul((sk.key[i] as u32)));
 };
-    torus::<LOG_M>::reduce(log_m, ct.b.wrapping_sub(dot))
+    torus::reduce::<LOG_M>(log_m, ct.b.wrapping_sub(dot))
 }
 
 pub fn lwe_decode(mut log_m: usize, mut phase: u32, mut delta: u32) -> bool
 {
-    torus::<LOG_M>::reduce(log_m, phase.wrapping_sub((delta / 2))) < delta
+    torus::reduce::<LOG_M>(log_m, phase.wrapping_sub((delta / 2))) < delta
 }
 
 pub fn binfhe_lwe_decrypt(mut n: usize, mut log_m: usize, mut ct: &BinfheLweCiphertextDyn, mut sk: &BinfheLweSecretKeyDyn, mut delta: u32) -> bool
@@ -8491,47 +8491,47 @@ pub fn binfhe_lwe_add(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertex
 {
     let mut a = [(0 as u32); n];
     for i in 0.. n{
-    a[i] = torus::<LOG_M>::torus_add(log_m, x.a[i], y.a[i]);
+    a[i] = torus::torus_add::<LOG_M>(log_m, x.a[i], y.a[i]);
 };
-    BinfheLweCiphertextDyn { a: a, b: torus::<LOG_M>::torus_add(log_m, x.b, y.b), n: 0 }
+    BinfheLweCiphertextDyn { a: a, b: torus::torus_add::<LOG_M>(log_m, x.b, y.b), n: 0 }
 }
 
 pub fn binfhe_lwe_sub(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut y: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
 {
     let mut a = [(0 as u32); n];
     for i in 0.. n{
-    a[i] = torus::<LOG_M>::torus_sub(log_m, x.a[i], y.a[i]);
+    a[i] = torus::torus_sub::<LOG_M>(log_m, x.a[i], y.a[i]);
 };
-    BinfheLweCiphertextDyn { a: a, b: torus::<LOG_M>::torus_sub(log_m, x.b, y.b), n: 0 }
+    BinfheLweCiphertextDyn { a: a, b: torus::torus_sub::<LOG_M>(log_m, x.b, y.b), n: 0 }
 }
 
 pub fn binfhe_lwe_neg(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn) -> BinfheLweCiphertextDyn
 {
     let mut a = [(0 as u32); n];
     for i in 0.. n{
-    a[i] = torus::<LOG_M>::torus_neg(log_m, x.a[i]);
+    a[i] = torus::torus_neg::<LOG_M>(log_m, x.a[i]);
 };
-    BinfheLweCiphertextDyn { a: a, b: torus::<LOG_M>::torus_neg(log_m, x.b), n: 0 }
+    BinfheLweCiphertextDyn { a: a, b: torus::torus_neg::<LOG_M>(log_m, x.b), n: 0 }
 }
 
 pub fn binfhe_lwe_scale(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut c: u32) -> BinfheLweCiphertextDyn
 {
     let mut a = [(0 as u32); n];
     for i in 0.. n{
-    a[i] = torus::<LOG_M>::mul_exact(log_m, x.a[i], c);
+    a[i] = torus::mul_exact::<LOG_M>(log_m, x.a[i], c);
 };
-    BinfheLweCiphertextDyn { a: a, b: torus::<LOG_M>::mul_exact(log_m, x.b, c), n: 0 }
+    BinfheLweCiphertextDyn { a: a, b: torus::mul_exact::<LOG_M>(log_m, x.b, c), n: 0 }
 }
 
 pub fn binfhe_lwe_add_const(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut c: u32) -> BinfheLweCiphertextDyn
 {
-    BinfheLweCiphertextDyn { a: x.a, b: torus::<LOG_M>::torus_add(log_m, x.b, c), n: 0 }
+    BinfheLweCiphertextDyn { a: x.a, b: torus::torus_add::<LOG_M>(log_m, x.b, c), n: 0 }
 }
 
 pub fn binfhe_not(mut n: usize, mut log_m: usize, mut x: &BinfheLweCiphertextDyn, mut delta: u32) -> BinfheLweCiphertextDyn
 {
     let mut out = binfhe_lwe_neg::<N, LOG_M>(n, log_m, x);
-    out.b = torus::<LOG_M>::torus_add(log_m, out.b, delta);
+    out.b = torus::torus_add::<LOG_M>(log_m, out.b, delta);
     out
 }
 
@@ -8547,12 +8547,12 @@ pub fn binfhe_trivial(mut n: usize, mut log_m: usize, mut m: bool, mut delta: u3
 pub fn mod_switch(mut from: usize, mut to: usize, mut x: u32) -> u32
 {
     if to >= from{
-    super::torus::<FROM, TO>::embed_up(from, to, x)
+    super::torus::embed_up::<FROM, TO>(from, to, x)
 } else {
     let shift = from - to;
     let half = (1 as u32) << (shift - 1);
     let rounded = (((x as u64) + (half as u64)) >> shift) as u32;
-    super::torus::<TO>::reduce(to, rounded)
+    super::torus::reduce::<TO>(to, rounded)
 }
 }
 
@@ -8895,14 +8895,14 @@ pub fn read_op(mut reader: &mut Reader) -> Result<PlanOp, DecodeError>
 pub fn binfhe_rgsw_encrypt<R: SpecRng>(mut n: usize, mut log: usize, mut ell: usize, mut base_log: usize, mut eta: usize, mut m: bool, mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRgswCiphertextDyn
 {
     let rows = (0..n).map(|j| {
-    let g = gadget::<LOG>::level_factor(log, base_log, j);
+    let g = gadget::level_factor::<LOG>(log, base_log, j);
     let contrib = if m{
     g
 } else {
     0
 };
     let mut rlwe0 = binfhe_rlwe_encrypt_scalar::<N, LOG, ETA, R>(n, log, eta, 0, sk, rng);
-    rlwe0.a[0] = torus::<LOG>::torus_add(log, rlwe0.a[0], contrib);
+    rlwe0.a[0] = torus::torus_add::<LOG>(log, rlwe0.a[0], contrib);
     let rlwe1 = binfhe_rlwe_encrypt_scalar::<N, LOG, ETA, R>(n, log, eta, contrib, sk, rng);
     BinfheRgswRowDyn { rlwe0: rlwe0, rlwe1: rlwe1, n: 0 }
 }).collect::<Vec<_>>();
@@ -8911,8 +8911,8 @@ pub fn binfhe_rgsw_encrypt<R: SpecRng>(mut n: usize, mut log: usize, mut ell: us
 
 pub fn binfhe_external_product(mut n: usize, mut log: usize, mut ell: usize, mut base_log: usize, mut c: &BinfheRgswCiphertextDyn, mut ct: &BinfheRlweCiphertextDyn) -> BinfheRlweCiphertextDyn
 {
-    let a_dec = gadget::<N, LOG, ELL, BASE_LOG>::gadget_poly_decompose(n, log, ell, base_log, &ct.a);
-    let b_dec = gadget::<N, LOG, ELL, BASE_LOG>::gadget_poly_decompose(n, log, ell, base_log, &ct.b);
+    let a_dec = gadget::gadget_poly_decompose::<N, LOG, ELL, BASE_LOG>(n, log, ell, base_log, &ct.a);
+    let b_dec = gadget::gadget_poly_decompose::<N, LOG, ELL, BASE_LOG>(n, log, ell, base_log, &ct.b);
     let mut out_a = [(0 as u32); n];
     let mut out_b = [(0 as u32); n];
     for j in 0.. ell{
@@ -8927,8 +8927,8 @@ pub fn binfhe_external_product(mut n: usize, mut log: usize, mut ell: usize, mut
 };
 };
     for k in 0.. n{
-    out_a[k] = torus::<LOG>::reduce(log, out_a[k]);
-    out_b[k] = torus::<LOG>::reduce(log, out_b[k]);
+    out_a[k] = torus::reduce::<LOG>(log, out_a[k]);
+    out_b[k] = torus::reduce::<LOG>(log, out_b[k]);
 };
     BinfheRlweCiphertextDyn { a: out_a, b: out_b, n: 0 }
 }
@@ -8964,7 +8964,7 @@ pub fn binfhe_poly_mul_neg(mut n: usize, mut log: usize, mut a: &[u32; N], mut b
 };
 };
     for r in result.iter_mut(){
-    *r = torus::<LOG>::reduce(log, *r);
+    *r = torus::reduce::<LOG>(log, *r);
 };
     result
 }
@@ -8984,17 +8984,17 @@ pub fn binfhe_poly_rotate(mut n: usize, mut log: usize, mut p: &[u32; N], mut ex
 };
 };
     for r in result.iter_mut(){
-    *r = torus::<LOG>::reduce(log, *r);
+    *r = torus::reduce::<LOG>(log, *r);
 };
     result
 }
 
 pub fn binfhe_rlwe_encrypt_poly<R: SpecRng>(mut n: usize, mut log: usize, mut eta: usize, mut msg: &[u32; N], mut sk: &BinfheRlweSecretKeyDyn, mut rng: &mut R) -> BinfheRlweCiphertextDyn
 {
-    let a: [u32; N] = (0..n).map(|_| torus::<LOG>::reduce(log, rng.next_u32())).collect::<Vec<_>>();
+    let a: [u32; N] = (0..n).map(|_| torus::reduce::<LOG>(log, rng.next_u32())).collect::<Vec<_>>();
     let mut b = binfhe_poly_mul_neg::<N, LOG>(n, log, &a, &sk.key);
     for i in 0.. n{
-    b[i] = torus::<LOG>::reduce(log, b[i].wrapping_add(sampler::<LOG, ETA, R>::sample_error(log, eta, rng)).wrapping_add(msg[i]));
+    b[i] = torus::reduce::<LOG>(log, b[i].wrapping_add(sampler::sample_error::<LOG, ETA, R>(log, eta, rng)).wrapping_add(msg[i]));
 };
     BinfheRlweCiphertextDyn { a: a, b: b, n: 0 }
 }
@@ -9011,7 +9011,7 @@ pub fn binfhe_rlwe_phase(mut n: usize, mut log: usize, mut ct: &BinfheRlweCipher
     let product = binfhe_poly_mul_neg::<N, LOG>(n, log, &ct.a, &sk.key);
     let mut phase = [(0 as u32); n];
     for i in 0.. n{
-    phase[i] = torus::<LOG>::torus_sub(log, ct.b[i], product[i]);
+    phase[i] = torus::torus_sub::<LOG>(log, ct.b[i], product[i]);
 };
     phase
 }
@@ -9021,7 +9021,7 @@ pub fn binfhe_sample_extract(mut n: usize, mut log: usize, mut ct: &BinfheRlweCi
     let mut a_lwe = [(0 as u32); n];
     a_lwe[0] = ct.a[0];
     for i in 1.. n{
-    a_lwe[i] = torus::<LOG>::torus_neg(log, ct.a[n - i]);
+    a_lwe[i] = torus::torus_neg::<LOG>(log, ct.a[n - i]);
 };
     BinfheLweCiphertextDyn { a: a_lwe, b: ct.b[0], n: 0 }
 }
@@ -9030,8 +9030,8 @@ pub fn binfhe_rlwe_add(mut n: usize, mut log: usize, mut x: &BinfheRlweCiphertex
 {
     let mut out = *x;
     for i in 0.. n{
-    out.a[i] = torus::<LOG>::torus_add(log, out.a[i], y.a[i]);
-    out.b[i] = torus::<LOG>::torus_add(log, out.b[i], y.b[i]);
+    out.a[i] = torus::torus_add::<LOG>(log, out.a[i], y.a[i]);
+    out.b[i] = torus::torus_add::<LOG>(log, out.b[i], y.b[i]);
 };
     out
 }
@@ -9040,8 +9040,8 @@ pub fn binfhe_rlwe_sub(mut n: usize, mut log: usize, mut x: &BinfheRlweCiphertex
 {
     let mut out = *x;
     for i in 0.. n{
-    out.a[i] = torus::<LOG>::torus_sub(log, out.a[i], y.a[i]);
-    out.b[i] = torus::<LOG>::torus_sub(log, out.b[i], y.b[i]);
+    out.a[i] = torus::torus_sub::<LOG>(log, out.a[i], y.a[i]);
+    out.b[i] = torus::torus_sub::<LOG>(log, out.b[i], y.b[i]);
 };
     out
 }
@@ -9073,7 +9073,7 @@ pub fn cbd<R: SpecRng>(mut eta: usize, mut rng: &mut R) -> i32
 
 pub fn sample_error<R: SpecRng>(mut log: usize, mut eta: usize, mut rng: &mut R) -> u32
 {
-    super::torus::<LOG>::reduce(log, (cbd::<ETA, R>(eta, rng) as u32))
+    super::torus::reduce::<LOG>(log, (cbd::<ETA, R>(eta, rng) as u32))
 }
 
 pub fn mask(mut log: usize) -> u32
@@ -13391,7 +13391,7 @@ pub fn bit_to_g128(mut b: bool) -> Galois128
 
 pub fn stack_uses_lwe_base(mut n: usize, mut l: usize) -> bool
 {
-    core::mem::<<LweBaseOt<N> as BaseOt<L>>::SetupMsg>::size_of() > 0
+    core::mem::size_of::<<LweBaseOt<N> as BaseOt<L>>::SetupMsg>() > 0
 }
 
 pub fn sample_bytes<R: SpecRng>(mut l: usize, mut rng: &mut R) -> [u8; L]
