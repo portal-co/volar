@@ -14,6 +14,8 @@ use crate::ir::*;
 use core::fmt::Write;
 
 #[cfg(feature = "std")]
+use std::boxed::Box;
+#[cfg(feature = "std")]
 use std::collections::BTreeSet;
 #[cfg(feature = "std")]
 use std::format;
@@ -22,6 +24,8 @@ use std::string::{String, ToString};
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeSet;
 #[cfg(not(feature = "std"))]
@@ -70,6 +74,12 @@ fn is_len_bound(k: &TraitKind) -> bool {
 struct LeanCx {
     /// Type-param name → Nat variable name (e.g. "N" → "n").
     len_params: Vec<(String, String)>,
+    /// Exact-arithmetic mode (mxx-derived modules): map `u64`/`u128` to
+    /// `Nat` so all arithmetic is exact and casts between machine int types
+    /// are identities. Only sound where the source never wraps; the mxx
+    /// lowerer enforces tower moduli < 2^63, so every u128 intermediate is
+    /// < 2^126 and Rust's wrapping semantics coincide with Nat.
+    exact_nat: bool,
     /// Type param O → (base len var, divisor), from `N: Div<Uk, Output=O>`.
     div_projections: Vec<(String, String, usize)>,
     /// A Digest-bound type param is present: functions take a `hash` param.
@@ -85,6 +95,17 @@ struct LeanCx {
     cur_indent: usize,
     /// Variables known to hold Bool (for Rust `^`/`&` → Lean `!=`/`&&`).
     bool_vars: Vec<String>,
+    /// Length-param names that may appear in expression position (repeat
+    /// lengths, loop bounds) and print as their Nat variable. Const
+    /// generics always qualify (they could not print at all before);
+    /// typenum-style params qualify only in exact mode, preserving the
+    /// garble subset's output byte for byte.
+    expr_len_vars: Vec<String>,
+    /// Function name → its implicit Nat length parameters (Lean names), for
+    /// exact-mode call sites: over `List` (length-erased) types, implicit
+    /// length params are not synthesizable, so call sites pass them by
+    /// name (`(n := n)`).
+    fn_len_params: Vec<(String, Vec<String>)>,
 }
 
 impl LeanCx {
@@ -101,15 +122,36 @@ impl LeanCx {
     }
 }
 
-fn cx_for(generics: &[IrGenericParam], where_clause: &[IrWherePredicate]) -> LeanCx {
-    let mut cx = LeanCx::default();
+fn cx_for_ex(
+    generics: &[IrGenericParam],
+    where_clause: &[IrWherePredicate],
+    exact_nat: bool,
+) -> LeanCx {
+    let mut cx = LeanCx { exact_nat, ..Default::default() };
     for p in generics {
         if p.bounds.iter().any(|b| is_len_bound(&b.trait_kind)) {
             cx.len_params.push((p.name.clone(), p.name.to_lowercase()));
         }
+        // `const N: usize` parameters are Nat length variables in native
+        // Lean, same as typenum-style length params — and they may appear
+        // in expression position (`[0; N]`, `for i in 0..N`).
+        if p.kind == IrGenericParamKind::Const
+            && matches!(&p.const_ty, None | Some(IrType::Primitive(PrimitiveType::Usize)))
+        {
+            cx.len_params.push((p.name.clone(), p.name.to_lowercase()));
+            cx.expr_len_vars.push(p.name.clone());
+        }
         if p.bounds.iter().any(|b| b.trait_kind == TraitKind::Digest || b.trait_kind.to_string() == "Digest") {
             cx.digest = true;
             cx.digest_ty = Some(p.name.clone());
+        }
+    }
+    if exact_nat {
+        // exact mode: every length param may appear in expression position
+        for (p, _) in cx.len_params.clone() {
+            if !cx.expr_len_vars.contains(&p) {
+                cx.expr_len_vars.push(p);
+            }
         }
     }
     for pred in where_clause {
@@ -168,7 +210,13 @@ fn ty_lean(ty: &IrType, cx: &LeanCx) -> Result<String> {
             PrimitiveType::Bool => "Bool".into(),
             PrimitiveType::U8 => "UInt8".into(),
             PrimitiveType::U32 => "UInt32".into(),
-            PrimitiveType::U64 => "UInt64".into(),
+            PrimitiveType::U64 => {
+                if cx.exact_nat {
+                    "Nat".into() // exact mode: u64 is unbounded-exact
+                } else {
+                    "UInt64".into()
+                }
+            }
             PrimitiveType::Usize => "Nat".into(),
             PrimitiveType::I64 => "Int".into(),
             PrimitiveType::I128 => "Int".into(),
@@ -285,6 +333,14 @@ fn expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
         IrExprKind::Var(v) => {
             if cx.fin_vars.contains(v) {
                 w!(out, "{}.val", ident(v))
+            } else if cx.expr_len_vars.contains(v) {
+                if let Some(le) = cx.len_expr(v) {
+                    // a const-generic length name in expression position
+                    // (repeat lengths, loop bounds) is the Nat variable
+                    w!(out, "{le}")
+                } else {
+                    w!(out, "{}", ident(v))
+                }
             } else {
                 w!(out, "{}", ident(v))
             }
@@ -407,12 +463,38 @@ fn expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
                 }
                 return Ok(());
             }
-            expr_lean(base, cx, out)?;
+            // Lean's `]![` does not chain off an `Index` base: parenthesize
+            // it. (Bare variables and field projections chain fine.)
+            if matches!(&base.kind, IrExprKind::Index { .. }) {
+                w!(out, "(");
+                expr_lean(base, cx, out)?;
+                w!(out, ")");
+            } else {
+                expr_lean(base, cx, out)?;
+            }
             w!(out, "[");
             expr_lean(index, cx, out)?;
             w!(out, "]!")
         }
         IrExprKind::Cast { expr, ty } => {
+            // exact-arithmetic mode: machine-int targets are all Nat/Int,
+            // so casts are identities.
+            if cx.exact_nat
+                && matches!(
+                    &**ty,
+                    IrType::Primitive(
+                        PrimitiveType::U64
+                            | PrimitiveType::U128
+                            | PrimitiveType::Usize
+                            | PrimitiveType::I64
+                            | PrimitiveType::I128
+                    )
+                )
+            {
+                w!(out, "(");
+                expr_lean(expr, cx, out)?;
+                return Ok(w!(out, ")"));
+            }
             // v1: `as usize` from UInt8-ish → .toNat; `as u64` from
             // usize/Nat → UInt64.ofNat. Extend as the subset grows.
             match &**ty {
@@ -438,6 +520,69 @@ fn expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
         IrExprKind::Call { func, args } => {
             w!(out, "(");
             expr_lean(func, cx, out)?;
+            // exact mode: helper length params are implicit `{n : Nat}` but
+            // not synthesizable from length-erased List arguments, so call
+            // sites pass them by name. Turbofish const args (TypeParam
+            // numerals / length names) map positionally onto the callee's
+            // length params; calls without turbofish forward the caller's
+            // same-named length variables.
+            if cx.exact_nat {
+                // Bare calls parse as `Var`, qualified calls as `Path`.
+                let (callee, type_args): (String, &[IrType]) = match &func.kind {
+                    IrExprKind::Var(v) => (v.clone(), &[]),
+                    IrExprKind::Path { segments, type_args } => {
+                        (segments.last().cloned().unwrap_or_default(), type_args)
+                    }
+                    _ => (String::new(), &[]),
+                };
+                {
+                    let type_args = type_args;
+                    if let Some(params) = cx
+                        .fn_len_params
+                        .iter()
+                        .find(|(n, _)| *n == callee)
+                        .map(|(_, p)| p.clone())
+                        .filter(|p| !p.is_empty())
+                    {
+                        if type_args.is_empty() {
+                            for p in &params {
+                                w!(out, " ({p} := {p})");
+                            }
+                        } else {
+                            if type_args.len() != params.len() {
+                                return Err(CompilerError::Unsupported(format!(
+                                    "call to {callee}: {} const args for {} length params",
+                                    type_args.len(),
+                                    params.len()
+                                )));
+                            }
+                            for (p, a) in params.iter().zip(type_args.iter()) {
+                                match a {
+                                    IrType::TypeParam(s)
+                                        if s.chars().all(|c| c.is_ascii_digit()) =>
+                                    {
+                                        w!(out, " ({p} := {s})")
+                                    }
+                                    IrType::TypeParam(s) => {
+                                        let le = cx.len_expr(s).ok_or_else(|| {
+                                            CompilerError::Unsupported(format!(
+                                                "call to {callee}: const arg {s} is not a length param"
+                                            ))
+                                        })?;
+                                        w!(out, " ({p} := {le})");
+                                    }
+                                    other => {
+                                        return Err(CompilerError::Unsupported(format!(
+                                            "call to {callee}: non-length const arg {:?}",
+                                            std::mem::discriminant(other)
+                                        )))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             for a in args {
                 w!(out, " ");
                 expr_lean(a, cx, out)?;
@@ -485,6 +630,10 @@ fn expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
             w!(out, "))")
         }
         IrExprKind::FixedArray(items) | IrExprKind::Array(items) => {
+            // Ascribe only leaf-literal lists (and empty lists); outer
+            // nesting levels are inferred from the elements.
+            let leaf = items.is_empty()
+                || items.iter().all(|it| matches!(it.kind, IrExprKind::Lit(_)));
             w!(out, "([");
             for (i, it) in items.iter().enumerate() {
                 if i > 0 {
@@ -492,7 +641,11 @@ fn expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
                 }
                 expr_lean(it, cx, out)?;
             }
-            w!(out, "] : List UInt8)")
+            if leaf {
+                w!(out, "] : List {})", if cx.exact_nat { "Nat" } else { "UInt8" })
+            } else {
+                w!(out, "])")
+            }
         }
         IrExprKind::StructExpr { fields, rest, .. } => {
             if rest.is_some() {
@@ -556,6 +709,47 @@ fn expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
             }
             w!(out, ")");
             return Ok(());
+        }
+        IrExprKind::IterPipeline(chain)
+            if chain.steps.is_empty()
+                && matches!(&chain.source, IterChainSource::Range { .. })
+                && matches!(&chain.terminal, IterTerminal::Fold { .. }) =>
+        {
+            // `(start..end).fold(init, |acc, i| body)`
+            //   → `(List.range' start (end - start)).foldl (fun acc i => body) init`
+            let IterChainSource::Range { start, end, inclusive } = &chain.source else {
+                unreachable!()
+            };
+            let IterTerminal::Fold { init, acc_var, elem_var, body } = &chain.terminal else {
+                unreachable!()
+            };
+            w!(out, "((List.range' (");
+            expr_lean(start, cx, out)?;
+            w!(out, ") ((");
+            expr_lean(end, cx, out)?;
+            w!(out, ") - (");
+            expr_lean(start, cx, out)?;
+            if *inclusive {
+                w!(out, ") + 1");
+            } else {
+                w!(out, ")");
+            }
+            w!(out, ")).foldl (fun ");
+            pattern_lean(acc_var, out);
+            w!(out, " ");
+            pattern_lean(elem_var, out);
+            w!(out, " => ");
+            expr_lean(body, cx, out)?;
+            w!(out, ") (");
+            expr_lean(init, cx, out)?;
+            w!(out, "))")
+        }
+        IrExprKind::Repeat { elem, len } => {
+            w!(out, "(List.replicate (");
+            expr_lean(len, cx, out)?;
+            w!(out, ") (");
+            expr_lean(elem, cx, out)?;
+            w!(out, "))")
         }
         IrExprKind::DefaultValue { ty } => {
             if let Some(box_ir) = ty.as_ref() {
@@ -970,6 +1164,80 @@ fn pattern_lean(p: &IrPattern, out: &mut String) {
     }
 }
 
+/// Flatten a nested index lvalue `v[i0][i1]...[ik]` into its base variable
+/// and the index chain (outermost first).
+fn collect_index_chain(e: &IrExpr) -> Result<(String, Vec<IrExpr>)> {
+    let mut chain = Vec::new();
+    let mut cur = e;
+    loop {
+        match &cur.kind {
+            IrExprKind::Index { base, index } => {
+                chain.push((**index).clone());
+                cur = base;
+            }
+            IrExprKind::Var(v) => {
+                chain.reverse();
+                return Ok((v.clone(), chain));
+            }
+            _ => {
+                return Err(CompilerError::Unsupported(
+                    "index assign through a non-variable base".into(),
+                ))
+            }
+        }
+    }
+}
+
+/// Emit the nested `List.set` spine for `v[i0][i1]...[ik] := rhs`:
+/// `v.set i0 ((v[i0]!).set i1 (...))`. The leaf rhs prints bare — the
+/// enclosing level's parentheses are the wrap, matching the historical
+/// single-level output byte for byte.
+fn emit_set_chain(
+    var: &str,
+    chain: &[IrExpr],
+    rhs: &IrExpr,
+    cx: &LeanCx,
+    out: &mut String,
+) -> Result<()> {
+    // read prefix for depth d: v, v[i0]!, v[i0]![i1]!, ...
+    fn read_prefix(
+        var: &str,
+        chain: &[IrExpr],
+        depth: usize,
+        cx: &LeanCx,
+        out: &mut String,
+    ) -> Result<()> {
+        w!(out, "{}", ident(var));
+        for idx in &chain[..depth] {
+            w!(out, "[");
+            expr_lean(idx, cx, out)?;
+            w!(out, "]!");
+        }
+        Ok(())
+    }
+    fn rec(
+        var: &str,
+        chain: &[IrExpr],
+        depth: usize,
+        rhs: &IrExpr,
+        cx: &LeanCx,
+        out: &mut String,
+    ) -> Result<()> {
+        if depth == chain.len() {
+            expr_lean(rhs, cx, out)
+        } else {
+            read_prefix(var, chain, depth, cx, out)?;
+            w!(out, ".set ");
+            expr_lean(&chain[depth], cx, out)?;
+            w!(out, " (");
+            rec(var, chain, depth + 1, rhs, cx, out)?;
+            w!(out, ")");
+            Ok(())
+        }
+    }
+    rec(var, chain, 0, rhs, cx, out)
+}
+
 /// Statement-position expressions (assign, return, loops).
 fn stmt_expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
     match &e.kind {
@@ -979,16 +1247,10 @@ fn stmt_expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
                     w!(out, "{} := ", ident(v));
                     expr_lean(right, cx, out)
                 }
-                IrExprKind::Index { base, index } => {
-                    let IrExprKind::Var(v) = &base.kind else {
-                        return Err(CompilerError::Unsupported("nested index assign".into()));
-                    };
-                    w!(out, "{} := {}.set ", ident(v), ident(v));
-                    expr_lean(index, cx, out)?;
-                    w!(out, " (");
-                    expr_lean(right, cx, out)?;
-                    w!(out, ")");
-                    Ok(())
+                IrExprKind::Index { .. } => {
+                    let (v, chain) = collect_index_chain(left)?;
+                    w!(out, "{} := ", ident(&v));
+                    emit_set_chain(&v, &chain, right, cx, out)
                 }
                 _ => Err(CompilerError::Unsupported("non-var assignment".into())),
             }
@@ -999,18 +1261,35 @@ fn stmt_expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
                     w!(out, "{} := {} {} ", ident(v), ident(v), binop_lean(op));
                     expr_lean(right, cx, out)
                 }
-                IrExprKind::Index { base, index } => {
-                    let IrExprKind::Var(v) = &base.kind else {
-                        return Err(CompilerError::Unsupported("nested index assign-op".into()));
+                IrExprKind::Index { .. } => {
+                    let (v, chain) = collect_index_chain(left)?;
+                    // rhs' := (v[i0]!..[ik]! <op> rhs), as typed IR.
+                    let mut read_expr = IrExpr {
+                        kind: IrExprKind::Var(v.clone()),
+                        prov: (),
+                        side: None,
                     };
-                    w!(out, "{} := {}.set ", ident(v), ident(v));
-                    expr_lean(index, cx, out)?;
-                    w!(out, " ({}[", ident(v));
-                    expr_lean(index, cx, out)?;
-                    w!(out, "]! {} ", binop_lean(op));
-                    expr_lean(right, cx, out)?;
-                    w!(out, ")");
-                    Ok(())
+                    for idx in &chain {
+                        read_expr = IrExpr {
+                            kind: IrExprKind::Index {
+                                base: Box::new(read_expr),
+                                index: Box::new((*idx).clone()),
+                            },
+                            prov: (),
+                            side: None,
+                        };
+                    }
+                    let combined = IrExpr {
+                        kind: IrExprKind::Binary {
+                            op: *op,
+                            left: Box::new(read_expr),
+                            right: Box::new((**right).clone()),
+                        },
+                        prov: (),
+                        side: None,
+                    };
+                    w!(out, "{} := ", ident(&v));
+                    emit_set_chain(&v, &chain, &combined, cx, out)
                 }
                 _ => Err(CompilerError::Unsupported("non-var assign-op".into())),
             }
@@ -1019,6 +1298,32 @@ fn stmt_expr_lean(e: &IrExpr, cx: &LeanCx, out: &mut String) -> Result<()> {
             w!(out, "return ");
             if let Some(e) = e {
                 expr_lean(e, cx, out)?;
+            }
+            Ok(())
+        }
+        IrExprKind::If { cond, then_branch, else_branch }
+            if !then_branch.stmts.is_empty()
+                || matches!(else_branch.as_deref().map(|e| &e.kind), Some(IrExprKind::Block(b)) if !b.stmts.is_empty()) =>
+        {
+            // Statement-position `if` with block bodies (do mode). Mirrors
+            // the tail-expression If layout in block_lean_mode.
+            let pad = "  ".repeat(cx.cur_indent);
+            w!(out, "if ");
+            expr_lean(cond, cx, out)?;
+            wln!(out, " then");
+            let mut cx2 = cx.clone();
+            cx2.cur_indent += 1;
+            block_lean_mode(then_branch, &cx2, out, true)?;
+            if let Some(else_b) = else_branch {
+                wln!(out, "{pad}else");
+                match &else_b.kind {
+                    IrExprKind::Block(eb) => block_lean_mode(eb, &cx2, out, true)?,
+                    _ => {
+                        w!(out, "{pad}  ");
+                        expr_lean(else_b, &cx2, out)?;
+                        wln!(out, "");
+                    }
+                }
             }
             Ok(())
         }
@@ -1131,8 +1436,30 @@ fn fn_lean_inner(
     Ok(())
 }
 
+/// Options for the native Lean printer.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct LeanPrintOptions {
+    /// Exact-arithmetic mode for mxx-derived modules: `u64`/`u128` map to
+    /// `Nat`, casts between machine-int types are identities, and
+    /// const-generic names may appear in expression position. Only sound
+    /// when the source never wraps machine integers (the mxx lowerer
+    /// enforces tower moduli < 2^63, so every `u128` intermediate is
+    /// < 2^126).
+    pub exact_nat: bool,
+}
+
 /// Print the selected items of a parsed module as one native Lean module.
 pub fn print_module_lean(module: &IrModule<IrFunction>, only: &BTreeSet<String>) -> Result<String> {
+    print_module_lean_with(module, only, LeanPrintOptions::default())
+}
+
+/// Print the selected items of a parsed module as one native Lean module,
+/// with explicit options.
+pub fn print_module_lean_with(
+    module: &IrModule<IrFunction>,
+    only: &BTreeSet<String>,
+    opts: LeanPrintOptions,
+) -> Result<String> {
     let mut module = module.clone();
     crate::printer_ts::deshadow_module(&mut module);
     let module = &module;
@@ -1164,6 +1491,17 @@ pub fn print_module_lean(module: &IrModule<IrFunction>, only: &BTreeSet<String>)
     wln!(out, "  (List.range 8).map (fun i => ((x >>> (8 * i.toUInt64)) &&& 0xff).toUInt8)");
     wln!(out, "");
 
+    // Function name → implicit Nat length params (exact-mode call sites
+    // pass these by name; see LeanCx::fn_len_params).
+    let fn_len_params: Vec<(String, Vec<String>)> = module
+        .functions
+        .iter()
+        .map(|f| {
+            let fcx = cx_for_ex(&f.generics, &f.where_clause, opts.exact_nat);
+            (f.name.clone(), fcx.len_params.iter().map(|(_, v)| v.clone()).collect())
+        })
+        .collect();
+
     let mut digest_methods: Vec<String> = Vec::new();
     for imp in &module.impls {
         for item in &imp.items {
@@ -1185,7 +1523,8 @@ pub fn print_module_lean(module: &IrModule<IrFunction>, only: &BTreeSet<String>)
         if !only.contains(&name) {
             continue;
         }
-        let cx = cx_for(&s.generics, &[]);
+        let mut cx = cx_for_ex(&s.generics, &[], opts.exact_nat);
+        cx.fn_len_params = fn_len_params.clone();
         w!(out, "structure {}", ident(&name));
         for (_, v) in &cx.len_params {
             if cx.div_projections.iter().any(|(q, _, _)| q == v) {
@@ -1202,12 +1541,24 @@ pub fn print_module_lean(module: &IrModule<IrFunction>, only: &BTreeSet<String>)
         wln!(out, "");
     }
 
+    for c in &module.consts {
+        if !only.contains(&c.name) {
+            continue;
+        }
+        let mut cx = cx_for_ex(&[], &[], opts.exact_nat);
+        cx.fn_len_params = fn_len_params.clone();
+        w!(out, "def {} : {} := ", ident(&c.name), ty_lean(&c.ty, &cx)?);
+        expr_lean(&c.value, &cx, &mut out)?;
+        wln!(out, "\n");
+    }
+
     for f in &module.functions {
         if !only.contains(&f.name) {
             continue;
         }
-        let mut cx = cx_for(&f.generics, &f.where_clause);
+        let mut cx = cx_for_ex(&f.generics, &f.where_clause, opts.exact_nat);
         cx.digest_methods = digest_methods.clone();
+        cx.fn_len_params = fn_len_params.clone();
         fn_lean(f, &cx, &mut out, None, &[])?;
         wln!(out, "");
     }
@@ -1251,8 +1602,9 @@ pub fn print_module_lean(module: &IrModule<IrFunction>, only: &BTreeSet<String>)
                     all_g.extend(m.generics.clone());
                     let mut all_w = imp.where_clause.clone();
                     all_w.extend(m.where_clause.clone());
-                    let mut mcx = cx_for(&all_g, &all_w);
+                    let mut mcx = cx_for_ex(&all_g, &all_w, opts.exact_nat);
                     mcx.digest_methods = digest_methods.clone();
+                    mcx.fn_len_params = fn_len_params.clone();
                     let mut st = ident(&name);
                     for (p, v) in &mcx.len_params {
                         if mcx.div_projections.iter().any(|(q, _, _)| q == p) {

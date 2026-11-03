@@ -1934,7 +1934,6 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 index_var,
                 body,
             } => {
-                // Static form: Array::<ElemTy, Len>::from_fn(|index_var| body)
                 debug_assert!(
                     index_var
                         .chars()
@@ -1942,17 +1941,29 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     "ArrayGenerate index_var is not a valid ident: {:?}",
                     index_var
                 );
-                write!(f, "Array::<")?;
-                match elem_ty {
-                    Some(ty) => TypeWriter { ty }.fmt(f)?,
-                    None => write!(f, "_")?,
+                if elem_ty.is_none() {
+                    // No turbofish at the source: `core::array::from_fn`
+                    // over a plain `[T; N]` (the parser only records
+                    // elem_ty for turbofish'd hybrid `Array`/`GenericArray`
+                    // forms). Emit the plain-array constructor so the output
+                    // type-checks without hybrid_array in scope.
+                    write!(f, "core::array::from_fn(|{}| ", index_var)?;
+                    self.sub(body).fmt(f)?;
+                    write!(f, ")")?;
+                } else {
+                    // Static form: Array::<ElemTy, Len>::from_fn(|index_var| body)
+                    write!(f, "Array::<")?;
+                    TypeWriter {
+                        ty: elem_ty.as_ref().unwrap(),
+                    }
+                    .fmt(f)?;
+                    write!(f, ", ")?;
+                    let len_ty = array_length_as_static_type(len);
+                    TypeWriter { ty: &len_ty }.fmt(f)?;
+                    write!(f, ">::from_fn(|{}| ", index_var)?;
+                    self.sub(body).fmt(f)?;
+                    write!(f, ")")?;
                 }
-                write!(f, ", ")?;
-                let len_ty = array_length_as_static_type(len);
-                TypeWriter { ty: &len_ty }.fmt(f)?;
-                write!(f, ">::from_fn(|{}| ", index_var)?;
-                self.sub(body).fmt(f)?;
-                write!(f, ")")?;
             }
             IrExprKind::Unary { op, expr } => match op {
                 SpecUnaryOp::Neg => {

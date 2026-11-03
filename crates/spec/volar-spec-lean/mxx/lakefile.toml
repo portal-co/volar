@@ -1,0 +1,20 @@
+# Local verification package for the mxx transport artifacts (Phase 2 of
+# docs/mxx-cutover-plan.md). Builds each element's generated Stage (mxx's
+# own relation export), Native (volar printer_lean exact-Nat output), and
+# Transport (generated refinement proofs) against mxx's handwritten Lean
+# packages.
+#
+# NOTE: the mxx-ir-core require is a LOCAL-DEVELOPMENT path to a sibling
+# checkout of https://github.com/MachinaIO/mxx at the pinned rev
+# (11004eeb438aa13c57f3c5ec387b1eaa85bb2007). voof will consume the checked-in
+# artifacts with its own pinned-sources wiring; volar CI does not run lake.
+name = "volar-spec-mxx"
+defaultTargets = ["VolarSpecMxx"]
+
+[[require]]
+name = "mxx-ir-core"
+path = "../../../../../mxx/crates/ir-core/lean"
+
+[[lean_lib]]
+name = "VolarSpecMxx"
+roots = ["lwe"]

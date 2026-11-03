@@ -5,3 +5,6 @@ node_modules
 target
 # npm build output (zshy) — publish artifacts, built on demand via `npm run build`
 packages/*/dist
+
+# Lean/Lake build artifacts (volar-spec-lean/mxx verification package)
+.lake

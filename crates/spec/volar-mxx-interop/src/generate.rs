@@ -21,6 +21,7 @@
 use crate::lower::{HelperMode, LowerOptions, lower_validated_to_module};
 use crate::InteropError;
 use crate::programs::ElementSpec;
+use crate::transport;
 
 /// The mxx revision all elements are generated from (kept in sync with the
 /// `mxx-ir-core`/`mxx-dsl` git pins in this crate's `Cargo.toml`).
@@ -44,6 +45,66 @@ fn banner(what: &str) -> String {
 /// and `check-specs` fails on drift.
 pub fn generate_rt_source() -> String {
     format!("{}{}", banner("ring arithmetic runtime helpers"), crate::rt::MXX_RT_SOURCE)
+}
+
+/// The three Lean artifacts of one element (Phase 2): the mxx scope
+/// relation, the native spec-IR function, and the generated transport proof.
+pub struct ElementLean {
+    /// mxx's relational export (`mxx_ir_core::lean`).
+    pub stage: String,
+    /// The spec's native Lean backend output (exact-Nat mode).
+    pub native: String,
+    /// The generated refinement proofs (or a loud NOT-BRIDGED inventory).
+    pub transport: String,
+}
+
+/// Generate all three Lean artifacts for one element.
+pub fn generate_element_lean(element: &ElementSpec) -> Result<ElementLean, InteropError> {
+    let (built, validated) = (element.build)()?;
+
+    // mxx side: the scope relation for the frozen graph.
+    let stage_ns = format!("Stage_mxx_{}", element.element);
+    let artifact = mxx_ir_core::lean::export(
+        &validated,
+        &mxx_ir_core::lean::ExportOptions {
+            module_name: stage_ns.clone(),
+            namespace: stage_ns,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| InteropError::Expr(format!("mxx lean export: {e}")))?;
+
+    // Native side: the lowered module through the spec's Lean backend in
+    // exact-Nat mode (self-contained: helpers inlined).
+    let module = lower_validated_to_module(
+        &built.graph,
+        &validated,
+        &LowerOptions {
+            function_name: element.function.to_string(),
+            helpers: HelperMode::Inline,
+            module_name: format!("mxx_{}", element.element),
+        },
+    )?;
+    let names: std::collections::BTreeSet<String> = module
+        .functions
+        .iter()
+        .map(|f| f.name.clone())
+        .chain(module.consts.iter().map(|c| c.name.clone()))
+        .collect();
+    let native = volar_compiler::printer_lean::print_module_lean_with(
+        &module,
+        &names,
+        volar_compiler::printer_lean::LeanPrintOptions { exact_nat: true },
+    )
+    .map_err(|e| InteropError::Expr(format!("native lean print: {e}")))?;
+
+    let transport = transport::generate_transport(element, &built.graph, &validated, &module);
+
+    Ok(ElementLean {
+        stage: artifact.source,
+        native,
+        transport,
+    })
 }
 
 /// Generate one element's `volar-spec` source file.

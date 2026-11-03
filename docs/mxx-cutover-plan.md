@@ -1,7 +1,21 @@
 # mxx cutover plan: spec autogeneration, transport proofs, and the voof proof chain
 
-Status: active — Phase 0 (M0) landed (`6817355`), Phase 1 first element
-(M1, `lwe`) landed. Phases 2–3 ahead; Phase 3 gated on mxx#175.
+Status: active — Phase 0 (M0, `6817355`), Phase 1 (M1, `lwe` element,
+`0e442f9`), and Phase 2 v1 (transport proofs for `lwe`) landed. Phase 3
+gated on mxx#175.
+
+Phase 2 as landed: `cargo xtask gen-specs` emits, per element, into
+`crates/spec/volar-spec-lean/mxx/<element>/`: `Stage.lean` (mxx's own
+relational export of the frozen graph), `Native.lean` (`printer_lean`
+exact-Nat mode), and `Transport.lean` (generated refinement proofs). The
+verification package `crates/spec/volar-spec-lean/mxx/` (lakefile with a
+local-path require on a sibling mxx checkout) builds `lwe.Transport`
+**with zero `sorry`s**: `mxx_lwe_sample_refines` proves the native spec
+function's output is accepted by mxx's stage relation. Transport v1
+recognized shape (everything else lands in a `-- NOT-BRIDGED` inventory):
+ring dimension 1, single CRT tower, `mat_add`/`mat_mul` only, mat_mul
+inner dimension ≤ 3, single matrix output, deterministic graph. voof-side
+package wiring is a follow-up.
 Upstream tracking: [MachinaIO/mxx#175 — feat: generate security
 statements](https://github.com/MachinaIO/mxx/issues/175)
 
@@ -287,7 +301,7 @@ drift apart without CI failing):
 | --- | --- | --- |
 | M0 | Volar-interop compiler round-trips one mxx program to a compiling, tested spec element | **Landed** (`6817355`): DSL program → validate → lower → print → reparse round-trip → rustc compile → run vs naive reference |
 | M1 | First clearly-equivalent element (`lwe.rs` core) generated from mxx, old tests pass unchanged | **Landed**: `mxx_lwe` generated + cross-test vs generic `LweSample` (deterministic shared vectors); full `volar-spec` suite green |
-| M2 | Transport-proof generator emits native↔mxx refinement for M1's element; voof `volar-spec-mxx-bridge` builds | `lake build` green in voof CI; zero `sorry` |
+| M2 | Transport-proof generator emits native↔mxx refinement for M1's element; voof `volar-spec-mxx-bridge` builds | **Landed (volar side)**: generated Transport.lean builds sorry-free in `volar-spec-lean/mxx` (lake, mathlib v4.28.0 via mxx's pin). voof package wiring remains open |
 | M3 | All Phase-1 candidate elements moved | per-element evidence records |
 | M4 | **(pre-#175 deadline)** interop compiler + transport pipeline ready for security-statement consumption | M0–M2 complete |
 | M5 | mxx TFHE ported as generated spec element; legacy toy `tfhe.rs` retired | TFHE main-use-case test; ledger updated |

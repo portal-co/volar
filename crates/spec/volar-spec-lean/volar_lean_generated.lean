@@ -69,7 +69,7 @@ def and_via_table {n : Nat} (self : Eval n) (other : (Eval n)) (table : (GarbleT
     d := DigestSt.update d (other.target)
     return (DigestSt.finalize d hash)
   )
-  return { target := (List.ofFn (fun (i : Fin n) => (hash[i.val]! ^^^ table.table[index]![i.val]!))) }
+  return { target := (List.ofFn (fun (i : Fin n) => (hash[i.val]! ^^^ (table.table[index]!)[i.val]!))) }
 
 end Eval
 
@@ -87,7 +87,7 @@ def and_result {n : Nat} (self : Garble n) (b : (Garble n)) (hash : List UInt8 â
 
 def action_result_base {n : Nat} (self : Garble n) (args : List ((Garble n))) (bit : Nat) (hash : List UInt8 â†’ List UInt8) : Garble n := Id.run do
   let mut d := DigestSt.new
-  let domain_separator := ([((172) : UInt8)] : List UInt8)
+  let domain_separator := ([((172) : UInt8)])
   d := DigestSt.update d (domain_separator)
   d := DigestSt.update d (self.base)
   let mut d_1 := (absorb_args_bases d args)
@@ -115,7 +115,7 @@ namespace GlobalSecret
 
 def new {n : Nat} (secret : List UInt8) : GlobalSecret n := Id.run do
   let mut secret := secret
-  secret := secret.set (0) (secret[(0)]! ||| (1))
+  secret := secret.set (0) ((secret[(0)]! ||| ((1) : UInt8)))
   return { secret := secret }
 
 def secret_m {n : Nat} (self : GlobalSecret n) : List UInt8 := 

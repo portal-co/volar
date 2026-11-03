@@ -40,6 +40,7 @@ pub mod generate;
 pub mod lower;
 pub mod programs;
 pub mod rt;
+pub mod transport;
 
 pub use error::InteropError;
 pub use lower::{HelperMode, LowerOptions, lower_validated_to_module};

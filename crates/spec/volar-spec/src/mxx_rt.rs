@@ -26,68 +26,52 @@
 //! `moduli[t]`. This is the reference ("exact") semantics — schoolbook
 //! convolution, no NTT — matching mxx's Lean `Mxx.Primitives.ExactMatrix`
 //! model per tower.
+//!
+//! # Closed-form discipline
+//!
+//! Every helper is a nest of `core::array::from_fn` / range-`fold`
+//! expressions with no mutation: the Lean transport (Phase 2 of
+//! `docs/mxx-cutover-plan.md`) prints these as `List.ofFn` / `List.foldl`
+//! closed forms, which are pointwise-provable, unlike mutable loop nests.
 
 /// `c[i] = (a[i] + b[i]) mod q`, for canonical `a[i], b[i] < q`.
 pub fn poly_add<const N: usize>(a: [u64; N], b: [u64; N], q: u64) -> [u64; N] {
-    let mut out = [0u64; N];
-    for i in 0..N {
-        out[i] = ((a[i] as u128 + b[i] as u128) % q as u128) as u64;
-    }
-    out
+    core::array::from_fn(|i| ((a[i] as u128 + b[i] as u128) % q as u128) as u64)
 }
 
 /// `c[i] = (a[i] - b[i]) mod q`, for canonical `a[i], b[i] < q`.
 pub fn poly_sub<const N: usize>(a: [u64; N], b: [u64; N], q: u64) -> [u64; N] {
-    let mut out = [0u64; N];
-    for i in 0..N {
-        out[i] = ((a[i] as u128 + q as u128 - b[i] as u128) % q as u128) as u64;
-    }
-    out
+    core::array::from_fn(|i| ((a[i] as u128 + q as u128 - b[i] as u128) % q as u128) as u64)
 }
 
 /// `c[i] = (-a[i]) mod q`.
 pub fn poly_neg<const N: usize>(a: [u64; N], q: u64) -> [u64; N] {
-    let mut out = [0u64; N];
-    for i in 0..N {
-        out[i] = ((q as u128 - a[i] as u128) % q as u128) as u64;
-    }
-    out
+    core::array::from_fn(|i| ((q as u128 - a[i] as u128) % q as u128) as u64)
 }
 
 /// `c[i] = (a[i] * s) mod q`.
 pub fn poly_scale<const N: usize>(a: [u64; N], s: u64, q: u64) -> [u64; N] {
-    let mut out = [0u64; N];
-    for i in 0..N {
-        out[i] = ((a[i] as u128 * s as u128) % q as u128) as u64;
-    }
-    out
+    core::array::from_fn(|i| ((a[i] as u128 * s as u128) % q as u128) as u64)
 }
 
 /// Negacyclic convolution `c = a * b` in `Z_q[X]/(X^N + 1)`, schoolbook.
 ///
-/// Every product term is reduced mod `q` before accumulation, so no
-/// intermediate exceeds `2q`; tower moduli up to 63 bits are exact in
-/// `u128` term arithmetic.
+/// `c[k] = sum_{i <= k} a[i] b[k - i] - sum_{i > k} a[i] b[k + N - i]`,
+/// all mod `q`: the `i + j >= N` wraparound terms subtract because
+/// `X^N = -1`. Every product term is reduced mod `q` before accumulation,
+/// so no intermediate exceeds `2q`; tower moduli up to 63 bits are exact
+/// in `u128` term arithmetic.
 pub fn poly_mul<const N: usize>(a: [u64; N], b: [u64; N], q: u64) -> [u64; N] {
-    let q128 = q as u128;
-    let mut acc = [0u128; N];
-    for i in 0..N {
-        for j in 0..N {
-            let t = (a[i] as u128 * b[j] as u128) % q128;
-            let k = i + j;
-            if k < N {
-                acc[k] = (acc[k] + t) % q128;
+    core::array::from_fn(|k| {
+        ((0..N).fold(0u128, |acc, i| {
+            if i <= k {
+                (acc + (a[i] as u128 * b[k - i] as u128) % (q as u128)) % (q as u128)
             } else {
-                // X^N = -1: wrapped terms subtract.
-                acc[k - N] = (acc[k - N] + q128 - t) % q128;
+                (acc + (q as u128) - (a[i] as u128 * b[k + N - i] as u128) % (q as u128))
+                    % (q as u128)
             }
-        }
-    }
-    let mut out = [0u64; N];
-    for i in 0..N {
-        out[i] = acc[i] as u64;
-    }
-    out
+        }) % (q as u128)) as u64
+    })
 }
 
 /// Coefficientwise matrix add: `out[i][j] = a[i][j] + b[i][j]` per tower.
@@ -96,15 +80,11 @@ pub fn mat_add<const R: usize, const C: usize, const N: usize, const D: usize>(
     b: [[[[u64; N]; D]; C]; R],
     moduli: [u64; D],
 ) -> [[[[u64; N]; D]; C]; R] {
-    let mut out = [[[[0u64; N]; D]; C]; R];
-    for i in 0..R {
-        for j in 0..C {
-            for t in 0..D {
-                out[i][j][t] = poly_add(a[i][j][t], b[i][j][t], moduli[t]);
-            }
-        }
-    }
-    out
+    core::array::from_fn(|i| {
+        core::array::from_fn(|j| {
+            core::array::from_fn(|t| poly_add(a[i][j][t], b[i][j][t], moduli[t]))
+        })
+    })
 }
 
 /// Coefficientwise matrix subtract.
@@ -113,15 +93,11 @@ pub fn mat_sub<const R: usize, const C: usize, const N: usize, const D: usize>(
     b: [[[[u64; N]; D]; C]; R],
     moduli: [u64; D],
 ) -> [[[[u64; N]; D]; C]; R] {
-    let mut out = [[[[0u64; N]; D]; C]; R];
-    for i in 0..R {
-        for j in 0..C {
-            for t in 0..D {
-                out[i][j][t] = poly_sub(a[i][j][t], b[i][j][t], moduli[t]);
-            }
-        }
-    }
-    out
+    core::array::from_fn(|i| {
+        core::array::from_fn(|j| {
+            core::array::from_fn(|t| poly_sub(a[i][j][t], b[i][j][t], moduli[t]))
+        })
+    })
 }
 
 /// Coefficientwise matrix negation.
@@ -129,15 +105,9 @@ pub fn mat_neg<const R: usize, const C: usize, const N: usize, const D: usize>(
     a: [[[[u64; N]; D]; C]; R],
     moduli: [u64; D],
 ) -> [[[[u64; N]; D]; C]; R] {
-    let mut out = [[[[0u64; N]; D]; C]; R];
-    for i in 0..R {
-        for j in 0..C {
-            for t in 0..D {
-                out[i][j][t] = poly_neg(a[i][j][t], moduli[t]);
-            }
-        }
-    }
-    out
+    core::array::from_fn(|i| {
+        core::array::from_fn(|j| core::array::from_fn(|t| poly_neg(a[i][j][t], moduli[t])))
+    })
 }
 
 /// Coefficientwise matrix scale by a per-tower scalar table.
@@ -146,15 +116,11 @@ pub fn mat_scale<const R: usize, const C: usize, const N: usize, const D: usize>
     s: [u64; D],
     moduli: [u64; D],
 ) -> [[[[u64; N]; D]; C]; R] {
-    let mut out = [[[[0u64; N]; D]; C]; R];
-    for i in 0..R {
-        for j in 0..C {
-            for t in 0..D {
-                out[i][j][t] = poly_scale(a[i][j][t], s[t], moduli[t]);
-            }
-        }
-    }
-    out
+    core::array::from_fn(|i| {
+        core::array::from_fn(|j| {
+            core::array::from_fn(|t| poly_scale(a[i][j][t], s[t], moduli[t]))
+        })
+    })
 }
 
 /// Ring matrix product: `out[i][j] = sum_k a[i][k] * b[k][j]` (negacyclic
@@ -164,40 +130,31 @@ pub fn mat_mul<const R: usize, const K: usize, const C: usize, const N: usize, c
     b: [[[[u64; N]; D]; C]; K],
     moduli: [u64; D],
 ) -> [[[[u64; N]; D]; C]; R] {
-    let mut out = [[[[0u64; N]; D]; C]; R];
-    for i in 0..R {
-        for j in 0..C {
-            for k in 0..K {
-                for t in 0..D {
-                    let term = poly_mul(a[i][k][t], b[k][j][t], moduli[t]);
-                    out[i][j][t] = poly_add(out[i][j][t], term, moduli[t]);
-                }
-            }
-        }
-    }
-    out
+    core::array::from_fn(|i| {
+        core::array::from_fn(|j| {
+            core::array::from_fn(|t| {
+                (0..K).fold([0u64; N], |acc, k| {
+                    poly_add(acc, poly_mul(a[i][k][t], b[k][j][t], moduli[t]), moduli[t])
+                })
+            })
+        })
+    })
 }
 
 /// Matrix transpose.
 pub fn mat_transpose<const R: usize, const C: usize, const N: usize, const D: usize>(
     a: [[[[u64; N]; D]; C]; R],
 ) -> [[[[u64; N]; D]; R]; C] {
-    let mut out = [[[[0u64; N]; D]; R]; C];
-    for i in 0..R {
-        for j in 0..C {
-            out[j][i] = a[i][j];
-        }
-    }
-    out
+    core::array::from_fn(|j| core::array::from_fn(|i| a[i][j]))
 }
 
 /// The `R x R` identity matrix: constant polynomial 1 on the diagonal.
 pub fn mat_identity<const R: usize, const N: usize, const D: usize>() -> [[[[u64; N]; D]; R]; R] {
-    let mut out = [[[[0u64; N]; D]; R]; R];
-    for i in 0..R {
-        for t in 0..D {
-            out[i][i][t][0] = 1u64;
-        }
-    }
-    out
+    core::array::from_fn(|i| {
+        core::array::from_fn(|j| {
+            core::array::from_fn(|t| {
+                core::array::from_fn(|k| if i == j && k == 0 { 1u64 } else { 0u64 })
+            })
+        })
+    })
 }
