@@ -197,6 +197,8 @@ enum MethodPattern {
         /// the update operands, in order: (root, field) for `&x.f` args
         updates: Vec<(String, String)>,
     },
+    /// `self.f.clone()` returned bare — e.g. `GlobalSecret.secret`.
+    CloneField { field: String },
     /// `let index = (if s.f[0]&1==1 {1} else {0}) | (if o.g[0]&1==1 {2} else {0});`
     /// `let hash = { let mut d = D::new(); d.update(&x.f); …; d.finalize() };`
     /// `Ret { rf: from_fn(|i| hash[i] ^ t.table[index][i]) }` — e.g.
@@ -573,6 +575,18 @@ fn classify(f: &IrFunction) -> Option<MethodPattern> {
     } else {
         return None;
     };
+    // `self.f.clone()` — the CloneField pattern
+    if let IrExprKind::MethodCall { receiver, method, args, .. } = &e.kind {
+        if matches!(method, crate::ir::MethodKind::Known(crate::ir::StdMethod::Clone))
+            && args.is_empty()
+        {
+            if let IrExprKind::Field { base, field } = &receiver.kind {
+                if matches!(&base.kind, IrExprKind::Var(v) if v == "self") {
+                    return Some(MethodPattern::CloneField { field: field.clone() });
+                }
+            }
+        }
+    }
     match &e.kind {
         IrExprKind::StructExpr { kind, fields, rest, .. } => {
             let _ret = kind_name_of(kind)?;
@@ -1139,6 +1153,34 @@ fn emit_digest_ctor(
     w!(out, "    rw [List.getD_eq_getElem?_getD]\n");
     w!(out, "    rw [List.getElem?_map, List.getElem?_eq_getElem hb]\n");
     w!(out, "    simp\n");
+    Ok(None)
+}
+
+/// Emit the commutation for a clone-of-field method (`self.f.clone()`) —
+/// e.g. `GlobalSecret.secret`. Uses the curated `array_u8_clone_eq` (voof
+/// VolarSpecGarble.Verification.ProofObligations).
+fn emit_clone_field(
+    out: &mut String,
+    amod: &AeneasModule,
+    module: &IrModule<IrFunction>,
+    imp: &IrImpl,
+    fields: &[String],
+    f: &IrFunction,
+    field: &str,
+) -> Result<Option<String>> {
+    let self_ty = struct_name_of_impl(imp)?;
+    let a_self = amod.path(module, &self_ty);
+    let a_method = aeneas_method(amod, module, &self_ty, &f.name, fields);
+    let n_method = native_method(&f.name, fields);
+    w!(out, "\n/-- (generated) `{a_method}` commutes with the transport (clone is the\n    identity on U8 shim arrays). -/\n");
+    w!(out, "theorem {self_ty}_{}_commutes {{N : Type}} (d : vole.VoleArray N Std.U8)\n", f.name);
+    w!(out, "    (m : Std.Usize) (self : {a_self} N) :\n");
+    w!(out, "    (do let r ← {a_method} d self\n");
+    w!(out, "        ok (arrToNative r)) =\n");
+    w!(out, "    ok ({self_ty}.{n_method} ({self_ty}ToNative m.val self)) := by\n");
+    w!(out, "  simp only [{a_method}]\n");
+    w!(out, "  rw [array_u8_clone_eq d self.{field}]\n");
+    w!(out, "  rfl\n");
     Ok(None)
 }
 
@@ -1729,6 +1771,9 @@ pub fn print_module_lean_bridge(
                         &mut out, &amod, module, imp, fields, f, &ret, &rfield, &tests, &updates,
                         &table,
                     )?
+                }
+                Some(MethodPattern::CloneField { field }) => {
+                    emit_clone_field(&mut out, &amod, module, imp, fields, f, &field)?
                 }
                 None => Some("body pattern".to_string()),
             };

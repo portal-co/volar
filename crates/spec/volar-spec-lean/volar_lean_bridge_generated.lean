@@ -410,6 +410,17 @@ theorem Eval_and_via_table_commutes {N : Type} {D : Type}
     simp only [Option.map_some, Option.getD_some]
     simp [xorBytes, hbr, hbrow, u8ToUInt8_xor]
 
+/-- (generated) `volar_spec.garble.GlobalSecret.impl.secret` commutes with the transport (clone is the
+    identity on U8 shim arrays). -/
+theorem GlobalSecret_secret_commutes {N : Type} (d : vole.VoleArray N Std.U8)
+    (m : Std.Usize) (self : volar_spec.garble.GlobalSecret N) :
+    (do let r ← volar_spec.garble.GlobalSecret.impl.secret d self
+        ok (arrToNative r)) =
+    ok (GlobalSecret.secret_m (GlobalSecretToNative m.val self)) := by
+  simp only [volar_spec.garble.GlobalSecret.impl.secret]
+  rw [array_u8_clone_eq d self.secret]
+  rfl
+
 /-- (generated) closure spec: the extracted `volar_spec.garble.GlobalSecret.encode.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` is the
     conditional pointwise xor. -/
 theorem GlobalSecret_encode_closure_spec {N : Type} (d : vole.VoleArray N Std.U8)
@@ -626,7 +637,6 @@ theorem Eval_bitxor_commutes {N : Type} (d : vole.VoleArray N Std.U8)
 --   - method Garble.to_share (body pattern)
 --   - method Eval.to_share (body pattern)
 --   - method GlobalSecret.new (body pattern)
---   - method GlobalSecret.secret (body pattern)
 --   - method GlobalSecret.one_wire_eval (body pattern)
 --   - method GlobalSecret.gen_and_table (body pattern)
 --   - method GlobalSecret.gen_and_table_pol (body pattern)
