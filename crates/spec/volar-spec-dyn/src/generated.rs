@@ -7347,6 +7347,220 @@ impl  WarpCode<K, N> for WarpRepetitionCode {
     }
 }
 
+pub const GF8_POLY: u8 = 27;
+
+pub const GF64_POLY: u64 = 27;
+
+pub const GF128_POLY: u128 = 135;
+
+pub const GF256_POLY: U256 = U256([1061, 0, 0, 0]);
+
+pub const BLOCK_LEN: usize = BLOCK;
+
+pub const ASCON_HASH256_IV: [u64; 5] = [11177464323724596865, 5459383224871899602, 12566513473065105434, 4359436768738168243, 1899470422303676269];
+
+pub const ASCON_XOF128_IV: [u64; 5] = [15745374255817443307, 14734905824818166121, 16667980376626976305, 1072114354614917324, 16164673763700313054];
+
+pub const ASCON_RC: [u64; 12] = [240, 225, 210, 195, 180, 165, 150, 135, 120, 105, 90, 75];
+
+pub const ASCON_128A_IV: u64 = 9259414062373011456;
+
+pub const MAGIC: &[u8; 4] = b"VBP1";
+
+pub const VERSION: u8 = 1;
+
+pub const MAX_ITEMS: usize = (1 << 20);
+
+pub const MAX_PAYLOAD: usize = 4;
+
+pub const BLAKE2S_BLOCK: usize = 64;
+
+pub const BLAKE2S_OUT: usize = 32;
+
+pub const BLAKE2S_IV: [u32; 8] = [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225];
+
+pub const BLAKE2S_SIGMA: [usize; 160] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3, 11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4, 7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8, 9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13, 2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9, 12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11, 13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10, 6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5, 10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0];
+
+pub const CIRrus_DEFAULT_HASH: CirrusHashBackend = CirrusHashBackend::Blake2s;
+
+pub const SPEC_HASH_SOURCES_DIGEST: [u8; 32] = [189, 135, 23, 134, 108, 248, 95, 76, 53, 231, 139, 133, 61, 87, 41, 93, 33, 0, 157, 124, 23, 253, 232, 133, 4, 231, 73, 217, 42, 180, 173, 194];
+
+pub const P_LIMBS: [u64; 4] = [18446744073709551597, 18446744073709551615, 18446744073709551615, 9223372036854775807];
+
+pub const D_LIMBS: [u64; 4] = [8496970652267935907, 31536524315187371, 10144147576115030168, 5909686906226998899];
+
+pub const D2_LIMBS: [u64; 4] = [16993941304535871833, 63073048630374742, 1841551078520508720, 2596001775599221991];
+
+pub const D: Fe25519 = fe_const(D_LIMBS);
+
+pub const D2: Fe25519 = fe_const(D2_LIMBS);
+
+pub const BASE_X_LIMBS: [u64; 4] = [14507833142362363162, 7578651490590762930, 13881468655802702940, 2407515759118799870];
+
+pub const BASE_Y_LIMBS: [u64; 4] = [7378697629483820632, 7378697629483820646, 7378697629483820646, 7378697629483820646];
+
+pub const L_LIMBS: [u64; 4] = [6346243789798364141, 1503914060200516822, 0, 1152921504606846976];
+
+pub const SBOX: [u8; 256] = [99, 124, 119, 123, 242, 107, 111, 197, 48, 1, 103, 43, 254, 215, 171, 118, 202, 130, 201, 125, 250, 89, 71, 240, 173, 212, 162, 175, 156, 164, 114, 192, 183, 253, 147, 38, 54, 63, 247, 204, 52, 165, 229, 241, 113, 216, 49, 21, 4, 199, 35, 195, 24, 150, 5, 154, 7, 18, 128, 226, 235, 39, 178, 117, 9, 131, 44, 26, 27, 110, 90, 160, 82, 59, 214, 179, 41, 227, 47, 132, 83, 209, 0, 237, 32, 252, 177, 91, 106, 203, 190, 57, 74, 76, 88, 207, 208, 239, 170, 251, 67, 77, 51, 133, 69, 249, 2, 127, 80, 60, 159, 168, 81, 163, 64, 143, 146, 157, 56, 245, 188, 182, 218, 33, 16, 255, 243, 210, 205, 12, 19, 236, 95, 151, 68, 23, 196, 167, 126, 61, 100, 93, 25, 115, 96, 129, 79, 220, 34, 42, 144, 136, 70, 238, 184, 20, 222, 94, 11, 219, 224, 50, 58, 10, 73, 6, 36, 92, 194, 211, 172, 98, 145, 149, 228, 121, 231, 200, 55, 109, 141, 213, 78, 169, 108, 86, 244, 234, 101, 122, 174, 8, 186, 120, 37, 46, 28, 166, 180, 198, 232, 221, 116, 31, 75, 189, 139, 138, 112, 62, 181, 102, 72, 3, 246, 14, 97, 53, 87, 185, 134, 193, 29, 158, 225, 248, 152, 17, 105, 217, 142, 148, 155, 30, 135, 233, 206, 85, 40, 223, 140, 161, 137, 13, 191, 230, 66, 104, 65, 153, 45, 15, 176, 84, 187, 22];
+
+pub const RCON: [u8; 11] = [0, 1, 2, 4, 8, 16, 32, 64, 128, 27, 54];
+
+pub const NR: usize = 10;
+
+pub const BLOCK: usize = 16;
+
+pub const NK_ROUND_KEYS: usize = (NR + 1);
+
+pub const GF8_AES_POLY: u8 = 27;
+
+pub const LAMBDA_BYTES: usize = 16;
+
+pub const LAMBDA_BYTES: usize = 16;
+
+pub const LAMBDA_BYTES: usize = 16;
+
+pub const TAU: usize = 4;
+
+pub const SUB_VOLE_N: usize = 8;
+
+pub const SUB_VOLE_K: usize = 3;
+
+pub const L_HAT_BYTES: usize = 16;
+
+pub const W_GRIND: u32 = 4;
+
+pub const COM_BYTES: usize = 32;
+
+pub const AND_VARS: usize = 7;
+
+pub const AND_CONS: usize = 3;
+
+pub const K_A: usize = 0;
+
+pub const K_B: usize = 1;
+
+pub const K_C: usize = 2;
+
+pub const DELTA: usize = 3;
+
+pub const V_HAT: usize = 4;
+
+pub const P1: usize = 5;
+
+pub const P2: usize = 6;
+
+pub const U: usize = 7;
+
+pub const SHAKE128_RATE: usize = 168;
+
+pub const SHA3_256_RATE: usize = 136;
+
+pub const KECCAK_RNDC: [u64; 24] = [1, 32898, 9223372036854808714, 9223372039002292224, 32907, 2147483649, 9223372039002292353, 9223372036854808585, 138, 136, 2147516425, 2147483658, 2147516555, 9223372036854775947, 9223372036854808713, 9223372036854808579, 9223372036854808578, 9223372036854775936, 32778, 9223372039002259466, 9223372039002292353, 9223372036854808704, 2147483649, 9223372039002292232];
+
+pub const KECCAK_ROTC: [u32; 24] = [1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14, 27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44];
+
+pub const KECCAK_PILN: [usize; 24] = [10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1];
+
+pub const LOCALITY: usize = 10;
+
+pub const TAU: usize = 3;
+
+pub const FERRET_REG_TOY: FerretParams = FerretParams { n: 256, k: 32, t: 4 };
+
+pub const FERRET_REG_SETUP: FerretParams = FerretParams { n: 609728, k: 36288, t: 1269 };
+
+pub const FERRET_REG_MAIN: FerretParams = FerretParams { n: 10805248, k: 589760, t: 1319 };
+
+pub const FERRET_UNI_TOY: FerretParams = FerretParams { n: 256, k: 32, t: 4 };
+
+pub const FERRET_UNI_SETUP: FerretParams = FerretParams { n: 616092, k: 37248, t: 1254 };
+
+pub const FERRET_UNI_MAIN: FerretParams = FerretParams { n: 10616092, k: 588160, t: 1324 };
+
+pub const KAPPA_BITS: usize = 128;
+
+pub const KAPPA_BYTES: usize = 16;
+
+pub const TOY_P: u64 = 2147483647;
+
+pub const TOY_G: u64 = 7;
+
+pub const IKNP_KAPPA: usize = 128;
+
+pub const IKNP_KAPPA_BYTES: usize = (IKNP_KAPPA / 8);
+
+pub const LWE_N: usize = 16;
+
+pub const LWE_Q_BITS: u32 = 16;
+
+pub const LWE_Q: u32 = ((1 as u32) << LWE_Q_BITS);
+
+pub const LWE_Q_MASK: u32 = (LWE_Q - 1);
+
+pub const LWE_NOISE_BOUND: u32 = 1;
+
+pub const TAG_DOMAIN: &[u8] = b"softspoken-cot-tag-v1";
+
+pub const STACK_SEED_BYTES: usize = IKNP_KAPPA_BYTES;
+
+pub const TAG_DELTA: u8 = 1;
+
+pub const TAG_LWE_SETUP: u8 = 2;
+
+pub const TAG_LWE_RECV: u8 = 3;
+
+pub const TAG_LWE_PAYLOAD: u8 = 4;
+
+pub const TAG_IKNP_U: u8 = 5;
+
+pub const TAG_IKNP_CORR: u8 = 6;
+
+pub const TAG_SSP_S: u8 = 7;
+
+pub const TAG_SSP_R: u8 = 8;
+
+pub const TAG_FERRET_OPEN: u8 = 9;
+
+pub const TAG_FERRET_MPCOT: u8 = 10;
+
+pub const TAG_BEA95: u8 = 11;
+
+pub const TAG_HAT: u8 = 12;
+
+pub const TAG_FERRET_CHECK_MASK: u8 = 13;
+
+pub const TAG_FERRET_CHECK_HV: u8 = 14;
+
+pub const Q4: u32 = (1 << 30);
+
+pub const FALSE: u64 = 0;
+
+pub const MAGIC: &[u8; 8] = b"VTLBL001";
+
+pub const VERSION: u16 = 1;
+
+pub const HEADER_BYTES: usize = (((((((8 + 2) + 1) + 32) + 32) + 32) + 8) + 4);
+
+pub const SECURITY_BITS: usize = 128;
+
+pub const PAPER_PROFILE: PaperProfile = PaperProfile { security_bits: SECURITY_BITS, ring_degree: 4096, modulus_bits: 109, batch_messages: 699050 };
+
+pub const REFERENCE_PLAINTEXT_MODULUS: u64 = 1125899906826241;
+
+pub const REFERENCE_DELTA: u64 = 576460752303415297;
+
+pub const SMALL_NOISE_STANDARD_DEVIATION: u64 = 4;
+
+pub const SMALL_NOISE_MAX_DEVIATION: u64 = 512;
+
+pub const LARGE_NOISE_STANDARD_DEVIATION: u64 = 1000;
+
+pub const LARGE_NOISE_MAX_DEVIATION: u64 = 128000;
+
+pub const REFERENCE_PARAMETERS: Parameters = Parameters { degree: 4096, width: 512, plaintext_modulus: REFERENCE_PLAINTEXT_MODULUS, delta: REFERENCE_DELTA, gadget_base: (1 << 28), gadget_digits: 4 };
+
+pub const WARP_TRANSCRIPT_DOMAIN: [u8; 51] = *b"volar-iop/warp/eprint-2025-753/construction-10.4/v1";
+
 pub fn gf_mul_u8(mut a: u8, mut b: u8, mut c: u8) -> u8
 {
     let mut p: u8 = 0;
@@ -11237,7 +11451,7 @@ pub fn or_proof_challenge<G: ScalarOps, D: Digest>(mut s: &<G as _>::Element, mu
 {
     let g = G::generator();
     let mut h = D::new();
-    h.update(b"[118, 111, 108, 97, 114, 45, 99, 104, 111, 117, 45, 111, 114, 108, 97, 110, 100, 105, 45, 111, 114, 45, 112, 114, 111, 111, 102, 45, 118, 49]");
+    h.update(b"volar-chou-orlandi-or-proof-v1");
     G::<D>::write_element(&g, &mut h);
     G::<D>::write_element(s, &mut h);
     G::<D>::write_element(r, &mut h);
@@ -11566,7 +11780,7 @@ pub fn column_rows_for_valid_k(mut seed: &[u8; 16], mut k: usize, mut j: usize) 
     let mut counter = 0 as u32;
     while (fill < LOCALITY){
     let mut h = Sha3_256::new();
-    h.update(b"[102, 101, 114, 114, 101, 116, 45, 108, 112, 110, 45, 49, 48, 108, 111, 99, 97, 108, 45, 118, 49]");
+    h.update(b"ferret-lpn-10local-v1");
     h.update(seed);
     h.update((j as u64).to_le_bytes());
     h.update(counter.to_le_bytes());
@@ -11820,7 +12034,7 @@ pub fn cuckoo_table_size(mut t: usize) -> usize
 pub fn hash_i(mut seed: &[u8; 16], mut i: usize, mut x: usize, mut m: usize) -> usize
 {
     let mut h = Sha3_256::new();
-    h.update(b"[102, 101, 114, 114, 101, 116, 45, 99, 117, 99, 107, 111, 111, 45, 104, 45, 118, 49]");
+    h.update(b"ferret-cuckoo-h-v1");
     h.update(seed);
     h.update((i as u64).to_le_bytes());
     h.update((x as u64).to_le_bytes());
@@ -12119,7 +12333,7 @@ pub fn refill<R: SpecRng>(mut rng: &mut R, mut sender: &mut CotPoolSender, mut r
     let Some(next_refill_count) = sender.refill_count.checked_add(1) else {
     return false;
 };
-    let mut transcript = b"[118, 111, 108, 97, 114, 45, 102, 101, 114, 114, 101, 116, 45, 112, 111, 111, 108, 45, 114, 101, 102, 105, 108, 108, 45, 118, 49]".to_vec();
+    let mut transcript = b"volar-ferret-pool-refill-v1".to_vec();
     transcript.extend_from_slice(&sender.refill_count.to_le_bytes());
     let (out, check) = ferret_extend_malicious(rng, params, &sender.seed, &receiver.seed, &transcript);
     if !check{
@@ -12200,7 +12414,7 @@ pub fn g_double(mut seed: Block) -> (Block, Block)
 pub fn crhf(mut input: &Block, mut tweak: u64) -> Block
 {
     let mut h = Sha3_256::new();
-    h.update(b"[102, 101, 114, 114, 101, 116, 45, 115, 112, 99, 111, 116, 45, 104, 45, 118, 49]");
+    h.update(b"ferret-spcot-h-v1");
     h.update(input);
     h.update(tweak.to_le_bytes());
     let out = h.finalize().to_vec();
@@ -12212,7 +12426,7 @@ pub fn crhf(mut input: &Block, mut tweak: u64) -> Block
 pub fn hash_prime(mut v: &Block) -> [u8; 32]
 {
     let mut h = Sha3_256::new();
-    h.update(b"[102, 101, 114, 114, 101, 116, 45, 115, 112, 99, 111, 116, 45, 104, 112, 45, 118, 49]");
+    h.update(b"ferret-spcot-hp-v1");
     h.update(v);
     let out = h.finalize().to_vec();
     let mut b = [(0 as u8); 32];
@@ -12384,7 +12598,7 @@ pub fn spcot_in_process<R: SpecRng>(mut rng: &mut R, mut delta: &Block, mut n: u
 pub fn spcot_fs_chis(mut n: usize, mut transcript: &[u8]) -> Vec<Block>
 {
     let mut h = Sha3_256::new();
-    h.update(b"[102, 101, 114, 114, 101, 116, 45, 115, 112, 99, 111, 116, 45, 102, 115, 45, 118, 49]");
+    h.update(b"ferret-spcot-fs-v1");
     h.update(transcript);
     let seed = h.finalize().to_vec();
     let mut chi = [(0 as u8); KAPPA_BYTES];
@@ -14990,7 +15204,7 @@ pub fn warp_is_instance_satisfied(mut m: usize, mut terms: usize, mut deg: usize
 
 pub fn warp_absorb_index(mut m: usize, mut terms: usize, mut deg: usize, mut pesat: &WarpIndexDyn, mut transcript: &mut WarpTranscript)
 {
-    transcript.absorb_array(&(0..u5).map(|i| b"[105, 110, 100, 101, 120]"[i]).collect::<Vec<u8>>().n, &(0..u5).map(|i| b"[105, 110, 100, 101, 120]"[i]).collect::<Vec<u8>>());
+    transcript.absorb_array(&(0..u5).map(|i| b"index"[i]).collect::<Vec<u8>>().n, &(0..u5).map(|i| b"index"[i]).collect::<Vec<u8>>());
     transcript.absorb_usize(m);
     transcript.absorb_usize(pesat.public_len);
     transcript.absorb_usize(pesat.witness_len);
@@ -15054,7 +15268,7 @@ pub fn warp_inv(mut a: Galois128) -> Galois128
 
 pub fn warp_absorb_instance(mut logn: usize, mut beta: usize, mut transcript: &mut WarpTranscript, mut instance: &WarpAccInstanceDyn)
 {
-    transcript.absorb_array(&(0..u12).map(|i| b"[97, 99, 99, 45, 105, 110, 115, 116, 97, 110, 99, 101]"[i]).collect::<Vec<u8>>().n, &(0..u12).map(|i| b"[97, 99, 99, 45, 105, 110, 115, 116, 97, 110, 99, 101]"[i]).collect::<Vec<u8>>());
+    transcript.absorb_array(&(0..u12).map(|i| b"acc-instance"[i]).collect::<Vec<u8>>().n, &(0..u12).map(|i| b"acc-instance"[i]).collect::<Vec<u8>>());
     transcript.absorb_len_prefixed(&instance.root.n, &instance.root);
     transcript.absorb_fields(&instance.alpha.n, &instance.alpha);
     transcript.absorb_field(instance.mu);
@@ -15069,7 +15283,7 @@ pub fn warp_transcript_for<M, TERMS, DEG, X, FRESH, A, LOGN, BETA>(mut m: usize,
     warp_absorb_index(m, terms, deg, index, &mut transcript);
     transcript.absorb_usize(fresh);
     for i in 0.. fresh{
-    transcript.absorb_array(&(0..u12).map(|i| b"[102, 114, 101, 115, 104, 45, 112, 117, 98, 108, 105, 99]"[i]).collect::<Vec<u8>>().n, &(0..u12).map(|i| b"[102, 114, 101, 115, 104, 45, 112, 117, 98, 108, 105, 99]"[i]).collect::<Vec<u8>>());
+    transcript.absorb_array(&(0..u12).map(|i| b"fresh-public"[i]).collect::<Vec<u8>>().n, &(0..u12).map(|i| b"fresh-public"[i]).collect::<Vec<u8>>());
     transcript.absorb_fields(&fresh_publics[i].n, &fresh_publics[i]);
 };
     transcript.absorb_usize(a);

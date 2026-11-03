@@ -1266,7 +1266,6 @@ dependencies = [
 [[package]]
 name = "lazy-repo"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/lazy-repo.git#8c80b2d8e89891168f7f7c01a2d04164e0b5fafe"
 dependencies = [
  "rkyv",
  "sha2 0.10.9",
@@ -1451,6 +1450,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "mxx-dsl"
+version = "0.1.0"
+source = "git+https://github.com/MachinaIO/mxx?rev=11004eeb438aa13c57f3c5ec387b1eaa85bb2007#11004eeb438aa13c57f3c5ec387b1eaa85bb2007"
+dependencies = [
+ "mxx-ir-core",
+ "num-bigint",
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "mxx-ir-core"
+version = "0.1.0"
+source = "git+https://github.com/MachinaIO/mxx?rev=11004eeb438aa13c57f3c5ec387b1eaa85bb2007#11004eeb438aa13c57f3c5ec387b1eaa85bb2007"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "never-say-never"
 version = "6.6.666"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1475,6 +1499,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
+ "rand 0.8.8",
+ "serde",
 ]
 
 [[package]]
@@ -1698,7 +1734,6 @@ dependencies = [
 [[package]]
 name = "portal-pc-waffle-entity"
 version = "0.6.0-alpha.1"
-source = "git+https://github.com/portal-co/waffle-#2441c583f88f03608e0ad7a24d787be61050d6e1"
 dependencies = [
  "arena-traits",
  "serde",
@@ -1707,7 +1742,6 @@ dependencies = [
 [[package]]
 name = "portal-pc-waffle-frontend"
 version = "0.6.0-alpha.1"
-source = "git+https://github.com/portal-co/waffle-#2441c583f88f03608e0ad7a24d787be61050d6e1"
 dependencies = [
  "anyhow",
  "hashbrown 0.15.5",
@@ -1722,7 +1756,6 @@ dependencies = [
 [[package]]
 name = "portal-pc-waffle-ir"
 version = "0.6.0-alpha.1"
-source = "git+https://github.com/portal-co/waffle-#2441c583f88f03608e0ad7a24d787be61050d6e1"
 dependencies = [
  "anyhow",
  "arena-traits",
@@ -2255,7 +2288,6 @@ dependencies = [
 [[package]]
 name = "rv-asm"
 version = "0.2.1"
-source = "git+https://github.com/portal-co/rv-utils.git#aed26b49f86507347ec1e4e2bca1e424faa12aaf"
 
 [[package]]
 name = "sec1"
@@ -2755,6 +2787,10 @@ name = "volar-channel"
 version = "0.1.0"
 
 [[package]]
+name = "volar-circuit-exec-core"
+version = "0.1.0"
+
+[[package]]
 name = "volar-circuit-source"
 version = "0.1.0"
 dependencies = [
@@ -3045,7 +3081,6 @@ dependencies = [
 [[package]]
 name = "volar-llvm-constchain"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/llvm-bridge.git#993a729d3769cceb81781cfcfa0ece56edc01bce"
 dependencies = [
  "inkwell",
 ]
@@ -3053,9 +3088,9 @@ dependencies = [
 [[package]]
 name = "volar-llvm-import-core"
 version = "0.1.0"
-source = "git+https://github.com/portal-co/llvm-bridge.git#993a729d3769cceb81781cfcfa0ece56edc01bce"
 dependencies = [
  "inkwell",
+ "volar-circuit-exec-core",
 ]
 
 [[package]]
@@ -3106,6 +3141,17 @@ dependencies = [
  "volar-ir",
  "volar-ir-common",
  "volar-spec",
+]
+
+[[package]]
+name = "volar-mxx-interop"
+version = "0.0.1"
+dependencies = [
+ "mxx-dsl",
+ "mxx-ir-core",
+ "num-bigint",
+ "thiserror 2.0.20",
+ "volar-compiler",
 ]
 
 [[package]]
@@ -4069,11 +4115,279 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "volar-circuit-interop"
+name = "portal-pc-waffle"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-waffle-backend"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-waffle-copying"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-waffle-copying-passes"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-waffle-fuzzing"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-waffle-hooking"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-waffle-lowering"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-waffle-passes"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-waffle-passes-shared"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-solutions-sdk"
+version = "0.0.2"
+
+[[patch.unused]]
+name = "pit-gen"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-ir-schema-gen"
+name = "pit-js-teavm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pit-lang-generic"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pit-packaging"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pit-packaging-contrib"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pit-rust-generic"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-aarch64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-arm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-riscv32"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-riscv64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-writer"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pit-patch"
+version = "0.5.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-jsc-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-cfg"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ll-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ssa"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-tac"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-util"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "lazy-repo-crypto"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "lazy-repo-std"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-jit-host-names"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "dreamcompiler-ffi-sig"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "thin-mcp"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "lazy-repo-crypto"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "lazy-repo-std"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-aarch64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-arch"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-cli"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-host"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-meta-gen"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-riscv"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-swap"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-target-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-target-js"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-target-wasm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-web"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "vane-wsdom"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-blitz-aarch64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-blitz-arm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-blitz-c"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-blitz-common"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-blitz-i686"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-blitz-js"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-blitz-opt"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-blitz-riscv32"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-blitz-x86-64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-llvm-jumpthread"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-llvm-pass-build"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-llvm-pass-support"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-jit-host-names"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-llvm-jumpthread"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-llvm-pass-build"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "volar-llvm-pass-support"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-pc-asm-common"
+version = "0.1.1"
+
+[[patch.unused]]
+name = "pit-core"
+version = "0.5.0-alpha.1"
+
+[[patch.unused]]
+name = "volar-wasm-circuit-import"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -4081,21 +4395,137 @@ name = "volar-lir-text"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-llvm-plugin-api"
+name = "dreamcompiler-log"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-noir-backend"
+name = "dreamcompiler-minibc"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-pod2-backend"
+name = "dreamcompiler-minibc-c-interp"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-ssa-lir-replay"
+name = "os-abi-codegen"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "volar-wasm-circuit-import"
+name = "os-abi-spec"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-abi-stubs"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-async"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-build"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-codesign-macho"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-ctx"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-daemon"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-daemon-hook"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-daemon-protocol"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-daemon-shim"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-darwin-wasi"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-host-api"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-interposer"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-jit-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-linux-wasi"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-net"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-page"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-page-codegen"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-rewrite-elf"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-rewrite-macho"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-shim-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-shim-handler"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-syscall-emit"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-target-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-target-native"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-target-wax"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-transform-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-unix-emulation"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-unix-wasi"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "os-win32-wasi"
 version = "0.1.0"

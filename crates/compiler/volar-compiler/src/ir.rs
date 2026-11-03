@@ -2028,8 +2028,34 @@ impl IrLit {
             Self::Float(f) => f.to_string(),
             Self::Bool(b) => b.to_string(),
             Self::Char(c) => format!("'{}'", c),
-            Self::Str(s) => format!("\"{}\"", s),
-            Self::ByteStr(bs) => format!("b\"{:?}\"", bs),
+            Self::Str(s) => {
+                let mut out = String::from("\"");
+                for c in s.chars() {
+                    match c {
+                        '"' => out.push_str("\\\""),
+                        '\\' => out.push_str("\\\\"),
+                        c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+                        c => out.push(c),
+                    }
+                }
+                out.push('"');
+                out
+            }
+            Self::ByteStr(bs) => {
+                // Emit a valid Rust byte-string literal: printable ASCII
+                // infix with `\"`/`\\` escaped, everything else as `\xNN`.
+                let mut s = String::from("b\"");
+                for b in bs {
+                    match b {
+                        b'"' => s.push_str("\\\""),
+                        b'\\' => s.push_str("\\\\"),
+                        0x20..=0x7e => s.push(*b as char),
+                        _ => s.push_str(&format!("\\x{b:02x}")),
+                    }
+                }
+                s.push('"');
+                s
+            }
             Self::Byte(b) => format!("b'{}'", b),
             Self::Unit => "()".to_string(),
         }

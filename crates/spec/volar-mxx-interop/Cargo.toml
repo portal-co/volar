@@ -1,0 +1,15 @@
+[package]
+name = "volar-mxx-interop"
+version = "0.0.1"
+edition = "2024"
+license.workspace = true
+description = "Volar-interop compiler: lowers validated frozen mxx graphs (MachinaIO/mxx) into volar-compiler spec IR. See docs/mxx-cutover-plan.md."
+
+[dependencies]
+volar-compiler = { git = "https://github.com/portal-co/volar.git", features = ["parsing", "std"] }
+mxx-ir-core = { git = "https://github.com/MachinaIO/mxx", rev = "11004eeb438aa13c57f3c5ec387b1eaa85bb2007" }
+num-bigint = "0.4"
+thiserror = "2"
+
+[dev-dependencies]
+mxx-dsl = { git = "https://github.com/MachinaIO/mxx", rev = "11004eeb438aa13c57f3c5ec387b1eaa85bb2007" }

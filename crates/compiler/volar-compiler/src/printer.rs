@@ -413,6 +413,12 @@ pub struct ImplWriter<'a> {
     pub ctx: Option<&'a RustCtx>,
 }
 
+/// Writer for a module-level `const` item (`IrConst`).
+pub struct ConstWriter<'a> {
+    pub c: &'a IrConst,
+    pub ctx: Option<&'a RustCtx>,
+}
+
 pub struct FunctionWriter<'a> {
     pub f: &'a IrFunction,
     pub level: usize,
@@ -634,6 +640,10 @@ impl<'a> RustBackend for ModuleWriter<'a> {
             ImplWriter { i, ctx }.fmt(f)?;
             writeln!(f)?;
         }
+        for c in &self.module.consts {
+            ConstWriter { c, ctx }.fmt(f)?;
+            writeln!(f)?;
+        }
         for func in &self.module.functions {
             FunctionWriter {
                 f: func,
@@ -645,6 +655,20 @@ impl<'a> RustBackend for ModuleWriter<'a> {
             writeln!(f)?;
         }
         Ok(())
+    }
+}
+
+impl RustBackend for ConstWriter<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "pub const {}: ", self.c.name)?;
+        TypeWriter { ty: &self.c.ty }.fmt(f)?;
+        write!(f, " = ")?;
+        ExprWriter {
+            expr: &self.c.value,
+            ctx: self.ctx,
+        }
+        .fmt(f)?;
+        writeln!(f, ";")
     }
 }
 

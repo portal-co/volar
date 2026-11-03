@@ -32,6 +32,7 @@ members = [
     "crates/tools/volar-ir-tester",
     "crates/helper/volar-log",
     "crates/examples/volar-riscv-e2e",
+    "crates/spec/volar-mxx-interop",
     "xtask",
 ]
 default-members = [
