@@ -202,6 +202,10 @@ enum MethodPattern {
     /// `p[0] |= 1; Self { f: p }` — mutate-index-zero-then-construct, e.g.
     /// `GlobalSecret.new`.
     MutateOrZeroCtor { field: String, param: String },
+    /// `Ret { rf: from_fn(|i| { let mut v = 0; for j in 0..8
+    ///   { let bit = self.f[i*8+j] & 1; v |= bit << j }; v }) }` — the
+    /// bit-pack shape (`to_share` ×2).
+    BitPackCtor { rfield: String, sfield: String },
     /// `let index = (if s.f[0]&1==1 {1} else {0}) | (if o.g[0]&1==1 {2} else {0});`
     /// `let hash = { let mut d = D::new(); d.update(&x.f); …; d.finalize() };`
     /// `Ret { rf: from_fn(|i| hash[i] ^ t.table[index][i]) }` — e.g.
@@ -584,9 +588,114 @@ fn as_mutate_or_zero_ctor(f: &IrFunction) -> Option<MethodPattern> {
     Some(MethodPattern::MutateOrZeroCtor { field: fields[0].0.clone(), param: pv.clone() })
 }
 
+/// `Ret { rf: from_fn(|i| { let mut v = 0; for j in 0..8 { let bit =
+/// self.f[i*8+j] & 1; v |= bit << j }; v }) }` — the bit-pack shape
+/// (`to_share` ×2).
+fn as_bitpack_ctor(f: &IrFunction) -> Option<MethodPattern> {
+    if !f.body.stmts.is_empty() {
+        return None;
+    }
+    let tail = f.body.expr.as_ref()?;
+    let IrExprKind::StructExpr { fields, rest: None, .. } = &tail.kind else { return None };
+    if fields.len() != 1 {
+        return None;
+    }
+    let IrExprKind::ArrayGenerate { elem_ty, index_var: iv, body, .. } = &fields[0].1.kind
+    else {
+        return None
+    };
+    if !matches!(elem_ty.as_deref(), Some(IrType::Primitive(PrimitiveType::U8))) {
+        return None;
+    }
+    let IrExprKind::Block(blk) = &body.kind else { return None };
+    if blk.stmts.len() != 2 {
+        return None;
+    }
+    // let mut v := 0
+    let crate::ir::IrStmtKind::Let { pattern, init: Some(init), .. } = &blk.stmts[0].kind else {
+        return None
+    };
+    let crate::ir::IrPattern::Ident { name: v, .. } = pattern else { return None };
+    if !matches!(&init.kind, IrExprKind::Lit(crate::ir::IrLit::Int(0))) {
+        return None;
+    }
+    // for j in 0..8 { let bit = self.f[i*8+j] & 1; v |= bit << j }
+    let crate::ir::IrStmtKind::Semi(loop_) = &blk.stmts[1].kind else { return None };
+    let IrExprKind::BoundedLoop { var: jv, start, end, inclusive: false, body: lbody } =
+        &loop_.kind
+    else {
+        return None
+    };
+    if !matches!(&start.kind, IrExprKind::Lit(crate::ir::IrLit::Int(0)))
+        || !matches!(&end.kind, IrExprKind::Lit(crate::ir::IrLit::Int(8)))
+    {
+        return None;
+    }
+    if lbody.stmts.len() != 2 || lbody.expr.is_some() {
+        return None;
+    }
+    let crate::ir::IrStmtKind::Let { pattern, init: Some(init), .. } = &lbody.stmts[0].kind else {
+        return None
+    };
+    let crate::ir::IrPattern::Ident { name: bit, .. } = pattern else { return None };
+    let IrExprKind::Binary { op: SpecBinOp::BitAnd, left: band_l, right: band_r } = &init.kind
+    else {
+        return None
+    };
+    if !matches!(&band_r.kind, IrExprKind::Lit(crate::ir::IrLit::Int(1))) {
+        return None;
+    }
+    let IrExprKind::Index { base: ibase, index: iidx } = &band_l.kind else { return None };
+    let IrExprKind::Field { base: fbase, field: sfield } = &ibase.kind else { return None };
+    if !matches!(&fbase.kind, IrExprKind::Var(s) if s == "self") {
+        return None;
+    }
+    // index: iv * 8 + jv
+    let IrExprKind::Binary { op: SpecBinOp::Add, left: mul, right: jv2 } = &iidx.kind else {
+        return None
+    };
+    if !matches!(&jv2.kind, IrExprKind::Var(s) if s == jv) {
+        return None;
+    }
+    let IrExprKind::Binary { op: SpecBinOp::Mul, left: iv2, right: eight } = &mul.kind else {
+        return None
+    };
+    if !matches!(&iv2.kind, IrExprKind::Var(s) if s == iv)
+        || !matches!(&eight.kind, IrExprKind::Lit(crate::ir::IrLit::Int(8)))
+    {
+        return None;
+    }
+    // v |= bit << j
+    let crate::ir::IrStmtKind::Semi(assign) = &lbody.stmts[1].kind else { return None };
+    let IrExprKind::AssignOp { op: SpecBinOp::BitOr, left: vl, right: shl } = &assign.kind
+    else {
+        return None
+    };
+    if !matches!(&vl.kind, IrExprKind::Var(s) if s == v) {
+        return None;
+    }
+    let IrExprKind::Binary { op: SpecBinOp::Shl, left: bit2, right: jv3 } = &shl.kind else {
+        return None
+    };
+    if !matches!(&bit2.kind, IrExprKind::Var(s) if s == bit)
+        || !matches!(&jv3.kind, IrExprKind::Var(s) if s == jv)
+    {
+        return None;
+    }
+    // block tail: the accumulator variable
+    match &blk.expr {
+        Some(e) if matches!(&e.kind, IrExprKind::Var(s) if s == v) => {}
+        _ => return None,
+    }
+    Some(MethodPattern::BitPackCtor { rfield: fields[0].0.clone(), sfield: sfield.clone() })
+}
+
 /// Classify a method body (a single tail expression, or a single
 /// `Semi(Return(expr))` statement).
 fn classify(f: &IrFunction) -> Option<MethodPattern> {
+    if let Some(p) = as_bitpack_ctor(f) {
+        return Some(p);
+    }
     if let Some(p) = as_mutate_or_zero_ctor(f) {
         return Some(p);
     }
@@ -1187,6 +1296,70 @@ fn emit_digest_ctor(
     w!(out, "    rw [List.getD_eq_getElem?_getD]\n");
     w!(out, "    rw [List.getElem?_map, List.getElem?_eq_getElem hb]\n");
     w!(out, "    simp\n");
+    Ok(None)
+}
+
+/// Emit the commutation for a bit-pack constructor (`to_share`'s
+/// `from_fn(|i| pack 8 bits)` shape). Uses the curated `<spec>` (per-struct,
+/// voof ProofObligations) and the native-side `to_share_inner_native` /
+/// `bitPack_transport` (voof VolarSpecBridge.Prelude).
+fn emit_bitpack_ctor(
+    out: &mut String,
+    amod: &AeneasModule,
+    module: &IrModule<IrFunction>,
+    imp: &IrImpl,
+    fields: &[String],
+    f: &IrFunction,
+    rfield: &str,
+    sfield: &str,
+) -> Result<Option<String>> {
+    let self_ty = struct_name_of_impl(imp)?;
+    let a_self = amod.path(module, &self_ty);
+    let a_method = aeneas_method(amod, module, &self_ty, &f.name, fields);
+    let n_method = native_method(&f.name, fields);
+    let spec = format!("{}_{}_spec", self_ty.to_lowercase(), f.name);
+    w!(out, "\n/-- (generated) `{a_method}` commutes with the transport (bit-pack; uses the\n    curated `{spec}`). -/\n");
+    w!(out, "theorem {self_ty}_{}_commutes {{N O : Type}} (d : vole.VoleArray N Std.U8)\n", f.name);
+    w!(out, "    (dO : vole.VoleArray O Std.U8)\n");
+    w!(out, "    (divDict : core.ops.arith.Div N\n");
+    w!(out, "      (typenum.uint.UInt (typenum.uint.UInt (typenum.uint.UInt (typenum.uint.UInt\n");
+    w!(out, "        typenum.uint.UTerm typenum.bit.B1) typenum.bit.B0) typenum.bit.B0)\n");
+    w!(out, "      typenum.bit.B0) O)\n");
+    w!(out, "    (m mo : Std.Usize)\n");
+    w!(out, "    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)\n");
+    w!(out, "    (hsizeO : dO.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok mo)\n");
+    w!(out, "    (hdiv : mo.val * 8 = m.val)\n");
+    w!(out, "    (g : {a_self} N)\n");
+    w!(out, "    (hgl : (vecL g.{sfield}.data).length = m.val) :\n");
+    w!(out, "    (do let r ← {a_method} d dO divDict g\n");
+    w!(out, "        ok ({self_ty}ToNative (m.val / 8) r)) =\n");
+    w!(out, "    ok ({self_ty}.{n_method} ({self_ty}ToNative m.val g)) := by\n");
+    w!(out, "  obtain ⟨r, hr, hpost⟩ := spec_ok_elim ({spec} d dO divDict m mo hsize hsizeO hdiv g hgl)\n");
+    w!(out, "  rw [hr]\n");
+    w!(out, "  simp only [Bind.bind, Aeneas.Std.bind]\n");
+    w!(out, "  congr 1\n");
+    w!(out, "  simp only [{self_ty}ToNative]\n");
+    w!(out, "  simp only [{self_ty}.{n_method}]\n");
+    w!(out, "  show ({{ {rfield} := arrToNative r.{rfield} }} : {self_ty} (m.val / 8)) =\n");
+    w!(out, "    ({{ {rfield} := List.ofFn (fun i : Fin (m.val / 8) => (Id.run do\n");
+    w!(out, "      let mut v := (0 : UInt8)\n");
+    w!(out, "      for h : j in [(0):(8)] do\n");
+    w!(out, "        let bit := ((arrToNative g.{sfield})[((i.val * (8)) + j)]! &&& ((1) : UInt8))\n");
+    w!(out, "        v := v ||| (bit <<< (j).toUInt8)\n");
+    w!(out, "      return v)) }} : {self_ty} (m.val / 8))\n");
+    w!(out, "  simp only [arrToNative]\n");
+    w!(out, "  rw [hpost, List.map_ofFn]\n");
+    w!(out, "  congr 1\n");
+    w!(out, "  apply List.ext_getElem\n");
+    w!(out, "  · have hmo : mo.val = m.val / 8 := by omega\n");
+    w!(out, "    simp [hmo]\n");
+    w!(out, "  · intro i h1 h2\n");
+    w!(out, "    rw [List.getElem_ofFn, List.getElem_ofFn]\n");
+    w!(out, "    simp only [Function.comp_apply]\n");
+    w!(out, "    show u8ToUInt8 ⟨bitPackBvFrom (vecL g.{sfield}.data) i 0 (0#u8).bv⟩ = _\n");
+    w!(out, "    rw [to_share_inner_native ((vecL g.{sfield}.data).map u8ToUInt8) i]\n");
+    w!(out, "    rw [← bitPack_transport ((vecL g.{sfield}.data).map u8ToUInt8) (vecL g.{sfield}.data) rfl i 8 0 (0#u8) rfl]\n");
+    w!(out, "    rfl\n");
     Ok(None)
 }
 
@@ -1856,6 +2029,9 @@ pub fn print_module_lean_bridge(
                 }
                 Some(MethodPattern::MutateOrZeroCtor { field, param }) => {
                     emit_mutate_or_zero_ctor(&mut out, &amod, module, imp, fields, f, &field, &param)?
+                }
+                Some(MethodPattern::BitPackCtor { rfield, sfield }) => {
+                    emit_bitpack_ctor(&mut out, &amod, module, imp, fields, f, &rfield, &sfield)?
                 }
                 None => Some("body pattern".to_string()),
             };

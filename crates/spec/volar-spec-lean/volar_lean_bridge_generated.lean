@@ -193,6 +193,50 @@ theorem Garble_share_commutes {N : Type} (d : vole.VoleArray N Std.U8)
     rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]
     simp [u8ToUInt8_xor]
 
+/-- (generated) `volar_spec.garble.Garble.to_share` commutes with the transport (bit-pack; uses the
+    curated `garble_to_share_spec`). -/
+theorem Garble_to_share_commutes {N O : Type} (d : vole.VoleArray N Std.U8)
+    (dO : vole.VoleArray O Std.U8)
+    (divDict : core.ops.arith.Div N
+      (typenum.uint.UInt (typenum.uint.UInt (typenum.uint.UInt (typenum.uint.UInt
+        typenum.uint.UTerm typenum.bit.B1) typenum.bit.B0) typenum.bit.B0)
+      typenum.bit.B0) O)
+    (m mo : Std.Usize)
+    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)
+    (hsizeO : dO.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok mo)
+    (hdiv : mo.val * 8 = m.val)
+    (g : volar_spec.garble.Garble N)
+    (hgl : (vecL g.base.data).length = m.val) :
+    (do let r ← volar_spec.garble.Garble.to_share d dO divDict g
+        ok (GarbleToNative (m.val / 8) r)) =
+    ok (Garble.to_share (GarbleToNative m.val g)) := by
+  obtain ⟨r, hr, hpost⟩ := spec_ok_elim (garble_to_share_spec d dO divDict m mo hsize hsizeO hdiv g hgl)
+  rw [hr]
+  simp only [Bind.bind, Aeneas.Std.bind]
+  congr 1
+  simp only [GarbleToNative]
+  simp only [Garble.to_share]
+  show ({ base := arrToNative r.base } : Garble (m.val / 8)) =
+    ({ base := List.ofFn (fun i : Fin (m.val / 8) => (Id.run do
+      let mut v := (0 : UInt8)
+      for h : j in [(0):(8)] do
+        let bit := ((arrToNative g.base)[((i.val * (8)) + j)]! &&& ((1) : UInt8))
+        v := v ||| (bit <<< (j).toUInt8)
+      return v)) } : Garble (m.val / 8))
+  simp only [arrToNative]
+  rw [hpost, List.map_ofFn]
+  congr 1
+  apply List.ext_getElem
+  · have hmo : mo.val = m.val / 8 := by omega
+    simp [hmo]
+  · intro i h1 h2
+    rw [List.getElem_ofFn, List.getElem_ofFn]
+    simp only [Function.comp_apply]
+    show u8ToUInt8 ⟨bitPackBvFrom (vecL g.base.data) i 0 (0#u8).bv⟩ = _
+    rw [to_share_inner_native ((vecL g.base.data).map u8ToUInt8) i]
+    rw [← bitPack_transport ((vecL g.base.data).map u8ToUInt8) (vecL g.base.data) rfl i 8 0 (0#u8) rfl]
+    rfl
+
 /-- (generated) `volar_spec.garble.Eval.zero` commutes with the transport. -/
 theorem Eval_zero_commutes {N : Type} (d : vole.VoleArray N Std.U8)
     (m : Std.Usize)
@@ -277,6 +321,50 @@ theorem Eval_open_commutes {N : Type} (d : vole.VoleArray N Std.U8)
     rw [List.getElem?_map, List.getElem?_map]
     rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]
     simp [u8ToUInt8_xor]
+
+/-- (generated) `volar_spec.garble.Eval.to_share` commutes with the transport (bit-pack; uses the
+    curated `eval_to_share_spec`). -/
+theorem Eval_to_share_commutes {N O : Type} (d : vole.VoleArray N Std.U8)
+    (dO : vole.VoleArray O Std.U8)
+    (divDict : core.ops.arith.Div N
+      (typenum.uint.UInt (typenum.uint.UInt (typenum.uint.UInt (typenum.uint.UInt
+        typenum.uint.UTerm typenum.bit.B1) typenum.bit.B0) typenum.bit.B0)
+      typenum.bit.B0) O)
+    (m mo : Std.Usize)
+    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)
+    (hsizeO : dO.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok mo)
+    (hdiv : mo.val * 8 = m.val)
+    (g : volar_spec.garble.Eval N)
+    (hgl : (vecL g.target.data).length = m.val) :
+    (do let r ← volar_spec.garble.Eval.to_share d dO divDict g
+        ok (EvalToNative (m.val / 8) r)) =
+    ok (Eval.to_share (EvalToNative m.val g)) := by
+  obtain ⟨r, hr, hpost⟩ := spec_ok_elim (eval_to_share_spec d dO divDict m mo hsize hsizeO hdiv g hgl)
+  rw [hr]
+  simp only [Bind.bind, Aeneas.Std.bind]
+  congr 1
+  simp only [EvalToNative]
+  simp only [Eval.to_share]
+  show ({ target := arrToNative r.target } : Eval (m.val / 8)) =
+    ({ target := List.ofFn (fun i : Fin (m.val / 8) => (Id.run do
+      let mut v := (0 : UInt8)
+      for h : j in [(0):(8)] do
+        let bit := ((arrToNative g.target)[((i.val * (8)) + j)]! &&& ((1) : UInt8))
+        v := v ||| (bit <<< (j).toUInt8)
+      return v)) } : Eval (m.val / 8))
+  simp only [arrToNative]
+  rw [hpost, List.map_ofFn]
+  congr 1
+  apply List.ext_getElem
+  · have hmo : mo.val = m.val / 8 := by omega
+    simp [hmo]
+  · intro i h1 h2
+    rw [List.getElem_ofFn, List.getElem_ofFn]
+    simp only [Function.comp_apply]
+    show u8ToUInt8 ⟨bitPackBvFrom (vecL g.target.data) i 0 (0#u8).bv⟩ = _
+    rw [to_share_inner_native ((vecL g.target.data).map u8ToUInt8) i]
+    rw [← bitPack_transport ((vecL g.target.data).map u8ToUInt8) (vecL g.target.data) rfl i 8 0 (0#u8) rfl]
+    rfl
 
 /-- (generated) closure spec: the extracted `volar_spec.garble.Eval.and_via_table.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` is the
     pointwise xor of the hash and the selected table row. -/
@@ -660,8 +748,6 @@ theorem Eval_bitxor_commutes {N : Type} (d : vole.VoleArray N Std.U8)
 
 -- NOT-BRIDGED (v1):
 --   - method Garble.action_result_base (body pattern)
---   - method Garble.to_share (body pattern)
---   - method Eval.to_share (body pattern)
 --   - method GlobalSecret.one_wire_eval (body pattern)
 --   - method GlobalSecret.gen_and_table (body pattern)
 --   - method GlobalSecret.gen_and_table_pol (body pattern)
