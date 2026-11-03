@@ -302,7 +302,7 @@ drift apart without CI failing):
 | M0 | Volar-interop compiler round-trips one mxx program to a compiling, tested spec element | **Landed** (`6817355`): DSL program → validate → lower → print → reparse round-trip → rustc compile → run vs naive reference |
 | M1 | First clearly-equivalent element (`lwe.rs` core) generated from mxx, old tests pass unchanged | **Landed**: `mxx_lwe` generated + cross-test vs generic `LweSample` (deterministic shared vectors); full `volar-spec` suite green |
 | M2 | Transport-proof generator emits native↔mxx refinement for M1's element; voof `volar-spec-mxx-bridge` builds | **Landed (volar side)**: generated Transport.lean builds sorry-free in `volar-spec-lean/mxx` (lake, mathlib v4.28.0 via mxx's pin). voof package wiring remains open |
-| M3 | All Phase-1 candidate elements moved | per-element evidence records |
+| M3 | All Phase-1 candidate elements moved | **Partial**: `lwe` landed. `tinylabels/ring_lwe` needs tape-based sampler lowering (mxx `sampling_tape` ↔ `SpecRng`); `binfhe/gadget` needs a power-of-two-torus analysis (mxx gadget nodes are regular base-B over prime CRT towers; volar's is MSB-first covering over `2^LOG` — the digit-reversal equivalence is plausible but unverified). Both are next-session work, not blockers for Phase 2/3 infrastructure |
 | M4 | **(pre-#175 deadline)** interop compiler + transport pipeline ready for security-statement consumption | M0–M2 complete |
 | M5 | mxx TFHE ported as generated spec element; legacy toy `tfhe.rs` retired | TFHE main-use-case test; ledger updated |
 | M6 | Remaining lattice support moved; voof proof chain closed end to end | per-element Proven-track evidence submitted for human decision |
