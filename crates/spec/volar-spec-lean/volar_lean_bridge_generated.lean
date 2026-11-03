@@ -410,6 +410,32 @@ theorem Eval_and_via_table_commutes {N : Type} {D : Type}
     simp only [Option.map_some, Option.getD_some]
     simp [xorBytes, hbr, hbrow, u8ToUInt8_xor]
 
+/-- (generated) `volar_spec.garble.GlobalSecret.new` commutes with the transport (set-index-zero-or-one
+    then construct). -/
+theorem GlobalSecret_new_commutes {N : Type} (d : vole.VoleArray N Std.U8)
+    (m : Std.Usize) (secret : volar_spec.array.Array Std.U8 N)
+    (hs0 : 0 < (vecL secret.data).length) :
+    (do let r ← volar_spec.garble.GlobalSecret.new d secret
+        ok (GlobalSecretToNative m.val r)) =
+    ok (GlobalSecret.new (arrToNative secret)) := by
+  simp only [volar_spec.garble.GlobalSecret.new]
+  rw [shim_index_mut_zero d secret hs0]
+  simp only [bind_tc_ok, lift]
+  show (ok (GlobalSecretToNative m.val
+        ({ secret := ({ data := (⟨secret.data.val.set 0 (((vecL secret.data)[0]'hs0) ||| 1#u8), (by rw [List.length_set]; exact secret.data.property)⟩ :
+          alloc.vec.Vec Std.U8), _n := secret._n } : volar_spec.array.Array Std.U8 N) } : volar_spec.garble.GlobalSecret N)) : RustM _) =
+    ok (GlobalSecret.new (arrToNative secret))
+  show (ok ({ secret := List.map u8ToUInt8 (secret.data.val.set 0 (((vecL secret.data)[0]'hs0) ||| 1#u8)) } :
+        GlobalSecret m.val) : RustM _) =
+    ok (GlobalSecret.new (arrToNative secret))
+  rw [map_set_u8, u8ToUInt8_or, u8ToUInt8_one]
+  simp only [GlobalSecret.new, arrToNative]
+  simp [Id.run, pure]
+  congr 1
+  congr 1
+  rw [List.getElem?_eq_getElem hs0]
+  simp
+
 /-- (generated) `volar_spec.garble.GlobalSecret.impl.secret` commutes with the transport (clone is the
     identity on U8 shim arrays). -/
 theorem GlobalSecret_secret_commutes {N : Type} (d : vole.VoleArray N Std.U8)
@@ -636,7 +662,6 @@ theorem Eval_bitxor_commutes {N : Type} (d : vole.VoleArray N Std.U8)
 --   - method Garble.action_result_base (body pattern)
 --   - method Garble.to_share (body pattern)
 --   - method Eval.to_share (body pattern)
---   - method GlobalSecret.new (body pattern)
 --   - method GlobalSecret.one_wire_eval (body pattern)
 --   - method GlobalSecret.gen_and_table (body pattern)
 --   - method GlobalSecret.gen_and_table_pol (body pattern)

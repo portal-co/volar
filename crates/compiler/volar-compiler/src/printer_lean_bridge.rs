@@ -199,6 +199,9 @@ enum MethodPattern {
     },
     /// `self.f.clone()` returned bare — e.g. `GlobalSecret.secret`.
     CloneField { field: String },
+    /// `p[0] |= 1; Self { f: p }` — mutate-index-zero-then-construct, e.g.
+    /// `GlobalSecret.new`.
+    MutateOrZeroCtor { field: String, param: String },
     /// `let index = (if s.f[0]&1==1 {1} else {0}) | (if o.g[0]&1==1 {2} else {0});`
     /// `let hash = { let mut d = D::new(); d.update(&x.f); …; d.finalize() };`
     /// `Ret { rf: from_fn(|i| hash[i] ^ t.table[index][i]) }` — e.g.
@@ -553,9 +556,40 @@ fn is_fixed_shim_u8_array(ty: &IrType) -> bool {
     )
 }
 
+/// `p[0] |= 1; Self { f: p }` — the GlobalSecret.new shape.
+fn as_mutate_or_zero_ctor(f: &IrFunction) -> Option<MethodPattern> {
+    if f.body.stmts.len() != 1 {
+        return None;
+    }
+    let crate::ir::IrStmtKind::Semi(inner) = &f.body.stmts[0].kind else { return None };
+    let IrExprKind::AssignOp { op: SpecBinOp::BitOr, left, right } = &inner.kind else {
+        return None
+    };
+    if !matches!(&right.kind, IrExprKind::Lit(crate::ir::IrLit::Int(1))) {
+        return None;
+    }
+    let IrExprKind::Index { base, index } = &left.kind else { return None };
+    if !matches!(&index.kind, IrExprKind::Lit(crate::ir::IrLit::Int(0))) {
+        return None;
+    }
+    let IrExprKind::Var(pv) = &base.kind else { return None };
+    if pv == "self" {
+        return None;
+    }
+    let tail = f.body.expr.as_ref()?;
+    let IrExprKind::StructExpr { fields, rest: None, .. } = &tail.kind else { return None };
+    if fields.len() != 1 || !matches!(&fields[0].1.kind, IrExprKind::Var(v) if v == pv) {
+        return None;
+    }
+    Some(MethodPattern::MutateOrZeroCtor { field: fields[0].0.clone(), param: pv.clone() })
+}
+
 /// Classify a method body (a single tail expression, or a single
 /// `Semi(Return(expr))` statement).
 fn classify(f: &IrFunction) -> Option<MethodPattern> {
+    if let Some(p) = as_mutate_or_zero_ctor(f) {
+        return Some(p);
+    }
     if let Some(p) = as_table_digest_ctor(f) {
         return Some(p);
     }
@@ -1184,6 +1218,51 @@ fn emit_clone_field(
     Ok(None)
 }
 
+/// Emit the commutation for a mutate-index-zero-then-construct method
+/// (`p[0] |= 1; Self { f: p }`) — e.g. `GlobalSecret.new`. Uses the curated
+/// `shim_index_mut_zero` (voof ProofObligations) and `map_set_u8` /
+/// `u8ToUInt8_or` (voof VolarSpecBridge.Prelude).
+fn emit_mutate_or_zero_ctor(
+    out: &mut String,
+    amod: &AeneasModule,
+    module: &IrModule<IrFunction>,
+    imp: &IrImpl,
+    fields: &[String],
+    f: &IrFunction,
+    field: &str,
+    param: &str,
+) -> Result<Option<String>> {
+    let self_ty = struct_name_of_impl(imp)?;
+    let a_self = amod.path(module, &self_ty);
+    let a_method = aeneas_method(amod, module, &self_ty, &f.name, fields);
+    let n_method = native_method(&f.name, fields);
+    w!(out, "\n/-- (generated) `{a_method}` commutes with the transport (set-index-zero-or-one\n    then construct). -/\n");
+    w!(out, "theorem {self_ty}_{}_commutes {{N : Type}} (d : vole.VoleArray N Std.U8)\n", f.name);
+    w!(out, "    (m : Std.Usize) ({param} : volar_spec.array.Array Std.U8 N)\n");
+    w!(out, "    (hs0 : 0 < (vecL {param}.data).length) :\n");
+    w!(out, "    (do let r ← {a_method} d {param}\n");
+    w!(out, "        ok ({self_ty}ToNative m.val r)) =\n");
+    w!(out, "    ok ({self_ty}.{n_method} (arrToNative {param})) := by\n");
+    w!(out, "  simp only [{a_method}]\n");
+    w!(out, "  rw [shim_index_mut_zero d {param} hs0]\n");
+    w!(out, "  simp only [bind_tc_ok, lift]\n");
+    w!(out, "  show (ok ({self_ty}ToNative m.val\n");
+    w!(out, "        ({{ {field} := ({{ data := (⟨{param}.data.val.set 0 (((vecL {param}.data)[0]'hs0) ||| 1#u8), (by rw [List.length_set]; exact {param}.data.property)⟩ :\n");
+    w!(out, "          alloc.vec.Vec Std.U8), _n := {param}._n }} : volar_spec.array.Array Std.U8 N) }} : {a_self} N)) : RustM _) =\n");
+    w!(out, "    ok ({self_ty}.{n_method} (arrToNative {param}))\n");
+    w!(out, "  show (ok ({{ {field} := List.map u8ToUInt8 ({param}.data.val.set 0 (((vecL {param}.data)[0]'hs0) ||| 1#u8)) }} :\n");
+    w!(out, "        {self_ty} m.val) : RustM _) =\n");
+    w!(out, "    ok ({self_ty}.{n_method} (arrToNative {param}))\n");
+    w!(out, "  rw [map_set_u8, u8ToUInt8_or, u8ToUInt8_one]\n");
+    w!(out, "  simp only [{self_ty}.{n_method}, arrToNative]\n");
+    w!(out, "  simp [Id.run, pure]\n");
+    w!(out, "  congr 1\n");
+    w!(out, "  congr 1\n");
+    w!(out, "  rw [List.getElem?_eq_getElem hs0]\n");
+    w!(out, "  simp\n");
+    Ok(None)
+}
+
 /// Emit the closure spec + commutation for a table-selected digest
 /// constructor (`let index = (bit-tests); …digest…;
 /// Ret { rf: from_fn(|i| hash[i] ^ t.table[index][i]) }`) — e.g.
@@ -1774,6 +1853,9 @@ pub fn print_module_lean_bridge(
                 }
                 Some(MethodPattern::CloneField { field }) => {
                     emit_clone_field(&mut out, &amod, module, imp, fields, f, &field)?
+                }
+                Some(MethodPattern::MutateOrZeroCtor { field, param }) => {
+                    emit_mutate_or_zero_ctor(&mut out, &amod, module, imp, fields, f, &field, &param)?
                 }
                 None => Some("body pattern".to_string()),
             };
