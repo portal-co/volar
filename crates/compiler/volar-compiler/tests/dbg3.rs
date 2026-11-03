@@ -7,11 +7,11 @@ fn dbg3() {
     for i in &m.impls {
         for it in &i.items {
             if let volar_compiler::ir::IrImplItem::Method(f) = it {
-                if matches!(f.name.as_str(), "and_result") {
-                    out.push_str(&format!("=== {:?}::{}\n{:.2000?}\n\n", i.self_ty, f.name, f.body));
+                if matches!(f.name.as_str(), "and_via_table") {
+                    out.push_str(&format!("=== {:?}::{}\n{:.2500?}\n\n", i.self_ty, f.name, f.body));
                 }
             }
         }
     }
-    std::fs::write("/tmp/garble-ir4.txt", out).unwrap();
+    std::fs::write("/tmp/garble-ir5.txt", out).unwrap();
 }
