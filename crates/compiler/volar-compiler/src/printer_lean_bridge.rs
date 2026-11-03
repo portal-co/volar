@@ -381,6 +381,14 @@ fn is_shim_u8_array(ty: &IrType) -> bool {
     )
 }
 
+/// A fixed-size core array of shim u8 arrays (e.g. `GarbleTable.table`).
+fn is_fixed_shim_u8_array(ty: &IrType) -> bool {
+    matches!(
+        ty,
+        IrType::Array { kind: crate::ir::ArrayKind::FixedArray, elem, .. } if is_shim_u8_array(elem)
+    )
+}
+
 /// Classify a method body (a single tail expression, or a single
 /// `Semi(Return(expr))` statement).
 fn classify(f: &IrFunction) -> Option<MethodPattern> {
@@ -1234,14 +1242,21 @@ pub fn print_module_lean_bridge(
         struct_fields.push((name.clone(), fields.clone()));
         if s.generics.len() == 1
             && !s.fields.is_empty()
-            && s.fields.iter().all(|f| is_shim_u8_array(&f.ty))
+            && s.fields.iter().all(|f| is_shim_u8_array(&f.ty) || is_fixed_shim_u8_array(&f.ty))
         {
             let aename = amod.path(module, &name);
             w!(out, "\n/-- (generated) transport: extracted `{aename}` → native `{name}`. -/\n");
             w!(out, "def {name}ToNative (n : Nat) (x : {aename} N) : {name} n :=\n");
-            let parts: Vec<String> = fields
+            let parts: Vec<String> = s
+                .fields
                 .iter()
-                .map(|f| format!("{f} := arrToNative x.{f}"))
+                .map(|f| {
+                    if is_shim_u8_array(&f.ty) {
+                        format!("{} := arrToNative x.{}", f.name, f.name)
+                    } else {
+                        format!("{} := arrFixedToNative x.{}", f.name, f.name)
+                    }
+                })
                 .collect();
             w!(out, "  {{ {} }}\n", parts.join(", "));
             bridged.insert(name);

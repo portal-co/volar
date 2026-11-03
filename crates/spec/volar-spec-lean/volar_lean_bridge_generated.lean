@@ -18,6 +18,10 @@ def EvalToNative (n : Nat) (x : volar_spec.garble.Eval N) : Eval n :=
 def GarbleToNative (n : Nat) (x : volar_spec.garble.Garble N) : Garble n :=
   { base := arrToNative x.base }
 
+/-- (generated) transport: extracted `volar_spec.garble.GarbleTable` → native `GarbleTable`. -/
+def GarbleTableToNative (n : Nat) (x : volar_spec.garble.GarbleTable N) : GarbleTable n :=
+  { table := arrFixedToNative x.table }
+
 /-- (generated) transport: extracted `volar_spec.garble.GlobalSecret` → native `GlobalSecret`. -/
 def GlobalSecretToNative (n : Nat) (x : volar_spec.garble.GlobalSecret N) : GlobalSecret n :=
   { secret := arrToNative x.secret }
@@ -486,7 +490,6 @@ theorem Eval_bitxor_commutes {N : Type} (d : vole.VoleArray N Std.U8)
     simp [u8ToUInt8_xor]
 
 -- NOT-BRIDGED (v1):
---   - struct GarbleTable (fields not all shim u8-arrays)
 --   - method Garble.action_result_base (body pattern)
 --   - method Garble.to_share (body pattern)
 --   - method Eval.to_share (body pattern)
