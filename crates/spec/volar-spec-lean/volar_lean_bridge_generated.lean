@@ -278,6 +278,138 @@ theorem Eval_open_commutes {N : Type} (d : vole.VoleArray N Std.U8)
     rw [List.getElem?_eq_getElem hb, List.getElem?_eq_getElem ht]
     simp [u8ToUInt8_xor]
 
+/-- (generated) closure spec: the extracted `volar_spec.garble.Eval.and_via_table.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` is the
+    pointwise xor of the hash and the selected table row. -/
+theorem Eval_and_via_table_closure_spec {N : Type} {D : Type}
+    (d : vole.VoleArray N Std.U8) (dict : volar_spec.SpecDigest D N)
+    (hash : volar_spec.array.Array Std.U8 N) (table : volar_spec.garble.GarbleTable N)
+    (index : Std.Usize) (row : volar_spec.array.Array Std.U8 N)
+    (hrow : table.table.val[index.val]? = some row) (i : Std.Usize)
+    (hh : i.val < (vecL hash.data).length)
+    (ht : i.val < (vecL row.data).length) :
+    volar_spec.garble.Eval.and_via_table.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut d dict (hash, table, index) i =
+      ok (xorBytes (vecL hash.data) (vecL row.data) i.val, (hash, table, index)) := by
+  have hh' : i.val < hash.data.val.length := hh
+  have ht' : i.val < row.data.val.length := ht
+  simp only [volar_spec.garble.Eval.and_via_table.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut,
+    array.Array.Insts.CoreOpsIndexIndexUsizeT.index,
+    alloc.vec.Vec.Insts.CoreOpsIndexIndex.index,
+    core.Slice.Insts.CoreOpsIndexIndex.index,
+    alloc.vec.Vec.Insts.CoreOpsDerefDerefSlice.deref, alloc.vec.Vec.as_slice,
+    rust_primitives.sequence.seq_to_slice,
+    core.Usize.Insts.CoreSliceIndexSliceIndexSliceT.get,
+    rust_primitives.slice.slice_length,
+    rust_primitives.slice.slice_index, Slice.index_usize,
+    Aeneas.Std.Array.index_usize, Aeneas.Std.Array.getElem?_Usize_eq, hrow,
+    UScalar.lt_equiv, Slice.len_val, Slice.length, Slice.getElem?_Usize_eq,
+    eq_true hh', eq_true ht',
+    decide_true, ↓reduceIte, getElem?_pos, spec_ok, bind_tc_ok, lift]
+  simp [xorBytes, vecL, hh, ht, hh', ht', hrow]
+  rfl
+
+/-- (generated) `volar_spec.garble.Eval.and_via_table` commutes with the transport, given the dict
+    realizes `hash` on the concatenated update inputs (streaming-hash spec). -/
+theorem Eval_and_via_table_commutes {N : Type} {D : Type}
+    (d : vole.VoleArray N Std.U8) (dict : volar_spec.SpecDigest D N)
+    (m : Std.Usize)
+    (hsize : d.arrayArraySizeInst.typenummarker_traitsUnsignedInst.USIZE = ok m)
+    (self : volar_spec.garble.Eval N) (other : volar_spec.garble.Eval N) (table : volar_spec.garble.GarbleTable N)
+    (hselfl : (vecL self.target.data).length = m.val)
+    (hotherl : (vecL other.target.data).length = m.val)
+    (hm0 : 0 < m.val)
+    (htl : ∀ k, k < 4 → ∀ row, table.table.val[k]? = some row →
+      (vecL row.data).length = m.val)
+    (hash : List UInt8 → List UInt8)
+    (d0 : D) (hnew : dict.new = ok d0)
+    (d1 : D) (hup1 : dict.update (core.Shared0T.Insts.CoreConvertAsRef (array.Array.Insts.CoreConvertAsRefSlice Std.U8 d.arrayArraySizeInst)) d0 self.target = ok d1)
+    (d2 : D) (hup2 : dict.update (core.Shared0T.Insts.CoreConvertAsRef (array.Array.Insts.CoreConvertAsRefSlice Std.U8 d.arrayArraySizeInst)) d1 other.target = ok d2)
+    (r : volar_spec.array.Array Std.U8 N) (hfin : dict.finalize d2 = ok r)
+    (hr : arrToNative r = hash ((vecL self.target.data).map u8ToUInt8 ++ (vecL other.target.data).map u8ToUInt8))
+    (hrlen : (vecL r.data).length = m.val) :
+    (do let res ← volar_spec.garble.Eval.and_via_table d dict self other table
+        ok (EvalToNative m.val res)) =
+    ok (Eval.and_via_table (EvalToNative m.val self) (EvalToNative m.val other) (GarbleTableToNative m.val table) hash) := by
+  have hlen4 : table.table.val.length = 4 := by
+    have := table.table.property; simpa using this
+  have h01l : 0 < (vecL self.target.data).length := by rw [hselfl]; exact hm0
+  have h02l : 0 < (vecL other.target.data).length := by rw [hotherl]; exact hm0
+  simp only [volar_spec.garble.Eval.and_via_table]
+  rw [shim_index_zero d self.target h01l]
+  simp only [bind_tc_ok, lift]
+  set b1 := (vecL self.target.data)[0]'h01l &&& 1#u8 with hb1def
+  rw [shim_index_zero d other.target h02l]
+  simp only [bind_tc_ok, lift]
+  set b2 := (vecL other.target.data)[0]'h02l &&& 1#u8 with hb2def
+  rw [table_sel_prefix b1 b2]
+  set E : Std.Usize :=
+    (if b1 = 1#u8 then 1#usize else 0#usize) ||| (if b2 = 1#u8 then 2#usize else 0#usize)
+    with hEdef
+  have hidxv : E.val = (if b1 = 1#u8 then 1 else 0) ||| (if b2 = 1#u8 then 2 else 0) :=
+    table_sel_index_val b1 b2
+  have hidx4 : E.val < 4 := table_sel_index_lt4 b1 b2
+  rw [hnew]; simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hup1]; simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hup2]; simp only [Bind.bind, Aeneas.Std.bind]
+  rw [hfin]; simp only [Bind.bind, Aeneas.Std.bind]
+  set row : volar_spec.array.Array Std.U8 N :=
+    table.table.val[E.val]'(by rw [hlen4]; exact hidx4) with hrowdef
+  have hrow : table.table.val[E.val]? = some row := getElem?_pos _ _ _
+  have hrowl : (vecL row.data).length = m.val := htl E.val hidx4 row hrow
+  obtain ⟨v, hv, hpost⟩ := spec_ok_elim (from_fn_spec d.arrayArraySizeInst
+    (volar_spec.garble.Eval.and_via_table.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8 d dict) m hsize
+    (r, table, E)
+    (fun j => xorBytes (vecL r.data) (vecL row.data) j)
+    (by intro j hj
+        have hh : j.val < (vecL r.data).length := by rw [hrlen]; exact hj
+        have ht : j.val < (vecL row.data).length := by rw [hrowl]; exact hj
+        exact Eval_and_via_table_closure_spec d dict r table E row hrow j hh ht))
+  rw [hv]
+  simp only [Bind.bind, Aeneas.Std.bind]
+  congr 1
+  simp only [Eval.and_via_table, EvalToNative, GarbleTableToNative, arrFixedToNative,
+    arrToNative, DigestSt.new, DigestSt.update, DigestSt.finalize]
+  simp [Id.run, pure]
+  congr 1
+  rw [hpost, List.map_ofFn]
+  rw [← hr]
+  simp only [arrToNative]
+  apply List.ext_getElem
+  · simp
+  · intro i h1 h2
+    rw [List.getElem_ofFn, List.getElem_ofFn]
+    simp only [Function.comp_apply]
+    have hi : i < m.val := by simpa using h1
+    have hb1 : (Option.map u8ToUInt8 ((vecL self.target.data)[0]?)).getD default &&& (1 : UInt8)
+        = u8ToUInt8 b1 := by
+      rw [List.getElem?_eq_getElem h01l]
+      simp only [Option.map_some, Option.getD_some]
+      rw [← u8ToUInt8_one, ← u8ToUInt8_and, hb1def]
+    have hb2 : (Option.map u8ToUInt8 ((vecL other.target.data)[0]?)).getD default &&& (1 : UInt8)
+        = u8ToUInt8 b2 := by
+      rw [List.getElem?_eq_getElem h02l]
+      simp only [Option.map_some, Option.getD_some]
+      rw [← u8ToUInt8_one, ← u8ToUInt8_and, hb2def]
+    have hiff1 : ((Option.map u8ToUInt8 ((vecL self.target.data)[0]?)).getD default &&& (1 : UInt8)) = 1
+        ↔ b1 = 1#u8 := by
+      rw [hb1]; constructor
+      · intro h; apply u8ToUInt8_injective; rw [h, u8ToUInt8_one]
+      · intro h; rw [h, u8ToUInt8_one]
+    have hiff2 : ((Option.map u8ToUInt8 ((vecL other.target.data)[0]?)).getD default &&& (1 : UInt8)) = 1
+        ↔ b2 = 1#u8 := by
+      rw [hb2]; constructor
+      · intro h; apply u8ToUInt8_injective; rw [h, u8ToUInt8_one]
+      · intro h; rw [h, u8ToUInt8_one]
+    rw [if_congr hiff1 rfl rfl, if_congr hiff2 rfl rfl, ← hidxv]
+    rw [hrow]
+    simp only [Option.map_some, Option.getD_some]
+    have hbr : i < (vecL r.data).length := by rw [hrlen]; exact hi
+    have hbrow : i < (vecL row.data).length := by rw [hrowl]; exact hi
+    rw [List.getElem?_map, List.getElem?_eq_getElem hbr]
+    simp only [arrToNative]
+    rw [List.getElem?_map, List.getElem?_eq_getElem hbrow]
+    simp only [Option.map_some, Option.getD_some]
+    simp [xorBytes, hbr, hbrow, u8ToUInt8_xor]
+
 /-- (generated) closure spec: the extracted `volar_spec.garble.GlobalSecret.encode.closure.Insts.CoreOpsFunctionFnMutTupleUsizeU8.call_mut` is the
     conditional pointwise xor. -/
 theorem GlobalSecret_encode_closure_spec {N : Type} (d : vole.VoleArray N Std.U8)
@@ -493,7 +625,6 @@ theorem Eval_bitxor_commutes {N : Type} (d : vole.VoleArray N Std.U8)
 --   - method Garble.action_result_base (body pattern)
 --   - method Garble.to_share (body pattern)
 --   - method Eval.to_share (body pattern)
---   - method Eval.and_via_table (body pattern)
 --   - method GlobalSecret.new (body pattern)
 --   - method GlobalSecret.secret (body pattern)
 --   - method GlobalSecret.one_wire_eval (body pattern)
